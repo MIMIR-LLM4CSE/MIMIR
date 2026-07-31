@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+  <!-- Bold "M" — MIMIR mark, sized for the activity-bar (masked monochrome) -->
+  <path d="M4 19V6l8 8 8-8v13"/>
+  <!-- Runic serifs at the feet (Norse-myth nod) -->
+  <path d="M2.6 19h2.8M18.6 19h2.8"/>
+</svg>

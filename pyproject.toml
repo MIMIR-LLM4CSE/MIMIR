@@ -1,0 +1,92 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mimir-agent"
+version = "0.1.0"
+description = "MIMIR — a local AI agent over MCP tool servers, from math to HPC."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+authors = [{ name = "MIMIR contributors" }]
+keywords = ["llm", "agent", "mcp", "hpc", "ollama", "vllm"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
+    "Intended Audience :: Science/Research",
+]
+
+# Core runtime — enough to start every server registered by default.
+dependencies = [
+    "mcp>=1.0.0",
+    "ollama>=0.3.0",
+    "openai>=1.0.0",
+    "httpx>=0.27.0",
+    "websockets>=12.0",
+    "numpy>=1.24.0",
+    "sympy>=1.12",
+    "psutil>=5.9.0",
+]
+
+[project.optional-dependencies]
+# vLLM is used through its OpenAI-compatible API, so the client only needs the
+# `openai` package (already in core). This extra exists so `pip install .[vllm]`
+# stays a valid, documented command.
+vllm = ["openai>=1.0.0"]
+
+# Fine-tuning stack — only needed for the ml/ servers (server_finetune.py).
+finetune = [
+    "torch>=2.0.0",
+    "transformers>=4.40.0",
+    "peft>=0.10.0",
+    "datasets>=2.18.0",
+    "trl>=0.8.0",
+    "bitsandbytes>=0.43.0",
+]
+
+# Development / test tooling.
+dev = [
+    "pytest>=8.0.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/MIMIR-LLM4CSE/MIMIR"
+Documentation = "https://github.com/MIMIR-LLM4CSE/MIMIR/blob/master/README.md"
+Source = "https://github.com/MIMIR-LLM4CSE/MIMIR"
+
+[project.scripts]
+mimir = "mimir.client.ui.cli.main:main_sync"
+mimir-server = "mimir.client.ui.ws.ws_server:main"
+
+[tool.setuptools]
+# The MCP servers are launched as standalone scripts by absolute file path
+# (SERVER_BASE in client/config/constants.py, resolved from __file__), so they
+# must ship inside the installed package tree even though they are not importable
+# sub-packages. include-package-data + the package-data globs below cover them.
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["mimir*"]
+# vscode-extension is a Node project, not a Python package; tests ship separately.
+exclude = ["mimir.vscode-extension*", "mimir.tests*", "tests*", "slides*"]
+
+[tool.setuptools.package-data]
+mimir = [
+    "requirements.txt",
+    "servers/**/*.py",
+    "servers/**/*.json",
+    "skills/**/*.md",
+    "client/config/*.json",
+    "examples/*.md",
+    "examples/**/*.py",
+    "examples/**/*.md",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["mimir/tests"]

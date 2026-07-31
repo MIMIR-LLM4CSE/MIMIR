@@ -1,0 +1,289 @@
+from __future__ import annotations
+
+import warnings
+
+from ..context.signals import SOURCE_FILE_EXTENSIONS
+from ..context.execution_context import weakest_validation_tier
+# Re-exported here for backward compatibility; the canonical definition lives in
+# config.constants alongside the other agent-loop tuning knobs.
+from ..config.constants import VALIDATION_RETRY_BUDGET
+
+WORKFLOW_STATES: tuple[str, ...] = ("discover", "edit", "validate", "conclude")
+
+
+
+def pending_validation_paths(execution_context: dict) -> list[str]:
+	dirty_files = set(execution_context.get("dirty_written_files", set()))
+	validated_files = set(execution_context.get("validated_files", set()))
+	return sorted(path for path in dirty_files if path not in validated_files)
+
+
+def has_pending_validation(execution_context: dict) -> bool:
+	return bool(pending_validation_paths(execution_context))
+
+
+def has_blocking_denials(execution_context: dict) -> bool:
+	return bool(execution_context.get("denied_tool_calls", []))
+
+
+def set_workflow_state(execution_context: dict, new_state: str) -> None:
+	if new_state in WORKFLOW_STATES:
+		execution_context["workflow_state"] = new_state
+	else:
+		warnings.warn(
+			f"set_workflow_state called with unknown state '{new_state}'; ignored. "
+			f"Expected one of: {', '.join(WORKFLOW_STATES)}",
+			stacklevel=2,
+		)
+
+
+
+
+def unchecked_checklist_items(execution_context: dict) -> list[dict]:
+	"""Steps still unticked on the live checklist, or [] if there is no checklist.
+
+	The single reader of checklist state outside the prompt builder, shared by the
+	completion issues below, the finalization predicate, and the unfinished-plan
+	nudge. Fails closed to ``[]`` on a missing or unreadable file so a run without a
+	checklist — the majority — keeps behaving exactly as before, rather than having
+	an obligation invented for it.
+
+	Optional steps are included; callers that must not block on them filter on
+	``item["optional"]``.
+	"""
+	todo_fp = execution_context.get("todo_file_path", "")
+	if not todo_fp:
+		return []
+	# Imported lazily: the prompt package pulls in the extension loader, and the
+	# guardrails layer is imported during its construction.
+	from ..prompt.system_prompt import _load_todo_items
+	return [it for it in _load_todo_items(todo_fp) if not it.get("done")]
+
+
+def _collect_completion_issues(execution_context: dict) -> tuple[list[str], list[str]]:
+	"""Return (issues, completed) describing the current completion state."""
+	issues: list[str] = []
+	completed: list[str] = []
+
+	pending = pending_validation_paths(execution_context)
+	fail_counts: dict = execution_context.get("validation_fail_count_by_file", {})
+	dirty: set = execution_context.get("dirty_written_files", set())
+
+	if pending:
+		# Split pending files into three sub-buckets for clearer feedback.
+		stuck_paths = [p for p in pending if fail_counts.get(p, 0) >= VALIDATION_RETRY_BUDGET]
+		retry_paths = [p for p in pending if fail_counts.get(p, 0) > 0 and fail_counts.get(p, 0) < VALIDATION_RETRY_BUDGET]
+		fresh_paths = [p for p in pending if fail_counts.get(p, 0) == 0]
+		if stuck_paths:
+			issues.append("Validation budget exhausted (no further retries): " + ", ".join(stuck_paths[:5]))
+		if retry_paths:
+			issues.append("Validation failing (will retry): " + ", ".join(retry_paths[:5]))
+		if fresh_paths:
+			issues.append("Unvalidated modified files: " + ", ".join(fresh_paths[:5]))
+	else:
+		# Name the strength of the evidence, never just the fact of it. An
+		# unqualified "All modified files validated" is what a model reads back as
+		# licence to report the work as verified — but every tier below "oracle"
+		# means only that the code ran, and a vacuous green test exits 0 exactly
+		# like a rigorous one. The weakest tier governs: a change is only as well
+		# established as its least-checked file.
+		tier = weakest_validation_tier(execution_context, dirty) if dirty else None
+		if tier:
+			# "weakest", not "highest": the value *is* the floor across the change, and
+			# the old label said the opposite of what it printed — the exact inversion a
+			# model reads back as licence.
+			completed.append(f"All modified files validated (weakest evidence: {tier})")
+		else:
+			completed.append("All modified files validated")
+
+	denied_calls = execution_context.get("denied_tool_calls", [])
+	if denied_calls:
+		denied_descriptions = []
+		for item in denied_calls[:5]:
+			tool_name = item.get("tool", "unknown")
+			path = item.get("path")
+			fallback_tools = item.get("fallback_tools", [])
+			fallback_hint = (" -> fallback: " + ", ".join(fallback_tools[:3])) if fallback_tools else ""
+			denied_descriptions.append(
+				(f"{tool_name}({path})" if path else tool_name) + fallback_hint
+			)
+		issues.append("Denied actions: " + ", ".join(denied_descriptions))
+	else:
+		completed.append("No denied actions")
+
+	if execution_context.get("code_mutation_started") and execution_context.get("workflow_state") != "conclude":
+		issues.append("Workflow not completed: still in '" + str(execution_context.get("workflow_state")) + "' state")
+	elif execution_context.get("workflow_state") == "conclude":
+		completed.append("Workflow reached conclude state")
+
+	# The plan-vs-implementation check, obtained from state that already exists:
+	# declared_edit_set is scraped from the checklist's own step text and until now
+	# only fed a state transition. Reporting the difference is what makes a step
+	# that was planned and then quietly skipped visible at completion time.
+	declared: set = execution_context.get("declared_edit_set", set()) or set()
+	unwritten = sorted(declared - dirty)
+	if unwritten:
+		issues.append("Declared but never written: " + ", ".join(unwritten[:5]))
+
+	unchecked = [it for it in unchecked_checklist_items(execution_context) if not it.get("optional")]
+	if unchecked and execution_context.get("code_mutation_started"):
+		issues.append(
+			f"Checklist incomplete: {len(unchecked)} step(s) unchecked — "
+			+ "; ".join(it["text"] for it in unchecked[:3])
+		)
+
+	if not issues:
+		issues.append("Unknown blocker; explicit completion criteria were not met")
+
+	return issues, completed
+
+
+def finalize_incomplete_answer(answer: str, execution_context: dict) -> str:
+	issues, completed = _collect_completion_issues(execution_context)
+	pending = pending_validation_paths(execution_context)
+	denied_calls = execution_context.get("denied_tool_calls", [])
+
+	summary = "Task is incomplete.\n\nCompleted:\n- " + "\n- ".join(completed)
+	summary += "\n\nRemaining issues:\n- " + "\n- ".join(issues)
+
+	# Only treat unvalidated source-code files as high-risk; unvalidated non-code
+	# files (e.g. .md, .txt) that never go through a code validator are low-risk.
+	_pending_code = [p for p in pending if any(p.endswith(ext) for ext in SOURCE_FILE_EXTENSIONS)]
+	# Something the model said it would change and then didn't is a silent gap, not
+	# a failure — medium, not high, but never "low".
+	_unwritten = (execution_context.get("declared_edit_set", set()) or set()) - (
+		execution_context.get("dirty_written_files", set()) or set()
+	)
+	risk_level = (
+		"high" if _pending_code or denied_calls
+		else ("medium" if pending or _unwritten else "low")
+	)
+	summary += f"\n\nResidual risk: {risk_level}."
+	if answer.strip():
+		summary += "\n\nLatest model answer:\n" + answer.strip()
+	return summary
+
+# --- Loop-control nudge copy -----------------------------------------------
+# Message bodies for the nudges fired directly from query_engine.agent_loop
+# (plan-mode control flow, the step-limit reminder, and the mid-tool-loop repeat
+# correctives). As with the guidance-nudge copy above, only the wording lives
+# here; the *when-to-fire* gating stays in agent_loop. Kept here so all nudge copy
+# sits in one module regardless of which loop fires it.
+
+# Plan-mode user nudges.
+PLAN_TODO_NUDGE_EARLY = (
+	"You have not yet recorded a plan, which is mandatory to produce a valid plan output. "
+	"Record it with the plan/todo tool in two forms: a written plan document (structured markdown prose — an overview, the approach broken into its main axes with the reasoning and the concrete files/symbols each touches, key decisions/risks, and how you'll validate) AND the ordered checklist of implementation/validation steps. "
+	"If you need more information to write the plan, you may ask the user for clarification or call the read-only exploration tools (search, read, inspect, platform/memory queries) to gather evidence. "
+	"The plan must focus on detailed key actions and validations needed to complete the task (implementations, tests, validations, etc.). "
+	"Steps such as discovery, analysis, or information gathering that are not directly part of the implementation/validation plan should be omitted. "
+)
+PLAN_TODO_NUDGE_LATE = (
+	"You should have described a plan to the user by now — record it with the plan/todo tool. "
+	"Provide both a written plan document (structured markdown prose explaining the approach, its main axes, the reasoning, and validation) and the ordered checklist of steps. "
+	"If you are unsure about the exact steps, make your best guess based on the information you have, and we can iterate from there. "
+	"The plan must focus on detailed key actions and validations needed to complete the task (implementations, tests, validations, etc.). "
+	"Steps such as discovery, analysis, or information gathering that are not directly part of the implementation/validation plan should be omitted. "
+)
+# Sent when the written plan document exists but the ordered checklist does not.
+# The generic "you have not yet recorded a plan" nudge is false at that point, and a
+# model told its plan is missing while the document sits on disk tends to rewrite the
+# document rather than supply the form that is actually absent.
+PLAN_CHECKLIST_MISSING_NUDGE = (
+	"Your written plan document is recorded — do not write it again. What is still missing is the other "
+	"form: the ordered checklist of implementation/validation steps. Record it now with the plan/todo tool. "
+	"The steps must be the key actions and validations needed to complete the task (implementations, tests, "
+	"validations, etc.); omit discovery, analysis, and information-gathering steps. "
+)
+PLAN_DELIVER_ANSWER = (
+	"You must now deliver your final answer to the user, explaining the plan you have written. No more tool calls should be made. "
+	"The plan should be the main basis of your answer, but you can also include relevant information from the discovery context or tool results if it helps the user understand the reasoning behind the plan. "
+)
+PLAN_DELIVER_ANSWER_FIRM = (
+	"STOP calling tools. The plan is already recorded and the user can see it — re-reading or re-writing it "
+	"changes nothing and repeating its text back is not an answer. Reply now, in prose only, with a short "
+	"summary (a few sentences) of what the plan does and what you need from the user to proceed. "
+	"Do not reproduce the plan document verbatim. "
+)
+# Tool-role reply used when a redundant plan/todo call is dropped after the plan is
+# already recorded (the model is looping on the checklist instead of delivering).
+PLAN_ALREADY_RECORDED_ERROR = (
+	"The plan is already recorded and unchanged — this call was skipped. "
+	"Do not call any more tools: answer the user in prose now."
+)
+# Advisory, not a rejection: the plan stands either way. Rejecting it used to discard
+# the plan the model had just recorded, with nothing guaranteeing it would submit that
+# form again — which is how a run could spin without ever delivering anything.
+PLAN_EVIDENCE_NUDGE = (
+	"Your plan is not grounded in any exploration of the code. The repository structure and platform "
+	"summary in your context are orientation only — they do not tell you which files, symbols, or boundaries "
+	"this task touches. If locating the relevant code would materially change this plan, use the read-only "
+	"exploration tools (search, read, inspect, platform/memory queries) now and refine it. If it would not — "
+	"a task that touches no existing code, for instance — keep the plan as it is and say plainly in your "
+	"answer that it rests on assumptions rather than on the code."
+)
+
+# Plan-approval workflow nudges. After the user reviews a proposed plan they may
+# accept it (switch to agent mode and execute), reject it (drop it and stop), ask for a
+# rework (re-plan from scratch), or describe specific changes in free text (fold them
+# in, then re-present for approval).
+PLAN_APPROVED_EXECUTE = (
+	"The user has APPROVED your plan. You are now switching to agent mode to carry it out. "
+	"Execute the approved plan end to end: work through the recorded checklist in order, "
+	"making the necessary edits, running the relevant validations, and marking each step done "
+	"with the plan/todo update tool as you complete it. You may ask for re-plan or re-approval"
+	"if you notice any issues as you execute the plan, otherwise act on the plan you already agreed with the user."
+)
+PLAN_REJECTED_STOP = (
+	"The user has REJECTED this plan. Do not execute any part of it and do not write a new plan. "
+	"Stop here and wait for the user's next instruction."
+)
+PLAN_REJECTED_ANSWER = (
+	"Plan rejected — nothing was executed. Tell me what you would like to do instead."
+)
+PLAN_REWORK_NUDGE = (
+	"The user has asked you to REWORK this plan. Redo it from scratch: reconsider the approach, question the "
+	"assumptions that led to the rejected plan, gather any further evidence you need with the read-only "
+	"exploration tools, and then record a revised plan with the plan/todo tool for the user to review again."
+)
+
+
+def plan_revision_nudge(feedback: str) -> str:
+	"""Nudge to fold the user's requested changes into a revised plan, then re-present it."""
+	detail = f' The user asked for the following changes:\n"{feedback}"\n' if feedback else " "
+	return (
+		"The user has requested CHANGES to the plan before approving it." + detail +
+		"Evaluate each request: integrate the changes that improve the plan, and for anything you "
+		"disagree with or that seems out of scope, briefly explain your reasoning rather than blindly "
+		"applying it. Then record the revised plan with the plan/todo tool so the user can review it again."
+	)
+
+
+STEP_LIMIT_NUDGE = (
+	"You are approaching the step limit. "
+	"Consider to stop calling tools and summarise: (1) what has been completed, "
+	"(2) what still needs doing, and (3) the next step the user should request."
+)
+
+
+def repeat_corrective_message(tool_name: str, fails: int) -> str:
+	"""One-time mid-loop reminder when a non-write call keeps failing identically."""
+	return (
+		f"[automated workflow reminder — not from the user; advisory, apply judgment]\n\n"
+		f"The same operation has now failed {fails} times with identical arguments. "
+		"Repeating it unchanged will keep failing. Change something concrete — different "
+		"arguments, a different tool, or fix the underlying precondition (e.g. resolve the "
+		"environment per the cascade) — or stop and conclude clearly that you cannot proceed, "
+		"naming what failed and why. Do not issue the same call again."
+	)
+
+
+def redundant_corrective_message(tool_name: str, repeats: int) -> str:
+	"""One-time mid-loop reminder when a non-write call keeps returning identical content."""
+	return (
+		f"[automated workflow reminder — not from the user; advisory, apply judgment]\n\n"
+		f"You have already made this exact call {repeats + 1} times and received the same "
+		"result each time. The content is unchanged and already in the conversation above — "
+		"re-reading it adds nothing. Use what you already have: act on it, read something "
+		"different (another file or line range), or conclude. Do not repeat this call."
+	)

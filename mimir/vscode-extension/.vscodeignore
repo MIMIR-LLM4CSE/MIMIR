@@ -1,0 +1,14 @@
+# Keep the packaged .vsix small: ship only the webpack bundle + assets.
+.vscode/**
+.vscode-test/**
+src/**
+webview/**
+node_modules/**
+**/*.ts
+**/*.map
+tsconfig.json
+webpack.config.js
+package-lock.json
+vitest.config.*
+**/*.vsix
+.gitignore

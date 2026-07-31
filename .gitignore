@@ -1,0 +1,23 @@
+# Local / machine-specific VS Code settings (contains cluster topology & paths)
+.vscode/settings.json
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mimir/
+
+# Packaging / build artifacts
+build/
+dist/
+.venv/
+venv/
+*.vsix
+
+# Node
+node_modules/
+
+# Logs & runtime
+*.log
+slides/

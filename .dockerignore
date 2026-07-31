@@ -1,0 +1,24 @@
+# Keep the build context small and reproducible.
+.git
+.gitignore
+**/__pycache__/
+**/*.pyc
+**/.pytest_cache/
+**/.mypy_cache/
+**/.ruff_cache/
+
+# Node / VS Code extension build artifacts (not needed in the Python image).
+mimir/vscode-extension/node_modules/
+mimir/vscode-extension/dist/
+mimir/vscode-extension/out/
+mimir/vscode-extension/*.vsix
+
+# Docs / non-runtime assets.
+slides/
+build/
+dist/
+*.egg-info/
+
+# Local virtualenvs.
+.venv/
+venv/

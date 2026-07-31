@@ -1,0 +1,60 @@
+{
+  "mistral":       { "tool_call_parser": "mistral", "pin_role": "append_user" },
+  "devstral":      { "tool_call_parser": "mistral", "pin_role": "append_user", "max_tools": 40, "enforcement": "strict" },
+  "mixtral":       { "tool_call_parser": "mistral", "pin_role": "append_user" },
+  "codestral":     { "tool_call_parser": "mistral", "pin_role": "append_user" },
+  "mathstral":     { "tool_call_parser": "mistral", "pin_role": "append_user" },
+  "magistral":     { "tool_call_parser": "mistral", "pin_role": "append_user" },
+  "pixtral":       { "tool_call_parser": "mistral", "pin_role": "append_user" },
+
+  "qwen3-coder":   { "tool_call_parser": "qwen3_coder", "supports_thinking": true, "reasoning_parser": "deepseek_r1" },
+  "qwen3":         { "tool_call_parser": "hermes",      "supports_thinking": true, "reasoning_parser": "deepseek_r1" },
+  "qwen2.5-coder": { "tool_call_parser": "hermes" },
+  "qwen2.5":       { "tool_call_parser": "hermes" },
+  "qwen2":         { "tool_call_parser": "hermes" },
+  "qwq":           { "tool_call_parser": "hermes",      "supports_thinking": true, "reasoning_parser": "deepseek_r1" },
+
+  "llama-4":       { "tool_call_parser": "llama4_json" },
+  "llama4":        { "tool_call_parser": "llama4_json" },
+  "llama-3":       { "tool_call_parser": "llama3_json" },
+  "llama3":        { "tool_call_parser": "llama3_json" },
+  "llama":         { "tool_call_parser": "llama3_json" },
+  "meta-llama":    { "tool_call_parser": "llama3_json" },
+
+  "nemotron":      { "tool_call_parser": "qwen3_coder", "supports_thinking": true, "reasoning_parser": "deepseek_r1" },
+  "minitron":      { "tool_call_parser": "hermes" },
+
+  "gemma":         { "tool_call_parser": "pythonic" },
+
+  "deepseek-r1":    { "tool_call_parser": "deepseek_v31", "supports_thinking": true, "reasoning_parser": "deepseek_r1" },
+  "deepseek-v3":    { "tool_call_parser": "deepseek_v3" },
+  "deepseek-v4":    { "tool_call_parser": "deepseek_v4", "supports_thinking": true, "reasoning_parser": "deepseek_v4" },
+  "deepseek-coder": { "tool_call_parser": "hermes" },
+  "deepseek":       { "tool_call_parser": "hermes" },
+
+  "granite-20b":   { "tool_call_parser": "granite-20b-fc" },
+  "granite":       { "tool_call_parser": "granite" },
+
+  "phi-4":         { "tool_call_parser": "hermes" },
+  "phi-3":         { "tool_call_parser": "hermes" },
+  "phi":           { "tool_call_parser": "hermes" },
+
+  "command-a":     { "tool_call_parser": "cohere_command3" },
+  "command-r":     { "tool_call_parser": "cohere_command3" },
+  "command":       { "tool_call_parser": "cohere_command3" },
+  "aya":           { "tool_call_parser": "hermes" },
+
+  "hunyuan":       { "tool_call_parser": "hunyuan_a13b" },
+
+  "kimi":          { "tool_call_parser": "kimi_k2" },
+
+  "internlm":      { "tool_call_parser": "internlm" },
+  "internvl":      { "tool_call_parser": "hermes" },
+
+  "xlam":          { "tool_call_parser": "xlam" },
+
+  "grok":          { "tool_call_parser": "hermes" },
+
+  "gpt":           { "tool_call_parser": "openai", "async-scheduling": true },
+  "openai":        { "tool_call_parser": "openai", "async-scheduling": true }
+}

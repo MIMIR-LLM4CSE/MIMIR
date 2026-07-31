@@ -1,0 +1,46 @@
+# MIMIR — Docker Compose for local / connect-mode use.
+#
+#   docker compose up --build mimir            # start the WS server on :8765
+#   docker compose run --rm mimir mimir        # interactive CLI in the same image
+#   docker compose --profile ollama up         # also start a local Ollama service
+#
+# Point the agent at your LLM backend with environment variables (see below).
+# The SLURM "launch" mode is not available in a container — use vLLM "connect"
+# mode against an already-running endpoint.
+
+services:
+  mimir:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: mimir:latest
+    ports:
+      - "8765:8765"
+    volumes:
+      # Mount the project you want the agent to work on as the sandbox root.
+      - "${MIMIR_WORKSPACE:-./}:/workspace"
+    environment:
+      # --- LLM backend selection ---------------------------------------------
+      LLM_BACKEND: "${LLM_BACKEND:-vllm}"
+      # vLLM connect mode: point at an already-running OpenAI-compatible endpoint.
+      VLLM_BASE_URL: "${VLLM_BASE_URL:-http://host.docker.internal:8000}"
+      VLLM_API_KEY: "${VLLM_API_KEY:-EMPTY}"
+      # Ollama (when LLM_BACKEND=ollama). Use the bundled service or a remote host.
+      OLLAMA_BASE_URL: "${OLLAMA_BASE_URL:-http://ollama:11434}"
+      MIMIR_DEFAULT_MODEL: "${MIMIR_DEFAULT_MODEL:-}"
+      GITHUB_TOKEN: "${GITHUB_TOKEN:-}"
+    extra_hosts:
+      # Lets the container reach a vLLM/Ollama running on the Docker host.
+      - "host.docker.internal:host-gateway"
+
+  # Optional local Ollama backend: `docker compose --profile ollama up`.
+  ollama:
+    image: ollama/ollama:latest
+    profiles: ["ollama"]
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_models:/root/.ollama
+
+volumes:
+  ollama_models:

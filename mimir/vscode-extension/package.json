@@ -1,0 +1,247 @@
+{
+  "name": "mimir",
+  "publisher": "mimir",
+  "displayName": "MIMIR Chat",
+  "description": "Chat with your local MIMIR agent directly inside VS Code",
+  "version": "0.1.0",
+  "license": "MIT",
+  "repository": { "type": "git", "url": "https://github.com/MIMIR-LLM4CSE/MIMIR.git", "directory": "mimir/vscode-extension" },
+  "bugs": { "url": "https://github.com/MIMIR-LLM4CSE/MIMIR/issues" },
+  "homepage": "https://github.com/MIMIR-LLM4CSE/MIMIR#readme",
+  "engines": { "vscode": "^1.85.0" },
+  "categories": ["Other"],
+  "icon": "images/mimir-logo-dark.png",
+  "activationEvents": [],
+  "main": "./dist/extension.js",  "contributes": {
+    "viewsContainers": {
+      "secondarySidebar": [
+        {
+          "id": "mimir-sidebar",
+          "title": "MIMIR",
+          "icon": "images/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "mimir-sidebar": [
+        {
+          "type": "webview",
+          "id": "mimir.chatView",
+          "name": "Chat"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "mimir.openChat",
+        "title": "MIMIR: Focus Chat",
+        "icon": "$(comment-discussion)"
+      },
+      {
+        "command": "mimir.startServer",
+        "title": "MIMIR: Start WS Server"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "mimir.startServer",
+          "when": "view == mimir.chatView",
+          "group": "navigation"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "MIMIR",
+      "properties": {
+        "mimir.wsUrl": {
+          "type": "string",
+          "default": "ws://localhost:8765",
+          "description": "WebSocket URL of the running MIMIR WS server"
+        },
+        "mimir.serverScript": {
+          "type": "string",
+          "default": "",
+          "description": "Path to ws_server.py (leave empty to connect to an already-running server)"
+        },
+        "mimir.pythonPath": {
+          "type": "string",
+          "default": "",
+          "description": "Python executable used to start the WS server (leave empty to use 'python3' from PATH)"
+        },
+        "mimir.localPythonPath": {
+          "type": "string",
+          "default": "",
+          "description": "Python executable for running the WS server locally on the frontal (used by vLLM 'connect' mode). Set this when the frontal and the SLURM compute nodes have different CPU architectures (e.g. x86 frontal vs ARM GH200 nodes). Falls back to pythonPath when empty."
+        },
+        "mimir.slurmEnabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Launch the WS server via SLURM (salloc + srun) instead of directly"
+        },
+        "mimir.loginNode": {
+          "type": "string",
+          "default": "",
+          "description": "SSH login node to use for SLURM allocation (e.g. login-1). Leave empty to run salloc locally."
+        },
+        "mimir.slurmArgs": {
+          "type": "string",
+          "default": "",
+          "description": "Arguments passed to salloc when SLURM mode is enabled (fallback when no clusterConfig)"
+        },
+        "mimir.clusterConfig": {
+          "type": "array",
+          "description": "Cluster topology for the connection wizard. Each entry: { name, loginNode, account, ollamaPath, vllmPath, nodeTypes: [...] }. ollamaPath/vllmPath override the global settings for that cluster.",
+          "items": { "type": "object" },
+          "default": [
+            {
+              "name": "example-cluster", "loginNode": "", "account": "your-account",
+              "ollamaPath": "ollama", "vllmPath": "vllm",
+              "nodeTypes": [
+                {"label":"GPU node", "partition":"your-partition", "cpusPerNode":32, "gpu":{"type":"a100","memGB":80,"maxCount":1}, "memOptionsGB":[64,128,256]}
+              ]
+            }
+          ]
+        },
+        "mimir.ollamaPath": {
+          "type": "string",
+          "default": "ollama",
+          "description": "Path to the ollama binary on the compute node"
+        },
+        "mimir.ollamaSetupScript": {
+          "type": "string",
+          "default": "",
+          "description": "Shell script to source before starting ollama on the compute node (leave empty to skip)"
+        },
+        "mimir.ollamaUrl": {
+          "type": "string",
+          "default": "http://127.0.0.1:11434",
+          "description": "Base URL of the Ollama API (e.g. http://127.0.0.1:11434 for local, or a remote host)"
+        },
+        "mimir.mimirPath": {
+          "type": "string",
+          "default": "",
+          "description": "Absolute path to the mimir package root on the shared filesystem. Required for SLURM mode when the package is not installed in the Python environment."
+        },
+        "mimir.availableModels": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "Ollama model names shown in the model selector dropdown. User-specific — add your pulled models here in settings.json (e.g. \"qwen3:8b\", \"devstral-small-2:24b-instruct-2512-fp16\")."
+        },
+        "mimir.backend": {
+          "type": "string",
+          "enum": ["ollama", "vllm", "anthropic"],
+          "default": "ollama",
+          "description": "LLM backend: ollama (default), vllm (OpenAI-compatible API), or anthropic (hosted Claude API)"
+        },
+        "mimir.anthropicAvailableModels": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [
+            "claude-opus-4-8",
+            "claude-sonnet-5",
+            "claude-haiku-4-5",
+            "claude-opus-4-7",
+            "claude-fable-5"
+          ],
+          "description": "Claude model IDs shown in the model selector when backend is Anthropic. Edit in settings.json to add or reorder models."
+        },
+        "mimir.vllmBaseUrl": {
+          "type": "string",
+          "default": "http://127.0.0.1:8000",
+          "description": "Base URL of the vLLM OpenAI-compatible API endpoint"
+        },
+        "mimir.vllmVerifySsl": {
+          "type": "boolean",
+          "default": true,
+          "description": "Verify the vLLM endpoint's TLS certificate. Disable (uncheck) for internal HTTPS routes served behind a private/corporate CA that isn't in the system trust store (avoids CERTIFICATE_VERIFY_FAILED). Sets VLLM_VERIFY_SSL=0 for the server."
+        },
+        "mimir.vllmMode": {
+          "type": "string",
+          "enum": ["launch", "connect"],
+          "default": "launch",
+          "description": "vLLM startup mode: 'launch' starts `vllm serve` on a compute node via SLURM; 'connect' attaches to an already-running vLLM at vllmBaseUrl (no SLURM, ws_server runs on the frontal)"
+        },
+        "mimir.vllmSetupScript": {
+          "type": "string",
+          "default": "",
+          "description": "Path to a shell script to source before starting vLLM on the compute node"
+        },
+        "mimir.vllmPath": {
+          "type": "string",
+          "default": "vllm",
+          "description": "Path to the vllm executable on the compute node"
+        },
+        "mimir.vllmExtraArgs": {
+          "type": "string",
+          "default": "",
+          "description": "Extra arguments appended to the auto-generated 'vllm serve <model>' command (e.g. '--tensor-parallel-size 2 --dtype bfloat16')"
+        },
+        "mimir.vllmServeCommand": {
+          "type": "string",
+          "default": "",
+          "description": "Override the full vLLM start command. Leave empty to auto-generate 'vllm serve <model>' from the selected model."
+        },
+        "mimir.vllmModelsDir": {
+          "type": "string",
+          "default": "",
+          "description": "Root directory containing your vLLM model weights. When set, relative entries in vllmAvailableModels are resolved against this path (e.g. 'openai/gpt-oss-20b' becomes '<vllmModelsDir>/openai/gpt-oss-20b'). Absolute entries in vllmAvailableModels are always used as-is. User/platform-specific — configure in settings.json."
+        },
+        "mimir.vllmAvailableModels": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "Model IDs shown in the model selector when backend is vLLM. Can be relative paths (e.g. 'openai/gpt-oss-20b') resolved against mimir.vllmModelsDir, or absolute paths, or HuggingFace IDs. User and platform-specific — configure in settings.json."
+        },
+        "mimir.modelSizes": {
+          "type": "object",
+          "default": {},
+          "description": "Map of model name or basename to VRAM size in GB. Annotates each model in the selector. User-specific — configure in settings.json (e.g. { \"qwen3:8b\": 5, \"devstral-small-2-24b\": 48 })."
+        },
+        "mimir.notifications.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show a native VS Code notification when a task completes or MIMIR needs your input, and the chat view is not focused/visible."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run build",
+    "build": "webpack --mode production",
+    "package": "vsce package --no-dependencies",
+    "publish": "vsce publish --no-dependencies",
+    "dev": "webpack --mode development --watch",
+    "sync": "EXT=$(ls -d ~/.vscode-server/extensions/mimir.mimir-* 2>/dev/null | head -1); if [ -z \"$EXT\" ]; then echo 'installed extension not found'; exit 1; fi; mkdir -p \"$EXT/dist\" \"$EXT/images\"; cp dist/extension.js dist/webview.js \"$EXT/dist/\" && cp images/* \"$EXT/images/\" && cp package.json \"$EXT/package.json\" && echo \"synced -> $EXT\"",
+    "deploy": "npm run build && npm run sync",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@vscode/vsce": "^3.2.0",
+    "vitest": "^2.1.0",
+    "@types/react": "^18.0.0",
+    "@types/react-dom": "^18.0.0",
+    "@types/vscode": "^1.85.0",
+    "@types/ws": "^8.5.0",
+    "css-loader": "^6.8.0",
+    "style-loader": "^3.3.3",
+    "ts-loader": "^9.5.0",
+    "typescript": "^5.3.0",
+    "webpack": "^5.89.0",
+    "webpack-cli": "^5.1.0"
+  },
+  "dependencies": {
+    "highlight.js": "^11.9.0",
+    "katex": "^0.16.9",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "react-markdown": "^9.0.1",
+    "rehype-highlight": "^7.0.0",
+    "rehype-katex": "^7.0.0",
+    "remark-gfm": "^4.0.0",
+    "remark-math": "^6.0.0",
+    "ws": "^8.16.0"
+  }
+}

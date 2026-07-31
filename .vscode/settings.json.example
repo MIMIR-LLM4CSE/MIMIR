@@ -1,0 +1,51 @@
+{
+    "python-envs.defaultEnvManager": "ms-python.python:conda",
+    "python-envs.defaultPackageManager": "ms-python.python:conda",
+
+    "mimir.mimirPath": "/path/to/mimir/repo",
+
+    "mimir.pythonPath": "/path/to/conda/envs/<env>/bin/python",
+
+    "mimir.loginNode": "your-login-node",
+    "mimir.slurmEnabled": false,
+    "mimir.slurmArgs": "-p <partition> -n <cpus> --gres=gpu:1 --account <account> --mem <mem>",
+
+    "mimir.ollamaSetupScript": "/path/to/setup_ollama.sh",
+    "mimir.vllmSetupScript": "/path/to/setup_vllm.sh",
+
+    "mimir.clusterConfig": [
+    {
+        "name": "example-cluster", "loginNode": "login-1", "account": "<account>",
+        "nodeTypes": [
+        {"label":"GPU · 1 day",  "partition":"<partition>",     "cpusPerNode":64,  "gpu":{"type":"a100", "memGB":80, "maxCount":1}, "memOptionsGB":[64,128,256]},
+        {"label":"CPU-only · 1 day", "partition":"<partition>_cpu", "cpusPerNode":128, "gpu":null, "memOptionsGB":[64,128,256,512]}
+        ]
+    }
+    ],
+    "workbench.editorAssociations": {
+        "*.copilotmd": "vscode.markdown.preview.editor",
+        "*.f90": "default"
+    },
+    "chat.mcp.autostart": "never",
+
+    "mimir.availableModels": [
+        "qwen3:30b",
+        "qwen2.5-coder:32b"
+    ],
+
+    "mimir.vllmModelsDir": "/path/to/vllm/models",
+
+    "mimir.vllmAvailableModels": [
+        "openai/gpt-oss-20b",
+        "mistralai/devstral-small-2-24b"
+    ],
+
+    "mimir.vllmExtraArgs": "--max-num-seqs=384",
+
+    "mimir.modelSizes": {
+        "qwen3:30b":               18,
+        "qwen2.5-coder:32b":       19,
+        "gpt-oss-20b":             40,
+        "devstral-small-2-24b":    48
+    }
+}
