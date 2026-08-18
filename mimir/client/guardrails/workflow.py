@@ -3,7 +3,7 @@ from __future__ import annotations
 import warnings
 
 from ..context.signals import SOURCE_FILE_EXTENSIONS
-from ..context.execution_context import weakest_validation_tier
+from ..context.execution_context import unwritten_declared_files, weakest_validation_tier
 # Re-exported here for backward compatibility; the canonical definition lives in
 # config.constants alongside the other agent-loop tuning knobs.
 from ..config.constants import VALIDATION_RETRY_BUDGET
@@ -24,6 +24,107 @@ def has_pending_validation(execution_context: dict) -> bool:
 
 def has_blocking_denials(execution_context: dict) -> bool:
 	return bool(execution_context.get("denied_tool_calls", []))
+
+
+# ── Denial escalation ladder ──────────────────────────────────────────────────
+# A refused approval is not a failure to report and not an instruction to re-ask.
+# It carries one of three meanings, which the model must weigh in this order:
+#
+#   1. "not this way"  — the goal stands, the means is wrong: find another route.
+#   2. "that's useless" — the step itself is unnecessary: drop it, keep going, and
+#                         say it was skipped at the user's request. (Dropping a step
+#                         is never the same as getting past the approval gate.)
+#   3. "stop there"    — end the turn: report what was done, what is blocked, and
+#                         what you need from the user.
+#
+# The model chooses. These stages are the floor under that choice: they take the
+# earlier readings off the table as refusals accumulate, so a wrong first guess
+# cannot become a loop. Counting is per approval scope — the same normalised token
+# the "always" grants use — so refusing one member of a command family escalates
+# the family, while an unrelated action starts fresh.
+
+STAGE_RECONSIDER: str = "reconsider"      # readings 1-3 all open
+STAGE_DROP_OR_STOP: str = "drop_or_stop"  # reading 1 spent: drop the step or hand back
+STAGE_HANDBACK: str = "handback"          # only reading 3 is left
+
+
+def denial_scope_count(execution_context: dict, scope: str) -> int:
+	"""How many times this approval scope has been refused this query."""
+	if not scope:
+		return 0
+	return sum(
+		1 for item in execution_context.get("denial_history", [])
+		if item.get("scope") == scope
+	)
+
+
+def denial_stage(execution_context: dict, scope: str = "") -> str:
+	"""Which readings of a refusal are still open, for *scope* (or the query overall).
+
+	A refusal already counted for *scope* must be in ``denial_history`` before this
+	is called: the stage describes the situation the model is being handed, so the
+	first refusal of a scope reports ``reconsider`` (all three readings open).
+	"""
+	from ..config.constants import (
+		DENIAL_QUERY_HANDBACK_TOTAL,
+		DENIAL_SCOPE_DROP_AFTER,
+		DENIAL_SCOPE_HANDBACK_AFTER,
+	)
+
+	history = execution_context.get("denial_history", [])
+	total = len(history)
+	scoped = denial_scope_count(execution_context, scope)
+
+	# Stopping the run mid-prompt is the user saying "stop" in the plainest way there
+	# is; it needs no accumulation.
+	if any(item.get("kind") == "cancelled" for item in history):
+		return STAGE_HANDBACK
+	if scoped >= DENIAL_SCOPE_HANDBACK_AFTER or total >= DENIAL_QUERY_HANDBACK_TOTAL:
+		return STAGE_HANDBACK
+	if scoped >= DENIAL_SCOPE_DROP_AFTER or total >= DENIAL_QUERY_HANDBACK_TOTAL - 1:
+		return STAGE_DROP_OR_STOP
+	return STAGE_RECONSIDER
+
+
+_STAGE_ORDER: tuple[str, ...] = (STAGE_RECONSIDER, STAGE_DROP_OR_STOP, STAGE_HANDBACK)
+
+
+def worst_denial_stage(execution_context: dict) -> str:
+	"""The furthest stage any refused scope has reached this query.
+
+	What the layers that speak about the run as a whole (the nudge, the completion
+	report) need: one scope at the end of the ladder governs the turn, even if another
+	was only refused once.
+	"""
+	history = execution_context.get("denial_history", [])
+	if not history:
+		return STAGE_RECONSIDER
+	scopes = {item.get("scope", "") for item in history}
+	return max(
+		(denial_stage(execution_context, scope) for scope in scopes),
+		key=_STAGE_ORDER.index,
+	)
+
+
+def handback_required(execution_context: dict) -> bool:
+	"""True once any refused scope has reached the end of the ladder."""
+	return bool(execution_context.get("denial_history")) and \
+		worst_denial_stage(execution_context) == STAGE_HANDBACK
+
+
+def handback_scopes(execution_context: dict) -> list[dict]:
+	"""The refusal records whose scope reached ``handback``, newest first."""
+	history = execution_context.get("denial_history", [])
+	seen: set = set()
+	out: list[dict] = []
+	for item in reversed(history):
+		scope = item.get("scope", "")
+		if scope in seen:
+			continue
+		seen.add(scope)
+		if denial_stage(execution_context, scope) == STAGE_HANDBACK:
+			out.append(item)
+	return out
 
 
 def set_workflow_state(execution_context: dict, new_state: str) -> None:
@@ -96,19 +197,14 @@ def _collect_completion_issues(execution_context: dict) -> tuple[list[str], list
 		else:
 			completed.append("All modified files validated")
 
+	# A refusal is only a *blocker* when it ended the run — the hand-back case. A step
+	# the user judged unnecessary is not a failure to fix, and listing it as one is what
+	# made every refusal come back as "Task is incomplete". It is still reported, in its
+	# own section (see refused_action_lines), because a skipped step must never be silent.
 	denied_calls = execution_context.get("denied_tool_calls", [])
-	if denied_calls:
-		denied_descriptions = []
-		for item in denied_calls[:5]:
-			tool_name = item.get("tool", "unknown")
-			path = item.get("path")
-			fallback_tools = item.get("fallback_tools", [])
-			fallback_hint = (" -> fallback: " + ", ".join(fallback_tools[:3])) if fallback_tools else ""
-			denied_descriptions.append(
-				(f"{tool_name}({path})" if path else tool_name) + fallback_hint
-			)
-		issues.append("Denied actions: " + ", ".join(denied_descriptions))
-	else:
+	if denied_calls and handback_required(execution_context):
+		issues.append("Stopped at the user's request: " + ", ".join(refused_action_lines(execution_context)))
+	elif not denied_calls:
 		completed.append("No denied actions")
 
 	if execution_context.get("code_mutation_started") and execution_context.get("workflow_state") != "conclude":
@@ -120,8 +216,7 @@ def _collect_completion_issues(execution_context: dict) -> tuple[list[str], list
 	# declared_edit_set is scraped from the checklist's own step text and until now
 	# only fed a state transition. Reporting the difference is what makes a step
 	# that was planned and then quietly skipped visible at completion time.
-	declared: set = execution_context.get("declared_edit_set", set()) or set()
-	unwritten = sorted(declared - dirty)
+	unwritten = unwritten_declared_files(execution_context)
 	if unwritten:
 		issues.append("Declared but never written: " + ", ".join(unwritten[:5]))
 
@@ -132,31 +227,92 @@ def _collect_completion_issues(execution_context: dict) -> tuple[list[str], list
 			+ "; ".join(it["text"] for it in unchecked[:3])
 		)
 
-	if not issues:
+	if not issues and not refused_action_lines(execution_context):
 		issues.append("Unknown blocker; explicit completion criteria were not met")
 
 	return issues, completed
 
 
-def finalize_incomplete_answer(answer: str, execution_context: dict) -> str:
+def refused_action_lines(execution_context: dict) -> list[str]:
+	"""One line per action the user refused, for the completion report.
+
+	Deduplicated, and named by target where there is one: three refusals of the same
+	command family printed as the bare tool name three times told the user nothing
+	about what they had actually refused.
+	"""
+	lines: list[str] = []
+	for item in execution_context.get("denied_tool_calls", []):
+		tool_name = item.get("tool", "unknown")
+		# The scope token is the command family / host / package set the refusal was
+		# really about; the tool name alone is the least informative part of it.
+		target = item.get("path") or (item.get("scope", "").split(":", 2) + ["", "", ""])[2]
+		line = f"{tool_name}({target})" if target else tool_name
+		if line not in lines:
+			lines.append(line)
+	return lines[:5]
+
+
+# Report headlines. The wording is load-bearing: it is what the user reads first and
+# what `is_incomplete_answer` matches on, so both live here rather than being spelled
+# out at each consumer.
+HEADLINE_INCOMPLETE: str = "Task is incomplete."
+HEADLINE_HANDBACK: str = "Stopped at your request."
+HEADLINE_REFUSED_ONLY: str = "Task complete, except for what you refused."
+
+_INCOMPLETE_HEADLINES: tuple[str, ...] = (HEADLINE_INCOMPLETE, HEADLINE_HANDBACK)
+
+
+def is_incomplete_answer(answer: str) -> bool:
+	"""True when a finalized answer reports the task as unfinished.
+
+	The consumers (the CLI's re-plan offer, the sub-agent's ``completed`` flag) used to
+	match the one literal prefix there was. Now that a refusal can end a run three
+	different ways, they ask here instead — a run that only skipped what the user
+	refused *is* finished, and must not be reported as a failure.
+	"""
+	return answer.startswith(_INCOMPLETE_HEADLINES)
+
+
+def finalize_incomplete_answer(
+	answer: str, execution_context: dict, ran_out_of_steps: bool = False,
+) -> str:
 	issues, completed = _collect_completion_issues(execution_context)
 	pending = pending_validation_paths(execution_context)
 	denied_calls = execution_context.get("denied_tool_calls", [])
+	refused = refused_action_lines(execution_context)
+	handback = handback_required(execution_context)
 
-	summary = "Task is incomplete.\n\nCompleted:\n- " + "\n- ".join(completed)
-	summary += "\n\nRemaining issues:\n- " + "\n- ".join(issues)
+	# Refusals alone do not make a task incomplete: reading (2) of a refusal is "this
+	# step was not needed", and the honest report of that is a completed task with a
+	# named omission — not a failure. Only a hand-back, some *other* open issue, or a
+	# run that never reached a final answer ends the run unfinished.
+	if handback:
+		headline = HEADLINE_HANDBACK
+	elif refused and not issues and not ran_out_of_steps:
+		headline = HEADLINE_REFUSED_ONLY
+	else:
+		headline = HEADLINE_INCOMPLETE
+
+	summary = headline + "\n\nCompleted:\n- " + "\n- ".join(completed)
+	if issues:
+		summary += "\n\nRemaining issues:\n- " + "\n- ".join(issues)
+	if refused and not handback:
+		summary += (
+			"\n\nNot performed (you refused these; they were skipped, not attempted "
+			"another way):\n- " + "\n- ".join(refused)
+		)
 
 	# Only treat unvalidated source-code files as high-risk; unvalidated non-code
 	# files (e.g. .md, .txt) that never go through a code validator are low-risk.
 	_pending_code = [p for p in pending if any(p.endswith(ext) for ext in SOURCE_FILE_EXTENSIONS)]
 	# Something the model said it would change and then didn't is a silent gap, not
 	# a failure — medium, not high, but never "low".
-	_unwritten = (execution_context.get("declared_edit_set", set()) or set()) - (
-		execution_context.get("dirty_written_files", set()) or set()
-	)
+	_unwritten = unwritten_declared_files(execution_context)
+	# A refusal the run stopped on stays high risk — work was cut short. A refusal the
+	# run absorbed and continued past is a known, named gap: medium, never "low".
 	risk_level = (
-		"high" if _pending_code or denied_calls
-		else ("medium" if pending or _unwritten else "low")
+		"high" if _pending_code or handback
+		else ("medium" if pending or _unwritten or denied_calls else "low")
 	)
 	summary += f"\n\nResidual risk: {risk_level}."
 	if answer.strip():
@@ -275,6 +431,26 @@ def repeat_corrective_message(tool_name: str, fails: int) -> str:
 		"arguments, a different tool, or fix the underlying precondition (e.g. resolve the "
 		"environment per the cascade) — or stop and conclude clearly that you cannot proceed, "
 		"naming what failed and why. Do not issue the same call again."
+	)
+
+
+def handback_corrective_message(refusals: list[dict]) -> str:
+	"""One-time mid-loop stop once refusals reached the end of the denial ladder.
+
+	Unlike the other correctives this one is not advisory framing around a retry: the
+	user has refused the same thing to the end of the ladder, and the only remaining
+	reading of that is "stop". It carries what was refused so the model reports the
+	right thing rather than guessing which of its actions is meant.
+	"""
+	what = ", ".join(item.get("scope") or item.get("tool", "that action") for item in refusals[:3])
+	return (
+		"[automated workflow reminder — not from the user; advisory, apply judgment]\n\n"
+		f"The user has refused this repeatedly ({what}) and will not be asked to approve it "
+		"again. That is no longer a hint to find another way — it is the end of this line of "
+		"work. Stop calling tools toward it now and end your turn: report what you completed, "
+		"what the refusal leaves undone, and what you need from the user to go further. If "
+		"other, unrelated parts of the task remain and are unaffected by the refusal, finish "
+		"those first, then hand back."
 	)
 
 

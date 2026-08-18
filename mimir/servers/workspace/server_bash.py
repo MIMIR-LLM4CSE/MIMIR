@@ -170,77 +170,47 @@ _WORKSPACE_ROOT = os.path.realpath(
 _MAX_OUTPUT = 64 * 1024
 _DEFAULT_TIMEOUT = 10
 
-# The user's real home, resolved once. Commands run with this as HOME so every tool
-# reads the configuration the user actually has (see _safe_env). It is captured here
-# because _safe_env rebuilds the environment from scratch, and because the validator
-# needs the same value to know where a bare 'cd' would land.
+# Commands run with the user's real home as HOME (see _safe_env, which rebuilds the
+# env from scratch); the validator needs the same value to know where a bare 'cd' lands.
 _REAL_HOME = os.path.realpath(os.path.abspath(os.path.expanduser("~")))
 
-# The allowlist is the union of the command *groups* in servers/_shared/shell_paths.py,
-# which the client's gate and classifier import too: this guard *confines* the paths a
-# command names, that gate *prompts* for the ones outside the workspace, and the
-# classifier decides what is plan-safe. Two copies of the taxonomy would fail silently
-# in both directions — a path the client misses cannot be granted, a path this guard
-# misses is never gated, and a command one side knows the other refuses is dead weight
-# advertised as a capability. Adding a command therefore means adding it to a *group*,
-# and the parity test in test_server_contracts.py keeps the two ends honest.
+# Union of the command *groups* in _shared/shell_paths.py, which the client's gate and
+# classifier import too. Add a command to a *group*, never here — two copies of the
+# taxonomy drift silently, and test_server_contracts.py enforces parity.
 _ALLOWED_COMMANDS = {
-    # Compile / run / test / validate.
     *_EXEC_COMMANDS,
-    # Read a file's content or metadata. 'sed' is dual-use: read-only when printing
-    # (sed -n / sed 's///' to stdout) but a real *write* with in-place '-i'. Its paths
-    # are confined either way, so an in-place edit cannot escape the workspace; the
-    # client classifier flags 'sed -i' as a write, so it is approval-gated and rejected
-    # in plan mode (never side-effect-free).
+    # 'sed' is dual-use: read-only when printing, a real write with '-i'. Paths are
+    # confined either way; the client classifier gates 'sed -i' as a write.
     *_READ_COMMANDS,
-    # Search file contents — this server is the only grep surface there is.
     *_SEARCH_COMMANDS,
-    # Enumerate the tree.
     *_INSPECT_COMMANDS,
-    # File management. Real writes: they move, duplicate, create and re-mode inside
-    # the workspace, and are approval-gated like any other write (rejected in plan
-    # mode).
-    # Every operand — source AND destination — is confined, so `cp /etc/passwd .` is
-    # refused while reorganising the workspace's own files is not.
-    # NOTE: deletion ('rm', 'rmdir') stays out — it is the one write with no recovery
-    # path, and nothing in a build/benchmark flow needs it.
+    # Real writes, approval-gated and rejected in plan mode. Every operand — source
+    # AND destination — is confined. Deletion ('rm'/'rmdir') stays out: the one write
+    # with no recovery path, and no build/benchmark flow needs it.
     *_WRITE_COMMANDS,
-    # Metadata words and no-ops. The no-ops carry no side effect at all, but they are
-    # what makes the standard capability probe expressible:
-    # `which pdflatex 2>/dev/null || true` tests for a toolchain without the whole
-    # chain being rejected on its last segment. Without them the agent has no way to
-    # ask "is X available?" and ends up probing with commands that get refused one
-    # after another.
+    # The no-ops are what makes the capability probe expressible:
+    # `which pdflatex 2>/dev/null || true` would otherwise be rejected on its last
+    # segment, leaving no way to ask "is X available?".
     *_NEUTRAL_COMMANDS,
-    # Where the rest of the call runs. One 'cd' rebases every later path in the chain.
+    # One 'cd' rebases every later path in the chain.
     "cd",
-    # HPC environment modules. 'module' is an Lmod *shell function*, not a
-    # binary, so it cannot run under 'bash --norc' on its own — the server
-    # defines it by sourcing Lmod's init in the (server-built, un-validated)
-    # wrapper around the user command (see _module_preamble). This lets a single
-    # call do 'module load cuda && nvcc ...': the load mutates the env of that
-    # one shell, which the rest of the chain then inherits. Args are validated
-    # against a fixed subcommand set below (discovery + load only).
+    # Lmod 'module' is a shell *function*, not a binary, so it cannot run under
+    # 'bash --norc' alone — the server sources Lmod's init in the wrapper it builds
+    # (see _module_preamble), letting 'module load cuda && nvcc ...' work in one call.
+    # Args are validated against _MODULE_SUBCOMMANDS below.
     "module",
-    # Environment managers (pip/conda/mamba). The agent can query and provision the
-    # environment it runs in — install a missing package, create an env from a YAML —
-    # scoped by _ENV_MANAGER_SUBCOMMANDS below in the same spirit as 'module': query
-    # and add, never remove, and never a sub-command that nests another command
-    # ('conda run', which would bypass this validator exactly as 'bash -c' would).
-    #
-    # These are the one group whose *effect* is deliberately outside the workspace:
-    # an install writes into the target interpreter's site-packages, which no path
-    # check here can (or should) confine. Two things bound it instead — the approval
-    # prompt every call goes through, and the sub-command scope below. Note the
-    # target: PATH puts the interpreter MIMIR runs under first (see _safe_env), so a
-    # bare 'pip install' provisions *that* env unless the agent names another.
+    # Query and provision only, scoped by _ENV_MANAGER_SUBCOMMANDS below: never
+    # remove, never a sub-command that nests another ('conda run' would bypass this
+    # validator exactly as 'bash -c' would). The one group whose effect is
+    # deliberately outside the workspace — an install writes into the target
+    # interpreter's site-packages, bounded by the approval prompt rather than a path
+    # check. PATH puts MIMIR's own interpreter first (_safe_env), so a bare
+    # 'pip install' provisions *that* env unless the agent names another.
     *_ENV_MANAGER_COMMANDS,
 }
 
-# 'module' subcommands we accept: discovery (read-only) and load only. No
-# destruction (unload/rm/swap/purge/reset) and no collection creation
-# (save/restore) — a benchmark step should only inspect modules or bring one in,
-# never tear down or persist the environment. Anything else is rejected.
+# Discovery and load only — no destruction (unload/rm/swap/purge/reset) and no
+# collection persistence (save/restore). Anything else is rejected.
 _MODULE_SUBCOMMANDS = {
     # discovery / read-only
     "list", "avail", "av", "show", "display", "spider", "whatis",
@@ -249,17 +219,11 @@ _MODULE_SUBCOMMANDS = {
     "load", "add",
 }
 
-# Environment-manager sub-commands we accept, by family ('pip3' → pip, 'mamba' →
-# conda). Query and add only, for the same reason 'module' gets no 'unload'/'purge':
-# an uninstall or an env removal is the write with no recovery path, and nothing in a
-# build/benchmark flow needs it. Also absent, and *not* for that reason:
-# - 'conda run' / 'mamba run' — they nest an arbitrary command, so allowing them
-#   would void this validator the way 'bash -c' would (see _SHELL_RUNNERS).
-# - 'pip config' / 'conda config' — they persist settings outside the workspace and
-#   outside the session, so a later call would run under an environment the user
-#   never saw being changed.
-# Anything unrecognised is rejected rather than passed through: a sub-command this
-# server has not reasoned about is exactly the one that turns out to delete something.
+# By family ('pip3' → pip, 'mamba' → conda). Query and add only — an uninstall or env
+# removal is the write with no way back. Also absent, for separate reasons:
+# 'conda run'/'mamba run' nest an arbitrary command (see _SHELL_RUNNERS), and
+# 'pip config'/'conda config' persist settings past the session. Anything
+# unrecognised is rejected rather than passed through.
 _ENV_MANAGER_SUBCOMMANDS = {
     "pip": {"install", "download", "list", "show", "freeze", "check", "inspect",
             "index", "help"},
@@ -358,33 +322,22 @@ _TEX_FORBIDDEN_FLAGS = {
 
 # Per-command denylist of flags whose write or exec target sits where the path
 # extraction cannot see it — a flag *value* (`find -fprint FILE`) or a nested command
-# (`find -exec`, `rg --pre`). Matched as an exact token or a glued '=' form (e.g.
-# '--output=x'). Keyed by argv[0].
-#
-# NOTE: creating a file is not itself the reason a flag is here. A write flag whose
-# target the guard can *see* is confined instead of denied — that is
-# ``shell_paths.WRITE_VALUE_FLAGS_BY_CMD``, which covers ``gcc -o``, ``sort -o`` and
-# friends in both the separated and glued spellings. What stays out is the write the
-# guard cannot resolve at all: ``find -fprint`` (whose flag value the operand walk does
-# not reach) and ``find -exec`` / ``rg --pre`` (a nested command, opaque by nature).
+# (`find -exec`, `rg --pre`). Matched as an exact token or a glued '=' form. Keyed by
+# argv[0]. A write flag whose target the guard *can* see is confined instead of denied
+# (``shell_paths.WRITE_VALUE_FLAGS_BY_CMD``: `gcc -o`, `sort -o`, …).
 _FORBIDDEN_ARG_TOKENS_BY_CMD = {
-    # -exec/-execdir are NOT here: the parser lifts their payload into its own
-    # nested segment, which is then accepted or rejected on the nested command's own
-    # head (see the segment.nested branch in _validate_command). -ok/-okdir stay —
-    # they prompt on a tty the agent does not have. Everything else here hides its
-    # target in flag-value position, where the operand walk never looks.
+    # -exec/-execdir are NOT here: the parser lifts their payload into its own nested
+    # segment, judged on the nested command's own head (see _validate_command).
+    # -ok/-okdir stay — they prompt on a tty the agent does not have.
     "find": {"-ok", "-okdir", "-delete",
              "-fprint", "-fprint0", "-fprintf", "-fls", "--in-place"},
     "rg":   {"--pre", "--pre-glob", "--hostname-bin", "--search-zip", "-f", "--file"},
-    # '-f/--file' reads the patterns from a file. Denylisted for both engines rather
-    # than merely confined: it is a read whose operand sits in flag-value position,
-    # which is exactly where the pattern-skipping rule stops looking.
+    # '-f/--file' reads patterns from a file — a read whose operand sits in flag-value
+    # position, exactly where the pattern-skipping rule stops looking.
     "grep": {"-f", "--file"},
-    # Recursive mode changes. Every path chmod is given is confined to the workspace
-    # like any other operand, so the concern is not *where* it reaches but how much it
-    # rewrites from one token: '-R' re-modes a whole tree, which no build step needs
-    # and which the user cannot review from the call. Single-path forms are the point
-    # of allowing chmod at all (see shell_paths.WRITE_COMMANDS) and stay available.
+    # Not about *where* chmod reaches (operands are confined like any other) but how
+    # much one token rewrites: '-R' re-modes a whole tree, unreviewable from the call.
+    # Single-path forms are the point of allowing chmod at all and stay available.
     "chmod": {"-R", "--recursive"},
     **{cmd: _TEX_FORBIDDEN_FLAGS for cmd in _TEX_COMMANDS},
 }
@@ -398,12 +351,9 @@ _SHELL_RUNNERS = {
     "eval", "exec", "source", ".", "command", "env", "xargs", "nohup", "sudo",
 }
 
-# Commands whose exit status 1 means "nothing found" rather than "failed":
-# `grep`/`rg` return 1 on no match, `which` returns 1 when the binary is absent.
-# Both are legitimate *answers* to a question the agent asked. Reported as an
-# error they read as a broken command, and the model re-runs them unchanged —
-# so a clean no-match (rc 1, empty stdout) is reported as a successful result.
-# A real failure (bad pattern, unreadable file) exits 2 and stays an error.
+# Commands whose exit status 1 means "nothing found" rather than "failed" — a
+# legitimate answer the model would otherwise re-run unchanged. A clean no-match
+# (rc 1, empty stdout) is reported as success; a real failure exits 2 and stays an error.
 _NO_MATCH_COMMANDS = {"grep", "rg", "which"}
 
 
@@ -424,27 +374,18 @@ def _safe_env(cwd: str) -> dict:
         "PATH": path,
         "LANG": os.environ.get("LANG", "C.UTF-8"),
         "LC_ALL": os.environ.get("LC_ALL", "C.UTF-8"),
-        # HOME is the user's real home, inherited. It used to be pinned to the
-        # workspace, which looked like confinement but was not: what confines a
-        # command here is the path check on the operands it names, and HOME changes
-        # none of that. What pinning actually did was detach every tool from the
-        # user's own configuration and caches, silently and per tool — user
-        # site-packages (~/.local/lib) vanished from `python`, `pip` lost its config
-        # and re-downloaded into a stray .cache/ in the repo, `conda` lost ~/.condarc
-        # and its channels, and TeX stopped finding packages installed in ~/texmf.
-        # The agent then saw failures the user cannot reproduce in their own shell.
-        # Startup files are kept out by 'bash --noprofile --norc' plus BASH_ENV
-        # below, which is what that concern actually needed; incidental cache writes
-        # land where they would for the user, instead of polluting the workspace.
+        # Inherited, not pinned to the workspace: confinement comes from the operand
+        # path check, and pinning only detached tools from the user's own config and
+        # caches (~/.local site-packages, ~/.condarc, ~/texmf). Startup files are kept
+        # out by 'bash --noprofile --norc' plus BASH_ENV below, which is what that
+        # concern actually needed.
         "HOME": _REAL_HOME,
         # Prevent non-interactive bash from loading an arbitrary startup file.
         "BASH_ENV": "",
         "PWD": cwd,
-        # kpathsea reads texmf.cnf settings from the environment, so these pin the
-        # TeX engines' sandbox regardless of the site's texmf.cnf: no \write18 at
-        # all, and 'paranoid' file access — TeX may only write below the cwd and
-        # may not read dotfiles or absolute paths outside its trees. This is the
-        # backstop for the shell-escape flags already denylisted at validation.
+        # kpathsea reads these from the env, pinning the TeX sandbox regardless of the
+        # site's texmf.cnf: no \write18, and 'paranoid' file access. Backstop for the
+        # shell-escape flags already denylisted at validation.
         "shell_escape": "f",
         "openout_any": "p",
         "openin_any": "p",
@@ -602,9 +543,8 @@ def _resolve_cd_target(argv: list[str], cwd: str, call_cwd: str) -> tuple[str | 
     """
     resolved = _cd_destination(argv, cwd, call_cwd)
     if not _is_within_workspace(resolved):
-        # The *resolved* destination, not the token written: every refusal in this
-        # server names the path the user would be asked to approve, so the message
-        # and the prompt refer to the same thing ('..' and '/etc' do not).
+        # The *resolved* destination, not the token written, so the refusal and the
+        # approval prompt name the same path ('..' and '/etc' do not).
         return None, err(
             f"Path outside workspace is not approved: {resolved}",
             hint="Moving outside the workspace needs the user's approval for that "
@@ -644,29 +584,21 @@ def _validate_path_args(argv: list[str], cwd: str) -> dict | None:
 
 
 def _validate_command(command: str, cwd: str) -> dict:
-    # Segmentation — which commands the shell would run, and which files their
-    # redirections touch — comes from shell_paths.parse_segments, the module the
-    # client's gate imports too (see the note on _ALLOWED_COMMANDS). What is left
-    # here is the *policy*: the allowlist, the flag denylists, and confinement.
+    # Segmentation comes from shell_paths.parse_segments, shared with the client's
+    # gate. What is left here is the *policy*: allowlist, flag denylists, confinement.
     try:
         segments = _parse_segments(command)
     except _ShellParseError as e:
         return err(e.message, hint=_PARSE_HINTS.get(e.reason, ""))
 
     parsed = []
-    # The base for path confinement. A 'cd' segment moves it (within the
-    # workspace), so later segments are checked against the directory the shell
-    # will actually be in — see _resolve_cd_target.
+    # Base for path confinement; a 'cd' segment moves it (see _resolve_cd_target).
     seg_cwd = cwd
     for segment in segments:
         argv = segment.argv
-        # A program named by path is not judged by the allowlist — the allowlist is a
-        # set of command *names*, and a path names a specific file instead. It is
-        # judged as the path it is, by the confinement check below: inside the
-        # workspace it runs, outside it needs the user's approval like any other
-        # out-of-workspace path. What stays refused whatever the spelling is a shell
-        # runner: allowing '/bin/sh' by path would reinstate the very bypass the
-        # name-based refusal exists to prevent, and approving one root would unlock it.
+        # A program named by path is judged as a path (confinement check below), not
+        # against the allowlist of command *names*. Shell runners stay refused whatever
+        # the spelling: allowing '/bin/sh' by path reinstates the very bypass.
         argv0_is_path = _is_path_like_command(argv[0])
         runner = os.path.basename(argv[0]) if argv0_is_path else argv[0]
         if argv[0] not in _ALLOWED_COMMANDS and (
@@ -691,10 +623,8 @@ def _validate_command(command: str, cwd: str) -> dict:
                     "that the capability is unavailable. To run a binary you "
                     "compiled, reference it by a workspace path such as './a.out'."
                 )
-            # The approved list is inlined rather than pointed at: this payload is
-            # the reply to a *shell* call, so any 'call X() to find out' pointer
-            # reads as another shell command to try — which is how the agent ends
-            # up running the name of an MCP tool and failing again on it.
+            # Inlined rather than pointed at: in a reply to a *shell* call, any
+            # "call X() to find out" pointer reads as another shell command to try.
             return err(
                 f"Command '{argv[0]}' is not allowed.",
                 hint=hint,
@@ -730,10 +660,8 @@ def _validate_command(command: str, cwd: str) -> dict:
             continue
 
         # A nested command the parser lifted out (`find … -exec CMD {} \;`) is a real
-        # command: allowed only if its head is read-only. The flag denylist below
-        # would otherwise reject it on the `-exec` token alone, without ever looking
-        # at what is nested — which dead-ended read-only fan-out, since the hint's
-        # suggested workaround needs `xargs` and that is permanently banned.
+        # command: allowed only if its head is read-only. Judged here rather than by
+        # the flag denylist below, which would reject it on the `-exec` token alone.
         if segment.nested:
             if argv[0] not in READONLY_NESTED_COMMANDS:
                 return err(

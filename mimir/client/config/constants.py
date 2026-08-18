@@ -1,7 +1,10 @@
 from __future__ import annotations
 
-import hashlib
 import os
+
+# The workspace id names both the state dir below and the scratchpad under /tmp, so
+# it is defined once, server-side, and imported here rather than duplicated.
+from ...servers._shared.state_paths import workspace_id  # noqa: F401  (re-exported)
 
 
 SERVER_BASE = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "servers")) + os.sep
@@ -45,13 +48,6 @@ STATE_HOME = os.path.abspath(
     os.environ.get("MIMIR_STATE_HOME")
     or os.path.join(os.path.expanduser("~"), ".mimir")
 )
-
-
-def workspace_id(root: str) -> str:
-    """Readable, collision-free id for a workspace root: ``<basename>-<sha1[:8]>``."""
-    real = os.path.realpath(root)
-    digest = hashlib.sha1(real.encode("utf-8")).hexdigest()[:8]
-    return f"{os.path.basename(real) or 'root'}-{digest}"
 
 
 STATE_DIR = os.path.abspath(
@@ -241,6 +237,17 @@ NUDGE_MAX_BLAST_RADIUS: int = 1
 
 # Application-pack (extension) nudges: max fires per query per registered rule.
 CUSTOM_NUDGE_MAX_PER_QUERY: int = 3
+
+# ── Denial escalation ladder ───────────────────────────────────────────────────
+# A refusal is read three ways, in priority order: the means is wrong (find another
+# route) → the step is unnecessary (drop it, keep going) → stop and hand back. The
+# model picks; these thresholds are the floor that stops it picking "find another
+# route" forever. Counted per query, per approval scope (the same normalised token
+# the "always" grants use), so refusing `pip install X` also escalates `pip install Y`
+# while an unrelated command family starts fresh.
+DENIAL_SCOPE_DROP_AFTER: int = 2      # nth refusal of one scope that rules out "another route"
+DENIAL_SCOPE_HANDBACK_AFTER: int = 3  # nth refusal of one scope that forces the hand back
+DENIAL_QUERY_HANDBACK_TOTAL: int = 4  # total refusals in a query that force the hand back
 
 # Consecutive no-op ("I'm done") turns that may still be nudged. The model
 # produces a bare final-answer turn (no tool call); the first one earns a useful

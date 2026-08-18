@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from collections.abc import Iterable
 from typing import Any, Callable, TypedDict, cast
@@ -23,6 +24,7 @@ class ExecutionContext(TypedDict):
     validation_fail_count_by_file: dict[str, int]   # per-file count of failed syntax validations (retry-budget exhaustion)
     executed_failures: set[str]                     # files an `executed`-tier check was observed FAILING on, ever, this query — the red half of red→green (see VALIDATION_TIERS)
     denied_tool_calls: list[dict[str, Any]]         # tool calls blocked by policy/approval (denial nudge + finalization)
+    denial_history: list[dict[str, Any]]            # append-only refusal log keyed by approval scope; drives the escalation ladder (never cleared, unlike denied_tool_calls)
     workflow_state: str                             # coarse phase of the loop: "discover" | "edit" | "validate" | "conclude"
     code_mutation_started: bool                     # True once the first code file was successfully edited this query
     cluster_submit_warned: bool                     # True once the pre-submission HPC guard has fired once this query
@@ -50,6 +52,10 @@ class ExecutionContext(TypedDict):
     plan_written: bool                              # True once a prose plan/rationale was recorded
     todo_file_path: str                             # absolute path to the active todo_list.md (set at query start)
     last_edit_success_path: str                     # path of last successful code edit (cleared after injection)
+    # ── Cross-query and loop bookkeeping ───────────────────────────────────────
+    prev_query_written_files: set[str]               # files written by the PREVIOUS query, forwarded from carry_context so the pin can warn to re-read them
+    tool_msg_files: dict[str, list[str]]             # tool_call_id -> files that tool message concerns; lets history trimming match messages to files structurally
+    consecutive_noop_turns: int                      # consecutive bare final-answer turns with no tool call (nudge cutoff)
 
 
 # Per-query loop-control bookkeeping used only by agent_loop's tool-dispatch spin
@@ -84,6 +90,82 @@ def loop_control(execution_context: dict[str, Any]) -> LoopControlState:
     return lc
 
 
+# ── Recency-preserving sets ────────────────────────────────────────────────────
+#
+# Several fields are rendered into the discovery pin, which can only show a bounded
+# slice of them. A plain ``set`` carries no order, so the only deterministic slice is
+# an alphabetical one — and the alphabetically-last ten paths are not the ten that
+# matter. ``RecencySet`` keeps insertion order alongside the set so the pin can show
+# what the model just touched.
+#
+# It IS a ``set``: every existing membership test, ``|``, ``-`` and ``isinstance``
+# check keeps working unchanged. Operators that build a new set return a plain one and
+# simply lose the order, which ``recent_first`` degrades to sorted order for — the
+# previous behaviour, never a crash.
+class RecencySet(set):
+    """A ``set`` that also remembers the order elements were first added."""
+
+    __slots__ = ("_order",)
+
+    def __init__(self, iterable=()):
+        super().__init__()
+        self._order: list = []
+        self.update(iterable)
+
+    def add(self, item) -> None:
+        if item not in self:
+            self._order.append(item)
+        super().add(item)
+
+    def update(self, *iterables) -> None:  # type: ignore[override]
+        for it in iterables:
+            for item in it:
+                self.add(item)
+
+    def discard(self, item) -> None:
+        if item in self:
+            try:
+                self._order.remove(item)
+            except ValueError:
+                pass
+        super().discard(item)
+
+    def remove(self, item) -> None:
+        self.discard(item)
+
+    def clear(self) -> None:
+        self._order.clear()
+        super().clear()
+
+    def difference_update(self, *iterables) -> None:  # type: ignore[override]
+        for it in iterables:
+            for item in list(it):
+                self.discard(item)
+
+    def __isub__(self, other):  # type: ignore[override]
+        self.difference_update(other)
+        return self
+
+    def insertion_order(self) -> list:
+        """Elements oldest-first. Filtered against the set so it cannot drift."""
+        return [x for x in self._order if x in self]
+
+
+def recent_first(value) -> list:
+    """Elements of *value* most-recent-first, falling back to sorted order.
+
+    The pin shows a bounded slice, so which elements it picks is a real decision. A
+    :class:`RecencySet` answers it with recency; anything else (a plain set rebuilt by
+    ``|``, a list restored from JSON) has no such answer and gets deterministic
+    alphabetical order rather than an arbitrary one.
+    """
+    if isinstance(value, RecencySet):
+        return list(reversed(value.insertion_order()))
+    if isinstance(value, (set, frozenset)):
+        return sorted(value)
+    return sorted(value or [])
+
+
 # ── Field traits ───────────────────────────────────────────────────────────────
 #
 # What a field *is*, declared next to the field itself. Before this, the answers lived
@@ -116,11 +198,13 @@ _FIELD_SPECS: tuple[_FieldSpec, ...] = (
     ("searched", lambda: False, (bool,), frozenset({DISCOVERY})),
     ("inspected_dirs", set, (set,), frozenset({CARRY, DISCOVERY})),
     ("checked_paths", set, (set,), frozenset({CARRY, FILE_PATH, KNOWN_FILE, DISCOVERY})),
-    ("read_files", set, (set,), frozenset({CARRY, FILE_PATH, KNOWN_FILE, DISCOVERY})),
+    # RecencySet: rendered into the pin, which shows a bounded slice — recency is what
+    # makes that slice useful (see recent_first).
+    ("read_files", RecencySet, (set,), frozenset({CARRY, FILE_PATH, KNOWN_FILE, DISCOVERY})),
     # Not DISCOVERY: existence can be established by the repo baseline rather than by
     # the model's own exploration, which is exactly what the discovery gates must not
     # accept as evidence.
-    ("existing_paths", set, (set,), frozenset({CARRY, FILE_PATH, KNOWN_FILE})),
+    ("existing_paths", RecencySet, (set,), frozenset({CARRY, FILE_PATH, KNOWN_FILE})),
     ("similar_candidates_by_dir", dict, (dict,), _NO_TRAITS),
     ("search_tool_calls", lambda: 0, (int,), _NO_TRAITS),
     # Count of successful substantive actions (writes/exec/mutations — any PLAN_BLOCKED
@@ -128,15 +212,15 @@ _FIELD_SPECS: tuple[_FieldSpec, ...] = (
     # multi-step even when it touches only one (or zero) files.
     ("action_op_count", lambda: 0, (int,), _NO_TRAITS),
     # Carried, but NOT FILE_PATH: these are search patterns, not paths.
-    ("search_queries_used", set, (set,), frozenset({CARRY})),
+    ("search_queries_used", RecencySet, (set,), frozenset({CARRY})),
     ("read_file_line_counts", dict, (dict,), _NO_TRAITS),
     # Partial context only — never CARRY, and never proof of a full read (see
     # ``was_fully_read``). It is still KNOWN_FILE: seeing a snippet proves the file exists.
     ("snippet_read_files", set, (set,), frozenset({FILE_PATH, KNOWN_FILE, DISCOVERY})),
     # ── Edit: planned and in-flight mutations ──────────────────────────────────
-    ("planned_edit_targets", set, (set,), _NO_TRAITS),
+    ("planned_edit_targets", RecencySet, (set,), _NO_TRAITS),
     ("declared_edit_set", set, (set,), _NO_TRAITS),
-    ("dirty_written_files", set, (set,), frozenset({FILE_PATH})),
+    ("dirty_written_files", RecencySet, (set,), frozenset({FILE_PATH})),
     ("cross_file_grep_old_text", lambda: None, (str, _NoneType), _NO_TRAITS),
     ("cross_file_grep_source", lambda: None, (str, _NoneType), _NO_TRAITS),
     ("last_replace_old_text", lambda: None, (str, _NoneType), _NO_TRAITS),
@@ -157,6 +241,7 @@ _FIELD_SPECS: tuple[_FieldSpec, ...] = (
     ("cluster_submit_warned", lambda: False, (bool,), _NO_TRAITS),
     ("nudge_counts", dict, (dict,), _NO_TRAITS),
     ("denied_tool_calls", list, (list,), _NO_TRAITS),
+    ("denial_history", list, (list,), _NO_TRAITS),
     ("tests_run", set, (set,), _NO_TRAITS),
     # ── Environment ────────────────────────────────────────────────────────────
     # These three were live for a long time without being declared here at all: seeded
@@ -173,7 +258,82 @@ _FIELD_SPECS: tuple[_FieldSpec, ...] = (
     ("todo_file_path", lambda: "", (str,), _NO_TRAITS),
     # ── Tool visibility ────────────────────────────────────────────────────────
     ("rearmed_domains", set, (set,), _NO_TRAITS),
+    # ── Cross-query and loop bookkeeping ───────────────────────────────────────
+    # These three were live without being declared: written by the loop, the dispatcher
+    # or the carry merge, and read by the pin and the history budget — but invisible to
+    # the template, to validate_execution_context and to the trait derivations. That is
+    # why a deleted file kept appearing in the pin's "written last query" list: the
+    # delete observer purges fields_with(FILE_PATH), and an undeclared field has no
+    # traits to be found by.
+    ("prev_query_written_files", set, (set,), frozenset({FILE_PATH})),
+    ("tool_msg_files", dict, (dict,), _NO_TRAITS),
+    ("consecutive_noop_turns", lambda: 0, (int,), _NO_TRAITS),
 )
+
+
+# ── The carry-context schema ───────────────────────────────────────────────────
+#
+# ``carry_context`` is the session-level dict that survives between queries. Most of it
+# mirrors the CARRY-trait fields above, but three keys exist only there — and because
+# they were never declared anywhere, ``export_state`` did not know to normalise them
+# for JSON. ``last_query_written_files`` is a ``set``: the session store serialises with
+# ``default=str``, so it round-tripped as the *string* "{'a.py', 'b.py'}", and the next
+# ``_apply_carry_context`` did ``set(...)`` on that string, exploding it into single
+# characters that the pin then rendered as file paths.
+#
+# Declaring the extras here is what lets the JSON conversion and the deleted-path purge
+# be derived instead of hand-listed, so the next key added cannot repeat the bug.
+#   (name, default_factory, json_kind, holds_paths)
+_CarryExtraSpec = tuple[str, Callable[[], Any], str, bool]
+
+_CARRY_EXTRA_SPECS: tuple[_CarryExtraSpec, ...] = (
+    ("searched", lambda: False, "scalar", False),
+    # Forwarded into the next query's execution_context as prev_query_written_files.
+    ("last_query_written_files", set, "set", True),
+    # path -> mtime at the time of the read; used to evict reads a later edit staled.
+    ("_read_mtimes", dict, "dict", False),
+)
+
+
+def carry_set_fields() -> tuple[str, ...]:
+    """Carry keys holding a ``set`` — the ones needing list⇄set conversion for JSON."""
+    return fields_with(CARRY) + tuple(
+        name for name, _f, kind, _p in _CARRY_EXTRA_SPECS if kind == "set"
+    )
+
+
+def carry_path_fields() -> tuple[str, ...]:
+    """Carry keys holding workspace file paths — purged when a file is deleted."""
+    return fields_with(CARRY, FILE_PATH) + tuple(
+        name for name, _f, _k, holds_paths in _CARRY_EXTRA_SPECS if holds_paths
+    )
+
+
+def carry_context_to_json(carry: dict[str, Any]) -> dict[str, Any]:
+    """Return *carry* with every set rendered as a sorted list, ready for ``json.dump``.
+
+    Schema-driven for the declared keys, then a defensive sweep for anything else: the
+    session store serialises with ``default=str``, which turns an unconverted set into
+    a string instead of failing, so a missed key corrupts silently rather than loudly.
+    """
+    out = dict(carry)
+    for key in carry_set_fields():
+        if isinstance(out.get(key), set):
+            out[key] = sorted(out[key])
+    for key, value in out.items():  # backstop for any undeclared key
+        if isinstance(value, (set, frozenset)):
+            out[key] = sorted(value)
+    return out
+
+
+def carry_context_from_json(carry: dict[str, Any]) -> dict[str, Any]:
+    """Inverse of :func:`carry_context_to_json`: restore declared set fields."""
+    out = dict(carry)
+    for key in carry_set_fields():
+        if key in out and not isinstance(out[key], set):
+            value = out[key]
+            out[key] = set(value) if isinstance(value, (list, tuple, set)) else set()
+    return out
 
 
 def fields_with(*traits: str) -> tuple[str, ...]:
@@ -262,8 +422,9 @@ def known_existing_files(execution_context: dict[str, Any]) -> set[str]:
 #     (loop body + loop-control correctives)    LoopControlState (the private             agent_loop (repeat/redundant
 #                                              _loop_control object: write_calls,          guards)
 #                                              call_fails, call_results, …)
-#   policy/engine + agent_core (approval)  denied_tool_calls                          state_machine (blocking denials),
-#                                                                                         nudge_logic (denial nudge)
+#   policy/engine + agent_core (approval)  denied_tool_calls, denial_history          state_machine (blocking denials),
+#                                                                                         nudge_logic (denial nudge),
+#                                                                                         workflow (escalation ladder)
 #
 # Rule of thumb: fields are WRITTEN in exactly one place (the observation pass or the
 # loop) and READ in many. Never mutate context outside its declared writer above —
@@ -333,20 +494,57 @@ def has_discovery_evidence(execution_context: dict[str, Any], *, min_distinct: i
     return discovery_signal_count(execution_context) >= min_distinct
 
 
+def _declared_target_written(declared: str, written: set[str], root: str) -> bool:
+    """True when one declared edit target was honoured by one of the *written* paths.
+
+    The two sides are spelled differently by construction. A write records the path
+    the file tools were given — absolute outside the workspace, root-relative inside
+    — while the declared set is scraped from the checklist's own prose, where the
+    model names the file however it reads best: bare (``write wave_solver_2d.py in
+    ../other/``, the directory living in the surrounding words) or relative to the
+    workspace. So the comparison resolves both sides against the workspace root, and
+    a declared entry carrying no directory at all matches on basename — a bare
+    mention never carried a location to contradict.
+    """
+    if declared in written:
+        return True
+    base = os.path.basename(declared)
+    same_name = [w for w in written if os.path.basename(w) == base]
+    if not same_name:
+        return False
+    if not os.path.dirname(declared):
+        return True
+    target = os.path.abspath(os.path.join(root, declared))
+    return any(os.path.abspath(os.path.join(root, w)) == target for w in same_name)
+
+
+def unwritten_declared_files(execution_context: dict[str, Any]) -> list[str]:
+    """Declared edit targets that no write this query honoured, sorted.
+
+    The single definition of "promised and then skipped", read by the completion
+    issues, the residual-risk level, the verification ledger and the validation
+    nudge. Matching is by resolved path, not by string (see
+    :func:`_declared_target_written`) — a raw set difference reported a file as
+    never written whenever the plan spelled it differently from the write.
+    """
+    declared = execution_context.get("declared_edit_set", set()) or set()
+    if not declared:
+        return []
+    dirty = set(execution_context.get("dirty_written_files", set()) or set())
+    from ..config.constants import WORKSPACE_ROOT
+    root = os.path.abspath(WORKSPACE_ROOT)
+    return sorted(d for d in declared if not _declared_target_written(d, dirty, root))
+
+
 def declared_edit_set_complete(execution_context: dict[str, Any]) -> bool:
     """True when every file the model declared it would edit has been dirtied.
 
     The single definition of "the planned multi-file refactor is finished writing"
     — read by the edit→validate transition (runtime), the validation state guard
-    (state_machine), and the validation/state nudges (nudge_logic) instead of each
-    re-deriving the same ``declared.issubset(dirty)`` check. An empty declared set
-    (no explicit plan) is vacuously complete.
+    (state_machine), and the validation/state nudges (nudge_logic). An empty
+    declared set (no explicit plan) is vacuously complete.
     """
-    declared = execution_context.get("declared_edit_set", set()) or set()
-    dirty = execution_context.get("dirty_written_files", set()) or set()
-    if not declared:
-        return True
-    return declared.issubset(dirty)
+    return not unwritten_declared_files(execution_context)
 
 
 # ── Validation strength: how much a green check actually proved ───────────────

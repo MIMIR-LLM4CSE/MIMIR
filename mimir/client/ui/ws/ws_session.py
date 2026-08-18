@@ -380,10 +380,9 @@ class _Session:
         """Push a context_usage event to the WS client (best-effort, never raises)."""
         try:
             total, reserved = self._ctx_budget()
-            # allow_network=False: this runs on the WS event loop, which must not
-            # block on a tokenize round-trip. Already-counted messages (tokenized
-            # by the agent worker during the query) hit the shared cache for exact
-            # numbers; the rest fall back to the heuristic.
+            # allow_network=False: on the WS event loop, which must not block on a
+            # tokenize round-trip. Already-counted messages hit the shared cache for
+            # exact numbers; the rest fall back to the heuristic.
             history_used = get_backend().count_messages_tokens(
                 self.worker.model, self.history, allow_network=False
             )
@@ -439,10 +438,9 @@ class _Session:
                 except Exception:
                     return
                 if ev.get("type") == "error":
-                    # A turn failed (often a context-overflow 400). No `answer`
-                    # event will follow, so refresh the context bar here too —
-                    # otherwise the bar keeps showing the pre-failure usage and
-                    # never reflects the overflow that caused the error.
+                    # A turn failed (often a context-overflow 400) and no `answer`
+                    # event follows, so refresh the context bar here or it keeps
+                    # showing pre-failure usage and never reflects the overflow.
                     await self._emit_context_usage()
                 if ev.get("type") == "file_progress":
                     # Push accumulated batch_status for any files already written
@@ -467,12 +465,10 @@ class _Session:
                     except Exception:
                         pass
                 if ev.get("type") == "answer":
-                    # In full-context mode keep the structured transcript (user
-                    # turn + assistant tool_calls + tool results + final answer,
-                    # with chain-of-thought already stripped) so the model recalls
-                    # the tools it ran — the same behaviour as the CLI chat loop.
-                    # Falls back to the flattened final answer otherwise (or when
-                    # no structured transcript is available yet).
+                    # In full-context mode keep the structured transcript (tool_calls +
+                    # results + answer, chain-of-thought stripped) so the model recalls
+                    # the tools it ran, matching the CLI chat loop. Falls back to the
+                    # flattened answer otherwise.
                     full = self.worker.full_history()
                     context_mode = getattr(self.worker._agent, "context_mode", "full")
                     if full is not None and context_mode == "full":
@@ -485,16 +481,13 @@ class _Session:
                         "text": ev.get("text", ""),
                     })
                     self._autosave_session(list(self._display_messages))
-                    # Describe the session once the turn has landed: the answer is
-                    # part of the transcript, so the description says what was done
-                    # and not just what was asked — and the model call no longer
-                    # competes with the query the user is waiting on.
+                    # Once the turn has landed, so the description says what was *done*
+                    # rather than what was asked, and the model call no longer competes
+                    # with the query the user is waiting on.
                     self._schedule_summary_refresh()
                     await self._emit_context_usage()
-                    # Push the batch-review bar state at answer time.  Sending
-                    # directly here (not via out_q) means we read the snapshot
-                    # dict *after* any batch_review_accept that arrived while the
-                    # agent was running has already cleared it.
+                    # Sent directly rather than via out_q, so the snapshot dict is read
+                    # *after* any batch_review_accept that arrived mid-run cleared it.
                     try:
                         files = self.worker._build_batch_status()
                         await self.ws.send(json.dumps({"type": "batch_status", "files": files}))
@@ -594,16 +587,12 @@ class _Session:
         if not text:
             return
 
-        # Pre-query budget check: if history already fills the usable window,
-        # trim the oldest messages from the front so the new query fits.
-        # We do NOT call compact_history here (LLM call from the event loop
-        # is unsafe while the worker thread owns the agent). Simple truncation
-        # is fast, deterministic, and keeps the most recent context.
+        # Pre-query budget check: front-trim the oldest history so the new query fits.
+        # Deliberately not compact_history — an LLM call from the event loop is unsafe
+        # while the worker thread owns the agent.
         total, reserved = self._ctx_budget()
-        # The system prompt and tools schema ride on every call, so history only
-        # gets what is left after them. Leaving the overhead out here (while the
-        # context bar includes it) let the bar read past 100% without the trim
-        # ever firing — the prompt overflowed while this check said it fit.
+        # Subtract the per-call overhead (system prompt + tools schema) that rides on
+        # every call: without it the bar reads past 100% while this check says it fits.
         usable_tokens = max(1, total - reserved - self.worker.context_overhead_tokens())
         # allow_network=False: never block the WS event loop on tokenize.
         backend = get_backend()
@@ -621,19 +610,17 @@ class _Session:
                 self.history.pop(0)
                 total_tokens -= counts[idx]
                 idx += 1
-            # Front-trimming can leave an orphaned tool result at the head (a
-            # ``{"role": "tool"}`` whose preceding assistant tool_call was popped),
-            # which strict tokenizers (e.g. Mistral) reject. Drop any such leading
-            # tool messages so history always starts on a valid turn boundary.
+            # Front-trimming can orphan a ``{"role": "tool"}`` whose assistant tool_call
+            # was popped, which strict tokenizers (Mistral) reject — so drop leading
+            # tool messages until history starts on a valid turn boundary.
             while self.history and self.history[0].get("role") == "tool":
                 self.history.pop(0)
             await self._emit_context_usage()
 
-        # Resolve @<uri> resource mentions on the worker's loop (where the MCP
-        # sessions live), then submit the augmented text to the model. History and
-        # display keep the RAW `text`, so the attachment is per-turn (Claude/Copilot
-        # style). Caveat: in full-context mode the augmented user message persists in
-        # the worker's `_last_full_messages`; acceptable for MVP.
+        # Resolve @<uri> mentions on the worker's loop (where the MCP sessions live),
+        # then submit the augmented text. History and display keep the RAW `text`, so
+        # the attachment is per-turn. Caveat: in full-context mode the augmented message
+        # persists in the worker's `_last_full_messages`.
         effective_text = text
         try:
             effective_text, attached_uris = await asyncio.wrap_future(
@@ -649,10 +636,9 @@ class _Session:
 
         self.history.append({"role": "user", "content": text})
         self._display_messages.append({"role": "user", "kind": "text", "text": text})
-        # Save as soon as a query arrives so a reconnect during long-running
-        # agent turns (e.g. while waiting for an edit approval) can reload
-        # the session from disk and won't create a new blank session ID,
-        # which would wipe the chat on the frontend.
+        # Save on arrival so a reconnect mid-turn (e.g. while waiting for an edit
+        # approval) reloads from disk instead of minting a blank session ID, which
+        # would wipe the chat on the frontend.
         self._autosave_session(list(self._display_messages))
         self.worker.submit_query(effective_text, list(self.history[:-1]) + [{"role": "user", "content": effective_text}])
 

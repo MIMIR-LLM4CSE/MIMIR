@@ -8,9 +8,15 @@ from ...context.capabilities import name_with_arg_role
 from ...context.resource_context import augment_query_with_resources
 from ...prompt.system_prompt import _load_todo_items
 from ...query_engine.backends.factory import get_backend
+from ...query_engine.verification import parse_ledger_block, split_answer_ledger
 from ...config.constants import context_budget_for, STATE_DIR
+from ...guardrails.workflow import is_incomplete_answer
 
 _TODO_FILE = os.path.join(STATE_DIR, "todo_list.md")
+
+# Ledger status → glyph. The ledger stays a one-liner unless the user asks for it,
+# so the glyph carries the whole verdict at a glance.
+_LEDGER_GLYPH = {"ok": "✅", "note": "🛡", "warn": "⚠️"}
 
 _PROCEED_SIGNALS = frozenset({
     "start implementation",
@@ -26,6 +32,36 @@ _PROCEED_SIGNALS = frozenset({
 
 # Auto-compact history after this many accumulated user/assistant exchange pairs.
 AUTO_COMPACT_THRESHOLD: int = 10
+
+
+def _plain_row(row: str) -> str:
+    """Drop the row's markdown emphasis — the terminal has no use for it."""
+    return row.replace("**", "").replace("`", "")
+
+
+def format_ledger_summary(block: str) -> str:
+    """The collapsed one-liner printed under an answer, pointing at ``/ledger``.
+
+    Kept to the first few chips so it stays one terminal line; /ledger has the rest.
+    """
+    led = parse_ledger_block(block)
+    glyph = _LEDGER_GLYPH.get(led["status"], "🛡")
+    chips = [c.strip() for c in led["summary"].split("·") if c.strip()]
+    detail = " · ".join(chips[:3]) or f"{len(led['rows'])} item(s)"
+    if len(chips) > 3:
+        detail += f" · +{len(chips) - 3}"
+    return f"\n{glyph} Verification · {detail}   —  /ledger to expand"
+
+
+def format_ledger_full(block: str) -> str:
+    """The expanded ledger, one row per line."""
+    led = parse_ledger_block(block)
+    glyph = _LEDGER_GLYPH.get(led["status"], "🛡")
+    lines = [f"\n{glyph} Verification ledger — machine-recorded, not model-authored"]
+    if led["summary"]:
+        lines.append(f"   {led['summary']}")
+    lines.extend(f"   • {_plain_row(r)}" for r in led["rows"])
+    return "\n".join(lines) + "\n"
 
 
 def _is_proceed_signal(query: str) -> bool:
@@ -131,6 +167,12 @@ async def run_chat_session(agent: Any) -> None:
         nonlocal auto_compact_threshold
         auto_compact_threshold = n
 
+    # Ledger block of the last answer, kept so /ledger can expand it on demand.
+    last_ledger: str | None = None
+
+    def show_ledger() -> str | None:
+        return format_ledger_full(last_ledger) if last_ledger else None
+
     while True:
         try:
             query = input("🟦 You: ").strip()
@@ -162,6 +204,7 @@ async def run_chat_session(agent: Any) -> None:
             trusted_tools=agent.approvals.trusted_tools_view(),
             compact_history=do_compact,
             compact_threshold_setter=set_compact_threshold,
+            show_ledger=show_ledger,
             approval_manager=agent.approvals,
             agent=agent,
         )
@@ -212,6 +255,13 @@ async def run_chat_session(agent: Any) -> None:
             if was_plan_mode and not _is_proceed_signal(query):
                 agent.last_plan_query = query
 
+            # The ledger travels inside `answer` (history keeps it for the model); the
+            # terminal only gets the one-liner unless the user runs /ledger.
+            _, last_ledger = split_answer_ledger(answer)
+            ledger = parse_ledger_block(last_ledger) if last_ledger else None
+            if ledger:
+                print(format_ledger_summary(last_ledger))
+
             if agent.context_mode == "full":
                 # Full-context mode: replace history with the complete accumulated
                 # transcript from this query. agent._last_full_messages is
@@ -238,6 +288,12 @@ async def run_chat_session(agent: Any) -> None:
                     history.pop(0)
                     total_tokens -= counts[idx]
                     idx += 1
+                # Front-trimming can orphan a {"role": "tool"} whose assistant tool_call
+                # was popped, which strict tokenizers (Mistral) reject — so drop leading
+                # tool messages until history starts on a valid turn boundary. Mirrors
+                # the same guard in the WebSocket session's pre-query trim.
+                while history and history[0].get("role") == "tool":
+                    history.pop(0)
             else:
                 # Compact mode: only keep the final user/assistant text in history,
                 # then compact when genuinely needed.
@@ -249,7 +305,7 @@ async def run_chat_session(agent: Any) -> None:
                 if _compact_cooldown > 0:
                     _compact_cooldown -= 1
 
-                wrote_files = "[Files written this query:" in answer
+                wrote_files = bool(ledger and ledger["files"])
                 n_exchanges = len(history) // 2
                 # Compact when:
                 #   - plan was executed (always worth summarising)
@@ -263,7 +319,7 @@ async def run_chat_session(agent: Any) -> None:
                 if should_compact:
                     await do_compact()
 
-            if agent.mode == "agent" and answer.startswith("Task is incomplete."):
+            if agent.mode == "agent" and is_incomplete_answer(answer):
                 try:
                     replan = input("Return to plan mode to re-plan? [y/N] ").strip().lower()
                 except (EOFError, KeyboardInterrupt):

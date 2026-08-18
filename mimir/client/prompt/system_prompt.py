@@ -9,6 +9,7 @@ from typing import Any, Awaitable, Callable
 # the other user-extension resolvers (servers/skills/plugins); building lives here.
 from ..extensions.system_prompt import resolve_system_prompt_file
 from ..config.constants import THINKING_DEPTH_AUTO
+from ..context.execution_context import recent_first
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +73,10 @@ _SECTION_NON_NEGOTIABLES = (
     "denied, or a step was skipped. Report what actually happened.\n"
     "- NEVER bypass an approval gate, and never reach for a general shell to do what an "
     "approval-gated capability does.\n"
+    "- A refused approval is an instruction, not an error. Weigh which one it is, in order: "
+    "(1) not this way — reach the goal another way; (2) unnecessary — drop the step, continue "
+    "the rest, report it skipped at the user's request; (3) stop — end the turn saying what is "
+    "done, what is blocked, and what you need. NEVER re-ask for something already refused.\n"
     "- NEVER fake validation: do not simulate, wrap, inline, or monkey-patch a check to force a pass.\n"
     "- NEVER display internal tool or server names to the user in chat. Describe what you did by its "
     "effect (\"ran the tests\", \"searched the repository\", \"installed the package\").\n"
@@ -190,10 +195,9 @@ _SECTION_VALIDATION = (
     "benchmark tools, consulting the platform and HPC advisors for architecture-aware choices. "
     "An optimization without a measurement is a claim, and a faster wrong answer is a regression.\n"
     "\n"
-    "Pick the right intent: inspection observes files, dirs, symbols and metadata without running "
-    "anything; isolated execution runs small self-contained fragments with no project layout or "
-    "import dependencies; project validation runs code in its real context. Tests, builds, and code "
-    "validation require the last one — the other two are not substitutes.\n"
+    "A syntax check, a throwaway fragment and the project's own test suite are all the same surface — "
+    "only the command differs. A fragment that reimplements or stubs what the project actually imports "
+    "proves nothing about the project: run the real code, in its real layout.\n"
     "\n"
     "Validate the artifact as it stands. Re-running, inlining, wrapping, or simulating validation "
     "logic to force a pass, and monkey-patching or bypassing side effects, invalidate the result. "
@@ -201,15 +205,19 @@ _SECTION_VALIDATION = (
 )
 
 _SECTION_RUNNING = (
-    "## Running & building code\n"
-    "- Prefer the dedicated compile/run capability: it takes an inline snippet or an existing source "
-    "file and executes in a hardened sandbox with safe default flags — the right choice for ordinary "
-    "runs and quick checks.\n"
-    "- Drop to the controlled shell, an allowlisted workspace-scoped fallback, only for a toolchain "
-    "invocation that capability does not cover: specific compiler/linker flags, a build system "
-    "(make/cmake), the GPU/CUDA compiler, or loading an HPC environment module before building.\n"
-    "- When code needs a particular interpreter or modules, pass the chosen environment explicitly "
-    "(python_executable) rather than relying on the default.\n"
+    "## Running code, and where working files go\n"
+    "The controlled shell is the execution surface: compile, run, test and lint by invoking the "
+    "toolchain directly, with the exact flags the task needs.\n"
+    "- Prefer a one-shot command over a new file: a check you run once belongs inline — the code as a "
+    "quoted `-c` argument, steps chained with `&&`.\n"
+    "- A probe that genuinely needs a file (too long to pass inline, or re-run many times) goes in the "
+    "scratchpad, by absolute path, with its outputs: logs, intermediate data, diagnostic figures.\n"
+    "- A file in the workspace is a deliverable: what the user asked for, or what the artifact you "
+    "produce needs. Never a throwaway check.\n"
+    "- Each shell call is a fresh process at the workspace root with a short timeout ceiling. A long "
+    "run needs the detached/background capability, not a bigger timeout.\n"
+    "- When the default interpreter is the wrong environment, invoke the resolved one by absolute "
+    "path.\n"
     "- A check that fails on a missing module is an environment problem, not a code defect: enumerate "
     "the available environments and retry with an interpreter that resolves it before concluding.\n"
     "- A package you install or an environment you create is a reversible obligation: before "
@@ -323,9 +331,13 @@ def _build_memory_summary(
             parts.append(f"Files written: {', '.join(written)}")
 
     # Outcome: the first sentence/line of the answer (what was decided), not the
-    # full deliberation. Strip the mechanical [Files written…] annotation we append
-    # at return time, since that's already captured above.
-    answer_clean = answer.split("\n\n[Files written this query:")[0].strip()
+    # full deliberation. The verification ledger we append at return time is dropped —
+    # its file list is already captured above.
+    # Imported here, not at module scope: query_engine.finalize imports this module,
+    # so a top-level import would close the cycle.
+    from ..query_engine.verification import split_answer_ledger
+
+    answer_clean = split_answer_ledger(answer)[0].strip()
     first_line = next((ln.strip() for ln in answer_clean.splitlines() if ln.strip()), "")
     # Prefer the first sentence if the line runs long.
     first_sentence = re.split(r'(?<=[.!?])\s', first_line, maxsplit=1)[0] if first_line else ""
@@ -445,15 +457,17 @@ _OPTIONAL_STEP_RE = re.compile(r"^\s*[\(\[]?optional[\)\]]?\s*[:\-–]?\s+", re.
 
 
 def _scratch_dir_for_prompt() -> str:
-    """The scratchpad path to advertise, or a bare fallback if it cannot resolve.
+    """The scratchpad path to advertise, or "" if it cannot resolve.
 
-    Resolved through the client's own STATE_DIR — see tool_execution.validation
-    .scratch_roots for why the shared helper is not called bare here.
+    The session-scoped directory, not ``standing_roots()[0]``: the standing grant is
+    the scratchpad *home* (it has to cover a mid-run session switch), so advertising it
+    would point the model one level above where its own working files belong.
+    STATE_DIR is passed explicitly — see tool_execution.validation.scratch_roots.
     """
     try:
-        from ..tool_execution.validation import scratch_roots
-        roots = scratch_roots()
-        return roots[0] if roots else ""
+        from ...servers._shared.state_paths import scratch_dir
+        from ..config.constants import STATE_DIR
+        return scratch_dir(STATE_DIR)
     except Exception:
         return ""
 
@@ -635,12 +649,21 @@ def build_system_content(
             "Repository structure (baseline orientation — NOT a substitute for "
             "locating exact edit sites; search/read to find the specific code you change):\n"
             + repo_baseline_context
-            + f"\n\nScratchpad (yours, outside the workspace, no approval needed): {_scratch_dir_for_prompt()}\n"
-              "Use it by absolute path for throwaway scripts, probes, intermediate data and "
-              "working files. Nothing there counts as produced work or is reported to the user, "
-              "so prefer it over cluttering the workspace. Deliverables go in the workspace, or "
-              "wherever the user asked."
         )
+
+    # Unconditional: where working files go is a rule about the user's tree, so it must
+    # not depend on whether a repo baseline was built (an empty or unreadable workspace
+    # is exactly where a stray probe script is most visible). Same position in the order
+    # on every query, so the prefix stays cacheable.
+    system_content += _section(
+        f"Scratchpad (yours, outside the workspace, no approval needed): {_scratch_dir_for_prompt()}\n"
+        "Use it by absolute path for throwaway scripts, probes, intermediate data and working files. "
+        "Nothing there counts as produced work or is reported to the user. Two rules follow from that:\n"
+        "- Nothing throwaway goes in the workspace. A verification script, a plot you drew to convince "
+        "yourself, a log, a scratch dataset: the scratchpad, not the user's tree.\n"
+        "- What runs once does not become a file at all — run it as a one-shot shell command.\n"
+        "Deliverables go in the workspace, or wherever the user asked."
+    )
 
     if platform_profile_summary:
         system_content += _section(
@@ -795,60 +818,48 @@ def build_discovery_pin_block(
     """
     lines: list[str] = []
 
+    def _pin_section(header: str, field: str, cap: int, render=_pin_path) -> None:
+        """Append a capped, recency-ranked section.
+
+        Every section is capped: the three write-side (planned targets, files
+        written, files written last query).
+
+        Ordering is recency-first (see ``recent_first``): the slice has to be the paths
+        the model just touched.
+        """
+        values = recent_first(execution_context.get(field) or ())
+        if not values:
+            return
+        lines.append(header)
+        lines.extend(f"  {render(v)}" for v in values[:cap])
+        if len(values) > cap:
+            lines.append(f"  ... and {len(values) - cap} more")
+
     # Paths confirmed to exist on disk (carried across queries).  Showing
     # these prevents the model from trying to re-create files that already
     # exist (e.g. __init__.py, directories) from a previous query.
-    existing_paths = sorted(execution_context.get("existing_paths", set()))
-    if existing_paths:
-        shown_e = existing_paths[-max_files:]
-        lines.append(
-            "Known existing paths (already on disk — do not re-create):"
-        )
-        for p in shown_e:
-            lines.append(f"  {_pin_path(p)}")
-        if len(existing_paths) > max_files:
-            lines.append(f"  ... and {len(existing_paths) - max_files} more")
-
-    read_files = sorted(execution_context.get("read_files", set()))
-    if read_files:
-        shown = read_files[-max_files:]
-        lines.append(
-            "Files read this session (use these paths directly; avoid re-searching):"
-        )
-        for f in shown:
-            lines.append(f"  {_pin_path(f)}")
-        if len(read_files) > max_files:
-            lines.append(f"  ... and {len(read_files) - max_files} more")
-
-    search_queries = sorted(execution_context.get("search_queries_used", set()))
-    if search_queries:
-        shown_q = search_queries[-max_queries:]
-        lines.append(
-            "Search patterns already executed (avoid re-running identical searches):"
-        )
-        for q in shown_q:
-            lines.append(f"  {q!r}")
-
-    planned = sorted(execution_context.get("planned_edit_targets", set()))
-    if planned:
-        lines.append("Planned edit targets:")
-        for f in planned:
-            lines.append(f"  {_pin_path(f)}")
-
-    dirty = sorted(execution_context.get("dirty_written_files", set()))
-    if dirty:
-        lines.append("Files written this session (validate before claiming done):")
-        for f in dirty:
-            lines.append(f"  {_pin_path(f)}")
-
-    prev_written = sorted(execution_context.get("prev_query_written_files", set()))
-    if prev_written:
-        lines.append(
-            "Files written in the previous query — content has changed; "
-            "search for the target symbol then read only that section before using any edit tool:"
-        )
-        for f in prev_written:
-            lines.append(f"  {_pin_path(f)}")
+    _pin_section(
+        "Known existing paths (already on disk — do not re-create):",
+        "existing_paths", max_files,
+    )
+    _pin_section(
+        "Files read this session (use these paths directly; avoid re-searching):",
+        "read_files", max_files,
+    )
+    _pin_section(
+        "Search patterns already executed (avoid re-running identical searches):",
+        "search_queries_used", max_queries, render=repr,
+    )
+    _pin_section("Planned edit targets:", "planned_edit_targets", max_files)
+    _pin_section(
+        "Files written this session (validate before claiming done):",
+        "dirty_written_files", max_files,
+    )
+    _pin_section(
+        "Files written in the previous query — content has changed; "
+        "search for the target symbol then read only that section before using any edit tool:",
+        "prev_query_written_files", max_files,
+    )
 
     # Live todo checklist — re-read from disk so the pin always reflects the latest
     # state, even after the model has marked a step complete mid-session. Built

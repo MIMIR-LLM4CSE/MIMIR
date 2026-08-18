@@ -194,15 +194,19 @@ env var (`client/integration/server_manager.py`); servers read it through
 `servers/_shared/state_paths.py`. When `MIMIR_STATE_DIR` is unset (standalone runs, the
 hermetic test suite), they fall back to the legacy in-workspace `<workspace>/.mimir`.
 
-The same module owns the agent **scratchpad**: `scratch_dir()` →
-`<state_dir>/sessions/<sid>/scratch/` (session-scoped via the `active_session` sidecar,
-falling back to `<state_dir>/scratch/`), exposed as a standing sandbox root by
-`standing_roots()`. Both `server_files._safe` and `server_bash._is_within_workspace` pass
-it as `extra_roots` alongside `approved_roots()`, so the agent can write there without a
-user prompt — see `POLICY.md` → Out-of-Workspace Access Approval for why it is separate
-from the user-approval sidecar, and why scratch writes are excluded from the change
-ledger. Resolution never creates directories: a sandbox check runs on every call and must
-not materialise state.
+The same module owns the agent **scratchpad**, which lives under the temp dir rather than
+the state dir: `scratch_home()` → `MIMIR_SCRATCH_DIR` if set, else
+`<TMPDIR or /tmp>/mimir-<uid>-<workspace-id>`; `scratch_dir()` appends the active session
+id (from the `active_session` sidecar — the *only* thing it still needs the state dir for),
+falling back to the home outside a session. `standing_roots()` exposes the **home** as a
+standing sandbox root, one entry covering both. Both `server_files._safe` and
+`server_bash._is_within_workspace` pass it as `extra_roots` alongside `approved_roots()`,
+so the agent can write there without a user prompt — see `POLICY.md` → Out-of-Workspace
+Access Approval for why it is separate from the user-approval sidecar, why scratch writes
+are excluded from the change ledger, and how `ensure_scratch_home()` vets a world-writable
+`/tmp`. Resolution never creates directories: a sandbox check runs on every call and must
+not materialise state. `workspace_id()` also lives here, not in the client's constants:
+both the state dir and the scratchpad name are built from it.
 
 ### Numerical invariants (`_shared/numerics.py`)
 

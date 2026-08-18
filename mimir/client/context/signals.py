@@ -14,10 +14,9 @@ QUERY_CREATE_SIGNALS: tuple[str, ...] = (
     "scaffold", "generate",
 )
 
-# "new"/"nouveau" are the weakest create signals: they qualify a noun far more often
-# than they order a creation ("a new machine", "the new version", "what's new"). They
-# only count as create intent when the thing being qualified is an artifact we could
-# actually write — otherwise the strong verbs (create/add/generate/…) must carry it.
+# The weakest create signals: they qualify a noun far more often than they order a
+# creation ("a new machine", "what's new"), so they count as create intent only when
+# qualifying an artifact we could actually write. Otherwise the strong verbs carry it.
 _CREATE_WEAK_SIGNALS: frozenset[str] = frozenset({"new", "nouveau", "nouvelle"})
 
 _CREATE_ARTIFACT_NOUNS: tuple[str, ...] = (
@@ -101,19 +100,16 @@ _QUERY_DISCOVERY_ONLY: tuple[str, ...] = (
 )
 
 # Composed so each term lives in exactly one source set; dedup preserves order.
-# NOTE: pure-theory/bibliography terms (QUERY_SCIENCE_SIGNALS: derive/prove/integrate/
-# cite/theorem/complexity…) are deliberately NOT included — a derivation or literature
-# query needs no *repository* discovery, so it must not trigger the repo baseline scan or
-# the discovery nudge. The From-Math system prompt already steers those to symbolic tools
-# and references. HPC/performance terms (QUERY_HPC_SIGNALS: optimize/benchmark/parallelize…)
-# DO touch code, so they remain in scope for repo discovery.
 #
 # Read this as an EXIT filter, not a detector: the union is broad enough to be true for
-# almost any repo-touching request, and that is intended — its job is to exclude pure
-# theory, bibliography, and chit-chat from the baseline scan, not to discriminate among
-# coding tasks. Consumers (repo baseline in agent_core, plan_explore_required in
-# plan_loop, the discovery nudge) must not read a positive as evidence of anything more
-# specific than "this query plausibly touches the workspace".
+# almost any repo-touching request, and that is intended. Its job is to exclude pure
+# theory, bibliography and chit-chat from the baseline scan, not to discriminate among
+# coding tasks — consumers (repo baseline, plan_explore_required, the discovery nudge)
+# must not read a positive as more than "this query plausibly touches the workspace".
+#
+# Hence QUERY_SCIENCE_SIGNALS (derive/prove/cite/theorem…) is excluded: a derivation or
+# literature query needs no *repository* discovery. QUERY_HPC_SIGNALS
+# (optimize/benchmark/parallelize…) does touch code, so it stays in.
 QUERY_DISCOVERY_SIGNALS: tuple[str, ...] = tuple(
     dict.fromkeys(
         QUERY_EDIT_SIGNALS
@@ -129,20 +125,15 @@ QUERY_DISCOVERY_SIGNALS: tuple[str, ...] = tuple(
 
 
 # ---------------------------------------------------------------------------
-# Domain tool groups — query-gated pruning of heavy, specialized tool families.
+# Domain tool groups — query-gated pruning of heavy, specialized tool families whose
+# JSON schemas dominate per-step prompt cost (HPC, platform, benchmarking, finetune,
+# proxy). Each entry maps a tuple of tool-name *prefixes* to the query keywords that
+# activate the group; a group whose keywords are all absent is pruned from the tool
+# list (see query_engine.toollist.inactive_domain_prefixes).
 #
-# A handful of MCP servers (HPC cluster control, hardware/platform advisory,
-# benchmarking, fine-tuning, proxy/surrogate optimization) expose large tool
-# catalogs whose JSON schemas dominate the per-step prompt cost. They are only
-# relevant when the user's task is actually about that domain. Each entry maps a
-# tuple of tool-name *prefixes* to the query keywords that activate the group:
-# when none of a group's keywords appears in the query, the whole group is pruned
-# from the tool list sent to the model (see query_engine.toollist.inactive_domain_prefixes).
-#
-# Keyword lists are deliberately generous and overlapping (e.g. "optimize" turns on
-# both benchmark and platform) so a task that legitimately needs a domain is never
-# starved of its tools. Core families (files, search, code, math, memory, todo, web,
-# system) carry no prefix here and are therefore *never* pruned.
+# Keyword lists are deliberately generous and overlapping, so a task that legitimately
+# needs a domain is never starved of its tools. Core families (files, search, code,
+# math, memory, todo, web, system) carry no prefix and are never pruned.
 DOMAIN_TOOL_GROUPS: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] = (
     # HPC cluster control (Slurm / Lmod / allocations) — only for real cluster ops.
     (
@@ -212,15 +203,11 @@ SOURCE_FILE_EXTENSIONS: tuple[str, ...] = (
 
 
 # ---------------------------------------------------------------------------
-# Query-signal matching
-#
-# Intent detection matches a *word*, not a raw substring: a naive ``token in text``
-# fires on ``"create"`` inside ``"creative"``, ``"add"`` inside ``"address"``, or
-# ``"core"`` inside ``"encore"``. All matching goes through ``query_matches_any``,
-# which anchors every signal token at word boundaries (``\b``). Multi-word phrases
-# (e.g. ``"speed up"``) are supported — the space is matched literally between the
-# two word-bounded halves. ``\w`` is Unicode-aware for ``str`` patterns, so accented
-# French tokens (``"améliore"``, ``"accélère"``) get correct boundaries too.
+# Query-signal matching. Intent detection matches a *word*, not a raw substring — a
+# naive ``token in text`` fires on "create" inside "creative", "add" inside "address".
+# Everything goes through ``query_matches_any``, which anchors tokens at ``\b``.
+# Multi-word phrases ("speed up") work; ``\w`` is Unicode-aware, so accented French
+# tokens ("améliore") get correct boundaries too.
 # ---------------------------------------------------------------------------
 
 # Words that negate a following intent token within a short window. Kept minimal and
@@ -285,10 +272,8 @@ def query_has_unnegated_match(query: str, tokens: tuple[str, ...]) -> bool:
 
 
 # ── query-intent classifiers ───────────────────────────────────────────────────
-# Boolean intent predicates over the raw query, built on the signal vocabularies
-# above. Shared by the guardrail layer (write policy, nudges) and the query-engine
-# tool-list construction — hence they live in the foundational signals module, not
-# in any one guardrail subsystem.
+# Boolean intent predicates over the raw query. Shared by the guardrail layer and the
+# query-engine tool-list construction, hence they live here rather than in either.
 
 def query_is_informational(query: str) -> bool:
     """True when *query* asks for information rather than ordering a change.

@@ -11,7 +11,7 @@ import ollama
 
 from mcp import ClientSession
 
-from .guardrails.policy.approval import ApprovalManager
+from .guardrails.policy.approval import ApprovalManager, denial_kind
 from .config import (
     DEFAULT_MODEL,
     DEFAULT_THINKING_DEPTH,
@@ -27,9 +27,12 @@ from .config import (
 from .config.models import enforcement_level
 from .context import (
     CARRY,
-    FILE_PATH,
     SOURCE_FILE_EXTENSIONS,
     build_execution_context,
+    carry_context_from_json,
+    carry_context_to_json,
+    carry_path_fields,
+    carry_set_fields,
     ensure_execution_context,
     fields_with,
     validate_execution_context,
@@ -127,11 +130,14 @@ def _normalize_msg(msg):
     return vars(msg)
 
 
-# Set-valued execution-context fields carried forward (merged) across queries in a
-# session — derived from the CARRY trait declared next to each field, not hand-listed.
-# There used to be a second constant of this same name further down the file with a
-# different membership; both are now computed, so they cannot disagree.
-def _carry_set_fields() -> tuple[str, ...]:
+# Execution-context fields MIRRORED into carry_context and back — derived from the
+# CARRY trait declared next to each field, not hand-listed.
+#
+# Deliberately narrower than ``carry_set_fields()``: that one is every set-valued key
+# carry_context holds, including those with no execution-context counterpart
+# (``last_query_written_files``), and it answers a different question — what must be
+# converted for JSON. Merging is only ever about the mirrored subset.
+def _mirrored_carry_fields() -> tuple[str, ...]:
     return fields_with(CARRY)
 
 
@@ -145,6 +151,21 @@ class MimirAgent:
         # server_spawn_agent.py in a separate thread) inherit the same model.
         if model:
             os.environ["MIMIR_DEFAULT_MODEL"] = model
+        # Resolve the scratchpad home once, here, and publish it: the ownership check
+        # on a world-writable /tmp must happen in exactly one place, and both this
+        # process and the server subprocesses then read the same answer from the
+        # environment instead of re-deriving (and re-vetting) the path per call.
+        # A refused /tmp (symlink, foreign owner) falls back to the private state dir,
+        # which is where the scratchpad used to live — degraded, never absent.
+        from ..servers._shared.state_paths import ensure_scratch_home, scratch_home
+        resolved = ensure_scratch_home()
+        if not resolved:
+            resolved = os.path.join(STATE_DIR, "scratch")
+            logger.warning(
+                "scratchpad under %s is not usable (not ours, or not a directory); "
+                "falling back to %s", scratch_home(), resolved,
+            )
+        os.environ["MIMIR_SCRATCH_DIR"] = resolved
         self.backend: str = os.environ.get("LLM_BACKEND", "ollama")
         self.exit_stack = AsyncExitStack()
         self.mode = "agent"
@@ -361,14 +382,54 @@ class MimirAgent:
     def _is_code_filepath(path: str) -> bool:
         return os.path.splitext(path)[1].lower() in SOURCE_FILE_EXTENSIONS
 
-    def _record_denied_tool_call(self, tool_name: str, arguments: dict, execution_context: dict | None) -> None:
+    def approval_scope(self, tool_name: str, arguments: dict) -> str:
+        """The normalised approval scope for this call ("" if it cannot be derived).
+
+        The same token the "always" grants are keyed on, reused here as the identity
+        of the *goal* a refusal is about: `pip install numpy` and `pip install scipy`
+        share a scope, so refusing one escalates the other, while an unrelated command
+        family is untouched.
+        """
+        try:
+            return self.approvals._approval_scope(
+                tool_name, self.tool_owner.get(tool_name, "unknown"), arguments
+            )
+        except Exception:
+            return ""
+
+    def _record_denied_tool_call(
+        self,
+        tool_name: str,
+        arguments: dict,
+        execution_context: dict | None,
+        note: str = "",
+    ) -> None:
+        """Record a refusal in both ledgers.
+
+        ``denied_tool_calls`` is the *open* set — it is cleared once the same action
+        later succeeds, and drives the completion report. ``denial_history`` is
+        append-only and keyed by approval scope: it is what the escalation ladder
+        counts, and it must survive that clearing or a refusal followed by a success
+        elsewhere would silently reset the ladder.
+        """
         if execution_context is None:
             return
         fallback_tools = list(self.approvals.fallback_suggestions(tool_name))
+        scope = self.approval_scope(tool_name, arguments)
+        kind = denial_kind(note)
         execution_context.setdefault("denied_tool_calls", []).append({
             "tool": tool_name,
             "path": self._normalize_workspace_path(arguments.get("path") or arguments.get("filepath")),
             "fallback_tools": fallback_tools,
+            "scope": scope,
+            "kind": kind,
+            "reason": note,
+        })
+        execution_context.setdefault("denial_history", []).append({
+            "tool": tool_name,
+            "scope": scope,
+            "kind": kind,
+            "reason": note,
         })
 
     async def _auto_validate_written_file(self, path: str, execution_context: dict | None) -> str:
@@ -548,10 +609,15 @@ class MimirAgent:
                     pass  # file deleted; drop it
             self._carry_context["read_files"] = fresh_reads
 
-        for field in _carry_set_fields():
+        for field in _mirrored_carry_fields():
             prior: set = self._carry_context.get(field, set())
             if isinstance(prior, set) and isinstance(execution_context.get(field), set):
-                execution_context[field].update(prior)
+                # sorted(): carried entries seed a RecencySet's order, and a plain set
+                # iterates in hash order — which varies per process. Insert them in a
+                # stable order so the pin renders identically across runs. They are all
+                # older than anything this query records, so relative order among them
+                # carries no recency information to preserve.
+                execution_context[field].update(sorted(prior))
         if self._carry_context.get("searched"):
             execution_context["searched"] = True
         # Forward previous-query write set into execution context so the
@@ -562,7 +628,7 @@ class MimirAgent:
 
     def _update_carry_context(self, execution_context: dict) -> None:
         """Persist the fields worth remembering into the session carry dict."""
-        for field in _carry_set_fields():
+        for field in _mirrored_carry_fields():
             current: set = execution_context.get(field, set())
             if isinstance(current, set):
                 prior: set = self._carry_context.get(field, set())
@@ -578,34 +644,45 @@ class MimirAgent:
         # The agent just changed them, so the old read evidence is stale — a
         # fresh read_file must happen before the next query edits them again.
         dirty: set[str] = execution_context.get("dirty_written_files", set())
+        read_mtimes: dict[str, float] = self._carry_context.setdefault("_read_mtimes", {})
         if dirty:
             carry_reads: set[str] = self._carry_context.get("read_files", set())
             carry_reads -= dirty
             # Also drop their mtimes so the next apply_carry_context cannot
             # accidentally resurrect them as "up to date" entries.
-            read_mtimes: dict[str, float] = self._carry_context.get("_read_mtimes", {})
             for p in dirty:
                 read_mtimes.pop(p, None)
-        # Record mtime for each newly read file so staleness can be detected later.
-        read_mtimes = self._carry_context.setdefault("_read_mtimes", {})
-        for p in execution_context.get("read_files", set()) - dirty:
-            if p not in read_mtimes:
-                try:
-                    read_mtimes[p] = os.path.getmtime(absolute_workspace_path(p))
-                except OSError:
-                    pass
+
+        # Stamp every carried read with the mtime observed NOW. Unconditionally: the
+        # read happened during this query, so the file's current state is the baseline
+        # the next query must compare against. Recording only the first time (the old
+        # `if p not in read_mtimes`) froze the baseline forever, so a single external
+        # edit evicted the path from carry on every subsequent query — the model re-read
+        # it each time and the evidence was never accepted again.
+        carried_reads: set[str] = self._carry_context.get("read_files", set())
+        for p in carried_reads:
+            try:
+                read_mtimes[p] = os.path.getmtime(absolute_workspace_path(p))
+            except OSError:
+                read_mtimes.pop(p, None)
+        # Drop mtimes for paths no longer carried, so the dict cannot grow unboundedly
+        # across a long session.
+        for p in [p for p in read_mtimes if p not in carried_reads]:
+            del read_mtimes[p]
 
     def _discard_carry_path(self, path: str) -> None:
         """Remove a deleted file from every carried field that holds file paths.
 
-        Derived rather than listed: the fields that both carry across queries and hold
-        file paths. The old hand-written list also named ``dirty_written_files``, which
-        is never placed in carry_context — an entry that read as protection and was
-        doing nothing. ``inspected_dirs`` is correctly absent: it holds directories, and
-        deleting a file does not un-inspect the directory that contained it.
+        Derived rather than listed, and derived from the *carry* schema rather than from
+        the execution-context traits alone: ``last_query_written_files`` exists only in
+        carry_context, so a trait-only derivation could not see it and a deleted file
+        kept being announced in the pin as "written last query — re-read before editing".
+        ``inspected_dirs`` is correctly absent: it holds directories, and deleting a file
+        does not un-inspect the directory that contained it.
         """
-        for field in fields_with(CARRY, FILE_PATH):
+        for field in carry_path_fields():
             self._carry_context.get(field, set()).discard(path)
+        self._carry_context.get("_read_mtimes", {}).pop(path, None)
 
     def _request_tool_approval(self, tool_name: str, arguments: dict, max_attempts: int = 3) -> tuple[bool, str]:
         return self.approvals.request(
@@ -673,21 +750,69 @@ class MimirAgent:
         """
         return {"answers": []}
 
-    def _denied_tool_result(self, tool_name: str, arguments: dict) -> str:
-        fallback_tools = list(self.approvals.fallback_suggestions(tool_name))
-        fallback_hint = (
-            " Suggested safe alternatives: " + ", ".join(fallback_tools)
-            if fallback_tools
-            else " No safe alternative is configured; explain the limitation clearly."
+    def _denied_tool_result(
+        self,
+        tool_name: str,
+        arguments: dict,
+        note: str = "",
+        execution_context: dict | None = None,
+    ) -> str:
+        """The tool result a refused approval puts back in front of the model.
+
+        Not "ask again": a refusal is an instruction, and the hint states the three
+        readings it can carry so the model picks one instead of retrying. The stage
+        (see guardrails.workflow) narrows that choice as refusals accumulate.
+        """
+        from .guardrails.workflow import (
+            STAGE_DROP_OR_STOP,
+            STAGE_HANDBACK,
+            denial_scope_count,
+            denial_stage,
         )
+
+        scope = self.approval_scope(tool_name, arguments)
+        context = execution_context if execution_context is not None else {}
+        stage = denial_stage(context, scope)
+        refusals = denial_scope_count(context, scope)
+
+        fallback_tools = list(self.approvals.fallback_suggestions(tool_name))
+        if stage == STAGE_HANDBACK:
+            hint = (
+                "This has now been refused repeatedly. Do not look for another route and do not "
+                "ask again: stop here and hand back. Finish your turn with what you did complete, "
+                "what is blocked by the refusal, and what you need from the user to continue."
+            )
+        elif stage == STAGE_DROP_OR_STOP:
+            hint = (
+                "This was refused more than once, so the objection is to the action itself, not "
+                "just to how you went about it. Do not try another route to the same end. Either "
+                "drop this step and continue the rest of the task without it — saying plainly that "
+                "it was skipped at the user's request — or, if the task cannot go on without it, "
+                "stop and hand back with what is blocked."
+            )
+        else:
+            hint = (
+                "Read the refusal before reacting; it carries one of three meanings, in this order "
+                "of priority. (1) Not this way: the goal is fine but the means is wrong — reach it "
+                "another way. (2) Unnecessary: the step is not needed — drop it, continue the rest "
+                "of the task, and report it as skipped at the user's request. (3) Stop: end your "
+                "turn and hand back with what is done, what is blocked, and what you need. "
+                "Never re-issue this action and never route around the approval gate."
+            )
+            if fallback_tools:
+                hint += " Safe alternatives available for (1): " + ", ".join(fallback_tools) + "."
+            else:
+                hint += " No safe alternative is configured for (1)."
+
         return self._json_error_payload(
-            f"Execution of tool '{tool_name}' was denied by the user.",
-            hint=(
-                "Ask the user for confirmation, choose a read-only alternative, "
-                "or explain why the action is needed." + fallback_hint
-            ),
+            f"Execution of tool '{tool_name}' was refused by the user.",
+            hint=hint,
             tool=tool_name,
             arguments=arguments,
+            denial_reason=note or "denied by user",
+            denial_kind=denial_kind(note),
+            denial_stage=stage,
+            prior_refusals_for_this_goal=refusals,
         )
 
     async def connect_server(self, name: str, script: str) -> None:
@@ -1182,32 +1307,24 @@ class MimirAgent:
 
     # ── Session state serialisation ────────────────────────────────────────────
     #
-    # "Which fields must survive a JSON round-trip as sets" is not a separate question:
-    # it is exactly the carried set-valued fields, so it reuses `_carry_set_fields()`.
-    # It used to be its own constant — same name as the module-level one, six entries
-    # against five, and the extra one (`dirty_written_files`) was never in carry_context
-    # at all, so it did nothing but suggest that it did.
+    # "Which keys must survive a JSON round-trip as sets" is answered by the carry
+    # schema (``carry_set_fields``), not by the CARRY trait: the trait only knows the
+    # fields mirrored from the execution context, and carry_context holds set-valued
+    # keys of its own.
 
     def export_state(self) -> dict[str, Any]:
-        """Snapshot the agent's carry_context and LLM history for session persistence."""
-        cc = dict(self._carry_context)
-        # Convert sets to sorted lists so they survive JSON round-trips.
-        for field in _carry_set_fields():
-            if field in cc and isinstance(cc[field], set):
-                cc[field] = sorted(cc[field])
-        return {
-            "carry_context": cc,
-        }
+        """Snapshot the agent's carry_context for session persistence.
+
+        Conversion is derived from the carry schema rather than from the CARRY trait
+        alone: keys that live only in carry_context (``last_query_written_files``) are
+        sets too, and the session store serialises with ``default=str``, so anything
+        missed round-trips as a string instead of raising.
+        """
+        return {"carry_context": carry_context_to_json(self._carry_context)}
 
     def load_state(self, state: dict[str, Any]) -> None:
         """Restore agent state from a previously exported snapshot."""
-        cc = dict(state.get("carry_context", {}))
-        # Restore list→set for fields that must be sets at runtime.
-        for field in _carry_set_fields():
-            if field in cc and not isinstance(cc[field], set):
-                val = cc[field]
-                cc[field] = set(val) if isinstance(val, (list, tuple)) else set()
-        self._carry_context = cc
+        self._carry_context = carry_context_from_json(state.get("carry_context", {}))
 
 
 __all__ = ["MimirAgent", "SERVERS", "_BASE"]

@@ -29,10 +29,21 @@ from mimir.client.context.execution_context import (
 )
 from mimir.client.guardrails.nudges.engine import needs_incomplete_finalization
 from mimir.client.guardrails.workflow import (
+    HEADLINE_HANDBACK,
+    HEADLINE_INCOMPLETE,
+    HEADLINE_REFUSED_ONLY,
     _collect_completion_issues,
+    finalize_incomplete_answer,
+    is_incomplete_answer,
     unchecked_checklist_items,
 )
 from mimir.client.query_engine.finalize import _annotate_answer_with_changes
+from mimir.client.query_engine.verification import (
+    LEDGER_MARKER,
+    build_ledger,
+    parse_ledger_block,
+    split_answer_ledger,
+)
 
 
 def _ctx(**over):
@@ -72,12 +83,12 @@ class VerificationLedgerTests(_ChecklistFixture):
 
     def test_unvalidated_file_is_named_as_such(self):
         out = _annotate_answer_with_changes("Done.", _written({"a.py"}, validated=False))
-        self.assertIn("[Verification ledger", out)
-        self.assertIn("a.py (NOT validated)", out)
+        self.assertIn("Verification ledger", out)
+        self.assertIn("`a.py` — **not validated**", out)
 
     def test_tier_is_reported_per_file(self):
         out = _annotate_answer_with_changes("Done.", _written({"a.py"}, tier="static"))
-        self.assertIn("a.py (validated: static)", out)
+        self.assertIn("`a.py` — validated: static", out)
 
     def test_executed_without_an_oracle_says_so(self):
         # The wave2d case: green pytest, nothing compared. The model's prose claims
@@ -117,12 +128,12 @@ class VerificationLedgerTests(_ChecklistFixture):
         discriminated = _written({"parser.py"}, tier="oracle")
         discriminated["executed_failures"] = {"parser.py"}
         out = _annotate_answer_with_changes("Done.", discriminated)
-        self.assertIn("parser.py (validated: oracle — red→green)", out)
+        self.assertIn("`parser.py` — validated: oracle (red→green)", out)
         self.assertNotIn("Reported invariant", out)
 
         invariant = _written({"solver.py"}, tier="oracle")
         out = _annotate_answer_with_changes("Done.", invariant)
-        self.assertIn("solver.py (validated: oracle — reported invariant)", out)
+        self.assertIn("`solver.py` — validated: oracle (reported invariant)", out)
         # An invariant is presence-only evidence; the ledger must not let it pass for
         # a comparison against something sealed.
         self.assertIn("never its value", out)
@@ -131,22 +142,48 @@ class VerificationLedgerTests(_ChecklistFixture):
         ec = _written({"a.py"}, tier="executed")
         ec["declared_edit_set"] = {"a.py", "b.py"}
         out = _annotate_answer_with_changes("Done.", ec)
-        self.assertIn("Declared but never written: b.py", out)
+        self.assertIn("**Declared but never written:** `b.py`", out)
+
+    def test_declared_target_written_under_another_spelling_is_not_reported(self):
+        # The two sides are spelled differently by construction: a write outside the
+        # workspace records an absolute path, while the checklist prose names the file
+        # bare ("write wave_solver_2d.py in ../other/") or relative to the root. All
+        # three spellings are the same promise, kept.
+        import mimir.client.config.constants as constants
+        import os
+        root = constants.WORKSPACE_ROOT
+        outside = os.path.abspath(os.path.join(root, "../other/wave_solver_2d.py"))
+        for declared in ("wave_solver_2d.py", "../other/wave_solver_2d.py", outside):
+            ec = _written({outside}, tier="executed")
+            ec["declared_edit_set"] = {declared}
+            out = _annotate_answer_with_changes("Done.", ec)
+            self.assertNotIn("Declared but never written", out, declared)
+
+    def test_declared_elsewhere_is_still_reported(self):
+        # Basename matching is only for a *bare* mention, which carried no location.
+        # A declared path that names a directory must still resolve to the same file.
+        import mimir.client.config.constants as constants
+        import os
+        root = constants.WORKSPACE_ROOT
+        ec = _written({os.path.abspath(os.path.join(root, "src/solver.py"))}, tier="executed")
+        ec["declared_edit_set"] = {"tests/solver.py"}
+        out = _annotate_answer_with_changes("Done.", ec)
+        self.assertIn("**Declared but never written:** `tests/solver.py`", out)
 
     def test_unchecked_steps_are_reported_with_a_preview(self):
         ec = _written({"a.py"}, tier="executed")
         self.checklist(ec, ["- [x] write solver", "- [ ] add convergence test",
                             "- [ ] document it"])
         out = _annotate_answer_with_changes("Done.", ec)
-        self.assertIn("2 step(s) unchecked", out)
+        self.assertIn("2 steps unchecked", out)
         self.assertIn("add convergence test", out)
 
     def test_optional_steps_are_counted_separately(self):
         ec = _written({"a.py"}, tier="executed")
         self.checklist(ec, ["- [x] write solver", "- [ ] (optional) convergence study"])
         out = _annotate_answer_with_changes("Done.", ec)
-        self.assertIn("1 optional step(s) not done", out)
-        self.assertNotIn("step(s) unchecked", out)
+        self.assertIn("1 optional step not done", out)
+        self.assertNotIn("unchecked", out)
 
     def test_no_checklist_yields_no_checklist_lines(self):
         out = _annotate_answer_with_changes("Done.", _written({"a.py"}, tier="oracle"))
@@ -155,6 +192,53 @@ class VerificationLedgerTests(_ChecklistFixture):
     def test_ledger_never_replaces_the_model_answer(self):
         out = _annotate_answer_with_changes("Prose.", _written({"a.py"}, tier="oracle"))
         self.assertTrue(out.startswith("Prose."))
+
+
+class LedgerMarkerTests(_ChecklistFixture):
+    """The marker contract the front-ends collapse the ledger on.
+
+    Both UIs lift the block off the answer and render it as a disclosure panel, so the
+    marker must survive the round-trip and the answer prose must come back untouched.
+    """
+
+    def test_block_is_split_off_leaving_the_prose_intact(self):
+        out = _annotate_answer_with_changes("Prose.\n\nMore prose.", _written({"a.py"}))
+        body, block = split_answer_ledger(out)
+        self.assertEqual(body, "Prose.\n\nMore prose.")
+        self.assertTrue(block.startswith(LEDGER_MARKER))
+
+    def test_an_answer_without_a_ledger_splits_to_itself(self):
+        body, block = split_answer_ledger("Just prose.")
+        self.assertEqual(body, "Just prose.")
+        self.assertIsNone(block)
+
+    def test_header_fields_round_trip_through_the_marker(self):
+        ec = _written({"a.py", "b.py"}, validated=False)
+        _, block = split_answer_ledger(_annotate_answer_with_changes("Done.", ec))
+        parsed = parse_ledger_block(block)
+        self.assertEqual(parsed["status"], "warn")
+        self.assertEqual(parsed["files"], 2)
+        self.assertIn("2 not validated", parsed["summary"])
+        self.assertEqual(len(parsed["rows"]), 2)
+
+    def test_status_separates_clean_runs_soft_caveats_and_gaps(self):
+        # ok: settled evidence, nothing open. note: passed, but discriminates nothing.
+        # warn: something the reader has to act on.
+        clean = _written({"a.py"}, tier="oracle")
+        clean["executed_failures"] = {"a.py"}
+        self.assertEqual(build_ledger(clean)["status"], "ok")
+        self.assertEqual(build_ledger(_written({"a.py"}, tier="executed"))["status"], "note")
+        self.assertEqual(build_ledger(_written({"a.py"}, validated=False))["status"], "warn")
+
+    def test_only_rows_needing_action_are_emphasised(self):
+        """Bold is what the webview tints rows by, so it must mark exactly the gaps."""
+        settled = _annotate_answer_with_changes("Done.", _written({"a.py"}, tier="oracle"))
+        self.assertNotIn("**", settled)
+        ec = _written({"a.py"}, validated=False)
+        self.checklist(ec, ["- [ ] add the test"])
+        for row in parse_ledger_block(split_answer_ledger(
+            _annotate_answer_with_changes("Done.", ec))[1])["rows"]:
+            self.assertIn("**", row, row)
 
 
 class CompletionIssueTests(_ChecklistFixture):
@@ -214,6 +298,75 @@ class IncompleteFinalizationTests(_ChecklistFixture):
         ec = _written({"a.py"}, tier="oracle")
         self.checklist(ec, ["- [x] one", "- [ ] optional: extra benchmark"])
         self.assertFalse(needs_incomplete_finalization(ec))
+
+
+class RefusedActionReportTests(_ChecklistFixture):
+    """How a refused approval reads in the closing report.
+
+    A refusal used to be filed as a blocker unconditionally, so "the user told me
+    that step was unnecessary" and "the user stopped me" produced the same verdict:
+    `Task is incomplete.` at high risk. The three readings of a refusal have three
+    different honest endings, and none of them is silence about the skipped step.
+    """
+
+    def _refused(self, times=1, **over):
+        # An otherwise clean run — validated, concluded, nothing else outstanding — so
+        # the refusal is the only thing the report has to account for.
+        ec = _written({"a.py"}, tier="oracle")
+        ec["workflow_state"] = "conclude"
+        ec.update(over)
+        for _ in range(times):
+            ec["denied_tool_calls"].append(
+                {"tool": "bash_run", "path": "", "scope": "bash:bash_run:pip install"})
+            ec["denial_history"].append(
+                {"tool": "bash_run", "scope": "bash:bash_run:pip install", "kind": "denied"})
+        return ec
+
+    def test_a_dropped_step_is_reported_but_is_not_a_failure(self):
+        out = finalize_incomplete_answer("Done.", self._refused())
+        self.assertTrue(out.startswith(HEADLINE_REFUSED_ONLY))
+        self.assertIn("Not performed (you refused these", out)
+        self.assertIn("bash_run", out)
+        # Named and visible, but not filed as something still to fix.
+        self.assertNotIn("Remaining issues", out)
+        self.assertIn("Residual risk: medium.", out)
+
+    def test_the_end_of_the_ladder_reports_a_hand_back(self):
+        out = finalize_incomplete_answer("Done.", self._refused(times=3))
+        self.assertTrue(out.startswith(HEADLINE_HANDBACK))
+        self.assertIn("Stopped at the user's request", out)
+        self.assertIn("Residual risk: high.", out)
+
+    def test_a_refusal_alongside_a_real_blocker_stays_incomplete(self):
+        ec = self._refused()
+        ec["declared_edit_set"] = {"a.py", "b.py"}  # promised and never written
+        out = finalize_incomplete_answer("Done.", ec)
+        self.assertTrue(out.startswith(HEADLINE_INCOMPLETE))
+        self.assertIn("Declared but never written", out)
+
+    def test_a_refused_run_is_never_labelled_with_an_unknown_blocker(self):
+        # The fallback issue exists for a run with no identifiable problem; a refusal
+        # is a perfectly identified one, and printing both read as two separate faults.
+        out = finalize_incomplete_answer("Done.", self._refused())
+        self.assertNotIn("Unknown blocker", out)
+
+    def test_running_out_of_steps_never_borrows_the_complete_headline(self):
+        # The step-limit path shares this finalizer. A run that never reached a final
+        # answer is unfinished whatever else the ledger says.
+        out = finalize_incomplete_answer(
+            "Reached the maximum number of steps without a final answer.",
+            self._refused(),
+            ran_out_of_steps=True,
+        )
+        self.assertTrue(out.startswith(HEADLINE_INCOMPLETE))
+        self.assertIn("Not performed (you refused these", out)
+
+    def test_only_a_hand_back_counts_as_an_unfinished_answer(self):
+        self.assertTrue(is_incomplete_answer(HEADLINE_INCOMPLETE + "\n..."))
+        self.assertTrue(is_incomplete_answer(HEADLINE_HANDBACK + "\n..."))
+        # A run that skipped what the user refused *is* finished — the CLI must not
+        # offer to re-plan it and a sub-agent must not report it as failed.
+        self.assertFalse(is_incomplete_answer(HEADLINE_REFUSED_ONLY + "\n..."))
 
 
 class ChecklistReaderTests(_ChecklistFixture):
@@ -347,7 +500,7 @@ class WorkspaceRootIsNameableTests(unittest.TestCase):
         # types the destination explicitly, so restating it is noise on every answer.
         ec = _written({"wave_solver_2d/solver.py"}, tier="syntax")
         out = _annotate_answer_with_changes("Created outside the codes directory.", ec)
-        self.assertIn("Files written: wave_solver_2d/solver.py", out)
+        self.assertIn("`wave_solver_2d/solver.py` — validated: syntax", out)
         self.assertNotIn("workspace root", out)
 
 

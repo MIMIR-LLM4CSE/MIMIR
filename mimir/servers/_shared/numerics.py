@@ -39,18 +39,15 @@ NUMERICAL_INVARIANT_METRICS = frozenset({
     "linf_abs", "linf_rel",
 })
 
-# ``wall_time_s`` is the server's own wall-clock measurement of the solver
-# process — the tamper-proof twin of a self-reported ``time_s``. It is reserved
-# (the proxy strips proxy-printed values) but it is a *timing* invariant, not a
-# correctness one, so it is not in NUMERICAL_INVARIANT_METRICS: a run that only
-# reports a duration has proved nothing about the answer.
+# ``wall_time_s`` is the server's own wall-clock measurement — the tamper-proof twin of
+# a self-reported ``time_s``. Reserved, but a *timing* invariant rather than a
+# correctness one, hence absent from NUMERICAL_INVARIANT_METRICS: a run that reports
+# only a duration has proved nothing about the answer.
 RESERVED_METRICS = NUMERICAL_INVARIANT_METRICS | {"wall_time_s"}
 
-# ``key=value`` on a line of its own, with a strict single-token RHS. Anchored
-# and whole-line by construction (``fullmatch``) so prose that merely mentions a
-# metric name, verbose logs, and compiler output do not register. Mirrors the
-# strict fallback pattern the proxy metrics parser already uses for the same
-# reason.
+# ``key=value`` alone on a line, strict single-token RHS. Whole-line by construction
+# (``fullmatch``) so prose mentioning a metric name, verbose logs and compiler output do
+# not register. Mirrors the proxy metrics parser's strict fallback pattern.
 _INVARIANT_LINE_RE = re.compile(
     r"(?P<key>[A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?P<value>\S+)"
 )

@@ -16,13 +16,16 @@ from .gates import (
     _check_external_fetch,
     _check_out_of_workspace_access,
     _check_proxy_exec,
+    _out_of_workspace_targets,
 )
 # The exempt helper waives the approval prompt for side-effect-free discovery
 # commands in any mode (the read-only classifier itself lives in bash_classify.py).
 from .readonly_exempt import _readonly_bash_exempt
+from ..workflow import STAGE_HANDBACK, denial_stage
 from ...context.capabilities import EDIT, REMOVE, has_cap
 from ...context.execution_context import (
     has_discovery_evidence,
+    unwritten_declared_files,
     bootstrap_engine_context as _bootstrap_engine_context,
 )
 
@@ -138,7 +141,6 @@ def _missing_evidence(execution_context: dict[str, Any] | None) -> list[str]:
     read_files = execution_context.get("read_files", set()) or set()
     dirty_files = execution_context.get("dirty_written_files", set()) or set()
     validated_files = execution_context.get("validated_files", set()) or set()
-    declared_edit_set = execution_context.get("declared_edit_set", set()) or set()
 
     if state == "discover":
         # Coherent with the discovery gates: only guide toward discovery while the
@@ -153,7 +155,7 @@ def _missing_evidence(execution_context: dict[str, Any] | None) -> list[str]:
     elif state == "edit":
         if not read_files:
             evidence.append("Read the target file explicitly with read_file or read_file_lines before editing.")
-        remaining_declared = sorted(declared_edit_set - dirty_files)
+        remaining_declared = unwritten_declared_files(execution_context)
         if remaining_declared:
             evidence.append(
                 "Finish the remaining declared edit targets before switching to validation: "
@@ -205,7 +207,8 @@ def _next_tool_class(policy_stage: str, execution_context: dict[str, Any] | None
     if policy_stage == "proxy_exec":
         return "proxy_eval_run"
     if policy_stage == "approval":
-        return "safe_alternative_or_approval"
+        # Not "…_or_approval": asking again is the one move a refusal rules out.
+        return "safe_alternative_or_skip_or_hand_back"
     if policy_stage == "registry":
         return "available_tool_selection"
     return "diagnostic"
@@ -492,10 +495,17 @@ def evaluate_tool_preconditions(
     if pre_approval_eval is not None:
         return pre_approval_eval
 
+    # Computed here, not just inside the gate: the out-of-workspace prompt already
+    # shows this call's label and arguments, so when it runs the sensitive-tool card
+    # below would be the same decision asked twice. The targets are what tells the two
+    # apart, and once the gate has recorded its grants they no longer exist.
+    oow_targets = _out_of_workspace_targets(agent, normalized_tool_name, rewritten_arguments)
     oow_violation = _check_out_of_workspace_access(
-        agent, normalized_tool_name, rewritten_arguments, normalized_context)
+        agent, normalized_tool_name, rewritten_arguments, normalized_context, oow_targets)
     if oow_violation is not None:
-        agent._record_denied_tool_call(normalized_tool_name, rewritten_arguments, normalized_context)
+        agent._record_denied_tool_call(
+            normalized_tool_name, rewritten_arguments, normalized_context,
+            "path outside the workspace was not approved")
         return PolicyEvaluation(
             tool_name=normalized_tool_name,
             arguments=rewritten_arguments,
@@ -509,16 +519,27 @@ def evaluate_tool_preconditions(
         )
 
     if (agent.approvals.is_sensitive(normalized_tool_name, rewritten_arguments)
+            and not oow_targets
             and not _readonly_bash_exempt(agent, normalized_tool_name, rewritten_arguments)):
-        approved, note = agent._request_tool_approval(normalized_tool_name, rewritten_arguments)
+        # Already refused to the end of the ladder: refuse it ourselves rather than
+        # putting the same card in front of the user a fourth time. Being asked again
+        # after saying no is the friction the ladder exists to remove.
+        scope = agent.approval_scope(normalized_tool_name, rewritten_arguments)
+        if denial_stage(normalized_context or {}, scope) == STAGE_HANDBACK:
+            note = "already refused; not asked again"
+            approved = False
+        else:
+            approved, note = agent._request_tool_approval(normalized_tool_name, rewritten_arguments)
         if not approved:
-            agent._record_denied_tool_call(normalized_tool_name, rewritten_arguments, normalized_context)
+            agent._record_denied_tool_call(
+                normalized_tool_name, rewritten_arguments, normalized_context, note)
             return PolicyEvaluation(
                 tool_name=normalized_tool_name,
                 arguments=rewritten_arguments,
                 execution_context=normalized_context,
                 violation=_enrich_violation_payload(
-                    violation=agent._denied_tool_result(normalized_tool_name, rewritten_arguments),
+                    violation=agent._denied_tool_result(
+                        normalized_tool_name, rewritten_arguments, note, normalized_context),
                     policy_stage="approval",
                     execution_context=normalized_context,
                     tool_name=normalized_tool_name,

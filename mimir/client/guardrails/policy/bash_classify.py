@@ -61,10 +61,9 @@ class Kind:
     NEUTRAL = "neutral"
 
 
-# Kinds that produce no filesystem/exec side effect — the set that makes a command
-# "plan-safe" (runnable while drafting a plan / auto-approvable as read-only). A bare
-# ``cd`` (CHDIR) only moves the shell's cwd for the rest of the one command; it is
-# side-effect-free like the other discovery kinds.
+# Kinds with no filesystem/exec side effect — what makes a command "plan-safe"
+# (runnable while drafting / auto-approvable as read-only). CHDIR belongs here: a bare
+# ``cd`` only moves the shell's cwd for the rest of the one command.
 READONLY_KINDS = frozenset({
     Kind.READ, Kind.SEARCH, Kind.INSPECT, Kind.ENV_DISCOVERY, Kind.CHDIR, Kind.NEUTRAL,
 })
@@ -76,26 +75,22 @@ class Segment(NamedTuple):
     head: str = ""       # leading command of an EXEC segment (module for `python -m X`), else ""
 
 
-# A token still carrying one of these after tokenization is opaque to
-# *classification*: a subshell or substitution runs code, and a ``$VAR`` has a value
-# only the running shell knows, so the kind of the command would be a guess.
-# (Operator tokens never reach this check — the shared parser has already lifted
-# redirections out and refused subshells/backgrounding outright.)
+# A token still carrying one of these after tokenization is opaque to *classification*:
+# a subshell or substitution runs code, and a ``$VAR``'s value is known only to the
+# running shell, so the command's kind would be a guess. (Operator tokens never reach
+# here — the shared parser has already lifted redirections out and refused subshells.)
 _BASH_FORBIDDEN_CHARS = frozenset("()<>`$&")
 
-# What maps a leading command to a kind is the command *groups* in shell_paths — the
-# same ones the bash server builds its allowlist from, so classification cannot drift
-# from what actually runs. This module owns the part a group cannot express: which
-# option or sub-command changes the effect (`sed -i` writes, `module load` mutates, a
-# `> file` redirection turns a read into a write). `cd` is handled on its own
-# (Kind.CHDIR) so its target can rebase the relative operands of later segments
-# (`cd sub && pytest t.py`), and the environment managers by sub-command below.
+# Leading command → kind comes from the shell_paths command *groups*, the same ones the
+# bash server builds its allowlist from, so classification cannot drift from what runs.
+# This module owns what a group cannot express: which option or sub-command changes the
+# effect (`sed -i` writes, `module load` mutates, `> file` turns a read into a write).
+# `cd` gets its own kind so its target can rebase later segments' relative operands.
 
-# Environment-manager sub-commands that only *report* what is installed, offline and
-# without touching anything: those are discovery, hence plan-safe. Everything else the
-# server allows for these commands (install, create, update, and the network queries
-# `search`/`index`/`download`) is ENV_MUTATE — not because each one writes, but because
-# none of them is a local read, and a plan is drafted without reaching the network.
+# Sub-commands that only *report* what is installed, offline: discovery, hence
+# plan-safe. Everything else the server allows (install/create/update, plus the network
+# queries search/index/download) is ENV_MUTATE — not because each writes, but because
+# none is a local read, and a plan is drafted without reaching the network.
 _ENV_MANAGER_QUERY_SUB = frozenset({
     "list", "show", "freeze", "check", "inspect", "info", "help",
 })
@@ -231,10 +226,9 @@ def _inspect_operands(argv: list[str]) -> list[str]:
     return operands[:1] if operands else ["."]
 
 
-# A positional that unambiguously names a file: it carries a path separator or a
-# dotted extension. Stricter than :func:`_looks_like_path` so an exec/validation
-# command's module name (`python -m py_compile`), sub-command (`ruff check`), or
-# bare flag value is never mistaken for the file it acts on.
+# A positional that unambiguously names a file: path separator or dotted extension.
+# Stricter than :func:`_looks_like_path`, so a module name (`python -m py_compile`),
+# sub-command (`ruff check`) or bare flag value is never mistaken for the target file.
 _FILE_LIKE_RE = re.compile(r"\.[A-Za-z0-9]+$")
 
 

@@ -58,7 +58,6 @@ def _proxy_readme(entry: dict) -> str:
         lines.append(f"**Description:** {entry['description']}")
         lines.append("")
 
-    # Core identity
     lines.append("## Identity")
     for key in ("version", "arch", "backend", "parallelism", "tags"):
         val = entry.get(key)
@@ -69,7 +68,6 @@ def _proxy_readme(entry: dict) -> str:
         lines.append(f"- **updated_at:** {entry['updated_at']}")
     lines.append("")
 
-    # Executable & build
     lines.append("## Executable")
     lines.append(f"- **executable_path:** `{entry.get('executable_path', '?')}`")
     lines.append(f"- **output_format:** {entry.get('output_format', 'npz')}")
@@ -79,7 +77,6 @@ def _proxy_readme(entry: dict) -> str:
         lines.append(f"- **build_cmd:** `{entry['build_cmd']}`")
     lines.append("")
 
-    # I/O descriptions
     if entry.get("input_description"):
         lines.append("## Input")
         lines.append(entry["input_description"])
@@ -89,12 +86,10 @@ def _proxy_readme(entry: dict) -> str:
         lines.append(entry["output_description"])
         lines.append("")
 
-    # Run command
     lines.append("## Run Command Template")
     lines.append(f"```\n{entry.get('run_cmd_template', '(none)')}\n```")
     lines.append("")
 
-    # Param file
     pft = entry.get("param_file_template", "") or ""
     if pft.strip():
         fmt = entry.get("param_file_format", "text")
@@ -104,7 +99,7 @@ def _proxy_readme(entry: dict) -> str:
         lines.append(f"```\n{excerpt}\n```")
         lines.append("")
 
-    # Roofline
+    # Roofline ceilings
     peak_gf = entry.get("peak_gflops_per_s", 0)
     peak_bw = entry.get("peak_bandwidth_gbytes_per_s", 0)
     if peak_gf or peak_bw:
@@ -115,13 +110,11 @@ def _proxy_readme(entry: dict) -> str:
             lines.append(f"- **peak_bandwidth_gbytes_per_s:** {peak_bw}")
         lines.append("")
 
-    # Notes
     if entry.get("notes"):
         lines.append("## Notes")
         lines.append(entry["notes"])
         lines.append("")
 
-    # Usage examples
     examples = entry.get("usage_examples") or []
     if examples:
         lines.append("## Usage Examples")

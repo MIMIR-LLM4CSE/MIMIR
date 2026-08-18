@@ -11,6 +11,7 @@ from mcp.client.stdio import stdio_client
 
 from ..context.capabilities import infer_tool_caps
 from ..config.constants import STATE_DIR
+from ...servers._shared.state_paths import scratch_home
 
 
 def _make_elicitation_callback(agent: Any):
@@ -70,11 +71,14 @@ async def connect_server(*, agent: Any, name: str, script: str) -> None:
     # and the central per-workspace state dir so state-owning servers (memory, todo,
     # platform profile) persist to the same place the client resolves. The state dir
     # is deliberately distinct from the file/search sandbox — see config.constants.
+    # The scratchpad travels the same way: the client vetted that path at startup
+    # (ensure_scratch_home), so servers must use its answer, not re-derive one.
     server_env = {
         **os.environ,
         "MCP_FILES_ROOT": os.getcwd(),
         "SEARCH_ROOT": os.getcwd(),
         "MIMIR_STATE_DIR": STATE_DIR,
+        "MIMIR_SCRATCH_DIR": scratch_home(),
     }
     params = StdioServerParameters(command=command, args=[script], env=server_env)
 

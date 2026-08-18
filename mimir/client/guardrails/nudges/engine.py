@@ -8,6 +8,7 @@ from typing import Any, Callable
 
 from ..workflow import (
     VALIDATION_RETRY_BUDGET,
+    handback_required,
     has_blocking_denials,
     has_pending_validation,
     unchecked_checklist_items,
@@ -492,7 +493,17 @@ def _validation_nudge_content(agent: Any, execution_context: dict[str, Any]) -> 
 
 
 def _should_nudge_denial(execution_context: dict[str, Any]) -> bool:
-    """Blocking denials exist, budget left, and not already in the exhausted dead-end."""
+    """Blocking denials exist, budget left, and not already in the exhausted dead-end.
+
+    The handback message is exempt from the frequency cap and from the dead-end
+    suppression: the other denial messages ask the model to *do* something, so they
+    are worth rationing, but this one tells it to stop — a reminder to stop that is
+    itself suppressed leaves the model going. It still requires an *open* denial: if
+    every refused action was resolved some other way, there is nothing to hand back
+    about, and telling a recovered run to stop would cut it short for nothing.
+    """
+    if handback_required(execution_context) and has_blocking_denials(execution_context):
+        return True
     return (
         has_blocking_denials(execution_context)
         and nudge_count(execution_context, "denial") < NUDGE_MAX_DENIAL

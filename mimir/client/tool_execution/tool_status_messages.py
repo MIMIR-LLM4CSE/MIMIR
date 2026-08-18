@@ -51,23 +51,15 @@ def shorten_display_args(name: str, args: dict, tool_caps=None) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Generic name → status label.
-#
-# There are NO hardcoded tool-name lists here. A tool's status label is derived
-# from its *name* alone: an action verb (from the reusable ``_VERBS`` lexicon —
-# verbs, never tool identities) is turned into its gerund ("Reading…",
-# "Running…") and the remaining name tokens become the object. The salient
-# argument (path / pattern / command) is surfaced separately by
-# ``tool_arg_preview`` (the UI ``detail`` field), so the label itself only needs
-# the humanised name. Servers wanting exact wording still declare a
-# ``tool_caps(label="…")`` template, which ``label_for`` renders ahead of this
-# fallback.
+# Generic name → status label, with NO hardcoded tool-name lists. A label is derived
+# from the tool's *name* alone: an action verb becomes its gerund ("Reading…") and the
+# remaining tokens become the object. The salient argument is surfaced separately by
+# ``tool_arg_preview``. Servers wanting exact wording declare a ``tool_caps(label=…)``
+# template, which ``label_for`` renders ahead of this fallback.
 # ---------------------------------------------------------------------------
 
-# Reusable action verbs that may appear as a token in a tool name. This is a
-# vocabulary of verbs, not a registry of tools — adding a new tool needs no
-# entry here as long as it is named with one of these (or any) verbs, and an
-# unknown verb still humanises sensibly (see ``_humanize_tool_name``).
+# A vocabulary of verbs, not a registry of tools: a new tool needs no entry here, and
+# an unknown verb still humanises sensibly (see ``_humanize_tool_name``).
 _VERBS: frozenset[str] = frozenset({
     "read", "write", "append", "delete", "remove", "list", "find", "search",
     "grep", "replace", "apply", "get", "set", "run", "compile", "execute",
@@ -279,14 +271,11 @@ def summarize_tool_result(name: str, result: str, tool_caps=None) -> tuple[bool,
     payload = None
     text = result.strip()
     if text.startswith("{"):
-        # Parse only the LEADING JSON object. A tool result is a JSON payload that
-        # the client may append advisory text to (AUTO_VALIDATION, READ_HINT,
-        # MORE_CONTENT). A full json.loads on that combined string fails, which used
-        # to drop us into the plain-text heuristic below — and a post-write validator
-        # embedding "status": "error" (lint/typecheck/import) then flipped a
-        # SUCCESSFUL edit to a failed row. raw_decode reads the first value and
-        # ignores the trailing text, so the status reflects the tool, not the
-        # advisory.
+        # Parse only the LEADING JSON object: the client appends advisory text
+        # (AUTO_VALIDATION, READ_HINT, MORE_CONTENT) after the payload, and a full
+        # json.loads on the combined string fails into the plain-text heuristic below —
+        # where a validator's embedded "status": "error" flips a successful edit to a
+        # failed row. raw_decode ignores the trailing text.
         try:
             payload, _ = json.JSONDecoder().raw_decode(text)
         except (ValueError, TypeError):
@@ -295,10 +284,9 @@ def summarize_tool_result(name: str, result: str, tool_caps=None) -> tuple[bool,
             payload = None
 
     if isinstance(payload, dict):
-        # A policy precondition BLOCKED the call (the tool never ran, nothing was
-        # written). Render a short, explicit reason — not the raw JSON error cropped
-        # mid-sentence — so a blocked row reads as "blocked by policy", clearly
-        # distinct from a tool that genuinely failed. Covers both status="error"
+        # A policy precondition blocked the call — the tool never ran. Render a short
+        # explicit reason, not the raw JSON cropped mid-sentence, so the row reads as
+        # "blocked by policy" rather than as a genuine failure. Covers status="error"
         # (approval/write_policy/…) and status="blocked" (state_guard).
         stage = payload.get("policy_stage")
         if stage:
@@ -323,11 +311,9 @@ def summarize_tool_result(name: str, result: str, tool_caps=None) -> tuple[bool,
                 n = content.count("\n") + 1 if content else 0
                 return True, f"{n} line{'s' if n != 1 else ''}"
 
-        # A structured payload was parsed and its status is not an error/block: the
-        # tool succeeded. Return here so appended advisory text (AUTO_VALIDATION,
-        # READ_HINT, MORE_CONTENT) is never scanned by the plain-text heuristic
-        # below — otherwise a post-write validator's nested "status": "error" would
-        # flip this successful row to failed.
+        # Structured payload parsed, status not error/block: the tool succeeded. Return
+        # here so appended advisory text never reaches the plain-text heuristic below,
+        # whose nested "status": "error" would flip this row to failed.
         return True, ""
 
     # Plain-text error heuristic (only for results that are not a JSON payload).

@@ -11,7 +11,21 @@ which only set ``MCP_FILES_ROOT`` — we fall back to the legacy in-workspace
 ``<workspace>/.mimir`` so those callers keep working unchanged.
 """
 
+import hashlib
 import os
+import stat
+
+
+def workspace_id(root: str) -> str:
+    """Readable, collision-free id for a workspace root: ``<basename>-<sha1[:8]>``.
+
+    Lives here rather than in the client's constants because both ends need it: the
+    client to build the per-workspace state dir, this module to name the scratchpad
+    under a shared ``/tmp``.
+    """
+    real = os.path.realpath(root)
+    digest = hashlib.sha1(real.encode("utf-8")).hexdigest()[:8]
+    return f"{os.path.basename(real) or 'root'}-{digest}"
 
 
 def state_dir() -> str:
@@ -42,6 +56,26 @@ def active_session_id(base: str | None = None) -> str:
         return ""
 
 
+def scratch_home() -> str:
+    """Root of the agent's scratchpad, under the system temp dir.
+
+    ``MIMIR_SCRATCH_DIR`` if set — the client resolves this once at startup (after
+    validating ownership, see :func:`ensure_scratch_home`) and puts it in both its
+    own environment and the servers', so every end agrees on one location without
+    re-deriving it.
+
+    Default: ``<TMPDIR or /tmp>/mimir-<uid>-<workspace-id>``. Temp is where throwaway
+    work belongs, and the OS reclaims it; the uid and the workspace id keep two users
+    (and two checkouts) on a shared machine from colliding.
+    """
+    env = os.environ.get("MIMIR_SCRATCH_DIR")
+    if env:
+        return os.path.abspath(env)
+    tmp = os.environ.get("TMPDIR") or "/tmp"
+    root = os.path.abspath(os.environ.get("MCP_FILES_ROOT") or os.getcwd())
+    return os.path.join(os.path.abspath(tmp), f"mimir-{os.getuid()}-{workspace_id(root)}")
+
+
 def scratch_dir(base: str | None = None) -> str:
     """The agent's scratchpad: a writable directory *outside* the workspace.
 
@@ -50,23 +84,21 @@ def scratch_dir(base: str | None = None) -> str:
     itself, so every temporary file becomes indistinguishable from produced work —
     it lands in the user's tree and in the change ledger.
 
-    Per session (``sessions/<sid>/scratch/``) so parallel sessions cannot collide,
-    falling back to a shared ``scratch/`` outside any session (CLI runs, tests).
-    Never auto-deleted: the contents are often exactly what the user wants to
-    inspect after a run.
+    A per-session subdirectory of :func:`scratch_home` so parallel sessions cannot
+    collide, falling back to the home itself outside any session (CLI runs, tests).
+    Not auto-deleted by MIMIR: temp-dir policy is the OS's business, and the contents
+    are often exactly what the user wants to inspect after a run.
 
     Not created here — callers that write will create it; callers that only need
     the path for a sandbox check must not have that check materialise directories.
 
-    *base* overrides the state dir, for the client process: it resolves the same
-    location from its own ``STATE_DIR`` constant because ``MIMIR_STATE_DIR`` is
-    placed only in the *server* subprocesses' environment, never its own.
+    *base* overrides the *state* dir, which is consulted only for the active-session
+    sidecar: the client passes its own ``STATE_DIR`` because ``MIMIR_STATE_DIR`` is
+    placed only in the server subprocesses' environment, never its own.
     """
-    root = base or state_dir()
-    sid = active_session_id(root)
-    if sid:
-        return os.path.join(root, "sessions", sid, "scratch")
-    return os.path.join(root, "scratch")
+    sid = active_session_id(base or state_dir())
+    home = scratch_home()
+    return os.path.join(home, sid) if sid else home
 
 
 def standing_roots(base: str | None = None) -> list[str]:
@@ -76,8 +108,45 @@ def standing_roots(base: str | None = None) -> list[str]:
     decisions the *user* made, and folding a system grant into it would both
     misreport consent and let a stale sidecar revoke the scratchpad.
 
-    Both the session-scoped scratchpad and the session-less fallback are granted,
-    so a path stays writable across a session switch mid-run.
+    The grant is the scratchpad *home*, which covers the session subdirectory and the
+    session-less fallback alike — so a session switch mid-run cannot revoke a path
+    already being written. Still a list: it is one element of a sandbox's extra roots,
+    and callers concatenate it with the user-approved ones.
+
+    *base* is accepted for signature parity with :func:`scratch_dir`; the home does
+    not depend on the state dir.
     """
-    root = base or state_dir()
-    return [scratch_dir(root), os.path.join(root, "scratch")]
+    return [scratch_home()]
+
+
+def ensure_scratch_home() -> str:
+    """Create the scratchpad home ``0700`` and vet it, or return "" if unsafe.
+
+    The one function here that touches the disk. ``/tmp`` is world-writable, so an
+    existing path at our name is not necessarily ours: a symlink or a foreign-owned
+    directory means someone else chose where our writes land, and the answer is to
+    decline rather than to use it. The client calls this once at startup and falls
+    back to a path under its private state dir on "".
+    """
+    home = scratch_home()
+    try:
+        info = os.lstat(home)
+    except FileNotFoundError:
+        try:
+            os.makedirs(home, mode=0o700)
+        except OSError:
+            return ""
+        return home
+    except OSError:
+        return ""
+
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+        return ""
+    if info.st_uid != os.getuid():
+        return ""
+    if info.st_mode & 0o077:
+        try:
+            os.chmod(home, 0o700)
+        except OSError:
+            return ""
+    return home

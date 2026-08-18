@@ -59,10 +59,9 @@ OVERWRITE = "overwrite"                  # replaces an existing file's entire co
 REMOVE = "remove"                        # deletes a file
 REPLACEMENT_TRACK = "replacement_track"
 
-# Validation — a tool that validates code (syntax/lint/typecheck/test). The
-# first-party stack validates through the bash server, but the flag stays declarable
-# so an extension-pack server can ship its own validator (the client marks its target
-# file validated and clears the edit-loop streak on success).
+# Validates code (syntax/lint/typecheck/test). The first-party stack validates through
+# the bash server, but the flag stays declarable so an extension-pack server can ship
+# its own validator (a success marks the target file validated + clears the edit streak).
 VALIDATE = "validate"
 
 # Task planning (the ordered-steps checklist is identified by the `plan_steps` arg-role)
@@ -89,11 +88,10 @@ BACKGROUNDABLE = "backgroundable"        # launches a long detached run; result 
 
 # ── Reversibility: how much of an action can be taken back ────────────────────
 #
-# The single ordered dimension that replaced the `sensitive` boolean. A boolean put
-# `mkdir` and a Slurm submission behind the same door, so there was no way to spend
-# friction where it actually matters. Sensitivity is now *derived* from this (see the
-# client's `_caps_from_meta`), the way plan-blocking is already derived from the write
-# caps — one concept declared, not two kept in sync.
+# One ordered dimension instead of a `sensitive` boolean, which put `mkdir` and a Slurm
+# submission behind the same door and left no way to spend friction where it matters.
+# Sensitivity is *derived* from this (client `_caps_from_meta`), the way plan-blocking
+# is derived from the write caps — one concept declared, not two kept in sync.
 #
 #   reversible   the client itself can undo it — an in-workspace file mutation, which
 #                the approval manager snapshots and `revert_last` restores. NOT
@@ -178,10 +176,10 @@ def build_descriptor(
     if risk_note:
         descriptor["risk_note"] = risk_note
 
-    # Pre-write diff preview: the generic edit shape (`kind`) and the arg(s) the
-    # client-side builder reads to reconstruct the proposed post-write content.
-    # Unlike `scope`, an argless spec is valid — a deletion has a shape but reads
-    # no content args. A kindless spec has nothing to dispatch on and is dropped.
+    # Pre-write diff preview: the generic edit shape (`kind`) plus the arg(s) the
+    # client builder reads to reconstruct the post-write content. Unlike `scope`, an
+    # argless spec is valid (a deletion has a shape but no content args); a kindless
+    # one has nothing to dispatch on and is dropped.
     if preview:
         norm_prev: dict[str, Any] = {}
         prev_args = preview.get("args")

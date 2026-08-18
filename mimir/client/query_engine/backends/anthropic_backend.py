@@ -237,7 +237,15 @@ class AnthropicBackend(LLMBackend):
         Assistant tool-use turns are replayed from the raw-block cache when available
         so signed thinking blocks survive; otherwise they are reconstructed from the
         flattened text + tool_calls (valid whenever thinking was not used).
+
+        Pairing is reconciled first: the API rejects a ``tool_use`` with no matching
+        ``tool_result`` (and the converse) outright, so an unpaired turn is a hard 400
+        rather than a degraded prompt. The loop already reconciles before every call;
+        this is the last-mile guard for any caller that doesn't.
         """
+        from ..history import reconcile_tool_pairs
+        messages = reconcile_tool_pairs(list(messages))
+
         system_parts: list[str] = []
         out: list[dict] = []
 

@@ -61,9 +61,8 @@ class _AgentWorker:
 
         self._thread = threading.Thread(target=self._main, name="mimir-worker", daemon=True)
         self._thread.start()
-        # Wait for agent to be ready (server connections established).
-        # The overall timeout is long to accommodate vLLM cold-start (model
-        # load + torch.compile can exceed 3 min on large models).  A separate
+        # Wait for server connections. The timeout is long to accommodate vLLM
+        # cold-start (model load + torch.compile can exceed 3 min); a separate
         # backend-health poll runs first and surfaces progress to the client.
         timeout = int(os.environ.get("MIMIR_INIT_TIMEOUT", "600"))
         if not self._ready.wait(timeout=timeout):
@@ -268,10 +267,9 @@ class _AgentWorker:
             def _token_cb(delta: str) -> None:
                 self.out_q.put({"type": "token", "text": delta})
 
-            # Reasoning text of the block currently streaming, kept so its size can
-            # be reported in tokens when the block closes. Counted here rather than
-            # in the webview so the number comes from the same tokenizer as the
-            # context bar instead of a second, divergent estimate.
+            # Reasoning text of the streaming block, kept so its size can be reported
+            # in tokens when the block closes. Counted here, not in the webview, so the
+            # number comes from the same tokenizer as the context bar.
             think_buf: list[str] = []
 
             def _think_token_cb(delta: str) -> None:
@@ -326,10 +324,9 @@ class _AgentWorker:
         # Push current todo state.
         self._push_todos()
         self.out_q.put({"type": "answer", "text": answer, "cancelled": cancelled})
-        # Note: batch_status is sent from the drain loop's answer handler so it
-        # always reflects the *current* snapshot state (respects in-flight
-        # batch_review_accept messages that would otherwise lose the race with a
-        # queued batch_status built here).
+        # batch_status is sent from the drain loop's answer handler instead, so it
+        # reflects the current snapshot — a batch_status queued here would lose the
+        # race with an in-flight batch_review_accept.
 
     def _build_batch_status(self) -> list[dict]:
         """Compute per-file accumulated diffs from original → current for every
@@ -442,21 +439,18 @@ class _AgentWorker:
         server_name = agent.tool_owner.get(tool_name, "unknown")
         risk = agent.approvals.describe_risk(tool_name)
         scope_label = agent.approvals._approval_scope_label(tool_name, server_name, arguments)
-        # Canonical human label ("Proxy exec: run") so the card header reads the
-        # same as the tool-activity row instead of a bare op name; None when the
-        # tool declares no template — the client falls back to server·tool.
-        # In-workspace approval card: the file name is enough to identify the target,
-        # and the full argument set is sent alongside for anyone who wants detail.
+        # Canonical human label ("Proxy exec: run") so the card header matches the
+        # tool-activity row instead of showing a bare op name; None when the tool
+        # declares no template, and the client falls back to server·tool.
         label = label_for(
             tool_name,
             shorten_display_args(tool_name, arguments or {}, agent.tool_caps),
             agent.tool_caps,
         )
 
-        # A tool that declares a diff-preview spec is a previewable file mutation:
-        # auto-approve it (batch review + /undo cover it) and send a live progress
-        # card with the reconstructed before/after diff. Tools with no spec —
-        # including foreign-server writers — get the normal approval prompt.
+        # A declared diff-preview spec marks a previewable file mutation: auto-approve
+        # (batch review + /undo cover it) and send a live card with the reconstructed
+        # diff. No spec — including foreign-server writers — means the normal prompt.
         if preview_spec(tool_name, agent.tool_caps) is not None:
             diffs = build_preview_diffs(tool_name, arguments, agent.tool_caps)
             if diffs:

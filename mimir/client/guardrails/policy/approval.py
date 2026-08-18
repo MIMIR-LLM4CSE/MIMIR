@@ -119,6 +119,36 @@ _SCOPE_KINDS: dict[str, tuple[Callable[[dict, tuple[str, ...]], str], str]] = {
 }
 
 
+# --- Denial kinds -------------------------------------------------------------
+# Every approval front-end already returns a human-readable note beside its verdict
+# ("denied by user", "cancelled", …). Those notes are what the *user* would read, so
+# they stay as they are; these tokens are what the *policy layer* branches on, so no
+# caller ever has to match prose. A note we do not recognise degrades to a plain
+# refusal rather than raising — an unknown note is still a refusal.
+
+DENIAL_DENIED: str = "denied"                    # the user answered "no"
+DENIAL_CANCELLED: str = "cancelled"              # the run was stopped while the card was open
+DENIAL_BATCH_REJECT: str = "batch_reject"        # the pending batch review was rejected
+DENIAL_INVALID_RESPONSE: str = "invalid_response"  # the prompt's retry budget ran out
+DENIAL_PATH: str = "path_denied"                 # out-of-workspace access refused
+DENIAL_AUTO_REPEAT: str = "auto_denied_repeat"   # refused so often we stopped asking
+
+_DENIAL_KINDS: dict[str, str] = {
+    "denied by user": DENIAL_DENIED,
+    "denied": DENIAL_DENIED,
+    "cancelled": DENIAL_CANCELLED,
+    "denied because pending batch review was rejected": DENIAL_BATCH_REJECT,
+    "denied after invalid approval responses": DENIAL_INVALID_RESPONSE,
+    "path outside the workspace was not approved": DENIAL_PATH,
+    "already refused; not asked again": DENIAL_AUTO_REPEAT,
+}
+
+
+def denial_kind(note: str | None) -> str:
+    """Map an approval front-end's refusal note to a stable kind token."""
+    return _DENIAL_KINDS.get((note or "").strip().lower(), DENIAL_DENIED)
+
+
 class TrustedToolsView:
     """
     Lightweight dynamic view over trusted tool names.
@@ -384,8 +414,21 @@ class ApprovalManager:
         return f"path:{os.path.realpath(os.path.abspath(abspath))}"
 
     def is_path_approved(self, abspath: str) -> bool:
-        """True if this exact out-of-workspace path was granted 'always' this session."""
-        return self._path_scope_token(abspath) in self.approved_scopes
+        """True if an 'always' grant this session covers *abspath*.
+
+        Containment, not equality: the sidecar the servers read admits a granted
+        path as a *root* (``resolve_path_in_root``'s ``extra_roots``), so once a
+        directory is approved the server already allows everything under it and a
+        prompt for a child could no longer deny anything.
+        """
+        real = os.path.realpath(os.path.abspath(abspath))
+        for scope in self.approved_scopes:
+            if not scope.startswith("path:"):
+                continue
+            granted = scope[len("path:"):]
+            if real == granted or real.startswith(granted + os.sep):
+                return True
+        return False
 
     def grant_path(self, abspath: str, *, always: bool) -> None:
         """Record an approved out-of-workspace path and mirror it to the sidecar.

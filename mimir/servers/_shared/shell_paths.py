@@ -33,98 +33,73 @@ import re
 import shlex
 from dataclasses import dataclass, field
 
-# Build / execution — the compile/run/test/validate surface. Named as a group
-# because it feeds both the bash server's allowlist and PATH_SENSITIVE_COMMANDS
-# below: an interpreter or compiler takes a file operand exactly as ``cat`` does,
-# so ``python /tmp/evil.py`` must be confined for the same reason
-# ``cat /etc/passwd`` is — and it additionally *executes* what it reads.
+# The command taxonomy, split by *effect* — read, search, inspect, write, execute,
+# provision — because that is what both sides key off: the bash server builds its
+# allowlist from these groups, and the client's classifier maps each to a capability
+# kind, which decides approval and plan-mode availability.
+
+# Build / execution. An interpreter or compiler takes a file operand exactly as ``cat``
+# does, so ``python /tmp/evil.py`` is confined for the same reason ``cat /etc/passwd``
+# is — and it additionally *executes* what it reads.
 EXEC_COMMANDS = frozenset({
     "python", "python3", "gcc", "g++", "gfortran", "javac", "java", "node", "pytest",
-    # Python lint / typecheck / format tools, invocable directly by name (they also
-    # work via ``python -m <tool>``). They replace the former dedicated code-quality
-    # validator tools: the agent validates a written file with ``ruff check <f>``,
-    # ``python -m mypy <f>``, ``pyflakes <f>`` or ``black <f>``.
+    # Lint / typecheck / format, invocable by name or via ``python -m <tool>``. These
+    # are the validator surface — there are no dedicated code-quality tools.
     "ruff", "pyflakes", "mypy", "black",
-    # GPU / build-system toolchain. ``nvcc`` is the CUDA compiler driver; ``make``
-    # and ``cmake`` are how CUDA/HPC benchmarks usually drive a build; ``ctest``
-    # runs a CMake project's test suite. A Makefile recipe is effectively arbitrary
+    # GPU / build-system toolchain. A Makefile recipe is effectively arbitrary
     # execution, but no more so than the gcc/python already here.
     "nvcc", "make", "cmake", "ctest",
-    # TeX/LaTeX document toolchain: a real execution that writes its artefacts
-    # (.pdf/.aux/.log) next to the source, exactly as ``gcc -o`` does.
+    # TeX/LaTeX: a real execution writing artefacts next to the source, as ``gcc -o`` does.
     "pdflatex", "latex", "xelatex", "lualatex", "pdftex", "tex",
     "bibtex", "biber", "makeindex", "latexmk", "dvips", "dvipdf",
 })
 
-# Environment managers: the package/env provisioning surface (``pip install``,
-# ``conda create``). Kept apart from EXEC_COMMANDS, which means "compiles or runs the
-# project's code" — these mutate the *interpreter environment* instead, which is a
-# different kind of effect (the client classifies them ENV_*, and the bash server
-# scopes their sub-commands the way it scopes ``module``'s).
-#
-# They still take file operands — a requirements file, a local wheel, an env YAML,
-# ``pip install .`` — so they are path-sensitive like everything else. What they
-# install lands wherever the target interpreter's site-packages is, which is outside
-# the workspace by construction: that is the point of allowing them, and it is the
-# approval prompt, not this module, that governs it.
+# Package/env provisioning. Kept apart from EXEC_COMMANDS ("compiles or runs the
+# project's code") because these mutate the *interpreter environment* instead. They
+# still take file operands (requirements file, local wheel, env YAML, ``pip install .``)
+# so they are path-sensitive; what they install lands in site-packages, outside the
+# workspace by construction, governed by the approval prompt rather than this module.
 ENV_MANAGER_COMMANDS = frozenset({
     "conda", "conda3", "mamba", "mamba3", "pip", "pip3",
 })
 
-# The remaining command groups, so the whole taxonomy of what a shell call can do
-# lives in one module: the bash server builds its allowlist from these groups, and the
-# client's classifier maps each to a capability kind. Split by *effect*, which is what
-# both sides key off — read, search, inspect, write, execute, provision — because that
-# is what decides approval and plan-mode availability.
-#
-# ``sed`` and ``sort`` sit in READ: they only write when carrying an in-place/output
-# flag, which the client detects per call (a group cannot express "depends on a flag").
+# ``sed`` and ``sort`` sit here, not in WRITE: they only write when carrying an
+# in-place/output flag, which the client detects per call (a group cannot express
+# "depends on a flag").
 READ_COMMANDS = frozenset({
     "cat", "head", "tail", "nl", "sed", "wc", "cut", "sort", "uniq", "comm",
     "tr", "fold", "column", "cksum", "md5sum", "sha256sum",
-    # ``stat``/``file`` open the file they are given, so they read it — unlike the
-    # metadata no-ops below, whose arguments are words.
+    # These open the file they are given, unlike the no-ops below whose args are words.
     "stat", "file",
 })
 SEARCH_COMMANDS = frozenset({"grep", "rg"})
 INSPECT_COMMANDS = frozenset({"ls", "find", "du"})
-# Unconditional writes: they move, duplicate or create whatever their flags say.
-#
-# ``chmod`` is a write of a file's *mode* rather than its contents, and it is here for
-# one reason: without it a workspace script cannot be run at all. Executing one by path
-# (``./build.sh``) is already supported — the bash server accepts a workspace-local
-# executable — but a script arriving without the x bit (a fresh checkout, a file the
-# agent just wrote) leaves no way to grant it, and the agent dead-ends on "Permission
-# denied" with no allowed command that fixes it. It grants no new *kind* of power:
-# ``python f.py``, ``make`` and a compiled ``./a.out`` already execute workspace code.
+# Unconditional writes. ``chmod`` writes a file's *mode* rather than its contents and is
+# here for one reason: a script arriving without the x bit (fresh checkout, or one the
+# agent just wrote) otherwise dead-ends on "Permission denied" with no allowed command
+# that fixes it. It grants no new *kind* of power — ``python f.py``, ``make`` and a
+# compiled ``./a.out`` already execute workspace code.
 WRITE_COMMANDS = frozenset({"mv", "cp", "mkdir", "chmod"})
-# Metadata and no-ops: no side effect, and no discovery evidence either. The no-ops are
-# what makes a capability probe expressible end to end (``which pdflatex || true``).
+# No side effect, and no discovery evidence either. The no-ops are what makes a
+# capability probe expressible end to end (``which pdflatex || true``).
 NEUTRAL_COMMANDS = frozenset({
     "pwd", "echo", "which", "basename", "dirname", "realpath", "df",
     "true", "false", ":",
 })
 
-# Every command whose non-option arguments name files or directories — derived from the
-# groups above rather than re-listed, so a command cannot be added to one and forgotten
-# here. Reading, searching, inspecting, writing, executing and provisioning all take
-# file operands, so all six are in.
-#
-# The two exceptions are what the derivation subtracts and adds: ``tr`` reads stdin only
-# and its arguments are character SETS (``'a-z'``, ``'/'``), so confining them would
-# reject a legitimate set; ``realpath`` is otherwise a no-op whose argument *is* a path.
-# ``echo``/``which``/``pwd``/``df`` stay out — their arguments are words.
-# What may appear as a nested command (``find … -exec CMD {} \;``). Derived from the
-# read-only groups rather than re-listed, on the same principle as
-# PATH_SENSITIVE_COMMANDS below: a command added to a group is covered automatically.
-# Writers, execs and provisioners stay out — a nested command's operands include the
-# ``{}`` placeholder, which no caller can resolve to the paths it will expand to, so
-# a nested write is a write to somewhere unknowable. Reading one is harmless: the
-# worst case is that some file inside the allowed roots is read.
+# What may appear as a nested command (``find … -exec CMD {} \;``). Writers, execs and
+# provisioners stay out: a nested command's operands include the ``{}`` placeholder,
+# which no caller can resolve, so a nested write goes somewhere unknowable. Reading one
+# is harmless — worst case, some file inside the allowed roots is read.
 READONLY_NESTED_COMMANDS = frozenset(
     READ_COMMANDS | SEARCH_COMMANDS | INSPECT_COMMANDS | NEUTRAL_COMMANDS
 )
 
+# Every command whose non-option arguments name files or directories. Derived from the
+# groups rather than re-listed, so a command cannot be added to one and forgotten here.
+# The derivation's two exceptions: ``tr`` reads stdin only and its arguments are
+# character SETS (``'a-z'``, ``'/'``), so confining them would reject a legitimate set;
+# ``realpath`` is otherwise a no-op whose argument *is* a path.
 PATH_SENSITIVE_COMMANDS = frozenset(
     (READ_COMMANDS - {"tr"})
     | {"realpath"}
@@ -135,10 +110,9 @@ PATH_SENSITIVE_COMMANDS = frozenset(
     | ENV_MANAGER_COMMANDS
 )
 
-# command → what running it does, for the one caller that needs to *report* the
-# taxonomy rather than act on it (the server's allowlist introspection, so the agent can
-# see what is plan-safe without probing). ``cd`` and the environment managers depend on
-# their argument, hence their own labels.
+# command → what running it does, for the one caller that *reports* the taxonomy rather
+# than acting on it (the server's allowlist introspection). ``cd`` and the environment
+# managers depend on their argument, hence their own labels.
 COMMAND_CATEGORIES = {
     **{c: "read" for c in READ_COMMANDS},
     **{c: "search" for c in SEARCH_COMMANDS},
@@ -264,13 +238,10 @@ def unquoted_substitution_marker(command: str) -> str | None:
 # a separate argv, validated (server) and classified (client) on its own.
 COMMAND_SEPARATORS = frozenset({";", "&&", "||", "|"})
 
-# Markers that run or inline *another* command. One of these is refused outright:
-# whatever the allowlist said about argv[0] tells us nothing about what the
-# substitution would execute.
-#
-# "Contains a marker" is only the right test where the shell would *act* on it — see
-# :func:`unquoted_substitution_marker`. Inside single quotes these characters are
-# ordinary text, and a search pattern is the usual place they show up.
+# Markers that run or inline *another* command — refused outright, since what the
+# allowlist said about argv[0] tells us nothing about what the substitution executes.
+# Only where the shell would *act* on them: inside single quotes these are ordinary
+# text (a search pattern is the usual place). See :func:`unquoted_substitution_marker`.
 SUBSTITUTION_MARKERS = ("$(", "`", "${", "<(", ">(")
 
 # Characters that make a token a bare shell operator rather than an argument.
@@ -388,10 +359,9 @@ def parse_segments(command: str) -> list[ParsedSegment]:
     segments: list[ParsedSegment] = []
     argv: list[str] = []
     redirections: list[Redirection] = []
-    # A `find -exec` payload: tokens after the flag belong to a nested command, not
-    # to find's own argv, and the `;`/`+` that ends it is a terminator rather than a
-    # chaining separator. Without this the terminator would split the command in the
-    # wrong place and the nested argv would be indistinguishable from find's operands.
+    # A `find -exec` payload: tokens after the flag belong to a nested command, not to
+    # find's own argv, and the `;`/`+` ending it is a terminator, not a chaining
+    # separator that would split the command in the wrong place.
     nested_argv: list[str] | None = None
     nested_segments: list[ParsedSegment] = []
     i, n = 0, len(tokens)
@@ -410,10 +380,9 @@ def parse_segments(command: str) -> list[ParsedSegment]:
             continue
 
         if tok in _NESTED_COMMAND_FLAGS and argv:
-            # The flag itself is dropped from the outer argv: it is not an operand,
-            # and leaving it there would trip the server's per-command flag denylist
-            # on the very token whose payload has just been made inspectable. The
-            # resulting nested segment is what records that a nested command exists.
+            # The flag is dropped from the outer argv: not an operand, and keeping it
+            # would trip the server's flag denylist on the very token whose payload has
+            # just been made inspectable. The nested segment records that it existed.
             nested_argv = []
             i += 1
             continue
@@ -467,9 +436,8 @@ def parse_segments(command: str) -> list[ParsedSegment]:
         raise ShellParseError("redirect", "A redirection must belong to a command.")
     if not segments:
         raise ShellParseError("empty", "Invalid command syntax.")
-    # Nested commands trail the chain they were lifted from: order within the
-    # top-level chain is preserved for every caller that reasons about `cd` rebasing,
-    # and a nested command can never precede the command that invokes it anyway.
+    # Nested commands trail the chain they were lifted from, so top-level order stays
+    # intact for callers reasoning about `cd` rebasing.
     return segments + nested_segments
 
 
@@ -524,18 +492,13 @@ _FILE_VALUE_FLAGS = ("-f", "--file")
 # first is dropped, and only when no -e/-f supplied the pattern instead.
 _LEADING_PATTERN_COMMANDS = ("grep", "rg", "sed")
 
-# Flags whose value is a file the command *writes*, keyed by leading command.
-#
-# Why these and not flags generally: a flag value is skipped by the walk below, which
-# is right for the ones that carry no path (`-lm`) and for the ones that read outside
-# the workspace legitimately — `-I/usr/include`, `-L/usr/lib` and `-Wl,-rpath,...` are
-# how any real build finds its system headers and libraries, and confining them would
-# refuse every HPC compile. Writing outside the workspace is the other case entirely:
-# it needs the user's approval, and the *separated* form already got it (`gcc -o
-# /tmp/x.out` resolves as a positional and is refused). The glued form did not —
-# `gcc a.c -o/tmp/x.out`, `ruff check --output-file=/tmp/r.txt`,
-# `pytest --junitxml=/tmp/j.xml` all wrote outside with no prompt — which is the
-# asymmetry this table closes. Both spellings of a *write* flag yield their value.
+# Flags whose value is a file the command *writes*, keyed by leading command. The walk
+# below skips flag values generally, which is right for the ones carrying no path
+# (`-lm`) and for reads that legitimately leave the workspace (`-I/usr/include`,
+# `-L/usr/lib`, `-Wl,-rpath,...` — confining those would refuse every HPC compile).
+# Writes are the other case: they need approval, which the separated form already gets
+# by resolving as a positional. This table closes the glued form (`gcc a.c -o/tmp/x`,
+# `--output-file=/tmp/r.txt`), so both spellings of a write flag yield their value.
 #
 # Add a flag here when its value is a path the command creates or overwrites. Do not
 # add read/search paths: they are deliberately unconfined (see above).
@@ -614,11 +577,8 @@ def path_operand_tokens(argv: list[str]) -> list[str]:
         return []
     head = argv[0]
     # A program named by path (``./a.out``, ``../tools/x.sh``) is itself a path this
-    # call opens — the most consequential one, since it is what executes. Walking only
-    # argv[1:] left it unexamined by both sides: the client never prompted for it, and
-    # the server could only refuse it outright as an unknown command, so an executable
-    # outside the workspace had no route to approval while a *file* outside it did.
-    # Including it here gives it the same treatment as any other operand.
+    # call opens — the most consequential one, since it is what executes — so it gets
+    # the same treatment as any other operand rather than being skipped as argv[0].
     leading_path = [head] if is_path_like_command(head) else []
     text_flags = _TEXT_VALUE_FLAGS.get(head, ())
     saw_text_flag = False

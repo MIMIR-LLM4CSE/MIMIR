@@ -42,13 +42,10 @@ def blocked_tools_for_context(
         # Appending is effectively creating new content, not a surgical edit.
         blocked.update(names_with_cap(CONTENT_WRITE, tool_caps))
 
-    # NOTE: this returns only *query-stable* blocks, so the per-query tool list is
-    # byte-identical across the steps of one query and the model-prompt prefix stays
-    # cacheable (vLLM automatic prefix caching). State-dependent guards — premature
-    # writes, premature external fetches — are NOT enforced by hiding tools here; they
-    # are rejected authoritatively at call time in evaluate_tool_preconditions
-    # (check_write_policy / _check_external_fetch). Hiding them used to also break the
-    # prefix cache every step and hardcoded specific tool names.
+    # Returns only *query-stable* blocks, so the tool list is byte-identical across the
+    # steps of one query and the prompt prefix stays cacheable (vLLM prefix caching).
+    # State-dependent guards (premature writes / external fetches) are NOT enforced by
+    # hiding tools here — they are rejected at call time in evaluate_tool_preconditions.
     return blocked
 
 
@@ -226,13 +223,10 @@ def tools_for_context(
 ) -> list[dict[str, Any]]:
     blocked = blocked_tools_for_context(query, execution_context, tool_caps)
 
-    # Both remaining filters are query-stable (not execution-state-dependent), so the
-    # resulting list is identical across the steps of one query — keeping the prompt
-    # prefix cacheable. External-fetch gating that used to hide ``github_*`` here now
-    # lives in the call-time policy (_check_external_fetch), capability-driven.
-    # The one sanctioned exception is `rearmed_domains`: it changes at most
-    # DOMAIN_REARM_MAX_PER_QUERY times per query, and each change is a deliberate,
-    # logged cache break in exchange for a capability the run turned out to need.
+    # Both remaining filters are query-stable, so the list is identical across the steps
+    # of one query and the prompt prefix stays cacheable. The one sanctioned exception
+    # is `rearmed_domains`: it changes at most DOMAIN_REARM_MAX_PER_QUERY times, each a
+    # deliberate, logged cache break buying a capability the run turned out to need.
     rearmed = (execution_context or {}).get("rearmed_domains") or set()
     inactive_prefixes = inactive_domain_prefixes(query, rearmed)
 

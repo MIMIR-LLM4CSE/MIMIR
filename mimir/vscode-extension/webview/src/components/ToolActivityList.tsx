@@ -3,13 +3,16 @@ import type { ExecResult, ToolActivity } from "../types";
 import { useElapsed, formatDuration } from "../hooks/useElapsed";
 
 /** Terminal-style in/out panel for an exec-shaped tool result (shell, code
- *  runner, compiler): the command that ran (IN) and its output (OUT). The body
- *  is height-restricted by default and expands on demand; stderr is shown in a
- *  neutral tone and only turns red when the command actually failed (non-zero
- *  exit), so routine stderr chatter doesn't read as an error. */
+ *  runner, compiler): the command that ran (IN) and its output (OUT). Each pane
+ *  scrolls on its own inside its own height cap, so a long command can never
+ *  push the output off-panel — IN and OUT are both always in view. Both caps are
+ *  restricted by default and grow on demand; stderr is shown in a neutral tone
+ *  and only turns red when the command actually failed (non-zero exit), so
+ *  routine stderr chatter doesn't read as an error. */
 const ExecOutput: React.FC<{ exec: ExecResult }> = ({ exec }) => {
   const [full, setFull] = useState(false);
-  const bodyRef = useRef<HTMLDivElement>(null);
+  const inRef = useRef<HTMLPreElement>(null);
+  const outRef = useRef<HTMLDivElement>(null);
   const [overflows, setOverflows] = useState(false);
 
   const commandLines = (exec.command ?? "").split("\n");
@@ -17,11 +20,12 @@ const ExecOutput: React.FC<{ exec: ExecResult }> = ({ exec }) => {
   const failed = exec.returncode !== 0;
   const showNotes = failed || !!exec.truncated || noOutput;
 
-  // Detect whether the restricted body clips its content, so the expand control
-  // only appears when it would actually do something (or to collapse back).
+  // Detect whether *either* pane clips its content, so the expand control only
+  // appears when it would actually do something (or to collapse back).
   useEffect(() => {
-    const el = bodyRef.current;
-    if (el) setOverflows(el.scrollHeight > el.clientHeight + 2);
+    const clipped = (el: HTMLElement | null) =>
+      !!el && el.scrollHeight > el.clientHeight + 2;
+    setOverflows(clipped(inRef.current) || clipped(outRef.current));
   }, [exec.command, exec.stdout, exec.stderr, full]);
   const showResize = overflows || full;
 
@@ -33,12 +37,13 @@ const ExecOutput: React.FC<{ exec: ExecResult }> = ({ exec }) => {
         (failed ? " tool-exec--failed" : "")
       }
     >
-      <div className="tool-exec-body" ref={bodyRef}>
+      <div className="tool-exec-body">
         {exec.command && (
           <div className="tool-exec-section tool-exec-section--in">
             <span className="tool-exec-tag tool-exec-tag--in">IN</span>
             <pre
               className="tool-exec-cmd tool-exec-body-col"
+              ref={inRef}
               title={exec.cwd ? `cwd: ${exec.cwd}` : undefined}
             >
               {commandLines.map((line, i) => (
@@ -53,7 +58,7 @@ const ExecOutput: React.FC<{ exec: ExecResult }> = ({ exec }) => {
         {!noOutput && (
           <div className="tool-exec-section">
             <span className="tool-exec-tag tool-exec-tag--out">OUT</span>
-            <div className="tool-exec-out tool-exec-body-col">
+            <div className="tool-exec-out tool-exec-body-col" ref={outRef}>
               {exec.stdout && <pre className="tool-exec-stdout">{exec.stdout}</pre>}
               {exec.stderr && <pre className="tool-exec-stderr">{exec.stderr}</pre>}
             </div>

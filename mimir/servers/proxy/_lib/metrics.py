@@ -77,19 +77,16 @@ def _parse_metrics_block(stdout: str) -> dict:
 
 # ── reserved server-side invariants ───────────────────────────────────────────
 
-# Metrics whose values are computed server-side as integrity invariants. Any
-# value the proxy prints for these keys is discarded before evaluation: the
-# code under optimization must not be able to satisfy its own acceptance
-# constraints. (Observed in the wild: an agent-edited proxy printing
-# conservation_residual=<its own drift> to pass a requirement whose sealed
-# reference was missing.)  ``wall_time_s`` is the server's own wall-clock
-# measurement of the solver process — the tamper-proof twin of the
-# self-reported ``time_s`` (see _normalize_time_metrics).
+# Metrics computed server-side as integrity invariants. Any value the proxy prints for
+# these keys is discarded before evaluation: the code under optimization must not be
+# able to satisfy its own acceptance constraints. (Seen in the wild: an agent-edited
+# proxy printing conservation_residual=<its own drift> to pass a requirement whose
+# sealed reference was missing.) ``wall_time_s`` is the server's own wall-clock
+# measurement — the tamper-proof twin of self-reported ``time_s``.
 #
-# The name set lives in _shared because the client's validation observer reads
-# the same vocabulary for the opposite purpose — presence of one of these keys
-# in a validation command's output is what distinguishes "the code ran" from
-# "the code was compared against something". See servers/_shared/numerics.py.
+# The name set lives in _shared because the client's validation observer reads the same
+# vocabulary for the opposite purpose: one of these keys in a validation command's
+# output distinguishes "the code ran" from "the code was compared against something".
 _RESERVED_METRICS = RESERVED_METRICS
 
 

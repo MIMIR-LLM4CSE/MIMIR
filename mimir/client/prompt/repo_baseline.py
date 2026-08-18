@@ -33,13 +33,10 @@ def build_repo_baseline_snapshot(
     prompt builder and execution-context seeding.
     """
     root = root or _workspace_root()
-    # The tree's root line is the ABSOLUTE path, not the basename. Rendered as a bare
-    # name ("codes/"), the root is indistinguishable from a subdirectory: a model told
-    # to put something "outside the codes directory" reads "codes/" as a child of the
-    # workspace, concludes the workspace root is therefore outside it, and writes the
-    # file straight into the directory it was told to avoid — while sincerely
-    # reporting the constraint satisfied. Stating the root line absolutely makes the
-    # containment visible at the only place the model actually looks: the tree.
+    # The root line is the ABSOLUTE path, not the basename. Rendered bare ("codes/") the
+    # root is indistinguishable from a subdirectory, so a model told to write "outside
+    # the codes directory" reads it as a child of the workspace and writes straight into
+    # the directory it was avoiding — while sincerely reporting the constraint met.
     root_name = os.path.abspath(root.rstrip(os.sep)) or "."
 
     lines: list[str] = []
@@ -82,11 +79,9 @@ def build_repo_baseline_snapshot(
 
     sections: list[str] = []
     if lines:
-        # State the root as an absolute path. The tree below is rendered from the
-        # basename down, which reads as if the workspace were the whole world: with
-        # no parent shown and the absolute path stated nowhere else in the prompt, a
-        # destination *outside* the workspace is not merely discouraged, it is
-        # unnameable — and every relative path silently resolves back inside.
+        # State the root absolutely. The tree renders from the basename down, which
+        # reads as if the workspace were the whole world — with the absolute path stated
+        # nowhere else, a destination outside it is not discouraged but unnameable.
         sections.append(f"Workspace root (absolute): {root}")
         sections.append("Structure summary:\n" + "\n".join(lines))
     if top_dirs:
@@ -99,10 +94,9 @@ def build_repo_baseline_snapshot(
         context_text = context_text[:max_chars]
 
     return {
-        # "." is the only dir seeded as inspected — low-risk orientation that cannot
-        # green-light a write on its own (see seed_execution_context_from_baseline).
-        # The set is shared with the discovery-evidence counter, which discounts
-        # exactly these entries so a snapshot cannot pre-satisfy a gate.
+        # "." is the only dir seeded as inspected — orientation that cannot green-light
+        # a write on its own. The discovery-evidence counter discounts exactly these
+        # entries, so a snapshot can never pre-satisfy a gate.
         "context": context_text,
         "inspected_dirs": sorted(BASELINE_SEEDED_DIRS) if context_text else [],
         "searched": bool(context_text),

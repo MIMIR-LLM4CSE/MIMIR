@@ -111,6 +111,11 @@ class ClientHelperTests(unittest.TestCase):
             "tests_run",
             # Per-directory candidate names, a dict keyed by directory.
             "similar_candidates_by_dir",
+            # Keyed by tool_call_id, not by path: a dict recording which files each
+            # tool *message* concerns, so history trimming can match messages to files
+            # structurally. Purging a deleted path from it would strand the message
+            # association it exists to provide.
+            "tool_msg_files",
         }
         for name, _f, _t, traits in m._FIELD_SPECS:
             if not name.endswith(("_files", "_paths", "_dirs")):
@@ -129,6 +134,12 @@ class ClientHelperTests(unittest.TestCase):
         Written as literals rather than recomputed so the test states what the
         behaviour *was*: a refactor meant to preserve semantics has to be checkable
         against the semantics it claims to preserve.
+
+        One deliberate addition since: ``prev_query_written_files`` now declares
+        FILE_PATH. It was previously written into the execution context without being
+        declared at all, so the delete observer — which purges ``fields_with(FILE_PATH)``
+        — could not see it, and a deleted file kept being announced in the pin as
+        "written last query, re-read before editing".
         """
         m = execution_context_module
         self.assertEqual(set(m.fields_with(m.CARRY)), {
@@ -136,7 +147,7 @@ class ClientHelperTests(unittest.TestCase):
             "checked_paths"})
         self.assertEqual(set(m.fields_with(m.FILE_PATH)), {
             "existing_paths", "read_files", "checked_paths", "dirty_written_files",
-            "validated_files", "snippet_read_files"})
+            "validated_files", "snippet_read_files", "prev_query_written_files"})
         self.assertEqual(set(m.fields_with(m.KNOWN_FILE)), {
             "existing_paths", "read_files", "checked_paths", "snippet_read_files"})
         self.assertEqual(set(m.DISCOVERY_EVIDENCE_SIGNALS), {
@@ -547,14 +558,104 @@ class ClientHelperTests(unittest.TestCase):
         self.assertFalse(approved)
         self.assertIn("invalid approval responses", note)
 
-    def test_denied_tool_result_includes_fallback_hint(self) -> None:
+    def test_denied_tool_result_offers_the_three_readings(self) -> None:
         agent = client_module.MimirAgent()
         # fallback_tools is seeded from the live registry post-connect; emulate that here.
         agent.approvals.fallback_tools["bash_run"] = ("code_run", "read_file_lines", "grep")
-        payload = json.loads(agent._denied_tool_result("bash_run", {"command": "echo hi"}))
+        payload = json.loads(
+            agent._denied_tool_result("bash_run", {"command": "echo hi"}, "denied by user"))
         self.assertEqual(payload["status"], "error")
-        self.assertIn("Suggested safe alternatives", payload["hint"])
-        self.assertIn("code_run", payload["hint"])
+        self.assertEqual(payload["denial_stage"], "reconsider")
+        self.assertEqual(payload["denial_reason"], "denied by user")
+        self.assertEqual(payload["denial_kind"], "denied")
+        # All three readings are offered on a first refusal, alternatives included.
+        for fragment in ("Not this way", "Unnecessary", "Stop", "code_run"):
+            self.assertIn(fragment, payload["hint"])
+        # Re-asking is the behaviour the ladder removes; the copy must not invite it.
+        self.assertNotIn("Ask the user for confirmation", payload["hint"])
+
+    def test_denied_tool_result_narrows_as_refusals_accumulate(self) -> None:
+        agent = client_module.MimirAgent()
+        execution_context = {"denial_history": []}
+        scope = agent.approval_scope("bash_run", {"command": "pip install numpy"})
+
+        def refuse() -> dict:
+            execution_context["denial_history"].append(
+                {"tool": "bash_run", "scope": scope, "kind": "denied", "reason": "denied by user"})
+            return json.loads(agent._denied_tool_result(
+                "bash_run", {"command": "pip install numpy"}, "denied by user", execution_context))
+
+        first = refuse()
+        self.assertEqual(first["denial_stage"], "reconsider")
+
+        second = refuse()
+        self.assertEqual(second["denial_stage"], "drop_or_stop")
+        self.assertIn("Do not try another route", second["hint"])
+
+        third = refuse()
+        self.assertEqual(third["denial_stage"], "handback")
+        self.assertEqual(third["prior_refusals_for_this_goal"], 3)
+        self.assertIn("stop here and hand back", third["hint"])
+
+    def test_record_denied_tool_call_feeds_two_independent_ledgers(self) -> None:
+        # denied_tool_calls is the open set and gets cleared when the action later
+        # succeeds; denial_history is what the ladder counts and must survive that,
+        # or a refusal followed by an unrelated success would reset the escalation.
+        from mimir.client.guardrails.observations import _observe_denial_clearing
+        from mimir.client.guardrails.workflow import denial_stage
+
+        agent = client_module.MimirAgent()
+        execution_context = client_module.MimirAgent._new_execution_context()
+        args = {"command": "pip install numpy"}
+        scope = agent.approval_scope("bash_run", args)
+
+        agent._record_denied_tool_call("bash_run", args, execution_context, "denied by user")
+        agent._record_denied_tool_call("bash_run", args, execution_context, "denied by user")
+        self.assertEqual(len(execution_context["denied_tool_calls"]), 2)
+        self.assertEqual(execution_context["denial_history"][0]["scope"], scope)
+        self.assertEqual(execution_context["denial_history"][0]["kind"], "denied")
+        self.assertEqual(denial_stage(execution_context, scope), "drop_or_stop")
+
+        _observe_denial_clearing(agent, "bash_run", args, "ok", execution_context)
+
+        self.assertEqual(execution_context["denied_tool_calls"], [])
+        self.assertEqual(len(execution_context["denial_history"]), 2)
+        self.assertEqual(denial_stage(execution_context, scope), "drop_or_stop")
+
+    def test_handback_nudge_fires_past_its_frequency_cap(self) -> None:
+        # The other denial messages ask the model to act, so they are rationed. This
+        # one tells it to stop — a reminder to stop that is itself suppressed leaves
+        # the model going.
+        import importlib
+        from mimir.client.config.constants import NUDGE_MAX_DENIAL
+        nudge_logic = importlib.import_module("mimir.client.guardrails.nudges.engine")
+
+        execution_context = {
+            "workflow_state": "edit",
+            "denied_tool_calls": [{"tool": "bash_run", "scope": "bash:bash_run:pip install"}],
+            "denial_history": [
+                {"tool": "bash_run", "scope": "bash:bash_run:pip install", "kind": "denied"}
+            ] * 3,
+            "dirty_written_files": set(),
+            "validated_files": set(),
+            "nudge_counts": {"denial": NUDGE_MAX_DENIAL},
+        }
+        messages: list = []
+
+        class _FakeAgent:
+            model = "big-model"
+            enforcement = "off"
+
+        fired = nudge_logic.maybe_append_nudge(
+            agent=_FakeAgent(),
+            query="please add the new feature",
+            active_mode="agent",
+            execution_context=execution_context,
+            messages=messages,
+        )
+        self.assertTrue(fired)
+        self.assertIn("Stop here", messages[-1]["content"])
+        self.assertNotIn("reach it another way", messages[-1]["content"])
 
     def test_state_machine_allows_code_edit_without_prior_read_in_edit_state(self) -> None:
         agent = client_module.MimirAgent()
@@ -2237,6 +2338,52 @@ class ClientHelperTests(unittest.TestCase):
 
     def test_is_proceed_signal_rejects_unrelated_queries(self) -> None:
         self.assertFalse(chat_session_module._is_proceed_signal("what does the policy module do?"))
+
+    # ── verification ledger in the terminal ───────────────────────────────────
+
+    def _ledger_block(self) -> str:
+        from mimir.client.query_engine.finalize import _annotate_answer_with_changes
+        from mimir.client.query_engine.verification import split_answer_ledger
+
+        ec = client_module.MimirAgent._new_execution_context()
+        ec["dirty_written_files"].add("solver.py")
+        return split_answer_ledger(_annotate_answer_with_changes("Done.", ec))[1]
+
+    def test_cli_ledger_collapses_to_one_line_pointing_at_the_command(self) -> None:
+        line = chat_session_module.format_ledger_summary(self._ledger_block())
+        self.assertEqual(len(line.strip().splitlines()), 1)
+        self.assertIn("1 file", line)
+        self.assertIn("/ledger", line)
+
+    def test_ledger_command_expands_the_last_ledger(self) -> None:
+        from mimir.client.ui.cli.chat_commands import handle_chat_command
+
+        block = self._ledger_block()
+
+        async def _run(show):
+            return await handle_chat_command(
+                query="/ledger", mode="agent", thinking=False, streaming=False,
+                batch_mode=False, set_mode=lambda v: None, set_thinking=lambda v: None,
+                set_streaming=lambda v: None, set_batch_mode=lambda v: None,
+                refresh_repo_baseline=None, show_ledger=show,
+            )
+
+        handled, message = asyncio.run(_run(
+            lambda: chat_session_module.format_ledger_full(block)))
+        self.assertTrue(handled)
+        self.assertIn("solver.py", message)
+
+        # No ledger yet (a read-only turn): the command says so instead of erroring.
+        handled, message = asyncio.run(_run(lambda: None))
+        self.assertTrue(handled)
+        self.assertIn("No verification ledger", message)
+
+    def test_cli_ledger_expands_without_markdown_noise(self) -> None:
+        # The terminal gets the rows plain — no backticks, no bold markers.
+        full = chat_session_module.format_ledger_full(self._ledger_block())
+        self.assertIn("solver.py — not validated", full)
+        self.assertNotIn("`", full)
+        self.assertNotIn("**", full)
 
     # ── live todo checklist ───────────────────────────────────────────────────
 

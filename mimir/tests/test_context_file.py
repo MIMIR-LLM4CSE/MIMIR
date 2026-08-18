@@ -113,7 +113,14 @@ class DefaultBaseShapeTests(unittest.TestCase):
         # wall-of-text prompt this replaced, and the structural guarantees below
         # (real headings, one instruction per line) are the actual protection
         # against regressing to prose — length alone never was.
-        self.assertLess(len(cb._DEFAULT_BASE_SYSTEM_CONTENT), 10500)
+        # Raised 10500 → 11000 for the denial-triage line in ## Non-negotiables: the
+        # prompt sat at 10430. A refused approval carries one of three meanings (wrong
+        # means / unnecessary step / stop), and reading it as "an error to retry" is
+        # exactly the non-self-correcting failure this section exists for. The nudge
+        # and tool-result copy say the same thing situationally, but both are
+        # enforcement-gated or arrive only after the fact; this line is the carrier
+        # that survives every level.
+        self.assertLess(len(cb._DEFAULT_BASE_SYSTEM_CONTENT), 11000)
 
     def test_env_resolution_cascade_lives_in_the_nudges_not_the_prompt(self) -> None:
         # The 5-step cascade is covered by env_resolution/env_cleanup nudges, which

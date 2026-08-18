@@ -1,6 +1,7 @@
 import types
 import unittest
 
+from mimir.client.guardrails.policy import approval
 from mimir.client.guardrails.policy.approval import ApprovalManager as _ApprovalManager
 from mimir.client.context.capabilities import (
     NON_BATCH, SENSITIVE, ToolCaps, fallbacks, names_with_cap,
@@ -77,6 +78,47 @@ class ApprovalManagerTests(unittest.TestCase):
         self.assertFalse(approved)
         self.assertEqual(note, "denied after invalid approval responses")
         self.assertEqual(len(outputs), 3)
+
+
+class DenialKindTests(unittest.TestCase):
+    """Every refusal note a front-end can produce maps to a stable kind token.
+
+    The notes are prose the user reads; the kinds are what the policy layer branches
+    on. If a front-end's wording drifts out of the table the mapping degrades to a
+    plain refusal — never an exception, since an unrecognised note is still a refusal.
+    """
+
+    def test_every_front_end_note_maps_to_its_kind(self) -> None:
+        cases = {
+            "denied by user": approval.DENIAL_DENIED,
+            "denied": approval.DENIAL_DENIED,                       # WS Block button
+            "cancelled": approval.DENIAL_CANCELLED,                 # WS Stop button
+            "denied because pending batch review was rejected": approval.DENIAL_BATCH_REJECT,
+            "denied after invalid approval responses": approval.DENIAL_INVALID_RESPONSE,
+            "path outside the workspace was not approved": approval.DENIAL_PATH,
+            "already refused; not asked again": approval.DENIAL_AUTO_REPEAT,
+        }
+        for note, expected in cases.items():
+            with self.subTest(note=note):
+                self.assertEqual(approval.denial_kind(note), expected)
+
+    def test_unknown_or_missing_note_degrades_to_a_plain_refusal(self) -> None:
+        for note in ("", None, "something a plugin invented"):
+            with self.subTest(note=note):
+                self.assertEqual(approval.denial_kind(note), approval.DENIAL_DENIED)
+
+    def test_the_cli_notes_are_exactly_the_ones_request_returns(self) -> None:
+        # Guards the mapping against the notes drifting in approval.request().
+        manager = approval_module.ApprovalManager({"write_file"})
+        manager.batch_mode = False
+        _, note = manager.request(
+            tool_name="write_file",
+            server_name="files",
+            arguments={"path": "demo.txt"},
+            input_func=lambda _: "n",
+            output_func=lambda _: None,
+        )
+        self.assertEqual(approval.denial_kind(note), approval.DENIAL_DENIED)
 
 
 class SensitivityGateTests(unittest.TestCase):

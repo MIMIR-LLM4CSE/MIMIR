@@ -37,14 +37,22 @@ class _FakeAgent:
         return tool_name, rewritten
 
     def _request_tool_approval(self, tool_name: str, arguments: dict) -> tuple[bool, str]:
-        return False, "denied"
-
-    def _record_denied_tool_call(self, tool_name: str, arguments: dict, execution_context: dict | None) -> None:
-        self.denied_calls.append((tool_name, arguments, execution_context))
+        return False, "denied by user"
 
     @staticmethod
-    def _denied_tool_result(tool_name: str, arguments: dict) -> str:
-        return f"denied:{tool_name}:{arguments.get('path', '')}"
+    def approval_scope(tool_name: str, arguments: dict) -> str:
+        return f"fake:{tool_name}"
+
+    def _record_denied_tool_call(
+        self, tool_name: str, arguments: dict, execution_context: dict | None, note: str = "",
+    ) -> None:
+        self.denied_calls.append((tool_name, arguments, execution_context, note))
+
+    @staticmethod
+    def _denied_tool_result(
+        tool_name: str, arguments: dict, note: str = "", execution_context: dict | None = None,
+    ) -> str:
+        return f"denied:{tool_name}:{arguments.get('path', '')}:{note}"
 
     @staticmethod
     def _is_write_tool(tool_name: str) -> bool:
@@ -319,8 +327,11 @@ class PolicyManagerTests(unittest.TestCase):
                 execution_context={},
             )
 
-        self.assertEqual(result.violation, "denied:read_file_lines:x.py")
+        # The refusal note reaches both the ledger and the tool result — it used to be
+        # computed by the front-end and then dropped on the floor.
+        self.assertEqual(result.violation, "denied:read_file_lines:x.py:denied by user")
         self.assertEqual(len(agent.denied_calls), 1)
+        self.assertEqual(agent.denied_calls[0][3], "denied by user")
 
     def test_write_policy_violation_short_circuits_approval(self) -> None:
         agent = _FakeAgent()
@@ -357,6 +368,60 @@ class PolicyManagerTests(unittest.TestCase):
 
         self.assertIsNone(result.violation)
         self.assertEqual(agent.denied_calls, [])
+
+    def test_scope_at_the_end_of_the_ladder_is_refused_without_asking_again(self) -> None:
+        # Being shown the same card a fourth time after saying no three times is the
+        # friction the ladder exists to remove: the gate refuses on the user's behalf.
+        agent = _FakeAgent()
+        agent.approvals = SimpleNamespace(is_sensitive=lambda tool, args: True)
+        asked = {"count": 0}
+
+        def _never_called(tool_name, arguments):
+            asked["count"] += 1
+            return False, "denied by user"
+
+        agent._request_tool_approval = _never_called
+        scope = agent.approval_scope("read_file_lines", {})
+        context = {"denial_history": [
+            {"tool": "read_file_lines", "scope": scope, "kind": "denied", "reason": "denied by user"}
+            for _ in range(3)
+        ]}
+
+        with patch.object(policy_manager_module, "ensure_execution_context", return_value=context), \
+             patch.object(policy_manager_module, "check_state_machine_guard", return_value=None), \
+             patch.object(policy_manager_module, "check_write_policy", return_value=None):
+            result = policy_manager_module.evaluate_tool_preconditions(
+                agent=agent,
+                tool_name="read_file_lines",
+                arguments={"path": "x.py"},
+                execution_context=context,
+            )
+
+        self.assertEqual(asked["count"], 0)
+        self.assertIn("already refused; not asked again", result.violation)
+
+    def test_an_unrelated_scope_is_still_put_to_the_user(self) -> None:
+        # The ladder escalates a goal, not the session: a different action starts fresh.
+        agent = _FakeAgent()
+        agent.approvals = SimpleNamespace(is_sensitive=lambda tool, args: True)
+        agent._request_tool_approval = lambda tool_name, arguments: (True, "approved once")
+        context = {"denial_history": [
+            {"tool": "replace_in_file", "scope": "fake:replace_in_file",
+             "kind": "denied", "reason": "denied by user"}
+            for _ in range(3)
+        ]}
+
+        with patch.object(policy_manager_module, "ensure_execution_context", return_value=context), \
+             patch.object(policy_manager_module, "check_state_machine_guard", return_value=None), \
+             patch.object(policy_manager_module, "check_write_policy", return_value=None):
+            result = policy_manager_module.evaluate_tool_preconditions(
+                agent=agent,
+                tool_name="read_file_lines",
+                arguments={"path": "x.py"},
+                execution_context=context,
+            )
+
+        self.assertIsNone(result.violation)
 
     def test_returns_normalized_inputs_when_allowed(self) -> None:
         agent = _FakeAgent()

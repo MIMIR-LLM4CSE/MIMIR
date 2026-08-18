@@ -91,11 +91,9 @@ def _should_enter_validate(execution_context: dict[str, Any]) -> bool:
 
 
 def _edit_signature(tool_name: str, path: str, arguments: dict, registry: Any = None) -> str:
-    # Dedup signature built from the args the *server* declares as identifying an
-    # edit (the ``edit_sig`` arg-role) — e.g. (old_text, new_text) for a replace,
-    # (start_line, end_line, new_content) for a line edit, (content) for a write.
-    # Each part is trimmed to a 64-char preview. Tools that declare no edit_sig
-    # role fall back to a full-arguments signature.
+    # Dedup signature from the args the *server* declares as identifying an edit (the
+    # ``edit_sig`` arg-role), each part trimmed to a 64-char preview. Tools declaring no
+    # edit_sig role fall back to a full-arguments signature.
     sig_args = arg_role(tool_name, "edit_sig", registry)
     if sig_args:
         parts = "|".join(str(arguments.get(a, "")).strip()[:64] for a in sig_args)
@@ -201,10 +199,9 @@ def _observe_edit_outcome(
     else:
         new_fail_count = 1
         execution_context["edit_loop_state"][edited_path] = (current_signature, new_fail_count)
-    # Per-file failure streak, incremented regardless of whether the patch changed.
-    # This is what escalates a model that keeps trying *different* wrong anchors on the
-    # same file (the common case) — the signature-based count above resets on each new
-    # patch and only guards the identical-patch spin in check_write_policy.
+    # Per-file streak, incremented whether or not the patch changed — this is what
+    # escalates a model trying *different* wrong anchors on the same file. The
+    # signature-based count above resets per patch and only guards identical-patch spin.
     streak = int(execution_context["edit_fail_streak_by_file"].get(edited_path, 0)) + 1
     execution_context["edit_fail_streak_by_file"][edited_path] = streak
     # After 2 consecutive failures on the file (any patch) force the model to re-read it:
@@ -678,21 +675,15 @@ def _carries_shell_command(agent: Any, tool_name: str) -> tuple[str, ...] | None
 
 
 # Leading commands (or `python -m` modules) that validate code project-wide. A
-# *successful* run of one that names no specific source file (bare `pytest`,
-# `ruff check .`, `mypy src/`) validates the whole tree → clears every pending file.
+# *successful* run of one naming no specific source file (bare `pytest`, `ruff check .`,
+# `mypy src/`) validates the whole tree → clears every pending file. Per-file validation
+# is already language-agnostic; this set only adds the whole-project shortcut.
 #
-# INVARIANT: every entry must be runnable, i.e. also declared in the bash server's
-# `_ALLOWED_COMMANDS` AND recognised by `bash_classify._EXEC_COMMANDS` (`py_compile`
-# runs as `python -m py_compile`, which both allow). An entry missing from either is
-# dead — the server rejects it or the classifier can't tag it. To add another cross-
-# language project runner (e.g. `eslint`), declare it in those two places first, then
-# list it here. Per-file validation is language-agnostic already (any file named in a
-# compile/run/check command — `gcc a.c`, `gfortran b.f90`, `javac Foo.java`,
-# `node --check app.js` — is credited via its declared compiler); this set only adds
-# the *whole-project* shortcut. Deliberately excluded even though declared:
-# `python`/`node`/`./binary` (running a program/inline snippet is not validation) and
-# `make`/`cmake` (ambiguous — a green `make clean`/docs target validates nothing), so
-# those only ever credit the file they explicitly name.
+# INVARIANT: every entry must also be in the bash server's `_ALLOWED_COMMANDS` AND
+# `bash_classify._EXEC_COMMANDS`, or it is dead — rejected by the server or untaggable
+# by the classifier. Declare a new project runner in those two places first.
+# Excluded on purpose: `python`/`node`/`./binary` (running a program is not validation)
+# and `make`/`cmake` (a green `make clean` validates nothing).
 _PROJECT_VALIDATORS = frozenset({
     # Python
     "pytest", "ruff", "mypy", "pyflakes", "black", "py_compile",
@@ -702,13 +693,11 @@ _PROJECT_VALIDATORS = frozenset({
 # A positional that names a specific file (has a dotted extension), vs a directory/`.`.
 _FILE_EXT_RE = _re.compile(r"\.[A-Za-z0-9]+$")
 
-# How much a green run of each validator actually proves. Keys are command heads;
-# anything not listed defaults to "executed" (the command ran the code — which is
-# what running an arbitrary binary or interpreter amounts to). Deliberately a
-# *lower* bound: `pytest` is "executed" no matter how good the test is, because
-# from outside the process a rigorous suite and a vacuous one are the same exit
-# code. Only printed invariants (see numerics.observed_invariant_metrics) lift a
-# run to "oracle", and that promotion happens in _observe_bash_validation.
+# How much a green run of each validator actually proves, keyed by command head;
+# unlisted heads default to "executed". Deliberately a *lower* bound: `pytest` is
+# "executed" however good the test is, since from outside the process a rigorous suite
+# and a vacuous one are the same exit code. Only printed invariants (see
+# numerics.observed_invariant_metrics) lift a run to "oracle", in _observe_bash_validation.
 _VALIDATOR_TIER = {
     "py_compile": "syntax",
     "ruff": "static", "mypy": "static", "pyflakes": "static", "black": "static",
@@ -783,12 +772,11 @@ def _observe_bash_validation(
     if not explicit and not whole_project:
         return
     # A green run that *reported* a numerical invariant compared the artifact against
-    # something it does not itself define — an analytic or manufactured solution, a
-    # reference field, a conserved quantity, a refinement sweep. That is the only
-    # signal available, without reading the test's assertions, that separates "the
-    # code ran" from "the code was checked against something". Presence of the key is
-    # what counts; the value is never interpreted (a forged number is unfalsifiable
-    # from out here — which is why the proxy seals references server-side instead).
+    # something it does not define (analytic solution, reference field, conserved
+    # quantity, refinement sweep) — the only signal, short of reading the test's
+    # assertions, separating "the code ran" from "the code was checked". Presence of the
+    # key is what counts; the value is never interpreted (a forged number is
+    # unfalsifiable from out here, which is why the proxy seals references server-side).
     if status == "ok" and observed_invariant_metrics(str(payload.get("stdout") or "")):
         tier = "oracle"
     dirty = execution_context.get("dirty_written_files", set())
@@ -808,14 +796,12 @@ def _observe_bash_validation(
     if status == "ok" and whole_project:
         for target in list(pending_validation_paths(execution_context)):
             _mark_file_validated(execution_context, target, tier)
-    # …but a failing project-wide run is still *evidence*, even when it is not
-    # attribution: the suite was red while exactly these files were pending. Recording
-    # that is what lets the dominant repair loop — run the suite, fix, run it again —
-    # earn the red→green promotion, which per-file attribution alone never sees (the
-    # command names the test, the pending file is the source). Deliberately separate
-    # from `_register_validation_failure`: no retry budget is charged, nothing is
-    # un-validated, no workflow transition fires. An unattributable failure must not
-    # cost a file its budget; it may still testify that the check discriminates.
+    # …but a failing project-wide run is still *evidence*, if not attribution: the suite
+    # was red while exactly these files were pending. That is what lets the repair loop
+    # (run suite, fix, run again) earn the red→green promotion, which per-file
+    # attribution never sees — the command names the test, the pending file is the
+    # source. Separate from `_register_validation_failure` on purpose: no retry budget
+    # charged, nothing un-validated, no workflow transition.
     elif whole_project and tier == "executed":
         for target in pending_validation_paths(execution_context):
             _record_executed_failure(execution_context, target)
@@ -844,10 +830,8 @@ def _observe_command(
         return
 
     # Track the shell's cwd across the chain: a ``cd sub`` rebases the relative path
-    # operands of every later segment (e.g. ``cd sub && cat f.py`` reads sub/f.py, and
-    # ``cd sub && pytest t.py`` validates sub/t.py) so they normalize to the same
-    # workspace path the dedicated file/search observers would record. Applied
-    # uniformly to every path-bearing kind, not just exec.
+    # operands of every later segment, so they normalize to the same workspace path the
+    # dedicated file/search observers record. Applied to every path-bearing kind.
     rel_base = ""
 
     def _resolve(op: str) -> str | None:

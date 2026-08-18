@@ -1057,14 +1057,12 @@ body {
   font-size: 0.85em;
   overflow: hidden;
 }
-/* The scrollable body holds the IN / OUT sections. Restricted by default so the
-   panel stays compact; `--full` lets it grow to the roomier size on demand. */
+/* The body stacks the IN / OUT sections and never scrolls itself: each pane owns
+   its own scrollbar (see `.tool-exec-body-col` below), so a long command cannot
+   push the output out of the panel. */
 .tool-exec-body {
-  max-height: 116px;
-  overflow: auto;
-}
-.tool-exec--full .tool-exec-body {
-  max-height: 260px;
+  display: flex;
+  flex-direction: column;
 }
 .tool-exec pre {
   margin: 0;
@@ -1081,10 +1079,32 @@ body {
   padding-left: 6px;
 }
 /* The content column: must be allowed to shrink, else long unbreakable tokens
-   would push it past the panel instead of wrapping. */
+   would push it past the panel instead of wrapping. It is also the scroll port —
+   one per pane, each with its own height cap, so IN and OUT are always both
+   visible however long either one is. A short pane still takes only the height
+   it needs; `--full` widens both caps on demand. */
 .tool-exec-section > .tool-exec-body-col {
   flex: 1 1 auto;
   min-width: 0;
+  overflow: auto;
+  max-height: 104px;
+}
+.tool-exec-section--in > .tool-exec-body-col {
+  max-height: 62px;
+}
+.tool-exec--full .tool-exec-section > .tool-exec-body-col {
+  max-height: 300px;
+}
+.tool-exec--full .tool-exec-section--in > .tool-exec-body-col {
+  max-height: 150px;
+}
+/* Lone pane (a command with no output, or output with no command): nothing to
+   share the panel with, so it takes the whole budget. */
+.tool-exec-section:only-child > .tool-exec-body-col {
+  max-height: 116px;
+}
+.tool-exec--full .tool-exec-section:only-child > .tool-exec-body-col {
+  max-height: 320px;
 }
 .tool-exec-section--in {
   background: var(--surface-2);
@@ -1093,10 +1113,8 @@ body {
   border-top: 1px solid var(--border);
 }
 .tool-exec-tag {
-  /* Pinned while its own section scrolls past, so the label stays readable on
-     long output without ever sitting on top of it. */
-  position: sticky;
-  top: 5px;
+  /* Sits in the gutter outside its pane's scroll port, so it stays put while the
+     pane scrolls without ever sitting on top of the text. */
   flex: 0 0 auto;
   width: 26px;
   margin-top: 5px;
@@ -1202,6 +1220,12 @@ body {
   white-space: pre-wrap;
   word-break: break-word;
   color: var(--danger);
+}
+/* The error panel scrolls as one body (its tag is inside the scroll port), so the
+   ERR tag pins itself — unlike the IN / OUT tags, which sit outside their pane. */
+.tool-error-body > .tool-exec-tag--err {
+  position: sticky;
+  top: 5px;
 }
 .tool-exec-tag--err {
   color: var(--danger);
@@ -2624,6 +2648,112 @@ body {
   overflow: auto;
 }
 .thinking-block--live .thinking-content { max-height: 160px; }
+
+/* ── Verification ledger — collapsed evidence panel under an answer ───────────
+   Machine-recorded, so it must be readable without competing with the answer:
+   collapsed it is one dim status line; open it is a tinted rail of rows. The
+   status (ok / note / warn) picks the accent every part below reads from. */
+
+.ledger {
+  margin: var(--sp-4) 0 var(--sp-2);
+  font-size: calc(var(--chat-font-size) - 2px);
+  --ledger-accent: var(--fg-dim);
+}
+.ledger--ok   { --ledger-accent: var(--ok); }
+.ledger--note { --ledger-accent: var(--fg-dim); }
+.ledger--warn { --ledger-accent: var(--warn); }
+
+.ledger-summary {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--sp-3);
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  color: var(--fg-dim);
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+.ledger-summary::-webkit-details-marker { display: none; }
+.ledger-summary:hover {
+  background: var(--bg-hover);
+  border-color: var(--border);
+  color: var(--fg);
+}
+.ledger[open] .ledger-summary { color: var(--fg); }
+
+.ledger-chevron {
+  font-size: 0.9em;
+  opacity: 0.6;
+  transition: transform var(--motion-fast);
+}
+.ledger[open] .ledger-chevron { transform: rotate(90deg); }
+
+.ledger-glyph { color: var(--ledger-accent); }
+.ledger-label { font-weight: 600; }
+
+.ledger-chip {
+  font-family: var(--mono);
+  font-size: 0.82em;
+  white-space: nowrap;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--ledger-accent) 14%, transparent);
+  color: color-mix(in srgb, var(--ledger-accent) 70%, var(--fg));
+}
+
+.ledger-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  margin: var(--sp-2) 0 0 var(--sp-3);
+  padding: var(--sp-3) var(--sp-4);
+  border-left: 2px solid color-mix(in srgb, var(--ledger-accent) 45%, transparent);
+  border-radius: 0 var(--radius-md) var(--radius-md) 0;
+  background: color-mix(in srgb, var(--ledger-accent) 6%, transparent);
+}
+
+.ledger-row {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-3);
+  line-height: 1.45;
+  color: var(--fg-dim);
+}
+.ledger-row--warn { color: var(--fg); }
+.ledger-row-text { min-width: 0; overflow-wrap: anywhere; }
+.ledger-row strong { color: var(--warn); font-weight: 600; }
+
+/* The dot carries the row's verdict, so the text stays quiet. */
+.ledger-row-dot {
+  flex-shrink: 0;
+  width: 5px;
+  height: 5px;
+  margin-top: 1px;
+  border-radius: 50%;
+  background: var(--fg-dim);
+  opacity: 0.55;
+}
+.ledger-row--ok .ledger-row-dot { background: var(--ok); opacity: 0.9; }
+.ledger-row--warn .ledger-row-dot { background: var(--warn); opacity: 1; }
+
+.ledger-path {
+  font-family: var(--mono);
+  font-size: 0.92em;
+  color: var(--fg);
+  background: color-mix(in srgb, var(--fg) 8%, transparent);
+  padding: 0 4px;
+  border-radius: var(--radius-sm);
+}
+
+.ledger-foot {
+  margin-top: var(--sp-1);
+  font-size: 0.8em;
+  font-style: italic;
+  opacity: 0.55;
+}
 
 /* ── "Show more / less" affordance for clipped tool logs & diffs ──────────── */
 .show-more-btn {

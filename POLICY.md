@@ -44,7 +44,8 @@ conversation *after* a model step (per agent step). Both consult the same
 
 Every tool call passes through a chain of safety checks before it can run. The
 first check that objects stops the call and hands the model an explanation it can
-react to (a denied action is recorded as *unfinished work*). The checks run in a
+react to (a refused action is weighed against the three readings of a refusal — see
+[If approval is refused](#if-approval-is-refused)). The checks run in a
 fixed order, and add-on packs can insert extra rules but never remove any.
 
 ```mermaid
@@ -66,7 +67,7 @@ flowchart TD
     H -- ok --> I{"Add-on project rules<br/><small>last gate — just before asking you</small>"}
     I -- yes --> X
     I -- ok --> J{"Risky action?<br/>ask the user"}
-    J -- denied --> Y["🚫 Mark the task<br/>as unfinished"]
+    J -- refused --> Y["🚫 Read the refusal:<br/>another way / drop the step / stop"]
     J -- "allowed / not risky" --> K(["▶️ Run the tool"])
     K --> L["📒 Remember what happened"]
 
@@ -181,6 +182,7 @@ runner just walks the table.
   - batch-mode queuing
   - pre-write file snapshot capture and unified diff display
   - revert-all on rejection
+  - `denial_kind(note)`: maps each front-end's refusal note ("denied by user", "cancelled", …) to a stable token, so the policy layer branches on a kind instead of on prose
 
 - `mimir/client/guardrails/policy/bash_classify.py`
   - classifies a `bash_run` command line (command + options) into capability **kinds** (read / search / inspect / write / exec / env) plus the operands it acts on; `classify_bash_command` (per-segment, `; && || |`) / `bash_command_is_readonly` (all segments read-only?)
@@ -200,9 +202,9 @@ runner just walks the table.
 
   Order per step: **core verification → pack verification → (stop if `off`) → core guidance → pack guidance**; the first row whose `should_fire` is true fires and wins. Each nudge's per-query frequency cap (`nudge_count(ec, category) < NUDGE_MAX_*`) lives inside its own predicate. Nudge and prompt text refers to tools by **capability/category**, never by literal MCP tool name (the plan output via "the plan/todo tool"). The lone exception is validation, which names the bash **commands** it steers toward (`python -m py_compile` / `pytest` / `ruff` / `mypy`) since those are shell invocations, not MCP tools.
 
-  The nudge **message copy** (the `render` text for every built-in nudge, plus the stateful `validation_nudge_message` builder) lives in `mimir/client/guardrails/nudges/messages.py` — inside the nudges subsystem, since only it consumes them. `guardrails/workflow.py` keeps only the shared **state model + predicates** (`set_workflow_state`, `has_pending_validation`, `has_blocking_denials`, `pending_validation_paths`) and the agent-loop plan/loop copy.
+  The nudge **message copy** (the `render` text for every built-in nudge, plus the stateful `validation_nudge_message` builder) lives in `mimir/client/guardrails/nudges/messages.py` — inside the nudges subsystem, since only it consumes them. `guardrails/workflow.py` keeps only the shared **state model + predicates** (`set_workflow_state`, `has_pending_validation`, `has_blocking_denials`, `pending_validation_paths`, plus the denial ladder — `denial_stage`, `worst_denial_stage`, `handback_required`) and the agent-loop plan/loop copy.
 
-  Separately from the `guardrails/nudges/engine.py` layers, the agent loop itself fires **loop-control correctives** mid-tool-loop (in `agent_loop.py`) when a call is over-repeated: the failing-call guard (identical *failed* non-write call → correct, then hard-block) and the redundant-success guard (non-write call returning byte-identical content → correct on the 1st repeat, hard-block + history-strip on the 2nd, with a neutral `status:"skipped"` notice so the model proceeds rather than retries). The **firing decision** lives in the loop; the corrective message **TEXT** lives alongside the other loop-control copy in `mimir/client/guardrails/workflow.py` (`repeat_corrective_message()` / `redundant_corrective_message()`), keeping wording consistent.
+  Separately from the `guardrails/nudges/engine.py` layers, the agent loop itself fires **loop-control correctives** mid-tool-loop (in `agent_loop.py`) when a call is over-repeated: the failing-call guard (identical *failed* non-write call → correct, then hard-block) and the redundant-success guard (non-write call returning byte-identical content → correct on the 1st repeat, hard-block + history-strip on the 2nd, with a neutral `status:"skipped"` notice so the model proceeds rather than retries); and, once refusals reach the end of the denial ladder, a one-time **hand-back stop** (`handback_corrective_message()`), which is mid-loop for the same reason — a model that has been told to hand back and hasn't is still calling tools, where no nudge can reach it. The **firing decision** lives in the loop; the corrective message **TEXT** lives alongside the other loop-control copy in `mimir/client/guardrails/workflow.py` (`repeat_corrective_message()` / `redundant_corrective_message()` / `handback_corrective_message()`), keeping wording consistent.
 
 ---
 
@@ -491,7 +493,7 @@ Target extraction (`_out_of_workspace_targets`) reuses the existing file/edit-ta
 
 Behavior:
 - with no approval hook wired the gate **fails closed** — out-of-workspace access is denied;
-- a granted path is recorded via `ApprovalManager.grant_path`, which mirrors the full allow set to `<state_dir>/approved_paths.json`. The sandboxed servers read that sidecar **per call** (their env is frozen at spawn, so the file is the only live client→server channel) and pass the entries as `extra_roots` to `resolve_path_in_root`. `always` also records a `path:<abspath>` scope token that skips re-prompting for the session;
+- a granted path is recorded via `ApprovalManager.grant_path`, which mirrors the full allow set to `<state_dir>/approved_paths.json`. The sandboxed servers read that sidecar **per call** (their env is frozen at spawn, so the file is the only live client→server channel) and pass the entries as `extra_roots` to `resolve_path_in_root`. `always` also records a `path:<abspath>` scope token that skips re-prompting for the session. Both the token check and the gate's target list work by **containment**, as the server does: `extra_roots` admits a granted path as a *root*, so once a directory is approved everything under it is already allowed there and a prompt for a child could no longer deny anything;
 - grants reset on session change (`reset_allowed_paths`, wired on the WS worker); a missing/corrupt sidecar yields `[]` (fail-closed — a broken allowlist can never widen the sandbox).
 
 **Shell commands carry their paths inside a string**, where the file-target extractor cannot see them — so `cat /etc/passwd` and `python /tmp/evil.py` used to be refused by the server with no prompt ever shown, leaving the user unable to grant an access they might well have wanted. `_shell_path_targets` walks the command's segments and surfaces every path they name, so the rule is uniform: *anything* reaching outside the workspace asks the user, whatever tool or syntax it arrives in.
@@ -500,7 +502,7 @@ The operand extraction is `servers/_shared/shell_paths.py`, imported by **both**
 
 Extraction is command-family aware, so no prompt is raised for text that merely looks like a path — a `grep` pattern or a `sed` script (`grep /etc/passwd notes.txt` opens nothing) — nor for flags (`-I/usr/include`, `-m pytest`). A path built from a shell **expansion** raises no prompt either, because it is refused outright by the guard: expansion happens in the child shell, so the path checked would not be the path read. The gate does parse *around* a bare `$VAR` (`shell_segments(allow_expansion=True)`), since a command mixing `gcc -I$CUDA_HOME/include` with a genuine out-of-workspace operand must still reach the user; command substitution (`$(...)`, backticks) stays opaque on both sides because it runs code.
 
-`cd` deserves a word, because it is the one target that is not itself an access. Moving the shell is side-effect-free, so a `cd` **inside** the workspace never reaches this gate — the approval for such a chain is decided by whatever command follows it, exactly as for any other call. Stepping **outside** does change what every later relative path in the chain resolves to, so the destination is surfaced here and the user decides. The walk threads the current directory through the segments (chained `cd`s accumulate) exactly as the server's `_resolve_cd_target` does, so `cd /etc && cat passwd` surfaces both `/etc` and `/etc/passwd`. The gate is capability-scoped to `CODE_EXEC` and driven off the shared segmenter, so no tool name or shell keyword is spelled out in it.
+`cd` deserves a word, because it is the one target that is not itself an access. Moving the shell is side-effect-free, so a `cd` **inside** the workspace never reaches this gate — the approval for such a chain is decided by whatever command follows it, exactly as for any other call. Stepping **outside** does change what every later relative path in the chain resolves to, so the destination is surfaced here and the user decides. The walk threads the current directory through the segments (chained `cd`s accumulate) exactly as the server's `_resolve_cd_target` does, so `cd /etc && cat passwd` surfaces `/etc` **and** the `/etc/passwd` it reaches — then asks only about `/etc`, the grant that covers both (one command naming a directory and paths inside it used to raise one prompt per path). The gate is capability-scoped to `CODE_EXEC` and driven off the shared segmenter, so no tool name or shell keyword is spelled out in it.
 
 **Scope.** This gate sees the paths a call *names*, not what an executed program then opens: `python`, `make`, `gcc` and a locally-built binary run with the account's full privileges, so `python -c "open('/etc/passwd')"` reaches outside without any path appearing in an argument. Note this gate is not the only line — the sensitive-tool approval below it stops **every** execution, in or out of the workspace, so nothing runs unasked (outside the auto-approving headless runner). The user therefore controls *whether* something runs; neither gate controls *what it does* once it does. That needs process-level isolation (namespaces, seccomp, a container), which is not implemented — see [SERVERS_DETAILED.md](SERVERS_DETAILED.md#scope-of-the-sandbox-read-this-before-trusting-confined) for the bounds on what an "always" grant covers.
 
@@ -508,13 +510,15 @@ This is a **safety-class** gate (like sensitive-tool approval): it runs at every
 
 ### The scratchpad (standing grant)
 
-`state_paths.scratch_dir()` — `<state_dir>/sessions/<sid>/scratch/`, falling back to `<state_dir>/scratch/` outside a session — is writable **without approval**, and never prompts. It is the agent's place for throwaway probe scripts, intermediate data and working files.
+`state_paths.scratch_dir()` — `<TMPDIR or /tmp>/mimir-<uid>-<workspace-id>/<sid>/`, falling back to the home itself outside a session — is writable **without approval**, and never prompts. It is the agent's place for throwaway probe scripts, intermediate data and working files.
 
 Why it exists: without one, the only writable location is the user's own workspace, so every temporary file is indistinguishable from produced work — it lands in the repo *and* in the change ledger, and then demands validation before the run can conclude. Consequently `observations._record_code_edit` **excludes** scratch paths from `dirty_written_files`, which is what makes the scratchpad useful rather than a new source of validation noise.
 
-Mechanically it composes two seams that already existed: `state_dir()` and the `extra_roots` parameter of `resolve_path_in_root`, which already admitted absolute paths outside the workspace. `state_paths.standing_roots()` is deliberately **separate** from `approved_roots()` — that sidecar is the record of decisions the *user* made, and folding a system grant into it would both misreport consent and let a stale/corrupt sidecar revoke the scratchpad. Both the session-scoped and session-less paths are granted so a session switch mid-run cannot revoke a path already being written.
+Why the temp dir: that is where throwaway work belongs and where the OS reclaims it, and it is the location a user looking for MIMIR's working files will actually think of. The price is that `/tmp` is world-writable, so an existing directory at our name is not necessarily ours. `state_paths.ensure_scratch_home()` is the one function here that touches the disk: it creates the home `0700`, and **declines** — returning `""` — on a symlink, a non-directory, or a foreign owner. The client calls it **once** at startup (`MimirAgent.__init__`) and on a refusal falls back to `<state_dir>/scratch`, where the scratchpad used to live: degraded, never absent. The resolved path is then published in `MIMIR_SCRATCH_DIR`, in the client's own environment *and* the servers' (`server_manager`), so the vetting happens in exactly one place and no other end re-derives the path. `scratch_home()` stays a pure resolution — a sandbox check runs on every call and must not materialise directories.
 
-The grant is the scratchpad specifically, not "outside is fine now": sibling paths under the state dir (plans, sessions) still prompt, and `/etc/passwd` is still refused. Client-side the exemption lives in `_out_of_workspace_targets`, resolved from `constants.STATE_DIR` for the same reason as the trusted read roots above.
+`state_paths.standing_roots()` is deliberately **separate** from `approved_roots()` — that sidecar is the record of decisions the *user* made, and folding a system grant into it would both misreport consent and let a stale/corrupt sidecar revoke the scratchpad. It grants the scratchpad **home**, one root covering the per-session subdirectory and the session-less fallback alike, so a session switch mid-run cannot revoke a path already being written.
+
+The grant is the scratchpad specifically, not "outside is fine now": the temp dir itself and a same-named sibling (`<home>_evil`) still prompt, paths under the state dir (plans, sessions) still prompt, and `/etc/passwd` is still refused. Client-side the exemption lives in `_out_of_workspace_targets`; `constants.STATE_DIR` is still passed to the shared helper, but only to read the active-session sidecar.
 
 ### Placement (where a new file goes)
 
@@ -627,11 +631,34 @@ The approval prompt shows the level on its own `Undo :` line (`ApprovalManager.d
 
 **Where these classifications live.** There are **no hardcoded classification lists** in the client. Each tool's capabilities (`sensitive`, `plan_blocked`, `edit`, `non_batch`, …) are declared by its server via `@mcp.tool(**tool_caps(...))` and resolved at connect time into a **per-agent** live registry (`agent.tool_caps`) by `infer_tool_caps` (`tool.meta["mimir"]` › standard `annotations` › conservative default — no static fallback). The policy/approval/execution layers query that registry (`has_cap(name, cap, agent.tool_caps)` / `names_with_cap(cap, agent.tool_caps)`); the approval manager is seeded from it after connect (`MimirAgent.seed_classification_from_caps`). So a new MCP server is classified correctly with zero client edits. At startup the client logs an info line listing connected tools that declared no caps (`unannotated_live_tools` — either genuinely pure tools or one that forgot to declare). The registry is strictly per-agent because `spawn_agent` runs sub-agents concurrently with a subset of servers.
 
-If approval is denied:
-- the denial is recorded in execution context
-- the model receives a structured error
-- safe fallback suggestions may be included when available (guidance only; no automatic fallback execution)
-- final success is blocked unless the task can be completed safely without the denied action
+### If approval is refused
+
+A refusal is treated as an **instruction**, not as an error to report and retry. It can carry one of three meanings, and the model is required to weigh which, in this order of priority:
+
+1. **"Not this way"** — the goal stands, the means is wrong: reach it another way (the declared fallbacks are offered here as guidance; nothing is executed automatically).
+2. **"Unnecessary"** — the step is not needed: drop it, continue the rest of the task, and report it as skipped at the user's request. Dropping a step is *never* the same as getting past the approval gate, which remains a non-negotiable.
+3. **"Stop"** — end the turn and hand back, reporting what is done, what is blocked, and what is needed from the user.
+
+The client does not guess which one the user meant, but it does put a floor under the model's choice, so a wrong first guess cannot become a loop. Every refusal is appended to `denial_history` in the execution context, keyed by the same **approval scope** the `always` grants use — so refusing `pip install numpy` also escalates `pip install scipy`, while an unrelated command family starts fresh. The stage (`guardrails/workflow.denial_stage`) governs what is still open:
+
+| stage | reached when | readings left |
+|-------|--------------|---------------|
+| `reconsider` | 1st refusal of the scope | all three, model's judgment |
+| `drop_or_stop` | 2nd refusal of the scope, or 3 refusals in the query | (2) or (3) — another route to the same goal is off the table |
+| `handback` | 3rd refusal of the scope, 4 in the query, or the run was cancelled at the prompt | (3) only |
+
+At `handback`, further sensitive calls on that scope are **refused by the gate without prompting again** — being shown the same card a fourth time after saying no three times is precisely the friction this removes.
+
+The stage reaches the model through three carriers, all saying the same thing: the tool result it gets mid-loop (`agent_core._denied_tool_result`, which also carries `denial_reason` / `denial_kind` / `denial_stage`), the denial nudge once it stops calling tools (`nudges/messages.denial_nudge_message`), and — at `handback` only — a one-time mid-loop stop injected from `query_engine/dispatch.py`, since a model that has been told to hand back and hasn't is by definition still calling tools. The ladder is stated once in the system prompt's **Non-negotiables**, the only carrier that survives every enforcement level.
+
+Two ledgers are kept, deliberately: `denied_tool_calls` is the *open* set that feeds the completion report and is cleared once the action later succeeds; `denial_history` is append-only and is what the ladder counts, so a refusal followed by an unrelated success never silently resets the escalation.
+
+**Reporting.** A refusal alone no longer forces `Task is incomplete.` — reading (2) says the step was not needed, and the honest report of that is a finished task with a named omission. `finalize_incomplete_answer` picks one of three headlines (`is_incomplete_answer` is the predicate the CLI's re-plan offer and the sub-agent `completed` flag use):
+- `Stopped at your request.` — hand-back; residual risk stays **high**
+- `Task complete, except for what you refused.` — refusal absorbed, everything else done; risk **medium**, with the skipped actions listed under *Not performed*
+- `Task is incomplete.` — some other blocker is open
+
+A skipped step is never silent, whichever headline applies.
 
 ### Interactive clarification vs approval
 
@@ -653,24 +680,28 @@ Batch mode:
 
 ### Verification ledger (always emitted)
 
-`query_engine/finalize._annotate_answer_with_changes` appends a machine-recorded block to **every** answer, on every exit path — not enforcement-gated, not conditional on a plan. It replaces the older `[Files written this query: …]` suffix:
+`query_engine/verification.build_ledger` + `render_ledger` (called from `finalize._annotate_answer_with_changes`) append a machine-recorded block to **every** answer, on every exit path — not enforcement-gated, not conditional on a plan:
 
 ```
-[Verification ledger — machine-recorded, not model-authored]
-Files written: solver.py (validated: executed) ; test_solver.py (NOT validated)
-Discrimination: none observed — every check that passed was first run after the
+<!--mimir:ledger status="warn" files="2" summary="2 files · 1 not validated · 2 steps open"-->
+Verification ledger — machine-recorded, not model-authored:
+- `solver.py` — validated: executed
+- `test_solver.py` — **not validated**
+- Discrimination: none observed — every check that passed was first run after the
   change and was never seen failing, so nothing establishes that it tells working
   code from broken code.
-Declared but never written: helper.py
-Checklist: 2 step(s) unchecked — add the convergence test; document it
-Checklist: 1 optional step(s) not done
+- **Declared but never written:** `helper.py`
+- Checklist: **2 steps unchecked** — add the convergence test; document it
+- Checklist: 1 optional step not done
 ```
 
-Lines with no content are omitted, so a clean run with no checklist collapses to a single line. Why it exists: the model's closing prose and the recorded evidence used to sit side by side with nothing reconciling them, so "verified and working" could be emitted directly above files that had only ever been executed. The ledger lands *after* the model stops acting — it cannot loop and cannot be argued with.
+Rows with no content are omitted, so a clean run with no checklist collapses to a single row. Why it exists: the model's closing prose and the recorded evidence used to sit side by side with nothing reconciling them, so "verified and working" could be emitted directly above files that had only ever been executed. The ledger lands *after* the model stops acting — it cannot loop and cannot be argued with.
+
+**Marker contract** (how the ledger stays out of the way while still reaching the model). The block is always the answer's tail and opens with the `<!--mimir:ledger …-->` marker, which carries `status` (`ok` = settled evidence, nothing open · `note` = it passed but discriminates nothing · `warn` = something needs action), the number of files written, and the one-line `" · "`-separated summary. Front-ends split on the marker (`split_answer_ledger`, `parseLedger` in `ledgerUtils.ts`) and render the block as a **collapsed disclosure panel**: the VS Code webview as `VerificationLedger`, the CLI as a one-liner plus `/ledger` to expand. Bold marks exactly the rows a reader has to act on, which is what the webview tints rows by. Nothing is lost if a consumer ignores the marker — the block is plain markdown and the framing line repeats what the marker says.
 
 - the **discrimination** line appears only once something was actually executed (a syntax/lint-only edit never claimed correctness, so the per-file tier already tells the story). It is worded **domain-neutrally** on purpose: it used to name reference comparisons, conservation checks and convergence measurements — vocabulary a parser or a CLI can never satisfy — so it fired on every non-numerical run and became wallpaper. Numerical wording now appears only to *qualify* an invariant that was actually reported (`Reported invariant: … presence is recorded, never its value`), never to announce its absence.
-- a file at `oracle` names **which basis earned it**: `(validated: oracle — red→green)` or `(validated: oracle — reported invariant)`. The basis is derived, not stored — a file promoted by discrimination is exactly one in `executed_failures`, which is already kept for the promotion itself.
-- **"Declared but never written"** is the plan-vs-implementation check, obtained free from `declared_edit_set` — paths already scraped out of the checklist's own step text, which until now only fed a state transition.
+- a file at `oracle` names **which basis earned it**: `validated: oracle (red→green)` or `validated: oracle (reported invariant)`. The basis is derived, not stored — a file promoted by discrimination is exactly one in `executed_failures`, which is already kept for the promotion itself.
+- **"Declared but never written"** is the plan-vs-implementation check, obtained free from `declared_edit_set` — paths already scraped out of the checklist's own step text, which until now only fed a state transition. The comparison is `unwritten_declared_files` (one definition, read by the ledger, the completion issues, the residual-risk level, the validation nudge and the edit-state guidance), and it matches by **resolved path**, not by string: a write records the path the file tools took (absolute outside the workspace, root-relative inside) while the prose names the file however it reads best, so a bare mention (`write wave_solver_2d.py in ../other/`) matches on basename and a relative one is resolved against the root. A raw set difference announced a file as promised-and-skipped whenever the two spellings differed — which out-of-workspace writes guarantee.
 - **Optional steps** (`- [ ] (optional) …`, `[optional]`, `optional:`) are counted separately and never block; without this a step the plan marked aspirational vanished silently.
 
 ### Blocking conditions

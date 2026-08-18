@@ -28,6 +28,7 @@ async def handle_chat_command(
     trusted_tools: Iterable[str] | None = None,
     compact_history: Callable[[], Awaitable[None]] | None = None,
     compact_threshold_setter: Callable[[int], None] | None = None,
+    show_ledger: Callable[[], str | None] | None = None,
     approval_manager: Any | None = None,
     agent: Any | None = None,
 ) -> tuple[bool, str]:
@@ -78,6 +79,7 @@ async def handle_chat_command(
             "  /untrust <tool> -> remove session auto-approval for a tool\n"
             "  /compact      -> summarize and compress conversation history\n"
             "  /compact threshold <N> -> set auto-compaction threshold (default 10)\n"
+            "  /ledger       -> expand the verification ledger of the last answer\n"
             "  /undo         -> revert all file changes made in the last agent turn\n"
             "  /resources    -> list attachable MCP resources (use @<uri> to attach one to a query)\n"
             "  @<path>[:a-b] -> attach a workspace file (or lines a-b) to a query, e.g. @src/foo.py:10-20\n"
@@ -232,6 +234,12 @@ async def handle_chat_command(
             return True, f"\n{'✓ enabled' if enabled else '✗ disabled'} {kind[:-1]}: {name}\n"
 
         return True, f"\n❌ Usage: {cmd} on|off <name>\n"
+
+    if cmd == "/ledger":
+        block = show_ledger() if show_ledger is not None else None
+        if not block:
+            return True, "\nNo verification ledger yet — nothing was written or left open.\n"
+        return True, block
 
     if cmd == "/undo":
         if approval_manager is None:

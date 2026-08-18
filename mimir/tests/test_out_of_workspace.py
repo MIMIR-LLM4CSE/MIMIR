@@ -63,6 +63,14 @@ class GrantPathTests(_TmpStateDir):
         self.assertIn(os.path.realpath("/tmp/data/run.log"),
                       json.load(open(self._sidecar())))
 
+    def test_always_on_a_dir_covers_paths_under_it(self) -> None:
+        # The sidecar hands the server a *root*, so a child of a granted directory
+        # is already allowed there — re-prompting for it could deny nothing.
+        m = self._mgr()
+        m.grant_path("/tmp/data", always=True)
+        self.assertTrue(m.is_path_approved("/tmp/data/sub/run.log"))
+        self.assertFalse(m.is_path_approved("/tmp/data-other/run.log"))
+
     def test_reset_clears_paths_and_sidecar(self) -> None:
         m = self._mgr()
         m.grant_path("/tmp/data/run.log", always=True)
@@ -200,9 +208,9 @@ class OutOfWorkspaceGateTests(_TmpStateDir):
         """The scratchpad is outside the workspace by design.
 
         Prompting for it would defeat its purpose — it exists so throwaway work has
-        a home that costs no user decision. Resolved from the client's own
-        STATE_DIR, for the same reason as the trusted-read roots above, so this is
-        checked with MIMIR_STATE_DIR removed.
+        a home that costs no user decision. Checked with MIMIR_STATE_DIR removed:
+        the scratchpad home lives under the temp dir and must not depend on the
+        state dir (only the per-session subdirectory reads its sidecar).
         """
         from mimir.client.tool_execution.validation import scratch_roots
         old = os.environ.pop("MIMIR_STATE_DIR", None)
@@ -218,13 +226,20 @@ class OutOfWorkspaceGateTests(_TmpStateDir):
                 os.environ["MIMIR_STATE_DIR"] = old
 
     def test_scratchpad_grant_does_not_widen_to_its_parent(self) -> None:
-        # The exemption must be the scratchpad specifically, not "anything under
-        # the state dir is writable".
+        # The exemption must be the scratchpad specifically, not "the temp dir is
+        # writable now" — nor a prefix match that admits a same-named sibling.
+        from mimir.client.tool_execution.validation import scratch_roots
+        home = scratch_roots()[0]
         agent = self._agent(cap=EDIT, script=(False, False))
-        sibling = os.path.join(constants.STATE_DIR, "sessions", "s1", "plans", "p.md")
-        out = engine._check_out_of_workspace_access(
-            agent, "write_file", {"path": sibling}, {})
-        self.assertIsNotNone(out)
+        for path in (
+            os.path.join(os.path.dirname(home), "someone_else.py"),
+            home + "_evil/probe.py",
+            os.path.join(constants.STATE_DIR, "sessions", "s1", "plans", "p.md"),
+        ):
+            with self.subTest(path=path):
+                out = engine._check_out_of_workspace_access(
+                    agent, "write_file", {"path": path}, {})
+                self.assertIsNotNone(out)
 
 
 class _FakeExecAgent(_FakeAgent):
@@ -345,14 +360,15 @@ class ShellPathApprovalTests(_TmpStateDir):
             self.assertIsNone(out, cmd)
         self.assertEqual(agent.prompts, [])
 
-    def test_path_after_an_out_of_workspace_cd_is_seen(self) -> None:
+    def test_path_after_an_out_of_workspace_cd_asks_once(self) -> None:
         # `cd /etc && cat passwd`: the relative operand resolves under the new base,
-        # so both the destination and the file it reaches are surfaced.
+        # so the file *is* seen — but granting the destination admits it to the
+        # server as a root, so asking again for a path under it decides nothing.
         agent = self._agent(script=(True, True))
-        engine._check_out_of_workspace_access(
+        out = engine._check_out_of_workspace_access(
             agent, "run_shell", {"command": "cd /etc && cat passwd"}, {})
-        self.assertIn(os.path.realpath("/etc"), agent.prompts)
-        self.assertIn(os.path.realpath("/etc/passwd"), agent.prompts)
+        self.assertIsNone(out)
+        self.assertEqual(agent.prompts, [os.path.realpath("/etc")])
 
     def test_cd_outside_workspace_prompts(self) -> None:
         agent = self._agent(script=(True, False))
@@ -402,6 +418,82 @@ class ShellPathApprovalTests(_TmpStateDir):
             agent, "read_file_lines", {"path": "notes.txt", "q": "cd /etc"}, {})
         self.assertIsNone(out)
         self.assertEqual(agent.prompts, [])
+
+
+class _FakeEngineAgent(_FakeExecAgent):
+    """Enough of the agent surface for the full precondition pipeline."""
+
+    def __init__(self, mgr, *, script) -> None:
+        super().__init__(mgr, script=script)
+        self.tool_owner = {"run_shell": "code"}
+        self.tool_approvals: list[str] = []
+
+    def _normalize_tool_arguments(self, tool_name, arguments):
+        return dict(arguments)
+
+    def _rewrite_tool_for_context(self, tool_name, arguments):
+        return tool_name, dict(arguments)
+
+    def _request_tool_approval(self, tool_name, arguments):
+        self.tool_approvals.append(tool_name)
+        return True, "approved once"
+
+    def approval_scope(self, tool_name, arguments):
+        return f"fake:{tool_name}"
+
+    def _record_denied_tool_call(self, tool_name, arguments, execution_context, note="") -> None:
+        pass
+
+    def _denied_tool_result(self, tool_name, arguments, note="", execution_context=None):
+        return f"denied:{tool_name}:{note}"
+
+    def _normalize_workspace_path(self, path):
+        return path or ""
+
+    def _is_code_filepath(self, path):
+        return str(path).endswith(".py")
+
+
+class SingleApprovalPerCallTests(_TmpStateDir):
+    """One call, one question.
+
+    A sensitive command reaching outside the workspace used to raise two cards in a
+    row — the out-of-workspace prompt and then the ordinary sensitive-tool prompt —
+    for a single decision. The first already names the tool, its arguments and the
+    path, and rates the call irreversible, so it subsumes the second.
+    """
+
+    def _agent(self, script=(True, False)):
+        return _FakeEngineAgent(
+            approval_mod.ApprovalManager(sensitive_tools={"run_shell"}), script=script)
+
+    def _evaluate(self, agent, command):
+        return engine.evaluate_tool_preconditions(
+            agent=agent, tool_name="run_shell", arguments={"command": command},
+            execution_context={"searched": True},
+        )
+
+    def test_outside_workspace_asks_once(self) -> None:
+        agent = self._agent()
+        out = self._evaluate(agent, "mkdir /tmp/outside/build")
+        self.assertIsNone(out.violation)
+        self.assertEqual(agent.prompts, [os.path.realpath("/tmp/outside/build")])
+        self.assertEqual(agent.tool_approvals, [])   # no second card
+
+    def test_inside_workspace_still_asks_the_sensitive_card(self) -> None:
+        # Nothing outside → the ordinary approval is the only one, and must remain.
+        agent = self._agent()
+        out = self._evaluate(agent, "mkdir build")
+        self.assertIsNone(out.violation)
+        self.assertEqual(agent.prompts, [])
+        self.assertEqual(agent.tool_approvals, ["run_shell"])
+
+    def test_denied_outside_path_still_blocks(self) -> None:
+        agent = self._agent(script=(False, False))
+        out = self._evaluate(agent, "mkdir /tmp/outside/build")
+        self.assertIsNotNone(out.violation)
+        self.assertIn("outside the workspace", out.violation)
+        self.assertEqual(agent.tool_approvals, [])
 
 
 if __name__ == "__main__":

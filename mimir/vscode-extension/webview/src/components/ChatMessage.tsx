@@ -5,6 +5,8 @@ import { FileDiff } from "./FileDiff";
 import { countDiffLines } from "./diffUtils";
 import { ToolActivityList } from "./ToolActivityList";
 import { ThinkingPanel } from "./ThinkingPanel";
+import { VerificationLedger } from "./VerificationLedger";
+import { splitAnswerLedger } from "./ledgerUtils";
 import { vscodePostMessage } from "../hooks/useWebSocket";
 
 interface Props {
@@ -109,6 +111,9 @@ const ChatMessageInner: React.FC<Props> = ({ message, onApprovalResponse, onRetr
   }
 
   const isUser = message.role === "user";
+  // The verification ledger rides at the end of the answer text (history keeps it for
+  // the model); the bubble shows the prose and hands the ledger to its own panel.
+  const { body: answerBody, ledger } = splitAnswerLedger(message.text ?? "");
 
   return (
     <div className={`chat-message ${isUser ? "user" : "agent"}`}>
@@ -135,7 +140,8 @@ const ChatMessageInner: React.FC<Props> = ({ message, onApprovalResponse, onRetr
           <>
             {/* Reasoning is rendered in-stream via kind="thinking" panels, so it
                 is intentionally NOT duplicated on the answer bubble here. */}
-            <MarkdownContent text={message.text ?? ""} />
+            <MarkdownContent text={answerBody} />
+            {ledger && <VerificationLedger block={ledger} />}
             {(message.diffs ?? []).length > 0 && (
               <div className="diff-list">
                 {(message.diffs ?? []).map((d, i) => (

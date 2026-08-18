@@ -201,11 +201,16 @@ def _out_of_workspace_targets(agent: Any, tool_name: str, arguments: dict) -> li
             continue
         if full not in out:
             out.append(full)
-    return out
+    # One command routinely names a directory *and* paths inside it (``cd /data &&
+    # python run.py``). Approving the directory grants it to the server as a root,
+    # so its children are allowed the moment the parent is — prompting for each in
+    # turn asks the same decision several times over.
+    return [t for t in out if not any(_is_under(other, t) for other in out if other != t)]
 
 
 def _check_out_of_workspace_access(
     agent: Any, tool_name: str, arguments: dict, execution_context: dict[str, Any] | None,
+    targets: list[str] | None = None,
 ) -> str | None:
     """Prompt the user before a tool touches a path outside the workspace.
 
@@ -213,8 +218,13 @@ def _check_out_of_workspace_access(
     agent's ``_request_path_approval`` hook). Runs before the sensitive/preview gate
     so a previewable write cannot bypass it. Fail-closed: with no hook wired,
     out-of-workspace access is denied. Returns a violation payload or ``None``.
+
+    *targets* lets the caller pass the list it already computed with
+    :func:`_out_of_workspace_targets` — the engine needs to know whether this call
+    prompts at all, and re-deriving it after the grants land would come back empty.
     """
-    targets = _out_of_workspace_targets(agent, tool_name, arguments)
+    if targets is None:
+        targets = _out_of_workspace_targets(agent, tool_name, arguments)
     if not targets:
         return None
     prompt = getattr(agent, "_request_path_approval", None)
@@ -289,14 +299,12 @@ def _check_cluster_submit(
 
 # ── proxy direct-execution guard ──────────────────────────────────────────────
 #
-# During a proxy optimization session the model must improve the proxy only by
-# editing its source and going through ``proxy_eval(op='run')``. A direct
-# ``python proxy.py`` / ``./proxy`` bypasses reference sealing, the numerical
-# invariants and the ratchet, and lets a hand-run be reported as a win. This
-# guard is capability-scoped to CODE_EXEC tools and blocks only calls that
-# *execute* the proxy (in command position) — never read-only inspection
-# (``cat``/``grep``) of its source. Locked and non-tiered (a correctness /
-# anti-bypass boundary, not guidance); fail-open on any internal error.
+# In a proxy optimization session the model may only improve the proxy by editing its
+# source and going through ``proxy_eval(op='run')``. A direct ``python proxy.py`` skips
+# reference sealing, the numerical invariants and the ratchet, letting a hand-run be
+# reported as a win. Scoped to CODE_EXEC tools; blocks only calls that *execute* the
+# proxy (command position), never read-only inspection of its source. Locked and
+# non-tiered — a correctness boundary, not guidance. Fail-open on internal error.
 
 # Leading tokens that wrap another command; we look past them (and their flags /
 # ``VAR=val`` assignments) to find the program actually executed.

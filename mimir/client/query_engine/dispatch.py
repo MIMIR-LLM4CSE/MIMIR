@@ -36,7 +36,13 @@ from ..tool_execution.tool_status_messages import (
     summarize_tool_result,
     error_detail,
 )
-from ..guardrails.workflow import repeat_corrective_message, redundant_corrective_message
+from ..guardrails.workflow import (
+    handback_corrective_message,
+    handback_required,
+    handback_scopes,
+    repeat_corrective_message,
+    redundant_corrective_message,
+)
 from .streaming import _to_dict
 from .background import (
     _maybe_emit_open_editor,
@@ -423,10 +429,12 @@ async def _post_dispatch_inject(
 ) -> None:
     """After every tool dispatch step, inject post-dispatch reminders.
 
-    Two independent reminders: (1) mark a completed todo step done after a successful
-    edit, and (2) a one-time corrective when a non-write call keeps failing identically
-    (staged as ``_repeat_alert`` during dispatch) — this is the mid-tool-loop channel
-    the regular nudges can't reach, since they only fire when the model stops calling tools.
+    Three independent reminders: (1) mark a completed todo step done after a successful
+    edit, (2) a one-time corrective when a non-write call keeps failing identically
+    (staged as ``_repeat_alert`` during dispatch), and (3) a one-time stop when refusals
+    have run the denial ladder to its end. This is the mid-tool-loop channel the regular
+    nudges can't reach, since they only fire when the model stops calling tools — and a
+    model that has been told to hand back is, by definition, still calling tools.
     """
     # remind agent to mark completed step done in todo list
     success_path = execution_context.get("last_edit_success_path", "")
@@ -461,6 +469,14 @@ async def _post_dispatch_inject(
         messages.append({
             "role": "user",
             "content": redundant_corrective_message(name, repeats),
+        })
+
+    # one-time stop once refusals reached the end of the denial ladder
+    if handback_required(execution_context) and not execution_context.get("_handback_told"):
+        execution_context["_handback_told"] = True
+        messages.append({
+            "role": "user",
+            "content": handback_corrective_message(handback_scopes(execution_context)),
         })
 
 

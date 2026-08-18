@@ -14,9 +14,11 @@ def is_python_test_filepath(path: str) -> bool:
 def scratch_roots() -> list[str]:
     """The agent's scratchpad directories, as absolute real paths.
 
-    Resolved from the client's own ``STATE_DIR``: ``MIMIR_STATE_DIR`` is placed
-    only in the server subprocesses' environment, so calling the shared helper
-    bare would resolve a different directory here than the sandbox uses.
+    The scratchpad home itself comes from ``MIMIR_SCRATCH_DIR``, which the client
+    resolves and publishes at startup, so both ends agree without either re-deriving
+    it. ``STATE_DIR`` is still passed because the shared helper reads the active
+    -session sidecar from there, and ``MIMIR_STATE_DIR`` reaches only the server
+    subprocesses' environment.
     """
     from ...servers._shared.state_paths import standing_roots
     from ..config.constants import STATE_DIR

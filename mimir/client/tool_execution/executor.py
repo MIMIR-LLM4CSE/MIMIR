@@ -9,9 +9,6 @@ from ..guardrails.observations import record_tool_observation
 from ..guardrails.policy.engine import evaluate_tool_preconditions
 from ..context.capabilities import CACHEABLE, EDIT, SEARCH_WITH_PATH, has_cap
 from .validation import absolute_workspace_path
-
-
-# Import _make_hashable from normalizer
 from .normalizer import _make_hashable
 
 _READ_HINT_MAX_MATCHES = 3

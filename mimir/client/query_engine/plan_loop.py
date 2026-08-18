@@ -43,12 +43,10 @@ _PLAN_ACCEPT = "Accept & start"
 _PLAN_REJECT = "Reject"
 _PLAN_REWORK = "Rework"
 
-# Once the plan is recorded, the model owes the user a prose answer + the approval
-# prompt. Some models instead keep re-reading / re-writing the same plan and echoing
-# its text every turn (the deliver nudge alone never breaks that cycle, because a
-# turn that calls tools never reaches the delivery branch). It gets this many further
-# tool-calling turns — enough for a genuine last-minute lookup — after which its calls
-# are dropped and the plan is delivered for approval.
+# Once the plan is recorded the model owes a prose answer + the approval prompt, but
+# some models keep re-reading and re-echoing the plan instead — and the deliver nudge
+# never breaks that, since a turn that calls tools never reaches the delivery branch.
+# After this many further tool-calling turns its calls are dropped.
 _PLAN_POST_RECORD_TOOL_TURNS = 2
 
 
@@ -152,20 +150,14 @@ async def _run_plan_mode(
     )
     answer = ""
     todo_written = False
-    # Turns spent calling tools since the plan was recorded, and whether the deliver
-    # nudge already went out — both reset whenever the plan goes back to the drawing
-    # board (revise / rework). See _PLAN_POST_RECORD_TOOL_TURNS.
+    # Both reset whenever the plan goes back to the drawing board (revise / rework).
     post_record_tool_turns = 0
     deliver_nudged = False
-    # Advisory evidence gate: a plan for a repo-touching task ought to be grounded in
-    # the model's own exploration, so a plan recorded with zero evidence is flagged
-    # once — but never rejected. The query signal behind `plan_explore_required` is a
-    # deliberately broad exit filter ("this query plausibly touches the workspace",
-    # see context.signals), far too coarse to justify blocking on: it fires just as
-    # readily for a task that creates something new outside the repo, where there is
-    # nothing to explore and no exploration could ever satisfy it.
-    # Tier-able: skipped entirely when the model's enforcement level is "off" (the
-    # gate is discovery babysitting, not a safety guard).
+    # Advisory evidence gate: a plan recorded with zero exploration is flagged once,
+    # never rejected. The query signal behind it is a deliberately broad exit filter
+    # (see context.signals) — it fires just as readily for a task that creates
+    # something new outside the repo, where no exploration could ever satisfy it.
+    # Skipped at enforcement "off": this is discovery babysitting, not a safety guard.
     plan_explore_required = (
         query_requires_repo_discovery(query)
         and resolve_enforcement(agent) != "off"
@@ -176,11 +168,11 @@ async def _run_plan_mode(
 
     for plan_nudges in range(max_steps):
         # Pick up mid-run steering (chat-while-busy) before each plan-mode call.
-        _drain_steer(agent, messages, execution_context)
+        _drain_steer(agent, messages)
 
         # The mode is live: leaving plan mid-draft hands the run to the agent loop
-        # (which serves both "agent" and the read-only "ask"), carrying the
-        # conversation — and whatever evidence was already gathered — with it.
+        # (which serves both "agent" and read-only "ask"), carrying the conversation
+        # and whatever evidence was already gathered with it.
         live_mode = _live_mode(agent, "plan", execution_context)
         if live_mode != "plan":
             system_content = await _apply_mode_switch(agent, messages, new_mode=live_mode)
@@ -223,13 +215,11 @@ async def _run_plan_mode(
         if content:
             answer = content
 
-        # Anti-parroting guard: the plan is recorded, the model was told to deliver,
-        # and it is still calling tools. Past the budget its calls are dropped so the
-        # turn falls through to the delivery + approval path below.
-        # Not conditioned on prose having been emitted: a model stuck in this loop
-        # typically emits tool calls and nothing else, which is exactly when the
-        # escape hatch is needed. With the calls dropped the next turn reaches the
-        # delivery branch, and _finalize_answer tolerates an empty answer.
+        # Anti-parroting guard: plan recorded, model told to deliver, still calling
+        # tools. Past the budget its calls are dropped so the turn falls through to the
+        # delivery + approval path. Not conditioned on prose having been emitted — a
+        # model stuck here typically emits tool calls and nothing else, and
+        # _finalize_answer tolerates an empty answer.
         if tool_calls and todo_written:
             post_record_tool_turns += 1
             if post_record_tool_turns > _PLAN_POST_RECORD_TOOL_TURNS:
@@ -237,11 +227,9 @@ async def _run_plan_mode(
                 tool_calls = []
 
         if not tool_calls:
-            # A no-tool-call turn is only the final deliver-answer step once a
-            # plan has actually been recorded (in either form). If the model narrated
-            # a plan as chat prose without recording it through the plan/todo tool, do
-            # NOT accept it as the result — nudge it to record the plan and keep the
-            # loop going so plan mode reliably produces a structured plan.
+            # Only the final deliver-answer step once a plan is actually recorded (in
+            # either form). A plan narrated as chat prose is not the result — nudge and
+            # keep looping, so plan mode reliably produces a structured plan.
             if not todo_written:
                 if plan_nudges <= max_steps - 5:
                     messages.append({"role": "user", "content": PLAN_TODO_NUDGE_EARLY})
@@ -254,11 +242,9 @@ async def _run_plan_mode(
             decision, feedback = await _request_plan_decision(agent)
             if decision == "accept":
                 emit({"type": "status", "text": "  ✔ Plan approved — switching to agent mode"})
-                # Persist the switch on the agent so it applies everywhere: the
-                # in-session default mode flips to "agent" (subsequent queries stay
-                # in agent mode) and the front-end toggle is synced via the "mode"
-                # event. Guarded so non-interactive callers (tests, sub-agents that
-                # lack set_mode) are unaffected.
+                # Persist the switch so the in-session default flips to "agent" and the
+                # front-end toggle syncs via the "mode" event. Guarded for
+                # non-interactive callers that lack set_mode.
                 _set_mode = getattr(agent, "set_mode", None)
                 if callable(_set_mode):
                     try:
@@ -318,25 +304,19 @@ async def _run_plan_mode(
         )
 
         await _dispatch_tool_calls(tool_calls, agent, messages, execution_context)
-        # Whether a plan exists is the execution context's call, not a second
-        # derivation from tool names here: ``observations._observe_todo_flags``
-        # already tells the two TASK_PLANNING forms apart by the `plan_steps`
-        # arg-role and records `todo_written` (ordered checklist) / `plan_written`
-        # (prose document). Re-deriving it locally is what previously made a plan
-        # recorded in prose invisible to this loop, so the "record a plan" nudge
-        # kept firing at a model that had already written one — and the run spun
-        # until max_steps without ever reaching the approval prompt.
+        # Whether a plan exists is the execution context's call, never a second
+        # derivation from tool names here: ``observations._observe_todo_flags`` tells
+        # the two TASK_PLANNING forms apart by the `plan_steps` arg-role and records
+        # `todo_written` (checklist) / `plan_written` (prose document).
         checklist_written = bool(execution_context.get("todo_written"))
         plan_doc_written = bool(execution_context.get("plan_written"))
         if checklist_written or plan_doc_written:
             if (plan_explore_required
                     and not plan_evidence_nudged
                     and not has_discovery_evidence(execution_context, min_distinct=DISCOVERY_EVIDENCE_MIN_DISTINCT_PLAN)):
-                # Plan written without any exploration. Advisory, not a rejection:
-                # the model is told once, and either strengthens the plan on the
-                # spot or says so when it delivers. Blocking here used to discard
-                # the plan the model had just recorded, and nothing guaranteed it
-                # would submit that form again.
+                # Advisory, not a rejection: told once, the model either strengthens the
+                # plan or says so on delivery. Blocking would discard the plan it just
+                # recorded, with nothing guaranteeing it submits that form again.
                 plan_evidence_nudged = True
                 emit({"type": "status", "text": "  ⚠ Plan not grounded in any exploration — flagged"})
                 messages.append({"role": "user", "content": PLAN_EVIDENCE_NUDGE})
@@ -347,10 +327,9 @@ async def _run_plan_mode(
                 PLAN_TODO_NUDGE_EARLY if plan_nudges <= max_steps - 5 else PLAN_TODO_NUDGE_LATE
             )})
         elif not checklist_written:
-            # The prose document is recorded but the ordered checklist is not. Ask
-            # for the missing form only — telling the model it has "not yet recorded
-            # a plan" when its plan is on disk is what it kept trying to fix by
-            # rewriting the document it had already written.
+            # Prose document recorded, ordered checklist not. Ask for the missing form
+            # only: telling the model it has "not yet recorded a plan" when its plan is
+            # on disk makes it rewrite the document it already wrote.
             messages.append({"role": "user", "content": PLAN_CHECKLIST_MISSING_NUDGE})
         else:
             # Repeating the same deliver nudge verbatim is what the model echoes back;

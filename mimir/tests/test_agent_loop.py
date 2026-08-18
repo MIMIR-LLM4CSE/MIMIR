@@ -169,6 +169,34 @@ class PostDispatchInjectTests(unittest.TestCase):
         self.assertEqual(messages[0]["role"], "user")
         self.assertIn("failed 2 times", messages[0]["content"])
 
+    def _refusals(self, times: int) -> dict:
+        return {"denial_history": [
+            {"tool": "bash_run", "scope": "bash:bash_run:pip install", "kind": "denied"}
+        ] * times}
+
+    def test_end_of_the_denial_ladder_stops_the_model_mid_loop(self) -> None:
+        # The nudge layer only fires when the model stops calling tools — and a model
+        # that has been told to hand back and hasn't is, by definition, still calling
+        # them. This is the only channel that reaches it.
+        messages: list[dict] = []
+        ec = self._refusals(3)
+        asyncio.run(dispatch_module._post_dispatch_inject(None, messages, ec))
+        self.assertEqual(len(messages), 1)
+        self.assertEqual(messages[0]["role"], "user")
+        self.assertIn("refused this repeatedly", messages[0]["content"])
+        self.assertIn("bash:bash_run:pip install", messages[0]["content"])
+
+        # Said once. Repeating "stop" every step would crowd out the model's own
+        # closing summary, which is the thing we actually want it to produce.
+        messages.clear()
+        asyncio.run(dispatch_module._post_dispatch_inject(None, messages, ec))
+        self.assertEqual(messages, [])
+
+    def test_a_refusal_short_of_the_ladder_does_not_stop_the_model(self) -> None:
+        messages: list[dict] = []
+        asyncio.run(dispatch_module._post_dispatch_inject(None, messages, self._refusals(2)))
+        self.assertEqual(messages, [])
+
 
 class FinalizeAnswerTests(unittest.TestCase):
     def _agent(self):
@@ -197,12 +225,12 @@ class FinalizeAnswerTests(unittest.TestCase):
             )
 
         self.assertTrue(result.startswith("Done."))
-        self.assertIn("[Verification ledger", result)
+        self.assertIn("Verification ledger", result)
         self.assertIn("a.py", result)
         self.assertIn("b.cu", result)
         # Neither file was validated, so the ledger says so rather than merely
         # listing them (the old "[Files written this query: …]" behaviour).
-        self.assertIn("NOT validated", result)
+        self.assertIn("not validated", result)
         self.assertEqual(carry["n"], 1)                      # carry context saved
         self.assertEqual(agent._last_full_messages, messages[1:])  # system stripped
 
@@ -757,15 +785,13 @@ class DrainSteerTests(unittest.TestCase):
     def test_injects_queued_messages_as_user_turns(self) -> None:
         agent = types.SimpleNamespace(_poll_steer=lambda: ["focus on the parser", "skip tests"])
         messages: list[dict] = [{"role": "tool", "content": "prev result"}]
-        ec: dict = {}
         emitted: list[dict] = []
         with patch.object(agent_loop_module, "emit", lambda ev: emitted.append(ev)):
-            agent_loop_module._drain_steer(agent, messages, ec)
+            agent_loop_module._drain_steer(agent, messages)
 
         # Both steer messages appended, in order, as user turns.
         self.assertEqual(messages[-2], {"role": "user", "content": "focus on the parser"})
         self.assertEqual(messages[-1], {"role": "user", "content": "skip tests"})
-        self.assertTrue(ec["user_steered"])
         # Each injection is surfaced to the front-end for the "delivered" affordance.
         self.assertEqual([e["type"] for e in emitted], ["steer_injected", "steer_injected"])
         self.assertEqual(emitted[0]["text"], "focus on the parser")
@@ -774,16 +800,14 @@ class DrainSteerTests(unittest.TestCase):
         # Whitespace-only messages are skipped.
         agent = types.SimpleNamespace(_poll_steer=lambda: ["  ", ""])
         messages: list[dict] = []
-        agent_loop_module._drain_steer(agent, messages, {})
+        agent_loop_module._drain_steer(agent, messages)
         self.assertEqual(messages, [])
 
         # No _poll_steer attr at all (CLI / sub-agents / tests) → untouched.
         bare = types.SimpleNamespace()
         msgs2: list[dict] = [{"role": "user", "content": "x"}]
-        ec2: dict = {}
-        agent_loop_module._drain_steer(bare, msgs2, ec2)
+        agent_loop_module._drain_steer(bare, msgs2)
         self.assertEqual(msgs2, [{"role": "user", "content": "x"}])
-        self.assertNotIn("user_steered", ec2)
 
 
 class SteerInjectionInLoopTests(RunAgentQueryNonInteractiveTests):

@@ -22,7 +22,8 @@ On top of that loop sits a policy and context layer:
 
 - **Safety** — approval before sensitive actions, discovery-before-write checks, and
   validation-gated completion (no "done" while edits are unvalidated).
-- **Honest completion** — every answer carries a machine-recorded verification ledger:
+- **Honest completion** — every answer carries a machine-recorded verification ledger,
+  shown as a collapsed panel you expand on demand (`/ledger` in the CLI):
   what was written, how strongly each file was actually checked, and an explicit note
   when nothing showed that the checks *discriminate* — that they tell working code from
   broken code. A check seen failing before the fix and passing after counts; one that was
@@ -270,7 +271,11 @@ selection, chaining, and recovery.
 The client gates sensitive tool calls through an interactive approval prompt (`yes` /
 `no` / `always`). Approval-gated actions include file writes, memory mutation, code
 execution/compilation, shell commands, external POST requests, Slurm allocation, and benchmark
-persistence. A denied call returns a structured error so the model can pick a safer path.
+persistence. A refusal is handed back as an instruction, not an error to retry: MIMIR weighs
+whether you meant "not this way" (reach the goal another way), "that's unnecessary" (drop the
+step and carry on, saying it was skipped) or "stop" (end the turn and report what is blocked) —
+and after repeated refusals of the same action it stops asking you at all. See
+[POLICY.md](POLICY.md#if-approval-is-refused).
 
 Sandboxing and hardening highlights:
 
@@ -370,12 +375,13 @@ core edit, no registration call:
 | Base prompt | `.mimir/system_prompt.md` | `MIMIR_SYSTEM_PROMPT_FILE` | user **replaces** the built-in default |
 
 Agent **state** lives elsewhere, in a central per-workspace dir (`~/.mimir/<workspace-id>/`,
-override `MIMIR_STATE_DIR`): memory, sessions, plans, todos — and the agent's **scratchpad**
-at `<state-dir>/sessions/<session-id>/scratch/`. The scratchpad is writable without approval
-and is where throwaway scripts, probes and intermediate data belong; nothing written there is
-reported as produced work or asked to be validated. It is never auto-deleted, so it is also
-where to look for a run's working files afterwards. Keeping state out of `.mimir/` leaves the
-workspace directory the user's alone.
+override `MIMIR_STATE_DIR`): memory, sessions, plans, todos. The agent's **scratchpad** sits
+under the temp dir instead — `<TMPDIR or /tmp>/mimir-<uid>-<workspace-id>/<session-id>/`,
+override `MIMIR_SCRATCH_DIR`. It is writable without approval and is where throwaway scripts,
+probes, intermediate data and diagnostic plots belong; nothing written there is reported as
+produced work or asked to be validated, so that is also where to look for a run's working
+files afterwards (MIMIR never deletes them — the OS reclaims the temp dir). Keeping both out
+of `.mimir/` leaves the workspace directory the user's alone.
 
 **Custom servers** — drop a `FastMCP` `server_<name>.py`; give each tool a precise docstring
 and structured return, then restart. Tag each tool with **capabilities** via `tool_caps(...)`

@@ -24,6 +24,97 @@ from ..config.constants import (
 _TOOL_OUTPUT_MAX_CHARS = 4000
 _TOOL_OUTPUT_MAX_LINES = 60
 
+# Placeholder result emitted for an assistant tool call whose real result is absent —
+# keeps the assistant↔tool pairing valid and tells the model the output is gone.
+EVICTED_TOOL_RESULT = json.dumps({
+    "status": "error",
+    "error": "tool result not in history (evicted to stay within the context budget)",
+})
+
+
+def _declared_call_ids(assistant: dict) -> list[str | None]:
+    """Ids of an assistant turn's tool calls; ``None`` where the model emitted none.
+
+    Ollama-style calls carry no id at all, so the caller must fall back to positional
+    matching rather than assume a key that isn't there.
+    """
+    out: list[str | None] = []
+    for tc in assistant.get("tool_calls") or []:
+        cid = tc.get("id") if isinstance(tc, dict) else None
+        out.append(cid if isinstance(cid, str) and cid else None)
+    return out
+
+
+def reconcile_tool_pairs(messages: list[dict]) -> list[dict]:
+    """Repair assistant.tool_calls ↔ tool-message pairing.
+
+    Three upstream mechanisms legitimately break the pairing: ``_trim_tool_history``
+    evicts a tool result while preserving its assistant turn, ``_maybe_compact_intra_query``
+    can slice between an assistant turn and its results, and the dispatcher drops
+    duplicate/already-dispatched calls without emitting a tool message for them.
+
+    The invariant belongs to the history, not to one provider: strict backends reject a
+    dangling pair outright (the Claude API 400s on a ``tool_use`` with no ``tool_result``)
+    and lenient ones render an incoherent prompt. For each assistant turn declaring
+    calls, the following run of tool messages is matched by ``tool_call_id`` first, then
+    positionally for any lacking a usable id; each declared call is emitted with its
+    response or a stub. Tool messages belonging to no preceding call are dropped.
+    """
+    out: list[dict] = []
+    i = 0
+    n = len(messages)
+    while i < n:
+        m = messages[i]
+        if m.get("role") == "assistant" and m.get("tool_calls"):
+            declared = _declared_call_ids(m)
+
+            # Contiguous run of tool messages answering this assistant turn.
+            j = i + 1
+            run: list[dict] = []
+            while j < n and messages[j].get("role") == "tool":
+                run.append(messages[j])
+                j += 1
+
+            responses: list[dict | None] = [None] * len(declared)
+            leftovers: list[dict] = []
+            for tmsg in run:
+                tcid = tmsg.get("tool_call_id")
+                slot = (
+                    declared.index(tcid)
+                    if isinstance(tcid, str) and tcid in declared
+                    else -1
+                )
+                if slot >= 0 and responses[slot] is None:
+                    responses[slot] = tmsg
+                else:
+                    leftovers.append(tmsg)
+            for tmsg in leftovers:
+                slot = next((k for k, r in enumerate(responses) if r is None), None)
+                if slot is None:
+                    break  # all calls answered — remaining tool messages are orphans
+                fixed = dict(tmsg)
+                if declared[slot] is not None:
+                    fixed["tool_call_id"] = declared[slot]
+                responses[slot] = fixed
+
+            out.append(m)
+            for cid, resp in zip(declared, responses):
+                if resp is not None:
+                    out.append(resp)
+                    continue
+                stub: dict = {"role": "tool", "content": EVICTED_TOOL_RESULT}
+                if cid is not None:
+                    stub["tool_call_id"] = cid
+                out.append(stub)
+            i = j
+        elif m.get("role") == "tool":
+            # Orphan tool message (no preceding assistant tool_calls run) — drop it.
+            i += 1
+        else:
+            out.append(m)
+            i += 1
+    return out
+
 
 def served_compaction_instruction() -> str:
     """The handoff-note prompt used when summarizing older conversation turns.
@@ -112,11 +203,10 @@ def _trim_tool_history(
             protected_paths |= execution_context.get("read_files", set())
     protected_paths = {p for p in protected_paths if p}  # drop empty strings
 
-    # Authoritative per-message file association, recorded at dispatch time
-    # (see _dispatch_tool_calls). Matching a message to its files structurally
-    # avoids the substring hazards of the legacy path: a search/grep result that
-    # merely *mentions* a path no longer falsely protects it from eviction nor
-    # falsely invalidates that file's actual read.
+    # Authoritative per-message file association, recorded at dispatch time (see
+    # _dispatch_tool_calls). Structural matching avoids the substring hazard: a grep
+    # result that merely *mentions* a path neither protects it from eviction nor
+    # invalidates that file's actual read.
     tool_msg_files: dict = (
         execution_context.get("tool_msg_files", {}) if execution_context else {}
     )
@@ -153,11 +243,9 @@ def _trim_tool_history(
 
         to_remove.append(idx)
         removed_size += _size(content)
-        # Keep execution_context in sync: if this message was a file read,
-        # invalidate the corresponding read_files entry so policy enforces a
-        # fresh re-read before the next edit on that file. Structural association
-        # is exact; the substring fallback preserves old behaviour for untracked
-        # (carried-over) messages.
+        # Keep execution_context in sync: evicting a file read invalidates its
+        # read_files entry, so policy demands a fresh re-read before the next edit.
+        # The substring fallback covers untracked (carried-over) messages.
         if execution_context is not None:
             read_files: set[str] = execution_context.get("read_files", set())
             if structural:
@@ -349,7 +437,8 @@ def _enforce_context_budget(
     compaction callback is available, then (3) a deterministic hard-fit pass that
     truncates oversized content as a last resort. Step 3 is what actually
     *guarantees* the prompt fits regardless of message types or whether
-    compaction is wired up.
+    compaction is wired up. (4) repairs the assistant↔tool pairing that steps 1
+    and 2 legitimately break, so every backend receives a coherent history.
     """
     total, reserved, trim_budget, compact_budget = context_budget_for(model, context_mode)
     overhead = token_counter(json.dumps(step_tools)) if step_tools else 0
@@ -359,11 +448,10 @@ def _enforce_context_budget(
                        token_counter=token_counter, token_budget=trim_budget)
     _maybe_compact_intra_query(messages, system_content, execution_context, compact_fn,
                                token_counter=token_counter, token_budget=compact_budget)
-    # Hard backstop: keep a small margin under the usable window for chat-template
-    # scaffolding and a minimal answer allocation our per-message estimate omits.
-    # This is a LAST RESORT — it destructively truncates oversized message content,
-    # so we only reach it when eviction + summarization still didn't fit. Notify
-    # the user when it actually drops content, since that loss is otherwise silent.
+    # Hard backstop, reached only when eviction + summarization still didn't fit: keeps
+    # a margin for chat-template scaffolding and a minimal answer allocation the
+    # per-message estimate omits. Destructive, so the user is notified when it drops
+    # content — that loss is otherwise silent.
     if total:
         usable = max(1, total - reserved - overhead)
         before = sum(token_counter(_message_content_str(m)) for m in messages)
@@ -374,3 +462,6 @@ def _enforce_context_budget(
                 f"  ⚠ Context backstop: truncated ~{before - after} tokens of older "
                 f"content to fit the model's window."
             )})
+    # Last: eviction and compaction above can strand an assistant tool call or a tool
+    # result. Repair in place so the next model call is coherent whatever the backend.
+    messages[:] = reconcile_tool_pairs(messages)

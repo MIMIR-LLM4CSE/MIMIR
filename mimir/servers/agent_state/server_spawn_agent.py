@@ -201,10 +201,12 @@ async def _run_sub_agent(
     # Files the sub-agent modified this run (recorded by _update_carry_context).
     files_written = sorted(agent._carry_context.get("last_query_written_files", set()))
     # "completed" = the task itself finished; distinct from the run succeeding.
-    # finalize_incomplete_answer prefixes "Task is incomplete."; the hard step
-    # limit yields "Reached the maximum number of steps…".
+    # finalize_incomplete_answer owns its headlines (is_incomplete_answer matches
+    # them); the hard step limit yields "Reached the maximum number of steps…".
+    from mimir.client.guardrails.workflow import is_incomplete_answer
+
     completed = error is None and not (
-        answer.startswith("Task is incomplete.")
+        is_incomplete_answer(answer)
         or answer.startswith("Reached the maximum number of steps")
     )
     return {

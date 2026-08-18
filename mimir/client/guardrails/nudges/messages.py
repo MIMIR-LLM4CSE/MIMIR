@@ -10,8 +10,19 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..workflow import pending_validation_paths, VALIDATION_RETRY_BUDGET, WORKFLOW_STATES
-from ...context import bootstrap_state_context, declared_edit_set_complete
+from ..workflow import (
+	pending_validation_paths,
+	worst_denial_stage,
+	STAGE_DROP_OR_STOP,
+	STAGE_HANDBACK,
+	VALIDATION_RETRY_BUDGET,
+	WORKFLOW_STATES,
+)
+from ...context import (
+    bootstrap_state_context,
+    declared_edit_set_complete,
+    unwritten_declared_files,
+)
 
 
 _DISCOVERY_NUDGE: str = (
@@ -26,9 +37,31 @@ _DISCOVERY_NUDGE: str = (
 	"then proceed with the task, grounded in those findings."
 )
 
-_DENIAL_PREAMBLE: str = (
-	"A required tool call was denied by the user. Do not claim full success. "
-	"Either choose a safe alternative or explain clearly what remains incomplete because of the denial."
+# A refusal is an instruction, not an error to report and retry. The three readings
+# below are stated in priority order and mirror the tool-result hint the model got
+# mid-loop (agent_core._denied_tool_result) and the Non-negotiables line in the system
+# prompt — this nudge is the copy that reaches it once it has stopped calling tools.
+_DENIAL_RECONSIDER: str = (
+	"A tool call was refused by the user. Do not claim full success, and do not re-issue it. "
+	"Decide what the refusal meant, in this order: (1) not this way — the goal stands but the "
+	"means was wrong, so reach it another way; (2) unnecessary — the step is not needed, so drop "
+	"it, carry on with the rest of the task, and say plainly that it was skipped at the user's "
+	"request; (3) stop — end your turn and hand back, reporting what is done, what is blocked, "
+	"and what you need from the user."
+)
+
+_DENIAL_DROP_OR_STOP: str = (
+	"That action has now been refused more than once, so the objection is to the action itself, "
+	"not to how you went about it. Stop looking for another route to the same end. Either drop "
+	"the step and finish the rest of the task without it — stating that it was skipped at the "
+	"user's request — or, if the task cannot proceed without it, stop and hand back with what "
+	"is blocked."
+)
+
+_DENIAL_HANDBACK: str = (
+	"That action has been refused repeatedly and you will not be asked to approve it again. Stop "
+	"here. Make no further tool calls toward it: end your turn with what you completed, what the "
+	"refusal leaves undone, and what you need from the user to go further."
 )
 
 
@@ -76,10 +109,19 @@ def _validation_nudge_message(pending_paths: list[str]) -> str:
 
 
 def denial_nudge_message(execution_context: dict | None = None) -> str:
-	denied_calls = (execution_context or {}).get("denied_tool_calls", [])
-	if not denied_calls:
-		return _DENIAL_PREAMBLE
+	context = execution_context or {}
+	stage = worst_denial_stage(context)
 
+	if stage == STAGE_HANDBACK:
+		return _DENIAL_HANDBACK
+	if stage == STAGE_DROP_OR_STOP:
+		return _DENIAL_DROP_OR_STOP
+
+	denied_calls = context.get("denied_tool_calls", [])
+	if not denied_calls:
+		return _DENIAL_RECONSIDER
+
+	# Alternatives are worth naming only while reading (1) is still on the table.
 	fragments: list[str] = []
 	for item in denied_calls[:3]:
 		tool_name = item.get("tool", "unknown")
@@ -87,9 +129,9 @@ def denial_nudge_message(execution_context: dict | None = None) -> str:
 		if fallback_tools:
 			fragments.append(f"{tool_name}: try {', '.join(fallback_tools[:3])}")
 		else:
-			fragments.append(f"{tool_name}: state clearly what this action was needed for")
+			fragments.append(f"{tool_name}: no configured alternative — weigh (2) and (3)")
 
-	return _DENIAL_PREAMBLE + " Suggested alternatives: " + "; ".join(fragments)
+	return _DENIAL_RECONSIDER + " Alternatives for (1): " + "; ".join(fragments)
 
 
 # --- Guidance-nudge copy ---------------------------------------------------
@@ -240,10 +282,7 @@ def validation_nudge_message(agent: Any, execution_context: dict) -> str:
     )
 
     if not declared_complete:
-        remaining = sorted(
-            (execution_context.get("declared_edit_set", set()) or set())
-            - (execution_context.get("dirty_written_files", set()) or set())
-        )
+        remaining = unwritten_declared_files(execution_context)
         if remaining:
             remaining_preview = ", ".join(remaining[:5])
             return (

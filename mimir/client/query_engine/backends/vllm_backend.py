@@ -8,6 +8,11 @@ from typing import Any, Callable
 
 from .base import LLMBackend
 from .tag_parser import ThinkTagParser
+# The assistant↔tool pairing invariant belongs to the history, not to this provider:
+# history.py owns the single implementation and applies it before every model call.
+# Re-applied here because _prepare_messages_for_openai normalises ids first, which can
+# turn a positional match into an id match.
+from ..history import reconcile_tool_pairs
 
 
 # Single source of truth in _shared so the embedding helper (which runs in the
@@ -115,10 +120,9 @@ def _answer_max_tokens(mml: int, prompt_tokens: int) -> int:
     return min(remaining, int(mml * CTX_RESERVED_RATIO))
 
 
-# Profile keys that configure how vLLM is *launched* (`vllm serve` flags), not how
-# a chat request is made. The VS Code extension reads these straight from
-# vllm_model_profiles.json to build the serve command; they must NOT be forwarded
-# in a chat-completion request's extra_body, where vLLM has no such parameters.
+# Profile keys that configure how vLLM is *launched* (`vllm serve` flags), read
+# straight from vllm_model_profiles.json by the VS Code extension. They must NOT be
+# forwarded in a chat request's extra_body, where vLLM has no such parameters.
 _LAUNCH_ONLY_PROFILE_KEYS: frozenset[str] = frozenset({
     "tool_call_parser", "reasoning_parser", "async-scheduling",
     # Client-only knobs consumed by the agent loop / config, never valid as vLLM
@@ -201,14 +205,6 @@ def _normalize_tool_calls(raw_tool_calls: list) -> list[dict]:
     return result
 
 
-# Placeholder result emitted for an assistant tool call whose real result was trimmed
-# from history — keeps the assistant↔tool pairing valid and tells the model it's gone.
-_EVICTED_TOOL_RESULT = json.dumps({
-    "status": "error",
-    "error": "tool result not in history (evicted to stay within the context budget)",
-})
-
-
 def _extract_reasoning(obj: Any) -> str | None:
     """Return the reasoning/thinking text from a streaming delta or message object.
 
@@ -224,68 +220,6 @@ def _extract_reasoning(obj: Any) -> str | None:
     return None
 
 
-def _reconcile_tool_pairs(prepared: list[dict]) -> list[dict]:
-    """Repair assistant.tool_calls ↔ tool-message pairing for strict OpenAI/vLLM validation.
-
-    Upstream history trimming (`_trim_tool_history`) and intra-query compaction can break
-    two invariants vLLM enforces: every assistant tool call must be answered by a tool
-    message, and every tool message must reference a call in the immediately preceding
-    assistant message. For each assistant turn that declares calls, the following run of
-    tool messages is matched to those calls (by `tool_call_id`, then positionally for any
-    that lack a valid id); each declared call is emitted with its response or a small stub
-    when the real one was evicted. Tool messages belonging to no preceding call (e.g. their
-    assistant turn was compacted away) are dropped.
-    """
-    out: list[dict] = []
-    i = 0
-    n = len(prepared)
-    while i < n:
-        m = prepared[i]
-        if m.get("role") == "assistant" and m.get("tool_calls"):
-            declared_ids = [tc["id"] for tc in m["tool_calls"]]
-            declared_set = set(declared_ids)
-
-            # Contiguous run of tool messages answering this assistant turn.
-            j = i + 1
-            run: list[dict] = []
-            while j < n and prepared[j].get("role") == "tool":
-                run.append(prepared[j])
-                j += 1
-
-            # Match by id first; collect the rest for positional assignment.
-            responses: dict[str, dict] = {}
-            leftovers: list[dict] = []
-            for tmsg in run:
-                tcid = tmsg.get("tool_call_id")
-                if isinstance(tcid, str) and tcid in declared_set and tcid not in responses:
-                    responses[tcid] = tmsg
-                else:
-                    leftovers.append(tmsg)
-            for tmsg in leftovers:
-                nxt = next((d for d in declared_ids if d not in responses), None)
-                if nxt is None:
-                    break  # all calls already answered — remaining tool msgs are orphans → drop
-                fixed = dict(tmsg)
-                fixed["tool_call_id"] = nxt
-                responses[nxt] = fixed
-
-            out.append(m)
-            for cid in declared_ids:
-                out.append(responses.get(cid) or {
-                    "role": "tool",
-                    "tool_call_id": cid,
-                    "content": _EVICTED_TOOL_RESULT,
-                })
-            i = j
-        elif m.get("role") == "tool":
-            # Orphan tool message (no preceding assistant tool_calls run) — drop it.
-            i += 1
-        else:
-            out.append(m)
-            i += 1
-    return out
-
-
 def _prepare_messages_for_openai(messages: list[dict]) -> list[dict]:
     """Convert internal/Ollama-style history to strict OpenAI chat schema.
 
@@ -293,7 +227,7 @@ def _prepare_messages_for_openai(messages: list[dict]) -> list[dict]:
     id/type/function.arguments(string), tool messages must carry a tool_call_id that
     matches a call in the immediately preceding assistant message, and every assistant
     tool call must be answered. This does the per-message shape normalization, then
-    `_reconcile_tool_pairs` repairs any pairing broken by upstream trimming/compaction.
+    `reconcile_tool_pairs` repairs any pairing broken by upstream trimming/compaction.
     """
     prepared: list[dict] = []
 
@@ -347,7 +281,7 @@ def _prepare_messages_for_openai(messages: list[dict]) -> list[dict]:
 
         prepared.append(m)
 
-    return _merge_consecutive_user_messages(_reconcile_tool_pairs(prepared))
+    return _merge_consecutive_user_messages(reconcile_tool_pairs(prepared))
 
 
 def _merge_consecutive_user_messages(prepared: list[dict]) -> list[dict]:
@@ -470,12 +404,9 @@ class VllmBackend(LLMBackend):
         # any call-specific overrides (e.g. thinking_budget).
         extra_body: dict = _model_extra_body(model)
         if extra_body.pop("supports_thinking", False):
-            # Mirror the thinking toggle into the chat template the way Ollama
-            # does: send enable_thinking EXPLICITLY so "off" truly disables
-            # reasoning. `enable_thinking` is the de-facto standard kwarg across
-            # thinking-capable vLLM templates (Qwen3, DeepSeek-R1, GLM, Nemotron,
-            # …); when the key is omitted most templates default it to True, so
-            # it must be passed to actually suppress the think block.
+            # Send enable_thinking EXPLICITLY so "off" truly disables reasoning: it is
+            # the de-facto standard kwarg across thinking-capable vLLM templates (Qwen3,
+            # DeepSeek-R1, GLM, Nemotron), and most default it to True when omitted.
             ctk = extra_body.setdefault("chat_template_kwargs", {})
             ctk["enable_thinking"] = bool(thinking)
             if thinking:
@@ -516,18 +447,12 @@ class VllmBackend(LLMBackend):
         if extra_body:
             create_kwargs["extra_body"] = extra_body
 
-        # Send an explicit max_tokens. Otherwise vLLM defaults it to
-        # (max_model_len - prompt_tokens), which goes negative when the prompt is
-        # near/over the served window and 400s with "max_tokens must be at least
-        # 1, got -N". We reserve the remaining window for the answer.
-        #
-        # NOTE: clamping max_tokens to >=1 is NOT sufficient when the *prompt*
-        # itself exceeds max_model_len — vLLM re-caps max_tokens to the (negative)
-        # remaining space and still 400s with the cryptic "got -N". So when we can
-        # see the prompt overflows the window, raise a clear, actionable error
-        # instead of letting vLLM emit the confusing one. The agent loop's context
-        # budgeting (which accounts for the tools schema) should prevent ever
-        # reaching here; this is a last-resort safety net.
+        # Send an explicit max_tokens: vLLM otherwise defaults it to
+        # (max_model_len - prompt_tokens), which goes negative near the window and 400s
+        # with "max_tokens must be at least 1, got -N". Clamping to >=1 is not enough —
+        # when the *prompt* itself overflows, vLLM re-caps to the negative remainder and
+        # 400s anyway, so raise a clear error instead. Last-resort net; the agent loop's
+        # context budgeting should prevent reaching here.
         max_tokens = options.get("max_tokens") or options.get("num_predict")
         mml = served_model_len(model)
         if mml:
@@ -626,13 +551,10 @@ class VllmBackend(LLMBackend):
                 if reasoning:
                     parser.thinking_parts.append(reasoning)
 
-                # Route the content through the tag parser (not a blind tag strip) so
-                # inline <think>…</think> reasoning is separated into thinking_parts
-                # instead of being merged into the answer. Otherwise tag-based models
-                # in non-streaming mode would leak reasoning into final_msg["content"]
-                # and pollute the conversation history. The parser also echoes the
-                # answer text to stdout (token_callback is None here), matching the
-                # previous direct-write behaviour.
+                # Through the tag parser, not a blind tag strip, so inline
+                # <think>…</think> lands in thinking_parts instead of leaking into
+                # final_msg["content"] and polluting history. The parser also echoes the
+                # answer to stdout (token_callback is None here).
                 content = msg.content or ""
                 if content:
                     parser.feed_content(content)

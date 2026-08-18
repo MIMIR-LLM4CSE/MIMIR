@@ -23,6 +23,7 @@ import os
 import sys
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 
 _SERVERS = Path(__file__).resolve().parents[1] / "servers"
@@ -183,22 +184,21 @@ class PreconditionDoesNotWeakenTheSandboxTests(_WorkspaceFixture):
         self.assertFalse(os.path.exists(outside))
 
     def test_scratchpad_absolute_path_still_succeeds(self):
-        # The standing root must survive the new precondition.
+        # The standing root must survive the new precondition. MIMIR_SCRATCH_DIR is
+        # pointed at a temp dir so the hermetic suite never writes into the real
+        # scratchpad under /tmp.
         from state_paths import scratch_dir
         state = tempfile.mkdtemp()
-        self.addCleanup(lambda: __import__("shutil").rmtree(state, ignore_errors=True))
-        old = os.environ.get("MIMIR_STATE_DIR")
-        os.environ["MIMIR_STATE_DIR"] = state
-        try:
+        scratch = tempfile.mkdtemp()
+        for d in (state, scratch):
+            self.addCleanup(lambda p=d: __import__("shutil").rmtree(p, ignore_errors=True))
+        with unittest.mock.patch.dict(
+            os.environ, {"MIMIR_STATE_DIR": state, "MIMIR_SCRATCH_DIR": scratch}
+        ):
             fp = os.path.join(scratch_dir(), "probe.py")
             res = sf.write_file(path=fp, content="x = 1\n")
             self.assertEqual(res.get("status"), "ok", res)
             self.assertTrue(os.path.isfile(fp))
-        finally:
-            if old is None:
-                os.environ.pop("MIMIR_STATE_DIR", None)
-            else:
-                os.environ["MIMIR_STATE_DIR"] = old
 
 
 class InternalHelpersAreUnaffectedTests(_WorkspaceFixture):

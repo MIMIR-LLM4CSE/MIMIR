@@ -31,23 +31,16 @@ from dataclasses import dataclass, field
 from typing import Any, Iterable
 
 # ---------------------------------------------------------------------------
-# Capability vocabulary — orthogonal semantic flags a server declares per tool.
-# Mirrored on the server side in servers/_shared/capabilities.py (kept in sync by
-# test_capabilities.test_vocab_in_sync). Consumers query these via has_cap /
-# names_with_cap. A flag is a reusable behavioral contract the client reacts to,
-# never a tool's identity (see module docstring).
-#
-# The vocabulary is organised by the *policy or nudge that consumes each flag* —
-# that is what justifies a flag's existence. There is exactly one declared flag
-# per real policy distinction; anything derivable from the others is a helper
-# (see ``is_write`` / ``clears_edit_loop`` below), never a separately-declared
-# flag. A single tool typically carries flags from several groups (e.g.
-# write_file is CONTENT_WRITE + OVERWRITE + EDIT).
+# Capability vocabulary — orthogonal semantic flags a server declares per tool,
+# mirrored server-side in servers/_shared/capabilities.py (test_capabilities
+# .test_vocab_in_sync keeps them level). A flag is a reusable behavioral contract,
+# never a tool's identity. Organised by the *policy or nudge that consumes it* —
+# that is what justifies a flag existing. Exactly one declared flag per real policy
+# distinction; anything derivable is a helper (``is_write``, ``clears_edit_loop``).
 # ---------------------------------------------------------------------------
 
 # --- Discovery: reads, searches, inspections the policy tracks as evidence -
-# The write policy reads these to build edit/delete preconditions, and the
-# discovery/blast-radius nudges read them as "did exploration happen".
+# Feeds edit/delete preconditions and the "did exploration happen" nudges.
 READ = "read"                          # _observe_read -> read_files (edit/overwrite precondition; evidence)
 SEARCH = "search"                      # _observe_search_flags (evidence; blast-radius)
 SEARCH_WITH_PATH = "search_with_path"  # results embed file paths the executor auto-follows
@@ -68,12 +61,10 @@ REMOVE = "remove"                      # deletes a file (needs context; _observe
 REPLACEMENT_TRACK = "replacement_track"  # _observe_replacement_tracking -> cross-file completeness
 
 # --- Validation ------------------------------------------------------------
-# A tool that validates code (syntax/lint/typecheck/test). The first-party stack
-# validates through the bash server (no dedicated tool carries this), but the flag
-# stays in the vocabulary so an extension-pack server can ship its own validator: a
-# successful VALIDATE call marks its target file validated (`_observe_validation_tool`)
-# and clears the edit-failure streak (`clears_edit_loop`), the same conclude-gate
-# contribution a bash validation command makes.
+# Validates code (syntax/lint/typecheck/test). No first-party tool carries this — the
+# stack validates through the bash server — but the flag stays so an extension-pack
+# server can ship its own validator, with the same conclude-gate contribution a bash
+# validation makes (`_observe_validation_tool` + `clears_edit_loop`).
 VALIDATE = "validate"
 
 # --- Task planning ---------------------------------------------------------
@@ -82,11 +73,9 @@ VALIDATE = "validate"
 TASK_PLANNING = "task_planning"        # records a task plan (checklist and/or prose rationale)
 
 # --- Approval & mode policy ------------------------------------------------
-# How much of a tool's effect can be taken back. Mirrors the server-side vocabulary in
-# `servers/_shared/capabilities.py`. This is the *declared* dimension; SENSITIVE below
-# is derived from it (see `_caps_from_meta`), so a tool states one fact about its
-# effect instead of two that can drift apart — the same treatment PLAN_BLOCKED already
-# gets from the write caps.
+# How much of a tool's effect can be taken back — the *declared* dimension, from which
+# SENSITIVE below is derived (see `_caps_from_meta`), so a tool states one fact about
+# its effect rather than two that can drift.
 REVERSIBLE = "reversible"              # the client itself can undo it (approval snapshots + revert_last)
 RECOVERABLE = "recoverable"            # undoable by hand, off the client's record (delete, env mutation)
 IRREVERSIBLE = "irreversible"          # leaves the machine or spends something real (cluster hours, outbound POST)
@@ -112,9 +101,8 @@ BACKGROUNDABLE = "backgroundable"      # launches a long detached run; result ma
 
 
 
-# --- servers whose tools are all read-only (spawn_agent readonly subset) ---
-# A server-name allowlist (not tool classification): the subset a read-only
-# sub-agent connects. Consumed by servers/agent_state/server_spawn_agent.py.
+# A server-name allowlist (not tool classification): the subset a read-only sub-agent
+# connects. Consumed by servers/agent_state/server_spawn_agent.py.
 _READONLY_SERVERS: frozenset[str] = frozenset({
     "files", "search", "code", "math", "strings",
     "datetime", "memory", "system", "platform",
@@ -136,22 +124,18 @@ class ToolCaps:
     fallbacks: tuple[str, ...] = ()
     label: str | None = None
     # Session-approval scope narrowing: {"args": [...], "kind": "<kind>", "noun": ...}.
-    # The approval manager derives a per-call scope token from `args` using the generic
-    # `kind` strategy, so "always" narrows to e.g. one command family / host / package
-    # set instead of the whole tool. None -> coarse server:tool scope.
+    # Lets "always" narrow to one command family / host / package set instead of the
+    # whole tool. None -> coarse server:tool scope.
     scope: dict[str, Any] | None = None
     # One-line risk sentence shown in the approval prompt (registry-driven describe_risk).
     risk_note: str | None = None
-    # Pre-write diff preview: {"kind": "<edit shape>", "args": [...]}. A file-mutating
-    # tool declares the generic shape of its edit (full content / append / replace /
-    # line splice / delete) and which args carry it, so a UI can reconstruct the
-    # proposed post-write content and render a diff before execution. None -> the
-    # tool's mutations can't be previewed (and get the normal approval flow).
+    # Pre-write diff preview: {"kind": "<edit shape>", "args": [...]}. Declares the
+    # generic shape of the edit (full content / append / replace / splice / delete) and
+    # which args carry it, so a UI can reconstruct the post-write content and diff it.
+    # None -> not previewable (normal approval flow).
     preview: dict[str, Any] | None = None
-    # How much of this tool's effect can be taken back: reversible | recoverable |
-    # irreversible (see REVERSIBILITY_LEVELS). SENSITIVE is derived from it, so this is
-    # the one declared fact rather than two that can drift. Always populated —
-    # `_derive_reversibility` supplies a conservative value when nothing is declared.
+    # reversible | recoverable | irreversible (see REVERSIBILITY_LEVELS). Always
+    # populated — `_derive_reversibility` supplies a conservative value when undeclared.
     reversibility: str = RECOVERABLE
 
     def has(self, cap: str) -> bool:
@@ -204,18 +188,14 @@ def _derive_reversibility(caps: set[str]) -> str:
 
 def _caps_from_meta(name: str, desc: dict) -> ToolCaps:
     caps = set(desc.get("capabilities", []) or [])
-    # Plan-blocking is *derived* for file mutations: any file writer/editor is
-    # inherently unsafe in plan mode, so a server needn't declare PLAN_BLOCKED
-    # alongside its write caps (and can't forget to). Non-file side effects
-    # (exec / db / web / cluster) still declare PLAN_BLOCKED explicitly.
+    # Derived for file mutations so a server can't forget to declare it alongside its
+    # write caps. Non-file side effects (exec/db/web/cluster) still declare it.
     if caps & {CONTENT_WRITE, EDIT, REMOVE}:
         caps.add(PLAN_BLOCKED)
     approval = desc.get("approval", {}) or {}
-    # Sensitivity is derived, not declared — the same way PLAN_BLOCKED is above. A tool
-    # states one fact about its effect (how far it can be taken back) and the approval
-    # requirement follows: anything the client cannot itself undo is gated. Two
-    # independently declared fields would eventually disagree, and the failure mode of
-    # that disagreement is a tool running unasked.
+    # Sensitivity is derived, like PLAN_BLOCKED above: anything the client cannot itself
+    # undo is gated. Two independently declared fields would eventually disagree, and
+    # the failure mode of that disagreement is a tool running unasked.
     reversibility = approval.get("reversibility")
     if reversibility not in REVERSIBILITY_LEVELS:
         # `sensitive: true` is the pre-reversibility spelling. Honour it as
@@ -312,11 +292,9 @@ def build_tool_caps(tools: Iterable[Any]) -> dict[str, ToolCaps]:
 
 
 # ===========================================================================
-# Query helpers — consumers use these instead of re-listing tool names.
-#
-# Each requires the per-agent ``registry`` (``agent.tool_caps``). When omitted it
-# resolves to an empty registry (everything unclassified) — there is no static
-# fallback table; classification is owned by the connected servers.
+# Query helpers — consumers use these instead of re-listing tool names. Each takes
+# the per-agent ``registry`` (``agent.tool_caps``); omitting it resolves to an empty
+# one (everything unclassified). There is no static fallback table.
 # ===========================================================================
 
 def _registry(registry: dict[str, ToolCaps] | None) -> dict[str, ToolCaps]:

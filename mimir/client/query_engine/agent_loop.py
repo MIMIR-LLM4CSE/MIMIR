@@ -7,7 +7,7 @@ from . import streaming as _streaming
 from ..event_sink import emit
 from .toollist import domains_signaled_by_text, tools_for_context, tools_for_readonly_mode
 from .streaming import _process_response, _stream_chat
-from .history import _enforce_context_budget
+from .history import _enforce_context_budget, reconcile_tool_pairs
 from .finalize import _finalize_answer
 from .dispatch import _dispatch_tool_calls, _post_dispatch_inject
 from .readonly_guard import filter_readonly_tool_calls
@@ -206,7 +206,7 @@ def _remove_pin(messages: list[dict], token) -> None:
 
 
 
-def _drain_steer(agent: Any, messages: list[dict], execution_context: dict) -> None:
+def _drain_steer(agent: Any, messages: list[dict]) -> None:
     """Inject any user "steer" messages queued mid-run as user turns at a step boundary.
 
     Front-ends that support chatting-while-busy (the WebSocket server) patch a
@@ -230,7 +230,6 @@ def _drain_steer(agent: Any, messages: list[dict], execution_context: dict) -> N
         if not text:
             continue
         messages.append({"role": "user", "content": text})
-        execution_context["user_steered"] = True
         emit({"type": "steer_injected", "text": text})
 
 
@@ -369,7 +368,7 @@ async def _run_agent_loop(
     while step < hard:
         # Pick up anything the user typed mid-run (chat-while-busy steering) and
         # inject it as the next user turn before this step's model call.
-        _drain_steer(agent, messages, execution_context)
+        _drain_steer(agent, messages)
 
         # The mode is live: the user can flip it while this query is running, and
         # the change must land on THIS step. Plan mode is a different loop shape
@@ -540,7 +539,10 @@ async def _run_agent_loop(
 
     answer = "Reached the maximum number of steps without a final answer."
     if needs_incomplete_finalization(execution_context):
-        answer = finalize_incomplete_answer(answer, execution_context)
+        # A run that ran out of steps is unfinished whatever else the ledger says —
+        # in particular it must never borrow the "complete except for what you
+        # refused" headline just because a refusal was the only thing recorded.
+        answer = finalize_incomplete_answer(answer, execution_context, ran_out_of_steps=True)
     agent.approvals.flush_pending_review()
     answer = await _finalize_answer(agent, query, answer, execution_context, messages, logger)
     return answer
@@ -610,6 +612,12 @@ async def run_agent_query(
         and hist[-1].get("content") == query
     ):
         messages.append({"role": "user", "content": query})
+
+    # Inherited history can arrive with a broken assistant↔tool pairing: a front-end
+    # trims by token budget and can pop an assistant turn while keeping its results.
+    # Normalise once here so plan mode — which does no budget enforcement of its own —
+    # is covered too, and no backend ever has to cope with a dangling pair.
+    messages[:] = reconcile_tool_pairs(messages)
 
     # -------------------------------------------------------
     # Skill detection (explicit first, then implicit)
