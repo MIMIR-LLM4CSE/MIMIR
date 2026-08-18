@@ -243,17 +243,22 @@ class OutOfWorkspaceGateTests(_TmpStateDir):
 
 
 class _FakeExecAgent(_FakeAgent):
-    """A CODE_EXEC tool taking a shell command — paths arrive inside the string.
+    """A shell-command tool — paths arrive inside the command string.
 
     No `cwd` arg-role: the bash server has no working-directory argument, so every
     call starts at the workspace root and `cd` is the only way to move.
+
+    The `command_prefix` scope is what makes the extractor read the arguments as shell;
+    CODE_EXEC alone does not, since a tool can execute through structured parameters
+    that no shell parser should be pointed at.
     """
 
     def __init__(self, mgr, *, script) -> None:
         super().__init__(mgr, cap=CODE_EXEC, script=script)
         self.tool_caps = {
             "run_shell": ToolCaps(name="run_shell",
-                                  capabilities=frozenset({CODE_EXEC}))
+                                  capabilities=frozenset({CODE_EXEC}),
+                                  scope={"args": ["command"], "kind": "command_prefix"})
         }
 
     def get_tool_file_targets(self, tool_name, arguments):

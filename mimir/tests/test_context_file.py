@@ -120,7 +120,21 @@ class DefaultBaseShapeTests(unittest.TestCase):
         # and tool-result copy say the same thing situationally, but both are
         # enforcement-gated or arrive only after the fact; this line is the carrier
         # that survives every level.
-        self.assertLess(len(cb._DEFAULT_BASE_SYSTEM_CONTENT), 11000)
+        # Raised 11000 → 12100 for the verdict rule in ## Validation: the prompt sat at
+        # 10974. Exit 0 only says the program ran to the end, and nothing downstream can
+        # read the output it produced — no parser generalises across plots, tables, logs
+        # and physical units. So an executed check no longer validates a file on its own,
+        # and the obligation to judge its output is stated here, where it reaches every
+        # run. The three outcomes and what `unknown` obliges are load-bearing: without
+        # them a model picks `pass` to close the loop, which is the failure this exists
+        # to stop.
+        # Raised 12100 → 12250 for the verdict-scope line in ## Validation: the prompt
+        # sat at 11974. One unqualified `pass` used to settle every open run at once,
+        # so a run the model had not read was credited by a statement about another —
+        # the same over-crediting the verdict rule above exists to stop, one level up.
+        # The rule only works if the model knows the bracketed form, and it is asked
+        # for at the moment it would otherwise write the broad `pass`.
+        self.assertLess(len(cb._DEFAULT_BASE_SYSTEM_CONTENT), 12250)
 
     def test_env_resolution_cascade_lives_in_the_nudges_not_the_prompt(self) -> None:
         # The 5-step cascade is covered by env_resolution/env_cleanup nudges, which

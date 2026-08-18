@@ -108,8 +108,8 @@ environment variables.
 
 ## 3. Choose and Configure an LLM Backend
 
-Pick **one** backend: vLLM (OpenAI-compatible, GPU-served — best for HPC/SLURM) or
-Ollama (local, simplest for interactive use).
+Pick **one** backend: vLLM (OpenAI-compatible, GPU-served — best for HPC/SLURM, and the
+default) or Ollama (local, simplest for interactive use — set `LLM_BACKEND=ollama`).
 
 ### vLLM (OpenAI-compatible endpoint)
 
@@ -227,7 +227,7 @@ Set these in your shell profile (`.bashrc`, `.zshrc`) or in the SLURM job script
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `LLM_BACKEND` | `ollama` | `ollama` or `vllm` |
+| `LLM_BACKEND` | `vllm` | `vllm` or `ollama` |
 | `MIMIR_DEFAULT_MODEL` | *(empty)* | Model selected at startup; overridden by `--model` flag or the UI |
 | `OLLAMA_BASE_URL` | `http://127.0.0.1:11434` | Ollama API endpoint |
 | `VLLM_BASE_URL` | `http://127.0.0.1:8000` | vLLM API base URL |
@@ -323,7 +323,7 @@ with the extension source.
   "mimir.pythonPath":   "/path/to/conda/envs/myenv/bin/python",
 
   // ── LLM backend ──────────────────────────────────────────────────────────
-  // "mimir.backend": "ollama",           // "ollama" (default) or "vllm"
+  // "mimir.backend": "vllm",             // "vllm" (default) or "ollama"
   // "mimir.vllmBaseUrl": "http://127.0.0.1:8000",
   // "mimir.vllmMode":   "launch",        // "launch" (start vllm serve on a SLURM node)
   //                                         //   or "connect" (attach to vllmBaseUrl, no SLURM)

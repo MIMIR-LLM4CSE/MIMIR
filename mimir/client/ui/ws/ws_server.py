@@ -150,7 +150,7 @@ def main() -> None:
     parser.add_argument("--model", default=None)
     parser.add_argument("--cwd", default=None, help="Set working directory before starting")
     parser.add_argument("--backend", choices=["ollama", "vllm", "anthropic"], default=None,
-                        help="LLM backend to use (default: from LLM_BACKEND env var or ollama). "
+                        help="LLM backend to use (default: from LLM_BACKEND env var or vllm). "
                              "anthropic uses the hosted Claude API — the key comes from the "
                              "ANTHROPIC_API_KEY env var, never a CLI arg.")
     parser.add_argument("--vllm-base-url", default=None,

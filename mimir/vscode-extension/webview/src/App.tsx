@@ -93,7 +93,7 @@ export const App: React.FC = () => {
   const [modelSizes, setModelSizes] = useState<Record<string, number>>({});
   const [selectedModel, setSelectedModel] = useState("");
   const [clusterConfig, setClusterConfig] = useState<ClusterConfig[]>([]);
-  const [backend, setBackend] = useState("ollama");
+  const [backend, setBackend] = useState("vllm");
   const [vllmBaseUrl, setVllmBaseUrl] = useState("http://127.0.0.1:8000");
   const [vllmMode, setVllmMode] = useState<"launch" | "connect">("launch");
   const [input, setInput] = useState("");

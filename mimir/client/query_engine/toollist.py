@@ -20,7 +20,8 @@ from typing import Any
 from ..context.signals import query_prefers_existing_file_edits
 from ..context.capabilities import (
     CANDIDATE_SEARCH, CHECK_EXISTENCE, CODE_NAV, CONTENT_WRITE, EDIT, INSPECT_DIR,
-    PLAN_BLOCKED, READ, SEARCH, SEARCH_WITH_PATH, names_with_cap,
+    PLAN_BLOCKED, READ, SEARCH, SEARCH_WITH_PATH, TASK_PLANNING,
+    names_with_arg_role, names_with_cap,
 )
 from ..context.signals import DOMAIN_TOOL_GROUPS, query_matches_any
 from ..context.execution_context import bootstrap_engine_context as _bootstrap_engine_context
@@ -248,23 +249,44 @@ def tools_for_context(
     )
 
 
-def tools_for_readonly_mode(tools: list[dict[str, Any]], tool_caps: Any = None) -> list[dict[str, Any]]:
+def hidden_planning_tools(mode: str, tool_caps: Any = None) -> set[str]:
+    """Plan-writing tools *mode* does not expose, by capability rather than by name.
+
+    ASK answers and records nothing, so every ``TASK_PLANNING`` writer is hidden.
+    PLAN records the prose document only — the ordered checklist is written after the
+    user approves, at the start of the execution — so the tool declaring the
+    ``plan_steps`` arg-role is hidden. Withdrawing the tool is what lets the prompt
+    drop the matching "do not write a plan / a checklist" prohibitions: a tool the
+    model cannot see needs no rule, no nudge, and no prompt tokens.
+    """
+    if mode == "ask":
+        return names_with_cap(TASK_PLANNING, tool_caps)
+    if mode == "plan":
+        return names_with_arg_role("plan_steps", tool_caps)
+    return set()
+
+
+def tools_for_readonly_mode(
+    tools: list[dict[str, Any]], tool_caps: Any = None, mode: str = "",
+) -> list[dict[str, Any]]:
     """Return the exploration-safe subset of tools allowed in a read-only mode.
 
     Shared by every mode in ``READONLY_MODES`` (plan, ask). Write, execution, and
-    mutation tools (PLAN_BLOCKED) are stripped. Everything else — search, read,
-    inspect, platform query, memory read, todo read, and the dual-use PLAN_READONLY
-    exec tool (kept visible so the model can run read-only discovery commands; its
-    exec use is rejected at call time by
+    mutation tools (PLAN_BLOCKED) are stripped, along with the plan-writing tools
+    *mode* has no use for (see :func:`hidden_planning_tools`). Everything else —
+    search, read, inspect, platform query, memory read, todo read, and the dual-use
+    PLAN_READONLY exec tool (kept visible so the model can run read-only discovery
+    commands; its exec use is rejected at call time by
     :func:`readonly_guard.filter_readonly_tool_calls`) — is kept so the model can
     gather the evidence its answer or plan is grounded in.
     """
-    plan_blocked = names_with_cap(PLAN_BLOCKED, tool_caps)
+    hidden = names_with_cap(PLAN_BLOCKED, tool_caps) | hidden_planning_tools(mode, tool_caps)
     return [
         tool for tool in tools
-        if tool.get("function", {}).get("name") not in plan_blocked
+        if tool.get("function", {}).get("name") not in hidden
     ]
 
 
-# Historical name, kept because plan_loop imports it and tests monkeypatch it there.
-tools_for_plan_mode = tools_for_readonly_mode
+def tools_for_plan_mode(tools: list[dict[str, Any]], tool_caps: Any = None) -> list[dict[str, Any]]:
+    """The read-only subset for plan mode. Its own name because plan_loop imports it."""
+    return tools_for_readonly_mode(tools, tool_caps, mode="plan")

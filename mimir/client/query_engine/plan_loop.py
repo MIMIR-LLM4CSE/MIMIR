@@ -21,7 +21,6 @@ from ..config.constants import (
 from ..guardrails.workflow import (
     PLAN_TODO_NUDGE_EARLY,
     PLAN_TODO_NUDGE_LATE,
-    PLAN_CHECKLIST_MISSING_NUDGE,
     PLAN_DELIVER_ANSWER,
     PLAN_DELIVER_ANSWER_FIRM,
     PLAN_ALREADY_RECORDED_ERROR,
@@ -136,8 +135,7 @@ async def _run_plan_mode(
     logger: Any,
     cb: dict,
 ) -> str:
-    """Plan-mode loop: gather evidence with read-only tools, then record a plan via the plan/todo tool."""
-    # Lazy import: agent_loop imports this module (run_agent_query dispatch), so these
+    """Plan-mode loop: gather evidence with read-only tools, then record a plan via the plan/todo tool."""    # Lazy import: agent_loop imports this module (run_agent_query dispatch), so these
     # agent-loop helpers + the tail-called agent loop are fetched at call time.
     from .agent_loop import (
         _advertised_tools, _drain_steer, _run_agent_loop,
@@ -149,7 +147,7 @@ async def _run_plan_mode(
         plan_tools, query=query, tool_caps=agent.tool_caps, max_tools=max_tools_for(agent.model),
     )
     answer = ""
-    todo_written = False
+    plan_recorded = False
     # Both reset whenever the plan goes back to the drawing board (revise / rework).
     post_record_tool_turns = 0
     deliver_nudged = False
@@ -220,17 +218,17 @@ async def _run_plan_mode(
         # delivery + approval path. Not conditioned on prose having been emitted — a
         # model stuck here typically emits tool calls and nothing else, and
         # _finalize_answer tolerates an empty answer.
-        if tool_calls and todo_written:
+        if tool_calls and plan_recorded:
             post_record_tool_turns += 1
             if post_record_tool_turns > _PLAN_POST_RECORD_TOOL_TURNS:
                 _reject_stalled_calls(tool_calls, messages)
                 tool_calls = []
 
         if not tool_calls:
-            # Only the final deliver-answer step once a plan is actually recorded (in
-            # either form). A plan narrated as chat prose is not the result — nudge and
+            # Only the final deliver-answer step once the plan document is actually
+            # recorded. A plan narrated as chat prose is not the result — nudge and
             # keep looping, so plan mode reliably produces a structured plan.
-            if not todo_written:
+            if not plan_recorded:
                 if plan_nudges <= max_steps - 5:
                     messages.append({"role": "user", "content": PLAN_TODO_NUDGE_EARLY})
                 else:
@@ -274,7 +272,7 @@ async def _run_plan_mode(
                 emit({"type": "status", "text": "  ↻ Reworking the plan per your feedback"})
                 messages.append({"role": "user", "content": plan_revision_nudge(feedback)})
                 _clear_recorded_plan(execution_context)
-                todo_written = False
+                plan_recorded = False
                 post_record_tool_turns = 0
                 deliver_nudged = False
                 continue
@@ -282,7 +280,7 @@ async def _run_plan_mode(
                 emit({"type": "status", "text": "  ↺ Plan sent back — reworking from scratch"})
                 messages.append({"role": "user", "content": PLAN_REWORK_NUDGE})
                 _clear_recorded_plan(execution_context)
-                todo_written = False
+                plan_recorded = False
                 post_record_tool_turns = 0
                 deliver_nudged = False
                 continue
@@ -296,9 +294,10 @@ async def _run_plan_mode(
             # "none": no interactive front-end / dismissed — deliver the plan as-is.
             break
 
-        # Safety guard: drop any hallucinated calls to write/execution tools, and
-        # restrict the dual-use exec tool to read-only discovery. Shared with ask
-        # mode — see readonly_guard.filter_readonly_tool_calls.
+        # Safety guard: drop any hallucinated calls to write/execution tools, restrict
+        # the dual-use exec tool to read-only discovery, and drop the task-checklist
+        # tool (plan mode records the plan document only). Shared with ask mode — see
+        # readonly_guard.filter_readonly_tool_calls.
         tool_calls = filter_readonly_tool_calls(
             tool_calls, agent=agent, messages=messages, mode_label="plan",
         )
@@ -307,10 +306,8 @@ async def _run_plan_mode(
         # Whether a plan exists is the execution context's call, never a second
         # derivation from tool names here: ``observations._observe_todo_flags`` tells
         # the two TASK_PLANNING forms apart by the `plan_steps` arg-role and records
-        # `todo_written` (checklist) / `plan_written` (prose document).
-        checklist_written = bool(execution_context.get("todo_written"))
-        plan_doc_written = bool(execution_context.get("plan_written"))
-        if checklist_written or plan_doc_written:
+        # `plan_written` (prose document) — the only form plan mode produces.
+        if execution_context.get("plan_written"):
             if (plan_explore_required
                     and not plan_evidence_nudged
                     and not has_discovery_evidence(execution_context, min_distinct=DISCOVERY_EVIDENCE_MIN_DISTINCT_PLAN)):
@@ -320,17 +317,12 @@ async def _run_plan_mode(
                 plan_evidence_nudged = True
                 emit({"type": "status", "text": "  ⚠ Plan not grounded in any exploration — flagged"})
                 messages.append({"role": "user", "content": PLAN_EVIDENCE_NUDGE})
-            todo_written = True
+            plan_recorded = True
 
-        if not todo_written:
+        if not plan_recorded:
             messages.append({"role": "user", "content": (
                 PLAN_TODO_NUDGE_EARLY if plan_nudges <= max_steps - 5 else PLAN_TODO_NUDGE_LATE
             )})
-        elif not checklist_written:
-            # Prose document recorded, ordered checklist not. Ask for the missing form
-            # only: telling the model it has "not yet recorded a plan" when its plan is
-            # on disk makes it rewrite the document it already wrote.
-            messages.append({"role": "user", "content": PLAN_CHECKLIST_MISSING_NUDGE})
         else:
             # Repeating the same deliver nudge verbatim is what the model echoes back;
             # escalate to the firm one once it has been ignored.

@@ -17,6 +17,7 @@ from mimir.client.context.capabilities import (
     PLAN_BLOCKED,
     PLAN_READONLY,
     SENSITIVE,
+    TASK_PLANNING,
 )
 
 
@@ -142,9 +143,37 @@ class PlanModeToolVisibilityTests(unittest.TestCase):
         kept = {t["function"]["name"] for t in tools_for_plan_mode(tools, registry)}
         self.assertEqual(kept, {"bash_run", "grep"})
 
-    def test_ask_mode_gets_the_same_subset(self):
-        # tools_for_plan_mode is the historical alias; both modes share one filter.
-        self.assertIs(tools_for_plan_mode, tools_for_readonly_mode)
+    def test_each_readonly_mode_hides_the_planning_tools_it_cannot_use(self):
+        # ASK records nothing, so both plan-writing tools go. PLAN writes the prose
+        # document only — the checklist tool (the `plan_steps` arg-role) goes, the
+        # document tool stays. Withdrawing them is what lets the prompt drop the
+        # matching "do not write a plan / a checklist" prohibitions.
+        registry = {
+            "grep": ToolCaps(name="grep", capabilities=frozenset()),
+            "todo_set_plan": ToolCaps(name="todo_set_plan", capabilities=frozenset({TASK_PLANNING})),
+            "todo_write": ToolCaps(
+                name="todo_write", capabilities=frozenset({TASK_PLANNING}),
+                arg_roles={"plan_steps": ("steps",)},
+            ),
+        }
+        tools = [
+            {"function": {"name": "grep"}},
+            {"function": {"name": "todo_set_plan"}},
+            {"function": {"name": "todo_write"}},
+        ]
+        self.assertEqual(
+            {t["function"]["name"] for t in tools_for_plan_mode(tools, registry)},
+            {"grep", "todo_set_plan"},
+        )
+        self.assertEqual(
+            {t["function"]["name"] for t in tools_for_readonly_mode(tools, registry, mode="ask")},
+            {"grep"},
+        )
+        # No mode given: the plain read-only subset, planning tools untouched.
+        self.assertEqual(
+            {t["function"]["name"] for t in tools_for_readonly_mode(tools, registry)},
+            {"grep", "todo_set_plan", "todo_write"},
+        )
 
 
 class _FakeAgent:
@@ -154,6 +183,11 @@ class _FakeAgent:
             "bash_run": ToolCaps(name="bash_run", capabilities=frozenset({PLAN_READONLY, SENSITIVE})),
             "code_run": ToolCaps(name="code_run", capabilities=frozenset({SENSITIVE})),
             "write_file": ToolCaps(name="write_file", capabilities=frozenset({PLAN_BLOCKED})),
+            "todo_set_plan": ToolCaps(name="todo_set_plan", capabilities=frozenset({TASK_PLANNING})),
+            "todo_write": ToolCaps(
+                name="todo_write", capabilities=frozenset({TASK_PLANNING}),
+                arg_roles={"plan_steps": ("steps",)},
+            ),
         }
 
     @staticmethod
@@ -212,6 +246,26 @@ class ReadonlyToolCallGuardTests(unittest.TestCase):
             [_call("write_file", {})], agent=agent, messages=messages, mode_label="plan",
         )
         self.assertIn("not available in plan mode", messages[0]["content"])
+
+    def test_planning_calls_are_dropped_per_mode(self):
+        # Defence in depth for tools the mode never advertised: ask drops both plan
+        # writers, plan drops only the checklist and keeps the document tool.
+        agent = _FakeAgent("ask")
+        messages: list[dict] = []
+        kept = filter_readonly_tool_calls(
+            [_call("todo_set_plan", {}), _call("todo_write", {})],
+            agent=agent, messages=messages, mode_label="ask",
+        )
+        self.assertEqual(kept, [])
+        self.assertIn("nothing is recorded", messages[0]["content"])
+
+        messages = []
+        kept = filter_readonly_tool_calls(
+            [_call("todo_set_plan", {}), _call("todo_write", {})],
+            agent=_FakeAgent("plan"), messages=messages, mode_label="plan",
+        )
+        self.assertEqual([c["function"]["name"] for c in kept], ["todo_set_plan"])
+        self.assertIn("approved the plan", messages[0]["content"])
 
 
 class ReadonlyBashApprovalExemptionTests(unittest.TestCase):

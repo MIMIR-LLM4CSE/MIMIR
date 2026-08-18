@@ -159,6 +159,64 @@ def regression_nudge_message(untested: list[tuple[str, str]]) -> str:
 	)
 
 
+def unjudged_output_nudge_message(commands: list[str]) -> str:
+	preview = "\n".join(f"- {c}" for c in commands[:5])
+	more = f"\n(+{len(commands) - 5} more)" if len(commands) > 5 else ""
+	return (
+		"You ran the following and never said what its output showed:\n"
+		+ preview
+		+ more
+		+ "\n\nExit 0 only means the program reached its end — it is not a result. State "
+		"the verdict on one line, as `verdict: pass|fail|unknown — <what in the output "
+		"shows it>`, naming the number, message or behaviour you are reading it from. "
+		"`fail` is expected sometimes and is not a setback: a green run with a wrong "
+		"answer is exactly what this catches. `unknown` is a legitimate answer when the "
+		"output does not settle the question — say what would settle it and go get that, "
+		"or explain why it is out of reach. Silence is the one ending that is not "
+		"available."
+		+ (
+			"\n\nJudge them one at a time when they showed different things: "
+			"`verdict[<command or file>]: pass|fail|unknown — <why>` settles just that run."
+			if len(commands) > 1 else ""
+		)
+	)
+
+
+def ambiguous_verdict_nudge_message(commands: list[str]) -> str:
+	"""A `pass` was stated while several runs, bearing on different files, were open."""
+	preview = "\n".join(f"- {c}" for c in commands[:5])
+	more = f"\n(+{len(commands) - 5} more)" if len(commands) > 5 else ""
+	return (
+		"You stated a `pass`, but these runs are open and they bear on different "
+		"files:\n"
+		+ preview
+		+ more
+		+ "\n\nOne unqualified `pass` would credit all of them, including whatever you did "
+		"not have in mind — so nothing was recorded. Name what you judged: "
+		"`verdict[<command or file>]: pass — <what in the output shows it>`, one line per "
+		"run you have actually read. A run you have not judged yet stays open, which is "
+		"the correct outcome; `fail` and `unknown` need no such qualifier, since neither "
+		"claims anything works."
+	)
+
+
+def unknown_verdict_nudge_message(paths: list[str]) -> str:
+	target = ", ".join(paths[:3]) if paths else "the run"
+	return (
+		f"You judged the output for {target} as `unknown`, which is the honest answer "
+		"when nothing on hand settles the question — but it is a starting point, not a "
+		"conclusion. Name what would settle it and get it: the reference implementation "
+		"or prior version to compare against, a documented or published value, an "
+		"analytical limit or special case the result must reproduce, a conservation or "
+		"symmetry property that must hold, a coarser/finer run to check the trend, or "
+		"the project's own tests. Fetch it if it is reachable (the docs, the repository, "
+		"the web), derive it if it is not, then re-judge and state the new verdict. "
+		"If it is genuinely out of reach, say so explicitly in your final answer, name "
+		"what remains unverified and why — an explained dead end is an acceptable "
+		"ending, an unexplained one is not."
+	)
+
+
 def unfinished_plan_nudge_message(unchecked: list[dict]) -> str:
 	preview = "\n".join(f"- {it['text']}" for it in unchecked[:5])
 	more = f"\n(+{len(unchecked) - 5} more)" if len(unchecked) > 5 else ""

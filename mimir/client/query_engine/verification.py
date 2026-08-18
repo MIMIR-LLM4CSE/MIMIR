@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import re
 
-from ..context import unwritten_declared_files, validation_tier, weakest_validation_tier
+from ..context import unwritten_declared_files, validation_tier, verdict_for, weakest_validation_tier
 from ..guardrails.workflow import unchecked_checklist_items
 
 #: Opening marker of a rendered ledger block. Stable — UIs split answers on it.
@@ -45,6 +45,21 @@ _INVARIANT_NOTE = (
     "Reported invariant: a validation run printed a numerical invariant. Its presence "
     "is recorded, never its value — nothing here compared it against a sealed reference."
 )
+# Said once, next to the rows that carry a verdict: the ledger is machine-recorded, but
+# a verdict is the one line in it the model wrote, and the two must not read alike.
+_VERDICT_NOTE = (
+    "Verdicts are the model's own reading of a run's output, recorded as stated and "
+    "never checked — exit 0 says a program ended, not that its answer is right."
+)
+
+
+def _verdict_suffix(execution_context: dict, path: str) -> str:
+    """`· verdict: fail — <reason>` for a judged file, or the empty string."""
+    record = verdict_for(execution_context, path)
+    if not record:
+        return ""
+    reason = (record.get("reason") or "").strip()
+    return f" · verdict: {record['verdict']}" + (f" — {reason}" if reason else "")
 
 
 def _oracle_basis(execution_context: dict, path: str) -> str:
@@ -69,27 +84,41 @@ def build_ledger(execution_context: dict) -> dict | None:
     validated = execution_context.get("validated_files", set())
     unchecked = unchecked_checklist_items(execution_context)
     unwritten = unwritten_declared_files(execution_context)
+    unjudged = execution_context.get("unjudged_runs") or {}
     required = [it for it in unchecked if not it.get("optional")]
     optional = [it for it in unchecked if it.get("optional")]
 
-    if not written and not unchecked and not unwritten:
+    # A run nobody judged is worth reporting even when no file was touched: an
+    # analysis-only session is exactly the one whose whole answer rests on that output.
+    if not written and not unchecked and not unwritten and not unjudged:
         return None
 
     rows: list[str] = []
     notes: list[str] = []
     unvalidated = [f for f in written if f not in validated]
+    awaiting = {p for run in unjudged.values() for p in (run.get("paths") or ())}
 
     for f in written:
         if f in unvalidated:
-            rows.append(f"`{f}` — **not validated**")
+            # "not validated" alone reads as "never checked", which understates a file
+            # whose check ran and overstates one whose verdict came back negative.
+            if f in awaiting:
+                rows.append(f"`{f}` — ran, **not validated**: its output was never judged")
+            else:
+                rows.append(f"`{f}` — **not validated**" + _verdict_suffix(execution_context, f))
             continue
         tier = validation_tier(execution_context, f) or "executed"
         if tier == "oracle":
             # Saying plainly which way it got there is what stops "the tests passed"
             # being read back as "the result is correct".
-            rows.append(f"`{f}` — validated: oracle ({_oracle_basis(execution_context, f)})")
+            rows.append(f"`{f}` — validated: oracle ({_oracle_basis(execution_context, f)})"
+                        + _verdict_suffix(execution_context, f))
         else:
-            rows.append(f"`{f}` — validated: {tier}")
+            rows.append(f"`{f}` — validated: {tier}" + _verdict_suffix(execution_context, f))
+
+    for command, run in sorted(unjudged.items()):
+        if not (run.get("paths") or ()):
+            rows.append(f"`{command}` — ran; its output was never judged")
 
     tiers = [validation_tier(execution_context, f) for f in written]
     if written:
@@ -100,6 +129,8 @@ def build_ledger(execution_context: dict) -> dict | None:
         elif any(_oracle_basis(execution_context, f) == _ORACLE_INVARIANT
                  for f in written if validation_tier(execution_context, f) == "oracle"):
             notes.append(_INVARIANT_NOTE)
+    if any(verdict_for(execution_context, f) for f in written):
+        notes.append(_VERDICT_NOTE)
     rows.extend(notes)
 
     # Bold marks the rows a reader has to act on — it is what the webview tints rows by.
@@ -125,12 +156,14 @@ def build_ledger(execution_context: dict) -> dict | None:
             chips.append(f"evidence: {weakest or 'executed'}")
     if unwritten:
         chips.append(f"{len(unwritten)} declared, never written")
+    if unjudged:
+        chips.append(f"{_plural(len(unjudged), 'run')} unjudged")
     if required:
         chips.append(f"{_plural(len(required), 'step')} open")
     if optional:
         chips.append(f"{_plural(len(optional), 'optional step')} left")
 
-    if unvalidated or unwritten or required:
+    if unvalidated or unwritten or required or unjudged:
         status = "warn"
     elif notes or optional:
         status = "note"

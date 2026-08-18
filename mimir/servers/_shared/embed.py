@@ -12,7 +12,7 @@ missing dependency), and callers fall back to lexical overlap scoring. This keep
 the hermetic pytest suite and embedding-less environments fully working.
 
 Environment:
-  LLM_BACKEND           "vllm" | "ollama" (default "ollama", matching the chat side)
+  LLM_BACKEND           "vllm" | "ollama" (default "vllm", matching the chat side)
   MIMIR_EMBED_MODEL     embedding model name. Required for vLLM (the served model
                         name, e.g. "BAAI/bge-m3"); defaults to "nomic-embed-text"
                         for Ollama.
@@ -34,7 +34,7 @@ _DEFAULT_OLLAMA_EMBED_MODEL = "nomic-embed-text"
 # ── configuration ───────────────────────────────────────────────────────────────
 
 def _backend() -> str:
-    return os.environ.get("LLM_BACKEND", "ollama").strip().lower()
+    return os.environ.get("LLM_BACKEND", "vllm").strip().lower()
 
 
 def _embed_model() -> str:

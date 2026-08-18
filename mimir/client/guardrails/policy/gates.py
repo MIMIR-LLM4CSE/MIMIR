@@ -19,8 +19,8 @@ import shlex
 from typing import Any
 
 from ...context.capabilities import (
-    CLUSTER_SUBMIT, CODE_EXEC, EDIT, EXTERNAL_FETCH, PLAN_BLOCKED, READ,
-    arg_role, has_cap,
+    CLUSTER_SUBMIT, EDIT, EXTERNAL_FETCH, PLAN_BLOCKED, READ,
+    arg_role, has_cap, scope_spec,
 )
 
 
@@ -83,6 +83,20 @@ def _trusted_read_roots() -> list[str]:
             for r in (*trusted_read_roots(), STATE_DIR)]
 
 
+def _shell_command_args(agent: Any, tool_name: str) -> tuple[str, ...] | None:
+    """Command-arg names if *tool_name* takes a raw shell command, else None.
+
+    Registry-driven: a shell tool declares a ``command_prefix`` scope kind. The twin of
+    ``observations._carries_shell_command`` — the guards below read tool arguments *as
+    shell*, which is a statement about the tool's interface, not about whether it
+    executes.
+    """
+    spec = scope_spec(tool_name, getattr(agent, "tool_caps", None))
+    if not spec or spec.get("kind") != "command_prefix":
+        return None
+    return tuple(spec.get("args") or ("command",))
+
+
 def _shell_path_targets(agent: Any, tool_name: str, arguments: dict, base: str) -> list[str]:
     """Every filesystem path a shell call's arguments name, as abspaths.
 
@@ -106,12 +120,15 @@ def _shell_path_targets(agent: Any, tool_name: str, arguments: dict, base: str) 
 
     Operand extraction is ``shell_paths.segment_path_operands``, the routine the
     server's guard walks to decide what to *confine*, so what the user is asked
-    about is exactly what would otherwise be refused. Capability-scoped to CODE_EXEC
-    and driven off the shared segmenter, so no tool name or shell keyword is spelled
-    out here. Fail-open on an unparseable command: the server still validates and
-    confines every accepted call independently.
+    about is exactly what would otherwise be refused. Scoped to tools that declare a
+    ``command_prefix`` scope — the property this actually needs, since it reads the
+    arguments *as shell*. CODE_EXEC would be the wrong test: it also marks tools that
+    execute through structured arguments (``proxy_exec``, ``ft_run``), whose parameters
+    are not a command line. Driven off the shared segmenter, so no tool name or shell
+    keyword is spelled out here. Fail-open on an unparseable command: the server still
+    validates and confines every accepted call independently.
     """
-    if not has_cap(tool_name, CODE_EXEC, getattr(agent, "tool_caps", None)):
+    if _shell_command_args(agent, tool_name) is None:
         return []
     from ....servers._shared.shell_paths import (
         cd_destination, normalize_path_arg, segment_path_operands,
@@ -302,7 +319,7 @@ def _check_cluster_submit(
 # In a proxy optimization session the model may only improve the proxy by editing its
 # source and going through ``proxy_eval(op='run')``. A direct ``python proxy.py`` skips
 # reference sealing, the numerical invariants and the ratchet, letting a hand-run be
-# reported as a win. Scoped to CODE_EXEC tools; blocks only calls that *execute* the
+# reported as a win. Scoped to shell-command tools; blocks only calls that *execute* the
 # proxy (command position), never read-only inspection of its source. Locked and
 # non-tiered — a correctness boundary, not guidance. Fail-open on internal error.
 
@@ -429,16 +446,23 @@ def _check_proxy_exec(
 ) -> str | None:
     """Block direct execution of a proxy that is under optimization.
 
-    Fast-path abstains for any non-CODE_EXEC tool (no disk touched). Otherwise, if
-    an optimization session is initialized, blocks the call only when one of its
-    string arguments *executes* the proxy source/executable (in command position).
-    Read-only inspection of the source (``cat``/``grep``) never matches. Fail-open.
+    Fast-path abstains for any tool that does not carry a shell command (no command
+    line to read). Otherwise, if an optimization session is initialized, blocks the call
+    only when one of its string arguments *executes* the proxy source/executable (in
+    command position). Read-only inspection of the source (``cat``/``grep``) never
+    matches. Fail-open.
+
+    Scoped on the ``command_prefix`` scope rather than CODE_EXEC: the sanctioned route
+    ``proxy_exec`` declares CODE_EXEC too, and its ``proxy_name`` argument is a bare
+    name that :func:`_segment_program` would read as a program — matching the basenames
+    in :func:`_proxy_exec_targets` and blocking the very tool this guard exists to steer
+    the model towards.
 
     Note: this covers a bash ``python proxy.py`` / ``./proxy``. Executing the proxy
     by pasting its body inline into a fresh script is a narrower, documented residual
     gap; the reserved-metrics guard still prevents forging an accepted result there.
     """
-    if not has_cap(tool_name, CODE_EXEC, getattr(agent, "tool_caps", None)):
+    if _shell_command_args(agent, tool_name) is None:
         return None
     try:
         targets = _proxy_exec_targets()

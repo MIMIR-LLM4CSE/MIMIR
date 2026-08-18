@@ -186,6 +186,20 @@ _SECTION_VALIDATION = (
     "- Report each measured result as `key=value` on its own line so it is recorded rather than claimed "
     "in prose, using the conventional invariant name where one applies (`l2_rel`, `linf_rel`, "
     "`convergence_order`, `conservation_residual`, `finite`).\n"
+    "- Exit 0 means the program ran to the end, nothing more. Nothing downstream can read your "
+    "output, so read it yourself and state the verdict on its own line: "
+    "`verdict: pass|fail|unknown — <what in the output shows it>`, naming the number, message or "
+    "behaviour you read it from. Until you do, an executed check leaves the file unvalidated; a "
+    "syntax or lint check needs no verdict, its exit code is the finding. `fail` on a green run is "
+    "expected sometimes and is not a setback — fix and re-run. `unknown` is the honest answer when "
+    "the output does not settle the question: say what would settle it and go get that (the "
+    "reference implementation, a documented value, an analytical limit, an invariant, a refinement "
+    "trend), then re-judge; if it is out of reach, say so and name what stays unverified. A check "
+    "that decides its own pass/fail must exit non-zero when it fails, or print `check=fail` on its "
+    "own line when the exit code is not its to choose.\n"
+    "- With several runs open on different files, a `pass` must name its run: "
+    "`verdict[<command or file>]: pass — <why>`, one line each. Unqualified it would credit runs "
+    "you did not read, so it credits none. `fail` and `unknown` need no qualifier.\n"
     "- With no oracle available, say so and record it as residual risk. Never call an artifact verified "
     "or correct on Tier 1a alone, and never report a check you did not run.\n"
     "\n"
@@ -208,8 +222,8 @@ _SECTION_RUNNING = (
     "## Running code, and where working files go\n"
     "The controlled shell is the execution surface: compile, run, test and lint by invoking the "
     "toolchain directly, with the exact flags the task needs.\n"
-    "- Prefer a one-shot command over a new file: a check you run once belongs inline — the code as a "
-    "quoted `-c` argument, steps chained with `&&`.\n"
+    "- Never create a file for something you run once: the check goes inline — the code as a quoted "
+    "`-c` argument, steps chained with `&&`.\n"
     "- A probe that genuinely needs a file (too long to pass inline, or re-run many times) goes in the "
     "scratchpad, by absolute path, with its outputs: logs, intermediate data, diagnostic figures.\n"
     "- A file in the workspace is a deliverable: what the user asked for, or what the artifact you "
@@ -658,10 +672,13 @@ def build_system_content(
     system_content += _section(
         f"Scratchpad (yours, outside the workspace, no approval needed): {_scratch_dir_for_prompt()}\n"
         "Use it by absolute path for throwaway scripts, probes, intermediate data and working files. "
-        "Nothing there counts as produced work or is reported to the user. Two rules follow from that:\n"
+        "Nothing there counts as produced work or is reported to the user. Three rules follow from that:\n"
         "- Nothing throwaway goes in the workspace. A verification script, a plot you drew to convince "
         "yourself, a log, a scratch dataset: the scratchpad, not the user's tree.\n"
         "- What runs once does not become a file at all — run it as a one-shot shell command.\n"
+        "- No temporary directory of your own making. The path above already exists for that; a "
+        "`/tmp/<name>` you invent is not yours, and asking the user to approve one is asking them to "
+        "decide something already decided.\n"
         "Deliverables go in the workspace, or wherever the user asked."
     )
 
@@ -710,7 +727,7 @@ def build_system_content(
             else:
                 system_content += _section(
                     "No task checklist yet. For multi-step tasks it is strongly recommended "
-                    "to write the plan before starting work, then mark each step complete as you go."
+                    "to record the ordered steps before starting work, then mark each step complete as you go."
                 )
         elif plan_todos:
             # Fallback: static list from plan output (todo server not registered).
@@ -721,40 +738,28 @@ def build_system_content(
 
     if active_mode == "plan":
         tool_catalog = build_tool_catalog_for_planning(tool_owner, sensitive_tools)
-      
-        # Inject the existing draft so the model can refine it in subsequent turns.
-        if todo_file:
-            draft_items = _load_todo_items(todo_file)
-            if draft_items:
-                system_content += _section(
-                    "Current draft plan (refine, extend, or replace as needed — "
-                    "record the final ordered steps with the plan/todo tool from your available tools):\n"
-                    + "\n".join(_render_checklist(draft_items))
-                )
 
         system_content += _section(
-            "Current mode: PLAN. Write, execution, and mutation tools are blocked, except the plan/todo tool. "
+            "Current mode: PLAN. Write, execution, and mutation tools are blocked — only the plan document tool is available. "
             "The repository structure and target hardware above are orientation only — you must call "
             "the read-only exploration tools (search, read, inspect, platform/memory queries) to locate the exact "
             "files, symbols, and boundaries this task touches before writing the plan. Gather that evidence "
             "first, then produce the plan grounded in what you found.\n"
             "\n"
-            "Record the plan in TWO forms with the plan/todo tool:\n"
-            "  1. A written plan document (free-form markdown prose) — this is the primary deliverable "
-            "the user reads. Do NOT reduce it to a bare list of steps. Structure it like a short design "
-            "note, using Markdown headings and a few sentences of prose under each:\n"
+            "Record ONE thing with the plan tool: a written plan document (free-form markdown prose) — "
+            "this is the deliverable the user reads and approves. Do NOT reduce it to a bare list of "
+            "steps. Structure it like a short design note, using Markdown headings and a few sentences "
+            "of prose under each:\n"
             "       • an Overview stating the goal and the outcome the change produces;\n"
             "       • an Approach broken into the main axes of the work (e.g. one subsection per component, "
             "layer, or concern), each explaining WHAT will change, WHERE (concrete files/symbols found "
             "during exploration), and WHY that approach over the alternatives;\n"
             "       • key design decisions, trade-offs, assumptions, and risks or edge cases;\n"
             "       • how the result will be validated (tests, checks, manual verification).\n"
-            "  2. An ordered checklist of the concrete implementation/validation steps — the actionable "
-            "spine that mirrors the written plan and is executed once approved.\n"
             "\n"
             "Write for a reader who wants to understand the reasoning, not just a task list: explain the "
             "rationale, reference the specific evidence you gathered, and keep it focused. Scale the depth "
-            "to the task — a trivial change may need only a couple of paragraphs and 2-3 steps, a larger "
+            "to the task — a trivial change may need only a couple of paragraphs, a larger "
             "one warrants several axes with explanation. "
             "You will receive more context after the first step, so focus on the critical discovery and initial action here. "
             "\nAvailable tools by server:\n"
@@ -763,9 +768,9 @@ def build_system_content(
 
     if active_mode == "ask":
         system_content += _section(
-            "Current mode: ASK. This is a read-only question-answering turn. Write, execution, and "
-            "mutation tools are unavailable, and the dual-use execution tool is restricted to read-only "
-            "discovery commands (search, list, read). "
+            "Current mode: ASK. This is a read-only question-answering turn. Write, execution, "
+            "mutation, and plan/checklist tools are unavailable, and the dual-use execution tool is "
+            "restricted to read-only discovery commands (search, list, read). "
             "The repository structure and target hardware above are orientation only — call the "
             "read-only exploration tools (search, read, inspect, platform/memory queries) to find the "
             "actual files, symbols, and behaviour the question is about before answering. Never answer "
@@ -774,9 +779,8 @@ def build_system_content(
             "Answer the question directly, in prose, grounded in what you actually read: cite the "
             "concrete file paths (with line numbers where it helps) that back each claim. Scale the "
             "length to the question — a one-line question deserves a one-line answer, a design question "
-            "warrants a few paragraphs. Do NOT write a plan, a task checklist, or an implementation "
-            "proposal, and do not offer to make changes unless the user asked for them. If the question "
-            "cannot be settled from the code, say what you found and what remains unknown."
+            "warrants a few paragraphs. Do not offer to make changes unless the user asked for them. "
+            "If the question cannot be settled from the code, say what you found and what remains unknown."
         )
 
     return system_content

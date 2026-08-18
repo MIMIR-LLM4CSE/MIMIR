@@ -37,7 +37,7 @@ Minimal local setup:
 {
   "mimir.mimirPath": "/path/to/codes",
   "mimir.pythonPath": "/path/to/python",
-  "mimir.backend": "ollama",
+  "mimir.backend": "vllm",
   "mimir.availableModels": ["qwen3:8b"]
 }
 ```

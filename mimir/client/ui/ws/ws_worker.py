@@ -104,7 +104,7 @@ class _AgentWorker:
         try:
             from ...config.models import LLM_BACKEND, VLLM_BASE_URL
         except ImportError:
-            LLM_BACKEND = os.environ.get("LLM_BACKEND", "ollama")
+            LLM_BACKEND = os.environ.get("LLM_BACKEND", "vllm")
             VLLM_BASE_URL = os.environ.get("VLLM_BASE_URL", "http://127.0.0.1:8000")
 
         if LLM_BACKEND == "vllm":

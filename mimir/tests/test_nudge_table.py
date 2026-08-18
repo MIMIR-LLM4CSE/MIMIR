@@ -30,7 +30,8 @@ class CoreNudgeTableTest(unittest.TestCase):
     def test_verification_categories(self):
         verif = {n.name for n in _CORE_NUDGES if n.layer == "verification"}
         self.assertEqual(
-            verif, {"denial", "error_recovery", "regression", "unfinished_plan"}
+            verif, {"denial", "error_recovery", "regression", "unfinished_plan",
+                    "output_verdict"}
         )
 
     def test_verification_layer_is_never_enforcement_gated(self):

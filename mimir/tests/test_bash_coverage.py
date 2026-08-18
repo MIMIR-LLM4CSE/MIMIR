@@ -91,6 +91,10 @@ def _run(command: str, *, status: str = "ok", stdout: str = "out",
 #   inspect   -> paths that must land in inspected_dirs
 #   write     -> paths that must land in dirty_written_files
 #   validate  -> paths that must land in validated_files (implies they were dirty)
+#   judge     -> paths a run left awaiting the model's verdict. Exit 0 from something
+#                that *executes* proves the program ended, not that its answer is
+#                right, so those commands park here instead of crediting validation;
+#                a checker (py_compile/ruff/mypy/a compiler) still credits directly.
 #   project   -> a green whole-project validator: clears every pending file
 #   tests_run -> paths that must land in tests_run (feeds the regression nudge)
 #   env       -> an environment mutation must be recorded
@@ -114,29 +118,30 @@ _CREDITING_CORPUS: list[tuple[str, dict]] = [
     # ── validation, per file, across languages ───────────────────────────────
     ("python -m py_compile solver.py", {"validate": ["solver.py"]}),
     ("python -m pytest -q tests/test_solver.py",
-     {"validate": ["tests/test_solver.py"], "tests_run": ["tests/test_solver.py"]}),
+     {"judge": ["tests/test_solver.py"], "tests_run": ["tests/test_solver.py"]}),
     ("pytest tests/test_solver.py",
-     {"validate": ["tests/test_solver.py"], "tests_run": ["tests/test_solver.py"]}),
+     {"judge": ["tests/test_solver.py"], "tests_run": ["tests/test_solver.py"]}),
     ("ruff check solver.py", {"validate": ["solver.py"]}),
     ("mypy solver.py", {"validate": ["solver.py"]}),
     ("gcc -O2 -c src/mesh.c -o mesh.o", {"validate": ["src/mesh.c"]}),
     ("gfortran -O2 solver.f90 -o solver", {"validate": ["solver.f90"]}),
     ("nvcc -arch=sm_80 kernel.cu -o kernel", {"validate": ["kernel.cu"]}),
-    ("node --check app.js", {"validate": ["app.js"]}),
-    ("cd build && ctest", {"project": True}),
-    # Running a program credits the file it names, at the `executed` tier — the
-    # exclusion from _PROJECT_VALIDATORS only denies it the whole-project shortcut.
-    ("python solver.py", {"validate": ["solver.py"]}),
+    # `node` runs a program as readily as it checks one, and the classifier keys on the
+    # command head, so the pessimistic reading applies: ask for a verdict.
+    ("node --check app.js", {"judge": ["app.js"]}),
+    ("cd build && ctest", {"judge": ["pending.py"]}),
+    # Running a program names the file it ran, but exit 0 says only that it ended.
+    ("python solver.py", {"judge": ["solver.py"]}),
 
     # ── validation, whole project ────────────────────────────────────────────
-    ("pytest", {"project": True}),
-    ("pytest -q", {"project": True}),
+    ("pytest", {"judge": ["pending.py"]}),
+    ("pytest -q", {"judge": ["pending.py"]}),
     ("ruff check .", {"project": True}),
     ("mypy src/", {"project": True}),
 
     # ── chains the model actually writes ─────────────────────────────────────
     ("cd tests && pytest test_solver.py",
-     {"validate": ["tests/test_solver.py"], "tests_run": ["tests/test_solver.py"]}),
+     {"judge": ["tests/test_solver.py"], "tests_run": ["tests/test_solver.py"]}),
     ("python -m py_compile solver.py && ruff check solver.py", {"validate": ["solver.py"]}),
 
     # ── environment ──────────────────────────────────────────────────────────
@@ -153,16 +158,18 @@ _CREDITING_CORPUS: list[tuple[str, dict]] = [
 # on a run. Two rules follow from the list being asserted:
 #   * closing a hole means deleting its line here, deliberately, in the same change;
 #   * opening a NEW one breaks the corpus assertions above, not this list.
-# The reason matters when weighing a fix: `make`/`cmake` are excluded by an explicit
-# policy decision (a green `make clean` validates nothing), while `python -c` and the
-# heredoc are parser limits.
+# The reason matters when weighing a fix: `python -c` and the heredoc are parser limits,
+# while the rest hide the real command from the classifier one way or another.
+#
+# Three entries left this list when executions started owing a verdict: `make test`,
+# `cmake --build build` and `./solver --check`. They still credit no *validation* — a
+# green `make clean` establishes nothing, and what a local binary checked is unknowable
+# — but each is now recorded as a run whose output the model must account for, which is
+# the one thing that can be said about them without knowing what they did.
 _KNOWN_UNCREDITED: list[tuple[str, str]] = [
     ("python -c \"import solver; solver.check()\"",
-     "inline snippet: no file operand exists to credit"),
-    ("make test", "ambiguous build driver: a green target proves nothing specific"),
-    ("cmake --build build", "ambiguous build driver, as above"),
+     "inline snippet: the embedded `;` splits into an unparseable second segment"),
     ("tox -e py311", "unrecognised leading command → segment is opaque"),
-    ("./solver --check", "a local binary runs code; what it validated is unknowable"),
     ("cat $(ls *.py | head -1)", "command substitution runs code → opaque by design"),
     ("bash -c 'pytest tests/'", "wrapper hides the real command from the classifier"),
 ]
@@ -172,7 +179,7 @@ class CorpusCreditTests(unittest.TestCase):
     """Every corpus command must teach the blackboard what it claims to."""
 
     def _assert_credits(self, command: str, expect: dict) -> None:
-        dirty = tuple(expect.get("validate", ())) or (
+        dirty = tuple(expect.get("validate", ())) or tuple(expect.get("judge", ())) or (
             ("pending.py",) if expect.get("project") else ()
         )
         ec = _run(command, dirty=dirty)
@@ -187,6 +194,11 @@ class CorpusCreditTests(unittest.TestCase):
             self.assertIn(path, ec["dirty_written_files"], f"{command!r}: write not credited")
         for path in expect.get("validate", ()):
             self.assertIn(path, ec["validated_files"], f"{command!r}: validation not credited")
+        awaiting = {p for run in ec["unjudged_runs"].values() for p in run["paths"]}
+        for path in expect.get("judge", ()):
+            self.assertIn(path, awaiting, f"{command!r}: run not left awaiting a verdict")
+            self.assertNotIn(path, ec["validated_files"],
+                             f"{command!r}: an execution must not validate on its exit code")
         if expect.get("project"):
             self.assertIn("pending.py", ec["validated_files"],
                           f"{command!r}: whole-project run did not clear pending files")
@@ -277,6 +289,7 @@ def _semantic_view(ec: dict) -> tuple:
     return (
         frozenset(ec["read_files"]), bool(ec["searched"]), frozenset(ec["inspected_dirs"]),
         frozenset(ec["dirty_written_files"]), frozenset(ec["validated_files"]),
+        frozenset(ec["unjudged_runs"]),
         frozenset(ec["tests_run"]), tuple(ec.get("env_mutations") or ()),
         ec.get("last_edit_success_path") or "",
     )

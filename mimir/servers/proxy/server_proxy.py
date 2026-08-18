@@ -76,7 +76,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from mcp.server.fastmcp import FastMCP
-from capabilities import tool_caps, PLAN_BLOCKED, CLUSTER_SUBMIT, BACKGROUNDABLE, IRREVERSIBLE, RECOVERABLE
+from capabilities import tool_caps, CODE_EXEC, PLAN_BLOCKED, CLUSTER_SUBMIT, BACKGROUNDABLE, IRREVERSIBLE, RECOVERABLE
 from responses import err
 from _lib.execute import _DEFAULT_MAX_OUTPUT_MB, _REF_RUN_TIMEOUT
 from _lib.procs import _validate_slurm_args
@@ -366,7 +366,7 @@ def proxy_manage(
 _EXEC_OPS = ("run", "reference", "suite", "benchmark_create", "cancel")
 
 
-@mcp.tool(**tool_caps(caps=[PLAN_BLOCKED], reversibility=RECOVERABLE, non_batch=True,
+@mcp.tool(**tool_caps(caps=[PLAN_BLOCKED, CODE_EXEC], reversibility=RECOVERABLE, non_batch=True,
                       label="Proxy exec: {op}"))
 def proxy_exec(
     op: str,
@@ -460,7 +460,7 @@ def proxy_exec(
 _EVAL_OPS = ("init", "configure", "run", "stop", "reset", "reset_to_best", "end")
 
 
-@mcp.tool(**tool_caps(caps=[PLAN_BLOCKED, BACKGROUNDABLE], reversibility=RECOVERABLE, non_batch=True,
+@mcp.tool(**tool_caps(caps=[PLAN_BLOCKED, CODE_EXEC, BACKGROUNDABLE], reversibility=RECOVERABLE, non_batch=True,
                       label="Proxy eval: {op}"))
 def proxy_eval(
     op: str,

@@ -1663,6 +1663,84 @@ class ClientHelperTests(unittest.TestCase):
             nudge_logic._should_nudge_todo(ctx, level="light", active_mode="agent")
         )
 
+    def test_output_verdict_nudge_fires_on_an_unjudged_run(self) -> None:
+        import importlib
+        nudge_logic = importlib.import_module("mimir.client.guardrails.nudges.engine")
+
+        ctx = {
+            "unjudged_runs": {"python solver.py": {"paths": ["solver.py"], "tier": "executed"}},
+            "nudge_counts": {},
+        }
+        self.assertTrue(nudge_logic._should_nudge_output_verdict(ctx))
+        # Capped, so two ignored reminders do not become per-step spam.
+        ctx["nudge_counts"] = {"output_verdict": 2}
+        self.assertFalse(nudge_logic._should_nudge_output_verdict(ctx))
+
+    def test_output_verdict_nudge_fires_on_a_standing_unknown(self) -> None:
+        # "I cannot tell" is a legitimate answer and a starting point, not an ending.
+        import importlib
+        nudge_logic = importlib.import_module("mimir.client.guardrails.nudges.engine")
+
+        ctx = {
+            "unjudged_runs": {},
+            "dirty_written_files": {"solver.py"},
+            "validated_files": set(),
+            "verdict_by_file": {"solver.py": {"verdict": "unknown", "reason": "no reference"}},
+            "nudge_counts": {},
+        }
+        self.assertTrue(nudge_logic._should_nudge_output_verdict(ctx))
+        self.assertIn("would settle it", nudge_logic._output_verdict_nudge_content(ctx))
+
+    def test_a_refused_broad_pass_is_told_what_to_choose_between(self) -> None:
+        # The model did speak, so repeating "you never said what its output showed"
+        # would be false — and a model told to do what it just did repeats it verbatim.
+        import importlib
+        nudge_logic = importlib.import_module("mimir.client.guardrails.nudges.engine")
+
+        ctx = {
+            "unjudged_runs": {
+                "pytest -q": {"paths": ["solver.py"], "tier": "executed"},
+                "python bench.py": {"paths": ["bench.py"], "tier": "executed"},
+            },
+            "verdict_scope_required": ["pytest -q", "python bench.py"],
+            "nudge_counts": {},
+        }
+        self.assertTrue(nudge_logic._should_nudge_output_verdict(ctx))
+        content = nudge_logic._output_verdict_nudge_content(ctx)
+        self.assertIn("bear on different files", content)
+        self.assertIn("verdict[<command or file>]", content)
+        # Cleared once a verdict lands, so the ordinary ask comes back.
+        ctx["verdict_scope_required"] = []
+        self.assertIn(
+            "never said what its output showed",
+            nudge_logic._output_verdict_nudge_content(ctx),
+        )
+
+    def test_validation_nudge_defers_to_the_verdict_nudge(self) -> None:
+        # A file whose check already ran green is pending for a different reason;
+        # telling it to run py_compile again would be wrong advice.
+        import importlib
+        nudge_logic = importlib.import_module("mimir.client.guardrails.nudges.engine")
+
+        ctx = {
+            "workflow_state": "validate",
+            "code_mutation_started": True,
+            "dirty_written_files": {"solver.py"},
+            "validated_files": set(),
+            "declared_edit_set": set(),
+            "steps_since_last_edit": 5,
+            "unjudged_runs": {"python solver.py": {"paths": ["solver.py"], "tier": "executed"}},
+            "nudge_counts": {},
+        }
+        self.assertFalse(
+            nudge_logic._should_nudge_validation(ctx, level="strict", active_mode="agent")
+        )
+        # With the run judged, the file is pending for want of a check again.
+        ctx["unjudged_runs"] = {}
+        self.assertTrue(
+            nudge_logic._should_nudge_validation(ctx, level="strict", active_mode="agent")
+        )
+
     def test_discovery_evidence_requires_two_distinct_signals(self) -> None:
         import importlib
         nudge_logic = importlib.import_module("mimir.client.guardrails.nudges.engine")

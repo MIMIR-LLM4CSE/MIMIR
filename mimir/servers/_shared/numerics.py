@@ -56,6 +56,13 @@ _INVARIANT_LINE_RE = re.compile(
 # is not one of these was not a measurement — e.g. ``l2_rel=<computed below>``.
 _BOOL_VALUES = frozenset({"true", "false", "1", "0", "yes", "no"})
 
+# The verdict a run declares *about itself*, for a check that computes its own
+# pass/fail instead of letting an assertion raise. Client-side reading only (the
+# proxy has no use for it), but it shares the line grammar below so there is one
+# way to report a machine-readable result, not two.
+VERDICT_KEYS = frozenset({"check", "verdict"})
+_FAILING_VERDICTS = frozenset({"fail", "failed", "failure", "error", "red", "false", "no"})
+
 
 def _is_measurement(value: str) -> bool:
     if value.lower() in _BOOL_VALUES:
@@ -91,3 +98,27 @@ def observed_invariant_metrics(text: str) -> set[str]:
         if key in NUMERICAL_INVARIANT_METRICS and _is_measurement(m.group("value")):
             found.add(key)
     return found
+
+
+def observed_failure_verdict(text: str) -> bool:
+    """True when a run's own output declares that one of its checks did not pass.
+
+    The counterweight to an exit code: a script that evaluates its own criteria,
+    prints that they were not met and then returns 0 anyway is indistinguishable
+    from a clean run to everything downstream. Reading the verdict *only* in this
+    direction is deliberate — a ``check=fail`` line demotes a green exit, a
+    ``check=pass`` line never rescues a red one, so declaring a verdict can cost
+    credit but can never buy it.
+
+    Same strict whole-line ``key=value`` grammar as
+    :func:`observed_invariant_metrics`, so prose ("check failed to converge"),
+    logs and compiler output do not register. Any one failing verdict is enough,
+    however many checks the run reported.
+    """
+    if not text:
+        return False
+    for line in text.splitlines():
+        m = _INVARIANT_LINE_RE.fullmatch(line.strip())
+        if m and m.group("key") in VERDICT_KEYS and m.group("value").lower() in _FAILING_VERDICTS:
+            return True
+    return False

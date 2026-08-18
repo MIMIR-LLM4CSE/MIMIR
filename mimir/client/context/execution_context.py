@@ -23,6 +23,10 @@ class ExecutionContext(TypedDict):
     validation_tier_by_file: dict[str, str]         # per-file strength of that validation: syntax|static|executed|oracle (completion ledger)
     validation_fail_count_by_file: dict[str, int]   # per-file count of failed syntax validations (retry-budget exhaustion)
     executed_failures: set[str]                     # files an `executed`-tier check was observed FAILING on, ever, this query — the red half of red→green (see VALIDATION_TIERS)
+    unjudged_runs: dict[str, dict[str, Any]]        # command -> {paths: […], tier: str} for a run whose output the model has not judged yet (empty paths == no file attribution)
+    verdict_by_file: dict[str, dict[str, str]]      # path -> {verdict: pass|fail|unknown, reason, command}: what the MODEL said its output showed (never machine-observed)
+    verdict_attempts_by_file: dict[str, list[str]]  # path -> append-only "<command> → <reason>" per failing verdict; survives re-edits so the hand-back can say what was tried
+    verdict_scope_required: list[str]               # commands an unscoped `pass` could not choose between (they bear on different files); the nudge reads it back
     denied_tool_calls: list[dict[str, Any]]         # tool calls blocked by policy/approval (denial nudge + finalization)
     denial_history: list[dict[str, Any]]            # append-only refusal log keyed by approval scope; drives the escalation ladder (never cleared, unlike denied_tool_calls)
     workflow_state: str                             # coarse phase of the loop: "discover" | "edit" | "validate" | "conclude"
@@ -235,6 +239,10 @@ _FIELD_SPECS: tuple[_FieldSpec, ...] = (
     ("validation_tier_by_file", dict, (dict,), _NO_TRAITS),
     ("validation_fail_count_by_file", dict, (dict,), _NO_TRAITS),
     ("executed_failures", set, (set,), _NO_TRAITS),
+    ("unjudged_runs", dict, (dict,), _NO_TRAITS),
+    ("verdict_by_file", dict, (dict,), _NO_TRAITS),
+    ("verdict_attempts_by_file", dict, (dict,), _NO_TRAITS),
+    ("verdict_scope_required", list, (list,), _NO_TRAITS),
     # ── Workflow + policy ──────────────────────────────────────────────────────
     ("workflow_state", lambda: "discover", (str,), _NO_TRAITS),
     ("code_mutation_started", lambda: False, (bool,), _NO_TRAITS),
@@ -414,8 +422,13 @@ def known_existing_files(execution_context: dict[str, Any]) -> set[str]:
 #                                              code_mutation_started, validated_files,
 #                                              validation_tier_by_file,
 #                                              validation_fail_count_by_file, tests_run,
+#                                              unjudged_runs,
 #                                              action_op_count,
 #                                              todo_written, plan_written
+#   guardrails.verdict.record_verdict          verdict_by_file,                           verification (ledger rows),
+#     (runs after every assistant message,     verdict_attempts_by_file,                  nudge_logic (output_verdict),
+#      not after a tool call)                  unjudged_runs (runs it settles),           workflow (completion report)
+#                                              verdict_scope_required
 #   context/workflow.set_workflow_state       workflow_state                             every layer's state gates
 #   query_engine/nudge_logic._fire_nudge      nudge_counts[<category>]                    nudge_logic (per-category caps)
 #   query_engine/agent_loop                   steps_since_last_edit (increment),          nudge_logic (idle gates),
@@ -613,6 +626,31 @@ def files_below_tier(execution_context: dict[str, Any], tier: str) -> list[str]:
     return sorted(p for p, t in tiers.items() if _TIER_RANK.get(t, 0) < threshold)
 
 
+# ── Output verdicts: what the MODEL said a run's output showed ────────────────
+#
+# The tier ladder above grades machine-observed evidence; this grades nothing — it
+# records a claim. Exit 0 only ever means the program reached its end, and no parser
+# generalises across plots, tables, logs and physical units, so the only thing that can
+# read arbitrary output is the model. Mimir therefore never parses the *program's*
+# output for a pass/fail; it parses the model's own statement about it, which is a
+# format the model controls. Kept in its own field, and rendered under its own label in
+# the ledger, so a claim is never mistaken for an observation.
+VERDICTS: tuple[str, ...] = ("pass", "fail", "unknown")
+
+
+def unjudged_run_paths(execution_context: dict[str, Any]) -> list[str]:
+    """Every path awaiting a verdict, across all unjudged runs (sorted, deduped)."""
+    paths: set[str] = set()
+    for run in (execution_context.get("unjudged_runs") or {}).values():
+        paths.update(run.get("paths") or ())
+    return sorted(paths)
+
+
+def verdict_for(execution_context: dict[str, Any], path: str) -> dict[str, str] | None:
+    """The model's verdict on *path*'s last judged run, or None if it never gave one."""
+    return (execution_context.get("verdict_by_file") or {}).get(path)
+
+
 def execution_context_template() -> ExecutionContext:
     template = {name: factory() for name, factory, _types, _traits in _FIELD_SPECS}
     return cast(ExecutionContext, template)
@@ -658,6 +696,33 @@ def validate_execution_context(execution_context: dict[str, Any]) -> None:
                 f"execution_context['validation_tier_by_file'][{key!r}] must be one of "
                 f"{VALIDATION_TIERS}; got {tier!r}"
             )
+
+    for key, run in execution_context["unjudged_runs"].items():
+        if not isinstance(key, str):
+            raise TypeError("execution_context['unjudged_runs'] keys must be str")
+        if not isinstance(run, dict) or not isinstance(run.get("paths"), list):
+            raise TypeError("execution_context['unjudged_runs'] values must be {'paths': list, 'tier': str}")
+
+    for key, record in execution_context["verdict_by_file"].items():
+        if not isinstance(key, str):
+            raise TypeError("execution_context['verdict_by_file'] keys must be str")
+        if not isinstance(record, dict):
+            raise TypeError("execution_context['verdict_by_file'] values must be dict")
+        if record.get("verdict") not in VERDICTS:
+            raise ValueError(
+                f"execution_context['verdict_by_file'][{key!r}]['verdict'] must be one of "
+                f"{VERDICTS}; got {record.get('verdict')!r}"
+            )
+
+    for key, attempts in execution_context["verdict_attempts_by_file"].items():
+        if not isinstance(key, str):
+            raise TypeError("execution_context['verdict_attempts_by_file'] keys must be str")
+        if not isinstance(attempts, list):
+            raise TypeError("execution_context['verdict_attempts_by_file'] values must be list[str]")
+
+    for command in execution_context["verdict_scope_required"]:
+        if not isinstance(command, str):
+            raise TypeError("execution_context['verdict_scope_required'] values must be str")
 
     for query in execution_context["search_queries_used"]:
         if not isinstance(query, str):

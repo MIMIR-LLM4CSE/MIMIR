@@ -252,9 +252,9 @@ class FinalizeAnswerTests(unittest.TestCase):
 
 class RunPlanModeTests(unittest.TestCase):
     def test_emits_plan_then_delivers_answer(self) -> None:
-        # Step 1: model calls todo_write. Step 2: no tool calls → content is the answer.
+        # Step 1: model records the plan document. Step 2: no tool calls → content is the answer.
         backend = ScriptedBackend([
-            {"content": "planning", "tool_calls": [_tool_call("todo_write")]},
+            {"content": "planning", "tool_calls": [_tool_call("todo_set_plan")]},
             {"content": "Here is the plan."},
         ])
 
@@ -295,7 +295,7 @@ class RunPlanModeTests(unittest.TestCase):
         # are dropped and the plan is delivered.
         parrot = {"content": "Here is the plan.", "tool_calls": [_tool_call("todo_read_plan")]}
         backend = ScriptedBackend([
-            {"content": "planning", "tool_calls": [_tool_call("todo_write")]},
+            {"content": "planning", "tool_calls": [_tool_call("todo_set_plan")]},
             parrot, parrot, parrot, parrot, parrot,
         ])
 
@@ -333,14 +333,56 @@ class RunPlanModeTests(unittest.TestCase):
             for m in messages
         ))
 
+    def test_checklist_call_is_blocked_in_plan_mode(self) -> None:
+        # The ordered checklist belongs to the execution that follows approval, so a
+        # model that calls the plan_steps-carrying tool in plan mode has its call
+        # dropped and is told why — and that call never counts as a recorded plan.
+        backend = ScriptedBackend([
+            {"content": "", "tool_calls": [_tool_call("todo_write")]},
+            {"content": "planning", "tool_calls": [_tool_call("todo_set_plan")]},
+            {"content": "Here is the plan."},
+        ])
+        dispatched: list = []
+
+        async def _plan_dispatch(tool_calls, agent, messages, execution_context):
+            dispatched.extend(
+                _to_dict(_to_dict(tc).get("function", {})).get("name", "") for tc in tool_calls
+            )
+            _record_plan_flags(tool_calls, agent, execution_context)
+
+        async def _finalize(agent, query, answer, execution_context, messages, logger):
+            return answer
+
+        agent = types.SimpleNamespace(model="m", tools=[], tool_caps=dict(_CHECKLIST_CAPS))
+        agent._normalize_arguments = lambda args: args
+        messages = [{"role": "system", "content": "S"}, {"role": "user", "content": "plan it"}]
+
+        with patch.object(streaming_module, "get_backend", lambda: backend), \
+             patch.object(plan_loop_module, "tools_for_plan_mode", lambda tools, caps: []), \
+             patch.object(plan_loop_module, "_dispatch_tool_calls", _plan_dispatch), \
+             patch.object(plan_loop_module, "_finalize_answer", _finalize):
+            result = asyncio.run(
+                plan_loop_module._run_plan_mode(
+                    agent=agent, query="q", messages=messages,
+                    execution_context=build_execution_context(),
+                    max_steps=10, thinking=False, streaming=False, logger=None,
+                    cb={"think_token_callback": None},
+                )
+            )
+
+        self.assertEqual(result, "Here is the plan.")
+        self.assertEqual(dispatched, ["todo_set_plan"])
+        self.assertTrue(any(
+            m["role"] == "tool" and "approved the plan" in m["content"] for m in messages
+        ))
+
     def test_prose_plan_alone_is_recorded_and_delivered(self) -> None:
         # Regression (the wave2d plan-mode hang): the model records its plan as the
-        # prose document and never produces the checklist. The loop used to decide
-        # "is a plan recorded" by re-deriving it from tool names, counting only the
-        # plan_steps-carrying checklist, so it kept telling a model whose plan was on
-        # disk that it had "not yet recorded a plan" — which the model answered by
-        # rewriting that same document, until max_steps, with nothing delivered.
-        # The prose form now counts, and the missing checklist is asked for by name.
+        # prose document, which is now the only form plan mode produces. The loop used
+        # to decide "is a plan recorded" by re-deriving it from tool names, counting
+        # only the plan_steps-carrying checklist, so it kept telling a model whose plan
+        # was on disk that it had "not yet recorded a plan" — which the model answered
+        # by rewriting that same document, until max_steps, with nothing delivered.
         prose = {"content": "", "tool_calls": [_tool_call("todo_set_plan")]}
         backend = ScriptedBackend([prose, prose, prose, prose, prose, prose])
 
@@ -368,15 +410,13 @@ class RunPlanModeTests(unittest.TestCase):
 
         # Bounded by the post-record budget, not by max_steps.
         self.assertEqual(len(backend.calls), 2 + plan_loop_module._PLAN_POST_RECORD_TOOL_TURNS)
-        # It was asked for the form that was actually missing, and never told that it
-        # had recorded no plan at all.
-        self.assertTrue(any(
-            m["role"] == "user" and m["content"] == plan_loop_module.PLAN_CHECKLIST_MISSING_NUDGE
-            for m in messages
-        ))
+        # It was never told that it had recorded no plan, nor asked for a checklist.
         self.assertFalse(any(
             m["role"] == "user" and "not yet recorded a plan" in m["content"]
             for m in messages
+        ))
+        self.assertFalse(any(
+            m["role"] == "user" and "checklist" in m["content"] for m in messages
         ))
 
     def test_stalled_calls_are_dropped_even_with_no_prose(self) -> None:
@@ -385,7 +425,7 @@ class RunPlanModeTests(unittest.TestCase):
         # for — sailed past it and ran to max_steps.
         parrot = {"content": "", "tool_calls": [_tool_call("todo_read_plan")]}
         backend = ScriptedBackend([
-            {"content": "", "tool_calls": [_tool_call("todo_write")]},
+            {"content": "", "tool_calls": [_tool_call("todo_set_plan")]},
             parrot, parrot, parrot, parrot, parrot,
         ])
 
@@ -419,11 +459,11 @@ class RunPlanModeTests(unittest.TestCase):
     def test_prose_without_plan_is_nudged_not_accepted(self) -> None:
         # A no-tool-call turn before any plan is recorded must NOT be accepted as
         # the answer: the model narrated a plan as prose instead of calling the
-        # checklist tool. The loop nudges it to record the plan, and only accepts
-        # the answer once todo_write has actually run.
+        # plan tool. The loop nudges it to record the plan, and only accepts
+        # the answer once the plan document has actually been written.
         backend = ScriptedBackend([
             {"content": "Here's what I'd do: step 1, step 2."},          # prose, no plan
-            {"content": "planning", "tool_calls": [_tool_call("todo_write")]},
+            {"content": "planning", "tool_calls": [_tool_call("todo_set_plan")]},
             {"content": "Here is the plan."},
         ])
 
@@ -460,7 +500,7 @@ class RunPlanModeTests(unittest.TestCase):
         # Plan recorded + delivered, user accepts → switch to agent mode and hand
         # off to the agent loop, executing the approved plan to completion.
         backend = ScriptedBackend([
-            {"content": "planning", "tool_calls": [_tool_call("todo_write")]},
+            {"content": "planning", "tool_calls": [_tool_call("todo_set_plan")]},
             {"content": "Here is the plan."},
         ])
 
@@ -512,9 +552,9 @@ class RunPlanModeTests(unittest.TestCase):
         # User requests changes → the plan is reworked (new todo_write) and
         # re-presented; the second review accepts and hands off to agent mode.
         backend = ScriptedBackend([
-            {"content": "plan v1", "tool_calls": [_tool_call("todo_write")]},
+            {"content": "plan v1", "tool_calls": [_tool_call("todo_set_plan")]},
             {"content": "Here is plan v1."},   # review #1 → revise
-            {"content": "plan v2", "tool_calls": [_tool_call("todo_write")]},
+            {"content": "plan v2", "tool_calls": [_tool_call("todo_set_plan")]},
             {"content": "Here is plan v2."},   # review #2 → accept
         ])
 
@@ -566,7 +606,7 @@ class RunPlanModeTests(unittest.TestCase):
         # User rejects the plan: no hand-off to agent mode, no re-planning — the
         # loop stops immediately with the "nothing was executed" answer.
         backend = ScriptedBackend([
-            {"content": "plan v1", "tool_calls": [_tool_call("todo_write")]},
+            {"content": "plan v1", "tool_calls": [_tool_call("todo_set_plan")]},
             {"content": "Here is plan v1."},   # review → reject
         ])
 
@@ -613,7 +653,7 @@ class RunPlanModeTests(unittest.TestCase):
         # submit that form again — a model that answered by re-writing its prose
         # document instead then spun until max_steps and delivered nothing.
         backend = ScriptedBackend([
-            {"content": "planning", "tool_calls": [_tool_call("todo_write")]},
+            {"content": "planning", "tool_calls": [_tool_call("todo_set_plan")]},
             {"content": "Here is the plan."},
         ])
 
@@ -654,9 +694,9 @@ class RunPlanModeTests(unittest.TestCase):
 
     def test_plan_evidence_gate_skipped_when_enforcement_off(self) -> None:
         # At enforcement level "off" the plan-evidence gate is disabled: the first
-        # todo_write (zero evidence) is accepted without a rejection nudge.
+        # recorded plan (zero evidence) is accepted without a rejection nudge.
         backend = ScriptedBackend([
-            {"content": "planning", "tool_calls": [_tool_call("todo_write")]},
+            {"content": "planning", "tool_calls": [_tool_call("todo_set_plan")]},
             {"content": "Here is the plan."},
         ])
 

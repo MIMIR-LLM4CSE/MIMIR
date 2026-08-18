@@ -71,7 +71,7 @@ interface Props {
   onConnect: (model: string, loginNode: string | undefined, slurmArgs: string, backend: string, vllmBaseUrl: string, vllmPath?: string, ollamaPath?: string, vllmMode?: "launch" | "connect", anthropicApiKey?: string) => void;
 }
 
-export const ConnectForm: React.FC<Props> = ({ clusters, availableModels, vllmModels = [], anthropicModels = [], modelSizes = {}, backend: initBackend = "ollama", vllmBaseUrl: initVllmUrl = "http://127.0.0.1:8000", vllmMode: initVllmMode = "launch", onConnect }) => {
+export const ConnectForm: React.FC<Props> = ({ clusters, availableModels, vllmModels = [], anthropicModels = [], modelSizes = {}, backend: initBackend = "vllm", vllmBaseUrl: initVllmUrl = "http://127.0.0.1:8000", vllmMode: initVllmMode = "launch", onConnect }) => {
   const [backend, setBackend]           = useState(initBackend);
   const [vllmUrl, setVllmUrl]           = useState(initVllmUrl);
   // Claude API key — kept in webview state only; forwarded on connect and never

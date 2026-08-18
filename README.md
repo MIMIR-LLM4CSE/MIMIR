@@ -29,6 +29,12 @@ On top of that loop sits a policy and context layer:
   broken code. A check seen failing before the fix and passing after counts; one that was
   only ever green does not. "The tests passed" and "the result is correct" are tracked as
   different claims, for any language, not just numerical code.
+- **Exit 0 is not a result** — a linter or compiler validates on its exit code, because its
+  output *is* the verdict. Anything that *executes* leaves the file unvalidated until the
+  model states what the output showed (`verdict: pass|fail|unknown — <why>`), which is then
+  recorded as the model's claim, next to but never mixed with what the machine observed.
+  Judging arbitrary output — fields, convergence tables, plots, logs — is the one thing no
+  parser generalises over, so it is asked of the model rather than guessed at.
 - **Context efficiency** — cached repository baseline, per-query read caching, cross-query
   carry of discovery state with staleness eviction, and token-budget history trimming +
   compaction.
@@ -55,8 +61,8 @@ centralized in [`client/config/constants.py`](mimir/client/config/constants.py).
 
 ## Quick start
 
-Pick the path that fits you. All three need an LLM backend (Ollama or a vLLM endpoint) —
-see [Installation](#installation) and [`SETUP.md`](SETUP.md).
+Pick the path that fits you. All three need an LLM backend (a vLLM endpoint by default, or
+Ollama) — see [Installation](#installation) and [`SETUP.md`](SETUP.md).
 
 **A. pip** (installs the `mimir` / `mimir-server` commands)
 
@@ -95,13 +101,16 @@ Then configure `mimir.*` settings in `.vscode/settings.json` (see [`SETUP.md`](S
 
 ## Installation
 
-**Prerequisites:** Python ≥ 3.10 and one LLM backend — [Ollama](https://ollama.com/) running
-locally, or a vLLM OpenAI-compatible endpoint (e.g. `http://127.0.0.1:8000/v1`).
+**Prerequisites:** Python ≥ 3.10 and one LLM backend — a vLLM OpenAI-compatible endpoint
+(the default, e.g. `http://127.0.0.1:8000/v1`), or [Ollama](https://ollama.com/) running locally.
 
 ```bash
-pip install .                                 # or ".[vllm]" — installs the `mimir` command
-ollama pull qwen3:8b                          # a model that fits your hardware
+pip install ".[vllm]"                          # installs the `mimir` command
+export VLLM_BASE_URL=http://<node>:8000        # vLLM is the default backend
 cd /path/to/your/project && mimir
+
+# Ollama instead:
+#   pip install . && export LLM_BACKEND=ollama && ollama pull qwen3:8b
 ```
 
 `pip install -r mimir/requirements.txt` still installs the same core dependencies, but it
@@ -116,7 +125,7 @@ peft / datasets / trl); `sudo apt-get install gfortran` for Fortran compilation;
 
 | Environment variable | Default | Purpose |
 |----------------------|---------|---------|
-| `LLM_BACKEND` | `ollama` | Backend selector: `ollama` or `vllm` |
+| `LLM_BACKEND` | `vllm` | Backend selector: `vllm` or `ollama` |
 | `MIMIR_DEFAULT_MODEL` | *(empty)* | Model selected at startup; overridden by `--model` or the UI |
 | `OLLAMA_BASE_URL` | `http://127.0.0.1:11434` | Ollama API endpoint |
 | `VLLM_BASE_URL` | `http://127.0.0.1:8000` | vLLM API base URL (client appends `/v1` if needed) |

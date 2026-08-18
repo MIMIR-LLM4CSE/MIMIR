@@ -166,7 +166,7 @@ class MimirAgent:
                 "falling back to %s", scratch_home(), resolved,
             )
         os.environ["MIMIR_SCRATCH_DIR"] = resolved
-        self.backend: str = os.environ.get("LLM_BACKEND", "ollama")
+        self.backend: str = os.environ.get("LLM_BACKEND", "vllm")
         self.exit_stack = AsyncExitStack()
         self.mode = "agent"
         # Reasoning depth: a single rung on the THINKING_DEPTH_* ladder is the source

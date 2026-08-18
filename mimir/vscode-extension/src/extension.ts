@@ -195,6 +195,78 @@ const _diffContentProvider = new class implements vscode.TextDocumentContentProv
   }
 }();
 
+// ── Markdown preview freshness (plan .md) ─────────────────────────────────────
+//
+// The agent rewrites a plan in place (same file), and VS Code's Markdown preview
+// re-renders the cached TextDocument only when its own file watcher fires — which
+// is unreliable for files on network mounts and races with the write. Re-issuing
+// `markdown.showPreview` on an already-previewed resource only reveals the tab,
+// so the user kept seeing the previous plan. We therefore force the refresh
+// ourselves and poll the previewed file so out-of-band rewrites land too.
+
+/** Poller for the currently previewed markdown file, if any. */
+let _previewWatch: { path: string; mtimeMs: number; timer: NodeJS.Timeout } | undefined;
+
+function _stopPreviewWatch(): void {
+  if (_previewWatch) {
+    clearInterval(_previewWatch.timer);
+    _previewWatch = undefined;
+  }
+}
+
+/**
+ * Re-render every open Markdown preview with the file's current content.
+ * Waits (bounded) for the text model to catch up with the bytes on disk so the
+ * refresh does not simply re-render the stale cached document.
+ */
+async function _refreshMarkdownPreview(uri: vscode.Uri): Promise<void> {
+  let onDisk: string | undefined;
+  try {
+    onDisk = fs.readFileSync(uri.fsPath, "utf8");
+  } catch {
+    onDisk = undefined;
+  }
+  if (onDisk !== undefined) {
+    for (let i = 0; i < 10; i++) {
+      try {
+        const doc = await vscode.workspace.openTextDocument(uri);
+        if (doc.isDirty || doc.getText() === onDisk) break;
+      } catch {
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+  }
+  try {
+    await vscode.commands.executeCommand("markdown.preview.refresh");
+  } catch {
+    /* preview closed in the meantime */
+  }
+}
+
+/** Poll `abs` and refresh the preview whenever the file changes on disk. */
+function _watchPreviewedFile(uri: vscode.Uri): void {
+  const abs = uri.fsPath;
+  if (_previewWatch?.path === abs) return;
+  _stopPreviewWatch();
+  const stamp = (): number => {
+    try {
+      return fs.statSync(abs).mtimeMs;
+    } catch {
+      return 0;
+    }
+  };
+  const timer = setInterval(() => {
+    if (!_previewWatch) return;
+    const mtimeMs = stamp();
+    if (mtimeMs !== _previewWatch.mtimeMs) {
+      _previewWatch.mtimeMs = mtimeMs;
+      void _refreshMarkdownPreview(uri);
+    }
+  }, 1000);
+  _previewWatch = { path: abs, mtimeMs: stamp(), timer };
+}
+
 export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(
     vscode.workspace.registerTextDocumentContentProvider("mimir-diff", _diffContentProvider)
@@ -234,6 +306,7 @@ export function activate(context: vscode.ExtensionContext): void {
 }
 
 export function deactivate(): void {
+  _stopPreviewWatch();
   serverProcess?.kill();
   serverProcess = undefined;
   // Also tear down any SSH tunnel; otherwise it survives the reload still
@@ -324,7 +397,7 @@ class MimirAgentViewProvider implements vscode.WebviewViewProvider {
       modelSizes: cfg.get<Record<string, number>>("modelSizes") ?? {},
       slurmEnabled: cfg.get<boolean>("slurmEnabled") ?? false,
       clusterConfig: cfg.get<unknown[]>("clusterConfig") ?? [],
-      backend: cfg.get<string>("backend") ?? "ollama",
+      backend: cfg.get<string>("backend") ?? "vllm",
       vllmBaseUrl: cfg.get<string>("vllmBaseUrl") ?? "http://127.0.0.1:8000",
       vllmMode: cfg.get<string>("vllmMode") ?? "launch",
     });
@@ -479,7 +552,7 @@ class MimirAgentViewProvider implements vscode.WebviewViewProvider {
     sshTunnelProcess = undefined;
   }
 
-  private _startLocalAndConnect(model: string, backend = "ollama", vllmBaseUrl = "http://127.0.0.1:8000", anthropicApiKey = ""): void {
+  private _startLocalAndConnect(model: string, backend = "vllm", vllmBaseUrl = "http://127.0.0.1:8000", anthropicApiKey = ""): void {
     // Always start from a clean local slate (kills any prior server/tunnel,
     // including one left over from a SLURM session) before binding port 8765.
     this._teardownLocalState();
@@ -536,7 +609,7 @@ class MimirAgentViewProvider implements vscode.WebviewViewProvider {
     setTimeout(() => this._connectToServer(), 1000);
   }
 
-  private _startSlurmAndConnect(model: string, profile?: { loginNode?: string; slurmArgs?: string }, backend = "ollama", vllmBaseUrl = "http://127.0.0.1:8000", clusterVllmPath?: string, clusterOllamaPath?: string, vllmMode: "launch" | "connect" = "launch"): void {
+  private _startSlurmAndConnect(model: string, profile?: { loginNode?: string; slurmArgs?: string }, backend = "vllm", vllmBaseUrl = "http://127.0.0.1:8000", clusterVllmPath?: string, clusterOllamaPath?: string, vllmMode: "launch" | "connect" = "launch"): void {
     // Same clean-slate guarantee as the local path: drop any prior server/tunnel
     // (e.g. a leftover local server still bound to 8765) before allocating.
     this._teardownLocalState();
@@ -722,7 +795,12 @@ class MimirAgentViewProvider implements vscode.WebviewViewProvider {
         const uri = vscode.Uri.file(abs);
         if (/\.mdx?$/i.test(abs)) {
           vscode.commands.executeCommand("markdown.showPreview", uri).then(
-            undefined,
+            () => {
+              // Revealing an existing preview does not re-read the file, so an
+              // updated plan would still show its previous revision.
+              void _refreshMarkdownPreview(uri);
+              _watchPreviewedFile(uri);
+            },
             () => vscode.window.showWarningMessage(`MIMIR: cannot preview ${rel}`)
           );
         } else {
@@ -843,7 +921,7 @@ class MimirAgentViewProvider implements vscode.WebviewViewProvider {
     if (m.type === "connect") {
       const model = (m.model as string | undefined) ?? "";
       const profile = m.profile as { loginNode?: string; slurmArgs?: string } | undefined;
-      const backend = (m.backend as string | undefined) ?? "ollama";
+      const backend = (m.backend as string | undefined) ?? "vllm";
       const vllmBaseUrl = (m.vllmBaseUrl as string | undefined) ?? "http://127.0.0.1:8000";
       const vllmMode = (m.vllmMode as "launch" | "connect" | undefined) ?? "launch";
       const clusterVllmPath = (m.vllmPath as string | undefined);

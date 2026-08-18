@@ -172,16 +172,23 @@ Tools:
 
 Notes:
 - None of these tools is approval-gated: they manage a markdown checklist and prose
-  plans, not source files, so they must stay available without a prompt in both plan
-  and agent mode.
-- `todo_update` is **not** plan-blocked either: the model may mark/adjust items on an
-  existing plan during plan mode instead of overwriting it with `todo_write`.
-- In plan mode the model is expected to record a plan before the turn ends —
-  `todo_write` (checklist) and/or `todo_set_plan` (prose); `plan_loop.py` asks for the
-  missing checklist by name if only the prose document exists.
+  plans, not source files, so they must stay available without a prompt in agent mode.
+- Which of them a read-only mode sees is decided by `toollist.hidden_planning_tools()`:
+  **ask** hides both `TASK_PLANNING` writers (`todo_set_plan`, `todo_write`) since a
+  question records nothing; **plan** hides only `todo_write` (the `plan_steps` arg-role).
+  Both are also rejected at call time by `readonly_guard.filter_readonly_tool_calls`.
+  Withdrawing the tool is what lets the prompts drop the matching "do not write a plan /
+  a checklist" prohibitions.
+- `todo_update` and the read tools are **not** hidden anywhere: the model may consult or
+  tick an existing checklist in any mode.
+- In plan mode the model is expected to record the prose plan document (`todo_set_plan`)
+  before the turn ends. The ordered steps are recorded only after the user approves the
+  plan, at the start of the execution — a checklist written earlier tracks work nobody
+  agreed to yet.
 - After the plan is recorded and presented, plan mode asks the user to approve it
   (*Accept & start* / *Reject* / *Rework*, plus free-text *Other*). Accept switches to
-  agent mode and executes the recorded checklist; reject stops without executing
+  agent mode, where the model is asked to record the checklist before starting and then
+  executes it; reject stops without executing
   anything; rework/free-text loop back to re-planning. See
   [CLIENT_DETAILED.md](CLIENT_DETAILED.md) → `plan_loop.py`.
 
@@ -221,6 +228,17 @@ requires comparing against something the code does not itself define. The two re
 not conflict — the proxy distrusts the *value*, the observer only trusts the *presence* of
 the key. Hoisted here from `proxy/_lib/metrics.py`, which re-imports `RESERVED_METRICS` so
 its behaviour is unchanged.
+
+The same line grammar carries a run's verdict *about itself*: `observed_failure_verdict(stdout)`
+reports a `check=fail` / `verdict=fail` line, which the client reads as a failure even on
+exit 0 — a check that computes its own criteria, prints them unmet and returns 0 anyway is
+otherwise indistinguishable from a clean run. Read in that direction only: a passing verdict
+never rescues a red exit. Client-side only; the proxy has no use for it.
+
+This is an auxiliary carrier, not the mechanism. Judging a run's output is the model's job
+(`client/guardrails/verdict.py`), since no parser generalises across fields, plots, tables
+and logs; a `check=fail` line only spares the model being asked about output that already
+states its own answer, by pre-filling the verdict.
 
 
 ## workspace/server_files.py

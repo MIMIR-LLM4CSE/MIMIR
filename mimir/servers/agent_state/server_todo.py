@@ -19,7 +19,8 @@ Named prose plans are stored as a per-session history under plans/ (one
 
 Tools:
   1. todo_set_plan(text, title) — write the named approach/rationale before starting
-  2. todo_write(steps)          — replace the entire checklist with new steps
+  2. todo_write(steps)          — replace the entire checklist with new steps, once the
+                                  plan it comes from has been approved and work starts
   3. todo_read()                — return the current list (index, text, done)
   4. todo_read_plan(name)       — return the active or a named prose plan
   5. todo_list_plans()          — list the session's plan history
@@ -250,7 +251,9 @@ def _delete_deps() -> None:
 def todo_set_plan(text: str, title: str) -> dict:
     """Write a named prose plan (approach and rationale) for the current task.
 
-    Call this BEFORE todo_write when tackling a multi-step task. This written
+    Call this BEFORE todo_write when tackling a multi-step task — in plan mode it is
+    the only plan tool available, since the checklist is written once the user has
+    approved this document. This written
     plan is what the user reads to understand and approve the work, so make it a
     short design note, not a bare list of steps. Structure it with Markdown
     headings and a few sentences of prose under each:
@@ -408,8 +411,9 @@ def todo_write(steps: list[str], depends_on: list[list[int]] | None = None) -> d
     """Replace the entire todo list with a new ordered list of steps.
 
     Each step starts as not done.  For multi-step tasks, call todo_set_plan
-    first to record your prose rationale, then call this tool with the concrete
-    ordered steps.  Use todo_update() to mark items complete one at a time as
+    first to record your prose rationale and — in plan mode — get it approved,
+    then call this tool with the concrete ordered steps before starting the work.
+    Use todo_update() to mark items complete one at a time as
     you finish each step.
 
     Args:

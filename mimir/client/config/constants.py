@@ -228,6 +228,9 @@ NUDGE_MAX_DENIAL: int = 2
 NUDGE_MAX_ERROR_RECOVERY: int = 2
 NUDGE_MAX_REGRESSION: int = 1
 NUDGE_MAX_UNFINISHED_PLAN: int = 1
+# Matches error_recovery rather than the once-only reminders: an unjudged run is a
+# recurring condition, and the counter is re-armed whenever the pending set clears.
+NUDGE_MAX_OUTPUT_VERDICT: int = 2
 NUDGE_MAX_DISCOVERY: int = 3
 NUDGE_MAX_ENV_RESOLUTION: int = 1
 NUDGE_MAX_ENV_CLEANUP: int = 1

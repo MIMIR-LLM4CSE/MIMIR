@@ -13,9 +13,9 @@ VALID_MODES: tuple[str, ...] = ("agent", "plan", "ask")
 # read-only commands. "plan" produces a checklist for approval; "ask" just answers.
 READONLY_MODES: frozenset[str] = frozenset({"plan", "ask"})
 
-# LLM backend selection — LLM_BACKEND=vllm (local vLLM), anthropic/claude (hosted
-# Claude API, for evaluation against local models), else Ollama (default).
-LLM_BACKEND   = os.environ.get("LLM_BACKEND",   "ollama")
+# LLM backend selection — LLM_BACKEND=vllm (local vLLM, default), anthropic/claude
+# (hosted Claude API, for evaluation against local models), else Ollama.
+LLM_BACKEND   = os.environ.get("LLM_BACKEND",   "vllm")
 VLLM_BASE_URL = os.environ.get("VLLM_BASE_URL",  "http://127.0.0.1:8000")
 VLLM_API_KEY  = os.environ.get("VLLM_API_KEY",   "EMPTY")
 

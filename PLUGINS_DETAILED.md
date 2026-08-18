@@ -117,7 +117,7 @@ def read_note(path: str) -> str:
 | | `REPLACEMENT_TRACK` | A find / replace whose completeness MIMIR tracks across files. |
 | **Validation** | `VALIDATE` | Validates code (syntax / lint / typecheck / test). The first-party stack validates through the `bash` server, but a plugin server may declare its own validator: a successful call marks its target file validated and clears the edit-loop streak. |
 | **Planning** | `TASK_PLANNING` | Records a task plan / todo checklist. |
-| **Execution** | `CODE_EXEC` | Runs a program / shell command / code payload. A **scoping signal for guards**, not a block in itself: it is what makes the proxy direct-execution guard and the out-of-workspace shell-path gate look at your tool at all. |
+| **Execution** | `CODE_EXEC` | Runs a program / shell command / code payload. Two consequences: the run is recorded as owing a **verdict** on its output (exit 0 alone never validates an execution), and it is a scoping signal for guards. Note the shell-reading guards (proxy direct-execution, out-of-workspace shell paths) key on the `command_prefix` **scope** instead — a tool that executes through structured arguments has no command line for them to parse. |
 | | `BACKGROUNDABLE` | Launches a long detached run whose result may carry a `background_job` descriptor (status + summary ops), so a front-end with a worker watches it off the critical path and auto-resumes the agent on completion instead of having the model poll. |
 | **Approval & mode** | `SENSITIVE` | Requires user approval before running. **Derived — do not declare it**: see *Reversibility* below. |
 | | `NON_BATCH` | Must prompt immediately; never batched. |

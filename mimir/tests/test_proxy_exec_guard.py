@@ -26,9 +26,14 @@ class _FakeAgent:
 
     def __init__(self) -> None:
         self.tool_caps = {
-            "bash_run":     ToolCaps(name="bash_run", capabilities=frozenset({CODE_EXEC})),
-            "code_run":     ToolCaps(name="code_run", capabilities=frozenset({CODE_EXEC})),
-            "code_execute": ToolCaps(name="code_execute", capabilities=frozenset({CODE_EXEC})),
+            "bash_run":     ToolCaps(
+                name="bash_run", capabilities=frozenset({CODE_EXEC}),
+                scope={"args": ["command"], "kind": "command_prefix"},
+            ),
+            # Executes, but through structured arguments rather than a command line:
+            # its `proxy_name` is a bare name, which reading it as shell would take for
+            # a program in command position.
+            "proxy_exec":   ToolCaps(name="proxy_exec", capabilities=frozenset({CODE_EXEC})),
             # a non-exec tool that also names a path (fast-path abstain)
             "read_file_lines": ToolCaps(name="read_file_lines", capabilities=frozenset({READ})),
         }
@@ -95,11 +100,7 @@ class ProxyExecGuardTests(unittest.TestCase):
 
     def test_code_execute_executable_blocked(self) -> None:
         self._init_session()
-        self._assert_blocked(self._check("code_execute", path=self.exe))
-
-    def test_code_run_filepath_blocked(self) -> None:
-        self._init_session()
-        self._assert_blocked(self._check("code_run", language="python", filepath=self.src))
+        self._assert_blocked(self._check("bash_run", command=self.exe + " --fast"))
 
     def test_chained_command_blocked(self) -> None:
         self._init_session()
@@ -123,6 +124,15 @@ class ProxyExecGuardTests(unittest.TestCase):
         self._init_session()
         # read_file_lines carries no CODE_EXEC -> fast-path None even naming the source.
         self.assertIsNone(self._check("read_file_lines", path=self.src))
+
+    def test_the_sanctioned_route_is_never_blocked(self) -> None:
+        """The guard exists to push the model towards ``proxy_exec`` — so it must not
+        block it. Its arguments are not a command line, and reading them as one takes
+        the bare ``proxy_name`` for a program whose basename matches the target set.
+        """
+        self._init_session()
+        self.assertIsNone(self._check("proxy_exec", op="run", proxy_name="proxy_bin"))
+        self.assertIsNone(self._check("proxy_exec", op="run", proxy_name="proxy_src.py"))
 
     def test_no_session_allows_execution(self) -> None:
         # No active_session written -> guard abstains.

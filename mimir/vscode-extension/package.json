@@ -132,8 +132,8 @@
         "mimir.backend": {
           "type": "string",
           "enum": ["ollama", "vllm", "anthropic"],
-          "default": "ollama",
-          "description": "LLM backend: ollama (default), vllm (OpenAI-compatible API), or anthropic (hosted Claude API)"
+          "default": "vllm",
+          "description": "LLM backend: vllm (default, OpenAI-compatible API), ollama, or anthropic (hosted Claude API)"
         },
         "mimir.anthropicAvailableModels": {
           "type": "array",

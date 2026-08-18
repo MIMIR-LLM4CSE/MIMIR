@@ -177,6 +177,13 @@ def _collect_completion_issues(execution_context: dict) -> tuple[list[str], list
 		fresh_paths = [p for p in pending if fail_counts.get(p, 0) == 0]
 		if stuck_paths:
 			issues.append("Validation budget exhausted (no further retries): " + ", ".join(stuck_paths[:5]))
+			# Naming the file and the count says a wall was hit; naming the attempts says
+			# what the wall was, which is the part the user needs to take it from here.
+			attempts_log = execution_context.get("verdict_attempts_by_file", {}) or {}
+			for path in stuck_paths[:5]:
+				attempts = attempts_log.get(path) or []
+				if attempts:
+					issues.append(f"  {path} — tried: " + "; ".join(attempts[:3]))
 		if retry_paths:
 			issues.append("Validation failing (will retry): " + ", ".join(retry_paths[:5]))
 		if fresh_paths:
@@ -329,27 +336,16 @@ def finalize_incomplete_answer(
 # Plan-mode user nudges.
 PLAN_TODO_NUDGE_EARLY = (
 	"You have not yet recorded a plan, which is mandatory to produce a valid plan output. "
-	"Record it with the plan/todo tool in two forms: a written plan document (structured markdown prose — an overview, the approach broken into its main axes with the reasoning and the concrete files/symbols each touches, key decisions/risks, and how you'll validate) AND the ordered checklist of implementation/validation steps. "
+	"Record it with the plan tool as a written plan document (structured markdown prose — an overview, the approach broken into its main axes with the reasoning and the concrete files/symbols each touches, key decisions/risks, and how you'll validate). "
 	"If you need more information to write the plan, you may ask the user for clarification or call the read-only exploration tools (search, read, inspect, platform/memory queries) to gather evidence. "
 	"The plan must focus on detailed key actions and validations needed to complete the task (implementations, tests, validations, etc.). "
 	"Steps such as discovery, analysis, or information gathering that are not directly part of the implementation/validation plan should be omitted. "
 )
 PLAN_TODO_NUDGE_LATE = (
-	"You should have described a plan to the user by now — record it with the plan/todo tool. "
-	"Provide both a written plan document (structured markdown prose explaining the approach, its main axes, the reasoning, and validation) and the ordered checklist of steps. "
-	"If you are unsure about the exact steps, make your best guess based on the information you have, and we can iterate from there. "
+	"You should have described a plan to the user by now — record it with the plan tool as a written plan document (structured markdown prose explaining the approach, its main axes, the reasoning, and validation). "
+	"If you are unsure about the exact approach, make your best guess based on the information you have, and we can iterate from there. "
 	"The plan must focus on detailed key actions and validations needed to complete the task (implementations, tests, validations, etc.). "
 	"Steps such as discovery, analysis, or information gathering that are not directly part of the implementation/validation plan should be omitted. "
-)
-# Sent when the written plan document exists but the ordered checklist does not.
-# The generic "you have not yet recorded a plan" nudge is false at that point, and a
-# model told its plan is missing while the document sits on disk tends to rewrite the
-# document rather than supply the form that is actually absent.
-PLAN_CHECKLIST_MISSING_NUDGE = (
-	"Your written plan document is recorded — do not write it again. What is still missing is the other "
-	"form: the ordered checklist of implementation/validation steps. Record it now with the plan/todo tool. "
-	"The steps must be the key actions and validations needed to complete the task (implementations, tests, "
-	"validations, etc.); omit discovery, analysis, and information-gathering steps. "
 )
 PLAN_DELIVER_ANSWER = (
 	"You must now deliver your final answer to the user, explaining the plan you have written. No more tool calls should be made. "
@@ -385,9 +381,13 @@ PLAN_EVIDENCE_NUDGE = (
 # in, then re-present for approval).
 PLAN_APPROVED_EXECUTE = (
 	"The user has APPROVED your plan. You are now switching to agent mode to carry it out. "
-	"Execute the approved plan end to end: work through the recorded checklist in order, "
-	"making the necessary edits, running the relevant validations, and marking each step done "
-	"with the plan/todo update tool as you complete it. You may ask for re-plan or re-approval"
+	"No task checklist exists yet: before starting the work, record the ordered implementation/validation "
+	"steps of the approved plan with the plan/todo tool, unless the task is small enough not to warrant one. "
+	"The steps must be the key actions and validations the task needs (implementations, tests, validations, "
+	"etc.); omit discovery, analysis, and information-gathering steps. "
+	"Then execute the approved plan end to end, making the necessary edits, running the relevant validations, "
+	"and marking each step done with the plan/todo update tool as you complete it. "
+	"You may ask for re-plan or re-approval "
 	"if you notice any issues as you execute the plan, otherwise act on the plan you already agreed with the user."
 )
 PLAN_REJECTED_STOP = (

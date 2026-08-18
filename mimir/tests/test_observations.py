@@ -43,6 +43,7 @@ EXPECTED_ORDER = [
     "_observe_bash_validation",
     "_observe_command",
     "_observe_action_op",
+    "_observe_tool_run",
 ]
 
 
@@ -363,10 +364,86 @@ class BashValidationObservationTests(unittest.TestCase):
             agent, "bash_run", {"command": command}, json.dumps(payload), ec,
         )
 
-    def test_pytest_marks_dirty_file_validated(self):
+    def _judge(self, ec, verdict="pass", reason="the printed residual is below tolerance"):
+        """What the model says the run's output showed — exit 0 no longer speaks for it."""
+        from mimir.client.guardrails.verdict import record_verdict
+        return record_verdict(f"verdict: {verdict} — {reason}", ec)
+
+    def test_green_execution_alone_does_not_validate(self):
+        # The wave2d case: the run ends cleanly, the file stays pending until judged.
         agent, ec = self._agent(), self._ctx({"pkg/mod.py"})
         self._run(agent, "pytest -q pkg/mod.py", ec)
+        self.assertNotIn("pkg/mod.py", ec["validated_files"])
+        self.assertEqual(
+            ec["unjudged_runs"]["pytest -q pkg/mod.py"]["paths"], ["pkg/mod.py"],
+        )
+
+    def test_pytest_plus_a_passing_verdict_marks_dirty_file_validated(self):
+        agent, ec = self._agent(), self._ctx({"pkg/mod.py"})
+        self._run(agent, "pytest -q pkg/mod.py", ec)
+        self._judge(ec)
         self.assertIn("pkg/mod.py", ec["validated_files"])
+        self.assertFalse(ec["unjudged_runs"])
+
+    def test_failing_verdict_drives_the_existing_repair_ladder(self):
+        agent, ec = self._agent(), self._ctx({"foo.py"})
+        self._run(agent, "python foo.py", ec)
+        self._judge(ec, "fail", "0.00% amplitude reduction against a >90% criterion")
+        self.assertNotIn("foo.py", ec["validated_files"])
+        self.assertEqual(ec["validation_fail_count_by_file"].get("foo.py"), 1)
+        self.assertEqual(ec["workflow_state"], "edit")
+        self.assertEqual(
+            ec["verdict_attempts_by_file"]["foo.py"],
+            ["python foo.py → 0.00% amplitude reduction against a >90% criterion"],
+        )
+
+    def test_a_self_declared_failure_cannot_forge_discrimination(self):
+        # A model may lower its own credit, never raise it: fail→pass by assertion alone
+        # must not buy the red→green promotion an exit code cannot fake.
+        agent, ec = self._agent(), self._ctx({"foo.py"})
+        self._run(agent, "pytest -q foo.py", ec)
+        self._judge(ec, "fail", "wrong answer")
+        self.assertEqual(ec["executed_failures"], set())
+
+    def test_unknown_verdict_settles_the_run_but_validates_nothing(self):
+        agent, ec = self._agent(), self._ctx({"foo.py"})
+        self._run(agent, "python foo.py", ec)
+        self._judge(ec, "unknown", "no reference solution available for this regime")
+        self.assertFalse(ec["unjudged_runs"])
+        self.assertNotIn("foo.py", ec["validated_files"])
+        self.assertEqual(ec["verdict_by_file"]["foo.py"]["verdict"], "unknown")
+
+    def test_a_scratchpad_probe_credits_nothing(self):
+        # The prompt sends every throwaway probe to the scratchpad by absolute path, so
+        # this is the common path. Inheriting the pending set would let one `verdict:
+        # pass` on a probe validate source the probe never touched.
+        agent, ec = self._agent(), self._ctx({"solver.py", "mesh.py"})
+        self._run(agent, "python /tmp/mimir-scratch/probe.py", ec)
+        self.assertEqual(ec["unjudged_runs"]["python /tmp/mimir-scratch/probe.py"]["paths"], [])
+        self._judge(ec)
+        self.assertFalse(ec["validated_files"])
+
+    def test_a_probe_binary_names_its_artifact_in_the_head(self):
+        agent, ec = self._agent(), self._ctx({"solver.py"})
+        self._run(agent, "/tmp/mimir-scratch/built_probe", ec)
+        self.assertEqual(ec["unjudged_runs"]["/tmp/mimir-scratch/built_probe"]["paths"], [])
+
+    def test_an_in_workspace_run_still_covers_the_pending_set(self):
+        # A run routinely exercises code it does not name; that fallback is what lets a
+        # suite settle a refactor, and only an out-of-workspace target forfeits it.
+        agent, ec = self._agent(), self._ctx({"solver.py", "mesh.py"})
+        for command in ("pytest", "./solver", "python tests/test_solver.py"):
+            ec = self._ctx({"solver.py", "mesh.py"})
+            self._run(agent, command, ec)
+            self.assertEqual(
+                ec["unjudged_runs"][command]["paths"], ["mesh.py", "solver.py"], command,
+            )
+
+    def test_a_run_that_declares_its_own_failure_is_not_left_unjudged(self):
+        agent, ec = self._agent(), self._ctx({"foo.py"})
+        self._run(agent, "python foo.py", ec, stdout="reflection is high\ncheck=fail")
+        self.assertFalse(ec["unjudged_runs"])
+        self.assertEqual(ec["verdict_by_file"]["foo.py"]["verdict"], "fail")
 
     def test_py_compile_marks_validated(self):
         agent, ec = self._agent(), self._ctx({"foo.py"})
@@ -376,6 +453,7 @@ class BashValidationObservationTests(unittest.TestCase):
     def test_cd_rebases_relative_operand(self):
         agent, ec = self._agent(), self._ctx({"pkg/mod.py"})
         self._run(agent, "cd pkg && pytest mod.py", ec)
+        self._judge(ec)
         self.assertIn("pkg/mod.py", ec["validated_files"])
 
     def test_same_name_other_dir_is_not_credited(self):
@@ -416,9 +494,11 @@ class BashValidationObservationTests(unittest.TestCase):
         self.assertEqual(ec["validated_files"], {"a.py", "b.py", "c.py"})
 
     def test_green_whole_project_run_clears_all_pending(self):
-        # A big refactor validated by a bare project-wide run: every pending file clears.
+        # A big refactor validated by a bare project-wide run: one verdict covers the
+        # single output the model was shown, so every pending file clears at once.
         agent, ec = self._agent(), self._ctx({"a.py", "pkg/b.py", "c.py"})
         self._run(agent, "pytest -q", ec)
+        self._judge(ec)
         self.assertEqual(ec["validated_files"], {"a.py", "pkg/b.py", "c.py"})
         self.assertEqual(ec["workflow_state"], "conclude")
 
@@ -447,12 +527,14 @@ class BashValidationObservationTests(unittest.TestCase):
     def test_python_m_module_recognised_as_project_validator(self):
         agent, ec = self._agent(), self._ctx({"a.py", "b.py"})
         self._run(agent, "python -m pytest", ec)
+        self._judge(ec)
         self.assertEqual(ec["validated_files"], {"a.py", "b.py"})
 
     def test_ctest_validates_whole_cmake_project(self):
         # A green CMake test run validates the whole C/C++/CUDA build.
         agent, ec = self._agent(), self._ctx({"kernel.cu", "solver.cpp"})
         self._run(agent, "cd build && ctest --output-on-failure", ec)
+        self._judge(ec)
         self.assertEqual(ec["validated_files"], {"kernel.cu", "solver.cpp"})
 
 
@@ -498,6 +580,93 @@ class PluginValidatorObservationTests(unittest.TestCase):
         self.assertNotIn("pkg/mod.py", ec["validated_files"])
 
 
+class ExecutionToolObservationTests(unittest.TestCase):
+    """An execution tool that is not bash owes a verdict just the same.
+
+    Split by *surface*, not by purpose: a shell tool's calls differ in kind call by call
+    (`cat` reads, `python` executes), so only the command text can decide and
+    `_observe_bash_validation` owns it. A tool like `proxy_exec` has no such variation —
+    the call *is* the execution — so the declared capability decides. The two must stay
+    mutually exclusive, or a bash run gets registered twice.
+    """
+
+    def _agent(self, caps, **kwargs):
+        from mimir.client.context.capabilities import ToolCaps
+        reg = {"runner": ToolCaps(name="runner", capabilities=frozenset(caps), **kwargs)}
+        return types.SimpleNamespace(
+            tool_caps=reg,
+            _parse_tool_payload=lambda result: json.loads(result),
+            _normalize_workspace_path=lambda p: os.path.normpath(p) if p else "",
+            _is_code_filepath=lambda p: str(p).endswith(".py"),
+        )
+
+    def _ctx(self, dirty=()):
+        ec = build_execution_context()
+        ec["dirty_written_files"] = set(dirty)
+        ec["code_mutation_started"] = bool(dirty)
+        return ec
+
+    def _call(self, agent, ec, **args):
+        runtime.record_tool_observation(
+            agent, "runner", args, '{"status": "ok"}', ec,
+        )
+
+    def test_a_code_exec_tool_leaves_its_run_awaiting_a_verdict(self):
+        from mimir.client.context.capabilities import CODE_EXEC
+        agent, ec = self._agent({CODE_EXEC}), self._ctx({"solver.py"})
+        self._call(agent, ec)
+        self.assertEqual(ec["unjudged_runs"]["runner"]["paths"], ["solver.py"])
+        self.assertFalse(ec["validated_files"])
+
+    def test_declared_path_args_attribute_the_run(self):
+        from mimir.client.context.capabilities import CODE_EXEC
+        agent = self._agent({CODE_EXEC}, arg_roles={"path": ("target",)})
+        ec = self._ctx({"a.py", "b.py"})
+        self._call(agent, ec, target="b.py")
+        self.assertEqual(ec["unjudged_runs"]["runner"]["paths"], ["b.py"])
+
+    def test_with_nothing_written_the_run_is_recorded_path_less(self):
+        # An analysis-only session: no file to attach the judgement to, but the answer
+        # still rests on that output.
+        from mimir.client.context.capabilities import CODE_EXEC
+        agent, ec = self._agent({CODE_EXEC}), self._ctx()
+        self._call(agent, ec)
+        self.assertEqual(ec["unjudged_runs"]["runner"]["paths"], [])
+
+    def test_an_out_of_workspace_target_credits_nothing(self):
+        # Same rule bash goes through: the call named what it ran, and it was not the
+        # user's code.
+        from mimir.client.context.capabilities import CODE_EXEC
+        agent = self._agent({CODE_EXEC}, arg_roles={"path": ("target",)})
+        ec = self._ctx({"a.py"})
+        self._call(agent, ec, target="/tmp/mimir-scratch/probe.py")
+        self.assertEqual(ec["unjudged_runs"]["runner"]["paths"], [])
+
+    def test_a_writer_owes_nothing(self):
+        from mimir.client.context.capabilities import EDIT
+        agent, ec = self._agent({EDIT}), self._ctx({"solver.py"})
+        self._call(agent, ec, path="solver.py")
+        self.assertFalse(ec["unjudged_runs"])
+
+    def test_a_shell_tool_is_left_to_the_bash_observer(self):
+        # Mutual exclusion: otherwise the same run is registered twice, once per handler.
+        from mimir.client.context.capabilities import CODE_EXEC
+        agent = self._agent(
+            {CODE_EXEC}, scope={"args": ["command"], "kind": "command_prefix"},
+        )
+        ec = self._ctx({"solver.py"})
+        self._call(agent, ec, command="python solver.py")
+        self.assertEqual(list(ec["unjudged_runs"]), ["python solver.py"])
+
+    def test_a_failed_call_owes_nothing(self):
+        from mimir.client.context.capabilities import CODE_EXEC
+        agent, ec = self._agent({CODE_EXEC}), self._ctx({"solver.py"})
+        runtime.record_tool_observation(
+            agent, "runner", {}, '{"status": "error"}', ec,
+        )
+        self.assertFalse(ec["unjudged_runs"])
+
+
 class ValidationTierTests(unittest.TestCase):
     """How much a green validation run actually proved.
 
@@ -511,6 +680,7 @@ class ValidationTierTests(unittest.TestCase):
     _agent = BashValidationObservationTests._agent
     _ctx = BashValidationObservationTests._ctx
     _run = BashValidationObservationTests._run
+    _judge = BashValidationObservationTests._judge
 
     def tier(self, ec, path="foo.py"):
         return ec["validation_tier_by_file"].get(path)
@@ -532,18 +702,21 @@ class ValidationTierTests(unittest.TestCase):
         agent, ec = self._agent(), self._ctx({"foo.py"})
         self._run(agent, "pytest -q foo.py", ec,
                   stdout="1 passed in 0.3s\nTest passed: solution is finite and stable.")
+        self._judge(ec)
         self.assertEqual(self.tier(ec), "executed")
 
     def test_reported_invariant_promotes_to_oracle(self):
         agent, ec = self._agent(), self._ctx({"foo.py"})
         self._run(agent, "pytest -q foo.py", ec,
                   stdout="l2_rel=3.2e-4\nconvergence_order=3.98\n1 passed")
+        self._judge(ec)
         self.assertEqual(self.tier(ec), "oracle")
 
     def test_prose_mentioning_a_metric_is_not_an_oracle(self):
         agent, ec = self._agent(), self._ctx({"foo.py"})
         self._run(agent, "pytest -q foo.py", ec,
                   stdout="we checked the l2_rel error and it looked fine")
+        self._judge(ec)
         self.assertEqual(self.tier(ec), "executed")
 
     def test_failing_run_reporting_an_invariant_is_not_credited(self):
@@ -552,9 +725,40 @@ class ValidationTierTests(unittest.TestCase):
         self.assertIsNone(self.tier(ec))
         self.assertNotIn("foo.py", ec["validated_files"])
 
+    def test_declared_failing_verdict_overrides_a_green_exit(self):
+        # The wave2d boundary test: the script decided its own criteria were unmet,
+        # printed so, and returned 0 — which the ledger would otherwise read as a pass.
+        agent, ec = self._agent(), self._ctx({"foo.py"})
+        self._run(agent, "python foo.py", ec, stdout="reflection is high\ncheck=fail")
+        self.assertIsNone(self.tier(ec))
+        self.assertNotIn("foo.py", ec["validated_files"])
+        self.assertEqual(ec["validation_fail_count_by_file"].get("foo.py"), 1)
+
+    def test_declared_failing_verdict_blocks_the_oracle_promotion(self):
+        agent, ec = self._agent(), self._ctx({"foo.py"})
+        self._run(agent, "pytest -q foo.py", ec, stdout="l2_rel=9.9\ncheck=fail")
+        self.assertIsNone(self.tier(ec))
+
+    def test_prose_about_a_failed_check_is_not_a_verdict(self):
+        agent, ec = self._agent(), self._ctx({"foo.py"})
+        self._run(agent, "pytest -q foo.py", ec, stdout="the check failed to converge early on")
+        self._judge(ec)
+        self.assertEqual(self.tier(ec), "executed")
+
+    def test_passing_verdict_never_rescues_a_red_exit(self):
+        agent, ec = self._agent(), self._ctx({"foo.py"})
+        self._run(agent, "pytest -q foo.py", ec, status="error", stdout="check=pass")
+        self.assertNotIn("foo.py", ec["validated_files"])
+
+    def test_declared_failing_verdict_leaves_whole_project_pending(self):
+        agent, ec = self._agent(), self._ctx({"a.py", "b.py"})
+        self._run(agent, "pytest -q", ec, stdout="check=fail")
+        self.assertFalse(ec["validated_files"])
+
     def test_tier_never_downgrades(self):
         agent, ec = self._agent(), self._ctx({"foo.py"})
         self._run(agent, "pytest -q foo.py", ec, stdout="l2_rel=1e-9")
+        self._judge(ec)
         self.assertEqual(self.tier(ec), "oracle")
         # A weaker check afterwards does not un-prove the comparison.
         ec["dirty_written_files"].add("foo.py")
@@ -564,6 +768,7 @@ class ValidationTierTests(unittest.TestCase):
     def test_strongest_segment_in_a_chain_wins(self):
         agent, ec = self._agent(), self._ctx({"foo.py"})
         self._run(agent, "python -m py_compile foo.py && pytest -q foo.py", ec)
+        self._judge(ec)
         self.assertEqual(self.tier(ec), "executed")
 
     def test_reedit_retracts_the_tier(self):
@@ -571,10 +776,12 @@ class ValidationTierTests(unittest.TestCase):
         from mimir.client.guardrails.observations import _record_code_edit
         agent, ec = self._agent(), self._ctx({"foo.py"})
         self._run(agent, "pytest -q foo.py", ec, stdout="l2_rel=1e-9")
+        self._judge(ec)
         self.assertEqual(self.tier(ec), "oracle")
         _record_code_edit(ec, "foo.py")
         self.assertIsNone(self.tier(ec))
         self.assertNotIn("foo.py", ec["validated_files"])
+        self.assertNotIn("foo.py", ec["verdict_by_file"])
 
     def test_failed_validation_retracts_the_tier(self):
         agent, ec = self._agent(), self._ctx({"foo.py"})
@@ -586,6 +793,7 @@ class ValidationTierTests(unittest.TestCase):
     def test_whole_project_run_stamps_every_pending_file(self):
         agent, ec = self._agent(), self._ctx({"a.py", "b.py"})
         self._run(agent, "pytest -q", ec)
+        self._judge(ec)
         self.assertEqual(ec["validated_files"], {"a.py", "b.py"})
         for p in ("a.py", "b.py"):
             self.assertEqual(self.tier(ec, p), "executed")
@@ -615,6 +823,7 @@ class RedGreenDiscriminationTests(ValidationTierTests):
         self._run(agent, "pytest -q", ec, status="error")
         self.assertIn("parser.py", ec["executed_failures"])
         self._run(agent, "pytest -q", ec)
+        self._judge(ec)
         self.assertEqual(self.tier(ec, "parser.py"), "oracle")
 
     def test_an_unattributable_failure_costs_no_retry_budget(self):
@@ -633,6 +842,7 @@ class RedGreenDiscriminationTests(ValidationTierTests):
         # Never seen failing ⇒ nothing establishes that it would have caught anything.
         agent, ec = self._agent(), self._ctx({"parser.py"})
         self._run(agent, "pytest -q", ec)
+        self._judge(ec)
         self.assertEqual(self.tier(ec, "parser.py"), "executed")
 
     def test_syntax_tier_red_then_green_does_not_promote(self):
@@ -657,6 +867,7 @@ class RedGreenDiscriminationTests(ValidationTierTests):
         _record_code_edit(ec, "parser.py")
         self.assertIn("parser.py", ec["executed_failures"])
         self._run(agent, "pytest -q", ec)
+        self._judge(ec)
         self.assertEqual(self.tier(ec, "parser.py"), "oracle")
 
 

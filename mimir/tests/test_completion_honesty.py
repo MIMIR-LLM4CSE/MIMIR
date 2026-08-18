@@ -241,6 +241,74 @@ class LedgerMarkerTests(_ChecklistFixture):
             self.assertIn("**", row, row)
 
 
+class OutputVerdictLedgerTests(_ChecklistFixture):
+    """Machine-observed and model-asserted, side by side and never conflated.
+
+    Exit 0 is all the loop sees by itself, so an execution parks its run until the model
+    says what the output showed. The ledger has to render three states the old two rows
+    could not: ran-but-unjudged, judged-and-failed, judged-and-passed.
+    """
+
+    def _awaiting(self, command, paths, **over):
+        ec = _ctx(
+            dirty_written_files=set(paths),
+            code_mutation_started=True,
+            unjudged_runs={command: {"paths": list(paths), "tier": "executed"}},
+            **over,
+        )
+        return ec
+
+    def test_unjudged_output_is_named_as_such(self):
+        # The wave2d row, stated correctly: "not validated" alone would read as
+        # "never checked", which understates a file whose check ran and printed a warning.
+        out = _annotate_answer_with_changes(
+            "All done, verified and working.", self._awaiting("python b_test.py", {"solver.py"}),
+        )
+        self.assertIn("`solver.py` — ran, **not validated**: its output was never judged", out)
+
+    def test_a_run_with_no_file_still_earns_a_ledger(self):
+        # An analysis-only session is exactly the one whose whole answer rests on that
+        # output — it used to produce no ledger at all.
+        ec = _ctx(unjudged_runs={"pytest -q": {"paths": [], "tier": "executed"}})
+        out = _annotate_answer_with_changes("The suite is green.", ec)
+        self.assertIn("`pytest -q` — ran; its output was never judged", out)
+
+    def test_a_failing_verdict_is_reported_with_its_reason(self):
+        ec = self._awaiting("python b_test.py", {"solver.py"})
+        ec["unjudged_runs"] = {}
+        ec["verdict_by_file"] = {"solver.py": {
+            "verdict": "fail", "reason": "0.00% amplitude reduction", "command": "python b_test.py",
+        }}
+        out = _annotate_answer_with_changes("Done.", ec)
+        self.assertIn("verdict: fail — 0.00% amplitude reduction", out)
+
+    def test_a_verdict_is_labelled_as_the_models_own_reading(self):
+        ec = _written({"solver.py"}, tier="executed")
+        ec["verdict_by_file"] = {"solver.py": {
+            "verdict": "pass", "reason": "matches the reference", "command": "pytest",
+        }}
+        out = _annotate_answer_with_changes("Done.", ec)
+        self.assertIn("`solver.py` — validated: executed · verdict: pass", out)
+        self.assertIn("the model's own reading", out)
+
+    def test_what_was_tried_is_reported_when_the_budget_runs_out(self):
+        from mimir.client.config.constants import VALIDATION_RETRY_BUDGET
+        ec = _ctx(
+            dirty_written_files={"solver.py"},
+            code_mutation_started=True,
+            validation_fail_count_by_file={"solver.py": VALIDATION_RETRY_BUDGET},
+            verdict_attempts_by_file={"solver.py": [
+                "python b_test.py → 0.00% amplitude reduction",
+                "python b_test.py → energy grew by 0.6%",
+            ]},
+        )
+        issues, _ = _collect_completion_issues(ec)
+        joined = "\n".join(issues)
+        self.assertIn("Validation budget exhausted", joined)
+        self.assertIn("0.00% amplitude reduction", joined)
+        self.assertIn("energy grew by 0.6%", joined)
+
+
 class CompletionIssueTests(_ChecklistFixture):
     def test_validated_sentence_names_the_evidence(self):
         # The unqualified sentence is what a model reads back as licence to report

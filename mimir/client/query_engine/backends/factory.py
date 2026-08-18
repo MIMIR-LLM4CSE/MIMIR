@@ -9,7 +9,7 @@ _singleton: dict[str, LLMBackend] = {}
 
 
 def get_backend() -> LLMBackend:
-    backend_name = os.environ.get("LLM_BACKEND", "ollama").lower()
+    backend_name = os.environ.get("LLM_BACKEND", "vllm").lower()
     if backend_name not in _singleton:
         if backend_name == "vllm":
             from .vllm_backend import VllmBackend

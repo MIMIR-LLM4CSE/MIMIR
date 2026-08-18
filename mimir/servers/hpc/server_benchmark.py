@@ -15,7 +15,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'
 import numpy as np
 import time
 from mcp.server.fastmcp import FastMCP
-from capabilities import tool_caps, PLAN_BLOCKED, RECOVERABLE
+from capabilities import tool_caps, CODE_EXEC, PLAN_BLOCKED, RECOVERABLE, REVERSIBLE
 from platform_profile_store import now_iso, persist_benchmark_report
 from responses import err, ok
 
@@ -26,7 +26,9 @@ mcp = FastMCP(
 )
 
 
-@mcp.tool(**tool_caps(caps=[PLAN_BLOCKED]))
+# `reversibility` is stated rather than derived: CODE_EXEC alone would infer RECOVERABLE
+# and gate an in-process micro-benchmark behind an approval prompt.
+@mcp.tool(**tool_caps(caps=[PLAN_BLOCKED, CODE_EXEC], reversibility=REVERSIBLE))
 def benchmark_python_compute(n: int = 2_000_000, repeats: int = 3) -> dict:
     """Estimate scalar compute throughput using a pure-Python math loop.
 
@@ -64,7 +66,7 @@ def benchmark_python_compute(n: int = 2_000_000, repeats: int = 3) -> dict:
     )
 
 
-@mcp.tool(**tool_caps(caps=[PLAN_BLOCKED]))
+@mcp.tool(**tool_caps(caps=[PLAN_BLOCKED, CODE_EXEC], reversibility=REVERSIBLE))
 def benchmark_memory_copy(size_mb: int = 256, repeats: int = 3) -> dict:
     """Estimate memory copy throughput with bytearray copies.
 
@@ -100,7 +102,7 @@ def benchmark_memory_copy(size_mb: int = 256, repeats: int = 3) -> dict:
     )
 
 
-@mcp.tool(**tool_caps(caps=[PLAN_BLOCKED]))
+@mcp.tool(**tool_caps(caps=[PLAN_BLOCKED, CODE_EXEC], reversibility=REVERSIBLE))
 def benchmark_numpy_matmul(n: int = 1024, repeats: int = 3) -> dict:
     """Estimate dense linear algebra performance with NumPy matmul.
 
