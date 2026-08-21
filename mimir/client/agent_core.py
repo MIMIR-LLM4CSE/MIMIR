@@ -32,7 +32,6 @@ from .context import (
     carry_context_from_json,
     carry_context_to_json,
     carry_path_fields,
-    carry_set_fields,
     ensure_execution_context,
     fields_with,
     validate_execution_context,
@@ -990,6 +989,7 @@ class MimirAgent:
         arguments: dict,
         execution_context: dict | None = None,
         run_auto_validation: bool = True,
+        call_id: str = "",
     ) -> str:
         return await execute_tool_call(
             agent=self,
@@ -997,6 +997,7 @@ class MimirAgent:
             arguments=arguments,
             execution_context=execution_context,
             run_auto_validation=run_auto_validation,
+            call_id=call_id,
         )
 
     async def compact_history(self, history: list[dict]) -> str:

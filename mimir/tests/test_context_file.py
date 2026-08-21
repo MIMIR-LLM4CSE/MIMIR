@@ -134,7 +134,18 @@ class DefaultBaseShapeTests(unittest.TestCase):
         # the same over-crediting the verdict rule above exists to stop, one level up.
         # The rule only works if the model knows the bracketed form, and it is asked
         # for at the moment it would otherwise write the broad `pass`.
-        self.assertLess(len(cb._DEFAULT_BASE_SYSTEM_CONTENT), 12250)
+        # Raised 12250 → 12900 for two rules in ## Validation / ## Running code: the
+        # prompt sat at 12780. The verdict rule above says what to do with a run's
+        # output but never that one must exist, and nothing else in the loop asked for
+        # an execution — a model could write, lint, and stop, with the whole judging
+        # machinery unreachable because it is only ever entered by running something.
+        # "Judging presupposes running" is the half that was missing, and it reaches
+        # every run. The second line names the test directory as the place a keepable
+        # test goes: the execution rule offers that route, and without it the
+        # scratchpad rule sends the test to the wrong tree. The acquisition list for an
+        # `unknown` is deliberately NOT here — it is situational, and the nudge that
+        # fires on a standing `unknown` carries it in full.
+        self.assertLess(len(cb._DEFAULT_BASE_SYSTEM_CONTENT), 12900)
 
     def test_env_resolution_cascade_lives_in_the_nudges_not_the_prompt(self) -> None:
         # The 5-step cascade is covered by env_resolution/env_cleanup nudges, which

@@ -32,7 +32,7 @@ rules here, and not implemented.
 Read "confined" throughout this file with that scope in mind; SERVERS_DETAILED.md
 carries the same note with the bounds on what an "always" approval grants.
 
-THE 73 ALLOWED COMMANDS, BY CATEGORY
+THE 74 ALLOWED COMMANDS, BY CATEGORY
 ------------------------------------
 One taxonomy, declared in ``_shared/shell_paths.py`` and read by both ends: the
 allowlist below is the union of those groups, the client's classifier maps each to a
@@ -51,7 +51,7 @@ search       yes        no        grep rg
 inspect      yes        no        ls find du
 chdir        yes        no        cd
 env          query      mutation  module pip pip3 conda conda3 mamba mamba3  ◆
-write        no         yes       mv cp mkdir
+write        no         yes       mv cp mkdir chmod
 exec         no         yes       gcc g++ gfortran nvcc javac java node python
                                   python3 make cmake ctest pytest ruff mypy pyflakes
                                   black pdflatex latex xelatex lualatex pdftex tex
@@ -137,7 +137,7 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '_shared'))
 
 from mcp.server.fastmcp import FastMCP
-from capabilities import tool_caps, PLAN_READONLY, CODE_EXEC, RECOVERABLE
+from capabilities import tool_caps, PLAN_READONLY, CODE_EXEC, JUDGE, RECOVERABLE
 from responses import err, ok
 from shell_paths import (
     COMMAND_CATEGORIES as _COMMAND_CATEGORIES,
@@ -349,6 +349,9 @@ _FORBIDDEN_ARG_TOKENS_BY_CMD = {
 _SHELL_RUNNERS = {
     "bash", "sh", "zsh", "ksh", "dash", "csh", "tcsh", "fish",
     "eval", "exec", "source", ".", "command", "env", "xargs", "nohup", "sudo",
+    # `timeout` wraps a command like `nohup` does, so allowlisting it would approve its
+    # own head and nothing it runs. The tool's own `timeout` parameter covers the need.
+    "timeout",
 }
 
 # Commands whose exit status 1 means "nothing found" rather than "failed" — a
@@ -905,6 +908,62 @@ def bash_run(command: str, timeout: int = _DEFAULT_TIMEOUT) -> dict:
         result["timeout_clamped"] = True
         result["requested_timeout"] = requested_timeout
     return result
+
+
+_VERDICT_VALUES = ("pass", "fail", "unknown")
+
+
+@mcp.tool(**tool_caps(
+    caps=[JUDGE],
+    arg_roles={
+        "verdict": ["verdict"], "verdict_reason": ["reason"], "verdict_scope": ["run"],
+    },
+    label="Verdict: {verdict}",
+))
+def report_verdict(verdict: str, reason: str, run: str = "") -> dict:
+    """State what a run's output showed. Call this after every execution you must read.
+
+    Exit 0 means a program reached its end, never that its answer is right, and nothing
+    downstream can read the output for you. Until you report it, the run stands as
+    something that happened and nothing more, and the answer has to say so. A syntax,
+    lint or type check needs no report — its exit code is the finding, and it is also
+    all it establishes: that the file parses and lints, never that the result is right.
+
+    Report as soon as you have read the output, in the same step you would move on:
+
+        report_verdict("pass", "l2_rel=3.1e-4 against the analytic solution, under the 1e-3 bound")
+        report_verdict("fail", "energy grows from 1.56 to 4.02 — the absorbing layer reflects")
+        report_verdict("unknown", "only prints 'Simulation completed.', nothing about correctness")
+
+    Name the number, message or behaviour you read it from; "it worked" is not a
+    reason. `fail` on a green run is expected sometimes and is not a setback — fix and
+    re-run.
+
+    `unknown` is the honest answer when the output does not settle the question, and it
+    is a starting point rather than a conclusion: it says what you know is not enough
+    yet, so go extend it. Say what would settle the question and get it — a reference
+    implementation, a documented value, an analytical limit, an invariant, a refinement
+    trend. Read the documentation, the literature or the repository, and fetch from the
+    web if you can reach it. When the standard is the user's to set rather than yours to
+    find — their conventions, their acceptance criteria, their data — ask them. Then
+    report again. If it stays out of reach, say so and name what is unverified: you are
+    not blocked on being certain, and the user is the last judge of what you could not
+    settle.
+
+    Args:
+        verdict: "pass", "fail" or "unknown".
+        reason:  What in the output shows it — the number, message or behaviour.
+        run:     Which run is being judged, as its command — a recognisable fragment is
+                 enough. Optional: left out, a "pass" settles the most recent run, so
+                 name the run whenever you are judging an earlier one. "fail" and
+                 "unknown" address everything outstanding and never need it.
+    """
+    value = (verdict or "").strip().lower()
+    if value not in _VERDICT_VALUES:
+        return err(f"verdict must be one of {', '.join(_VERDICT_VALUES)} — got '{verdict}'.")
+    if not (reason or "").strip():
+        return err("reason is required — name what in the output shows the verdict.")
+    return ok({"verdict": value, "reason": reason.strip(), "run": (run or "").strip()})
 
 
 if __name__ == "__main__":

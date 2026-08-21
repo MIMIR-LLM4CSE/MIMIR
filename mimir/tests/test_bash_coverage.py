@@ -142,6 +142,10 @@ _CREDITING_CORPUS: list[tuple[str, dict]] = [
     # ── chains the model actually writes ─────────────────────────────────────
     ("cd tests && pytest test_solver.py",
      {"judge": ["tests/test_solver.py"], "tests_run": ["tests/test_solver.py"]}),
+    # The idiom the base prompt asks for — a one-off check inline rather than a file.
+    # Parentheses alone make it unclassifiable, so it credits no file; but it plainly
+    # ran, and what it printed is the whole point of running it.
+    ('python -c "import solver; print(solver.residual())"', {"ran": True}),
     ("python -m py_compile solver.py && ruff check solver.py", {"validate": ["solver.py"]}),
 
     # ── environment ──────────────────────────────────────────────────────────
@@ -158,20 +162,19 @@ _CREDITING_CORPUS: list[tuple[str, dict]] = [
 # on a run. Two rules follow from the list being asserted:
 #   * closing a hole means deleting its line here, deliberately, in the same change;
 #   * opening a NEW one breaks the corpus assertions above, not this list.
-# The reason matters when weighing a fix: `python -c` and the heredoc are parser limits,
-# while the rest hide the real command from the classifier one way or another.
+# The reason matters when weighing a fix: each of these hides the command itself from
+# the classifier, so not even its head can be read.
 #
-# Three entries left this list when executions started owing a verdict: `make test`,
-# `cmake --build build` and `./solver --check`. They still credit no *validation* — a
-# green `make clean` establishes nothing, and what a local binary checked is unknowable
-# — but each is now recorded as a run whose output the model must account for, which is
-# the one thing that can be said about them without knowing what they did.
+# Entries left this list when executions started owing a verdict: `make test`,
+# `cmake --build build`, `./solver --check`, and every `python -c` form. They still
+# credit no *validation* — a green `make clean` establishes nothing, and an inline
+# payload names no file — but each is now recorded as a run whose output the model must
+# account for, which is the one thing that can be said about them without knowing what
+# they did.
 _KNOWN_UNCREDITED: list[tuple[str, str]] = [
-    ("python -c \"import solver; solver.check()\"",
-     "inline snippet: the embedded `;` splits into an unparseable second segment"),
-    ("tox -e py311", "unrecognised leading command → segment is opaque"),
-    ("cat $(ls *.py | head -1)", "command substitution runs code → opaque by design"),
-    ("bash -c 'pytest tests/'", "wrapper hides the real command from the classifier"),
+    ("tox -e py311", "unrecognised leading command — nothing in the head to read"),
+    ("cat $(ls *.py | head -1)", "command substitution runs code, under a `cat` head"),
+    ("bash -c 'pytest tests/'", "wrapper hides the real command behind a non-exec head"),
 ]
 
 
@@ -179,8 +182,8 @@ class CorpusCreditTests(unittest.TestCase):
     """Every corpus command must teach the blackboard what it claims to."""
 
     def _assert_credits(self, command: str, expect: dict) -> None:
-        dirty = tuple(expect.get("validate", ())) or tuple(expect.get("judge", ())) or (
-            ("pending.py",) if expect.get("project") else ()
+        dirty = tuple(expect.get("validate", ())) or (
+            ("pending.py",) if expect.get("project") or expect.get("ran") else ()
         )
         ec = _run(command, dirty=dirty)
 
@@ -193,15 +196,14 @@ class CorpusCreditTests(unittest.TestCase):
         for path in expect.get("write", ()):
             self.assertIn(path, ec["dirty_written_files"], f"{command!r}: write not credited")
         for path in expect.get("validate", ()):
-            self.assertIn(path, ec["validated_files"], f"{command!r}: validation not credited")
-        awaiting = {p for run in ec["unjudged_runs"].values() for p in run["paths"]}
-        for path in expect.get("judge", ()):
-            self.assertIn(path, awaiting, f"{command!r}: run not left awaiting a verdict")
-            self.assertNotIn(path, ec["validated_files"],
-                             f"{command!r}: an execution must not validate on its exit code")
+            self.assertIn(path, ec["validated_files"], f"{command!r}: check not credited")
+        if expect.get("ran"):
+            self.assertTrue(ec["runs"], f"{command!r}: run not recorded")
+            self.assertFalse(ec["validated_files"],
+                             f"{command!r}: an execution must not validate a file")
         if expect.get("project"):
             self.assertIn("pending.py", ec["validated_files"],
-                          f"{command!r}: whole-project run did not clear pending files")
+                          f"{command!r}: whole-project check did not clear pending files")
         for path in expect.get("tests_run", ()):
             self.assertIn(path, ec["tests_run"], f"{command!r}: test run not recorded")
         if expect.get("env"):
@@ -214,16 +216,23 @@ class CorpusCreditTests(unittest.TestCase):
             with self.subTest(command=command):
                 self._assert_credits(command, expect)
 
-    def test_failed_validation_is_attributed_not_credited(self) -> None:
-        """A red run must charge the file, not silently leave it unvalidated.
+    def test_a_failed_check_is_attributed_not_credited(self) -> None:
+        """A red check must charge the file, not silently leave it unvalidated.
 
         The mirror of the corpus above: crediting on success is only half the
         contract, and a failure that lands nowhere lets a broken file reach the
         conclude gate looking merely un-checked.
         """
-        ec = _run("pytest tests/test_solver.py", status="error", dirty=("tests/test_solver.py",))
+        ec = _run("ruff check tests/test_solver.py", status="error",
+                  dirty=("tests/test_solver.py",))
         self.assertNotIn("tests/test_solver.py", ec["validated_files"])
         self.assertEqual(ec["validation_fail_count_by_file"].get("tests/test_solver.py"), 1)
+
+    def test_a_failed_run_is_charged_to_the_run(self) -> None:
+        ec = _run("pytest tests/test_solver.py", status="error",
+                  dirty=("tests/test_solver.py",))
+        self.assertEqual(ec["validation_fail_count_by_file"], {})
+        self.assertEqual(ec["runs"]["pytest tests/test_solver.py"]["failures"], 1)
 
 
 class BlindSurfaceTests(unittest.TestCase):
@@ -289,7 +298,7 @@ def _semantic_view(ec: dict) -> tuple:
     return (
         frozenset(ec["read_files"]), bool(ec["searched"]), frozenset(ec["inspected_dirs"]),
         frozenset(ec["dirty_written_files"]), frozenset(ec["validated_files"]),
-        frozenset(ec["unjudged_runs"]),
+        frozenset(ec["runs"]),
         frozenset(ec["tests_run"]), tuple(ec.get("env_mutations") or ()),
         ec.get("last_edit_success_path") or "",
     )

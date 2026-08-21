@@ -1031,6 +1031,23 @@ body {
 .tool-status-glyph { font-size: 0.85em; font-weight: 700; flex-shrink: 0; }
 .tool-status-glyph--error { color: var(--danger); }
 
+/* The model's reading of the run's output — a claim, not a measurement, so it is
+   tinted rather than glyphed and never competes with the exit-code status. */
+.tool-verdict {
+  font-size: 0.7em;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 1px 5px;
+  border-radius: 3px;
+  border: 1px solid currentColor;
+  opacity: 0.75;
+  flex-shrink: 0;
+}
+.tool-verdict--pass { color: var(--ok); }
+.tool-verdict--fail { color: var(--danger); }
+.tool-verdict--unknown { color: var(--warn); }
+
 .tool-duration {
   font-family: var(--mono);
   font-size: 0.8em;

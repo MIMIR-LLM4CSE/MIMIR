@@ -12,18 +12,22 @@ Each is env-overridable and fail-open. The raw path primitives (``MIMIR_DIR``,
 Public authoring surface for a plugin pack (dropped into the plugins dir)::
 
     from mimir.client.extensions import (
-        PolicyCheck, NudgeRule, register_policy_check, register_nudge,
+        PolicyCheck, NudgeRule, PostToolRule,
+        register_policy_check, register_nudge, register_post_tool,
     )
 
-Policies are locked (mandatory); nudges are toggleable. Reference *capabilities* from
+Three seams, one per moment: a policy blocks a call *before* it runs, a post-tool hook
+reacts to what it produced, a nudge speaks at the *end of the turn*. Policies are locked
+(mandatory); nudges are toggleable. Reference *capabilities* from
 ``mimir.client.context.capabilities``, never literal tool names.
 """
 
 from __future__ import annotations
 
-# Plugin-pack authoring surface (descriptors + registries live in guardrails/).
+# Plugin-pack authoring surface (descriptors + registries live next to their consumers).
 from ..guardrails.policy.plugins import PolicyCheck, PolicyRegistry, register_policy_check
 from ..guardrails.nudges.plugins import NudgeRule, NudgeRegistry, register_nudge
+from ..tool_execution.plugins import PostToolRule, PostToolRegistry, register_post_tool
 
 # .mimir/ discovery + loading, one module per extension type.
 from .servers import (
@@ -44,6 +48,9 @@ __all__ = [
     "NudgeRule",
     "NudgeRegistry",
     "register_nudge",
+    "PostToolRule",
+    "PostToolRegistry",
+    "register_post_tool",
     # servers
     "all_servers",
     "all_server_descriptions",

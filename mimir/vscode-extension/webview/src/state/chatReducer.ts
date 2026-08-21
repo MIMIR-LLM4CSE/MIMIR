@@ -491,6 +491,29 @@ export function createChatReducer(makeId: () => string) {
         return state;
       }
 
+      case "verdict": {
+        // Lands on the row of the run it judges, which may already be frozen into a
+        // "tools" message by the time the model gets around to judging it.
+        const { id: vId, verdict } = action;
+        const patch = (t: ToolActivity): ToolActivity =>
+          t.id === vId ? { ...t, verdict } : t;
+        if (state.liveToolCalls.some((t) => t.id === vId)) {
+          return { ...state, liveToolCalls: state.liveToolCalls.map(patch) };
+        }
+        const idx = state.messages.findIndex(
+          (m) => m.kind === "tools" && (m.tools ?? []).some((t) => t.id === vId)
+        );
+        if (idx >= 0) {
+          return {
+            ...state,
+            messages: state.messages.map((m, i) =>
+              i === idx ? { ...m, tools: (m.tools ?? []).map(patch) } : m
+            ),
+          };
+        }
+        return state;
+      }
+
       case "diff": {
         const { file: dFile, patch: dPatch } = action;
         const isNewFile = !dPatch || dPatch.includes("/dev/null");
@@ -498,16 +521,19 @@ export function createChatReducer(makeId: () => string) {
         const liveIdx = s.messages.findIndex((m) => m.kind === "editing" && m.live);
         let messages: ChatMessage[];
         if (liveIdx >= 0) {
-          messages = s.messages.map((m, i) => {
-            if (i !== liveIdx) return m;
-            const existing = m.diffs ?? [];
-            const fileIdx = existing.findIndex((d) => d.file === dFile);
-            const updated =
-              fileIdx >= 0
-                ? existing.map((d, j) => (j === fileIdx ? { ...d, patch: dPatch } : d))
-                : [...existing, { file: dFile, patch: dPatch, is_new: isNewFile }];
-            return { ...m, diffs: updated };
-          });
+          // One entry per diff event, not per file: a file written then edited twice
+          // owes three diffs, each carrying its own is_new — an edit is not a creation.
+          messages = s.messages.map((m, i) =>
+            i !== liveIdx
+              ? m
+              : {
+                  ...m,
+                  diffs: [
+                    ...(m.diffs ?? []),
+                    { file: dFile, patch: dPatch, is_new: isNewFile },
+                  ],
+                }
+          );
         } else {
           messages = [
             ...s.messages,

@@ -19,14 +19,10 @@ class ExecutionContext(TypedDict):
     action_op_count: int                            # count of successful substantive actions (PLAN_BLOCKED: writes/exec/mutations); drives the todo op-count trigger
     # ── Edit: planned and in-flight mutations ──────────────────────────────────
     dirty_written_files: set[str]                   # code files successfully written this query and not yet re-validated
-    validated_files: set[str]                       # dirty files that have since passed syntax validation
-    validation_tier_by_file: dict[str, str]         # per-file strength of that validation: syntax|static|executed|oracle (completion ledger)
-    validation_fail_count_by_file: dict[str, int]   # per-file count of failed syntax validations (retry-budget exhaustion)
-    executed_failures: set[str]                     # files an `executed`-tier check was observed FAILING on, ever, this query — the red half of red→green (see VALIDATION_TIERS)
-    unjudged_runs: dict[str, dict[str, Any]]        # command -> {paths: […], tier: str} for a run whose output the model has not judged yet (empty paths == no file attribution)
-    verdict_by_file: dict[str, dict[str, str]]      # path -> {verdict: pass|fail|unknown, reason, command}: what the MODEL said its output showed (never machine-observed)
-    verdict_attempts_by_file: dict[str, list[str]]  # path -> append-only "<command> → <reason>" per failing verdict; survives re-edits so the hand-back can say what was tried
-    verdict_scope_required: list[str]               # commands an unscoped `pass` could not choose between (they bear on different files); the nudge reads it back
+    validated_files: set[str]                       # dirty files that have since passed a checker (syntax/imports/lint) — never an execution
+    validation_tier_by_file: dict[str, str]         # per-file strength of that validation: syntax|static (completion ledger)
+    validation_fail_count_by_file: dict[str, int]   # per-file count of failed checks (retry-budget exhaustion)
+    runs: dict[str, dict[str, Any]]                 # command -> {call_id, completed: bool, verdict: ''|pass|fail|unknown, reason, failures: int, attempts: [str]}: everything about an execution, which is judged on its own and credits no file
     denied_tool_calls: list[dict[str, Any]]         # tool calls blocked by policy/approval (denial nudge + finalization)
     denial_history: list[dict[str, Any]]            # append-only refusal log keyed by approval scope; drives the escalation ladder (never cleared, unlike denied_tool_calls)
     workflow_state: str                             # coarse phase of the loop: "discover" | "edit" | "validate" | "conclude"
@@ -60,6 +56,7 @@ class ExecutionContext(TypedDict):
     prev_query_written_files: set[str]               # files written by the PREVIOUS query, forwarded from carry_context so the pin can warn to re-read them
     tool_msg_files: dict[str, list[str]]             # tool_call_id -> files that tool message concerns; lets history trimming match messages to files structurally
     consecutive_noop_turns: int                      # consecutive bare final-answer turns with no tool call (nudge cutoff)
+    history_truncated: bool                          # the context backstop dropped older content this query; a cached read may no longer be "above in your context"
 
 
 # Per-query loop-control bookkeeping used only by agent_loop's tool-dispatch spin
@@ -238,11 +235,7 @@ _FIELD_SPECS: tuple[_FieldSpec, ...] = (
     ("validated_files", set, (set,), frozenset({FILE_PATH})),
     ("validation_tier_by_file", dict, (dict,), _NO_TRAITS),
     ("validation_fail_count_by_file", dict, (dict,), _NO_TRAITS),
-    ("executed_failures", set, (set,), _NO_TRAITS),
-    ("unjudged_runs", dict, (dict,), _NO_TRAITS),
-    ("verdict_by_file", dict, (dict,), _NO_TRAITS),
-    ("verdict_attempts_by_file", dict, (dict,), _NO_TRAITS),
-    ("verdict_scope_required", list, (list,), _NO_TRAITS),
+    ("runs", dict, (dict,), _NO_TRAITS),
     # ── Workflow + policy ──────────────────────────────────────────────────────
     ("workflow_state", lambda: "discover", (str,), _NO_TRAITS),
     ("code_mutation_started", lambda: False, (bool,), _NO_TRAITS),
@@ -276,6 +269,7 @@ _FIELD_SPECS: tuple[_FieldSpec, ...] = (
     ("prev_query_written_files", set, (set,), frozenset({FILE_PATH})),
     ("tool_msg_files", dict, (dict,), _NO_TRAITS),
     ("consecutive_noop_turns", lambda: 0, (int,), _NO_TRAITS),
+    ("history_truncated", lambda: False, (bool,), _NO_TRAITS),
 )
 
 
@@ -422,13 +416,12 @@ def known_existing_files(execution_context: dict[str, Any]) -> set[str]:
 #                                              code_mutation_started, validated_files,
 #                                              validation_tier_by_file,
 #                                              validation_fail_count_by_file, tests_run,
-#                                              unjudged_runs,
+#                                              runs,
 #                                              action_op_count,
 #                                              todo_written, plan_written
-#   guardrails.verdict.record_verdict          verdict_by_file,                           verification (ledger rows),
-#     (runs after every assistant message,     verdict_attempts_by_file,                  nudge_logic (output_verdict),
-#      not after a tool call)                  unjudged_runs (runs it settles),           workflow (completion report)
-#                                              verdict_scope_required
+#   guardrails.verdict.apply_verdict           runs[cmd].verdict/reason/failures,        verification (ledger rows),
+#     (runs on the judging tool's call,        attempts                                   nudge_logic (output_verdict),
+#      via _observe_verdict_tool)                                                         workflow (completion report)
 #   context/workflow.set_workflow_state       workflow_state                             every layer's state gates
 #   query_engine/nudge_logic._fire_nudge      nudge_counts[<category>]                    nudge_logic (per-category caps)
 #   query_engine/agent_loop                   steps_since_last_edit (increment),          nudge_logic (idle gates),
@@ -563,16 +556,17 @@ def declared_edit_set_complete(execution_context: dict[str, Any]) -> bool:
 # ── Validation strength: how much a green check actually proved ───────────────
 #
 # ``validated_files`` answers "was this file checked?"; this ladder answers "with
-# what?". The distinction exists because every rung below "oracle" tests only that
-# the code *runs* — a test asserting no-NaN and a loose magnitude bound exits 0
-# exactly like one that compares against an analytic solution, and for a long time
-# the two were indistinguishable everywhere in the client.
+# what?". Both are about **checkers** only — a parse, an import resolution, a lint,
+# a compile: tools whose output *is* a list of problems, so an empty one is the
+# finding and nobody has to read anything. Running the code is not on this ladder at
+# all; an execution is judged as a run (see ``runs`` and ``guardrails/verdict.py``),
+# because "it reached the end" and "it gave the right answer" are different claims
+# and only the second one is what the user asked for.
 #
 # Ordered weakest→strongest. Report-only: nothing gates, blocks, or nudges on the
 # tier — it is read by the completion ledger so the *answer* can say what was
-# actually established. That is deliberate; a wrong "your evidence is weak" verdict
-# would loop the model, whereas a pessimistic ledger line costs nothing.
-VALIDATION_TIERS: tuple[str, ...] = ("syntax", "static", "executed", "oracle")
+# actually established.
+VALIDATION_TIERS: tuple[str, ...] = ("syntax", "static")
 _TIER_RANK = {name: i for i, name in enumerate(VALIDATION_TIERS)}
 
 
@@ -628,27 +622,60 @@ def files_below_tier(execution_context: dict[str, Any], tier: str) -> list[str]:
 
 # ── Output verdicts: what the MODEL said a run's output showed ────────────────
 #
-# The tier ladder above grades machine-observed evidence; this grades nothing — it
-# records a claim. Exit 0 only ever means the program reached its end, and no parser
-# generalises across plots, tables, logs and physical units, so the only thing that can
-# read arbitrary output is the model. Mimir therefore never parses the *program's*
-# output for a pass/fail; it parses the model's own statement about it, which is a
-# format the model controls. Kept in its own field, and rendered under its own label in
-# the ledger, so a claim is never mistaken for an observation.
+# The tier ladder above grades machine-observed evidence about a *file*; this grades
+# nothing — it records a claim about a *run*. Exit 0 only ever means the program
+# reached its end, and no parser generalises across plots, tables, logs and physical
+# units, so the only thing that can read arbitrary output is the model. Mimir
+# therefore never parses the *program's* output for a pass/fail; it parses the model's
+# own statement about it, which is a format the model controls. Kept on the run rather
+# than on a file, and rendered under its own heading in the ledger, so a claim is never
+# mistaken for an observation and "the file lints" is never read as "the answer is right".
 VERDICTS: tuple[str, ...] = ("pass", "fail", "unknown")
 
 
-def unjudged_run_paths(execution_context: dict[str, Any]) -> list[str]:
-    """Every path awaiting a verdict, across all unjudged runs (sorted, deduped)."""
-    paths: set[str] = set()
-    for run in (execution_context.get("unjudged_runs") or {}).values():
-        paths.update(run.get("paths") or ())
-    return sorted(paths)
+def record_run(
+    execution_context: dict[str, Any], command: str, *, completed: bool, call_id: str = "",
+) -> dict[str, Any]:
+    """Register an execution, or re-register one being run again.
+
+    Re-registered last, not in place: an unscoped ``pass`` credits the most recent run,
+    and a re-run is newer than the record it replaces. Its failure history is carried
+    over — the repair budget counts attempts at the same command, and a re-run is the
+    next attempt, not a fresh start.
+    """
+    runs = execution_context.setdefault("runs", {})
+    previous = runs.pop(command, None) or {}
+    run = {
+        "call_id": call_id,
+        "completed": completed,
+        "verdict": "",
+        "reason": "",
+        "failures": int(previous.get("failures", 0)),
+        "attempts": list(previous.get("attempts") or ()),
+    }
+    runs[command] = run
+    return run
 
 
-def verdict_for(execution_context: dict[str, Any], path: str) -> dict[str, str] | None:
-    """The model's verdict on *path*'s last judged run, or None if it never gave one."""
-    return (execution_context.get("verdict_by_file") or {}).get(path)
+def unsettled_runs(execution_context: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Runs that reached their end and still owe a reading of what they showed.
+
+    A run that did not complete owes nothing: its non-zero exit *is* the finding, and
+    asking the model to judge output that never came would be asking for a guess. A run
+    judged ``unknown`` stays here — "I cannot tell" is not a settlement.
+    """
+    return {
+        command: run for command, run in (execution_context.get("runs") or {}).items()
+        if run.get("completed") and run.get("verdict") in ("", "unknown")
+    }
+
+
+def failed_runs(execution_context: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Runs that did not reach their end, or whose output the model judged wrong."""
+    return {
+        command: run for command, run in (execution_context.get("runs") or {}).items()
+        if not run.get("completed") or run.get("verdict") == "fail"
+    }
 
 
 def execution_context_template() -> ExecutionContext:
@@ -697,32 +724,16 @@ def validate_execution_context(execution_context: dict[str, Any]) -> None:
                 f"{VALIDATION_TIERS}; got {tier!r}"
             )
 
-    for key, run in execution_context["unjudged_runs"].items():
+    for key, run in execution_context["runs"].items():
         if not isinstance(key, str):
-            raise TypeError("execution_context['unjudged_runs'] keys must be str")
-        if not isinstance(run, dict) or not isinstance(run.get("paths"), list):
-            raise TypeError("execution_context['unjudged_runs'] values must be {'paths': list, 'tier': str}")
-
-    for key, record in execution_context["verdict_by_file"].items():
-        if not isinstance(key, str):
-            raise TypeError("execution_context['verdict_by_file'] keys must be str")
-        if not isinstance(record, dict):
-            raise TypeError("execution_context['verdict_by_file'] values must be dict")
-        if record.get("verdict") not in VERDICTS:
+            raise TypeError("execution_context['runs'] keys must be str")
+        if not isinstance(run, dict) or not isinstance(run.get("attempts"), list):
+            raise TypeError("execution_context['runs'] values must be dict with an 'attempts' list")
+        if run.get("verdict") not in ("",) + VERDICTS:
             raise ValueError(
-                f"execution_context['verdict_by_file'][{key!r}]['verdict'] must be one of "
-                f"{VERDICTS}; got {record.get('verdict')!r}"
+                f"execution_context['runs'][{key!r}]['verdict'] must be '' or one of "
+                f"{VERDICTS}; got {run.get('verdict')!r}"
             )
-
-    for key, attempts in execution_context["verdict_attempts_by_file"].items():
-        if not isinstance(key, str):
-            raise TypeError("execution_context['verdict_attempts_by_file'] keys must be str")
-        if not isinstance(attempts, list):
-            raise TypeError("execution_context['verdict_attempts_by_file'] values must be list[str]")
-
-    for command in execution_context["verdict_scope_required"]:
-        if not isinstance(command, str):
-            raise TypeError("execution_context['verdict_scope_required'] values must be str")
 
     for query in execution_context["search_queries_used"]:
         if not isinstance(query, str):

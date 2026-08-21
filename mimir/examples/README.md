@@ -13,6 +13,7 @@ file at the root) and is the **single source of truth** for every example.
 | `skills/example-skill/SKILL.md` | Skill (methodology prompt) | `.mimir/skills/<skill-name>/SKILL.md` |
 | `servers/server_example.py` | MCP server | `.mimir/servers/server_<name>.py` |
 | `plugins/policy_example.py` | Policy (locked — blocks a call) | `.mimir/plugins/<name>.py` |
+| `plugins/post_tool_example.py` | Post-tool hook (checks what a call produced) | `.mimir/plugins/<name>.py` |
 | `plugins/nudge_example.py` | Nudge (toggleable reminder) | `.mimir/plugins/<name>.py` |
 | `system_prompt.md` | Base system prompt | `.mimir/system_prompt.md` (or `$MIMIR_SYSTEM_PROMPT_FILE`) |
 

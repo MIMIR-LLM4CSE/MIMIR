@@ -215,7 +215,7 @@ answer, so `ChatMessage` splits the answer on the ledger's `<!--mimir:ledger …
 (`ledgerUtils.splitAnswerLedger`) and hands the block to `VerificationLedger`:
 
 - **collapsed by default** — a native `<details>` line: chevron, status glyph, "Verification",
-  then the summary as chips (`2 files`, `1 not validated`, `2 steps open`). No state, no wiring.
+  then the summary as chips (`2 files`, `1 not checked`, `2 steps open`). No state, no wiring.
 - **status drives the colour** — `ok` (settled evidence) / `note` (it passed but discriminates
   nothing) / `warn` (needs action) set `--ledger-accent`, which the glyph, chips, body rail and
   row dots all read from.

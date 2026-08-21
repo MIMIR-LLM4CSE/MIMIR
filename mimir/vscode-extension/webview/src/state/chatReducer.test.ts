@@ -129,6 +129,28 @@ describe("chatReducer", () => {
     expect(state.liveToolCalls[0].output).toBe("a.ts:1\nb.ts:2");
   });
 
+  it("badges the run's row when a verdict settles it", () => {
+    const state = run([
+      { type: "tool_call", id: "c1", name: "bash_run", label: "Running shell command", detail: "python solver.py" },
+      { type: "tool_result", id: "c1", name: "bash_run", ok: true, summary: "exit 0", duration_ms: 8 },
+      { type: "verdict", id: "c1", verdict: "fail" },
+    ]);
+    expect(state.liveToolCalls[0].verdict).toBe("fail");
+  });
+
+  it("badges a run frozen into an earlier step, since a verdict lands late by nature", () => {
+    // The model runs, moves on, and only judges the output a step or two later —
+    // by which time the row it belongs to is no longer live.
+    const state = run([
+      { type: "tool_call", id: "c1", name: "bash_run", label: "Running shell command", detail: "python solver.py" },
+      { type: "tool_result", id: "c1", name: "bash_run", ok: true, summary: "exit 0", duration_ms: 8 },
+      { type: "token", text: "reading the output" },
+      { type: "verdict", id: "c1", verdict: "pass" },
+    ]);
+    const frozen = state.messages.find((m) => m.kind === "tools");
+    expect(frozen?.tools![0].verdict).toBe("pass");
+  });
+
   it("renders an activity for an unknown tool (icon fallback)", () => {
     const state = run([
       { type: "tool_call", id: "c1", name: "some_new_tool", label: "Performing", detail: "" },
@@ -208,5 +230,28 @@ describe("chatReducer", () => {
     expect(blocked?.text).toContain("Blocked");
     expect(blocked?.text).toContain("rm -rf /");
     expect(s.busy).toBe(true);
+  });
+
+  it("stacks one diff entry per event and keeps each entry's own is_new", () => {
+    const s = run([
+      // Creation: the emitter marks a new file with a /dev/null header.
+      { type: "diff", file: "solver.py", patch: "--- /dev/null\n+++ b/solver.py\n+a" },
+      // Two later edits of the same file, each a real patch.
+      { type: "diff", file: "solver.py", patch: "--- a/solver.py\n+++ b/solver.py\n-a\n+b" },
+      { type: "diff", file: "solver.py", patch: "--- a/solver.py\n+++ b/solver.py\n-b\n+c" },
+    ]);
+    const card = s.messages.find((m) => m.kind === "editing");
+    expect(card?.diffs).toHaveLength(3);
+    expect(card?.diffs?.map((d) => d.is_new)).toEqual([true, false, false]);
+    expect(card?.diffs?.[2].patch).toContain("+c");
+  });
+
+  it("keeps distinct files as distinct entries", () => {
+    const s = run([
+      { type: "diff", file: "solver.py", patch: "--- a/solver.py\n+++ b/solver.py\n+a" },
+      { type: "diff", file: "driver.py", patch: "--- /dev/null\n+++ b/driver.py\n+b" },
+    ]);
+    const card = s.messages.find((m) => m.kind === "editing");
+    expect(card?.diffs?.map((d) => d.file)).toEqual(["solver.py", "driver.py"]);
   });
 });

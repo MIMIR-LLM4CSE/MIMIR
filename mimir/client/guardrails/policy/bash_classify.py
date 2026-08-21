@@ -25,6 +25,7 @@ blocks every call; this only observes/derives intent.
 
 from __future__ import annotations
 
+import os
 import re
 from typing import NamedTuple
 
@@ -405,6 +406,38 @@ def classify_bash_command(command: str) -> list[Segment] | None:
             seg = Segment(Kind.WRITE, [t for t in written if _looks_like_path(t)])
         segments.append(seg)
     return segments
+
+
+# Command position, for a command the tokenizer could not read: the start, or whatever
+# follows a separator. Textual on purpose — the whole point is that shlex already failed.
+_OPAQUE_SEGMENT_SPLIT_RE = re.compile(r"[;&|]+")
+_OPAQUE_ENV_ASSIGN_RE = re.compile(r"^[A-Za-z_]\w*=")
+
+
+def opaque_command_executes(command: str) -> bool:
+    """Whether a command :func:`classify_bash_command` gave up on still *ran* something.
+
+    Classification is all-or-nothing: an inline payload (``python -c "print(f(x))"``),
+    a heredoc or a substitution makes the whole command unreadable. That is the right
+    answer for *crediting* anything — nothing can be attributed to a command nobody can
+    parse — but the wrong one for noticing that a program ran. The head stays legible
+    when the rest does not, and the base prompt actively steers one-off checks inline
+    (``## Running code``), so the most encouraged idiom was also the least visible one:
+    a single pair of parentheses is enough to make ``python -c`` opaque.
+
+    Only command-position tokens are read (start of the command, or after ``; && || |``),
+    against the same ``EXEC_COMMANDS`` vocabulary the classifier itself uses, so an
+    unparseable ``cat`` or ``grep`` still reports nothing. Deliberately used *only* to
+    demand a verdict, never to grant credit.
+    """
+    for piece in _OPAQUE_SEGMENT_SPLIT_RE.split(command):
+        for tok in piece.split():
+            if _OPAQUE_ENV_ASSIGN_RE.match(tok):
+                continue
+            if os.path.basename(tok) in EXEC_COMMANDS or is_path_like_command(tok):
+                return True
+            break
+    return False
 
 
 def bash_command_is_readonly(command: str) -> bool:

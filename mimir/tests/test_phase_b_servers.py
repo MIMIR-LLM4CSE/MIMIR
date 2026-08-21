@@ -76,6 +76,18 @@ class DeclaredClassificationTest(unittest.TestCase):
         with_gate = {n for n, c in self.reg.items() if c.arg_roles.get("confirm_gate")}
         self.assertEqual(with_gate, set(golden.CONFIRM_GATE_ARGS))
 
+    def test_verdict_roles_match_golden(self):
+        for role, expected_by_tool in (
+            ("verdict", golden.VERDICT_ARGS),
+            ("verdict_reason", golden.VERDICT_REASON_ARGS),
+            ("verdict_scope", golden.VERDICT_SCOPE_ARGS),
+        ):
+            for tool, expected in expected_by_tool.items():
+                with self.subTest(role=role, tool=tool):
+                    self.assertEqual(caps.arg_role(tool, role, self.reg), expected)
+            declared = {n for n, c in self.reg.items() if c.arg_roles.get(role)}
+            self.assertEqual(declared, set(expected_by_tool))
+
     def test_scope_kinds_match_golden(self):
         for tool, kind in golden.SCOPE_KIND_BY_TOOL.items():
             with self.subTest(tool=tool):

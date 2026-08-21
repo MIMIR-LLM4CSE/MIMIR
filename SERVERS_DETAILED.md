@@ -217,23 +217,24 @@ both the state dir and the scratchpad name are built from it.
 
 ### Numerical invariants (`_shared/numerics.py`)
 
-One name set with two readings. `NUMERICAL_INVARIANT_METRICS` (`l2_rel`, `linf_rel`,
-`l2_abs`, `linf_abs`, `convergence_order`, `conservation_residual`, `finite`) plus
-`wall_time_s` form `RESERVED_METRICS`, which the **proxy** server strips from anything the
-code under optimization prints — a solver must not be able to satisfy its own acceptance
-constraints. The **client's** validation observer reads the same names as *evidence*:
-`observed_invariant_metrics(stdout)` scans for `key=value` lines, and a green validation
-run that reports one is promoted to the `oracle` tier, because computing such a value
-requires comparing against something the code does not itself define. The two readings do
-not conflict — the proxy distrusts the *value*, the observer only trusts the *presence* of
-the key. Hoisted here from `proxy/_lib/metrics.py`, which re-imports `RESERVED_METRICS` so
-its behaviour is unchanged.
+`NUMERICAL_INVARIANT_METRICS` (`l2_rel`, `linf_rel`, `l2_abs`, `linf_abs`,
+`convergence_order`, `conservation_residual`, `finite`) plus `wall_time_s` form
+`RESERVED_METRICS`, which the **proxy** server strips from anything the code under
+optimization prints — a solver must not be able to satisfy its own acceptance
+constraints. Hoisted here from `proxy/_lib/metrics.py`, which re-imports
+`RESERVED_METRICS` so its behaviour is unchanged.
 
-The same line grammar carries a run's verdict *about itself*: `observed_failure_verdict(stdout)`
-reports a `check=fail` / `verdict=fail` line, which the client reads as a failure even on
-exit 0 — a check that computes its own criteria, prints them unmet and returns 0 anyway is
-otherwise indistinguishable from a clean run. Read in that direction only: a passing verdict
-never rescues a red exit. Client-side only; the proxy has no use for it.
+The client does **not** read these names as evidence. A scan that promoted a run to the
+`oracle` tier for printing an `l2_rel=…` line existed and was removed: the value could
+never be interpreted (a forged number is unfalsifiable from outside the process — the
+very reason the proxy seals references server-side), so it rewarded a string. What a run
+printed is for the model to read and report through `report_verdict`.
+
+One client-side reading remains, and it only ever *withholds* credit:
+`observed_failure_verdict(stdout)` reports a whole-line `check=fail` / `verdict=fail`,
+which the client treats as a failure even on exit 0 — a check that computes its own
+criteria, prints them unmet and returns 0 anyway is otherwise indistinguishable from a
+clean run. Read in that direction only: a passing verdict never rescues a red exit.
 
 This is an auxiliary carrier, not the mechanism. Judging a run's output is the model's job
 (`client/guardrails/verdict.py`), since no parser generalises across fields, plots, tables
@@ -439,6 +440,10 @@ read-only, so it needs no approval and feeds the same discovery signals a tool w
 Tools:
 - `bash_allowed_commands`
 - `bash_run`
+- `report_verdict` — the model's reading of what a run's output showed (`judge`
+  capability). It executes nothing: the client's observer settles the run it names on the
+  blackboard (see POLICY.md → *Validation Policy*). It lives here because a verdict is
+  owed by a run, and where nothing can be executed nothing needs judging.
 
 ### Scope of the sandbox (read this before trusting "confined")
 

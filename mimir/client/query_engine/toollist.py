@@ -20,7 +20,7 @@ from typing import Any
 from ..context.signals import query_prefers_existing_file_edits
 from ..context.capabilities import (
     CANDIDATE_SEARCH, CHECK_EXISTENCE, CODE_NAV, CONTENT_WRITE, EDIT, INSPECT_DIR,
-    PLAN_BLOCKED, READ, SEARCH, SEARCH_WITH_PATH, TASK_PLANNING,
+    JUDGE, PLAN_BLOCKED, READ, SEARCH, SEARCH_WITH_PATH, TASK_PLANNING,
     names_with_arg_role, names_with_cap,
 )
 from ..context.signals import DOMAIN_TOOL_GROUPS, query_matches_any
@@ -112,9 +112,11 @@ def domains_signaled_by_text(query: str, text: str, rearmed: set[str]) -> set[st
 # Capabilities the agent loop structurally depends on across discover→edit→validate.
 # Tools carrying any of these (plus todo bookkeeping and spawn_agent) are always
 # retained by the relevance cap so trimming the long tail never strips the plumbing.
+# JUDGE is here because a verdict is owed by a run the model has already made: trimming
+# the channel away would leave that run unjudgeable, and the reminder unanswerable.
 _CORE_CAPS: tuple[str, ...] = (
     READ, SEARCH, SEARCH_WITH_PATH, CANDIDATE_SEARCH, INSPECT_DIR,
-    CHECK_EXISTENCE, CONTENT_WRITE, EDIT, CODE_NAV,
+    CHECK_EXISTENCE, CONTENT_WRITE, EDIT, CODE_NAV, JUDGE,
 )
 _CORE_NAME_PREFIXES: tuple[str, ...] = ("todo_",)
 _CORE_NAMES: frozenset[str] = frozenset({"spawn_agent"})

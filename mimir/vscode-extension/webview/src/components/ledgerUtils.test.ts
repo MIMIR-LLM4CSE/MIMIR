@@ -9,10 +9,10 @@ import {
 
 // Blocks exactly as client/query_engine/verification.render_ledger emits them.
 const BLOCK = [
-  '<!--mimir:ledger status="warn" files="2" summary="2 files · 1 not validated · 1 step open"-->',
+  '<!--mimir:ledger status="warn" files="2" summary="2 files · 1 not checked · 1 step open"-->',
   "Verification ledger — machine-recorded, not model-authored:",
-  "- `solver.py` — validated: oracle (red→green)",
-  "- `test_solver.py` — **not validated**",
+  "- `solver.py` — checked: static",
+  "- `test_solver.py` — **not checked**",
   "- Checklist: **1 step unchecked** — add the convergence test",
 ].join("\n");
 
@@ -41,14 +41,14 @@ describe("parseLedger", () => {
     expect(led.files).toBe(2);
     expect(summaryChips(led.summary)).toEqual([
       "2 files",
-      "1 not validated",
+      "1 not checked",
       "1 step open",
     ]);
   });
 
   it("collects one row per markdown list item, framing line excluded", () => {
     expect(parseLedger(BLOCK).rows).toHaveLength(3);
-    expect(parseLedger(BLOCK).rows[0]).toBe("`solver.py` — validated: oracle (red→green)");
+    expect(parseLedger(BLOCK).rows[0]).toBe("`solver.py` — checked: static");
   });
 
   it("falls back to note status when the marker is absent or unknown", () => {
@@ -60,12 +60,12 @@ describe("parseLedger", () => {
 
 describe("rowLevel", () => {
   it("tints emphasised rows as the ones needing action", () => {
-    expect(rowLevel("`test_solver.py` — **not validated**")).toBe("warn");
+    expect(rowLevel("`test_solver.py` — **not checked**")).toBe("warn");
     expect(rowLevel("Checklist: **1 step unchecked** — add it")).toBe("warn");
   });
 
   it("treats a file row carrying a tier as settled", () => {
-    expect(rowLevel("`solver.py` — validated: oracle (red→green)")).toBe("ok");
+    expect(rowLevel("`solver.py` — checked: static")).toBe("ok");
   });
 
   it("leaves prose notes neutral", () => {
@@ -75,10 +75,10 @@ describe("rowLevel", () => {
 
 describe("inlineSegments", () => {
   it("splits code spans and bold out of a row", () => {
-    expect(inlineSegments("`a.py` — **not validated**")).toEqual([
+    expect(inlineSegments("`a.py` — **not checked**")).toEqual([
       { kind: "code", text: "a.py" },
       { kind: "text", text: " — " },
-      { kind: "strong", text: "not validated" },
+      { kind: "strong", text: "not checked" },
     ]);
   });
 

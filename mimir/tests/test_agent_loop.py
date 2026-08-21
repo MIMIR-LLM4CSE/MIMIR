@@ -230,7 +230,7 @@ class FinalizeAnswerTests(unittest.TestCase):
         self.assertIn("b.cu", result)
         # Neither file was validated, so the ledger says so rather than merely
         # listing them (the old "[Files written this query: …]" behaviour).
-        self.assertIn("not validated", result)
+        self.assertIn("not checked", result)
         self.assertEqual(carry["n"], 1)                      # carry context saved
         self.assertEqual(agent._last_full_messages, messages[1:])  # system stripped
 
@@ -763,7 +763,7 @@ class RunAgentQueryNonInteractiveTests(unittest.TestCase):
             async def _build_system_content(self, **kwargs):
                 return "system"
 
-            async def _run_tool(self, tool, args, execution_context=None, run_auto_validation=True):
+            async def _run_tool(self, tool, args, execution_context=None, run_auto_validation=True, call_id=""):
                 return "{}"
 
             @staticmethod
@@ -1338,7 +1338,7 @@ class RepeatedFailingCallGuardTests(unittest.TestCase):
     def test_warns_then_blocks_repeated_failure(self) -> None:
         calls = {"n": 0}
 
-        async def run_tool(name, args, execution_context=None, run_auto_validation=True):
+        async def run_tool(name, args, execution_context=None, run_auto_validation=True, call_id=""):
             calls["n"] += 1
             return '{"status": "error", "error": "ModuleNotFoundError: No module named x"}'
 
@@ -1374,7 +1374,7 @@ class RepeatedFailingCallGuardTests(unittest.TestCase):
         """A tool whose MCP call *raises* (e.g. the server subprocess died and the
         session broke) must be converted into a normal tool-error message. The
         exception must NOT bubble out of dispatch and kill the whole turn."""
-        async def run_tool(name, args, execution_context=None, run_auto_validation=True):
+        async def run_tool(name, args, execution_context=None, run_auto_validation=True, call_id=""):
             raise ConnectionError("Connection closed")
 
         agent = self._agent(run_tool)
@@ -1395,7 +1395,7 @@ class RepeatedFailingCallGuardTests(unittest.TestCase):
         that was edited between reads) must never be counted as redundant or blocked."""
         calls = {"n": 0}
 
-        async def run_tool(name, args, execution_context=None, run_auto_validation=True):
+        async def run_tool(name, args, execution_context=None, run_auto_validation=True, call_id=""):
             calls["n"] += 1
             return f'{{"status": "ok", "n": {calls["n"]}}}'  # different content every call
 
@@ -1415,7 +1415,7 @@ class RepeatedFailingCallGuardTests(unittest.TestCase):
         (REDUNDANT_HARD_LIMIT)."""
         calls = {"n": 0}
 
-        async def run_tool(name, args, execution_context=None, run_auto_validation=True):
+        async def run_tool(name, args, execution_context=None, run_auto_validation=True, call_id=""):
             calls["n"] += 1
             return '{"status": "ok", "content": "unchanged"}'  # identical every time
 
@@ -1451,7 +1451,7 @@ class RepeatedFailingCallGuardTests(unittest.TestCase):
         """On the hard block, the intermediate identical exchanges are removed from
         history, leaving only the first occurrence (plus the current block notice)."""
 
-        async def run_tool(name, args, execution_context=None, run_auto_validation=True):
+        async def run_tool(name, args, execution_context=None, run_auto_validation=True, call_id=""):
             return '{"status": "ok", "content": "unchanged"}'  # identical every time
 
         agent = self._agent(run_tool)
@@ -1533,7 +1533,7 @@ class WriteDiffEmitTests(unittest.TestCase):
 
             snapshots = {path: "original content\n"}  # baseline predates that edit
 
-            async def run_tool(name, args, execution_context=None, run_auto_validation=True):
+            async def run_tool(name, args, execution_context=None, run_auto_validation=True, call_id=""):
                 return '{"status": "error", "error": "old_text not found"}'
 
             agent = self._agent(run_tool, snapshots)
@@ -1551,7 +1551,7 @@ class WriteDiffEmitTests(unittest.TestCase):
 
             snapshots: dict[str, str | None] = {}
 
-            async def run_tool(name, args, execution_context=None, run_auto_validation=True):
+            async def run_tool(name, args, execution_context=None, run_auto_validation=True, call_id=""):
                 with open(args["path"], "w", encoding="utf-8") as fh:
                     fh.write("new content\n")
                 return '{"status": "ok", "operation": "replaced"}'
@@ -1579,7 +1579,7 @@ class WriteDiffEmitTests(unittest.TestCase):
 
             snapshots: dict[str, str | None] = {}
 
-            async def run_tool(name, args, execution_context=None, run_auto_validation=True):
+            async def run_tool(name, args, execution_context=None, run_auto_validation=True, call_id=""):
                 with open(args["path"], "w", encoding="utf-8") as fh:
                     fh.write("new content\n")
                 # The real executor would append AUTO_VALIDATION here when

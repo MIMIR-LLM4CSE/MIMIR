@@ -101,6 +101,7 @@ EXTERNAL_FETCH_TOOLS = {
 REMOVE_TOOLS = {"delete_file", "env_delete"}
 OVERWRITE_TOOLS = {"write_file"}
 TASK_PLANNING_TOOLS = {"todo_write", "todo_set_plan"}
+JUDGE_TOOLS = {"report_verdict"}
 
 # --- code-intelligence navigation (server_code_intel.py) ---------------------
 # These nav tools join the broad read/search caps.
@@ -149,6 +150,19 @@ EDIT_BATCH_ARGS = {
 # steps — distinguishes the checklist from the prose-rationale planning tool by structure.
 PLAN_STEPS_ARGS = {
     "todo_write": ("steps",),
+}
+
+# verdict arg-roles: the args the judging tool declares as carrying the verdict itself,
+# the reason behind it, and the run it speaks for — read by the client observer, which
+# never names the tool or its parameters.
+VERDICT_ARGS = {
+    "report_verdict": ("verdict",),
+}
+VERDICT_REASON_ARGS = {
+    "report_verdict": ("reason",),
+}
+VERDICT_SCOPE_ARGS = {
+    "report_verdict": ("run",),
 }
 
 # confirm_gate arg-role: the boolean arg whose truthiness toggles a tool between a
@@ -218,6 +232,7 @@ GOLDEN = {
     "remove": REMOVE_TOOLS,
     "overwrite": OVERWRITE_TOOLS,
     "task_planning": TASK_PLANNING_TOOLS,
+    "judge": JUDGE_TOOLS,
 }
 
 

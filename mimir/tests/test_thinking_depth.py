@@ -190,7 +190,7 @@ class _LoopAgent:
     def _truncate_text(text, limit=600):
         return text[:limit]
 
-    async def _run_tool(self, tool, args, execution_context=None, run_auto_validation=True):
+    async def _run_tool(self, tool, args, execution_context=None, run_auto_validation=True, call_id=""):
         return "{}"
 
 

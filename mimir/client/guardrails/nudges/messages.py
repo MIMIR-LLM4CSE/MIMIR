@@ -23,6 +23,23 @@ from ...context import (
     declared_edit_set_complete,
     unwritten_declared_files,
 )
+from ...context.capabilities import scope_spec
+
+
+def shell_tool_name(agent: Any) -> str:
+	"""The connected shell tool, resolved from the scope its server declares.
+
+	Same identity ``observations._carries_shell_command`` reads, for the same reason:
+	the tool that takes a raw command line is the one declaring a ``command_prefix``
+	scope, and that declaration — not a name written here — is what says which one it
+	is. Falls back to a description, so copy stays sensible with none connected.
+	"""
+	registry = getattr(agent, "tool_caps", None) or {}
+	names = sorted(
+		n for n in registry
+		if (scope_spec(n, registry) or {}).get("kind") == "command_prefix"
+	)
+	return names[0] if names else "the shell"
 
 
 _DISCOVERY_NUDGE: str = (
@@ -69,8 +86,9 @@ def discovery_nudge_message() -> str:
 	return _DISCOVERY_NUDGE
 
 
-def state_nudge_message(execution_context: dict) -> str:
+def state_nudge_message(agent: Any, execution_context: dict) -> str:
 	state = execution_context.get("workflow_state", "discover")
+	tool = shell_tool_name(agent)
 	if state == "discover":
 		return (
 			"Workflow state is DISCOVER (gather evidence). Collect enough material — repository context "
@@ -86,22 +104,31 @@ def state_nudge_message(execution_context: dict) -> str:
 		)
 	if state == "validate":
 		return (
-			"Workflow state is VALIDATE (verify). Validate the modified files through bash_run "
-			"(`python -m py_compile` / `pytest -q` for tests / `ruff check` / `python -m mypy`) — "
-			"and benchmarks when the task is about performance — and resolve all errors before more edits."
+			f"Workflow state is VALIDATE (verify). Check the modified files through {tool} "
+			"(`python -m py_compile` / `ruff check` / `python -m mypy`) and resolve every error "
+			"before more edits. A check is not the whole of it: running the code — its entry "
+			"point, its callers, or the project's tests — is what produces a result, and that "
+			"result is yours to read and report."
 		)
 	if state == "conclude":
 		return "Workflow state is CONCLUDE. Summarize completion and residual risks."
 	return f"Unknown workflow state '{state}'. Expected one of: {', '.join(WORKFLOW_STATES)}."
 
 
-def _validation_nudge_message(pending_paths: list[str]) -> str:
+def _validation_nudge_message(pending_paths: list[str], tool: str) -> str:
+	"""Ask for the *checks* the pending files still owe — and only those.
+
+	The examples are checkers alone: a tool whose output is a list of problems, so an
+	empty one settles the file. `pytest` used to be listed here beside them, which taught
+	the model that a green suite validates a file — the exact reading the run/verdict
+	split exists to undo. Running the code is a separate step, owned by its own nudges.
+	"""
 	pending_text = ", ".join(pending_paths[:5]) if pending_paths else "modified files"
 	return (
 		"Do not conclude success yet. The following code file(s) were modified but not yet "
-		f"validated: {pending_text}. Validate each one through bash_run before finalizing — e.g. "
-		"`python -m py_compile <file>` (syntax), `pytest -q <file>` (tests), `ruff check <file>` "
-		"(lint), `python -m mypy <file>` (types). If a check reports errors, fix the code and re-run it. "
+		f"checked: {pending_text}. Check each one through {tool} before finalizing — e.g. "
+		"`python -m py_compile <file>` (syntax), `ruff check <file>` (lint), "
+		"`python -m mypy <file>` (types). If a check reports errors, fix the code and re-run it. "
 		"If an import cannot be resolved, the default interpreter may be wrong — pass the right "
 		"environment's python (the platform/environment query tool lists available environments). "
 		"If a validator is unavailable in every environment, say so and why, then proceed — do not loop."
@@ -153,67 +180,84 @@ def regression_nudge_message(untested: list[tuple[str, str]]) -> str:
 		"You modified source file(s) that have existing tests you have not run "
 		"this session:\n"
 		+ preview
-		+ "\n\nRun the associated test(s) through the dedicated test-validation tool "
-		"before concluding, so an edit doesn't silently break existing behavior. "
+		+ "\n\nRun the associated test(s) through the shell before concluding, so an edit "
+		"doesn't silently break existing behavior. Then say what the run showed — a suite "
+		"is an execution like any other, and its exit code is not its result. "
 		"If a test is intentionally out of scope, say so explicitly."
 	)
 
 
-def unjudged_output_nudge_message(commands: list[str]) -> str:
-	preview = "\n".join(f"- {c}" for c in commands[:5])
-	more = f"\n(+{len(commands) - 5} more)" if len(commands) > 5 else ""
+def unexercised_code_nudge_message(paths: list[str]) -> str:
+	"""Everything you wrote is checked, and none of it has ever run.
+
+	Says what the checks did establish before asking for more, because a model told
+	"this is not validated" after watching its lint pass reads the loop as broken and
+	re-runs the lint. The three routes are listed because "run it" is not actionable
+	for a library, and the way out is stated in the same breath: a change with nothing
+	to run is a real answer, and this fires once.
+	"""
+	preview = "\n".join(f"- {p}" for p in paths[:5])
+	more = f"\n(+{len(paths) - 5} more)" if len(paths) > 5 else ""
 	return (
-		"You ran the following and never said what its output showed:\n"
+		"These files are checked — they parse, import and lint:\n"
 		+ preview
 		+ more
-		+ "\n\nExit 0 only means the program reached its end — it is not a result. State "
-		"the verdict on one line, as `verdict: pass|fail|unknown — <what in the output "
-		"shows it>`, naming the number, message or behaviour you are reading it from. "
-		"`fail` is expected sometimes and is not a setback: a green run with a wrong "
-		"answer is exactly what this catches. `unknown` is a legitimate answer when the "
-		"output does not settle the question — say what would settle it and go get that, "
-		"or explain why it is out of reach. Silence is the one ending that is not "
-		"available."
+		+ "\n\nThat says they are written correctly. It says nothing about what they "
+		"compute, and nothing here has run yet, so there is no output for you or the "
+		"user to judge. Exercise the change one of three ways: run its entry point "
+		"directly, run whatever calls into it, or — when neither is reachable — add a "
+		"reproducible test to the project's test directory and run that. A test you "
+		"add there is a deliverable the user keeps, not a throwaway probe. Then say "
+		"what the output showed.\n"
+		"If this change genuinely has nothing to run — a comment, a docstring, a "
+		"rename — say so and move on."
+	)
+
+
+def unjudged_output_nudge_message(runs: list[tuple[str, str]], tool: str) -> str:
+	"""Ask what a run's output showed — or, for one already judged `unknown`, what would settle it.
+
+	Each entry is ``(command, unknown_reason)``; the reason is empty for a run nobody
+	has judged yet. Both are the same request at different stages, so they share one
+	message rather than two: what the model owes is a reading of that output.
+	"""
+	preview = "\n".join(
+		f"- {c}" + (f"  → you judged this `unknown`: {r}" if r else "") for c, r in runs[:5]
+	)
+	more = f"\n(+{len(runs) - 5} more)" if len(runs) > 5 else ""
+	standing = [c for c, r in runs if r]
+	return (
+		"You ran the following and have not settled what its output showed:\n"
+		+ preview
+		+ more
+		+ f"\n\nExit 0 only means the program reached its end — it is not a result. Call"
+		f" {tool} with what in the output settles it: the number, message or behaviour"
+		" you are reading it from. `fail` is expected sometimes and is not a setback: a"
+		" green run with a wrong answer is exactly what this catches. `unknown` is a"
+		" legitimate answer when the output does not settle the question — say what"
+		" would settle it and go get that, or explain why it is out of reach. Silence"
+		" is the one ending that is not available."
 		+ (
-			"\n\nJudge them one at a time when they showed different things: "
-			"`verdict[<command or file>]: pass|fail|unknown — <why>` settles just that run."
-			if len(commands) > 1 else ""
+			"\n\nAn `unknown` above is a starting point, not a conclusion. It means"
+			" what you know is not enough yet — so go extend it. Name what would settle"
+			" the question and get it: the reference implementation or prior version to"
+			" compare against, a documented or published value, an analytical limit the"
+			" result must reproduce, a conservation or symmetry property that must hold,"
+			" a coarser/finer run to check the trend, or the project's own tests. Read"
+			" the documentation, the literature, or the repository if the answer lives"
+			" there; fetch it from the web if you can reach it. And when the standard is"
+			" the user's to set rather than yours to find — their conventions, their"
+			" acceptance criteria, their data — ask them. Then re-run and judge again."
+			" If it is genuinely out of reach, say so in your final answer and name what"
+			" stays unverified: an explained dead end is an acceptable ending, and the"
+			" user is the one who decides what to do with it."
+			if standing else ""
 		)
-	)
-
-
-def ambiguous_verdict_nudge_message(commands: list[str]) -> str:
-	"""A `pass` was stated while several runs, bearing on different files, were open."""
-	preview = "\n".join(f"- {c}" for c in commands[:5])
-	more = f"\n(+{len(commands) - 5} more)" if len(commands) > 5 else ""
-	return (
-		"You stated a `pass`, but these runs are open and they bear on different "
-		"files:\n"
-		+ preview
-		+ more
-		+ "\n\nOne unqualified `pass` would credit all of them, including whatever you did "
-		"not have in mind — so nothing was recorded. Name what you judged: "
-		"`verdict[<command or file>]: pass — <what in the output shows it>`, one line per "
-		"run you have actually read. A run you have not judged yet stays open, which is "
-		"the correct outcome; `fail` and `unknown` need no such qualifier, since neither "
-		"claims anything works."
-	)
-
-
-def unknown_verdict_nudge_message(paths: list[str]) -> str:
-	target = ", ".join(paths[:3]) if paths else "the run"
-	return (
-		f"You judged the output for {target} as `unknown`, which is the honest answer "
-		"when nothing on hand settles the question — but it is a starting point, not a "
-		"conclusion. Name what would settle it and get it: the reference implementation "
-		"or prior version to compare against, a documented or published value, an "
-		"analytical limit or special case the result must reproduce, a conservation or "
-		"symmetry property that must hold, a coarser/finer run to check the trend, or "
-		"the project's own tests. Fetch it if it is reachable (the docs, the repository, "
-		"the web), derive it if it is not, then re-judge and state the new verdict. "
-		"If it is genuinely out of reach, say so explicitly in your final answer, name "
-		"what remains unverified and why — an explained dead end is an acceptable "
-		"ending, an unexplained one is not."
+		+ (
+			"\n\nOne call per run when they showed different things, each naming"
+			" its own run."
+			if len(runs) > 1 else ""
+		)
 	)
 
 
@@ -336,7 +380,7 @@ def validation_nudge_message(agent: Any, execution_context: dict) -> str:
     steps_since_last_edit = int(execution_context.get("steps_since_last_edit", 0))
 
     base_message = _validation_nudge_message(
-        pending_validation_paths(execution_context),
+        pending_validation_paths(execution_context), shell_tool_name(agent),
     )
 
     if not declared_complete:

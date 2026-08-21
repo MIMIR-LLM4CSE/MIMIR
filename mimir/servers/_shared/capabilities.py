@@ -67,6 +67,10 @@ VALIDATE = "validate"
 # Task planning (the ordered-steps checklist is identified by the `plan_steps` arg-role)
 TASK_PLANNING = "task_planning"          # records a task plan (checklist and/or prose rationale)
 
+# Records the model's reading of what a run's output showed. Declared, not derived, so
+# the client can find the channel by capability instead of by name.
+JUDGE = "judge"
+
 # Approval & mode policy
 SENSITIVE = "sensitive"
 NON_BATCH = "non_batch"
@@ -264,5 +268,5 @@ __all__ = [
     # Reversibility is the dimension a server *declares*; SENSITIVE is derived from it.
     "REVERSIBLE", "RECOVERABLE", "IRREVERSIBLE", "REVERSIBILITY_LEVELS",
     "CODE_NAV", "ENV_DISCOVERY", "EXTERNAL_FETCH", "CLUSTER_SUBMIT", "ENV_MUTATE",
-    "BACKGROUNDABLE", "REMOVE", "OVERWRITE", "TASK_PLANNING",
+    "BACKGROUNDABLE", "REMOVE", "OVERWRITE", "TASK_PLANNING", "JUDGE",
 ]

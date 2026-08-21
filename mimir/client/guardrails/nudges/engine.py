@@ -15,7 +15,6 @@ from ..workflow import (
     unchecked_checklist_items,
 )
 from .messages import (
-    ambiguous_verdict_nudge_message,
     blast_radius_nudge_message,
     creation_nudge_message,
     denial_nudge_message,
@@ -25,10 +24,10 @@ from .messages import (
     env_resolution_nudge_message,
     error_recovery_nudge_message,
     regression_nudge_message,
+    unexercised_code_nudge_message,
     state_nudge_message,
     unfinished_plan_nudge_message,
     unjudged_output_nudge_message,
-    unknown_verdict_nudge_message,
     todo_nudge_message,
     validation_nudge_message,
 )
@@ -39,9 +38,10 @@ from ...context.execution_context import (
     idle_steps,
     known_existing_files,
     nudge_count,
-    unjudged_run_paths,
+    unsettled_runs,
 )
 from ...config.models import resolve_enforcement
+from ...context.capabilities import CODE_EXEC, JUDGE, names_with_cap
 from ...event_sink import emit
 from ...config.constants import (
     CUSTOM_NUDGE_MAX_PER_QUERY,
@@ -57,6 +57,7 @@ from ...config.constants import (
     NUDGE_MAX_REGRESSION,
     NUDGE_MAX_STATE,
     NUDGE_MAX_TODO,
+    NUDGE_MAX_UNEXERCISED,
     NUDGE_MAX_UNFINISHED_PLAN,
     NUDGE_MAX_OUTPUT_VERDICT,
     NUDGE_MAX_VALIDATION,
@@ -469,22 +470,6 @@ def _first_failing_edit_path(execution_context: dict[str, Any]) -> str | None:
 
 # ── Verification-layer predicates (reality checks; run at every enforcement level) ──
 
-def _pending_needing_a_check(execution_context: dict[str, Any]) -> list[str]:
-    """Pending files that still need a *check*, not a *judgement*.
-
-    A file whose check already ran green and is only waiting on the model's verdict is
-    pending for a different reason, and telling it to run `py_compile` again would be
-    wrong advice. The verdict nudge owns that case (and, being verification-layer,
-    normally preempts this one); this keeps the split honest once its cap is spent.
-    """
-    awaiting = set(unjudged_run_paths(execution_context))
-    verdicts = execution_context.get("verdict_by_file") or {}
-    return [
-        p for p in pending_validation_paths(execution_context)
-        if p not in awaiting and (verdicts.get(p) or {}).get("verdict") != "unknown"
-    ]
-
-
 def _should_nudge_validation(
     execution_context: dict[str, Any], *, level: str, active_mode: str,
 ) -> bool:
@@ -497,7 +482,7 @@ def _should_nudge_validation(
     """
     return (
         _guidance_enabled("validation", enforcement=level, active_mode=active_mode)
-        and bool(_pending_needing_a_check(execution_context))
+        and bool(pending_validation_paths(execution_context))
         and nudge_count(execution_context, "validation") < NUDGE_MAX_VALIDATION
         and _retryable_pending_validation_exists(execution_context)
         and not _all_pending_budget_exhausted(execution_context)
@@ -576,13 +561,29 @@ def _should_nudge_unfinished_plan(execution_context: dict[str, Any]) -> bool:
     )
 
 
-def _unknown_verdict_paths(execution_context: dict[str, Any]) -> list[str]:
-    """Pending files whose last stated verdict was ``unknown``."""
-    verdicts = execution_context.get("verdict_by_file") or {}
-    return [
-        p for p in pending_validation_paths(execution_context)
-        if (verdicts.get(p) or {}).get("verdict") == "unknown"
-    ]
+def _should_nudge_unexercised_code(agent: Any, execution_context: dict[str, Any]) -> bool:
+    """Budget left, every written file checked, and nothing was ever run.
+
+    The gap between the two nudges that surround it, and mutually exclusive with both:
+    ``validation`` speaks while a file still owes a check, ``output_verdict`` while a run
+    still owes a verdict. This one owns the state in between — checks all green, no run
+    to judge — which is exactly where a model stops believing it is finished. A checker
+    established that the file is written correctly; nothing yet bears on whether it
+    computes the right thing, and nothing will until something executes.
+
+    Verification-layer for the same reason ``output_verdict`` is: a stronger model is
+    not reliably likelier to exercise what it just wrote. Silent when no execution
+    surface is connected — the advice would have nowhere to land — and once only,
+    because "there was nothing to run" is a legitimate answer the message asks for.
+    """
+    return (
+        nudge_count(execution_context, "unexercised") < NUDGE_MAX_UNEXERCISED
+        and bool(execution_context.get("code_mutation_started"))
+        and bool(execution_context.get("dirty_written_files"))
+        and not has_pending_validation(execution_context)
+        and not (execution_context.get("runs") or {})
+        and bool(names_with_cap(CODE_EXEC, getattr(agent, "tool_caps", None)))
+    )
 
 
 def _should_nudge_output_verdict(execution_context: dict[str, Any]) -> bool:
@@ -593,33 +594,33 @@ def _should_nudge_output_verdict(execution_context: dict[str, Any]) -> bool:
     enforcement level — a stronger model is not more likely to volunteer that its own
     green run produced a wrong answer, and exit 0 is all the loop can see by itself.
 
+    An ``unknown`` run stays outstanding, so both cases are the same condition; what
+    keeps the second from looping is the budget, which ``unknown`` does not re-arm.
+
     Every nudge fires only on a turn with no tool calls (``maybe_append_nudge`` has a
     single call site), so this asks at the moment the model tries to stop rather than
     interrupting a working loop.
     """
     return (
         nudge_count(execution_context, "output_verdict") < NUDGE_MAX_OUTPUT_VERDICT
-        and bool(
-            execution_context.get("unjudged_runs")
-            or _unknown_verdict_paths(execution_context)
-        )
+        and bool(unsettled_runs(execution_context))
     )
 
 
-def _output_verdict_nudge_content(execution_context: dict[str, Any]) -> str:
-    """Ask for the missing verdict, the one it must be scoped to, or resolve an ``unknown``.
+def _output_verdict_nudge_content(agent: Any, execution_context: dict[str, Any]) -> str:
+    """Ask for the missing verdict, or push a standing ``unknown`` towards resolution.
 
-    The ambiguity case comes first: the model did speak, so repeating "you never said
-    what its output showed" would be false, and a model told to do what it just did
-    repeats it verbatim.
+    The tool to call is resolved from the live registry, never spelled out here — the
+    server that declares the capability owns the name.
     """
-    ambiguous = execution_context.get("verdict_scope_required") or []
-    if ambiguous:
-        return ambiguous_verdict_nudge_message(sorted(ambiguous))
-    runs = execution_context.get("unjudged_runs") or {}
-    if runs:
-        return unjudged_output_nudge_message(sorted(runs))
-    return unknown_verdict_nudge_message(_unknown_verdict_paths(execution_context))
+    judges = sorted(names_with_cap(JUDGE, getattr(agent, "tool_caps", None)))
+    tool = judges[0] if judges else "the verdict tool"
+    runs = unsettled_runs(execution_context)
+    return unjudged_output_nudge_message(
+        sorted((command, str(run.get("reason") or "") if run.get("verdict") == "unknown" else "")
+               for command, run in runs.items()),
+        tool,
+    )
 
 
 # ── Guidance-layer predicates (reasoning shim; gated by enforcement + mode) ──
@@ -808,6 +809,14 @@ _CORE_NUDGES: tuple[_CoreNudge, ...] = (
         lambda agent, query, mode, ec, level: _should_nudge_regression(ec),
         lambda agent, ec: regression_nudge_message(_untested_edited_sources(ec)),
     ),
+    # Between them by design: `regression` covers an edit whose tests already exist,
+    # this one the change that has no run at all behind it.
+    _CoreNudge(
+        "unexercised", "verification",
+        lambda agent, query, mode, ec, level: _should_nudge_unexercised_code(agent, ec),
+        lambda agent, ec: unexercised_code_nudge_message(
+            sorted(ec.get("dirty_written_files") or ())),
+    ),
     _CoreNudge(
         "unfinished_plan", "verification",
         lambda agent, query, mode, ec, level: _should_nudge_unfinished_plan(ec),
@@ -816,7 +825,7 @@ _CORE_NUDGES: tuple[_CoreNudge, ...] = (
     _CoreNudge(
         "output_verdict", "verification",
         lambda agent, query, mode, ec, level: _should_nudge_output_verdict(ec),
-        lambda agent, ec: _output_verdict_nudge_content(ec),
+        lambda agent, ec: _output_verdict_nudge_content(agent, ec),
     ),
     # ── Guidance (reasoning shim; each predicate owns its enforcement/mode gate) ──
     # Validation leads the guidance layer: concluding on unvalidated code is the
@@ -850,7 +859,7 @@ _CORE_NUDGES: tuple[_CoreNudge, ...] = (
     _CoreNudge(
         "state", "guidance",
         lambda agent, query, mode, ec, level: _should_nudge_state(ec, level=level, active_mode=mode),
-        lambda agent, ec: state_nudge_message(ec),
+        lambda agent, ec: state_nudge_message(agent, ec),
     ),
     _CoreNudge(
         "blast_radius", "guidance",

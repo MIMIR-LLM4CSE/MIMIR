@@ -227,6 +227,9 @@ NUDGE_MAX_VALIDATION: int = 2
 NUDGE_MAX_DENIAL: int = 2
 NUDGE_MAX_ERROR_RECOVERY: int = 2
 NUDGE_MAX_REGRESSION: int = 1
+# Once only, and deliberately: "you never ran it" is a standing fact about the change,
+# not a condition that evolves, and a change with nothing to run is a legitimate answer.
+NUDGE_MAX_UNEXERCISED: int = 1
 NUDGE_MAX_UNFINISHED_PLAN: int = 1
 # Matches error_recovery rather than the once-only reminders: an unjudged run is a
 # recurring condition, and the counter is re-armed whenever the pending set clears.

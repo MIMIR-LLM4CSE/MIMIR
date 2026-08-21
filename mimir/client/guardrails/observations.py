@@ -20,10 +20,13 @@ from ..context import (
     bootstrap_runtime_context,
     declared_edit_set_complete,
     ensure_execution_context,
+    failed_runs,
     fields_with,
     raise_validation_tier,
+    record_run,
 )
-from ...servers._shared.numerics import observed_failure_verdict, observed_invariant_metrics
+from ...servers._shared.numerics import observed_failure_verdict
+from ..event_sink import emit
 from .workflow import (
     VALIDATION_RETRY_BUDGET,
     has_pending_validation,
@@ -38,6 +41,7 @@ from ..context.capabilities import (
     ENV_DISCOVERY,
     ENV_MUTATE,
     INSPECT_DIR,
+    JUDGE,
     PLAN_BLOCKED,
     READ,
     REMOVE,
@@ -53,7 +57,7 @@ from ..context.capabilities import (
     scope_spec,
 )
 from ..tool_execution.validation import is_python_test_filepath, is_scratch_path
-from .policy.bash_classify import Kind, classify_bash_command
+from .policy.bash_classify import Kind, classify_bash_command, opaque_command_executes
 
 
 # Source-file path regex derived from the canonical extension set so it stays in sync
@@ -154,10 +158,10 @@ def _record_code_edit(execution_context: dict[str, Any], edited_path: str) -> No
     execution_context["planned_edit_targets"].add(edited_path)
     execution_context["dirty_written_files"].add(edited_path)
     execution_context["validated_files"].discard(edited_path)
-    # Evidence is about a specific revision: rewriting the file retracts it. The attempt
-    # log is deliberately not retracted — it is the record of what was already tried.
+    # Evidence is about a specific revision: rewriting the file retracts it. Runs are
+    # not retracted — a run is a past event, and its verdict is a statement about what
+    # that event showed, which re-editing does not undo.
     execution_context.get("validation_tier_by_file", {}).pop(edited_path, None)
-    execution_context.get("verdict_by_file", {}).pop(edited_path, None)
     execution_context["edit_loop_state"].pop(edited_path, None)
     _clear_edit_fail_streak(execution_context, edited_path)
 
@@ -289,38 +293,22 @@ def _observe_apply_edits(
 
 
 def _mark_file_validated(
-    execution_context: dict[str, Any], target: str, tier: str = "executed",
+    execution_context: dict[str, Any], target: str, tier: str = "static",
 ) -> None:
-    """Credit *target* as validated and advance the workflow when nothing is pending.
+    """Credit *target* as checked and advance the workflow when nothing is pending.
 
-    Validation no longer runs through dedicated validator tools: the model exercises a
-    written file via bash (``python -m py_compile`` / ``pytest`` / ``ruff`` / ``mypy``),
-    and a *successful* run (the bash server only returns ``status == "ok"`` on exit 0)
-    is the signal that the file passed. A failing run returns ``status == "error"`` and
-    never reaches this path, so the file simply stays pending and the validation nudge
-    keeps steering — the same conclude-gate as before, now fed from bash.
+    Only a **checker** reaches here — ``py_compile``, ``ruff``, ``mypy``, a compiler:
+    a tool whose output *is* a list of problems, so exit 0 means there were none and
+    there is nothing left for anyone to read. Running the code never lands here, however
+    green it exits: "it reached the end" is a fact about the process, not about the
+    answer, and it is recorded on the run instead (see ``context.record_run``).
 
-    *tier* records how much that green run actually proved (see ``VALIDATION_TIERS``).
-    It has no effect on the conclude-gate — every tier still counts as validated,
-    exactly as before — and is read only by the completion ledger. The default suits
-    the extension-pack VALIDATE path, whose tool ran *something* but tells us no more.
-
-    **Red→green promotion.** A check that was observed failing on this file and now
-    passes has *discriminated*: it told the broken state apart from the fixed one, so
-    it is not vacuous. That is the domain-agnostic form of "compared against something
-    the code does not itself define" — it needs no numerical invariant, so a parser, a
-    CLI or a refactor can reach ``oracle`` where previously only numerical code could.
-    Deliberately not gated on ``syntax``/``static``: a ``py_compile`` going red→green
-    proves the file parses, which is not evidence about behaviour.
-
-    A model cannot award itself this by writing a test after the fix — such a test
-    never ran red. Provoking it on purpose means writing a failing check first, which
-    is TDD; a signal whose only exploit is the desired behaviour needs no defending.
+    *tier* records which kind of check it was (see ``VALIDATION_TIERS``). It has no
+    effect on the conclude-gate — every tier counts as validated — and is read only by
+    the completion ledger.
     """
     execution_context["validation_fail_count_by_file"].pop(target, None)
     execution_context["validated_files"].add(target)
-    if tier == "executed" and target in execution_context.get("executed_failures", set()):
-        tier = "oracle"
     raise_validation_tier(execution_context, target, tier)
     if execution_context["code_mutation_started"] and not has_pending_validation(execution_context):
         set_workflow_state(execution_context, "conclude")
@@ -328,46 +316,20 @@ def _mark_file_validated(
         execution_context["nudge_counts"]["state"] = 0
 
 
-def _record_executed_failure(execution_context: dict[str, Any], target: str) -> None:
-    """Remember that an ``executed``-tier check was seen failing on *target*.
-
-    The red half of red→green (see :func:`_mark_file_validated`). Kept in its own set
-    rather than read off ``validation_fail_count_by_file``, which
-    :func:`_mark_file_validated` *pops* on success — destroying the record at the exact
-    moment it becomes evidence.
-
-    Never cleared within the query, and in particular **not** on re-edit, unlike
-    ``validated_files`` and the tier map. Those record what is true of the current
-    revision; this records that a check discriminated at some point, and the edit is
-    precisely what happens between the red run and the green one. Clearing it on
-    re-edit would erase the signal on its way to being earned.
-    """
-    execution_context.setdefault("executed_failures", set()).add(target)
-
-
 def _register_validation_failure(
-    execution_context: dict[str, Any], target: str, tier: str = "executed",
-    *, arms_red_green: bool = True,
+    execution_context: dict[str, Any], target: str, tier: str = "static",
 ) -> None:
-    """Record a failed validation of *target* and drive the retry-budget escape.
+    """Record a failed check of *target* and drive the retry-budget escape.
 
-    The mirror of :func:`_mark_file_validated`: a validation command that ran but
-    exited non-zero (``status == "error"``) means the file did NOT pass. Increment its
-    per-file failure count, drop it from ``validated_files``, and return the workflow to
-    ``edit`` so the model repairs it. When every dirty file is either validated or has
-    exhausted ``VALIDATION_RETRY_BUDGET`` attempts, escape to ``conclude`` so a file that
-    cannot be made to pass does not wedge the workflow — the model concludes with the
-    residual risk stated. This is what re-feeds the (otherwise inert) fail-count that the
-    completion gate, the anti-thrashing state guard, and the nudge all read.
-
-    *tier* says how strong the failing check was; an ``executed`` one also arms the
-    red→green promotion — unless *arms_red_green* is False, which the model's own
-    ``verdict: fail`` passes. A self-declared failure followed by a self-declared pass
-    would otherwise forge discrimination, the one signal an exit code cannot fake: a
-    model may lower its own credit, never raise it.
+    The mirror of :func:`_mark_file_validated`: a checker that ran but exited non-zero
+    means the file did NOT pass. Increment its per-file failure count, drop it from
+    ``validated_files``, and return the workflow to ``edit`` so the model repairs it.
+    When every dirty file is either validated or has exhausted
+    ``VALIDATION_RETRY_BUDGET`` attempts, escape to ``conclude`` so a file that cannot be
+    made to pass does not wedge the workflow — the model concludes with the residual risk
+    stated. This is what re-feeds the (otherwise inert) fail-count that the completion
+    gate, the anti-thrashing state guard, and the nudge all read.
     """
-    if tier == "executed" and arms_red_green:
-        _record_executed_failure(execution_context, target)
     fail_counts = execution_context["validation_fail_count_by_file"]
     fail_counts[target] = int(fail_counts.get(target, 0)) + 1
     execution_context["validated_files"].discard(target)
@@ -683,7 +645,7 @@ def _carries_shell_command(agent: Any, tool_name: str) -> tuple[str, ...] | None
 
 def _observe_tool_run(
     agent: Any, tool_name: str, arguments: dict, status: Any,
-    execution_context: dict[str, Any],
+    execution_context: dict[str, Any], call_id: str = "",
 ) -> None:
     """A non-shell execution tool ran: its output owes a verdict too.
 
@@ -695,51 +657,38 @@ def _observe_tool_run(
     exclusive, which is what keeps a bash run from being registered twice and spares a
     third shlex parse per call.
 
-    Attribution comes from the tool's declared path args, through the same
-    :func:`_attributed_run_paths` rule bash goes through; with none, the run is recorded
-    against the command alone, which the ledger and the nudge both handle.
+    Recorded against the tool name, like any other run. It validates no file: an
+    execution's exit code says the program reached its end, and which file it exercised
+    is not a question anyone here can answer.
     """
     if status != "ok" or _carries_shell_command(agent, tool_name) is not None:
         return
     if not has_cap(tool_name, CODE_EXEC, agent.tool_caps):
         return
-    targets = [
-        p for p in (
-            agent._normalize_workspace_path(arguments.get(name))
-            for name in path_args(tool_name, agent.tool_caps)
-        ) if p
-    ]
-    dirty = execution_context.get("dirty_written_files", set())
-    _register_unjudged_run(
-        execution_context, tool_name,
-        _attributed_run_paths(execution_context, targets, dirty), "executed",
-    )
+    _record_run_outcome(execution_context, tool_name, True, call_id)
 
 
-# Leading commands (or `python -m` modules) that validate code project-wide. A
-# *successful* run of one naming no specific source file (bare `pytest`, `ruff check .`,
-# `mypy src/`) validates the whole tree → clears every pending file. Per-file validation
-# is already language-agnostic; this set only adds the whole-project shortcut.
+# Checkers that cover a whole tree in one call. A *successful* run of one naming no
+# specific source file (`ruff check .`, `mypy src/`) clears every pending file at once;
+# per-file crediting is already language-agnostic, this set only adds the shortcut.
+#
+# Every entry must also be in `_VALIDATOR_TIER` below — a head absent from it is an
+# execution, and `_bash_validation_scan` never reaches the whole-project test for one.
+# That is why `pytest` and `ctest` are not here: running a suite is a run, judged on its
+# own output, and it credits no file however green it exits.
 #
 # INVARIANT: every entry must also be in the bash server's `_ALLOWED_COMMANDS` AND
 # `bash_classify._EXEC_COMMANDS`, or it is dead — rejected by the server or untaggable
-# by the classifier. Declare a new project runner in those two places first.
-# Excluded on purpose: `python`/`node`/`./binary` (running a program is not validation)
-# and `make`/`cmake` (a green `make clean` validates nothing).
+# by the classifier. Declare a new project checker in those two places first.
 _PROJECT_VALIDATORS = frozenset({
-    # Python
-    "pytest", "ruff", "mypy", "pyflakes", "black", "py_compile",
-    # C / C++ / CUDA / Fortran — CMake test runner (green run validates the whole build)
-    "ctest",
+    "ruff", "mypy", "pyflakes", "black", "py_compile",
 })
 # A positional that names a specific file (has a dotted extension), vs a directory/`.`.
 _FILE_EXT_RE = _re.compile(r"\.[A-Za-z0-9]+$")
 
-# How much a green run of each validator actually proves, keyed by command head;
-# unlisted heads default to "executed". Deliberately a *lower* bound: `pytest` is
-# "executed" however good the test is, since from outside the process a rigorous suite
-# and a vacuous one are the same exit code. Only printed invariants (see
-# numerics.observed_invariant_metrics) lift a run to "oracle", in _observe_bash_validation.
+# The checkers, keyed by command head, and what kind of check each one is. A head that
+# is *not* here is an execution: it runs the code, so its exit code says the program
+# reached its end and nothing more, and what it printed is judged as a run.
 _VALIDATOR_TIER = {
     "py_compile": "syntax",
     "ruff": "static", "mypy": "static", "pyflakes": "static", "black": "static",
@@ -748,9 +697,7 @@ _VALIDATOR_TIER = {
     # so there is no result for anyone to judge.
     "gcc": "static", "g++": "static", "gfortran": "static", "nvcc": "static",
     "javac": "static",
-    "pytest": "executed", "ctest": "executed",
 }
-_DEFAULT_VALIDATION_TIER = "executed"
 
 # Reason recorded when the run itself declared the failure, so the model is not asked to
 # judge output that already carries its own verdict.
@@ -768,29 +715,33 @@ def _outside_workspace(path: str) -> bool:
 
 
 def _bash_validation_scan(agent: Any, command: str) -> tuple[list[str], bool, str, bool]:
-    """Scan a bash command for validation intent.
+    """Scan a bash command, telling checks apart from executions.
 
-    Returns ``(explicit_targets, whole_project, tier, ran_code)``:
+    Returns ``(explicit_targets, whole_project, tier, ran_program)``:
     - ``explicit_targets`` — normalized workspace paths of the files named by EXEC
       segments, with a leading ``cd`` rebasing later relative operands (``cd sub &&
-      pytest t.py`` → ``sub/t.py``).
-    - ``whole_project`` — True when a recognised project validator ran over no specific
-      file (bare ``pytest``, ``ruff check .``, ``mypy src/``): a green run then validates
-      every pending file, not just a named one.
-    - ``tier`` — the *strongest* evidence any EXEC segment in the command offers
-      (``py_compile a.py && pytest a.py`` is an execution, not a syntax check).
-    - ``ran_code`` — True when any segment executed at all, named file or not. The two
-      above are about *crediting* a file; this is about a run having produced output
-      somebody must judge, which ``python -c …`` and a bare ``./solver`` also do.
-    Empty/False/default for an opaque command or one with no exec segment.
+      ruff check t.py`` → ``sub/t.py``).
+    - ``whole_project`` — True when a recognised project **checker** ran over no specific
+      file (``ruff check .``, ``mypy src/``): a green run then validates every pending
+      file, not just a named one.
+    - ``tier`` — the strongest check any segment performed, or ``""`` when none did.
+    - ``ran_program`` — True when any segment *executed* the code rather than checking
+      it. That run owes a reading of its output whether or not it named a file, which
+      ``python -c …`` and a bare ``./solver`` also do.
+    For a command the classifier cannot read at all, the first three are empty — nothing
+    is attributable — but ``ran_program`` still comes from its command-position heads
+    (:func:`opaque_command_executes`). Opacity is a reason not to credit; it is not
+    a reason to believe nothing ran, and inline payloads (which the base prompt asks for)
+    are opaque by construction.
     """
     segments = classify_bash_command(command)
     if not segments:
-        return [], False, _DEFAULT_VALIDATION_TIER, False
+        return [], False, "", opaque_command_executes(command)
     rel_base = ""
     targets: list[str] = []
     whole_project = False
     tier_rank = -1
+    ran_program = False
     for seg in segments:
         if seg.kind == Kind.CHDIR:
             new_dir = seg.operands[0] if seg.operands else ""
@@ -806,117 +757,92 @@ def _bash_validation_scan(agent: Any, command: str) -> tuple[list[str], bool, st
             path = agent._normalize_workspace_path(based)
             if path:
                 targets.append(path)
-        # A bare `/tmp/<scratch>/probe` names its artifact in the head, not the operands.
-        # Kept only when it resolves outside the workspace — the sole thing
-        # `_attributed_run_paths` reads it for, so no other attribution shifts.
-        head_path = agent._normalize_workspace_path(
-            seg.head if (os.path.isabs(seg.head) or not rel_base)
-            else os.path.join(rel_base, seg.head)
-        )
-        if os.sep in seg.head and head_path and _outside_workspace(head_path):
-            targets.append(head_path)
-        seg_tier = _VALIDATOR_TIER.get(seg.head, _DEFAULT_VALIDATION_TIER)
+        seg_tier = _VALIDATOR_TIER.get(seg.head)
+        if seg_tier is None:
+            ran_program = True
+            continue
         tier_rank = max(tier_rank, VALIDATION_TIERS.index(seg_tier))
         if seg.head in _PROJECT_VALIDATORS and not any(_FILE_EXT_RE.search(op) for op in seg.operands):
             whole_project = True
-    tier = VALIDATION_TIERS[tier_rank] if tier_rank >= 0 else _DEFAULT_VALIDATION_TIER
-    return targets, whole_project, tier, tier_rank >= 0
+    tier = VALIDATION_TIERS[tier_rank] if tier_rank >= 0 else ""
+    return targets, whole_project, tier, ran_program
 
 
-def _register_unjudged_run(
-    execution_context: dict[str, Any], command: str, paths: list[str], tier: str,
+def _record_run_outcome(
+    execution_context: dict[str, Any], command: str, completed: bool,
+    call_id: str = "", reason: str = "",
 ) -> None:
-    """Record a run whose output nobody has judged yet.
+    """Register an execution and, when it did not complete, charge the repair budget.
 
-    Exit 0 means the program reached its end, never that its answer is right, so an
-    execution no longer credits the file on its own: it parks here until the model says
-    what the output showed. ``paths`` may be empty — an analysis-only session running
-    ``pytest`` with nothing written still owes a judgement, it just has no file to
-    attach it to.
+    A run that exited non-zero is already judged — by the machine, in the only direction
+    an exit code is trustworthy — so it owes no verdict and goes straight onto the
+    repair ladder. A green one owes a reading of what it printed.
     """
-    execution_context.setdefault("unjudged_runs", {})[command] = {
-        "paths": sorted(set(paths)), "tier": tier,
-    }
+    record_run(execution_context, command, completed=completed, call_id=call_id)
+    if not completed:
+        _register_run_failure(execution_context, command, reason)
 
 
-def _attributed_run_paths(
-    execution_context: dict[str, Any], named: list[str], dirty: set,
-) -> list[str]:
-    """The pending files a run's output speaks for.
-
-    A run naming dirty files speaks for exactly those. Naming none, it falls back to
-    the whole pending set, because a run routinely exercises code it does not name:
-    `pytest`, `./solver` and `python tests/test_solver.py` all validate the source
-    behind them, and that fallback is what lets one suite settle a refactor.
-
-    The exception is a run whose every named file lives *outside* the workspace: it
-    did name what it ran, and it ran something that is not the user's code. Letting it
-    inherit the pending set would mean one `verdict: pass` on a scratchpad probe
-    validating source the probe never touched — and the prompt sends every throwaway
-    probe to the scratchpad, so this is the common path, not a corner case. The run is
-    still registered with no paths: a verdict is owed on it, it just credits nothing.
-    """
-    attributed = [t for t in named if t in dirty]
-    if attributed:
-        return attributed
-    if named and all(_outside_workspace(t) for t in named):
-        return []
-    return pending_validation_paths(execution_context)
-
-
-def record_output_verdict(
-    execution_context: dict[str, Any], path: str, verdict: str, reason: str, command: str,
+def _register_run_failure(
+    execution_context: dict[str, Any], command: str, reason: str = "",
 ) -> None:
-    """Store the model's verdict on *path*, and log it when it is a failure.
+    """Charge a run's failure against the repair budget and steer back to ``edit``.
 
-    ``verdict_by_file`` holds the current claim (retracted when the file is re-edited,
-    like the tier); ``verdict_attempts_by_file`` is append-only and survives re-edits,
-    because "what was tried and why it did not work" is exactly the history a re-edit
-    would otherwise erase.
+    Same shape as the per-file budget: try, try again, then stop trying. Past
+    ``VALIDATION_RETRY_BUDGET`` attempts at the same command the workflow is released to
+    ``conclude`` rather than wedged — the run is reported unresolved with what was
+    tried, and the answer carries the residual risk instead of looping on it.
     """
-    execution_context.setdefault("verdict_by_file", {})[path] = {
-        "verdict": verdict, "reason": reason, "command": command,
-    }
-    if verdict == "fail":
-        attempts = execution_context.setdefault("verdict_attempts_by_file", {}).setdefault(path, [])
-        attempts.append(f"{command} → {reason}" if reason else command)
+    run = (execution_context.get("runs") or {}).get(command)
+    if run is None:
+        return
+    run["failures"] = int(run.get("failures", 0)) + 1
+    if reason:
+        run.setdefault("attempts", []).append(reason)
+    if not execution_context.get("code_mutation_started"):
+        return
+    set_workflow_state(execution_context, "edit")
+    if all(
+        int(r.get("failures", 0)) >= VALIDATION_RETRY_BUDGET
+        for r in failed_runs(execution_context).values()
+    ) and not has_pending_validation(execution_context):
+        set_workflow_state(execution_context, "conclude")
 
 
 def _observe_bash_validation(
     agent: Any, tool_name: str, arguments: dict, status: Any, payload: dict,
-    execution_context: dict[str, Any],
+    execution_context: dict[str, Any], call_id: str = "",
 ) -> None:
-    """Drive validation state from a bash command — success AND failure.
+    """Drive validation and run state from a bash command — success AND failure.
 
-    The bash-driven replacement for the removed validator ladder, run *regardless of
-    status* (unlike :func:`_observe_command`, which only credits the blackboard on
-    success). Three outcomes rather than two, because exit 0 does not mean the same
-    thing for every check:
+    Two axes, never mixed, because they answer different questions:
 
-    - ``syntax``/``static`` (``py_compile``, ``ruff``, ``mypy``) — exit 0 **validates**
-      the file. These tools *are* the verdict: their output is a list of problems, and
-      an empty one is the finding.
-    - ``executed`` (``pytest``, ``python solver.py``, ``./solver``) — exit 0 proves only
-      that the program reached its end, so the file stays pending and the run is parked
-      in ``unjudged_runs`` until the model states what the output showed.
-    - non-zero exit — ``_register_validation_failure``, unchanged.
+    - a **checker** (``py_compile`` → syntax; ``ruff``/``mypy``/a compiler → static)
+      validates the *files it names*. Its output is a list of problems and an empty one
+      is the finding, so exit 0 settles it and nobody has to read anything. Non-zero
+      charges the file's retry budget.
+    - an **execution** (``pytest``, ``python solver.py``, ``./solver``, ``python -c …``)
+      validates no file at all. It is recorded as a *run*: a non-zero exit is a failure
+      the machine already judged, and a green one owes the model a reading of what it
+      printed (``guardrails/verdict.py``). Which file it exercised is not asked — the
+      run is the subject, and guessing an attribution is what used to let one green
+      benchmark credit every file edited beforehand.
 
-    A green *project-wide* validator (bare ``pytest``, ``ruff check .``) covers every
-    pending file at once; at ``executed`` tier that now means every pending file awaits
-    the same verdict. Test files are recorded in ``tests_run`` either way (pass or fail)
-    so the regression nudge sees them. Only shell-command tools qualify.
+    A green project-wide **checker** (``ruff check .``) covers every pending file at
+    once. Test files are recorded in ``tests_run`` either way (pass or fail) so the
+    regression nudge sees them. Only shell-command tools qualify.
     """
     command_args = _carries_shell_command(agent, tool_name)
     if command_args is None:
         return
     command = str(arguments.get(command_args[0], "") or "")
-    explicit, whole_project, tier, ran_code = _bash_validation_scan(agent, command)
-    # `ran_code` (not just a named target) is what catches `python -c …` and a bare
-    # `./solver`: they credit nothing, but they produced output somebody must judge.
-    if not explicit and not whole_project and not ran_code:
+    explicit, whole_project, tier, ran_program = _bash_validation_scan(agent, command)
+    # `ran_program` (not just a named target) is what catches `python -c …` and a bare
+    # `./solver`: they validate nothing, but they produced output somebody must judge.
+    if not explicit and not whole_project and not ran_program:
         return
     stdout = str(payload.get("stdout") or "")
-    # A check that computes its own criteria, reports them unmet and still returns 0 is a
+    # A run that computes its own criteria, reports them unmet and still returns 0 is a
     # green exit over a red result — the shape of the failure this guards: a self-written
     # boundary test printed "significant reflection may be present", exited 0, and was
     # recorded as validated. A declared verdict therefore outranks the exit code, one way
@@ -924,50 +850,27 @@ def _observe_bash_validation(
     declared_failure = status == "ok" and observed_failure_verdict(stdout)
     if declared_failure:
         status = "error"
-    # A green run that *reported* a numerical invariant compared the artifact against
-    # something it does not define (analytic solution, reference field, conserved
-    # quantity, refinement sweep) — the only signal, short of reading the test's
-    # assertions, separating "the code ran" from "the code was checked". Presence of the
-    # key is what counts; the value is never interpreted (a forged number is
-    # unfalsifiable from out here, which is why the proxy seals references server-side).
-    if status == "ok" and observed_invariant_metrics(stdout):
-        tier = "oracle"
-    ran_executable = tier not in ("syntax", "static")
     dirty = execution_context.get("dirty_written_files", set())
     for target in explicit:
         if is_python_test_filepath(target):
             execution_context["tests_run"].add(target)
-        if target not in dirty:
+        if not tier or target not in dirty:
             continue
         if status != "ok":
             # A specific-file failure is attributable; a whole-project failure is not.
             _register_validation_failure(execution_context, target, tier)
-            if declared_failure:
-                record_output_verdict(
-                    execution_context, target, "fail", _SELF_DECLARED_FAILURE, command,
-                )
-        elif not ran_executable:
+        else:
             _mark_file_validated(execution_context, target, tier)
-    # A green project-wide validation run covers every still-pending file. A failing one
-    # is not attributable to a single file, so it leaves pending untouched (the model
-    # narrows down or re-runs per file).
-    if status == "ok" and whole_project and not ran_executable:
+    # A green project-wide check covers every still-pending file. A failing one is not
+    # attributable to a single file, so it leaves pending untouched (the model narrows
+    # down or re-runs per file).
+    if tier and whole_project and status == "ok":
         for target in list(pending_validation_paths(execution_context)):
             _mark_file_validated(execution_context, target, tier)
-    # …but a failing project-wide run is still *evidence*, if not attribution: the suite
-    # was red while exactly these files were pending. That is what lets the repair loop
-    # (run suite, fix, run again) earn the red→green promotion, which per-file
-    # attribution never sees — the command names the test, the pending file is the
-    # source. Separate from `_register_validation_failure` on purpose: no retry budget
-    # charged, nothing un-validated, no workflow transition. Spelled out rather than
-    # left to an `elif`, which a green `executed` run now also falls through to.
-    elif status != "ok" and whole_project and tier == "executed":
-        for target in pending_validation_paths(execution_context):
-            _record_executed_failure(execution_context, target)
-    if status == "ok" and ran_executable:
-        _register_unjudged_run(
-            execution_context, command,
-            _attributed_run_paths(execution_context, explicit, dirty), tier,
+    if ran_program:
+        _record_run_outcome(
+            execution_context, command, status == "ok", call_id,
+            _SELF_DECLARED_FAILURE if declared_failure else "",
         )
 
 
@@ -1061,12 +964,46 @@ def _observe_command(
             set_workflow_state(execution_context, "edit")
 
 
+def _observe_verdict_tool(
+    agent: Any, tool_name: str, arguments: dict, status: Any,
+    execution_context: dict[str, Any],
+) -> None:
+    """The model judged a run's output: settle the run it speaks for.
+
+    The judging tool is found by capability and read through its declared arg-roles, so
+    neither the tool's name nor its parameter names appear here — the server owns both.
+    Its own result carries nothing: what the call *means* is state on the blackboard,
+    which is what this writes.
+
+    Settled runs are announced per call id so the UI can badge the run's own row; a
+    statement that settled nothing (an unqualified ``pass`` over runs bearing on
+    different files) announces nothing, and the nudge asks for the missing scope.
+    """
+    if status != "ok" or not has_cap(tool_name, JUDGE, agent.tool_caps):
+        return
+    # Local import: verdict.py builds on this module's ladder entry points, so the
+    # dependency only runs the other way at call time.
+    from .verdict import apply_verdict
+
+    def _arg(role: str) -> str:
+        names = arg_role(tool_name, role, agent.tool_caps)
+        return str(arguments.get(names[0], "") or "").strip() if names else ""
+
+    verdict = _arg("verdict").lower()
+    settled = apply_verdict(verdict, _arg("verdict_reason"), _arg("verdict_scope"), execution_context)
+    for run in settled:
+        call_id = run.get("call_id")
+        if call_id:
+            emit({"type": "verdict", "id": call_id, "verdict": verdict})
+
+
 def record_tool_observation(
     agent: Any,
     tool_name: str,
     arguments: dict,
     result: str,
     execution_context: dict[str, Any] | None,
+    call_id: str = "",
 ) -> None:
     execution_context = ensure_execution_context(execution_context)
     execution_context = (
@@ -1101,7 +1038,8 @@ def record_tool_observation(
     _observe_existence_check(agent, tool_name, arguments, status, payload, execution_context)
     _observe_read(agent, tool_name, arguments, status, execution_context)
     _observe_declared_edit_set(agent, tool_name, arguments, status, execution_context)
-    _observe_bash_validation(agent, tool_name, arguments, status, payload, execution_context)
+    _observe_bash_validation(agent, tool_name, arguments, status, payload, execution_context, call_id)
     _observe_command(agent, tool_name, arguments, status, payload, execution_context)
     _observe_action_op(agent, tool_name, status, execution_context)
-    _observe_tool_run(agent, tool_name, arguments, status, execution_context)
+    _observe_tool_run(agent, tool_name, arguments, status, execution_context, call_id)
+    _observe_verdict_tool(agent, tool_name, arguments, status, execution_context)

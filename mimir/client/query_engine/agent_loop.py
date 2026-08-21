@@ -27,7 +27,6 @@ from ..context import validate_execution_context
 from ..guardrails.workflow import finalize_incomplete_answer, STEP_LIMIT_NUDGE
 from ..prompt.system_prompt import build_discovery_pin_block, _PIN_MARKER
 from ..guardrails.nudges import maybe_append_nudge, needs_incomplete_finalization
-from ..guardrails.verdict import record_verdict
 
 
 def _live_thinking(agent: Any, fallback: bool) -> bool:
@@ -457,11 +456,6 @@ async def _run_agent_loop(
         finally:
             _remove_pin(messages, pin_token)
         _process_response(msg, messages, thinking, streamed_thinking=(streaming and cb["think_token_callback"] is not None))
-
-        # Before the turn is judged terminal, so a verdict stated only in the final
-        # answer still counts. Reads `content`, never the thinking block: a judgement
-        # kept in private reasoning is not a statement, and the user never sees it.
-        record_verdict(msg.get("content", ""), execution_context)
 
         tool_calls = msg.get("tool_calls") or []
         if not tool_calls:

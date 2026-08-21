@@ -1,4 +1,4 @@
-"""Directory-scan loader for application extension packs (custom policies + nudges).
+"""Directory-scan loader for application extension packs (policies, post-tool hooks, nudges).
 
 Mirrors ``MimirAgent.load_skills``: resolve a plugins directory, import every ``*.py``
 module found there, and let each module register its descriptors as an import

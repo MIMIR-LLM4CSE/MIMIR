@@ -167,6 +167,17 @@ const ToolRow: React.FC<RowProps> = ({ tool }) => {
   // symbol in a column of them.
   const statusGlyph = tool.status === "error" ? "✕" : null;
 
+  // A run's exit code and its result are different facts: the badge carries what the
+  // model said the output showed, and only appears once it has said it.
+  const verdictBadge = tool.verdict ? (
+    <span
+      className={`tool-verdict tool-verdict--${tool.verdict}`}
+      title={`The model judged this run's output: ${tool.verdict}`}
+    >
+      {tool.verdict}
+    </span>
+  ) : null;
+
   return (
     <div className={`tool-row tool-row--${tool.status}`}>
       <button
@@ -184,6 +195,7 @@ const ToolRow: React.FC<RowProps> = ({ tool }) => {
         {tool.detail && <span className="tool-detail">{tool.detail}</span>}
         <span className="tool-row-tail">
           {tailSummary && <span className="tool-summary">{tailSummary}</span>}
+          {verdictBadge}
           {statusGlyph && (
             <span className={`tool-status-glyph tool-status-glyph--${tool.status}`}>
               {statusGlyph}

@@ -62,12 +62,12 @@ export function summaryChips(summary: string): string[] {
 
 /**
  * A row's severity. Bold emphasis is the ledger's convention for "a reader has to
- * act on this" (an unvalidated file, an open checklist step), so it is what tints
- * the row; a file row that carries a tier is settled evidence.
+ * act on this" (an unchecked file, an unjudged run, an open checklist step), so it is
+ * what tints the row; a checked file and a judged run are settled.
  */
 export function rowLevel(row: string): LedgerStatus {
   if (row.includes("**")) return "warn";
-  if (row.startsWith("`") && row.includes("validated:")) return "ok";
+  if (row.startsWith("`") && (row.includes("checked:") || row.includes("verdict:"))) return "ok";
   return "note";
 }
 

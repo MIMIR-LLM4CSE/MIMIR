@@ -21,13 +21,20 @@ from __future__ import annotations
 
 import os
 import tempfile
+import types
 import unittest
 
+from mimir.client.config.constants import NUDGE_VALIDATION_IDLE_STEPS
+from mimir.client.context.capabilities import CODE_EXEC, JUDGE, ToolCaps
 from mimir.client.context.execution_context import (
     build_execution_context,
     raise_validation_tier,
+    record_run,
 )
 from mimir.client.guardrails.nudges.engine import needs_incomplete_finalization
+from mimir.client.guardrails.nudges import maybe_append_nudge
+from mimir.client.guardrails.nudges.messages import unexercised_code_nudge_message
+from mimir.client.guardrails.verdict import apply_verdict
 from mimir.client.guardrails.workflow import (
     HEADLINE_HANDBACK,
     HEADLINE_INCOMPLETE,
@@ -81,65 +88,56 @@ class VerificationLedgerTests(_ChecklistFixture):
     def test_no_work_no_ledger(self):
         self.assertEqual(_annotate_answer_with_changes("Done.", _ctx()), "Done.")
 
-    def test_unvalidated_file_is_named_as_such(self):
+    def test_unchecked_file_is_named_as_such(self):
         out = _annotate_answer_with_changes("Done.", _written({"a.py"}, validated=False))
         self.assertIn("Verification ledger", out)
-        self.assertIn("`a.py` — **not validated**", out)
+        self.assertIn("`a.py` — **not checked**", out)
 
     def test_tier_is_reported_per_file(self):
         out = _annotate_answer_with_changes("Done.", _written({"a.py"}, tier="static"))
-        self.assertIn("`a.py` — validated: static", out)
+        self.assertIn("`a.py` — checked: static", out)
 
-    def test_executed_without_an_oracle_says_so(self):
-        # The wave2d case: green pytest, nothing compared. The model's prose claims
-        # verification; the ledger must contradict it in the same breath.
+    def test_a_checked_file_is_not_reported_as_a_correct_one(self):
+        # The wave2d case: the model's prose claims verification; the ledger must say
+        # in the same breath that a checker never looked at the answer.
         out = _annotate_answer_with_changes(
-            "All done, verified and working.", _written({"solver.py"}, tier="executed"),
+            "All done, verified and working.", _written({"solver.py"}, tier="static"),
         )
-        self.assertIn("Discrimination: none observed", out)
-        self.assertIn("tells working code from broken code", out)
+        self.assertIn("says nothing about whether the answer is right", out)
 
-    def test_the_absence_line_is_domain_neutral(self):
-        """The line fires on every non-numerical run, so it must not speak numerics.
+    def test_the_caveat_is_domain_neutral(self):
+        """The line fires on every run, so it must not speak numerics.
 
         Naming reference comparisons, conservation checks and convergence measurements
         made it unsatisfiable for a parser or a CLI: it printed on every such run and
-        became wallpaper. Numerical vocabulary is reserved for qualifying an invariant
-        that was actually reported.
+        became wallpaper.
         """
-        out = _annotate_answer_with_changes("Done.", _written({"parser.py"}, tier="executed"))
+        out = _annotate_answer_with_changes("Done.", _written({"parser.py"}, tier="static"))
         for word in ("conservation", "convergence", "reference comparison"):
-            self.assertNotIn(word, out, f"{word!r} leaked into the neutral absence line")
+            self.assertNotIn(word, out, f"{word!r} leaked into the neutral caveat")
 
-    def test_oracle_tier_suppresses_the_warning(self):
-        out = _annotate_answer_with_changes("Done.", _written({"solver.py"}, tier="oracle"))
-        self.assertNotIn("Discrimination: none observed", out)
+    def test_the_caveat_never_points_at_rows_that_are_not_there(self):
+        # It only ever prints when nothing ran, so a pointer to "the run rows below"
+        # sent the reader to an empty half of the ledger — the way a caveat stops being
+        # read at all.
+        out = _annotate_answer_with_changes("Done.", _written({"solver.py"}, tier="static"))
+        self.assertIn("nothing here was run", out)
+        self.assertNotIn("rows below", out)
 
-    def test_no_oracle_line_when_nothing_was_executed(self):
-        # A file that only got a syntax/static check never claimed correctness, so
-        # the per-file tier already tells the whole story — adding the warning
-        # would be noise on every lint-only edit.
-        for tier in ("syntax", "static"):
-            out = _annotate_answer_with_changes("Done.", _written({"a.py"}, tier=tier))
-            self.assertNotIn("Discrimination: none observed", out, tier)
-
-    def test_oracle_names_which_basis_earned_it(self):
-        """`oracle` from a discriminating check and from a printed number differ."""
-        discriminated = _written({"parser.py"}, tier="oracle")
-        discriminated["executed_failures"] = {"parser.py"}
-        out = _annotate_answer_with_changes("Done.", discriminated)
-        self.assertIn("`parser.py` — validated: oracle (red→green)", out)
-        self.assertNotIn("Reported invariant", out)
-
-        invariant = _written({"solver.py"}, tier="oracle")
-        out = _annotate_answer_with_changes("Done.", invariant)
-        self.assertIn("`solver.py` — validated: oracle (reported invariant)", out)
-        # An invariant is presence-only evidence; the ledger must not let it pass for
-        # a comparison against something sealed.
-        self.assertIn("never its value", out)
+    def test_a_judged_run_replaces_the_caveat(self):
+        # Once a run has been read, the ledger has something better to show than the
+        # reminder that a checker proves nothing about the answer.
+        ec = _written({"solver.py"}, tier="static")
+        ec["runs"] = {"pytest -q": {
+            "completed": True, "verdict": "pass", "reason": "l2_rel=3e-4",
+            "failures": 0, "attempts": [],
+        }}
+        out = _annotate_answer_with_changes("Done.", ec)
+        self.assertNotIn("says nothing about whether the answer is right", out)
+        self.assertIn("`pytest -q` — ran; verdict: pass — l2_rel=3e-4", out)
 
     def test_declared_but_never_written_is_reported(self):
-        ec = _written({"a.py"}, tier="executed")
+        ec = _written({"a.py"}, tier="static")
         ec["declared_edit_set"] = {"a.py", "b.py"}
         out = _annotate_answer_with_changes("Done.", ec)
         self.assertIn("**Declared but never written:** `b.py`", out)
@@ -154,7 +152,7 @@ class VerificationLedgerTests(_ChecklistFixture):
         root = constants.WORKSPACE_ROOT
         outside = os.path.abspath(os.path.join(root, "../other/wave_solver_2d.py"))
         for declared in ("wave_solver_2d.py", "../other/wave_solver_2d.py", outside):
-            ec = _written({outside}, tier="executed")
+            ec = _written({outside}, tier="static")
             ec["declared_edit_set"] = {declared}
             out = _annotate_answer_with_changes("Done.", ec)
             self.assertNotIn("Declared but never written", out, declared)
@@ -165,13 +163,13 @@ class VerificationLedgerTests(_ChecklistFixture):
         import mimir.client.config.constants as constants
         import os
         root = constants.WORKSPACE_ROOT
-        ec = _written({os.path.abspath(os.path.join(root, "src/solver.py"))}, tier="executed")
+        ec = _written({os.path.abspath(os.path.join(root, "src/solver.py"))}, tier="static")
         ec["declared_edit_set"] = {"tests/solver.py"}
         out = _annotate_answer_with_changes("Done.", ec)
         self.assertIn("**Declared but never written:** `tests/solver.py`", out)
 
     def test_unchecked_steps_are_reported_with_a_preview(self):
-        ec = _written({"a.py"}, tier="executed")
+        ec = _written({"a.py"}, tier="static")
         self.checklist(ec, ["- [x] write solver", "- [ ] add convergence test",
                             "- [ ] document it"])
         out = _annotate_answer_with_changes("Done.", ec)
@@ -179,18 +177,18 @@ class VerificationLedgerTests(_ChecklistFixture):
         self.assertIn("add convergence test", out)
 
     def test_optional_steps_are_counted_separately(self):
-        ec = _written({"a.py"}, tier="executed")
+        ec = _written({"a.py"}, tier="static")
         self.checklist(ec, ["- [x] write solver", "- [ ] (optional) convergence study"])
         out = _annotate_answer_with_changes("Done.", ec)
         self.assertIn("1 optional step not done", out)
         self.assertNotIn("unchecked", out)
 
     def test_no_checklist_yields_no_checklist_lines(self):
-        out = _annotate_answer_with_changes("Done.", _written({"a.py"}, tier="oracle"))
+        out = _annotate_answer_with_changes("Done.", _written({"a.py"}, tier="static"))
         self.assertNotIn("Checklist", out)
 
     def test_ledger_never_replaces_the_model_answer(self):
-        out = _annotate_answer_with_changes("Prose.", _written({"a.py"}, tier="oracle"))
+        out = _annotate_answer_with_changes("Prose.", _written({"a.py"}, tier="static"))
         self.assertTrue(out.startswith("Prose."))
 
 
@@ -218,21 +216,24 @@ class LedgerMarkerTests(_ChecklistFixture):
         parsed = parse_ledger_block(block)
         self.assertEqual(parsed["status"], "warn")
         self.assertEqual(parsed["files"], 2)
-        self.assertIn("2 not validated", parsed["summary"])
+        self.assertIn("2 not checked", parsed["summary"])
         self.assertEqual(len(parsed["rows"]), 2)
 
     def test_status_separates_clean_runs_soft_caveats_and_gaps(self):
-        # ok: settled evidence, nothing open. note: passed, but discriminates nothing.
-        # warn: something the reader has to act on.
-        clean = _written({"a.py"}, tier="oracle")
-        clean["executed_failures"] = {"a.py"}
-        self.assertEqual(build_ledger(clean)["status"], "ok")
-        self.assertEqual(build_ledger(_written({"a.py"}, tier="executed"))["status"], "note")
+        # ok: settled evidence, nothing open. note: it checks out, but nothing read the
+        # result. warn: something the reader has to act on.
+        clean = _written({"a.py"}, tier="static")
+        clean["runs"] = {"pytest -q": {
+            "completed": True, "verdict": "pass", "reason": "l2_rel=3e-4",
+            "failures": 0, "attempts": [],
+        }}
+        self.assertEqual(build_ledger(clean)["status"], "note")
+        self.assertEqual(build_ledger(_written({"a.py"}, tier="static"))["status"], "note")
         self.assertEqual(build_ledger(_written({"a.py"}, validated=False))["status"], "warn")
 
     def test_only_rows_needing_action_are_emphasised(self):
         """Bold is what the webview tints rows by, so it must mark exactly the gaps."""
-        settled = _annotate_answer_with_changes("Done.", _written({"a.py"}, tier="oracle"))
+        settled = _annotate_answer_with_changes("Done.", _written({"a.py"}, tier="static"))
         self.assertNotIn("**", settled)
         ec = _written({"a.py"}, validated=False)
         self.checklist(ec, ["- [ ] add the test"])
@@ -244,102 +245,202 @@ class LedgerMarkerTests(_ChecklistFixture):
 class OutputVerdictLedgerTests(_ChecklistFixture):
     """Machine-observed and model-asserted, side by side and never conflated.
 
-    Exit 0 is all the loop sees by itself, so an execution parks its run until the model
-    says what the output showed. The ledger has to render three states the old two rows
-    could not: ran-but-unjudged, judged-and-failed, judged-and-passed.
+    A file row says what a checker established; a run row says what happened when the
+    code was executed and what the model read in the output. The ledger has to render
+    four run states: never judged, judged pass, judged fail, judged unknown — plus a run
+    that never completed at all.
     """
 
-    def _awaiting(self, command, paths, **over):
-        ec = _ctx(
-            dirty_written_files=set(paths),
-            code_mutation_started=True,
-            unjudged_runs={command: {"paths": list(paths), "tier": "executed"}},
-            **over,
-        )
-        return ec
+    def _run(self, command="python b_test.py", **over):
+        run = {"completed": True, "verdict": "", "reason": "",
+               "failures": 0, "attempts": [], "call_id": ""}
+        run.update(over)
+        return _ctx(runs={command: run})
 
     def test_unjudged_output_is_named_as_such(self):
-        # The wave2d row, stated correctly: "not validated" alone would read as
-        # "never checked", which understates a file whose check ran and printed a warning.
-        out = _annotate_answer_with_changes(
-            "All done, verified and working.", self._awaiting("python b_test.py", {"solver.py"}),
+        out = _annotate_answer_with_changes("All done, verified and working.", self._run())
+        self.assertIn("`python b_test.py` — ran; **its output was never judged**", out)
+
+    def test_a_run_left_unresolved_is_reported_as_judged_unknown(self):
+        # After two reminders the loop stops asking — what it must never do is let the
+        # run vanish, which would read back as a clean session.
+        ec = self._run("python solver.py", verdict="unknown",
+                       reason="no reference for this regime")
+        out = _annotate_answer_with_changes("Done.", ec)
+        self.assertIn(
+            "`python solver.py` — ran; **judged unknown** — no reference for this regime", out,
         )
-        self.assertIn("`solver.py` — ran, **not validated**: its output was never judged", out)
 
     def test_a_run_with_no_file_still_earns_a_ledger(self):
         # An analysis-only session is exactly the one whose whole answer rests on that
         # output — it used to produce no ledger at all.
-        ec = _ctx(unjudged_runs={"pytest -q": {"paths": [], "tier": "executed"}})
-        out = _annotate_answer_with_changes("The suite is green.", ec)
-        self.assertIn("`pytest -q` — ran; its output was never judged", out)
+        out = _annotate_answer_with_changes("The suite is green.", self._run("pytest -q"))
+        self.assertIn("`pytest -q` — ran; **its output was never judged**", out)
+
+    def test_a_run_that_never_completed_is_reported_as_such(self):
+        out = _annotate_answer_with_changes("Done.", self._run(completed=False))
+        self.assertIn("`python b_test.py` — **did not complete**", out)
 
     def test_a_failing_verdict_is_reported_with_its_reason(self):
-        ec = self._awaiting("python b_test.py", {"solver.py"})
-        ec["unjudged_runs"] = {}
-        ec["verdict_by_file"] = {"solver.py": {
-            "verdict": "fail", "reason": "0.00% amplitude reduction", "command": "python b_test.py",
-        }}
+        ec = self._run(verdict="fail", reason="0.00% amplitude reduction")
         out = _annotate_answer_with_changes("Done.", ec)
-        self.assertIn("verdict: fail — 0.00% amplitude reduction", out)
+        self.assertIn("**verdict: fail** — 0.00% amplitude reduction", out)
 
     def test_a_verdict_is_labelled_as_the_models_own_reading(self):
-        ec = _written({"solver.py"}, tier="executed")
-        ec["verdict_by_file"] = {"solver.py": {
-            "verdict": "pass", "reason": "matches the reference", "command": "pytest",
-        }}
+        ec = self._run("pytest", verdict="pass", reason="matches the reference")
         out = _annotate_answer_with_changes("Done.", ec)
-        self.assertIn("`solver.py` — validated: executed · verdict: pass", out)
+        self.assertIn("`pytest` — ran; verdict: pass — matches the reference", out)
         self.assertIn("the model's own reading", out)
 
     def test_what_was_tried_is_reported_when_the_budget_runs_out(self):
         from mimir.client.config.constants import VALIDATION_RETRY_BUDGET
-        ec = _ctx(
-            dirty_written_files={"solver.py"},
-            code_mutation_started=True,
-            validation_fail_count_by_file={"solver.py": VALIDATION_RETRY_BUDGET},
-            verdict_attempts_by_file={"solver.py": [
-                "python b_test.py → 0.00% amplitude reduction",
-                "python b_test.py → energy grew by 0.6%",
-            ]},
+        ec = self._run(
+            verdict="fail", reason="energy grew by 0.6%",
+            failures=VALIDATION_RETRY_BUDGET,
+            attempts=["0.00% amplitude reduction", "energy grew by 0.6%"],
         )
+        ec["dirty_written_files"] = {"solver.py"}
+        ec["validated_files"] = {"solver.py"}
+        ec["code_mutation_started"] = True
         issues, _ = _collect_completion_issues(ec)
         joined = "\n".join(issues)
-        self.assertIn("Validation budget exhausted", joined)
+        self.assertIn("no further retries", joined)
         self.assertIn("0.00% amplitude reduction", joined)
         self.assertIn("energy grew by 0.6%", joined)
 
 
+class WorkflowNudgeSequenceTests(unittest.TestCase):
+    """The three verification nudges are one workflow, and never speak over each other.
+
+    Write → check → run → judge. Each step has exactly one nudge that owns it, and the
+    predicates are written so that at most one can fire at a time: `validation` while a
+    file still owes a check, `unexercised` once the checks are green and nothing has
+    run, `output_verdict` once a run owes a verdict. The gap this pins is the middle
+    one — before it existed, a model could write code, lint it, and stop, and the whole
+    judging machinery stayed unreachable because it is only ever entered by running
+    something.
+    """
+
+    def _agent(self, *, exec_tool=True, judge_tool=True):
+        reg = {}
+        if exec_tool:
+            reg["bash_run"] = ToolCaps(name="bash_run", capabilities=frozenset({CODE_EXEC}))
+        if judge_tool:
+            reg["report_verdict"] = ToolCaps(
+                name="report_verdict", capabilities=frozenset({JUDGE}))
+        return types.SimpleNamespace(tool_caps=reg, enforcement="strict", model="test")
+
+    def _fired(self, ec, *, agent=None):
+        """The category of the one nudge this call fires, or "" for none.
+
+        Read as a diff of the counters, not as "any counter is set": exactly one nudge
+        fires per turn, and asserting on the whole map would make an earlier turn's
+        reminder look like this one's.
+        """
+        # Two distinct discovery signals, else the guidance layer's `discovery` nudge
+        # speaks first and this reads as "no workflow nudge fired".
+        ec.setdefault("read_files", set()).add("solver.py")
+        ec["searched"] = True
+        before = dict(ec["nudge_counts"])
+        messages: list[dict] = []
+        maybe_append_nudge(
+            agent=agent or self._agent(), query="fix the solver",
+            active_mode="agent", execution_context=ec, messages=messages,
+        )
+        return next(
+            (c for c, n in ec["nudge_counts"].items() if n > before.get(c, 0)), "",
+        )
+
+    def test_each_step_of_the_workflow_has_exactly_one_nudge(self) -> None:
+        unchecked = _written({"solver.py"}, validated=False)
+        # `validation` waits for editing to pause (NUDGE_VALIDATION_IDLE_STEPS); the
+        # other two ask the moment the model stops, so only this one needs the wait.
+        unchecked["steps_since_last_edit"] = NUDGE_VALIDATION_IDLE_STEPS
+        cases = [
+            ("written, never checked", unchecked, "validation"),
+            ("checked, never run", _written({"solver.py"}, tier="static"), "unexercised"),
+        ]
+        for label, ec, expected in cases:
+            with self.subTest(step=label):
+                self.assertEqual(self._fired(ec), expected)
+
+        ec = _written({"solver.py"}, tier="static")
+        record_run(ec, "python solver.py", completed=True)
+        self.assertEqual(self._fired(ec), "output_verdict")
+
+        ec = _written({"solver.py"}, tier="static")
+        record_run(ec, "python solver.py", completed=True)
+        apply_verdict("pass", "l2_rel=3e-4 against the analytic solution", "", ec)
+        self.assertEqual(self._fired(ec), "", "a judged run leaves nothing to ask")
+
+    def test_a_run_of_any_kind_silences_the_execution_reminder(self) -> None:
+        # Including one that failed: the model is already on the repair ladder, and
+        # "you never ran it" would be false as well as unhelpful.
+        ec = _written({"solver.py"}, tier="static")
+        record_run(ec, "python solver.py", completed=False)
+        self.assertNotEqual(self._fired(ec), "unexercised")
+
+    def test_it_stays_silent_with_no_execution_surface_connected(self) -> None:
+        # Same rule the verdict nudge follows: advice with nowhere to land is noise.
+        ec = _written({"solver.py"}, tier="static")
+        self.assertEqual(self._fired(ec, agent=self._agent(exec_tool=False)), "")
+
+    def test_a_discovery_only_turn_is_never_told_to_run_something(self) -> None:
+        self.assertEqual(self._fired(build_execution_context()), "")
+
+    def test_it_asks_once_and_then_lets_go(self) -> None:
+        # "There was nothing to run" is an answer the message explicitly invites, so
+        # repeating the question would be arguing with a legitimate reply.
+        ec = _written({"solver.py"}, tier="static")
+        agent = self._agent()
+        for _ in range(3):
+            messages: list[dict] = []
+            maybe_append_nudge(agent=agent, query="fix it", active_mode="agent",
+                               execution_context=ec, messages=messages)
+        self.assertEqual(ec["nudge_counts"]["unexercised"], 1)
+
+    def test_the_reminder_names_the_three_routes_and_the_way_out(self) -> None:
+        text = unexercised_code_nudge_message(["solver.py"])
+        self.assertIn("solver.py", text)
+        for route in ("entry point", "calls into it", "test directory"):
+            self.assertIn(route, text)
+        self.assertIn("nothing to run", text)
+
+
 class CompletionIssueTests(_ChecklistFixture):
-    def test_validated_sentence_names_the_evidence(self):
+    def test_checked_sentence_does_not_claim_correctness(self):
         # The unqualified sentence is what a model reads back as licence to report
         # the work as verified.
-        _, completed = _collect_completion_issues(_written({"a.py"}, tier="executed"))
-        self.assertIn("All modified files validated (weakest evidence: executed)", completed)
+        _, completed = _collect_completion_issues(_written({"a.py"}, tier="static"))
+        self.assertIn(
+            "All modified files checked (static) — parses/lints, says nothing about the result",
+            completed,
+        )
 
     def test_weakest_tier_governs_a_multi_file_change(self):
         ec = _written({"a.py", "b.py"})
-        raise_validation_tier(ec, "a.py", "oracle")
+        raise_validation_tier(ec, "a.py", "static")
         raise_validation_tier(ec, "b.py", "syntax")
         _, completed = _collect_completion_issues(ec)
         # The value reported is the floor across the change, and the sentence must say
         # so: it used to print the weakest tier under the word "highest".
-        self.assertIn("weakest evidence: syntax", " ".join(completed))
+        self.assertIn("checked (syntax)", " ".join(completed))
         self.assertNotIn("highest evidence", " ".join(completed))
 
     def test_unchecked_checklist_becomes_an_issue(self):
-        ec = _written({"a.py"}, tier="executed")
+        ec = _written({"a.py"}, tier="static")
         self.checklist(ec, ["- [ ] add the test"])
         issues, _ = _collect_completion_issues(ec)
         self.assertTrue(any("Checklist incomplete" in i for i in issues))
 
     def test_optional_steps_are_not_an_issue(self):
-        ec = _written({"a.py"}, tier="executed")
+        ec = _written({"a.py"}, tier="static")
         self.checklist(ec, ["- [ ] [optional] tune the sponge"])
         issues, _ = _collect_completion_issues(ec)
         self.assertFalse(any("Checklist incomplete" in i for i in issues))
 
     def test_declared_but_unwritten_becomes_an_issue(self):
-        ec = _written({"a.py"}, tier="executed")
+        ec = _written({"a.py"}, tier="static")
         ec["declared_edit_set"] = {"a.py", "b.py"}
         issues, _ = _collect_completion_issues(ec)
         self.assertTrue(any("Declared but never written" in i for i in issues))
@@ -348,12 +449,12 @@ class CompletionIssueTests(_ChecklistFixture):
 class IncompleteFinalizationTests(_ChecklistFixture):
     def test_all_validated_with_no_checklist_is_complete(self):
         # Unchanged behaviour for the majority of runs.
-        self.assertFalse(needs_incomplete_finalization(_written({"a.py"}, tier="oracle")))
+        self.assertFalse(needs_incomplete_finalization(_written({"a.py"}, tier="static")))
 
     def test_all_validated_but_checklist_open_is_incomplete(self):
         # The gap this closes: validating the two files you wrote is no evidence
         # about the three steps you never started.
-        ec = _written({"a.py"}, tier="oracle")
+        ec = _written({"a.py"}, tier="static")
         self.checklist(ec, ["- [x] one", "- [ ] two", "- [ ] three"])
         self.assertTrue(needs_incomplete_finalization(ec))
 
@@ -363,7 +464,7 @@ class IncompleteFinalizationTests(_ChecklistFixture):
         self.assertFalse(needs_incomplete_finalization(ec))
 
     def test_optional_steps_alone_do_not_force_it(self):
-        ec = _written({"a.py"}, tier="oracle")
+        ec = _written({"a.py"}, tier="static")
         self.checklist(ec, ["- [x] one", "- [ ] optional: extra benchmark"])
         self.assertFalse(needs_incomplete_finalization(ec))
 
@@ -380,7 +481,7 @@ class RefusedActionReportTests(_ChecklistFixture):
     def _refused(self, times=1, **over):
         # An otherwise clean run — validated, concluded, nothing else outstanding — so
         # the refusal is the only thing the report has to account for.
-        ec = _written({"a.py"}, tier="oracle")
+        ec = _written({"a.py"}, tier="static")
         ec["workflow_state"] = "conclude"
         ec.update(over)
         for _ in range(times):
@@ -469,12 +570,12 @@ class UnfinishedPlanNudgeTests(_ChecklistFixture):
         return _should_nudge_unfinished_plan(ec)
 
     def test_fires_on_open_steps_after_code_was_written(self):
-        ec = _written({"a.py"}, tier="executed")
+        ec = _written({"a.py"}, tier="static")
         self.checklist(ec, ["- [x] one", "- [ ] two"])
         self.assertTrue(self._should(ec))
 
     def test_silent_without_a_checklist(self):
-        self.assertFalse(self._should(_written({"a.py"}, tier="executed")))
+        self.assertFalse(self._should(_written({"a.py"}, tier="static")))
 
     def test_silent_before_any_code_was_written(self):
         ec = _ctx()
@@ -482,18 +583,18 @@ class UnfinishedPlanNudgeTests(_ChecklistFixture):
         self.assertFalse(self._should(ec))
 
     def test_silent_when_everything_is_ticked(self):
-        ec = _written({"a.py"}, tier="executed")
+        ec = _written({"a.py"}, tier="static")
         self.checklist(ec, ["- [x] one", "- [x] two"])
         self.assertFalse(self._should(ec))
 
     def test_optional_steps_alone_do_not_fire_it(self):
-        ec = _written({"a.py"}, tier="executed")
+        ec = _written({"a.py"}, tier="static")
         self.checklist(ec, ["- [x] one", "- [ ] (optional) extra"])
         self.assertFalse(self._should(ec))
 
     def test_capped_at_one(self):
         from mimir.client.config.constants import NUDGE_MAX_UNFINISHED_PLAN
-        ec = _written({"a.py"}, tier="executed")
+        ec = _written({"a.py"}, tier="static")
         self.checklist(ec, ["- [ ] two"])
         self.assertTrue(self._should(ec))
         ec["nudge_counts"]["unfinished_plan"] = NUDGE_MAX_UNFINISHED_PLAN
@@ -568,7 +669,7 @@ class WorkspaceRootIsNameableTests(unittest.TestCase):
         # types the destination explicitly, so restating it is noise on every answer.
         ec = _written({"wave_solver_2d/solver.py"}, tier="syntax")
         out = _annotate_answer_with_changes("Created outside the codes directory.", ec)
-        self.assertIn("`wave_solver_2d/solver.py` — validated: syntax", out)
+        self.assertIn("`wave_solver_2d/solver.py` — checked: syntax", out)
         self.assertNotIn("workspace root", out)
 
 

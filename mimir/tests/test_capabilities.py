@@ -101,7 +101,7 @@ class ServerDeclarationTest(unittest.TestCase):
             caps.PLAN_BLOCKED, caps.PLAN_READONLY, caps.CODE_EXEC, caps.SENSITIVE, caps.NON_BATCH,
             caps.CODE_NAV, caps.ENV_DISCOVERY, caps.EXTERNAL_FETCH, caps.CLUSTER_SUBMIT,
             caps.ENV_MUTATE, caps.BACKGROUNDABLE,
-            caps.REMOVE, caps.OVERWRITE, caps.TASK_PLANNING,
+            caps.REMOVE, caps.OVERWRITE, caps.TASK_PLANNING, caps.JUDGE,
         }
         server_vocab = {
             srv.READ, srv.CACHEABLE, srv.SEARCH, srv.SEARCH_WITH_PATH,
@@ -111,7 +111,7 @@ class ServerDeclarationTest(unittest.TestCase):
             srv.PLAN_BLOCKED, srv.PLAN_READONLY, srv.CODE_EXEC, srv.SENSITIVE, srv.NON_BATCH,
             srv.CODE_NAV, srv.ENV_DISCOVERY, srv.EXTERNAL_FETCH, srv.CLUSTER_SUBMIT,
             srv.ENV_MUTATE, srv.BACKGROUNDABLE,
-            srv.REMOVE, srv.OVERWRITE, srv.TASK_PLANNING,
+            srv.REMOVE, srv.OVERWRITE, srv.TASK_PLANNING, srv.JUDGE,
         }
         self.assertEqual(client_vocab, server_vocab)
 

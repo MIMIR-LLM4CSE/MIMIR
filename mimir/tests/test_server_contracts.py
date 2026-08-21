@@ -1,4 +1,5 @@
 import importlib.util
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -1198,6 +1199,61 @@ class BashServerTests(unittest.TestCase):
         self.assertEqual(
             sorted(obs._PROJECT_VALIDATORS - set(EXEC_COMMANDS) - {"py_compile"}), [],
             "project validators the classifier does not tag as exec")
+        # And the invariant the split into checks-vs-runs added: a head absent from
+        # _VALIDATOR_TIER is an execution, for which _bash_validation_scan never reaches
+        # the whole-project test — so listing one here is dead weight that reads like a
+        # rule. `pytest` and `ctest` sat here unreachable for exactly that reason.
+        self.assertEqual(
+            sorted(obs._PROJECT_VALIDATORS - set(obs._VALIDATOR_TIER)), [],
+            "project checkers absent from _VALIDATOR_TIER are unreachable")
+
+    def test_the_header_table_is_the_allowlist(self) -> None:
+        """The module docstring is the allowlist's only human-readable form.
+
+        It is also the first thing a reader trusts about this server, and it drifts
+        silently: `chmod` was allowlisted and never added to the table, so the headline
+        count went stale with it — one omission, showing up as two wrong facts. Nothing
+        checked either, because the count is prose and prose is not imported.
+        """
+        doc = server_bash.__doc__ or ""
+        allowed = sorted(server_bash._ALLOWED_COMMANDS)
+        headline = re.search(r"THE (\d+) ALLOWED COMMANDS", doc)
+        self.assertIsNotNone(headline, "the headline count is gone from the docstring")
+        self.assertEqual(int(headline.group(1)), len(allowed),
+                         "the docstring's headline count is not the allowlist's size")
+        # The by-category table sits between the second and third rule lines.
+        table = doc.split("===========  =========  ========")[2]
+        missing = [
+            c for c in allowed
+            if not re.search(rf"(?<![\w.+-]){re.escape(c)}(?![\w.+-])", table)
+        ]
+        self.assertEqual(missing, [], "allowlisted commands absent from the header table")
+
+    def test_no_command_wrapper_is_allowlisted(self) -> None:
+        """A wrapper in the allowlist makes the allowlist decorative.
+
+        The validator checks argv[0]. A command whose argument list *is* another
+        command therefore approves its own head and nothing it runs — which is what
+        `_SHELL_RUNNERS` exists to refuse, and the one thing its rejection message
+        promises can never be allowed. Stated in that comment since it was written,
+        never checked: `timeout` reached the allowlist through `EXEC_COMMANDS` and
+        re-opened `bash -c` behind a head nobody was looking at.
+        """
+        self.assertEqual(
+            sorted(server_bash._SHELL_RUNNERS & set(server_bash._ALLOWED_COMMANDS)), [],
+            "a command runner is allowlisted; its nested command is never validated")
+
+    def test_a_wrapper_cannot_smuggle_a_refused_command(self) -> None:
+        """The behaviour the set invariant above protects, spelled out end to end."""
+        cwd = server_bash._WORKSPACE_ROOT
+        for cmd in ("timeout 5 rm -rf build", "timeout 5 bash -c 'echo hi'",
+                    "nohup rm -rf build", "/usr/bin/timeout 5 rm -rf build"):
+            with self.subTest(command=cmd):
+                self.assertEqual(server_bash._validate_command(cmd, cwd).get("status"),
+                                 "error", f"{cmd!r} smuggled a command past the allowlist")
+        # …without costing the ordinary run its own timeout, which is the tool's to set.
+        self.assertEqual(
+            server_bash._validate_command("python solver.py", cwd).get("status"), "ok")
 
     def test_every_refused_path_is_one_the_user_can_be_asked_about(self) -> None:
         """The invariant tying the guard to the gate.
@@ -1334,6 +1390,34 @@ class BashServerTests(unittest.TestCase):
         self.assertEqual(payload["status"], "error")
 
 
+class ReportVerdictTests(unittest.TestCase):
+    def test_a_verdict_word_outside_the_three_is_refused(self) -> None:
+        payload = server_bash.report_verdict("probably", "residual 3e-4 under the bound")
+        self.assertEqual(payload["status"], "error")
+
+    def test_an_empty_reason_is_refused(self) -> None:
+        payload = server_bash.report_verdict("pass", "   ")
+        self.assertEqual(payload["status"], "error")
+
+    def test_a_reason_naming_what_was_read_is_accepted(self) -> None:
+        for reason in (
+            "l2_rel=3.1e-4 against the analytic solution, under the 1e-3 bound",
+            "energy grows from 1.56 to 4.02 — the absorbing layer reflects",
+            "only prints 'Simulation completed.', nothing about correctness",
+            "the pulse leaves the domain and the field near the boundary stays flat",
+        ):
+            payload = server_bash.report_verdict("pass", reason)
+            self.assertEqual(payload["status"], "ok", reason)
+            self.assertEqual(payload["reason"], reason)
+
+    def test_scope_is_carried_through_verbatim(self) -> None:
+        payload = server_bash.report_verdict(
+            "fail", "the residual plateaus at 1e-1 instead of falling", " solver.py "
+        )
+        self.assertEqual(payload["status"], "ok")
+        self.assertEqual(payload["run"], "solver.py")
+
+
 class TodoServerTests(unittest.TestCase):
     def setUp(self) -> None:
         # server_todo resolves its file dynamically via _get_todo_file() (session
@@ -1427,6 +1511,27 @@ class EnvServerTests(unittest.TestCase):
 
     def test_looks_like_venv_false_for_plain_dir(self) -> None:
         self.assertFalse(server_env._looks_like_venv(str(SERVERS_DIR)))
+
+class ToolSchemaHonestyTests(unittest.TestCase):
+    """A tool's schema may only advertise policies that exist.
+
+    ``write_file`` once carried a ``large_file_overwrite_confirmed`` flag and a
+    docstring promising that ">150 lines blocks overwrite unless it is set". No policy
+    ever read it, so the model paid for the field in every tool schema and was told a
+    rule that would never fire. The two guards that do exist are the read-before-
+    overwrite check and the server's refusal to overwrite without ``overwrite=true``.
+    """
+
+    def test_write_file_advertises_no_line_threshold_policy(self) -> None:
+        import inspect
+        source = (SERVERS_DIR / "workspace" / "server_files.py").read_text()
+        self.assertNotIn("large_file_overwrite_confirmed", source)
+
+        sig = inspect.signature(server_files.write_file)
+        self.assertEqual(
+            list(sig.parameters), ["path", "content", "overwrite"]
+        )
+        self.assertNotIn("150", server_files.write_file.__doc__ or "")
 
 
 if __name__ == "__main__":

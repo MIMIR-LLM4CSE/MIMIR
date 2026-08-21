@@ -9,21 +9,27 @@ setUp/tearDown so nothing leaks between tests or into other test modules.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import tempfile
+import types
 import unittest
 
 import mimir.client.guardrails.policy.engine as policy_manager_module
 from mimir.client.extensions import (
     NudgeRule,
     PolicyCheck,
+    PostToolRule,
     register_nudge,
     register_policy_check,
+    register_post_tool,
 )
 from mimir.client.guardrails.policy.plugins import PolicyRegistry
 from mimir.client.guardrails.nudges.engine import maybe_append_nudge
 from mimir.client.guardrails.nudges.plugins import NudgeRegistry
+from mimir.client.tool_execution.executor import run_post_tool_annotations
+from mimir.client.tool_execution.plugins import PostToolRegistry
 from mimir.client.extensions.plugins import load_plugins
 from mimir.tests.test_policy_manager import _FakeAgent
 
@@ -46,10 +52,12 @@ class ExtensionRegistryResetMixin(unittest.TestCase):
     def setUp(self) -> None:
         PolicyRegistry.clear()
         NudgeRegistry.clear()
+        PostToolRegistry.clear()
 
     def tearDown(self) -> None:
         PolicyRegistry.clear()
         NudgeRegistry.clear()
+        PostToolRegistry.clear()
 
 
 class PolicyPluginTests(ExtensionRegistryResetMixin):
@@ -194,6 +202,73 @@ class NudgePluginTests(ExtensionRegistryResetMixin):
                                execution_context=ec, messages=[])
         # Capped at CUSTOM_NUDGE_MAX_PER_QUERY (3) via the shared nudge_counts.
         self.assertEqual(ec["nudge_counts"]["spammy"], 3)
+
+
+class PostToolPluginTests(ExtensionRegistryResetMixin):
+    """The seam between a call and the turn's end: react to what a tool produced."""
+
+    def _agent(self):
+        return types.SimpleNamespace(
+            tool_caps={},
+            _normalize_workspace_path=lambda p: p or "",
+        )
+
+    def _annotate(self, result: str = "{}") -> str:
+        return asyncio.run(run_post_tool_annotations(
+            self._agent(), "any_tool", {}, result, {},
+        ))
+
+    def test_an_empty_registry_annotates_nothing(self) -> None:
+        self.assertEqual(self._annotate(), "")
+
+    def test_a_sync_hook_appends_its_text(self) -> None:
+        register_post_tool(PostToolRule(
+            name="note", run=lambda ag, t, ar, res, ec: "\n\nNOTE: seen",
+        ))
+        self.assertIn("NOTE: seen", self._annotate())
+
+    def test_an_async_hook_is_awaited(self) -> None:
+        async def _run(agent, tool_name, arguments, result, execution_context):
+            return "\n\nASYNC: ok"
+
+        register_post_tool(PostToolRule(name="async_note", run=_run))
+        self.assertIn("ASYNC: ok", self._annotate())
+
+    def test_the_hook_sees_the_tool_result(self) -> None:
+        # What the call produced is the whole point of this seam.
+        register_post_tool(PostToolRule(
+            name="echo",
+            run=lambda ag, t, ar, res, ec: "\n\nRED" if "error" in res else "",
+        ))
+        self.assertIn("RED", self._annotate('{"status": "error"}'))
+        self.assertEqual(self._annotate('{"status": "ok"}'), "")
+
+    def test_a_raising_hook_is_skipped_not_fatal(self) -> None:
+        def _boom(agent, tool_name, arguments, result, execution_context):
+            raise RuntimeError("bad pack")
+
+        register_post_tool(PostToolRule(name="boom", order=10, run=_boom))
+        register_post_tool(PostToolRule(
+            name="survivor", order=20, run=lambda ag, t, ar, res, ec: "\n\nSTILL HERE",
+        ))
+        self.assertIn("STILL HERE", self._annotate())
+
+    def test_hooks_run_in_declared_order(self) -> None:
+        register_post_tool(PostToolRule(name="b", order=20, run=lambda *a: "second"))
+        register_post_tool(PostToolRule(name="a", order=10, run=lambda *a: "first"))
+        self.assertEqual(self._annotate(), "firstsecond")
+
+    def test_a_hook_can_write_to_the_blackboard(self) -> None:
+        # It cannot block — the call already happened — but the turn-end gates read
+        # what it records, which is how a machine-observed failure stops a conclusion.
+        def _record(agent, tool_name, arguments, result, execution_context):
+            execution_context.setdefault("dirty_written_files", set()).add("solver.py")
+            return ""
+
+        register_post_tool(PostToolRule(name="record", run=_record))
+        ec: dict = {}
+        asyncio.run(run_post_tool_annotations(self._agent(), "any_tool", {}, "{}", ec))
+        self.assertEqual(ec["dirty_written_files"], {"solver.py"})
 
 
 class LoaderTests(ExtensionRegistryResetMixin):

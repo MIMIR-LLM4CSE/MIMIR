@@ -539,22 +539,16 @@ def list_files(subdir: str = ".") -> dict:
     preview={"kind": "content", "args": ["content"]},
     label="Writing file: {path}",
 ))
-def write_file(path: str, content: str, overwrite: bool = False, large_file_overwrite_confirmed: bool = False) -> dict:
+def write_file(path: str, content: str, overwrite: bool = False) -> dict:
     """Create a file with the given content, or overwrite when overwrite=true.
 
     For existing files, prefer replace_in_file or replace_lines for surgical edits.
     Only use overwrite=true when you have read the file and intend to rewrite it entirely.
 
-    For files larger than 150 lines, the policy will block overwrite=true unless
-    large_file_overwrite_confirmed=true is also set. Use that flag only when a full
-    rewrite is genuinely necessary (e.g. the entire file structure changes).
-
     Args:
-        path:                         ABSOLUTE path to the file (required; a relative path is rejected).
-        content:                      Text content to write.
-        overwrite:                    Set to true to allow overwriting an existing file.
-        large_file_overwrite_confirmed: Set to true to bypass the >150-line surgical-edit policy
-                                       when a full rewrite of a large file is intentional.
+        path:      ABSOLUTE path to the file (required; a relative path is rejected).
+        content:   Text content to write.
+        overwrite: Set to true to allow overwriting an existing file.
     """
     try:
         abs_err = _require_abs(path)

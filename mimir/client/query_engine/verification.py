@@ -13,7 +13,11 @@ from __future__ import annotations
 
 import re
 
-from ..context import unwritten_declared_files, validation_tier, verdict_for, weakest_validation_tier
+from ..context import (
+    unwritten_declared_files,
+    validation_tier,
+    weakest_validation_tier,
+)
 from ..guardrails.workflow import unchecked_checklist_items
 
 #: Opening marker of a rendered ledger block. Stable — UIs split answers on it.
@@ -26,24 +30,15 @@ _ATTR_RE = re.compile(r'(?P<key>\w+)="(?P<value>[^"]*)"')
 #: a front-end drops the marker comment.
 LEDGER_FRAMING = "Verification ledger — machine-recorded, not model-authored:"
 
-# How a file reached the `oracle` tier. Derived, never stored: a file promoted by
-# red→green is exactly one an `executed`-tier check was seen failing on, and that set
-# is already kept for the promotion itself. Anything else at `oracle` got there by
-# reporting a numerical invariant.
-_ORACLE_DISCRIMINATED = "red→green"
-_ORACLE_INVARIANT = "reported invariant"
-
 # The absence line is domain-neutral on purpose: worded numerically it fires on every
 # parser/CLI/refactor run that could never satisfy it, and becomes wallpaper.
-_DISCRIMINATION_NOTE = (
-    "Discrimination: none observed — every check that passed was first run after the "
-    "change and was never seen failing, so nothing establishes that it tells working "
-    "code from broken code."
-)
-# Numerical wording only ever *qualifies* an invariant that was actually reported.
-_INVARIANT_NOTE = (
-    "Reported invariant: a validation run printed a numerical invariant. Its presence "
-    "is recorded, never its value — nothing here compared it against a sealed reference."
+# It only ever fires when nothing ran, so it must not point at run rows: there are none
+# below it, and sending the reader to an empty half of the ledger is how a caveat stops
+# being read at all.
+_UNCHECKED_OUTPUT_NOTE = (
+    "A checker says a file parses, imports and lints. It says nothing about whether the "
+    "answer is right, and nothing here was run — so no result was produced, and none was "
+    "judged."
 )
 # Said once, next to the rows that carry a verdict: the ledger is machine-recorded, but
 # a verdict is the one line in it the model wrote, and the two must not read alike.
@@ -53,19 +48,20 @@ _VERDICT_NOTE = (
 )
 
 
-def _verdict_suffix(execution_context: dict, path: str) -> str:
-    """`· verdict: fail — <reason>` for a judged file, or the empty string."""
-    record = verdict_for(execution_context, path)
-    if not record:
-        return ""
-    reason = (record.get("reason") or "").strip()
-    return f" · verdict: {record['verdict']}" + (f" — {reason}" if reason else "")
-
-
-def _oracle_basis(execution_context: dict, path: str) -> str:
-    if path in (execution_context.get("executed_failures") or set()):
-        return _ORACLE_DISCRIMINATED
-    return _ORACLE_INVARIANT
+def _run_row(command: str, run: dict) -> str:
+    """One execution, as what is actually known about it."""
+    reason = str(run.get("reason") or "").strip()
+    tail = f" — {reason}" if reason else ""
+    if not run.get("completed"):
+        return f"`{command}` — **did not complete**{tail}"
+    verdict = run.get("verdict")
+    if verdict == "pass":
+        return f"`{command}` — ran; verdict: pass{tail}"
+    if verdict == "fail":
+        return f"`{command}` — ran; **verdict: fail**{tail}"
+    if verdict == "unknown":
+        return f"`{command}` — ran; **judged unknown**{tail}"
+    return f"`{command}` — ran; **its output was never judged**"
 
 
 def _plural(n: int, word: str) -> str:
@@ -76,60 +72,46 @@ def build_ledger(execution_context: dict) -> dict | None:
     """The ledger for this run, or None when nothing happened worth recording.
 
     Returns ``{"status": ok|note|warn, "files": int, "summary": str, "rows": [markdown]}``.
-    ``status`` separates a clean run from soft caveats (evidence that passed but
-    discriminates nothing) and from hard gaps (unvalidated or unwritten files, open
-    checklist steps) — it is what a front-end colours the panel by.
+    ``status`` separates a clean run from soft caveats and from hard gaps (unvalidated or
+    unwritten files, unjudged runs, open checklist steps) — it is what a front-end colours
+    the panel by.
+
+    Two kinds of row, kept apart on purpose. A **file** row says what a checker
+    established: it parses, it lints, nothing more. A **run** row says what happened when
+    the code was executed and what the model read in the output. Merging them is what let
+    "validated" be reported as "correct".
     """
     written = sorted(execution_context.get("dirty_written_files", set()))
     validated = execution_context.get("validated_files", set())
     unchecked = unchecked_checklist_items(execution_context)
     unwritten = unwritten_declared_files(execution_context)
-    unjudged = execution_context.get("unjudged_runs") or {}
+    runs = execution_context.get("runs") or {}
     required = [it for it in unchecked if not it.get("optional")]
     optional = [it for it in unchecked if it.get("optional")]
 
     # A run nobody judged is worth reporting even when no file was touched: an
     # analysis-only session is exactly the one whose whole answer rests on that output.
-    if not written and not unchecked and not unwritten and not unjudged:
+    if not written and not unchecked and not unwritten and not runs:
         return None
 
     rows: list[str] = []
     notes: list[str] = []
     unvalidated = [f for f in written if f not in validated]
-    awaiting = {p for run in unjudged.values() for p in (run.get("paths") or ())}
 
     for f in written:
         if f in unvalidated:
-            # "not validated" alone reads as "never checked", which understates a file
-            # whose check ran and overstates one whose verdict came back negative.
-            if f in awaiting:
-                rows.append(f"`{f}` — ran, **not validated**: its output was never judged")
-            else:
-                rows.append(f"`{f}` — **not validated**" + _verdict_suffix(execution_context, f))
-            continue
-        tier = validation_tier(execution_context, f) or "executed"
-        if tier == "oracle":
-            # Saying plainly which way it got there is what stops "the tests passed"
-            # being read back as "the result is correct".
-            rows.append(f"`{f}` — validated: oracle ({_oracle_basis(execution_context, f)})"
-                        + _verdict_suffix(execution_context, f))
+            rows.append(f"`{f}` — **not checked**")
         else:
-            rows.append(f"`{f}` — validated: {tier}" + _verdict_suffix(execution_context, f))
+            rows.append(f"`{f}` — checked: {validation_tier(execution_context, f) or 'static'}")
 
-    for command, run in sorted(unjudged.items()):
-        if not (run.get("paths") or ()):
-            rows.append(f"`{command}` — ran; its output was never judged")
+    for command, run in sorted(runs.items()):
+        rows.append(_run_row(command, run))
 
-    tiers = [validation_tier(execution_context, f) for f in written]
-    if written:
-        # Only worth saying once code was run — below that the per-file tier tells the
-        # whole story.
-        if "oracle" not in tiers and "executed" in tiers:
-            notes.append(_DISCRIMINATION_NOTE)
-        elif any(_oracle_basis(execution_context, f) == _ORACLE_INVARIANT
-                 for f in written if validation_tier(execution_context, f) == "oracle"):
-            notes.append(_INVARIANT_NOTE)
-    if any(verdict_for(execution_context, f) for f in written):
+    open_runs = [c for c, r in runs.items() if r.get("completed") and r.get("verdict") in ("", "unknown")]
+    failed = [c for c, r in runs.items() if not r.get("completed") or r.get("verdict") == "fail"]
+    if written and not unvalidated and not runs:
+        notes.append(_UNCHECKED_OUTPUT_NOTE)
+    if any(r.get("verdict") for r in runs.values()):
         notes.append(_VERDICT_NOTE)
     rows.extend(notes)
 
@@ -150,20 +132,23 @@ def build_ledger(execution_context: dict) -> dict | None:
     if written:
         chips.append(_plural(len(written), "file"))
         if unvalidated:
-            chips.append(f"{len(unvalidated)} not validated")
+            chips.append(f"{len(unvalidated)} not checked")
         else:
-            weakest = weakest_validation_tier(execution_context, written)
-            chips.append(f"evidence: {weakest or 'executed'}")
+            chips.append(f"checked: {weakest_validation_tier(execution_context, written) or 'static'}")
     if unwritten:
         chips.append(f"{len(unwritten)} declared, never written")
-    if unjudged:
-        chips.append(f"{_plural(len(unjudged), 'run')} unjudged")
+    if runs:
+        chips.append(_plural(len(runs), "run"))
+        if open_runs:
+            chips.append(f"{len(open_runs)} unjudged")
+        if failed:
+            chips.append(f"{len(failed)} failed")
     if required:
         chips.append(f"{_plural(len(required), 'step')} open")
     if optional:
         chips.append(f"{_plural(len(optional), 'optional step')} left")
 
-    if unvalidated or unwritten or required or unjudged:
+    if unvalidated or unwritten or required or open_runs or failed:
         status = "warn"
     elif notes or optional:
         status = "note"

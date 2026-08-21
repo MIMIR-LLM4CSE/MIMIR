@@ -161,6 +161,10 @@ def unchecked_checklist_items(execution_context: dict) -> list[dict]:
 	return [it for it in _load_todo_items(todo_fp) if not it.get("done")]
 
 
+def _plural_runs(n: int) -> str:
+	return "1 run" if n == 1 else f"{n} runs"
+
+
 def _collect_completion_issues(execution_context: dict) -> tuple[list[str], list[str]]:
 	"""Return (issues, completed) describing the current completion state."""
 	issues: list[str] = []
@@ -176,33 +180,20 @@ def _collect_completion_issues(execution_context: dict) -> tuple[list[str], list
 		retry_paths = [p for p in pending if fail_counts.get(p, 0) > 0 and fail_counts.get(p, 0) < VALIDATION_RETRY_BUDGET]
 		fresh_paths = [p for p in pending if fail_counts.get(p, 0) == 0]
 		if stuck_paths:
-			issues.append("Validation budget exhausted (no further retries): " + ", ".join(stuck_paths[:5]))
-			# Naming the file and the count says a wall was hit; naming the attempts says
-			# what the wall was, which is the part the user needs to take it from here.
-			attempts_log = execution_context.get("verdict_attempts_by_file", {}) or {}
-			for path in stuck_paths[:5]:
-				attempts = attempts_log.get(path) or []
-				if attempts:
-					issues.append(f"  {path} — tried: " + "; ".join(attempts[:3]))
+			issues.append("Check budget exhausted (no further retries): " + ", ".join(stuck_paths[:5]))
 		if retry_paths:
-			issues.append("Validation failing (will retry): " + ", ".join(retry_paths[:5]))
+			issues.append("Checks failing (will retry): " + ", ".join(retry_paths[:5]))
 		if fresh_paths:
-			issues.append("Unvalidated modified files: " + ", ".join(fresh_paths[:5]))
+			issues.append("Modified files never checked: " + ", ".join(fresh_paths[:5]))
 	else:
-		# Name the strength of the evidence, never just the fact of it. An
-		# unqualified "All modified files validated" is what a model reads back as
-		# licence to report the work as verified — but every tier below "oracle"
-		# means only that the code ran, and a vacuous green test exits 0 exactly
-		# like a rigorous one. The weakest tier governs: a change is only as well
-		# established as its least-checked file.
+		# Name what a check actually proves. "All modified files validated" is what a
+		# model reads back as licence to report the work as verified, when all it means
+		# is that the files parse and lint — the answer's correctness lives on the runs.
 		tier = weakest_validation_tier(execution_context, dirty) if dirty else None
 		if tier:
-			# "weakest", not "highest": the value *is* the floor across the change, and
-			# the old label said the opposite of what it printed — the exact inversion a
-			# model reads back as licence.
-			completed.append(f"All modified files validated (weakest evidence: {tier})")
+			completed.append(f"All modified files checked ({tier}) — parses/lints, says nothing about the result")
 		else:
-			completed.append("All modified files validated")
+			completed.append("All modified files checked")
 
 	# A refusal is only a *blocker* when it ended the run — the hand-back case. A step
 	# the user judged unnecessary is not a failure to fix, and listing it as one is what
@@ -226,6 +217,29 @@ def _collect_completion_issues(execution_context: dict) -> tuple[list[str], list
 	unwritten = unwritten_declared_files(execution_context)
 	if unwritten:
 		issues.append("Declared but never written: " + ", ".join(unwritten[:5]))
+
+	# The reminder budget stops asking after two tries; what it must not do is let a run
+	# disappear. Every run still open at completion is named here, with what was tried.
+	runs = execution_context.get("runs") or {}
+	never_judged = [c for c, r in sorted(runs.items()) if r.get("completed") and not r.get("verdict")]
+	unresolved = [c for c, r in sorted(runs.items()) if r.get("verdict") == "unknown"]
+	broken = [(c, r) for c, r in sorted(runs.items())
+	          if not r.get("completed") or r.get("verdict") == "fail"]
+	if never_judged:
+		issues.append("Ran but never judged: " + ", ".join(never_judged[:5]))
+	if unresolved:
+		issues.append("Judged inconclusive, still unresolved: " + ", ".join(unresolved[:5]))
+	for command, run in broken[:5]:
+		spent = int(run.get("failures", 0)) >= VALIDATION_RETRY_BUDGET
+		label = "no further retries" if spent else "will retry"
+		issues.append(f"Run failing ({label}): {command}")
+		# Naming the run says a wall was hit; naming the attempts says what the wall was,
+		# which is the part the user needs to take it from here.
+		attempts = run.get("attempts") or []
+		if spent and attempts:
+			issues.append("  tried: " + "; ".join(attempts[:3]))
+	if runs and not never_judged and not unresolved and not broken:
+		completed.append(_plural_runs(len(runs)) + " judged pass by the model")
 
 	unchecked = [it for it in unchecked_checklist_items(execution_context) if not it.get("optional")]
 	if unchecked and execution_context.get("code_mutation_started"):

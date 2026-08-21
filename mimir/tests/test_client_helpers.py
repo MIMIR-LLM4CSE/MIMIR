@@ -40,6 +40,14 @@ client_module = types.SimpleNamespace(
 )
 
 
+def _judging_agent(name: str = "judge_it"):
+    """An agent whose registry declares one verdict tool, under an arbitrary name."""
+    from mimir.client.context.capabilities import JUDGE, ToolCaps
+    return types.SimpleNamespace(
+        tool_caps={name: ToolCaps(name=name, capabilities=frozenset({JUDGE}))}
+    )
+
+
 class ClientHelperTests(unittest.TestCase):
     def test_client_config_default_model_matches_client_constructor_default(self) -> None:
         defaults = client_module.MimirAgent.__init__.__defaults__
@@ -104,9 +112,6 @@ class ClientHelperTests(unittest.TestCase):
             "planned_edit_targets", "declared_edit_set",
             # Keyed by path but a dict of line counts, not a set of paths.
             "read_file_line_counts",
-            # Records that a check was seen failing — a fact about a check, not a path
-            # set to purge (see observations._record_executed_failure).
-            "executed_failures",
             # Files passed to a test runner: a history of what ran, not path evidence.
             "tests_run",
             # Per-directory candidate names, a dict keyed by directory.
@@ -910,7 +915,7 @@ class ClientHelperTests(unittest.TestCase):
             async def _build_system_content(self, **kwargs):
                 return "system"
 
-            async def _run_tool(self, tool, args, execution_context=None, run_auto_validation=True):
+            async def _run_tool(self, tool, args, execution_context=None, run_auto_validation=True, call_id=""):
                 return "{}"
 
             @staticmethod
@@ -1323,7 +1328,7 @@ class ClientHelperTests(unittest.TestCase):
                 # so the test isolates the read/write scheduling behaviour.
                 return []
 
-            async def _run_tool(self, name, args, execution_context=None, run_auto_validation=True):
+            async def _run_tool(self, name, args, execution_context=None, run_auto_validation=True, call_id=""):
                 if name == "write_file":
                     state["active_w"] += 1
                     state["max_w"] = max(state["max_w"], state["active_w"])
@@ -1417,7 +1422,7 @@ class ClientHelperTests(unittest.TestCase):
             def get_tool_file_targets(name, args): return []
 
             async def _run_tool(self, name, args, execution_context=None,
-                                run_auto_validation=True):
+                                run_auto_validation=True, call_id=""):
                 with human_pause_module.human_pause():
                     time.sleep(0.15)   # user staring at the approval card
                 return "{}"
@@ -1668,7 +1673,7 @@ class ClientHelperTests(unittest.TestCase):
         nudge_logic = importlib.import_module("mimir.client.guardrails.nudges.engine")
 
         ctx = {
-            "unjudged_runs": {"python solver.py": {"paths": ["solver.py"], "tier": "executed"}},
+            "runs": {"python solver.py": {"completed": True, "verdict": ""}},
             "nudge_counts": {},
         }
         self.assertTrue(nudge_logic._should_nudge_output_verdict(ctx))
@@ -1676,49 +1681,57 @@ class ClientHelperTests(unittest.TestCase):
         ctx["nudge_counts"] = {"output_verdict": 2}
         self.assertFalse(nudge_logic._should_nudge_output_verdict(ctx))
 
+    def test_a_run_that_never_completed_is_not_asked_about(self) -> None:
+        # Its non-zero exit is the finding; asking for a reading of output that never
+        # came would be asking for a guess.
+        import importlib
+        nudge_logic = importlib.import_module("mimir.client.guardrails.nudges.engine")
+        ctx = {
+            "runs": {"python solver.py": {"completed": False, "verdict": ""}},
+            "nudge_counts": {},
+        }
+        self.assertFalse(nudge_logic._should_nudge_output_verdict(ctx))
+
     def test_output_verdict_nudge_fires_on_a_standing_unknown(self) -> None:
-        # "I cannot tell" is a legitimate answer and a starting point, not an ending.
+        # "I cannot tell" is a legitimate answer and a starting point, not an ending:
+        # the run stays outstanding, and the ask names what would settle it.
         import importlib
         nudge_logic = importlib.import_module("mimir.client.guardrails.nudges.engine")
 
         ctx = {
-            "unjudged_runs": {},
-            "dirty_written_files": {"solver.py"},
-            "validated_files": set(),
-            "verdict_by_file": {"solver.py": {"verdict": "unknown", "reason": "no reference"}},
-            "nudge_counts": {},
-        }
-        self.assertTrue(nudge_logic._should_nudge_output_verdict(ctx))
-        self.assertIn("would settle it", nudge_logic._output_verdict_nudge_content(ctx))
-
-    def test_a_refused_broad_pass_is_told_what_to_choose_between(self) -> None:
-        # The model did speak, so repeating "you never said what its output showed"
-        # would be false — and a model told to do what it just did repeats it verbatim.
-        import importlib
-        nudge_logic = importlib.import_module("mimir.client.guardrails.nudges.engine")
-
-        ctx = {
-            "unjudged_runs": {
-                "pytest -q": {"paths": ["solver.py"], "tier": "executed"},
-                "python bench.py": {"paths": ["bench.py"], "tier": "executed"},
+            "runs": {
+                "python solver.py": {
+                    "completed": True, "verdict": "unknown", "reason": "no reference",
+                },
             },
-            "verdict_scope_required": ["pytest -q", "python bench.py"],
             "nudge_counts": {},
         }
         self.assertTrue(nudge_logic._should_nudge_output_verdict(ctx))
-        content = nudge_logic._output_verdict_nudge_content(ctx)
-        self.assertIn("bear on different files", content)
-        self.assertIn("verdict[<command or file>]", content)
-        # Cleared once a verdict lands, so the ordinary ask comes back.
-        ctx["verdict_scope_required"] = []
-        self.assertIn(
-            "never said what its output showed",
-            nudge_logic._output_verdict_nudge_content(ctx),
-        )
+        content = nudge_logic._output_verdict_nudge_content(_judging_agent(), ctx)
+        self.assertIn("you judged this `unknown`: no reference", content)
+        self.assertIn("would settle it", content)
 
-    def test_validation_nudge_defers_to_the_verdict_nudge(self) -> None:
-        # A file whose check already ran green is pending for a different reason;
-        # telling it to run py_compile again would be wrong advice.
+    def test_the_unjudged_ask_names_the_runs_and_the_tool_from_the_registry(self) -> None:
+        import importlib
+        nudge_logic = importlib.import_module("mimir.client.guardrails.nudges.engine")
+
+        ctx = {
+            "runs": {
+                "pytest -q": {"completed": True, "verdict": ""},
+                "python bench.py": {"completed": True, "verdict": ""},
+            },
+            "nudge_counts": {},
+        }
+        self.assertTrue(nudge_logic._should_nudge_output_verdict(ctx))
+        content = nudge_logic._output_verdict_nudge_content(_judging_agent(), ctx)
+        self.assertIn("have not settled what its output showed", content)
+        self.assertIn("python bench.py", content)
+        # The tool is named from the live registry, never spelled out in the copy.
+        self.assertIn("judge_it", content)
+
+    def test_a_run_never_makes_a_file_pending_a_check(self) -> None:
+        # The two axes do not interact: an unjudged run leaves the file exactly as
+        # un-checked as it was, so the validation nudge has nothing to defer to.
         import importlib
         nudge_logic = importlib.import_module("mimir.client.guardrails.nudges.engine")
 
@@ -1729,15 +1742,14 @@ class ClientHelperTests(unittest.TestCase):
             "validated_files": set(),
             "declared_edit_set": set(),
             "steps_since_last_edit": 5,
-            "unjudged_runs": {"python solver.py": {"paths": ["solver.py"], "tier": "executed"}},
+            "runs": {"python solver.py": {"completed": True, "verdict": ""}},
             "nudge_counts": {},
         }
-        self.assertFalse(
+        self.assertTrue(
             nudge_logic._should_nudge_validation(ctx, level="strict", active_mode="agent")
         )
-        # With the run judged, the file is pending for want of a check again.
-        ctx["unjudged_runs"] = {}
-        self.assertTrue(
+        ctx["validated_files"] = {"solver.py"}
+        self.assertFalse(
             nudge_logic._should_nudge_validation(ctx, level="strict", active_mode="agent")
         )
 
@@ -2459,7 +2471,7 @@ class ClientHelperTests(unittest.TestCase):
     def test_cli_ledger_expands_without_markdown_noise(self) -> None:
         # The terminal gets the rows plain — no backticks, no bold markers.
         full = chat_session_module.format_ledger_full(self._ledger_block())
-        self.assertIn("solver.py — not validated", full)
+        self.assertIn("solver.py — not checked", full)
         self.assertNotIn("`", full)
         self.assertNotIn("**", full)
 

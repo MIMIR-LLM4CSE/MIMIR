@@ -26,7 +26,7 @@ from .. import human_pause
 from ..context.capabilities import EDIT, has_cap, label_for
 from ..context.execution_context import loop_control
 from ..tool_execution.normalizer import _make_hashable
-from ..tool_execution.executor import run_post_write_validation
+from ..tool_execution.executor import run_post_tool_annotations
 from ..tool_execution.exec_preview import extract_exec_preview
 from ..tool_execution.tool_status_messages import (
     tool_status_message,
@@ -224,23 +224,24 @@ async def _dispatch_tool_calls(
                     name, args,
                     execution_context=execution_context,
                     run_auto_validation=False,
+                    call_id=call_id,
                 ),
                 _TOOL_TIMEOUT_SECS,
             )
 
             ok, summary = summarize_tool_result(name, result, agent.tool_caps)
 
-            # ── POST-WRITE VALIDATION (ADVISORY, SEPARATELY BUDGETED) ──
-            # Runs only for a successful edit. Its own timeout drops the advisory
-            # annotation rather than failing the write; a validation error/timeout
-            # is deliberately swallowed here so it can never reach the broad
-            # exception handler below (which WOULD mark the tool row failed).
+            # ── POST-TOOL ANNOTATIONS (ADVISORY, SEPARATELY BUDGETED) ──
+            # The built-in post-write ladder plus any registered post-tool hook. Its
+            # own timeout drops the annotation rather than failing the call; an error
+            # or timeout is deliberately swallowed here so it can never reach the
+            # broad exception handler below (which WOULD mark the tool row failed).
             # CancelledError (query cancel) is not an Exception, so it still
             # propagates.
-            if ok and has_cap(name, EDIT, agent.tool_caps):
+            if ok:
                 try:
                     result += await asyncio.wait_for(
-                        run_post_write_validation(agent, name, args, execution_context),
+                        run_post_tool_annotations(agent, name, args, result, execution_context),
                         timeout=_AUTO_VALIDATION_TIMEOUT_SECS,
                     )
                 except Exception:

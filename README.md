@@ -31,10 +31,11 @@ On top of that loop sits a policy and context layer:
   different claims, for any language, not just numerical code.
 - **Exit 0 is not a result** — a linter or compiler validates on its exit code, because its
   output *is* the verdict. Anything that *executes* leaves the file unvalidated until the
-  model states what the output showed (`verdict: pass|fail|unknown — <why>`), which is then
-  recorded as the model's claim, next to but never mixed with what the machine observed.
-  Judging arbitrary output — fields, convergence tables, plots, logs — is the one thing no
-  parser generalises over, so it is asked of the model rather than guessed at.
+  model reports what the output showed, through a dedicated tool call rather than a line in
+  the chat, which is then recorded as the model's claim, next to but never mixed with what
+  the machine observed. Judging arbitrary output — fields, convergence tables, plots, logs —
+  is the one thing no parser generalises over, so it is asked of the model rather than
+  guessed at.
 - **Context efficiency** — cached repository baseline, per-query read caching, cross-query
   carry of discovery state with staleness eviction, and token-budget history trimming +
   compaction.
@@ -380,7 +381,7 @@ core edit, no registration call:
 |------|----------|--------------|------------------------|
 | Skills | `.mimir/skills/<name>/SKILL.md` | `MIMIR_SKILLS_DIR` | user **overrides** bundled |
 | MCP servers | `.mimir/servers/server_<name>.py` (or `.js`) | `MIMIR_SERVERS_DIR` | user **skipped** (core protected) |
-| Policies + nudges | `.mimir/plugins/*.py` | `MIMIR_PLUGINS_DIR` | additive |
+| Policies, post-tool hooks + nudges | `.mimir/plugins/*.py` | `MIMIR_PLUGINS_DIR` | additive |
 | Base prompt | `.mimir/system_prompt.md` | `MIMIR_SYSTEM_PROMPT_FILE` | user **replaces** the built-in default |
 
 Agent **state** lives elsewhere, in a central per-workspace dir (`~/.mimir/<workspace-id>/`,

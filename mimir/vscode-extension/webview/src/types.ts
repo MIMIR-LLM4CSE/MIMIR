@@ -145,6 +145,15 @@ export interface ToolResultMessage {
   duration_ms: number;
 }
 
+/** What the model said a run's output showed. Exit 0 says a program ended, so the run
+ *  row stays unjudged until this lands on it — it is a claim, not a measurement. */
+export interface VerdictMessage {
+  type: "verdict";
+  /** Correlation id of the run being judged (an earlier tool_call). */
+  id: string;
+  verdict: "pass" | "fail" | "unknown";
+}
+
 export interface ThinkingStartMessage {
   type: "thinking_start";
 }
@@ -343,6 +352,7 @@ export type ServerMessage =
   | ThinkingEndMessage
   | ToolCallMessage
   | ToolResultMessage
+  | VerdictMessage
   | ErrorMessage
   | ConfigMessage
   | DiffMessage
@@ -505,6 +515,8 @@ export interface ToolActivity {
   /** Terminal in/out panel data, revealed when the row is expanded (exec tools only). */
   exec?: ExecResult;
   durationMs?: number;
+  /** What the model said this run's output showed — set when a verdict settled it. */
+  verdict?: "pass" | "fail" | "unknown";
   /** Epoch ms when the call started — drives the live elapsed timer. */
   startedAt: number;
 }

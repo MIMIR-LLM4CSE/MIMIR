@@ -72,6 +72,13 @@ VALIDATE = "validate"
 # the `plan_steps` arg-role (which carries the steps), not a separate capability.
 TASK_PLANNING = "task_planning"        # records a task plan (checklist and/or prose rationale)
 
+# --- Verdict ---------------------------------------------------------------
+# The channel through which the model states what a run's output showed
+# (_observe_verdict_tool -> guardrails/verdict.apply_verdict). Every consumer that has
+# to name the tool to the model resolves it from here, so the name lives in one place
+# — the server's declaration — and never in prompt or nudge copy.
+JUDGE = "judge"                        # records the model's verdict on a run's output
+
 # --- Approval & mode policy ------------------------------------------------
 # How much of a tool's effect can be taken back — the *declared* dimension, from which
 # SENSITIVE below is derived (see `_caps_from_meta`), so a tool states one fact about

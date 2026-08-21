@@ -117,6 +117,7 @@ def read_note(path: str) -> str:
 | | `REPLACEMENT_TRACK` | A find / replace whose completeness MIMIR tracks across files. |
 | **Validation** | `VALIDATE` | Validates code (syntax / lint / typecheck / test). The first-party stack validates through the `bash` server, but a plugin server may declare its own validator: a successful call marks its target file validated and clears the edit-loop streak. |
 | **Planning** | `TASK_PLANNING` | Records a task plan / todo checklist. |
+| **Verdict** | `JUDGE` | Records the model's reading of what a run's output showed, settling a run that owed one. The tool executes nothing — the client reads its `verdict` / `verdict_reason` / `verdict_scope` arg-roles and applies the result to the blackboard. Declare it once: with several such tools connected, the name the model is pointed at is the first in sort order. |
 | **Execution** | `CODE_EXEC` | Runs a program / shell command / code payload. Two consequences: the run is recorded as owing a **verdict** on its output (exit 0 alone never validates an execution), and it is a scoping signal for guards. Note the shell-reading guards (proxy direct-execution, out-of-workspace shell paths) key on the `command_prefix` **scope** instead — a tool that executes through structured arguments has no command line for them to parse. |
 | | `BACKGROUNDABLE` | Launches a long detached run whose result may carry a `background_job` descriptor (status + summary ops), so a front-end with a worker watches it off the critical path and auto-resumes the agent on completion instead of having the model poll. |
 | **Approval & mode** | `SENSITIVE` | Requires user approval before running. **Derived — do not declare it**: see *Reversibility* below. |
@@ -167,17 +168,18 @@ The [`policy`](mimir/examples/plugins/policy_example.py) and
 
 ---
 
-## Policies and nudges (`.mimir/plugins/*.py`)
+## Policies, post-tool hooks and nudges (`.mimir/plugins/*.py`)
 
-Both are Python modules that register descriptors as an **import side effect**, via the
-public authoring surface `mimir.client.extensions`. They differ in effect and control:
+All three are Python modules that register descriptors as an **import side effect**, via the
+public authoring surface `mimir.client.extensions`. One seam per moment in a call's life:
 
-| | Policy (`PolicyCheck`) | Nudge (`NudgeRule`) |
-|---|---|---|
-| Effect | **Blocks** a tool call (returns a violation string) | Injects an advisory reminder into the conversation |
-| Runs at | `pre_mutation` (after registry) or `pre_approval` (after write policy) | `verification` layer (always on) or `guidance` layer (tier-gated) |
-| Toggleable | **No — locked/mandatory** | Yes — via `/nudges`, persisted in `<STATE_DIR>/preferences.json` |
-| Can it relax a core gate? | **No** — a check only ADDs constraints; `None` abstains | n/a |
+| | Policy (`PolicyCheck`) | Post-tool hook (`PostToolRule`) | Nudge (`NudgeRule`) |
+|---|---|---|---|
+| When | before a call runs | after a call succeeded | end of a turn with no tool call |
+| Effect | **Blocks** the call (returns a violation string) | Appends text to the tool result; may write to the blackboard | Injects an advisory reminder, re-prompting the model |
+| Runs at | `pre_mutation` (after registry) or `pre_approval` (after write policy) | after the built-in post-write ladder, under its own 60 s budget | `verification` layer (always on) or `guidance` layer (tier-gated) |
+| Toggleable | **No — locked/mandatory** | No | Yes — via `/nudges`, persisted in `<STATE_DIR>/preferences.json` |
+| Can it relax a core gate? | **No** — a check only ADDs constraints; `None` abstains | No — it cannot un-run a call | n/a |
 
 The two `pre_mutation` / `pre_approval` slots, and the verification vs guidance layers, are
 defined in [`POLICY.md`](POLICY.md) (with zoomable flowcharts). This guide covers *authoring*.
@@ -212,6 +214,39 @@ def register():
 
 register()
 ```
+
+### A post-tool hook — check what the call produced
+
+A hook runs after a successful tool call and returns text appended to its result (`""` for
+nothing). `run` may be sync or async. It cannot block — the call already happened — but it is
+the one seam that can turn a **machine observation** into blackboard state, which the
+turn-end gates then read: a recorded failure is what stops a conclusion, with no blocking
+mechanism of its own. Example:
+[`mimir/examples/plugins/post_tool_example.py`](mimir/examples/plugins/post_tool_example.py).
+
+```python
+from mimir.client.extensions import PostToolRule, register_post_tool
+from mimir.client.context.capabilities import EDIT, has_cap
+
+async def _project_checks(agent, tool_name, arguments, result, execution_context):
+    if not has_cap(tool_name, EDIT, getattr(agent, "tool_caps", {})):
+        return ""                                  # not an edit → abstain
+    out = await agent._run_tool(
+        "bash_run", {"command": "pytest -q"}, execution_context=execution_context,
+    )
+    return "" if '"status": "ok"' in out else "\n\nPROJECT_CHECK: the suite is red."
+
+def register():
+    register_post_tool(PostToolRule(name="project_checks", run=_project_checks))
+
+register()
+```
+
+Running a command goes through the ordinary tool path, so the **approval gate still
+applies** — a hook cannot execute shell the user never agreed to, and an "always" grant on
+the command prefix covers the rest of the session. Keep a hook cheap: it runs after every
+matching call, inside a 60 s budget, and one that raises is skipped rather than allowed to
+cost the others their turn.
 
 ### A nudge — remind, don't block
 
