@@ -22,7 +22,6 @@ async def handle_chat_command(
     set_batch_mode: Callable[[bool], None],
     set_context_mode: Callable[[str], None] | None = None,
     set_enforcement: Callable[[str], None] | None = None,
-    refresh_repo_baseline: Callable[[bool], Awaitable[None]],
     trust_tool: Callable[[str], None] | None = None,
     untrust_tool: Callable[[str], None] | None = None,
     trusted_tools: Iterable[str] | None = None,
@@ -66,7 +65,6 @@ async def handle_chat_command(
             "                           full: keep all tool messages in history (200K+ models)\n"
             "  /enforcement strict|light|off -> guidance-nudge level (verification/safety always on);\n"
             "                           strict: all guidance; light: drop discovery nudge; off: no guidance\n"
-            "  /rescan       -> refresh cached repository baseline\n"
             "  /status       -> show current mode\n"
             "  /think off|auto|quick|medium|deep|max -> reasoning depth; auto (default) lets the\n"
             "                           model calibrate per turn, the rest impose a fixed budget\n"
@@ -124,10 +122,6 @@ async def handle_chat_command(
             return True, f"\nSwitched mode to: {parts[1].strip().lower()}\n"
         except ValueError as exc:
             return True, f"\n❌ {exc}\n"
-
-    if cmd == "/rescan":
-        await refresh_repo_baseline(True)
-        return True, "\nRepository baseline refreshed.\n"
 
     if cmd == "/think":
         if len(parts) == 1:

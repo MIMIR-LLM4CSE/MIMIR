@@ -37,9 +37,18 @@ LEDGER_FRAMING = "Verification ledger — machine-recorded, not model-authored:"
 # being read at all.
 _UNCHECKED_OUTPUT_NOTE = (
     "A checker says a file parses, imports and lints. It says nothing about whether the "
-    "answer is right, and nothing here was run — so no result was produced, and none was "
-    "judged."
+    "answer is right, and nothing here was built or run — so no result was produced, and "
+    "none was judged."
 )
+# Not a gap the model can close: nothing on this machine can check these files at all.
+_UNVERIFIABLE_NOTE = (
+    "No checker for these files exists in this environment, so the check that is "
+    "otherwise required could not be run on them."
+)
+# Said next to _UNCHECKED_OUTPUT_NOTE, never alone: "nothing ran" is the finding, this
+# is why. Recorded by the feasibility gate that suppressed the run recommendation, so
+# the reader learns what stood in the way instead of seeing the advice quietly absent.
+_EXERCISE_BLOCKED_NOTE = "Running it was out of reach here: {reason}."
 # Said once, next to the rows that carry a verdict: the ledger is machine-recorded, but
 # a verdict is the one line in it the model wrote, and the two must not read alike.
 _VERDICT_NOTE = (
@@ -52,6 +61,10 @@ def _run_row(command: str, run: dict) -> str:
     """One execution, as what is actually known about it."""
     reason = str(run.get("reason") or "").strip()
     tail = f" — {reason}" if reason else ""
+    # Before the not-completed branch, which a blocked run also satisfies: what matters
+    # about it is not that it stopped, but that it was never really attempted here.
+    if run.get("blocked"):
+        return f"`{command}` — **not attempted**: {run['blocked']}"
     if not run.get("completed"):
         return f"`{command}` — **did not complete**{tail}"
     verdict = run.get("verdict")
@@ -96,11 +109,15 @@ def build_ledger(execution_context: dict) -> dict | None:
 
     rows: list[str] = []
     notes: list[str] = []
+    unverifiable = set(execution_context.get("unverifiable_files", set()) or set())
     unvalidated = [f for f in written if f not in validated]
 
     for f in written:
         if f in unvalidated:
-            rows.append(f"`{f}` — **not checked**")
+            rows.append(
+                f"`{f}` — **not checked** (no checker here)" if f in unverifiable
+                else f"`{f}` — **not checked**"
+            )
         else:
             rows.append(f"`{f}` — checked: {validation_tier(execution_context, f) or 'static'}")
 
@@ -108,9 +125,18 @@ def build_ledger(execution_context: dict) -> dict | None:
         rows.append(_run_row(command, run))
 
     open_runs = [c for c, r in runs.items() if r.get("completed") and r.get("verdict") in ("", "unknown")]
-    failed = [c for c, r in runs.items() if not r.get("completed") or r.get("verdict") == "fail"]
+    failed = [
+        c for c, r in runs.items()
+        if (not r.get("completed") or r.get("verdict") == "fail") and not r.get("blocked")
+    ]
+    blocked = [c for c, r in runs.items() if r.get("blocked")]
     if written and not unvalidated and not runs:
         notes.append(_UNCHECKED_OUTPUT_NOTE)
+        blocked = str(execution_context.get("exercise_blocked_reason") or "").strip()
+        if blocked:
+            notes.append(_EXERCISE_BLOCKED_NOTE.format(reason=blocked))
+    if any(f in unverifiable for f in unvalidated):
+        notes.append(_UNVERIFIABLE_NOTE)
     if any(r.get("verdict") for r in runs.values()):
         notes.append(_VERDICT_NOTE)
     rows.extend(notes)
@@ -143,6 +169,8 @@ def build_ledger(execution_context: dict) -> dict | None:
             chips.append(f"{len(open_runs)} unjudged")
         if failed:
             chips.append(f"{len(failed)} failed")
+        if blocked:
+            chips.append(f"{len(blocked)} not attempted")
     if required:
         chips.append(f"{_plural(len(required), 'step')} open")
     if optional:
@@ -150,7 +178,7 @@ def build_ledger(execution_context: dict) -> dict | None:
 
     if unvalidated or unwritten or required or open_runs or failed:
         status = "warn"
-    elif notes or optional:
+    elif notes or optional or blocked:
         status = "note"
     else:
         status = "ok"

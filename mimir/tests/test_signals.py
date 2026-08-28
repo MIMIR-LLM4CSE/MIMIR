@@ -1,8 +1,6 @@
 import unittest
 
 from mimir.client.context.signals import (
-    QUERY_CREATE_SIGNALS,
-    QUERY_EDIT_SIGNALS,
     query_has_unnegated_match,
     query_matches_any,
 )
@@ -130,7 +128,7 @@ class QueryPredicatesTest(unittest.TestCase):
 
     def test_discovery_covers_french_explanatory_queries(self):
         # The discovery vocabulary used to be almost English-only, so a French
-        # session lost the repo baseline scan on purely explanatory questions.
+        # session skipped the plan-mode explore phase on purely explanatory questions.
         self.assertTrue(query_requires_repo_discovery("explique moi ce module"))
         self.assertTrue(query_requires_repo_discovery("montre moi la structure du projet"))
         self.assertTrue(query_requires_repo_discovery("a quoi sert cette classe ?"))

@@ -18,17 +18,17 @@ function run(actions: Parameters<ReturnType<typeof makeReducer>>[1][]): ChatStat
 }
 
 describe("chatReducer", () => {
-  it("coalesces token text across an intervening status into one bubble", () => {
+  it("coalesces token text across an intervening status into one draft", () => {
     const state = run([
       { type: "token", text: "Hello" },
       { type: "status", text: "Running bash command" },
       { type: "token", text: " world" },
     ]);
 
-    const streaming = state.messages.filter((m) => m.kind === "streaming");
-    expect(streaming).toHaveLength(1);
-    // Adjacent words join without an extra paragraph break.
-    expect(streaming[0].text).toBe("Hello world");
+    // Adjacent words join without an extra paragraph break, and nothing about the
+    // turn has reached the transcript yet.
+    expect(state.draft).toBe("Hello world");
+    expect(state.messages).toHaveLength(0);
     // Status text is dropped (decorrelated); it only flags a step boundary, which
     // is consumed by the second token. No thinking/tools messages are created.
     expect(state.messages.filter((m) => m.kind === "thinking")).toHaveLength(0);
@@ -36,14 +36,30 @@ describe("chatReducer", () => {
     expect(state.toolCallAfterToken).toBe(false);
   });
 
-  it("does not change the streaming bubble id when carrying text forward", () => {
-    const reducer = makeReducer();
-    let s = reducer(initialChatState, { type: "token", text: "A" });
-    const firstId = s.messages.find((m) => m.kind === "streaming")!.id;
-    s = reducer(s, { type: "status", text: "Running bash command" });
-    s = reducer(s, { type: "token", text: "B" });
-    const sameId = s.messages.find((m) => m.kind === "streaming")!.id;
-    expect(sameId).toBe(firstId);
+  it("commits the draft above the cards of the step that follows it", () => {
+    const state = run([
+      { type: "token", text: "Let me look." },
+      { type: "tool_call", id: "t1", name: "bash_run" },
+      { type: "tool_result", id: "t1", ok: true, summary: "done" },
+      { type: "token", text: "Found it." },
+    ]);
+
+    expect(state.messages.map((m) => m.kind)).toEqual(["text", "tools"]);
+    expect(state.messages[0].text).toBe("Let me look.");
+    expect(state.draft).toBe("Found it.");
+  });
+
+  it("drops the draft when a guardrail nudge sends the model back to work", () => {
+    // The symptom this exists for: a finished-looking answer appearing in the
+    // transcript and then being taken out of it again.
+    const state = run([
+      { type: "submit_query", text: "fix it" },
+      { type: "token", text: "All done!" },
+      { type: "nudge_injected", category: "validation", text: "check it first" },
+    ]);
+
+    expect(state.draft).toBe("");
+    expect(state.messages.map((m) => m.role)).toEqual(["user"]);
   });
 
   it("accumulates thinking chunks into one live block and pendingThinking", () => {
@@ -61,7 +77,7 @@ describe("chatReducer", () => {
     expect(state.toolCallAfterToken).toBe(true);
   });
 
-  it("finalizes the streaming bubble on answer and clears busy", () => {
+  it("publishes the answer and clears the draft", () => {
     const state = run([
       { type: "submit_query", text: "hi" },
       { type: "token", text: "partial" },
@@ -69,11 +85,12 @@ describe("chatReducer", () => {
     ]);
 
     expect(state.busy).toBe(false);
-    const streaming = state.messages.filter((m) => m.kind === "streaming");
-    expect(streaming).toHaveLength(0);
+    expect(state.draft).toBe("");
     const last = state.messages[state.messages.length - 1];
     expect(last.kind).toBe("text");
     expect(last.text).toBe("the final answer");
+    // The draft is superseded, not appended beside the answer.
+    expect(state.messages.filter((m) => m.text === "partial")).toHaveLength(0);
     expect(state.pendingThinking).toBe("");
     expect(state.pendingDiffs).toHaveLength(0);
   });
@@ -232,18 +249,19 @@ describe("chatReducer", () => {
     expect(s.busy).toBe(true);
   });
 
-  it("stacks one diff entry per event and keeps each entry's own is_new", () => {
+  it("coalesces repeated diffs of one file into a single entry and keeps is_new", () => {
     const s = run([
       // Creation: the emitter marks a new file with a /dev/null header.
       { type: "diff", file: "solver.py", patch: "--- /dev/null\n+++ b/solver.py\n+a" },
-      // Two later edits of the same file, each a real patch.
+      // Two later edits of the same file: each patch supersedes the previous one.
       { type: "diff", file: "solver.py", patch: "--- a/solver.py\n+++ b/solver.py\n-a\n+b" },
       { type: "diff", file: "solver.py", patch: "--- a/solver.py\n+++ b/solver.py\n-b\n+c" },
     ]);
     const card = s.messages.find((m) => m.kind === "editing");
-    expect(card?.diffs).toHaveLength(3);
-    expect(card?.diffs?.map((d) => d.is_new)).toEqual([true, false, false]);
-    expect(card?.diffs?.[2].patch).toContain("+c");
+    expect(card?.diffs).toHaveLength(1);
+    expect(card?.diffs?.[0].is_new).toBe(true);
+    expect(card?.diffs?.[0].patch).toContain("+c");
+    expect(s.pendingDiffs).toHaveLength(1);
   });
 
   it("keeps distinct files as distinct entries", () => {
@@ -253,5 +271,100 @@ describe("chatReducer", () => {
     ]);
     const card = s.messages.find((m) => m.kind === "editing");
     expect(card?.diffs?.map((d) => d.file)).toEqual(["solver.py", "driver.py"]);
+  });
+
+  // ── Sub-agent activity ──────────────────────────────────────────────────────
+  // A delegated run is one tool call lasting minutes. Its steps show up as ordinary
+  // rows under the call that spawned them; what is tested here is that they land on
+  // the right parent, in the right place, and settle when the parent does.
+
+  it("shows a sub-agent's steps as rows under the call that spawned them", () => {
+    const state = run([
+      { type: "tool_call", id: "p1", name: "spawn_agent", label: "Sub-agent (explore): find X" },
+      { type: "subagent_event", kind: "tool_call", parent_id: "p1", id: "p1:c1", name: "grep", label: "Searching: X" },
+    ]);
+
+    expect(state.liveToolCalls.map((t) => t.id)).toEqual(["p1", "p1:c1"]);
+    const child = state.liveToolCalls[1];
+    expect(child.parentId).toBe("p1");
+    expect(child.status).toBe("running");
+    // The badge says whose work it is; the role is read off the parent's own label.
+    expect(child.origin).toBe("explore #1");
+  });
+
+  it("keeps concurrent sub-agents' rows grouped under their own parent", () => {
+    const state = run([
+      { type: "tool_call", id: "p1", name: "spawn_agent", label: "Sub-agent (explore): A" },
+      { type: "tool_call", id: "p2", name: "spawn_agent", label: "Sub-agent (explore): B" },
+      { type: "subagent_event", kind: "tool_call", parent_id: "p2", id: "p2:c1", name: "grep" },
+      { type: "subagent_event", kind: "tool_call", parent_id: "p1", id: "p1:c1", name: "grep" },
+      { type: "subagent_event", kind: "tool_call", parent_id: "p1", id: "p1:c2", name: "read_file" },
+    ]);
+
+    // Interleaved on the wire, grouped on screen — otherwise a fan-out is unreadable.
+    expect(state.liveToolCalls.map((t) => t.id)).toEqual(["p1", "p1:c1", "p1:c2", "p2", "p2:c1"]);
+    expect(state.liveToolCalls.find((t) => t.id === "p2:c1")!.origin).toBe("explore #2");
+  });
+
+  it("settles a child row on its own result", () => {
+    const state = run([
+      { type: "tool_call", id: "p1", name: "spawn_agent", label: "Sub-agent (explore): A" },
+      { type: "subagent_event", kind: "tool_call", parent_id: "p1", id: "p1:c1", name: "grep" },
+      { type: "subagent_event", kind: "tool_result", parent_id: "p1", id: "p1:c1", ok: true, summary: "3 matches", duration_ms: 41 },
+    ]);
+
+    const child = state.liveToolCalls[1];
+    expect(child.status).toBe("ok");
+    expect(child.summary).toBe("3 matches");
+    expect(child.durationMs).toBe(41);
+  });
+
+  it("stops a child's timer when the delegating call itself finishes", () => {
+    // A child whose last event was shed (or whose run was cut short by the cap)
+    // would otherwise tick up forever under a call that is already done.
+    const state = run([
+      { type: "tool_call", id: "p1", name: "spawn_agent", label: "Sub-agent (explore): A" },
+      { type: "subagent_event", kind: "tool_call", parent_id: "p1", id: "p1:c1", name: "grep" },
+      { type: "tool_result", id: "p1", ok: true, summary: "answered" },
+    ]);
+
+    expect(state.liveToolCalls.map((t) => t.status)).toEqual(["ok", "ok"]);
+  });
+
+  it("patches a child row that was already frozen into the transcript", () => {
+    // Showing an approval card mid-flight freezes the step; the child's result
+    // arrives after that and must still find its row.
+    const reducer = makeReducer();
+    let state = initialChatState;
+    for (const a of [
+      { type: "tool_call" as const, id: "p1", name: "spawn_agent", label: "Sub-agent (explore): A" },
+      { type: "subagent_event" as const, kind: "tool_call" as const, parent_id: "p1", id: "p1:c1", name: "grep" },
+      { type: "token" as const, text: "next step" },   // commits the step, freezing the rows
+    ]) state = reducer(state, a);
+
+    state = reducer(state, {
+      type: "subagent_event", kind: "tool_result", parent_id: "p1", id: "p1:c1",
+      ok: false, summary: "no such file",
+    });
+
+    const frozen = state.messages.find((m) => m.kind === "tools")!;
+    expect(frozen.tools!.find((t) => t.id === "p1:c1")!.status).toBe("error");
+  });
+
+  it("ignores activity for a parent that is nowhere on screen", () => {
+    const before = run([{ type: "tool_call", id: "p1", name: "spawn_agent" }]);
+    const reducer = makeReducer();
+    const after = reducer(before, {
+      type: "subagent_event", kind: "tool_call", parent_id: "gone", id: "gone:c1", name: "grep",
+    });
+    expect(after).toBe(before);
+  });
+
+  it("records how much of a sub-agent's activity was shed", () => {
+    const state = run([
+      { type: "tool_call", id: "p1", name: "spawn_agent", label: "Sub-agent (explore): A" },
+      { type: "subagent_event", kind: "end", parent_id: "p1", dropped: 12 },
+    ]);
+    expect(state.liveToolCalls[0].childrenDropped).toBe(12);
   });
 });

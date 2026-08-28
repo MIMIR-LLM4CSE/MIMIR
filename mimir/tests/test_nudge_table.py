@@ -1,5 +1,6 @@
 import unittest
 
+from mimir.client.config.constants import EXERCISE_BUDGET
 from mimir.client.guardrails.nudges.engine import (
     _ALL_GUIDANCE,
     _CORE_NUDGES,
@@ -30,8 +31,30 @@ class CoreNudgeTableTest(unittest.TestCase):
     def test_verification_categories(self):
         verif = {n.name for n in _CORE_NUDGES if n.layer == "verification"}
         self.assertEqual(
-            verif, {"denial", "error_recovery", "regression", "unexercised",
-                    "unfinished_plan", "output_verdict"}
+            verif, {"denial", "error_recovery", "validation", "regression",
+                    "unexercised", "unfinished_plan"}
+        )
+
+    def test_no_row_asks_for_a_verdict(self):
+        # A verdict is asked for in-band (the VERDICT_DUE annotation on the run's own
+        # result) and reported by the ledger when it never came. As a turn-end row it
+        # fired on every green run, throwing away a finished answer for a label.
+        self.assertNotIn("output_verdict", {n.name for n in _CORE_NUDGES})
+
+    def test_the_exercise_rows_share_one_budget(self):
+        # "run the existing test" and "nothing was exercised" are one question; two
+        # budgets made it two re-prompts.
+        shared = {n.name for n in _CORE_NUDGES if n.budget_key == EXERCISE_BUDGET}
+        self.assertEqual(shared, {"regression", "unexercised"})
+
+    def test_validation_is_the_only_required_row_of_the_three(self):
+        # It precedes them, and it is the one nothing lets go of: a file the model
+        # modified and never checked blocks the conclusion, an unrun one does not.
+        names = [n.name for n in _CORE_NUDGES]
+        for advisory in ("regression", "unexercised"):
+            self.assertLess(names.index("validation"), names.index(advisory))
+        self.assertEqual(
+            _CORE_NUDGES[names.index("validation")].budget_key, "",
         )
 
     def test_verification_layer_is_never_enforcement_gated(self):
@@ -47,15 +70,15 @@ class CoreNudgeTableTest(unittest.TestCase):
         guidance = {n.name for n in _CORE_NUDGES if n.layer == "guidance"}
         self.assertEqual(guidance, set(_ALL_GUIDANCE))
 
-    def test_validation_nudge_enforcement_tier(self):
-        # The validation reminder is agent-only (plan mode is read-only → nothing to
-        # validate): fires at strict and light in agent mode, never in plan, never at off.
-        self.assertTrue(_guidance_enabled("validation", enforcement="strict", active_mode="agent"))
-        self.assertTrue(_guidance_enabled("validation", enforcement="light", active_mode="agent"))
-        self.assertFalse(_guidance_enabled("validation", enforcement="strict", active_mode="plan"))
-        self.assertFalse(_guidance_enabled("validation", enforcement="light", active_mode="plan"))
-        self.assertFalse(_guidance_enabled("validation", enforcement="off", active_mode="agent"))
-        self.assertFalse(_guidance_enabled("validation", enforcement="off", active_mode="plan"))
+    def test_validation_is_not_enforcement_gated(self):
+        # Checking a file one just modified is the working order's one requirement,
+        # not a reasoning shim to dial down: it must survive enforcement="off".
+        self.assertNotIn("validation", _ALL_GUIDANCE)
+        for level in ("strict", "light", "off"):
+            self.assertFalse(
+                _guidance_enabled("validation", enforcement=level, active_mode="agent"),
+                level,
+            )
 
     def test_ask_mode_gets_no_guidance_at_any_level(self):
         # Ask is answer-only: nothing is planned and nothing is edited, so no

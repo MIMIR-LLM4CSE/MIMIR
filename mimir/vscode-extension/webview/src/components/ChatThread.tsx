@@ -2,6 +2,7 @@ import React from "react";
 import type { ChatMessage, ToolActivity } from "../types";
 import type { ThinkingBlock } from "../state/chatReducer";
 import { ChatMessage as ChatMessageView } from "./ChatMessage";
+import { MarkdownContent } from "./MarkdownContent";
 import { ToolActivityList } from "./ToolActivityList";
 import { ThinkingPanel } from "./ThinkingPanel";
 import { GlobalApprovalBar } from "./GlobalApprovalBar";
@@ -10,6 +11,10 @@ import { StreamingStatus } from "./StreamingStatus";
 interface Props {
   messages: ChatMessage[];
   busy: boolean;
+  /** Prose of the turn in flight. Rendered below the transcript, never in it:
+   *  the loop may still send the model back to work, and a draft that lived in
+   *  the transcript would then have to be deleted out of it. */
+  draft?: string;
   /** Tool calls for the current (in-flight) step, not yet frozen into a message. */
   liveToolCalls?: ToolActivity[];
   /** Reasoning blocks for the current (in-flight) step, not yet frozen. */
@@ -39,6 +44,7 @@ interface Props {
 export const ChatThread: React.FC<Props> = ({
   messages,
   busy,
+  draft = "",
   liveToolCalls = [],
   liveThinkingBlocks = [],
   emptyState,
@@ -61,6 +67,7 @@ export const ChatThread: React.FC<Props> = ({
   // live thinking line already signal activity (they carry their own motion).
   const showStatusLine =
     busy &&
+    draft.trim().length === 0 &&
     liveToolCalls.length === 0 &&
     liveThinkingBlocks.length === 0;
 
@@ -126,6 +133,20 @@ export const ChatThread: React.FC<Props> = ({
           {/* Live tool calls for the in-flight step (not yet frozen). */}
           {liveToolCalls.length > 0 && (
             <ToolActivityList tools={liveToolCalls} />
+          )}
+
+          {/* The turn in flight. It joins the transcript only once the loop
+              accepts it; until then it lives here, where clearing it reads as
+              "still working" rather than as an answer being taken away. */}
+          {draft.trim().length > 0 && (
+            <div className="chat-message agent chat-draft">
+              <div className="message-body">
+                <MarkdownContent text={draft} />
+                <div className="chat-draft__status">
+                  <StreamingStatus />
+                </div>
+              </div>
+            </div>
           )}
 
           {/* Animated status line — shown while the agent is busy */}

@@ -1,11 +1,10 @@
 """Tool-call dispatch for one model step, plus the spin/dedup guards.
 
 ``_dispatch_tool_calls`` runs all tool calls for a step (parallel reads, sequential
-writes) with dedup + repeated/redundant-call guards; ``_post_dispatch_inject`` adds
-post-dispatch correctives. The failing-call and redundant-success guards (thresholds
-+ synthetic payloads + history stripping) live here, next to the dispatch that uses
-them; their corrective *copy* is in ``guardrails.workflow``. Extracted from
-``agent_loop.py``.
+writes) with dedup + a repeated-failing-call guard; ``_post_dispatch_inject`` adds
+post-dispatch correctives. The guard's thresholds and synthetic payload live here, next
+to the dispatch that uses them; its corrective *copy* is in ``guardrails.workflow``.
+Extracted from ``agent_loop.py``.
 """
 from __future__ import annotations
 
@@ -18,12 +17,12 @@ import time
 from typing import Any
 
 from ..config.constants import (
-    TOOL_CALL_TIMEOUT_SECS as _TOOL_TIMEOUT_SECS,
     AUTO_VALIDATION_TIMEOUT_SECS as _AUTO_VALIDATION_TIMEOUT_SECS,
+    IDENTICAL_REPEAT_THRESHOLD,
 )
 from ..event_sink import emit
 from .. import human_pause
-from ..context.capabilities import EDIT, has_cap, label_for
+from ..context.capabilities import EDIT, has_cap, label_for, timeout_for
 from ..context.execution_context import loop_control
 from ..tool_execution.normalizer import _make_hashable
 from ..tool_execution.executor import run_post_tool_annotations
@@ -41,8 +40,8 @@ from ..guardrails.workflow import (
     handback_required,
     handback_scopes,
     repeat_corrective_message,
-    redundant_corrective_message,
 )
+from ..guardrails.nudges import inject_reminder, maybe_inject_env_resolution
 from .streaming import _to_dict
 from .background import (
     _maybe_emit_open_editor,
@@ -103,11 +102,6 @@ async def _dispatch_tool_calls(
     # Per-key count of identical FAILED non-write dispatches this query, used to
     # backstop the repeated-failing-call spin (see _repeat_blocked_payload).
     call_fails: dict = lc.call_fails
-    # Per-key (result_hash, redundant_repeat_count) for non-write dispatches that
-    # SUCCEEDED with identical result content across steps. Backstops the
-    # redundant-successful-read spin (e.g. re-reading the same file unchanged over and
-    # over). A changed result resets the count, so edit-then-reread stays allowed.
-    call_results: dict = lc.call_results
     # call_id -> synthetic result, for calls hard-blocked because they have already
     # failed identically too many times. Kept in `normalized` so a tool message is
     # still emitted for the model's tool_call id, but never actually executed.
@@ -133,20 +127,9 @@ async def _dispatch_tool_calls(
         # Hard backstop for non-write tools: an identical call that has already failed
         # HARD_REPEAT_LIMIT times is not executed again — return a synthetic error so
         # the model gets feedback instead of silently spinning to the step ceiling.
-        elif (call_fails.get(key, 0) >= HARD_REPEAT_LIMIT
-              or getattr(agent, "_persistent_call_fails", {}).get(key, 0) >= HARD_REPEAT_LIMIT):
-            n_fails = max(call_fails.get(key, 0),
-                          getattr(agent, "_persistent_call_fails", {}).get(key, 0))
-            blocked_results[call_id] = _repeat_blocked_payload(name, n_fails)
+        elif call_fails.get(key, 0) >= HARD_REPEAT_LIMIT:
+            blocked_results[call_id] = _repeat_blocked_payload(name, call_fails[key])
             emit({"type": "status", "text": f"  ⛔ Blocking repeated failing call: {name}"})
-        # Hard backstop for non-write tools that keep SUCCEEDING with identical content:
-        # once the same call has returned the same result REDUNDANT_HARD_LIMIT times it
-        # adds no new information, so block it AND strip the intermediate repeats from
-        # history (keeping only the first copy) to break the redundant-read spin.
-        elif call_results.get(key, (None, 0))[1] >= REDUNDANT_HARD_LIMIT:
-            blocked_results[call_id] = _redundant_blocked_payload(name, call_results[key][1])
-            emit({"type": "status", "text": f"  ⛔ Blocking redundant repeated call: {name}"})
-            _strip_redundant_history(messages, execution_context, key)
         normalized.append((name, args, call_id))
 
     for name, args, call_id in normalized:
@@ -176,6 +159,9 @@ async def _dispatch_tool_calls(
     
     async def _run_with_timeout(name: str, args: dict, call_id: str) -> str:
         started = time.perf_counter()
+        # The wall is the tool's, not the loop's: a budget calibrated on a search
+        # cannot bound a tool whose work is an agent run of its own.
+        budget = timeout_for(name, agent.tool_caps)
         # Time the user spends on an approval card is not time the tool spent
         # working: it is subtracted from both the reported duration and the
         # timeout budget (see _await_tool), so a command approved after two
@@ -226,7 +212,7 @@ async def _dispatch_tool_calls(
                     run_auto_validation=False,
                     call_id=call_id,
                 ),
-                _TOOL_TIMEOUT_SECS,
+                budget,
             )
 
             ok, summary = summarize_tool_result(name, result, agent.tool_caps)
@@ -292,16 +278,16 @@ async def _dispatch_tool_calls(
 
         except asyncio.TimeoutError:
             _emit_result(
-                False, f"timed out after {_TOOL_TIMEOUT_SECS}s",
+                False, f"timed out after {budget}s",
                 error=(
-                    f"Tool '{name}' timed out after {_TOOL_TIMEOUT_SECS}s.\n\n"
+                    f"Tool '{name}' timed out after {budget}s.\n\n"
                     "Hint: The operation took too long; consider a narrower query "
                     "or a read-only alternative."
                 ),
             )
             return (
                 f'{{"status": "error", "error": "Tool \'{name}\' timed out after '
-                f'{_TOOL_TIMEOUT_SECS}s.", "hint": "The operation took too long; '
+                f'{budget}s.", "hint": "The operation took too long; '
                 f'consider a narrower query or a read-only alternative."}}'
             )
 
@@ -370,44 +356,36 @@ async def _dispatch_tool_calls(
     # Count identical non-write failures across steps and, on the first time a call
     # crosses SOFT_REPEAT_THRESHOLD, stage a one-time mid-loop corrective (consumed by
     # _post_dispatch_inject). Skips writes (own dedup) and already-blocked calls.
-    # Successful non-write calls that keep returning identical content are tracked the
-    # same way (redundant-read spin) via call_results.
     warned: set = lc.repeat_warned
-    redundant_warned: set = lc.redundant_warned
-    for result, (name, args, call_id) in zip(results, normalized):
+    for i, (result, (name, args, call_id)) in enumerate(zip(results, normalized)):
         if _is_write(name) or call_id in blocked_results:
             continue
-        ok, _summary = summarize_tool_result(name, result, agent.tool_caps)
         key = (name, _make_hashable(args))
-        if not ok:
-            call_fails[key] = call_fails.get(key, 0) + 1
-            pcf = getattr(agent, "_persistent_call_fails", None)
-            if pcf is not None:
-                pcf[key] = pcf.get(key, 0) + 1
-            if call_fails[key] >= SOFT_REPEAT_THRESHOLD and key not in warned:
-                warned.add(key)
-                execution_context["_repeat_alert"] = (name, call_fails[key])
+        ok, _summary = summarize_tool_result(name, result, agent.tool_caps)
+        if ok:
+            # The same call returning the same answer for the third time is spin, and
+            # nothing later in the turn will notice it: the failing-call guard above
+            # counts only failures, and a nudge fires only once the model stops calling
+            # tools — which a spinning model never does. Said as an annotation, never a
+            # block: two guards that withheld or rewrote a repeated success were built
+            # here before and removed, because refusing the content only sent the model
+            # to read the same thing another way. Nothing is withheld here.
+            digest = hashlib.sha1(str(result).encode("utf-8", "replace")).hexdigest()
+            seen, count = lc.call_results.get(key, ("", 0))
+            count = count + 1 if seen == digest else 1
+            lc.call_results[key] = (digest, count)
+            if count >= IDENTICAL_REPEAT_THRESHOLD and key not in lc.repeat_noted:
+                lc.repeat_noted.add(key)
+                results[i] = str(result) + (
+                    f"\n\nIDENTICAL_REPEAT: this call has returned exactly this result "
+                    f"{count} times in this task. It will not return anything else — "
+                    f"decide with what you already have, or ask a different question."
+                )
             continue
-        # Successful non-write call: clear any persistent failure count for this exact
-        # call (a call that now succeeds must not stay blocked across queries), then
-        # track repeats that return identical content. A changed result resets the
-        # counter so edit-then-reread is never penalised.
-        getattr(agent, "_persistent_call_fails", {}).pop(key, None)
-        result_hash = hashlib.sha1((result or "").encode("utf-8", "replace")).hexdigest()
-        prev_hash, prev_count = call_results.get(key, (None, 0))
-        identical = prev_hash == result_hash
-        new_count = prev_count + 1 if identical else 0
-        call_results[key] = (result_hash, new_count)
-        # Track the call_ids of the identical-content occurrences so the hard block can
-        # strip everything after the first copy. A changed result starts a fresh chain.
-        redundant_ids: dict = lc.redundant_call_ids
-        if identical:
-            redundant_ids.setdefault(key, []).append(call_id)
-        else:
-            redundant_ids[key] = [call_id]
-        if new_count >= REDUNDANT_SOFT_THRESHOLD and key not in redundant_warned:
-            redundant_warned.add(key)
-            execution_context["_redundant_alert"] = (name, new_count)
+        call_fails[key] = call_fails.get(key, 0) + 1
+        if call_fails[key] >= SOFT_REPEAT_THRESHOLD and key not in warned:
+            warned.add(key)
+            execution_context["_repeat_alert"] = (name, call_fails[key])
 
     # Record which files each tool message concerns, keyed by tool_call_id, so
     # _trim_tool_history can match messages to files structurally instead of by
@@ -427,15 +405,19 @@ async def _post_dispatch_inject(
     agent: Any,
     messages: list[dict],
     execution_context: dict,
+    *,
+    active_mode: str = "agent",
 ) -> None:
     """After every tool dispatch step, inject post-dispatch reminders.
 
-    Three independent reminders: (1) mark a completed todo step done after a successful
+    Four independent reminders: (1) mark a completed todo step done after a successful
     edit, (2) a one-time corrective when a non-write call keeps failing identically
-    (staged as ``_repeat_alert`` during dispatch), and (3) a one-time stop when refusals
-    have run the denial ladder to its end. This is the mid-tool-loop channel the regular
-    nudges can't reach, since they only fire when the model stops calling tools — and a
-    model that has been told to hand back is, by definition, still calling tools.
+    (staged as ``_repeat_alert`` during dispatch), (3) a one-time stop when refusals
+    have run the denial ladder to its end, and (4) the environment-resolution cascade
+    when a call just failed on a missing module. This is the mid-tool-loop channel the
+    regular nudges can't reach, since they only fire when the model stops calling tools
+    — and a model that has been told to hand back, or that is retrying against the
+    wrong interpreter, is by definition still calling tools.
     """
     # remind agent to mark completed step done in todo list
     success_path = execution_context.get("last_edit_success_path", "")
@@ -445,40 +427,38 @@ async def _post_dispatch_inject(
         and execution_context.get("todo_file_path")
     ):
         execution_context["last_edit_success_path"] = ""  # consume
-        messages.append({
-            "role": "user",
-            "content": (
-                f"You just wrote {os.path.basename(success_path)} successfully. "
-                "If a step in your task checklist is now fully complete, mark it done. "
-                "Do NOT mark it done if more work for that step remains."
-            ),
-        })
+        inject_reminder(
+            messages,
+            f"You just wrote {os.path.basename(success_path)} successfully. "
+            "If a step in your task checklist is now fully complete, mark it done. "
+            "Do NOT mark it done if more work for that step remains.",
+            category="todo_tick",
+        )
 
     # one-time corrective for a repeated identical failing call
     alert = execution_context.pop("_repeat_alert", None)
     if alert:
         name, fails = alert
-        messages.append({
-            "role": "user",
-            "content": repeat_corrective_message(name, fails),
-        })
-
-    # one-time corrective for a repeated identical SUCCESSFUL call (redundant read spin)
-    redundant_alert = execution_context.pop("_redundant_alert", None)
-    if redundant_alert:
-        name, repeats = redundant_alert
-        messages.append({
-            "role": "user",
-            "content": redundant_corrective_message(name, repeats),
-        })
+        inject_reminder(
+            messages, repeat_corrective_message(name, fails), category="repeat_call",
+        )
 
     # one-time stop once refusals reached the end of the denial ladder
     if handback_required(execution_context) and not execution_context.get("_handback_told"):
         execution_context["_handback_told"] = True
-        messages.append({
-            "role": "user",
-            "content": handback_corrective_message(handback_scopes(execution_context)),
-        })
+        inject_reminder(
+            messages,
+            handback_corrective_message(handback_scopes(execution_context)),
+            category="handback",
+        )
+
+    # the env cascade, at the failure rather than a step ceiling later
+    maybe_inject_env_resolution(
+        agent=agent,
+        active_mode=active_mode,
+        execution_context=execution_context,
+        messages=messages,
+    )
 
 
 # Repeated-failing-call guard. Nudges only fire when the model stops calling tools,
@@ -490,66 +470,6 @@ async def _post_dispatch_inject(
 SOFT_REPEAT_THRESHOLD = 2   # after this many identical FAILED dispatches, inject the corrective once
 HARD_REPEAT_LIMIT = 3       # once this many identical failures are recorded, block further attempts
 
-# Redundant-successful-call guard (a non-write call that keeps returning identical
-# content). Tuned more aggressively than the failed-call guard: a redundant read is
-# never useful, so we correct on the very first repeat and block on the second. On the
-# hard block the intermediate repeats are also stripped from history (see
-# _strip_redundant_history) so only the first copy of the result survives.
-REDUNDANT_SOFT_THRESHOLD = 1  # repeats (beyond the first call) before the corrective is injected once
-REDUNDANT_HARD_LIMIT = 2      # repeats recorded before the next identical call is blocked + history stripped
-
-
-def _tc_id(tc: Any) -> Any:
-    """Extract the id from a tool_call entry (dict or object form)."""
-    if isinstance(tc, dict):
-        return tc.get("id")
-    return getattr(tc, "id", None)
-
-
-def _strip_redundant_history(messages: list[dict], execution_context: dict, key: tuple) -> None:
-    """Remove redundant repeated tool exchanges from history, keeping only the first.
-
-    When a non-write call is hard-blocked for returning identical content repeatedly,
-    every occurrence after the first adds nothing but reinforces the loop (and bloats
-    the window). This drops those intermediate exchanges — both the assistant
-    ``tool_calls`` entry and its paired ``tool`` result — so the conversation keeps a
-    single copy of the result. Assistant/tool pairing is preserved: a tool_call is only
-    removed together with its result, and an assistant turn that existed solely to issue
-    the stripped call(s) is dropped entirely.
-    """
-    lc = loop_control(execution_context)
-    call_ids = lc.redundant_call_ids.get(key, [])
-    if len(call_ids) <= 1:
-        return  # nothing to collapse — only the keeper exists
-    strip_ids = set(call_ids[1:]) - {call_ids[0]}  # keep call_ids[0]; never strip the keeper
-    if not strip_ids:
-        return
-
-    kept: list[dict] = []
-    for m in messages:
-        role = m.get("role")
-        # Drop the redundant tool-result messages outright.
-        if role == "tool" and m.get("tool_call_id") in strip_ids:
-            continue
-        # Remove stripped tool_calls from assistant turns; drop the turn if it becomes
-        # empty (no surviving tool_calls and no textual content).
-        if role == "assistant" and isinstance(m.get("tool_calls"), list) and m.get("tool_calls"):
-            remaining = [tc for tc in m["tool_calls"] if _tc_id(tc) not in strip_ids]
-            if len(remaining) != len(m["tool_calls"]):
-                if not remaining and not str(m.get("content") or "").strip():
-                    continue  # assistant turn only issued the stripped call(s)
-                m = {k: v for k, v in m.items() if k != "tool_calls"}
-                if remaining:
-                    m["tool_calls"] = remaining
-        kept.append(m)
-
-    messages[:] = kept
-
-    # Drop stripped ids from the file-tracking map and collapse tracking to the keeper.
-    tool_msg_files = execution_context.get("tool_msg_files", {})
-    for cid in strip_ids:
-        tool_msg_files.pop(cid, None)
-    lc.redundant_call_ids[key] = call_ids[:1]
 
 
 def _repeat_blocked_payload(tool_name: str, fails: int) -> str:
@@ -567,24 +487,3 @@ def _repeat_blocked_payload(tool_name: str, fails: int) -> str:
         ),
     })
 
-
-def _redundant_blocked_payload(tool_name: str, repeats: int) -> str:
-    """Synthetic tool result returned in place of an over-repeated redundant call.
-
-    Fires for a non-write call that has already SUCCEEDED with identical result content
-    repeatedly — re-running it cannot surface anything new. Uses a neutral ("skipped")
-    status rather than "error" so the model reads it as guidance to proceed, not as a
-    failure to apologize for or retry.
-    """
-    return json.dumps({
-        "status": "skipped",
-        "reason": (
-            f"This exact call already returned the same result {repeats} times, so it was "
-            "not run again — repeating it adds no new information. This is not a failure."
-        ),
-        "next": (
-            "You already have this result in the conversation above — re-read it there. "
-            "Move on: act on what you found, read a different file or line range, or "
-            "conclude. Do not issue the same call again."
-        ),
-    })

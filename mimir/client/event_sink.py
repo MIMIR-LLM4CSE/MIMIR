@@ -44,6 +44,31 @@ def emit(event: dict) -> None:
         print(json.dumps(event))
 
 
+def captured_emitter() -> Callable[[dict], None] | None:
+    """The currently bound sink, captured for emitting from another task later.
+
+    :func:`emit` reads the ContextVar at call time, which is right for the agent loop
+    and wrong for a callback that fires elsewhere: a task started before the sink was
+    bound — an MCP session's receive loop, say — carries a snapshot of the context from
+    back then, so emitting there would find no sink and print instead. Capture the sink
+    where it IS bound, call the result where the event happens.
+
+    Returns None when nothing is bound, which is also the answer to "is there a
+    frontend to feed at all" — with no sink, a stream of events is noise, not a view.
+    """
+    sink = _current_sink.get()
+    if sink is None:
+        return None
+
+    def _emit(event: dict) -> None:
+        try:
+            sink(event)
+        except Exception:
+            pass
+
+    return _emit
+
+
 def set_event_sink(sink: Callable[[dict], None]) -> Any:
     """Bind *sink* for the current context; returns a token for :func:`reset_event_sink`."""
     return _current_sink.set(sink)

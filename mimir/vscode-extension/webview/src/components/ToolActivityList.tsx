@@ -138,12 +138,9 @@ const ToolRow: React.FC<RowProps> = ({ tool }) => {
   // explanation cropped in the tail.
   const canExpand = hasExec || hasError;
   // The tail is a narrow, single-line slot: an error there renders as a fragment
-  // cropped mid-sentence. Failed rows keep it clear (the ✕ glyph carries the
-  // status) and state the problem on the brief line below instead.
+  // cropped mid-sentence. Failed rows keep it clear — the ✕ carries the status and
+  // the full command/error is one click away.
   const tailSummary = isError ? "" : tool.summary;
-  // Collapsed, a failed row shows ONE line: the first line of the error, clipped.
-  // The full text — stack, hint, every line — appears only once expanded.
-  const briefError = (tool.error || tool.summary || "failed").split("\n")[0].trim();
   // Only *successful* exec-shaped rows (shell / code runner / compiler) open by
   // default, so the terminal IN/OUT panel is visible without a click. Failed or
   // blocked rows stay collapsed — the explanation is a dropdown the user opens on
@@ -162,11 +159,6 @@ const ToolRow: React.FC<RowProps> = ({ tool }) => {
   const elapsed = useElapsed(tool.startedAt, running);
   const duration = tool.durationMs ?? elapsed;
 
-  // Success is the norm and needs no mark — a clean row already reads as "fine".
-  // Only failure is worth a glyph, so the ✕ stands out instead of being one more
-  // symbol in a column of them.
-  const statusGlyph = tool.status === "error" ? "✕" : null;
-
   // A run's exit code and its result are different facts: the badge carries what the
   // model said the output showed, and only appears once it has said it.
   const verdictBadge = tool.verdict ? (
@@ -179,28 +171,48 @@ const ToolRow: React.FC<RowProps> = ({ tool }) => {
   ) : null;
 
   return (
-    <div className={`tool-row tool-row--${tool.status}`}>
+    <div
+      className={`tool-row tool-row--${tool.status}${tool.parentId ? " tool-row--child" : ""}`}
+    >
       <button
         className="tool-row-head"
         onClick={() => canExpand && setExpanded((e) => !e)}
         disabled={!canExpand}
         title={tool.error || tool.detail || tool.label}
       >
+        {/* Success is the norm and needs no mark; only failure gets a glyph, and it
+            leads the row so the status is read before the label. */}
+        {isError && (
+          <span className="tool-status-glyph tool-status-glyph--error" aria-label="failed">
+            ✕
+          </span>
+        )}
         {running ? (
           <span className="tb-spinner" aria-hidden="true" />
         ) : (
           <span className="tool-icon" aria-hidden="true">{tool.icon}</span>
         )}
+        {/* Whose work this is. Several sub-agents run at once, and their rows sit in
+            the same list as the agent's own — without the badge a reader cannot tell
+            which run a line belongs to. */}
+        {tool.origin && (
+          <span className="tool-origin" title={`Work of sub-agent ${tool.origin}`}>
+            {tool.origin}
+          </span>
+        )}
         <ToolLabel label={tool.label} />
         {tool.detail && <span className="tool-detail">{tool.detail}</span>}
         <span className="tool-row-tail">
+          {tool.childrenDropped ? (
+            <span
+              className="tool-summary"
+              title="Sub-agent steps that were shed rather than shown"
+            >
+              +{tool.childrenDropped} more
+            </span>
+          ) : null}
           {tailSummary && <span className="tool-summary">{tailSummary}</span>}
           {verdictBadge}
-          {statusGlyph && (
-            <span className={`tool-status-glyph tool-status-glyph--${tool.status}`}>
-              {statusGlyph}
-            </span>
-          )}
           <span className="tool-duration">{formatDuration(duration)}</span>
           {canExpand && (
             <span className="tool-chevron" aria-hidden="true">
@@ -210,20 +222,9 @@ const ToolRow: React.FC<RowProps> = ({ tool }) => {
         </span>
       </button>
       {expanded && tool.exec && <ExecOutput exec={tool.exec} />}
-      {hasError &&
-        (expanded ? (
-          <ErrorOutput error={tool.error!} onCollapse={() => setExpanded(false)} />
-        ) : (
-          // Collapsed: a single full-width line, ellipsized at the row edge — never
-          // squeezed into the right-hand tail. Clicking it opens the full panel.
-          <button
-            className="tool-error-brief"
-            onClick={() => setExpanded(true)}
-            title={briefError}
-          >
-            {briefError}
-          </button>
-        ))}
+      {expanded && hasError && (
+        <ErrorOutput error={tool.error!} onCollapse={() => setExpanded(false)} />
+      )}
     </div>
   );
 };

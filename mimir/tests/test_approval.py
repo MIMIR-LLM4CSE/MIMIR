@@ -1,8 +1,10 @@
 import types
 import unittest
 
+from mimir.client.context.execution_context import build_execution_context
 from mimir.client.guardrails.policy import approval
 from mimir.client.guardrails.policy.approval import ApprovalManager as _ApprovalManager
+from mimir.client.guardrails.workflow import approval_is_settled
 from mimir.client.context.capabilities import (
     NON_BATCH, SENSITIVE, ToolCaps, fallbacks, names_with_cap,
 )
@@ -126,10 +128,8 @@ class SensitivityGateTests(unittest.TestCase):
 
     def test_confirm_gate_tracks_confirm_arg(self) -> None:
         manager = _manager()
-        # apply_edits / replace_all_in_file are preview when confirm is falsy, real
-        # mutation (sensitive) when truthy.
-        self.assertFalse(manager.is_sensitive("apply_edits", {"confirm": False}))
-        self.assertTrue(manager.is_sensitive("apply_edits", {"confirm": True}))
+        # A confirm-gated tool is a preview when confirm is falsy, a real mutation
+        # (sensitive) when truthy.
         self.assertFalse(manager.is_sensitive("replace_all_in_file", {"confirm": False}))
         self.assertTrue(manager.is_sensitive("replace_all_in_file", {"confirm": True}))
 
@@ -267,6 +267,50 @@ class ReseedClassificationTests(unittest.TestCase):
         self.assertTrue(manager.is_sensitive("bash_run", {}))
         self.assertIn("bash_run", manager.non_batch_tools)
         self.assertNotIn("read_file_lines", manager.non_batch_tools)
+
+
+class SettledRefusalTests(unittest.TestCase):
+    """A refusal the user has already repeated is not put back to them.
+
+    The gate already declined to re-prompt once a scope reached `handback`; what it
+    still did was raise a third card for a scope refused twice, which the ladder had
+    already closed — from `drop_or_stop` on, another attempt at the same goal is off
+    the table, and the same route is one.
+    """
+
+    def _ctx(self, scope, times):
+        ec = build_execution_context()
+        ec["denial_history"] = [{"tool": "bash_run", "scope": scope, "kind": "refused"}] * times
+        return ec
+
+    def test_one_refusal_leaves_the_route_open(self):
+        # Reading (1) of a refusal is "not this way": trying again differently is
+        # exactly what the model is supposed to do, and it may need the card.
+        ec = self._ctx("bash:bash_run:make", 1)
+        self.assertFalse(approval_is_settled(ec, "bash:bash_run:make"))
+
+    def test_a_twice_refused_scope_is_settled(self):
+        ec = self._ctx("bash:bash_run:make", 2)
+        self.assertTrue(approval_is_settled(ec, "bash:bash_run:make"))
+
+    def test_an_unrelated_scope_starts_fresh(self):
+        ec = self._ctx("bash:bash_run:make", 2)
+        self.assertFalse(approval_is_settled(ec, "bash:bash_run:gfortran"))
+
+    def test_the_query_wide_handback_still_reaches_every_scope(self):
+        # Four refusals in one query end the run; nothing sensitive is worth another
+        # card at that point, whichever scope it belongs to.
+        ec = build_execution_context()
+        ec["denial_history"] = [
+            {"tool": "bash_run", "scope": f"bash:bash_run:c{i}", "kind": "refused"}
+            for i in range(4)
+        ]
+        self.assertTrue(approval_is_settled(ec, "bash:bash_run:untouched"))
+
+    def test_a_cancelled_prompt_settles_everything_at_once(self):
+        ec = build_execution_context()
+        ec["denial_history"] = [{"tool": "bash_run", "scope": "s", "kind": "cancelled"}]
+        self.assertTrue(approval_is_settled(ec, "other"))
 
 
 if __name__ == "__main__":

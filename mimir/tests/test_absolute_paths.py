@@ -18,7 +18,6 @@ Pure-Python + temp dirs (no live model/servers): runs on x86 and ARM.
 """
 from __future__ import annotations
 
-import json
 import os
 import sys
 import tempfile
@@ -107,35 +106,6 @@ class RelativePathsAreRejectedTests(_WorkspaceFixture):
         res = sf.write_file(path="", content="x = 1\n")
         self.assertEqual(res.get("status"), "error")
 
-    def test_apply_edits_rejects_a_relative_path_inside_the_batch(self):
-        # A batch must not be a way around the rule.
-        self.seed(text="alpha = 1\n")
-        edits = json.dumps([
-            {"operation": "replace_in_file", "path": "t.py",
-             "old_text": "alpha = 1", "new_text": "beta = 2"},
-        ])
-        res = sf.apply_edits(edits_json=edits, confirm=True)
-        self.assertEqual(res.get("status"), "error")
-        self.assertIn("absolute path", res.get("error", "").lower())
-        self.assertIn("Edit #0", res.get("error", ""))
-        # Rejected in the validation phase — the file is untouched.
-        with open(self.abs_path()) as fh:
-            self.assertEqual(fh.read(), "alpha = 1\n")
-
-    def test_apply_edits_rejects_when_only_one_sub_edit_is_relative(self):
-        self.seed(text="alpha = 1\nN = 10\n")
-        edits = json.dumps([
-            {"operation": "replace_in_file", "path": self.abs_path(),
-             "old_text": "alpha = 1", "new_text": "beta = 2"},
-            {"operation": "replace_in_file", "path": "t.py",
-             "old_text": "N = 10", "new_text": "N = 20"},
-        ])
-        res = sf.apply_edits(edits_json=edits, confirm=True)
-        self.assertEqual(res.get("status"), "error")
-        self.assertIn("Edit #1", res.get("error", ""))
-        with open(self.abs_path()) as fh:
-            self.assertEqual(fh.read(), "alpha = 1\nN = 10\n")
-
 
 class AbsolutePathsStillWorkTests(_WorkspaceFixture):
     def test_write_append_and_replace_round_trip(self):
@@ -158,16 +128,6 @@ class AbsolutePathsStillWorkTests(_WorkspaceFixture):
                                    confirm=True).get("status"), "ok")
         self.assertEqual(sf.delete_file(path=fp, confirm=True).get("status"), "ok")
         self.assertFalse(os.path.exists(fp))
-
-    def test_apply_edits_with_absolute_paths(self):
-        fp = self.seed(text="alpha = 1\n")
-        edits = json.dumps([
-            {"operation": "replace_in_file", "path": fp,
-             "old_text": "alpha = 1", "new_text": "beta = 2"},
-        ])
-        self.assertEqual(sf.apply_edits(edits_json=edits, confirm=True).get("status"), "ok")
-        with open(fp) as fh:
-            self.assertEqual(fh.read(), "beta = 2\n")
 
     def test_creating_a_nested_directory_works(self):
         fp = os.path.join(self.root, "pkg", "sub", "mod.py")
@@ -213,6 +173,42 @@ class InternalHelpersAreUnaffectedTests(_WorkspaceFixture):
             self.assertEqual(res.get("status"), "ok", f"{subdir!r} -> {res}")
         # Unchanged: the sandbox still governs where it may look.
         self.assertEqual(sf.list_files("/").get("status"), "error")
+
+
+class ReadsAreAsStrictAsWritesTests(unittest.TestCase):
+    """A read that tolerates a relative path teaches a habit the next write refuses.
+
+    That asymmetry is not theoretical: reads accepted `pkg/mod.py` for dozens of calls,
+    then the first edit on the same path was rejected. Whatever names a file answers to
+    the same rule.
+    """
+
+    def test_a_relative_path_is_refused_with_the_absolute_one_it_meant(self):
+        import server_search as ss
+        old = ss.SEARCH_ROOT
+        with tempfile.TemporaryDirectory() as d:
+            ss.SEARCH_ROOT = d
+            try:
+                with open(os.path.join(d, "mod.py"), "w") as fh:
+                    fh.write("x = 1\n")
+                res = ss.read_file_lines("mod.py")
+                self.assertEqual(res["status"], "error")
+                self.assertIn("absolute path", res["error"])
+                self.assertIn(os.path.join(d, "mod.py"), res["hint"])
+            finally:
+                ss.SEARCH_ROOT = old
+
+    def test_directory_tools_keep_their_tolerant_default(self):
+        # "." there means the workspace — no inference anyone can get wrong.
+        import server_search as ss
+        old = ss.SEARCH_ROOT
+        with tempfile.TemporaryDirectory() as d:
+            ss.SEARCH_ROOT = d
+            try:
+                self.assertEqual(ss.list_directory(".")["status"], "ok")
+                self.assertEqual(ss.tree_summary(".", use_cache=False)["status"], "ok")
+            finally:
+                ss.SEARCH_ROOT = old
 
 
 class PathRoundTripTests(unittest.TestCase):
@@ -265,7 +261,7 @@ class PathRoundTripTests(unittest.TestCase):
                 with open(os.path.join(d, "pkg", "mod.py"), "w") as fh:
                     fh.write("x = 1\n")
 
-                r = ss.read_file_lines("pkg/mod.py")
+                r = ss.read_file_lines(os.path.join(d, "pkg", "mod.py"))
                 self.assertTrue(os.path.isabs(r["path"]), r)
 
                 r = ss.list_directory("pkg")
@@ -277,9 +273,6 @@ class PathRoundTripTests(unittest.TestCase):
                 self.assertTrue(os.path.isabs(r["path"]), r)
                 # The tree's own root line, not just the echoed argument.
                 self.assertIn(os.path.abspath(os.path.join(d, "pkg")), r["tree"])
-
-                r = ss.read_files(["pkg/mod.py"])
-                self.assertTrue(os.path.isabs(r["files"][0]["path"]), r)
             finally:
                 ss.SEARCH_ROOT = old
 
@@ -294,7 +287,7 @@ class PathRoundTripTests(unittest.TestCase):
             try:
                 with open(os.path.join(d, "mod.py"), "w") as fh:
                     fh.write("alpha = 1\n")
-                found = ss.read_file_lines("mod.py")["path"]
+                found = ss.read_file_lines(os.path.join(d, "mod.py"))["path"]
                 res = sf.replace_in_file(path=found, old_text="alpha = 1",
                                          new_text="beta = 2")
                 self.assertEqual(res.get("status"), "ok", res)

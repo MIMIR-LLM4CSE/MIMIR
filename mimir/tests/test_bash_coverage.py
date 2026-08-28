@@ -170,11 +170,11 @@ _CREDITING_CORPUS: list[tuple[str, dict]] = [
 # credit no *validation* — a green `make clean` establishes nothing, and an inline
 # payload names no file — but each is now recorded as a run whose output the model must
 # account for, which is the one thing that can be said about them without knowing what
-# they did.
+# they did. `tox -e py311` left it when an unplaced head became UNKNOWN rather than
+# opaque; `bash -c 'pytest tests/'` left it because the server refuses it outright, so
+# there is no result to credit.
 _KNOWN_UNCREDITED: list[tuple[str, str]] = [
-    ("tox -e py311", "unrecognised leading command — nothing in the head to read"),
     ("cat $(ls *.py | head -1)", "command substitution runs code, under a `cat` head"),
-    ("bash -c 'pytest tests/'", "wrapper hides the real command behind a non-exec head"),
 ]
 
 
@@ -326,7 +326,7 @@ class CreditRateTests(unittest.TestCase):
     # growing the blind surface is a decision someone takes rather than a drift. A
     # blind spot that starts crediting raises the rate and is caught by
     # BlindSurfaceTests instead, which is why that direction needs no ceiling here.
-    MIN_CREDIT_RATE = 0.78
+    MIN_CREDIT_RATE = 0.93
 
     def test_credit_rate_above_floor(self) -> None:
         commands = [c for c, _ in _CREDITING_CORPUS] + [c for c, _ in _KNOWN_UNCREDITED]

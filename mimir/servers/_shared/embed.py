@@ -26,7 +26,6 @@ from __future__ import annotations
 import functools
 import os
 import re
-from typing import Any
 
 _DEFAULT_OLLAMA_EMBED_MODEL = "nomic-embed-text"
 

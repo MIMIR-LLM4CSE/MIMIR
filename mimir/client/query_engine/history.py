@@ -458,11 +458,6 @@ def _enforce_context_budget(
         _force_fit_to_window(messages, usable, token_counter)
         after = sum(token_counter(_message_content_str(m)) for m in messages)
         if after < before:
-            # Older content just left the context, possibly including a read the cache
-            # would otherwise answer with "it is above in your context". That claim is
-            # no longer safe to make, so the repeat-read short-circuit stands down for
-            # the rest of the query and reads are served in full again.
-            execution_context["history_truncated"] = True
             emit({"type": "status", "text": (
                 f"  ⚠ Context backstop: truncated ~{before - after} tokens of older "
                 f"content to fit the model's window."

@@ -21,7 +21,7 @@ graph TD
     end
     subgraph GOV["🛡️ Governance &amp; services"]
         guard["guardrails/<br/><small>policy · nudges<br/>workflow · observations · state_machine</small>"]
-        prompt["prompt/<br/><small>system_prompt · repo_baseline · platform_probe</small>"]
+        prompt["prompt/<br/><small>system_prompt</small>"]
         ext["extensions/<br/><small>.mimir/ servers · skills · plugins</small>"]
         integ["integration/<br/><small>MCP connect</small>"]
     end

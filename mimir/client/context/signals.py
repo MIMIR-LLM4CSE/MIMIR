@@ -103,9 +103,9 @@ _QUERY_DISCOVERY_ONLY: tuple[str, ...] = (
 #
 # Read this as an EXIT filter, not a detector: the union is broad enough to be true for
 # almost any repo-touching request, and that is intended. Its job is to exclude pure
-# theory, bibliography and chit-chat from the baseline scan, not to discriminate among
-# coding tasks — consumers (repo baseline, plan_explore_required, the discovery nudge)
-# must not read a positive as more than "this query plausibly touches the workspace".
+# theory, bibliography and chit-chat, not to discriminate among coding tasks — its two
+# consumers (the plan-mode explore phase, the discovery nudge) must not read a positive
+# as more than "this query plausibly touches the workspace".
 #
 # Hence QUERY_SCIENCE_SIGNALS (derive/prove/cite/theorem…) is excluded: a derivation or
 # literature query needs no *repository* discovery. QUERY_HPC_SIGNALS
@@ -194,11 +194,34 @@ DOMAIN_TOOL_GROUPS: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] = (
 )
 
 
+# What counts as source: an edit to one of these is recorded as produced work and owes
+# a check. Deliberately wider than the set of languages this environment can check —
+# whether a checker exists is a separate question, answered per file at write time
+# (guardrails.observations._language_checker_missing) so a language nothing here can
+# check is *reported* unchecked instead of dropping out of the ledger unnoticed. Every
+# spelling of a language belongs here: `.f03` was missing while the checker table
+# already knew it, so a Fortran 2003 file was never even recorded as modified.
 SOURCE_FILE_EXTENSIONS: tuple[str, ...] = (
-    ".py", ".js", ".ts",
-    ".c", ".cc", ".cpp", ".cxx", ".h", ".hpp",
-    ".java", ".f", ".f90", ".f95",
-    ".cu", ".cuh",  # CUDA C/C++ + headers — first-class HPC source
+    # Python
+    ".py", ".pyi", ".pyx", ".pxd",
+    # C / C++ (sources and headers)
+    ".c", ".h", ".cc", ".cpp", ".cxx", ".c++", ".hh", ".hpp", ".hxx", ".h++", ".inl",
+    # CUDA / HIP — first-class HPC source
+    ".cu", ".cuh", ".hip",
+    # Fortran, every spelling: fixed form, free form, and the preprocessed variants
+    ".f", ".for", ".ftn", ".f77", ".f90", ".f95", ".f03", ".f08", ".f18",
+    # JVM / .NET
+    ".java", ".kt", ".kts", ".scala", ".groovy", ".cs",
+    # JavaScript / TypeScript
+    ".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx",
+    # Systems / general purpose
+    ".go", ".rs", ".swift", ".zig", ".ml", ".hs",
+    # Scripting
+    ".sh", ".bash", ".zsh", ".ksh", ".pl", ".pm", ".rb", ".php", ".lua", ".tcl",
+    # Scientific / array languages
+    ".jl", ".r", ".m",
+    # Hardware description
+    ".v", ".sv", ".vhd", ".vhdl",
 )
 
 

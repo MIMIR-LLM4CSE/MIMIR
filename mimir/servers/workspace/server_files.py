@@ -1,7 +1,6 @@
 import ast
 import bisect
 import difflib
-import json
 import os
 import re
 import sys
@@ -11,7 +10,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'
 
 from mcp.server.fastmcp import FastMCP
 from responses import err, ok
-from root_paths import resolve_path_in_root
+from root_paths import require_absolute, resolve_path_in_root
 from approved_roots import approved_roots
 from state_paths import standing_roots
 from capabilities import (
@@ -35,6 +34,9 @@ mcp = FastMCP(
 )
 
 _MIN_REPLACE_ALL_PATTERN_LEN = 4
+# Lines shown either side of a near-match when an anchor fails, so the excerpt can be
+# copied back into old_text without a further read.
+_ANCHOR_SNIPPET_MARGIN = 3
 _CONTEXT_LINES = 2
 
 
@@ -54,33 +56,8 @@ def _safe(path: str) -> str:
 
 
 def _require_abs(path: str, arg: str = "path") -> dict | None:
-    """None when *path* is absolute; an error payload naming the likely target otherwise.
-
-    File tools take absolute paths only. A relative path has to be resolved against a
-    root the model cannot see, and getting that wrong is silent: asked to create a file
-    *outside* a directory, a model writes a bare relative name, the server resolves it
-    against that very directory, and the run reports the constraint satisfied. No amount
-    of prompt text made that inference reliable — removing the inference does.
-
-    The suggestion is the point. Naming the path the relative form *would* have produced
-    makes the rejection a one-step correction rather than an obstacle, and it states the
-    workspace root at the moment placement is actually being decided, which no static
-    prompt section can do.
-
-    Callers must run this at the tool boundary, not inside :func:`_safe` — internal
-    helpers (``list_files``) legitimately pass relative paths.
-    """
-    raw = "" if path is None else str(path).strip()
-    if not raw:
-        return err(f"Missing '{arg}'. File tools require an absolute path.")
-    if os.path.isabs(os.path.expanduser(raw)):
-        return None
-    candidate = os.path.abspath(os.path.join(ROOT_DIR_ABS, os.path.normpath(raw)))
-    return err(
-        f"Relative {arg} '{raw}' — file tools require an absolute path.",
-        hint=(f"Inside the workspace that is {candidate}. If you meant somewhere else, "
-              f"give that absolute path instead. The workspace root is {ROOT_DIR_ABS}."),
-    )
+    """Reject a relative *path* for a file tool (see root_paths.require_absolute)."""
+    return require_absolute(path, ROOT_DIR_ABS, arg)
 
 
 def _read_text(fp: str) -> str:
@@ -130,6 +107,48 @@ def _unified_diff(old_lines: list[str], new_lines: list[str], path: str) -> str:
             lineterm="\n",
         )
     )
+
+
+def _changed_line_span(old_lines: list[str], new_lines: list[str]) -> tuple[int, int]:
+    """1-based inclusive span of *new_lines* that differs, by common prefix/suffix.
+
+    Derived from the two contents rather than from each tool's own arguments, so every
+    edit tool gets the same answer without any of them tracking a match position.
+    A pure deletion returns ``end < start`` — nothing new occupies the site.
+    """
+    n_old, n_new = len(old_lines), len(new_lines)
+    pre = 0
+    while pre < n_old and pre < n_new and old_lines[pre] == new_lines[pre]:
+        pre += 1
+    suf = 0
+    while (
+        suf < n_old - pre
+        and suf < n_new - pre
+        and old_lines[n_old - 1 - suf] == new_lines[n_new - 1 - suf]
+    ):
+        suf += 1
+    return pre + 1, n_new - suf
+
+
+def _edit_orientation(content: str, updated: str) -> dict:
+    """Where the edit landed in the file it just produced.
+
+    An edit renumbers every line below it, so the line numbers the caller used to find
+    the site — from a search, an outline, an earlier read — stop describing the file the
+    moment the write succeeds. Handing back the new span and the shift applied below it
+    is what lets the next edit be aimed without first re-reading the file; the text
+    itself is already in the returned diff.
+    """
+    old_lines = content.splitlines(True)
+    new_lines = updated.splitlines(True)
+    start, end = _changed_line_span(old_lines, new_lines)
+    total = len(new_lines)
+    return {
+        "new_start_line": start,
+        "new_end_line": end,
+        "total_lines": total,
+        "line_delta": total - len(old_lines),
+    }
 
 
 def _validate_python_content(path: str, content: str) -> str | None:
@@ -196,7 +215,12 @@ def _apply_replace_lines_to_text(content: str, start_line: int, end_line: int, n
 
 
 def _nearest_context(content: str, old_text: str, *, max_snippets: int = 3) -> str:
-    """Return a short excerpt showing where *old_text* almost matches."""
+    """Return a short excerpt showing where *old_text* almost matches.
+
+    Wide enough to be copied straight into ``old_text``: a failed anchor is a request
+    for the exact current text, and answering it with the text costs a few dozen tokens
+    where answering it with "go read the file" costs a round trip and a re-read.
+    """
     probe = ""
     for part in old_text.splitlines():
         stripped = part.strip()
@@ -208,12 +232,17 @@ def _nearest_context(content: str, old_text: str, *, max_snippets: int = 3) -> s
 
     lines = content.splitlines()
     hits: list[str] = []
-    probe_lower = probe.lower()
+    # Compared with whitespace collapsed: differing spacing is the single most common
+    # reason an anchor misses, and it is exactly the case where showing the real text
+    # is the whole answer. A literal substring test never matches there.
+    probe_norm = " ".join(probe.lower().split())
+    if not probe_norm:
+        return ""
 
     for idx, line in enumerate(lines):
-        if probe_lower in line.lower():
-            start = max(0, idx - 1)
-            end = min(len(lines), idx + 2)
+        if probe_norm in " ".join(line.lower().split()):
+            start = max(0, idx - _ANCHOR_SNIPPET_MARGIN)
+            end = min(len(lines), idx + _ANCHOR_SNIPPET_MARGIN + 1)
             snippet = "\n".join(
                 f"  {start + i + 1}: {lines[start + i]}"
                 for i in range(end - start)
@@ -226,6 +255,58 @@ def _nearest_context(content: str, old_text: str, *, max_snippets: int = 3) -> s
         return ""
 
     return "Closest matches (case-insensitive) for " + repr(probe) + ":\n" + "\n---\n".join(hits)
+
+
+def _strip_line_number_prefixes(text: str, expect_start: int | None = None) -> str | None:
+    """*text* without its ``N: `` line-number prefixes, or ``None`` if it has none.
+
+    Reads, search excerpts and the post-edit window all number the text they hand back,
+    so the text a model has in front of it is numbered and the anchor it is asked for is
+    not. Undoing the prefix here costs a few lines; making the model do it costs a
+    failed edit and the re-read that follows.
+
+    Numbering must run consecutively — the text was copied from one contiguous block or
+    it was not — and *expect_start* pins where it must begin. Real code that happens to
+    look numbered (``1: value``) does not survive either test, and callers verify what
+    comes back besides.
+    """
+    lines = text.splitlines()
+    if not lines:
+        return None
+    out: list[str] = []
+    previous: int | None = None
+    for line in lines:
+        match = re.match(r"^\s*(\d+): ?", line)
+        if not match:
+            return None
+        number = int(match.group(1))
+        if previous is None:
+            if expect_start is not None and number != expect_start:
+                return None
+        elif number != previous + 1:
+            return None
+        previous = number
+        out.append(line[match.end():])
+    return "\n".join(out)
+
+
+def _anchor_retry_hint(excerpt: str) -> str:
+    """How to retry a failed anchor — from the excerpt when there is one.
+
+    Sending the caller off to read the file is only the right answer when nothing in
+    this reply shows the current text; when the excerpt is right there, telling it to
+    read anyway is what turns one failed edit into a search and a read.
+    """
+    if excerpt:
+        return (
+            "Copy old_text verbatim from anchor_excerpt — including indentation and "
+            "trailing whitespace — and drop the line-number prefix ('  12: '). Read the "
+            "file only if the excerpt does not cover the site you meant."
+        )
+    return (
+        "Use read_file_lines to inspect the current content and copy the exact "
+        "whitespace and text for old_text, without the line-number prefix ('12: ')."
+    )
 
 
 def _detect_context_bleed(
@@ -297,6 +378,14 @@ def _apply_replace_in_text(content: str, old_text: str, new_text: str) -> tuple[
     """
     count = content.count(old_text)
     if count == 0:
+        # An anchor copied from numbered output, prefixes and all. Only accepted when
+        # the un-numbered form matches the file exactly once, so a line of code that
+        # merely looks numbered cannot be rewritten by this path.
+        unnumbered = _strip_line_number_prefixes(old_text)
+        if unnumbered is not None and content.count(unnumbered) == 1:
+            return _apply_replace_in_text(
+                content, unnumbered, _strip_line_number_prefixes(new_text) or new_text
+            )
         # Trailing-whitespace-stripped fallback: strip trailing spaces/tabs per
         # line and retry the search on the file as a line-by-line window scan.
         # This recovers from anchors the model produced from memory with minor
@@ -336,7 +425,7 @@ def _apply_replace_in_text(content: str, old_text: str, new_text: str) -> tuple[
         ctx = _nearest_context(content, old_text)
         msg = "Target text was not found."
         if ctx:
-            msg += "\n" + ctx
+            msg += " Closest matches are in anchor_excerpt."
         return None, msg, False
     if count > 1:
         return None, "Target text appears multiple times.", False
@@ -373,45 +462,6 @@ def _already_applied_result(path: str, fp: str) -> dict:
         "reason": "No change: the original text is absent and the intended result is "
                   "already present — this edit was already applied.",
     }
-
-
-def _apply_insert_in_text(content: str, after_text: str, new_text: str) -> tuple[str | None, str | None]:
-    """Insert new_text after exactly one occurrence of after_text in content."""
-    count = content.count(after_text)
-    if count == 0:
-        ctx = _nearest_context(content, after_text)
-        msg = "Anchor text was not found."
-        if ctx:
-            msg += "\n" + ctx
-        return None, msg
-    if count > 1:
-        return None, "Anchor text appears multiple times."
-    match_pos = content.index(after_text)
-    after_end = match_pos + len(after_text)
-    # Check if new_text ends with text already immediately following after_text.
-    after_context = content[after_end:]
-    after_first = next(
-        (ln.rstrip() for ln in after_context.splitlines() if ln.strip()),
-        None,
-    )
-    new_lines_nonempty = [ln.rstrip() for ln in new_text.splitlines() if ln.strip()]
-    if new_lines_nonempty and after_first and len(after_first.strip()) >= 8:
-        if new_lines_nonempty[-1] == after_first:
-            return None, (
-                f"new_text ends with a line already present immediately after after_text: "
-                f"{after_first.strip()!r}. "
-                "new_text must contain ONLY the text to insert — "
-                "do not include lines that are already in the file after the anchor. "
-                "Remove the trailing context line(s) from new_text."
-            )
-    # Check if new_text starts with the after_text itself (common mistake: repeating the anchor).
-    if new_text.lstrip("\n\r").startswith(after_text.lstrip("\n\r")):
-        return None, (
-            "new_text starts with the same content as after_text. "
-            "after_text is the anchor already in the file — new_text is what comes AFTER it. "
-            "Do not repeat the anchor text inside new_text."
-        )
-    return content.replace(after_text, after_text + new_text, 1), None
 
 
 def _build_replace_all_pattern(old_text: str, *, whole_word: bool) -> re.Pattern[str]:
@@ -725,10 +775,11 @@ def replace_in_file(path: str, old_text: str, new_text: str) -> dict:
             # "Target text was not found" failure (see _edit_already_applied).
             if _edit_already_applied(content, old_text, new_text):
                 return ok(_already_applied_result(path, fp))
-            return err(
-                error_msg,
-                hint="Use read_file_lines to inspect the current content and copy the exact whitespace and text for old_text.",
-            )
+            # The excerpt rides as its own field: err() collapses whitespace in the
+            # message, and collapsed whitespace is unusable as an anchor.
+            excerpt = _nearest_context(content, old_text)
+            return err(error_msg, hint=_anchor_retry_hint(excerpt),
+                       **({"anchor_excerpt": excerpt} if excerpt else {}))
 
         assert updated is not None  # for typing
         syntax_error = _validate_python_content(path, updated)
@@ -745,6 +796,7 @@ def replace_in_file(path: str, old_text: str, new_text: str) -> dict:
             "absolute_path": fp,
             "replacements": 1,
             "diff": diff,
+            **_edit_orientation(content, updated),
         }
         if normalized:
             result["normalized_match"] = True
@@ -769,14 +821,16 @@ def replace_lines(path: str, start_line: int, end_line: int, new_content: str) -
     """Replace a range of lines in a file with new content (1-based, inclusive).
 
     This is the primary way to make surgical edits to code — specify exactly
-    which lines to replace. Always read_file_lines first to confirm the exact
-    line numbers.
+    which lines to replace. The line numbers must describe the file as it stands
+    now: a previous edit's result reports the new numbering it produced, and a
+    search reports the current one. Read the file when you have neither.
 
     Args:
         path:        ABSOLUTE path to the file (required; a relative path is rejected).
         start_line:  First line to replace (1-based).
         end_line:    Last line to replace (inclusive).
         new_content: Replacement text (may be fewer or more lines than the range).
+                     Write the lines themselves, without the ``N: `` prefix a read adds.
     """
     try:
         abs_err = _require_abs(path)
@@ -788,6 +842,9 @@ def replace_lines(path: str, start_line: int, end_line: int, new_content: str) -
 
         content = _read_text(fp)
         old_lines = content.splitlines(True)
+        # Replacement text pasted back from a numbered read, still numbered. Writing it
+        # as given would put the line numbers into the file.
+        new_content = _strip_line_number_prefixes(new_content, start_line) or new_content
 
         updated, error_msg = _apply_replace_lines_to_text(content, start_line, end_line, new_content)
         if error_msg:
@@ -833,6 +890,7 @@ def replace_lines(path: str, start_line: int, end_line: int, new_content: str) -
             "old_line_count": len(old_lines),
             "new_line_count": len(new_lines),
             "diff": diff,
+            **_edit_orientation(content, updated),
         })
     except ValueError as e:
         return err(str(e))
@@ -941,292 +999,12 @@ def replace_all_in_file(
             "whole_word": whole_word,
             "replacements": actual_count,
             "diff": diff,
+            **_edit_orientation(content, updated),
         })
     except ValueError as e:
         return err(str(e))
     except Exception as e:
         return err(str(e))
-
-
-
-@mcp.tool(**tool_caps(
-    caps=[EDIT],
-    arg_roles={"edit_batch": ["edits_json"], "confirm_gate": ["confirm"]},
-    risk_note="applies a batch of edits to files in the workspace",
-))
-def apply_edits(edits_json: str, confirm: bool = False) -> dict:
-    """Apply or preview a batch of file edits.
-
-    When confirm=False (default), performs full validation and returns diffs
-    WITHOUT modifying the filesystem.
-
-    When confirm=True, applies the edits atomically per file.
-
-    Notes:
-    - Multiple edits targeting the same file are applied cumulatively in memory.
-    - Writes are atomic per file (temp file + replace).
-    - The batch is prevalidated, but not globally transactional across multiple files.
-
-    Args:
-        edits_json: A JSON array of edit objects. Each object must have:
-            - "path": file path
-            - "operation": one of replace_lines, replace_in_file, insert_in_file
-            - operation-specific keys:
-                * replace_lines: start_line, end_line, new_content
-                * replace_in_file: old_text, new_text
-                * insert_in_file: after_text, new_text
-    """
-    fingerprints: dict[str, tuple[float, int]] = {}
-    
-    try:
-        edits = json.loads(edits_json)
-    except (json.JSONDecodeError, TypeError) as e:
-        return err(f"Invalid JSON: {e}", hint="Pass a JSON array of edit objects.")
-
-    if not isinstance(edits, list) or not edits:
-        return err("edits_json must be a non-empty JSON array.")
-
-    originals: dict[str, str] = {}
-    currents: dict[str, str] = {}
-    path_map: dict[str, str] = {}
-    per_edit_results: list[dict] = []
-    
-    # Track replace_lines ranges per file for overlap warnings
-    line_ranges: dict[str, list[tuple[int, int]]] = {}
-    warnings: list[str] = []
-
-    # Pre-sort: for files with multiple replace_lines edits, reorder them so
-    # the highest start_line is processed first (bottom-to-top application).
-    # This ensures that earlier edits don't shift line numbers for later ones
-    # when edits are applied cumulatively to currents[fp].
-    _rl_positions: dict[str, list[int]] = {}
-    for _i, _e in enumerate(edits):
-        if isinstance(_e, dict) and str(_e.get("operation", "")) == "replace_lines":
-            _rl_positions.setdefault(str(_e.get("path", "")).strip(), []).append(_i)
-    for _positions in _rl_positions.values():
-        if len(_positions) >= 2:
-            _sorted_pos = sorted(
-                _positions, key=lambda _j: -(int(edits[_j].get("start_line") or 0))
-            )
-            _saved = [edits[_k] for _k in _sorted_pos]
-            for _slot, _orig in enumerate(_positions):
-                edits[_orig] = _saved[_slot]
-
-    # Phase 1: validate all edits in memory, cumulatively per file
-    for idx, edit in enumerate(edits):
-        if not isinstance(edit, dict):
-            return err(f"Edit #{idx}: not a JSON object.")
-
-        path = str(edit.get("path", "")).strip()
-        op = str(edit.get("operation", "")).strip()
-        if not path:
-            return err(f"Edit #{idx}: missing 'path'.")
-        if not op:
-            return err(f"Edit #{idx}: missing 'operation'.")
-
-        # Same absolute-path rule as the single-file tools — a batch must not be a
-        # way around it. Rejected in phase 1, so nothing is written.
-        abs_err = _require_abs(path)
-        if abs_err is not None:
-            abs_err["error"] = f"Edit #{idx}: {abs_err.get('error', '')}"
-            return abs_err
-
-        try:
-            fp = _safe(path)
-        except ValueError as e:
-            return err(f"Edit #{idx}: {e}")
-
-        if not os.path.isfile(fp):
-            return err(f"Edit #{idx}: '{path}' does not exist or is not a file.")
-
-        if fp not in currents:
-            # Capture original content
-            content = _read_text(fp)
-            originals[fp] = content
-            currents[fp] = content
-            path_map[fp] = path
-
-            # Capture file fingerprint for TOCTOU protection
-            try:
-                stat = os.stat(fp)
-                fingerprints[fp] = (stat.st_mtime, stat.st_size)
-            except OSError as e:
-                return err(
-                    f"Edit #{idx} ({path}): cannot stat file for validation.",
-                    hint=str(e),
-                )
-
-        current = currents[fp]
-
-        if op == "replace_lines":
-            try:
-                start_line = int(edit.get("start_line"))
-                end_line = int(edit.get("end_line"))
-            except (TypeError, ValueError):
-                return err(f"Edit #{idx} ({path}): start_line and end_line must be integers.")
-
-            new_content = str(edit.get("new_content", ""))
-            updated, error_msg = _apply_replace_lines_to_text(current, start_line, end_line, new_content)
-            if error_msg:
-                return err(f"Edit #{idx} ({path}): {error_msg}")
-            
-            # ── overlap tracking ──
-            line_ranges.setdefault(fp, []).append((start_line, end_line))
-
-        elif op == "replace_in_file":
-            old_text = str(edit.get("old_text", ""))
-            new_text = str(edit.get("new_text", ""))
-            updated, error_msg, normalized = _apply_replace_in_text(current, old_text, new_text)
-            if error_msg:
-                # A sub-edit whose change is already present must not fail the whole
-                # batch — record it as a no-op and move on.
-                if _edit_already_applied(current, old_text, new_text):
-                    per_edit_results.append({
-                        "edit_index": idx, "path": path, "operation": op,
-                        "status": "noop",
-                        "reason": "already applied — original text absent, result present",
-                    })
-                    continue
-                return err(f"Edit #{idx} ({path}): {error_msg}")
-
-        elif op == "insert_in_file":
-            after_text = str(edit.get("after_text", ""))
-            new_text = str(edit.get("new_text", ""))
-            updated, error_msg = _apply_insert_in_text(current, after_text, new_text)
-            if error_msg:
-                return err(f"Edit #{idx} ({path}): {error_msg}")
-
-        else:
-            return err(f"Edit #{idx}: unknown operation '{op}'.")
-
-        assert updated is not None
-        syntax_error = _validate_python_content(path, updated)
-        if syntax_error:
-            return err(f"Edit #{idx} ({path}): {syntax_error}")
-
-        before_lines = current.splitlines(True)
-        after_lines = updated.splitlines(True)
-        edit_result: dict = {
-            "edit_index": idx,
-            "path": path,
-            "operation": op,
-            "status": "validated",
-            "diff": _unified_diff(before_lines, after_lines, path),
-        }
-        if op == "replace_in_file" and normalized:
-            edit_result["normalized_match"] = True
-        per_edit_results.append(edit_result)
-
-        currents[fp] = updated
-
-    
-    # Detect overlapping replace_lines edits (warnings only)
-    for fp, ranges in line_ranges.items():
-        if len(ranges) < 2:
-            continue
-
-        # Sort by start line
-        sorted_ranges = sorted(ranges, key=lambda r: r[0])
-
-        for (a_start, a_end), (b_start, b_end) in zip(
-            sorted_ranges, sorted_ranges[1:]
-        ):
-            if b_start <= a_end:
-                warnings.append(
-                    f"Overlapping replace_lines edits in '{path_map[fp]}': "
-                    f"lines {a_start}-{a_end} overlap with {b_start}-{b_end}."
-                )
-
-    file_previews: list[dict] = []
-    
-    # ── PREVIEW MODE ─────────────────────────────────────────────
-    if not confirm:
-        for fp, updated in currents.items():
-            original = originals[fp]
-            if updated == original:
-                continue
-            file_previews.append({
-                "path": path_map[fp],
-                "diff": _unified_diff(
-                    original.splitlines(True),
-                    updated.splitlines(True),
-                    path_map[fp],
-                ),
-            })
-
-        
-        return ok({
-            "operation": "preview_apply_edits",
-            "edits_validated": len(per_edit_results),
-            "files_touched": len(file_previews),
-            "per_edit_results": per_edit_results,
-            "file_previews": file_previews,
-            "warnings": warnings,
-            "hint": "Review the diffs and warnings above, then call apply_edits with confirm=true to apply.",
-        })
-
-
-    # Phase 2: write each changed file atomically
-    file_results: list[dict] = []
-    try:
-        for fp, updated in currents.items():
-            original = originals[fp]
-            if updated == original:
-                file_results.append({
-                    "path": path_map[fp],
-                    "status": "noop",
-                    "diff": "",
-                })
-                continue
-                        
-            # TOCTOU check: ensure file has not changed since validation
-            try:
-                current_stat = os.stat(fp)
-            except OSError as e:
-                return err(
-                    f"Failed to write '{path_map[fp]}': file no longer accessible.",
-                    hint=str(e),
-                )
-
-            expected = fingerprints.get(fp)
-            current = (current_stat.st_mtime, current_stat.st_size)
-
-            if expected != current:
-                return err(
-                    f"File changed since validation: '{path_map[fp]}'.",
-                    hint=(
-                        "The file was modified externally between validation and write. "
-                        "Re-run the operation to apply edits to the current version."
-                    ),
-                )
-
-            _atomic_write_text(fp, updated)
-            file_results.append({
-                "path": path_map[fp],
-                "status": "ok",
-                "diff": _unified_diff(
-                    original.splitlines(True),
-                    updated.splitlines(True),
-                    path_map[fp],
-                ),
-            })
-    except Exception as write_err:
-        already_written = [r["path"] for r in file_results if r["status"] == "ok"]
-        return err(
-            f"Batch write failed: {write_err}",
-            hint="The batch was prevalidated, but a filesystem write failed. Already-written files are not rolled back automatically.",
-            already_written=already_written,
-        )
-
-    
-    return ok({
-        "edits_validated": len(per_edit_results),
-        "files_touched": len(file_results),
-        "per_edit_results": per_edit_results,
-        "file_results": file_results,
-        "warnings": warnings,
-    })
-
 
 
 @mcp.resource(

@@ -38,7 +38,7 @@ from capabilities import (
     SEARCH, SEARCH_WITH_PATH,
 )
 from responses import err, ok
-from root_paths import resolve_path_in_root
+from root_paths import require_absolute, resolve_path_in_root
 from approved_roots import approved_roots
 from lsp_client import LSPPool, path_for
 
@@ -61,6 +61,11 @@ _CODE_EXTS = (
 )
 _MAX_TAGS = 60000
 _MAX_RESULTS = 50
+# Lines returned either side of a hit, and how many hits carry one. Enough to build an
+# edit anchor without a follow-up read; capped so a 50-hit search stays a search.
+_DEFAULT_CONTEXT_LINES = 3
+_MAX_CONTEXT_LINES = 10
+_CONTEXT_MAX_ENTRIES = 20
 _INDEX_TTL = 60.0  # seconds; the ctags index auto-rebuilds once stale past this TTL
 
 _lsp = LSPPool(SEARCH_ROOT)
@@ -105,11 +110,12 @@ _SCOPE_KEYS = frozenset({
 })
 
 
-def _entry_from(name, path, line, kind, scope, signature) -> dict:
+def _entry_from(name, path, line, kind, scope, signature, end=None) -> dict:
     abs_path = path if os.path.isabs(path) else os.path.join(SEARCH_ROOT, path)
     return {
         "name": name, "path": _out_path(abs_path),
         "line": int(line) if line else None,
+        "end_line": int(end) if end else None,
         "kind": kind or "", "scope": scope or "", "signature": signature or "",
     }
 
@@ -129,7 +135,8 @@ def _parse_json_tags(stdout: str) -> dict | None:
         if tag.get("_type") != "tag" or not tag.get("name") or not tag.get("path"):
             continue
         e = _entry_from(tag["name"], tag["path"], tag.get("line"),
-                        tag.get("kind", ""), tag.get("scope", ""), tag.get("signature", ""))
+                        tag.get("kind", ""), tag.get("scope", ""), tag.get("signature", ""),
+                        tag.get("end"))
         defs.setdefault(e["name"], []).append(e)
         by_file.setdefault(e["path"], []).append(e)
         n += 1
@@ -150,19 +157,21 @@ def _parse_traditional_tags(stdout: str) -> dict | None:
         if len(parts) < 3:
             continue
         name, path = parts[0], parts[1]
-        kind = lineno = signature = scope = ""
+        kind = lineno = signature = scope = end = ""
         for field in parts[3:]:
             if ":" in field:
                 key, val = field.split(":", 1)
                 if key == "line":
                     lineno = val
+                elif key == "end":
+                    end = val
                 elif key == "signature":
                     signature = val
                 elif key in _SCOPE_KEYS:
                     scope = val
             elif field:
                 kind = field  # bare extension field is the (full) kind name
-        e = _entry_from(name, path, lineno, kind, scope, signature)
+        e = _entry_from(name, path, lineno, kind, scope, signature, end)
         defs.setdefault(name, []).append(e)
         by_file.setdefault(e["path"], []).append(e)
         n += 1
@@ -172,7 +181,10 @@ def _parse_traditional_tags(stdout: str) -> dict | None:
 
 
 def _run_ctags(extra: list[str]) -> str:
-    cmd = ["ctags", "-R", "--fields=+nKsS"] + _CTAGS_EXCLUDES + extra + [SEARCH_ROOT]
+    # +e carries each tag's end line: without it a symbol map says where every symbol
+    # starts and never where one ends, which leaves "read the block around line N" to
+    # be guessed a few lines at a time.
+    cmd = ["ctags", "-R", "--fields=+nKsSe"] + _CTAGS_EXCLUDES + extra + [SEARCH_ROOT]
     try:
         proc = subprocess.run(
             cmd, capture_output=True, text=True, timeout=120, cwd=SEARCH_ROOT,
@@ -243,6 +255,43 @@ def _whole_word_scan(name: str, *, max_results: int = _MAX_RESULTS) -> list[dict
     return hits
 
 
+def _attach_context(entries: list[dict], context_lines: int) -> list[dict]:
+    """Add a numbered excerpt around each hit's line, in place.
+
+    A hit reported as ``{path, line}`` locates a symbol but cannot be acted on: an edit
+    needs the surrounding text exactly as it stands, and a line number alone sends the
+    caller back for a read whose answer this function already has open. Files are read
+    once each and only for the entries that fit the budget.
+    """
+    if context_lines <= 0:
+        return entries
+    cache: dict[str, list[str]] = {}
+    for entry in entries[:_CONTEXT_MAX_ENTRIES]:
+        rel = entry.get("path")
+        line = entry.get("line")
+        if not rel or not isinstance(line, int) or line < 1:
+            continue
+        lines = cache.get(rel)
+        if lines is None:
+            try:
+                with open(os.path.join(SEARCH_ROOT, rel), "r",
+                          encoding="utf-8", errors="replace") as fh:
+                    lines = fh.read().splitlines()
+            except OSError:
+                lines = []
+            cache[rel] = lines
+        if not lines or line > len(lines):
+            continue
+        lo = max(1, line - context_lines)
+        hi = min(len(lines), line + context_lines)
+        entry["context"] = {
+            "start_line": lo,
+            "end_line": hi,
+            "text": "\n".join(f"{i}: {lines[i - 1]}" for i in range(lo, hi + 1)),
+        }
+    return entries
+
+
 def _symbol_column(path_abs: str, line1: int, name: str) -> int:
     try:
         with open(path_abs, "r", encoding="utf-8", errors="replace") as fh:
@@ -280,12 +329,20 @@ _LSP_KIND = {
 
 def _flatten_doc_symbols(symbols: list, out: list, depth: int = 0) -> None:
     for s in symbols or []:
-        rng = s.get("selectionRange") or s.get("range") or {}
+        # Two shapes answer documentSymbol: the nested DocumentSymbol (its own
+        # `range`) and the flat SymbolInformation (a `location.range`). Reading only
+        # the first reported every symbol of a flat server at line 1.
+        full = s.get("range") or (s.get("location") or {}).get("range") or {}
+        rng = s.get("selectionRange") or full
         start = (rng.get("start") or {})
+        # The end comes from the FULL range, never the selection range: the latter
+        # covers the name alone, so its end would report a symbol one line long.
+        end = ((full.get("end") or {}).get("line"))
         out.append({
             "name": s.get("name", ""),
             "kind": _LSP_KIND.get(s.get("kind"), ""),
             "line": (start.get("line", 0) or 0) + 1,
+            "end_line": (end + 1) if isinstance(end, int) else 0,
             "depth": depth,
         })
         if s.get("children"):
@@ -298,17 +355,23 @@ def _flatten_doc_symbols(symbols: list, out: list, depth: int = 0) -> None:
     caps=[CODE_NAV, READ, CACHEABLE, SEARCH, SEARCH_WITH_PATH, CANDIDATE_SEARCH],
     label="Finding definition of {name}",
 ))
-def find_definition(name: str) -> dict:
+def find_definition(name: str, context_lines: int = _DEFAULT_CONTEXT_LINES) -> dict:
     """Locate where a symbol (function, class, type, variable) is DEFINED.
 
-    Returns each definition site as {path, line, kind, signature}. Prefers a
-    language server's workspace symbol index when available, otherwise a
-    universal-ctags index. Use this instead of grepping for a name when you want
-    the authoritative definition.
+    Returns each definition site as {path, line, kind, signature, context}, where
+    ``context`` is the surrounding source verbatim with line numbers — enough to build
+    an edit anchor without a follow-up read. Prefers a language server's workspace
+    symbol index when available, otherwise a universal-ctags index. Use this instead of
+    grepping for a name when you want the authoritative definition.
+
+    Args:
+        name:          Symbol to locate.
+        context_lines: Source lines to return either side of each hit (0 disables).
     """
     name = (name or "").strip()
     if not name:
         return err("A non-empty symbol name is required.")
+    context_lines = max(0, min(int(context_lines or 0), _MAX_CONTEXT_LINES))
 
     # Tier 1: LSP workspace/symbol (any language server that is up).
     probe = os.path.join(SEARCH_ROOT, "__probe__.py")
@@ -321,7 +384,8 @@ def find_definition(name: str) -> dict:
                 if e and e.get("name") == name
             ][:_MAX_RESULTS]
             if entries:
-                return ok({"name": name, "definitions": entries, "backend": "lsp"})
+                return ok({"name": name, "backend": "lsp",
+                           "definitions": _attach_context(entries, context_lines)})
 
     # Tier 2: ctags index.
     index = _ctags_index()
@@ -331,7 +395,8 @@ def find_definition(name: str) -> dict:
             for e in index["defs"].get(name, [])
         ][:_MAX_RESULTS]
         if entries:
-            return ok({"name": name, "definitions": entries, "backend": "ctags"})
+            return ok({"name": name, "backend": "ctags",
+                       "definitions": _attach_context(entries, context_lines)})
         return ok({"name": name, "definitions": [], "backend": "ctags",
                    "note": "No definition found in the symbol index."})
 
@@ -346,15 +411,23 @@ def find_definition(name: str) -> dict:
     caps=[READ, CACHEABLE, SEARCH, SEARCH_WITH_PATH],
     label="Finding references to {name}",
 ))
-def find_references(name: str) -> dict:
+def find_references(name: str, context_lines: int = 0) -> dict:
     """Find USE sites of a symbol across the workspace.
 
     Prefers a language server's reference resolution (anchored at the symbol's
-    definition); falls back to a whole-word text scan. Returns {path, line, text}.
+    definition); falls back to a whole-word text scan. Returns {path, line, text} — the
+    matching line itself, which locates a use site without quoting its surroundings.
+
+    Args:
+        name:          Symbol to locate.
+        context_lines: Source lines to return either side of each hit. Off by default:
+                       this answers "where is it used", and an excerpt per hit costs
+                       more than the answer. Raise it when you must edit the sites.
     """
     name = (name or "").strip()
     if not name:
         return err("A non-empty symbol name is required.")
+    context_lines = max(0, min(int(context_lines or 0), _MAX_CONTEXT_LINES))
 
     # Tier 1: LSP references anchored at a ctags/LSP-known definition position.
     index = _ctags_index()
@@ -370,12 +443,52 @@ def find_references(name: str) -> dict:
             if locs:
                 refs = [e for e in (_lsp_location_to_entry(l) for l in locs) if e][:_MAX_RESULTS]
                 if refs:
-                    return ok({"name": name, "references": refs, "backend": "lsp"})
+                    return ok({"name": name, "backend": "lsp",
+                               "references": _attach_context(refs, context_lines)})
 
     # Tier 2: whole-word text scan (always available).
     hits = _whole_word_scan(name)
-    return ok({"name": name, "references": hits, "backend": "scan",
-               "truncated": len(hits) >= _MAX_RESULTS})
+    return ok({"name": name, "references": _attach_context(hits, context_lines),
+               "backend": "scan", "truncated": len(hits) >= _MAX_RESULTS})
+
+
+def _file_line_count(abs_path: str) -> int:
+    try:
+        with open(abs_path, "rb") as fh:
+            return sum(1 for _ in fh)
+    except OSError:
+        return 0
+
+
+def _fill_end_lines(entries: list[dict], total_lines: int) -> list[dict]:
+    """Give every symbol an ``end_line``, deriving the ones no backend reported.
+
+    A symbol map that says only where each symbol *starts* leaves "read the block
+    around line N" to be found by widening the window a few lines at a time. The end
+    line is exact when the backend gives one (LSP ranges, universal-ctags ``+e``) and
+    otherwise derived: a symbol runs until the next one at the same or shallower
+    nesting, and the last one runs to the end of the file. That is an upper bound —
+    trailing blank lines or module-level code between two symbols fall inside it — and
+    an upper bound is the right error to make here: it costs a few extra lines in one
+    read, where a short one costs another read.
+
+    ``inferred_end`` marks which is which, since a derived end must not be taken for
+    the exact boundary of the construct.
+    """
+    ordered = sorted(entries, key=lambda e: (int(e.get("line") or 0), int(e.get("depth") or 0)))
+    for i, entry in enumerate(ordered):
+        start = int(entry.get("line") or 0)
+        if int(entry.get("end_line") or 0) >= start > 0:
+            continue
+        depth = int(entry.get("depth") or 0)
+        end = total_lines
+        for later in ordered[i + 1:]:
+            if int(later.get("depth") or 0) <= depth:
+                end = max(start, int(later.get("line") or 0) - 1)
+                break
+        entry["end_line"] = end or start
+        entry["inferred_end"] = True
+    return ordered
 
 
 @mcp.tool(**tool_caps(
@@ -386,10 +499,19 @@ def find_references(name: str) -> dict:
 def symbol_outline(path: str) -> dict:
     """List the symbols (classes, functions, types) defined in a single file.
 
-    Returns an ordered outline [{name, kind, line, depth}]. Prefers a language
-    server's document symbols; falls back to the ctags index for that file.
+    Returns an ordered outline [{name, kind, line, end_line, depth}] — read a symbol's
+    whole span in one call rather than walking toward its end. ``end_line`` is exact
+    when the backend reports one and otherwise derived from where the next symbol
+    starts, in which case ``inferred_end`` is set and the span is an upper bound.
+    Prefers a language server's document symbols; falls back to the ctags index.
+
+    Args:
+        path: ABSOLUTE path to the file (required; a relative path is rejected).
     """
     try:
+        abs_err = require_absolute(path, SEARCH_ROOT)
+        if abs_err is not None:
+            return abs_err
         abs_path = _safe_root(path)
     except ValueError as e:
         return err(str(e))
@@ -404,7 +526,10 @@ def symbol_outline(path: str) -> dict:
             out: list[dict] = []
             _flatten_doc_symbols(syms, out)
             if out:
-                return ok({"path": _out_path(abs_path), "symbols": out, "backend": "lsp"})
+                symbols = _fill_end_lines(out, _file_line_count(abs_path))
+                return ok({"path": _out_path(abs_path),
+                           "symbols": symbols,
+                           "backend": "lsp"})
 
     # Tier 2: ctags index.
     index = _ctags_index()
@@ -412,12 +537,14 @@ def symbol_outline(path: str) -> dict:
         rel = _out_path(abs_path)
         entries = sorted(
             ({"name": e["name"], "kind": e["kind"], "line": e["line"] or 0,
+              "end_line": e.get("end_line") or 0,
               "scope": e["scope"], "depth": 1 if e["scope"] else 0}
              for e in index["by_file"].get(rel, [])),
             key=lambda e: e["line"],
         )
         if entries:
-            return ok({"path": rel, "symbols": entries, "backend": "ctags"})
+            symbols = _fill_end_lines(entries, _file_line_count(abs_path))
+            return ok({"path": rel, "symbols": symbols, "backend": "ctags"})
         return ok({"path": rel, "symbols": [], "backend": "ctags"})
 
     return err(
@@ -431,11 +558,15 @@ def symbol_outline(path: str) -> dict:
 def hover(path: str, line: int, symbol: str = "") -> dict:
     """Type / signature / doc info for a symbol at a position (LSP-only).
 
-    ``line`` is 1-based. ``symbol`` (optional) is located on that line to compute
-    the column. Returns the language server's hover text, or an error when no
-    language server is available for the file's language.
+    ``path`` is an ABSOLUTE path (a relative one is rejected). ``line`` is 1-based.
+    ``symbol`` (optional) is located on that line to compute the column. Returns the
+    language server's hover text, or an error when no language server is available for
+    the file's language.
     """
     try:
+        abs_err = require_absolute(path, SEARCH_ROOT)
+        if abs_err is not None:
+            return abs_err
         abs_path = _safe_root(path)
     except ValueError as e:
         return err(str(e))

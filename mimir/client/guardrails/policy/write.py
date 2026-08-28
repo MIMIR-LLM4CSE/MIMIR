@@ -19,7 +19,7 @@ from ...context import (
     backfill_execution_context,
     ensure_execution_context,
     is_known_to_exist,
-    was_fully_read,
+    was_read,
 )
 from ...context.capabilities import (
     EDIT,
@@ -85,10 +85,10 @@ def check_write_policy(
         return None
 
     if has_cap(tool_name, OVERWRITE, agent.tool_caps):
-        # "Known to exist but not fully read" — the two facts are different, and a
-        # snippet satisfies neither of them for this gate: rewriting a whole file from
-        # a grep excerpt is exactly what this refuses.
-        if is_known_to_exist(execution_context, path) and not was_fully_read(
+        # "Known to exist but never read" — the two facts are different. What this
+        # refuses is rewriting a file nobody looked at; it asks for a read, not for the
+        # whole file, since reading is targeted by design.
+        if is_known_to_exist(execution_context, path) and not was_read(
             execution_context, path
         ):
             detail = (

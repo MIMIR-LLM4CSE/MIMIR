@@ -1,9 +1,9 @@
 """Regression guard for the load-bearing observer dispatch in record_tool_observation.
 
-The ``_observe_*`` handlers run in a fixed order (see observations.py), and
-``_observe_apply_edits`` short-circuits the rest via an early ``return`` when it
-handles the call. That ordering is the real fragility of the observation layer —
-these tests pin it so a future reorder/insert can't silently break it.
+The ``_observe_*`` handlers run in a fixed order (see observations.py) and each one
+decides for itself whether the call is its business. That ordering is the real
+fragility of the observation layer — these tests pin it so a future reorder/insert
+can't silently break it.
 
 Pure-Python + stubs (no live model/servers): runs on x86 and ARM.
 """
@@ -17,7 +17,7 @@ from contextlib import ExitStack
 from unittest.mock import patch
 
 import mimir.client.guardrails.observations as runtime
-from mimir.client.context.execution_context import build_execution_context
+from mimir.client.context.execution_context import build_execution_context, unsettled_runs
 
 
 # The authoritative dispatch order, mirroring record_tool_observation's body.
@@ -25,7 +25,6 @@ EXPECTED_ORDER = [
     "_observe_edit_outcome",
     "_observe_todo_flags",
     "_observe_replacement_tracking",
-    "_observe_apply_edits",
     "_observe_validation_tool",
     "_observe_missing_module",
     "_observe_env_probe",
@@ -39,6 +38,7 @@ EXPECTED_ORDER = [
     "_observe_dir_inspect",
     "_observe_existence_check",
     "_observe_read",
+    "_observe_delegated_exploration",
     "_observe_declared_edit_set",
     "_observe_bash_validation",
     "_observe_command",
@@ -55,24 +55,18 @@ def _stub_agent():
     )
 
 
-def _record_order(apply_edits_returns: bool) -> list[str]:
-    """Patch every _observe_* with a recorder, run the dispatcher, return call order.
-
-    ``_observe_apply_edits`` returns *apply_edits_returns* (its real return type is
-    bool, consumed by the early-return guard); all others return None.
-    """
+def _record_order() -> list[str]:
+    """Patch every _observe_* with a recorder, run the dispatcher, return call order."""
     order: list[str] = []
 
-    def _make_recorder(name: str, ret):
+    def _make_recorder(name: str):
         def _rec(*_a, **_k):
             order.append(name)
-            return ret
         return _rec
 
     with ExitStack() as stack:
         for name in EXPECTED_ORDER:
-            ret = apply_edits_returns if name == "_observe_apply_edits" else None
-            stack.enter_context(patch.object(runtime, name, _make_recorder(name, ret)))
+            stack.enter_context(patch.object(runtime, name, _make_recorder(name)))
         runtime.record_tool_observation(
             _stub_agent(), "any_tool", {}, "{}", build_execution_context(),
         )
@@ -81,17 +75,8 @@ def _record_order(apply_edits_returns: bool) -> list[str]:
 
 class ObserverDispatchOrderTests(unittest.TestCase):
     def test_dispatch_runs_all_handlers_in_order(self) -> None:
-        # Normal path: apply_edits does not claim the call → every handler runs in order.
-        self.assertEqual(_record_order(apply_edits_returns=False), EXPECTED_ORDER)
-
-    def test_apply_edits_short_circuits_remaining_handlers(self) -> None:
-        # When apply_edits handles the call it returns True and the dispatcher returns
-        # early — handlers after it must NOT run.
-        order = _record_order(apply_edits_returns=True)
-        cutoff = EXPECTED_ORDER.index("_observe_apply_edits") + 1
-        self.assertEqual(order, EXPECTED_ORDER[:cutoff])
-        # Explicit: nothing past apply_edits fired.
-        self.assertFalse(set(order) & set(EXPECTED_ORDER[cutoff:]))
+        # No handler claims the call: every one runs, in the declared order.
+        self.assertEqual(_record_order(), EXPECTED_ORDER)
 
 
 class ActionOpCountTests(unittest.TestCase):
@@ -129,13 +114,69 @@ class ActionOpCountTests(unittest.TestCase):
         self.assertEqual(ec["action_op_count"], 0)
 
 
+class DelegatedExplorationTests(unittest.TestCase):
+    """A sub-agent's reading is the caller's evidence — but not its pre-edit warrant."""
+
+    def _agent(self):
+        from mimir.client.context.capabilities import DELEGATE, ToolCaps
+        return types.SimpleNamespace(
+            _parse_tool_payload=lambda result: json.loads(result),
+            _normalize_workspace_path=lambda p: p or "",
+            _is_code_filepath=lambda p: False,
+            tool_caps={
+                "delegating_tool": ToolCaps(
+                    name="delegating_tool", capabilities=frozenset({DELEGATE})),
+                "plain_tool": ToolCaps(name="plain_tool"),
+            },
+        )
+
+    _OK = '{"status": "ok", "files_read": ["/w/a.py", "/w/b.py"]}'
+
+    def test_reported_reads_become_discovery_evidence(self) -> None:
+        ec = build_execution_context()
+        runtime.record_tool_observation(self._agent(), "delegating_tool", {}, self._OK, ec)
+        self.assertEqual(ec["delegated_read_files"], {"/w/a.py", "/w/b.py"})
+        self.assertEqual(ec["existing_paths"], {"/w/a.py", "/w/b.py"})
+
+    def test_they_never_land_in_read_files(self) -> None:
+        """`read_files` also answers "does THIS agent hold the lines it is about to
+        edit". Only a read of its own settles that."""
+        ec = build_execution_context()
+        runtime.record_tool_observation(self._agent(), "delegating_tool", {}, self._OK, ec)
+        self.assertEqual(ec["read_files"], set())
+
+    def test_a_failed_delegation_credits_nothing(self) -> None:
+        ec = build_execution_context()
+        runtime.record_tool_observation(
+            self._agent(), "delegating_tool", {},
+            '{"status": "error", "files_read": ["/w/a.py"]}', ec)
+        self.assertEqual(ec["delegated_read_files"], set())
+
+    def test_a_tool_without_the_capability_is_ignored(self) -> None:
+        ec = build_execution_context()
+        runtime.record_tool_observation(self._agent(), "plain_tool", {}, self._OK, ec)
+        self.assertEqual(ec["delegated_read_files"], set())
+
+    def test_a_delegated_sweep_can_carry_the_plan_evidence_bar(self) -> None:
+        """Otherwise plan mode punishes the fan-out it asks for: the explore phase
+        would never end and the turn budget would drain."""
+        from mimir.client.context.execution_context import plan_evidence_ready
+        ec = build_execution_context()
+        agent = self._agent()
+        runtime.record_tool_observation(agent, "delegating_tool", {}, self._OK, ec)
+        self.assertFalse(plan_evidence_ready(ec))  # one signal kind is not breadth
+        ec["searched"] = True
+        self.assertTrue(plan_evidence_ready(ec))
+
+
 class EditFailureStreakTests(unittest.TestCase):
     """Per-file edit-failure escalation must count failures regardless of the patch.
 
     edit_loop_state stays signature-based (guards only the identical-patch spin in
     check_write_policy). edit_fail_streak_by_file counts every consecutive failure on
     a file, so a model that keeps trying *different* wrong anchors still gets the
-    force-re-read + error_recovery escalation.
+    error_recovery escalation. The file is NOT evicted from the read sets: a wrong
+    anchor is not missing content, and the failure already carries the current text.
     """
 
     def _agent(self, extra_caps=None):
@@ -164,7 +205,7 @@ class EditFailureStreakTests(unittest.TestCase):
             '{"status": "error", "error": "Target text was not found."}', ec,
         )
 
-    def test_varied_anchor_failures_force_reread(self) -> None:
+    def test_varied_anchor_failures_escalate_without_evicting_the_file(self) -> None:
         from mimir.client.guardrails.nudges import engine as nudge_logic
         agent = self._agent()
         ec = build_execution_context()
@@ -172,11 +213,12 @@ class EditFailureStreakTests(unittest.TestCase):
 
         self._fail(agent, ec, "anchor A", "A2")   # failure 1
         self.assertEqual(ec["edit_fail_streak_by_file"]["mod.py"], 1)
-        self.assertIn("mod.py", ec["read_files"])  # not dropped after one failure
+        self.assertIn("mod.py", ec["read_files"])
 
         self._fail(agent, ec, "anchor B", "B2")   # failure 2 — DIFFERENT anchor
         self.assertEqual(ec["edit_fail_streak_by_file"]["mod.py"], 2)
-        self.assertNotIn("mod.py", ec["read_files"])  # force re-read triggered
+        # The escalation is the nudge, not a forged "you have not read this".
+        self.assertIn("mod.py", ec["read_files"])
         self.assertEqual(nudge_logic._first_failing_edit_path(ec), "mod.py")
 
     def test_success_resets_streak(self) -> None:
@@ -289,7 +331,6 @@ class BashCommandObservationTests(unittest.TestCase):
         ec = self._run("grep foo bar.py")
         self.assertTrue(ec["searched"])
         self.assertEqual(ec["search_tool_calls"], 1)
-        self.assertIn("foo", ec["search_queries_used"])
 
     def test_inspect_command_populates_inspected_dirs(self):
         ec = self._run("ls src")
@@ -342,6 +383,14 @@ class BashValidationObservationTests(unittest.TestCase):
     path exactly, which also means two same-named files in different directories are
     never confused.
     """
+
+    def setUp(self):
+        # These cases are about the check/run split, never about a missing toolchain, so
+        # whether this host happens to have `make` or `gfortran` must not decide them.
+        # The missing-command imputation has its own class below.
+        patcher = patch.object(runtime, "_any_command_on_path", lambda cmds: True)
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def _agent(self):
         from mimir.client.context.capabilities import ToolCaps
@@ -432,6 +481,55 @@ class BashValidationObservationTests(unittest.TestCase):
         self._judge(ec)
         self.assertEqual(ec["validated_files"], set())
         self.assertEqual(list(ec["runs"]), ["pytest -q"])
+
+    # ── environment setup: preparation, never evidence ─────────────────────
+
+    def test_sourcing_an_env_script_is_not_a_run(self):
+        # The Diva case: `source set_env_cmake.sh` was recorded as a run owing a
+        # verdict, purely because `source` was absent from the validator table. It
+        # executes, but it exercises nothing of the project.
+        agent, ec = self._agent(), self._ctx({"solver.f90"})
+        self._run(agent, "source set_env_cmake.sh", ec)
+        self.assertEqual(ec["runs"], {})
+        self.assertEqual(ec["validated_files"], set())
+
+    def test_env_setup_around_a_chdir_and_a_probe_is_not_a_run(self):
+        agent, ec = self._agent(), self._ctx({"solver.f90"})
+        self._run(agent, "cd sub && source env.sh && echo done", ec)
+        self.assertEqual(ec["runs"], {})
+
+    # ── builds: judged by the machine, like the compilers they drive ───────
+
+    def test_a_green_build_is_settled_by_its_exit_code(self):
+        # A build reports diagnostics, not results, so there is no output for the
+        # model to read — it must never surface as "ran but never judged".
+        agent, ec = self._agent(), self._ctx({"solver.f90"})
+        self._run(agent, "make -f makefile.cmake", ec)
+        self.assertEqual(ec["runs"]["make -f makefile.cmake"]["verdict"], "pass")
+        self.assertEqual(unsettled_runs(ec), {})
+
+    def test_a_build_that_only_prepares_its_environment_first_still_counts(self):
+        agent, ec = self._agent(), self._ctx({"solver.f90"})
+        self._run(agent, "source env.sh && make", ec, status="error")
+        run = ec["runs"]["source env.sh && make"]
+        self.assertFalse(run["completed"])
+        self.assertEqual(run["effect"], "build")
+
+    def test_a_run_in_the_chain_outranks_the_build_before_it(self):
+        # `make && ./solver` produced output somebody must judge; the build's own exit
+        # code stopped being the last word the moment something ran.
+        agent, ec = self._agent(), self._ctx({"solver.f90"})
+        self._run(agent, "make && ./solver", ec)
+        run = ec["runs"]["make && ./solver"]
+        self.assertEqual(run["effect"], "run")
+        self.assertEqual(run["verdict"], "")
+
+    def test_a_green_build_credits_no_file(self):
+        # Which source files a build compiled is not recorded anywhere, so crediting
+        # one would be a guess — and the check axis is the one that must stay honest.
+        agent, ec = self._agent(), self._ctx({"solver.f90"})
+        self._run(agent, "make", ec)
+        self.assertEqual(ec["validated_files"], set())
 
     def test_an_inline_snippet_is_a_run(self):
         # Unclassifiable (parentheses defeat the tokenizer), so it names nothing — but
@@ -527,6 +625,27 @@ class BashValidationObservationTests(unittest.TestCase):
         agent, ec = self._agent(), self._ctx({"solver.c"})
         self._run(agent, "gcc solver.c -O2 -o solver.out", ec)
         self.assertIn("solver.c", ec["validated_files"])
+
+    def test_a_build_is_credited_as_such_and_owes_no_verdict(self):
+        # A build sits on its own tier: it needs a toolchain, so nothing demands it,
+        # and its exit code is the finding — nothing executed, nothing to judge.
+        agent, ec = self._agent(), self._ctx({"solver.c"})
+        self._run(agent, "gcc -c solver.c -o solver.o", ec)
+        self.assertEqual(ec["validation_tier_by_file"]["solver.c"], "compiled")
+        self.assertFalse(ec["runs"])
+
+    def test_a_syntax_only_compile_is_the_cheap_check(self):
+        # The mandatory floor for a compiled language: it parses the translation unit
+        # and emits nothing, so it asks no more of the environment than a linter does.
+        agent, ec = self._agent(), self._ctx({"model.f90"})
+        self._run(agent, "gfortran -fsyntax-only model.f90", ec)
+        self.assertEqual(ec["validation_tier_by_file"]["model.f90"], "syntax")
+
+    def test_running_the_built_binary_is_a_run(self):
+        agent, ec = self._agent(), self._ctx({"solver.c"})
+        self._run(agent, "gcc -c solver.c -o solver.o", ec)
+        self._run(agent, "./solver.out", ec)
+        self.assertIn("./solver.out", ec["runs"])
 
     def test_fortran_compile_failure_counts(self):
         agent, ec = self._agent(), self._ctx({"model.f90"})
@@ -789,6 +908,138 @@ class ValidationTierTests(unittest.TestCase):
         ec = self._ctx({"foo.py"})
         _mark_file_validated(ec, "foo.py")
         self.assertEqual(self.tier(ec), "static")
+
+
+class UncheckableFileTests(unittest.TestCase):
+    """The check is required where it is possible, and reported where it is not.
+
+    A `.cu` edited on a node with no CUDA toolkit has no checker to run. Demanding one
+    anyway turns the conclude gate into a dead end, which a model escapes by inventing
+    a check — the one outcome worse than an unchecked file.
+    """
+
+    _ctx = BashValidationObservationTests._ctx
+
+    def _edit(self, path, *, available):
+        from mimir.client.guardrails import observations
+        ec = self._ctx(set())
+        with patch.object(
+            observations, "_any_command_on_path", lambda cmds: available
+        ):
+            observations._record_code_edit(ec, path)
+        return ec
+
+    def test_a_file_with_no_checker_here_does_not_block_the_conclusion(self):
+        from mimir.client.guardrails.workflow import pending_validation_paths
+        ec = self._edit("kernel.cu", available=False)
+        self.assertIn("kernel.cu", ec["unverifiable_files"])
+        self.assertEqual(pending_validation_paths(ec), [])
+
+    def test_the_same_file_owes_a_check_where_the_toolchain_exists(self):
+        from mimir.client.guardrails.workflow import pending_validation_paths
+        ec = self._edit("kernel.cu", available=True)
+        self.assertEqual(ec["unverifiable_files"], set())
+        self.assertEqual(pending_validation_paths(ec), ["kernel.cu"])
+
+    def test_a_language_with_no_declared_checker_is_unverifiable_too(self):
+        # The default used to be the opposite ("the model may know a checker we do
+        # not"), and it wedged every language outside the table: a `.rs` edit stayed
+        # pending for a check no runnable command could ever credit, so the run could
+        # not conclude. Nothing here can check it — same situation, same ending.
+        ec = self._edit("engine.rs", available=True)
+        self.assertIn("engine.rs", ec["unverifiable_files"])
+
+    def test_every_declared_checker_extension_is_recognised_as_source(self):
+        # The Fortran gap in one line: `.f03` was in the checker table and missing
+        # from SOURCE_FILE_EXTENSIONS, so the edit was never recorded at all and no
+        # check was ever asked for.
+        from mimir.client.guardrails.observations import _CHECKER_COMMANDS_BY_EXTENSION
+        from mimir.client.context.signals import SOURCE_FILE_EXTENSIONS
+        self.assertEqual(
+            set(_CHECKER_COMMANDS_BY_EXTENSION) - set(SOURCE_FILE_EXTENSIONS), set(),
+        )
+
+    def test_the_ledger_says_why_it_was_not_checked(self):
+        from mimir.client.query_engine.verification import build_ledger
+        ec = self._edit("kernel.cu", available=False)
+        rows = "\n".join(build_ledger(ec)["rows"])
+        self.assertIn("no checker here", rows)
+
+
+class MissingCommandImputationTests(unittest.TestCase):
+    """A command that is not installed said nothing about the patch.
+
+    The one imputation the machine settles alone, so PATH is patched rather than trusted:
+    whether this host happens to have `make` must not decide whether these pass.
+    """
+
+    def _agent(self):
+        from mimir.client.context.capabilities import ToolCaps
+        reg = {"bash_run": ToolCaps(
+            name="bash_run", scope={"kind": "command_prefix", "args": ["command"]},
+        )}
+        return types.SimpleNamespace(
+            tool_caps=reg,
+            _parse_tool_payload=lambda result: json.loads(result),
+            _normalize_workspace_path=lambda p: os.path.normpath(p) if p else "",
+            _is_code_filepath=lambda p: str(p).endswith(".py"),
+        )
+
+    def _red(self, command, dirty={"solver.c"}, absent=()):
+        """Run *command* red, with *absent* commands taken off PATH."""
+        ec = build_execution_context()
+        ec["dirty_written_files"] = set(dirty)
+        ec["code_mutation_started"] = True
+        real = runtime._any_command_on_path
+        runtime._any_command_on_path = lambda cmds: not any(c in absent for c in cmds)
+        try:
+            runtime.record_tool_observation(
+                self._agent(), "bash_run", {"command": command},
+                json.dumps({"status": "error", "stdout": "", "stderr": "boom"}), ec,
+            )
+        finally:
+            runtime._any_command_on_path = real
+        return ec
+
+    def test_a_command_that_is_not_installed_is_not_a_defect_in_the_patch(self):
+        ec = self._red("make", absent=("make",))
+        run = ec["runs"]["make"]
+        self.assertEqual(run["blocked"], "make is not installed here")
+        self.assertEqual(run["failures"], 0)
+        # Steers nothing: the wall is not a reason to go back and edit.
+        self.assertNotEqual(ec["workflow_state"], "edit")
+
+    def test_a_red_exit_from_an_installed_command_still_drives_the_repair_ladder(self):
+        # The default does not move. Every other wall needs the model to claim it.
+        ec = self._red("make")
+        self.assertEqual(ec["runs"]["make"]["blocked"], "")
+        self.assertEqual(ec["runs"]["make"]["failures"], 1)
+        self.assertEqual(ec["workflow_state"], "edit")
+
+    def test_a_stdlib_module_head_is_never_read_as_a_missing_command(self):
+        # `_exec_head` reports the *module* for `python -m X`, and `py_compile` has no
+        # command of its own — reading `head` here would mark the REQUIRED check axis
+        # as uninstallable on every box.
+        ec = self._red("python -m py_compile foo.py", dirty={"foo.py"},
+                       absent=("py_compile",))
+        self.assertEqual(ec["runs"].get("python -m py_compile foo.py", {}).get("blocked", ""), "")
+
+    def test_a_missing_local_executable_is_a_missed_build(self):
+        # `./solver` absent is a build that did not happen — attributable, not a wall.
+        ec = self._red("./solver", absent=("./solver",))
+        self.assertEqual(ec["runs"]["./solver"]["blocked"], "")
+        self.assertEqual(ec["runs"]["./solver"]["failures"], 1)
+
+    def test_an_env_setup_segment_is_not_tested_against_path(self):
+        # `source` is a shell builtin: without the effect filter every chain that sets
+        # up an environment would read as blocked.
+        ec = self._red("source env.sh && make", absent=("source",))
+        self.assertEqual(ec["runs"]["source env.sh && make"]["blocked"], "")
+
+    def test_a_blocked_run_closes_the_advisory_axis(self):
+        ec = self._red("make", absent=("make",))
+        self.assertTrue(ec["exercise_advice_closed"])
+        self.assertEqual(ec["exercise_blocked_reason"], "make is not installed here")
 
 
 if __name__ == "__main__":

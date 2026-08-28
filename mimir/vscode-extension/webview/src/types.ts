@@ -145,6 +145,26 @@ export interface ToolResultMessage {
   duration_ms: number;
 }
 
+/** One step of a sub-agent's run, reported while its parent tool call is still open.
+ *  A delegated run lasts minutes inside a single call; these are what make it visible,
+ *  and they render as ordinary tool rows under the row that spawned them. */
+export interface SubAgentEventMessage {
+  type: "subagent_event";
+  /** The tool_call id of the delegating call these belong to. */
+  parent_id: string;
+  kind: "tool_call" | "tool_result" | "end";
+  /** Child row id, already namespaced under parent_id (siblings reuse "c1"). */
+  id?: string;
+  name?: string;
+  label?: string;
+  detail?: string;
+  ok?: boolean;
+  summary?: string;
+  duration_ms?: number;
+  /** On "end": how many of the child's events were shed rather than forwarded. */
+  dropped?: number;
+}
+
 /** What the model said a run's output showed. Exit 0 says a program ended, so the run
  *  row stays unjudged until this lands on it — it is a claim, not a measurement. */
 export interface VerdictMessage {
@@ -184,8 +204,8 @@ export interface SteerInjectedMessage {
 }
 
 /** A workflow reminder the guardrail layer injected into the agent's user turn.
- *  Surfaced so a run that changes direction mid-way is attributable: the nudge
- *  occupies the user's turn slot but did NOT come from the user. */
+ *  Signals that the turn the model just streamed was not accepted as its answer.
+ *  Not rendered — the reducer uses it to drop the superseded draft. */
 export interface NudgeInjectedMessage {
   type: "nudge_injected";
   category: string;
@@ -353,6 +373,7 @@ export type ServerMessage =
   | ToolCallMessage
   | ToolResultMessage
   | VerdictMessage
+  | SubAgentEventMessage
   | ErrorMessage
   | ConfigMessage
   | DiffMessage
@@ -499,7 +520,7 @@ export type ClientMessage =
 // ── UI state types ─────────────────────────────────────────────────────────────
 
 export type MessageRole = "user" | "agent";
-export type MessageKind = "text" | "approval" | "error" | "streaming" | "editing" | "thinking" | "tools";
+export type MessageKind = "text" | "approval" | "error" | "editing" | "thinking" | "tools";
 
 /** A single tool invocation tracked from start (tool_call) to finish (tool_result). */
 export interface ToolActivity {
@@ -519,6 +540,12 @@ export interface ToolActivity {
   verdict?: "pass" | "fail" | "unknown";
   /** Epoch ms when the call started — drives the live elapsed timer. */
   startedAt: number;
+  /** Set on rows produced by a sub-agent: the id of the call that spawned it. */
+  parentId?: string;
+  /** Which sub-agent this row came from, e.g. "explore #2" — several run at once. */
+  origin?: string;
+  /** On a delegating row: child events shed rather than shown (queue or run ceiling). */
+  childrenDropped?: number;
 }
 
 export interface DiffEntry {
@@ -552,9 +579,6 @@ export interface ChatMessage {
   /** A user steer message queued mid-run, awaiting injection (shows a "queued" tag
    *  until the server confirms with steer_injected). */
   queued?: boolean;
-  /** Set on a bubble that the guardrail layer injected, not the user. Carries the
-   *  nudge category so the badge can name what fired. */
-  nudge?: string;
 }
 
 export type ConnectionState = "disconnected" | "connecting" | "connected" | "error";

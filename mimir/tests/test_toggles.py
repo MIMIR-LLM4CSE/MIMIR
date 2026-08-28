@@ -171,7 +171,7 @@ class ChatCommandTests(unittest.TestCase):
         return asyncio.run(handle_chat_command(
             query=query, mode="agent", thinking=False, streaming=False, batch_mode=False,
             set_mode=lambda m: None, set_thinking=lambda b: None, set_streaming=lambda b: None,
-            set_batch_mode=lambda b: None, refresh_repo_baseline=_noop, agent=agent,
+            set_batch_mode=lambda b: None, agent=agent,
         ))
 
     def _agent(self):

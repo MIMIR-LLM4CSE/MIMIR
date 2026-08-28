@@ -32,16 +32,15 @@ from .context import (
     carry_context_from_json,
     carry_context_to_json,
     carry_path_fields,
-    ensure_execution_context,
     fields_with,
     validate_execution_context,
 )
 from .context.capabilities import (
+    DELEGATE,
     NON_BATCH,
     SENSITIVE,
     TASK_PLANNING,
     ToolCaps,
-    arg_role,
     fallbacks,
     is_write,
     names_with_cap,
@@ -51,19 +50,12 @@ from .context.capabilities import (
 from .prompt.system_prompt import (
     build_base_system_content,
     build_system_content,
-    summarize_platform_profile,
-)
-from .prompt.platform_probe import probe_platform
-from .prompt.repo_baseline import (
-    build_repo_baseline_snapshot,
-    seed_execution_context_from_baseline,
 )
 from .tool_execution.validation import (
     absolute_workspace_path,
     auto_validate_written_file,
 )
 from .integration.server_manager import connect_server as connect_server_runtime
-from .context.signals import query_requires_repo_discovery
 from .query_engine import run_agent_query
 from .event_sink import set_event_sink, reset_event_sink
 from .tool_execution.formatter import (
@@ -189,18 +181,10 @@ class MimirAgent:
         # immutable for the agent's lifetime, so there is nothing to re-resolve per
         # turn. Overridable at runtime via set_enforcement / the /enforcement command.
         self.enforcement: str = enforcement_level(model)
-        self.repo_baseline_loaded = False
         # When True, an interactive front-end (CLI / WebSocket) has wired up a
         # continue-prompt handler, so the agent loop may ask the user to extend a
         # long run past the soft step budget. Off by default (sub-agents/tests).
         self.allow_continue_prompt = False
-        # In-memory structural snapshot of the workspace, built lazily once per session
-        # (see _ensure_repo_baseline). Replaces the former .mimir/repo_baseline.json.
-        self._repo_baseline: dict | None = None
-        # In-memory hardware profile from a self-contained client-side probe, built
-        # lazily once per session (see _ensure_platform_profile). Independent of the
-        # platform server, which remains available for deeper/benchmark queries.
-        self._platform_profile: dict | None = None
 
         self.sessions: dict[str, ClientSession] = {}
         self.tool_owner: dict[str, str] = {}
@@ -229,6 +213,9 @@ class MimirAgent:
         # Full message list from the last completed query (system message excluded).
         # Used by chat_session in full-context mode to keep tool results in history.
         self._last_full_messages: list[dict] = []
+        # Reference to the message list of the query currently running (system message
+        # INCLUDED, index 0). Front-ends read it to report context usage mid-turn.
+        self._live_messages: list[dict] | None = None
         # Context mode: "compact" (default, aggressive compaction) or
         # "full" (keep all tool messages in history — requires large context model).
         self.context_mode: str = "full"
@@ -236,12 +223,6 @@ class MimirAgent:
         # _stream_chat checks this on every LLM chunk so streaming aborts immediately.
         import threading as _threading
         self._cancel_flag = _threading.Event()
-
-        # Identical-failing-call counts that persist ACROSS queries (the per-query
-        # loop-control counter resets each turn, so a spin that hits the step ceiling
-        # and is re-continued restarts from zero — this backstops that cross-turn
-        # re-spin). Cleared when the call finally succeeds and on session change.
-        self._persistent_call_fails: dict = {}
 
         self.skills: dict[str, dict[str, str]] = {}
         self.load_skills(SKILL_BASE)
@@ -456,27 +437,6 @@ class MimirAgent:
             tools that turn out to be read-only produce no diff.
             """
 
-            # Batched multi-file edit: paths live inside the edits payload (named by the
-            # edit_batch arg-role), not a path arg.
-            batch_args = arg_role(tool_name, "edit_batch", self.tool_caps)
-            if batch_args:
-                if not arguments.get("confirm", False):
-                    return []
-
-                edits_raw = arguments.get(batch_args[0], "[]")
-                try:
-                    edits = json.loads(edits_raw) if isinstance(edits_raw, str) else edits_raw
-                except (json.JSONDecodeError, TypeError):
-                    return []
-
-                paths: list[str] = []
-                if isinstance(edits, list):
-                    for edit in edits:
-                        path = edit.get("path")
-                        if isinstance(path, str) and path:
-                            paths.append(self._normalize_workspace_path(path))
-                return paths
-
             # Generic: any tool that carries a file-path argument.
             # We snapshot the file before execution and compare after — tools
             # that don't modify it (reads, checks, etc.) produce no diff.
@@ -489,21 +449,6 @@ class MimirAgent:
 
             return []
 
-
-    def _ensure_platform_profile(self) -> dict:
-        """Lazily build (once/session) the self-contained hardware profile.
-
-        Uses a direct client-side probe (see discovery/platform_probe.py), so the
-        foundational platform summary is present whether or not the platform server
-        is registered. Cached on the instance; the probe runs a few cheap subprocesses.
-        """
-        if self._platform_profile is None:
-            try:
-                self._platform_profile = probe_platform()
-            except Exception as exc:  # never let a probe failure break a query
-                logger.debug("platform probe failed: %s", exc)
-                self._platform_profile = {}
-        return self._platform_profile
 
     def _get_todo_file(self) -> str:
         """Return the absolute path to the active todo_list.md, or '' if not available."""
@@ -528,55 +473,15 @@ class MimirAgent:
         memory_file = os.path.join(STATE_DIR, "memory", "MEMORY.md") if "memory_search" in self.tool_owner else ""
         todo_file = self._get_todo_file()
 
-        # Foundational, always-on context gathered by self-contained core functions
-        # (no server tools, no on-disk cache): the lazily-built repo baseline and the
-        # hardware probe.
-        baseline_context_text = self._truncate_text(
-            (self._repo_baseline or {}).get("context", ""), limit=15000
-        )
-        platform_profile_summary = summarize_platform_profile(self._ensure_platform_profile())
-
         return build_system_content(
             active_mode=active_mode,
             tool_owner=self.tool_owner,
             sensitive_tools=self.approvals.sensitive_tools,
-            platform_profile_summary=platform_profile_summary,
-            repo_baseline_context=baseline_context_text,
             memory_context_file=memory_file,
             todo_file=todo_file,
             plan_todos=self.plan_todos,
             thinking_depth=self.thinking_depth,
-        )
-
-    async def _refresh_platform_profile(self) -> None:
-        """Pre-warm the self-contained hardware profile (server-independent)."""
-        self._platform_profile = None
-        self._ensure_platform_profile()
-
-    async def _refresh_repo_baseline(self, force: bool = False) -> None:
-        if self.repo_baseline_loaded and not force:
-            return
-
-        # Self-contained filesystem walk — no server tools required.
-        self._repo_baseline = build_repo_baseline_snapshot()
-        self.repo_baseline_loaded = True
-
-    async def _ensure_repo_baseline(self, query: str) -> None:
-        """Build the structural baseline lazily, only when a query needs repo context.
-
-        A pure-math/bibliography session never triggers the scan; a coding session pays one
-        filesystem walk on its first repo-touching query. Idempotent via repo_baseline_loaded.
-        """
-        if query_requires_repo_discovery(query):
-            await self._refresh_repo_baseline()
-
-    def _seed_execution_context_from_baseline(self, execution_context: dict) -> None:
-        execution_context = ensure_execution_context(execution_context)
-        if execution_context is None:
-            return
-        seed_execution_context_from_baseline(
-            execution_context=execution_context,
-            baseline=self._repo_baseline,
+            delegation_available=bool(names_with_cap(DELEGATE, self.tool_caps)),
         )
 
     def _apply_carry_context(self, execution_context: dict) -> None:

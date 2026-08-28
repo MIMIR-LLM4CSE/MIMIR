@@ -27,7 +27,6 @@ from .messages import (
     unexercised_code_nudge_message,
     state_nudge_message,
     unfinished_plan_nudge_message,
-    unjudged_output_nudge_message,
     todo_nudge_message,
     validation_nudge_message,
 )
@@ -38,14 +37,15 @@ from ...context.execution_context import (
     idle_steps,
     known_existing_files,
     nudge_count,
-    unsettled_runs,
 )
+from ....servers._shared.shell_paths import any_command_on_path as _any_command_on_path
 from ...config.models import resolve_enforcement
-from ...context.capabilities import CODE_EXEC, JUDGE, names_with_cap
+from ...context.capabilities import CODE_EXEC, names_with_cap
 from ...event_sink import emit
 from ...config.constants import (
     CUSTOM_NUDGE_MAX_PER_QUERY,
     DISCOVERY_EVIDENCE_MIN_DISTINCT,
+    EXERCISE_BUDGET,
     NUDGE_MAX_BLAST_RADIUS,
     NUDGE_MAX_CREATION,
     NUDGE_MAX_DENIAL,
@@ -54,12 +54,10 @@ from ...config.constants import (
     NUDGE_MAX_ENV_CLEANUP,
     NUDGE_MAX_ENV_RESOLUTION,
     NUDGE_MAX_ERROR_RECOVERY,
-    NUDGE_MAX_REGRESSION,
+    NUDGE_MAX_EXERCISE,
     NUDGE_MAX_STATE,
     NUDGE_MAX_TODO,
-    NUDGE_MAX_UNEXERCISED,
     NUDGE_MAX_UNFINISHED_PLAN,
-    NUDGE_MAX_OUTPUT_VERDICT,
     NUDGE_MAX_VALIDATION,
     NUDGE_STATE_IDLE_STEPS,
     NUDGE_VALIDATION_IDLE_STEPS,
@@ -97,31 +95,54 @@ def _bootstrap_nudge_context(execution_context: dict[str, Any]) -> dict[str, Any
 _NUDGE_TAG = "[automated workflow reminder — not from the user; advisory, apply judgment]\n\n"
 
 
+def inject_reminder(
+    messages: list[dict[str, Any]],
+    content: str,
+    *,
+    category: str,
+    tagged: bool = True,
+) -> None:
+    """Append a machine-generated reminder as a user turn and announce the injection.
+
+    EVERY injection point must go through here, not just the nudge table. The event is
+    not decoration: the webview holds the turn in flight *outside* the transcript and
+    commits it only once the loop accepts it, so a reminder injected silently leaves
+    the rejected prose on screen looking like the answer, to be replaced without
+    explanation when the real one lands. The loop-control and plan-mode reminders were
+    injected that way, which is why the "answer appears then changes" symptom survived
+    the draft fix.
+
+    *tagged* is False for the reminders that are protocol, not advice (the plan-mode
+    control flow): prefixing those with an "advisory, apply judgment" banner invites
+    the model to skip a step the loop actually requires.
+    """
+    emit({"type": "nudge_injected", "category": category, "text": content})
+    messages.append({"role": "user", "content": (_NUDGE_TAG + content) if tagged else content})
+
+
 # Guidance nudges permitted per (enforcement, mode). This is the single source for
 # the enforcement dimension of the line; each nudge's own active_mode/situational
-# gate still applies on top. Verification nudges and the plan-evidence gate are
+# gate still applies on top. Verification nudges and the plan-mode explore phase are
 # independent of this table. "off" is intentionally absent → empty set (and the
 # caller short-circuits the whole guidance layer before it is consulted).
 # Category strings match the labels passed to _fire_nudge (e.g. the documentation
 # nudge's category is "doc", not "documentation").
 _ALL_GUIDANCE = frozenset({
     "discovery", "env_resolution", "doc", "state",
-    "blast_radius", "creation", "todo", "env_cleanup", "validation",
+    "blast_radius", "creation", "todo", "env_cleanup",
 })
-# Validation is agent-only: plan mode is read-only/discovery (no edits → no dirty
-# files → nothing to validate), so the reminder can never legitimately fire there.
-_ALL_GUIDANCE_PLAN = _ALL_GUIDANCE - {"validation"}
 _GUIDANCE_BY_LEVEL_MODE: dict[tuple[str, str], frozenset[str]] = {
     # strict babysits everything (the branches still gate mode themselves, so this does
-    # not actually leak agent-only nudges into plan mode) — minus validation in plan.
+    # not actually leak agent-only nudges into plan mode).
     ("strict", "agent"): _ALL_GUIDANCE,
-    ("strict", "plan"): _ALL_GUIDANCE_PLAN,
+    ("strict", "plan"): _ALL_GUIDANCE,
     # light: the deliberate carve-out — only the nudges that guard a costly,
     # hard-to-detect, non-self-correcting mistake (blast_radius = breaking callers;
-    # env_cleanup = leftover env side effects; validation = concluding on code that
-    # was never checked — agent-only). Everything else is procedural hand-holding a
-    # capable model does unprompted. Absent at "off" (guidance layer short-circuited).
-    ("light", "agent"): frozenset({"blast_radius", "env_cleanup", "validation"}),
+    # env_cleanup = leftover env side effects). Everything else is procedural
+    # hand-holding a capable model does unprompted. Absent at "off" (guidance layer
+    # short-circuited). Validation is no longer here: checking a file one modified is
+    # not a reasoning shim to dial down, it is the one thing the loop requires.
+    ("light", "agent"): frozenset({"blast_radius", "env_cleanup"}),
     ("light", "plan"): frozenset(),
     # ask is answer-only: nothing is planned and nothing is edited, so no guidance
     # category has anything to guard. Listed explicitly rather than relying on the
@@ -145,22 +166,21 @@ def _fire_nudge(
     messages: list[dict[str, Any]],
     category: str,
     content: str,
+    budget_key: str = "",
 ) -> bool:
-    """Increment the per-category nudge counter, append the nudge, and signal it fired.
+    """Increment the nudge counter, append the nudge, and signal it fired.
 
     Centralises the counter-increment + message-append + ``return True`` triplet that every
     nudge branch in ``maybe_append_nudge`` repeats. The per-nudge cap checks stay in the
-    guarding ``if`` so each nudge keeps its own frequency limit.
+    guarding ``if`` so each nudge keeps its own frequency limit. *budget_key* is the
+    counter charged when several categories ration one shared budget; the event still
+    carries the category, which is what a reader wants to see.
     """
     counts = execution_context["nudge_counts"]
-    counts[category] = counts.get(category, 0) + 1
-    logger.debug("nudge fired: category=%s count=%d", category, counts[category])
-    # Surface the injection to the front-end. A nudge is a message the *system* puts
-    # in the user's turn slot; when it steers the model somewhere the user did not ask
-    # for, the run is unreadable unless the injection itself is visible. Mirrors the
-    # `steer_injected` event emitted for chat-while-busy steering.
-    emit({"type": "nudge_injected", "category": category, "text": content})
-    messages.append({"role": "user", "content": _NUDGE_TAG + content})
+    key = budget_key or category
+    counts[key] = counts.get(key, 0) + 1
+    logger.debug("nudge fired: category=%s budget=%s count=%d", category, key, counts[key])
+    inject_reminder(messages, content, category=category)
     return True
 
 
@@ -169,14 +189,20 @@ def _all_pending_budget_exhausted(execution_context: dict[str, Any]) -> bool:
 
     In that case the model auto-escaped to conclude and cannot make further
     progress — suppress validation/state nudges to avoid confusing messages.
+
+    A file nothing here can check counts as settled for the same reason: it is
+    excluded from ``pending_validation_paths``, so leaving it out of this test made
+    one unverifiable file among several validated ones look like outstanding work.
     """
     dirty = execution_context.get("dirty_written_files", set())
     if not dirty:
         return False
     validated = execution_context.get("validated_files", set())
+    unverifiable = execution_context.get("unverifiable_files", set()) or set()
     fail_counts = execution_context.get("validation_fail_count_by_file", {})
     return all(
-        f in validated or int(fail_counts.get(f, 0)) >= VALIDATION_RETRY_BUDGET
+        f in validated or f in unverifiable
+        or int(fail_counts.get(f, 0)) >= VALIDATION_RETRY_BUDGET
         for f in dirty
     )
 
@@ -294,20 +320,16 @@ def needs_incomplete_finalization(execution_context: dict[str, Any]) -> bool:
     if _all_pending_budget_exhausted(execution_context):
         return has_blocking_denials(execution_context)
 
-    # If all dirty files are already validated (but workflow_state didn't reach
-    # conclude via the normal path), treat the session as complete except for denials.
-    dirty = execution_context.get("dirty_written_files", set())
-    validated = execution_context.get("validated_files", set())
-    if dirty and dirty.issubset(validated):
-        return has_blocking_denials(execution_context)
-
+    # Only the check axis blocks. `workflow_state` used to be read here as a third
+    # condition, and that is what made the *recommended* axes mandatory in practice:
+    # a failed run — or a `fail` verdict, which drives the same ladder — sends the
+    # state machine back to `edit`, so every answer came back "Task is incomplete"
+    # until the run had failed VALIDATION_RETRY_BUDGET times. The state machine is
+    # steering, not evidence; what a run left open is reported by
+    # _collect_completion_issues, which is where a recommendation belongs.
     return (
         has_pending_validation(execution_context)
         or has_blocking_denials(execution_context)
-        or (
-            execution_context.get("code_mutation_started")
-            and execution_context.get("workflow_state") != "conclude"
-        )
     )
 
 
@@ -384,6 +406,46 @@ def maybe_append_nudge(
     return fired
 
 
+def nudge_pending(
+    *,
+    agent: Any,
+    query: str,
+    active_mode: str,
+    execution_context: dict[str, Any],
+) -> bool:
+    """True if :func:`maybe_append_nudge` would fire right now — predicate-only probe.
+
+    Read BEFORE the model call so the loop can hold the turn's prose instead of
+    streaming it: a turn a nudge sends back must never have reached the screen.
+    Walks the same table and the same registry in the same layer order, evaluating
+    only the predicates — nothing is rendered, injected or counted, so probing has
+    no side effect on the run.
+
+    Deliberately an over-approximation on one point: a row whose predicate matches
+    but whose render comes back empty is reported as pending. The cost is one turn
+    that reaches the screen late; the alternative is rendering twice.
+    """
+    execution_context = _bootstrap_nudge_context(execution_context)
+    level = resolve_enforcement(agent)
+    if _core_nudge_pending(
+        agent=agent, query=query, active_mode=active_mode,
+        execution_context=execution_context, layer="verification", level=level,
+    ) or _custom_nudge_pending(
+        agent=agent, query=query, active_mode=active_mode,
+        execution_context=execution_context, layer="verification",
+    ):
+        return True
+    if level == "off":
+        return False
+    return _core_nudge_pending(
+        agent=agent, query=query, active_mode=active_mode,
+        execution_context=execution_context, layer="guidance", level=level,
+    ) or _custom_nudge_pending(
+        agent=agent, query=query, active_mode=active_mode,
+        execution_context=execution_context, layer="guidance",
+    )
+
+
 def _log_no_nudge(
     query: str,
     execution_context: dict[str, Any],
@@ -455,6 +517,36 @@ def _append_custom_nudge(
     return False
 
 
+def _custom_nudge_pending(
+    *,
+    agent: Any,
+    query: str,
+    active_mode: str,
+    execution_context: dict[str, Any],
+    layer: str,
+) -> bool:
+    """Would any pack-registered rule of *layer* fire? Mirrors the gates of
+    :func:`_append_custom_nudge` (toggle, per-query cap, tier) without rendering."""
+    disabled = getattr(agent, "disabled_nudges", None) or set()
+    counts = execution_context["nudge_counts"]
+    enforcement = resolve_enforcement(agent)
+    for rule in NudgeRegistry.rules(layer):
+        if rule.name in disabled:
+            continue
+        if counts.get(rule.name, 0) >= CUSTOM_NUDGE_MAX_PER_QUERY:
+            continue
+        if layer == "guidance" and not rule_tier_enabled(
+            rule, enforcement=enforcement, active_mode=active_mode
+        ):
+            continue
+        try:
+            if rule.predicate(agent, query, active_mode, execution_context):
+                return True
+        except Exception:
+            continue
+    return False
+
+
 def _first_failing_edit_path(execution_context: dict[str, Any]) -> str | None:
     """First path with at least one recorded consecutive edit failure, else None.
 
@@ -475,14 +567,18 @@ def _should_nudge_validation(
 ) -> bool:
     """Pending validation, budget left, editing paused, declared edit set complete.
 
-    Enforcement-tiered (guidance layer): fires at ``strict`` and ``light`` but not at
-    ``off`` — validating written code through bash is a reasoning shim a fully-trusted
-    model is left to do on its own. The reminder is one of the light carve-outs because
-    concluding on unvalidated code is a costly, hard-to-detect mistake.
+    Verification-layer, at every enforcement level: parsing, resolving imports and
+    linting a file one just modified is not a reasoning shim a strong model can be
+    trusted out of — it is the one obligation of the working order, the cheapest
+    evidence there is, and the only axis ``needs_incomplete_finalization`` blocks on.
+    What is *not* required is anything past it: a build needs a toolchain, a run needs
+    an environment, and neither is asked for here.
+
+    Agent-only in practice without a mode test: plan mode is read-only, so there are
+    no dirty files and ``pending_validation_paths`` is empty.
     """
     return (
-        _guidance_enabled("validation", enforcement=level, active_mode=active_mode)
-        and bool(pending_validation_paths(execution_context))
+        bool(pending_validation_paths(execution_context))
         and nudge_count(execution_context, "validation") < NUDGE_MAX_VALIDATION
         and _retryable_pending_validation_exists(execution_context)
         and not _all_pending_budget_exhausted(execution_context)
@@ -526,10 +622,124 @@ def _should_nudge_error_recovery(execution_context: dict[str, Any]) -> bool:
     )
 
 
+# ── The advisory axis: build it, run it ───────────────────────────────────
+# `regression` and `unexercised` are two phrasings of one question — "does anything
+# actually show this works?" — so they ration ONE budget rather than two, and asking it
+# is a recommendation: a build needs a toolchain and a run needs an environment, neither
+# of which the loop can conjure. Once the model has answered (a run it judged, or an
+# `unknown` saying it cannot), the subject is closed for the rest of the query. The
+# shared counter key is `EXERCISE_BUDGET` (config.constants).
+#
+# There is deliberately no third row asking for a *verdict* on a run that has one
+# outstanding. That ask fired on the happy path — edit, run, all green, answer — and
+# bought a label the ledger already prints ("its output was never judged") with a whole
+# discarded final answer plus, usually, a re-run to recover output the model no longer
+# had in front of it. The verdict is asked for where it costs nothing: the VERDICT_DUE
+# annotation on the run's own result, and the judging tool's docstring.
+
+# What this box can start with one direct command, by edited-file kind. The value is the
+# runner that has to exist for that to be true — asked of PATH, never assumed, so a `.py`
+# edit on a box with no interpreter is correctly not a route.
+_DIRECT_RUNNERS: dict[str, tuple[str, ...]] = {
+    ".py": ("python3", "python"),
+    ".sh": ("sh",),
+}
+
+# A suite already registered against a configured tree: `ctest` is one direct command, and
+# unlike a build it produces a result somebody can judge. The file is generated at configure
+# time and only when tests exist, so its presence is the whole test — a compiled test
+# *source* is deliberately not a route, because reaching it still means building first.
+_REGISTERED_SUITES: dict[str, tuple[str, ...]] = {
+    "CTestTestfile.cmake": ("ctest",),
+}
+
+# A build only counts as a route when the tree is ALREADY configured — that is the whole
+# proportionality test. `CMakeCache.txt` and not `CMakeLists.txt`: a configured tree is one
+# direct command, configuring one is a step of its own and stays out of reach.
+_CONFIGURED_BUILDS: dict[str, tuple[str, ...]] = {
+    "Makefile": ("make",),
+    "makefile": ("make",),
+    "GNUmakefile": ("make",),
+    "CMakeCache.txt": ("cmake", "make"),
+}
+
+
+def _exercise_budget_left(execution_context: dict[str, Any]) -> bool:
+    """True while the one shared exercise/verdict ask is still available."""
+    return (
+        not execution_context.get("exercise_advice_closed")
+        and nudge_count(execution_context, EXERCISE_BUDGET) < NUDGE_MAX_EXERCISE
+    )
+
+
+def _exercise_route(agent: Any, execution_context: dict[str, Any]) -> str:
+    """The one direct command that would exercise this change, named — or "" if none.
+
+    This is where "recommended when it is simply feasible" is decided, rather than
+    recited. A route is one invocation against the project as it stands, using something
+    that is actually installed; anything needing a step of its own first — configuring a
+    build, installing a package, provisioning data — is out of proportion and returns "".
+    So the model is never pushed toward a disproportionate step, and a recommendation that
+    does fire can name the command it found.
+
+    Silent, but not invisible: the obstacle is recorded so the ledger can say what stood in
+    the way instead of simply omitting the advice. Evidence only — a build file has to have
+    been *seen* this session, because recommending `make` against a Makefile nobody has laid
+    eyes on is not obviously proportionate either.
+    """
+    def _blocked(reason: str) -> str:
+        execution_context["exercise_blocked_reason"] = reason
+        return ""
+
+    def _route(description: str) -> str:
+        execution_context["exercise_blocked_reason"] = ""
+        return description
+
+    if execution_context.get("unresolved_modules"):
+        return _blocked("an import could not be resolved in the interpreter that was used")
+    if not names_with_cap(CODE_EXEC, getattr(agent, "tool_caps", None)):
+        return _blocked("no execution tool is connected to this session")
+
+    # 1. A test that already covers the edit: the cheapest route there is, and the one the
+    #    regression row is built on.
+    untested = _untested_edited_sources(execution_context)
+    if untested:
+        return _route(f"the test that already covers it ({untested[0][1]})")
+
+    dirty = sorted(execution_context.get("dirty_written_files") or ())
+    known = {os.path.basename(p) for p in _known_existing_files(execution_context)}
+
+    # 2. A file this environment starts directly.
+    for path in dirty:
+        runners = _DIRECT_RUNNERS.get(os.path.splitext(path)[1].lower())
+        if runners and _any_command_on_path(runners):
+            return _route(f"running {path} directly")
+
+    needs_build = [p for p in dirty if os.path.splitext(p)[1].lower() not in _DIRECT_RUNNERS]
+    if not needs_build:
+        return _blocked("nothing written here starts with one direct command")
+
+    # 3. A suite already registered here — ahead of the plain build below, and for the
+    #    reason the tier ladder gives: a build says the code is well formed, only a run
+    #    produces a result. This is what route 1 is for a compiled language, where pairing
+    #    a test *file* to a source would name something that still has to be built.
+    for suite_file, runners in _REGISTERED_SUITES.items():
+        if suite_file in known and _any_command_on_path(runners):
+            return _route(f"the test suite already registered here ({runners[0]})")
+
+    # 4. A build already configured in the tree — the branch a suffix test used to refuse
+    #    by category, which left every compiled change with no recommendation at all.
+    for build_file, drivers in _CONFIGURED_BUILDS.items():
+        if build_file in known and _any_command_on_path(drivers):
+            return _route(f"the build already configured here ({build_file})")
+
+    return _blocked("nothing written here starts with one direct command")
+
+
 def _should_nudge_regression(execution_context: dict[str, Any]) -> bool:
     """Budget left and an edited source has an on-disk test that was never run."""
     return (
-        nudge_count(execution_context, "regression") < NUDGE_MAX_REGRESSION
+        _exercise_budget_left(execution_context)
         and bool(_untested_edited_sources(execution_context))
     )
 
@@ -562,64 +772,26 @@ def _should_nudge_unfinished_plan(execution_context: dict[str, Any]) -> bool:
 
 
 def _should_nudge_unexercised_code(agent: Any, execution_context: dict[str, Any]) -> bool:
-    """Budget left, every written file checked, and nothing was ever run.
+    """Shared budget left, every written file checked, and nothing was ever run.
 
-    The gap between the two nudges that surround it, and mutually exclusive with both:
-    ``validation`` speaks while a file still owes a check, ``output_verdict`` while a run
-    still owes a verdict. This one owns the state in between — checks all green, no run
-    to judge — which is exactly where a model stops believing it is finished. A checker
+    Mutually exclusive with the two rows around it: ``validation`` speaks while a file
+    still owes a check, this one owns the state after — checks all green, no run at all
+    — which is exactly where a model stops believing it is finished. A checker
     established that the file is written correctly; nothing yet bears on whether it
     computes the right thing, and nothing will until something executes.
 
-    Verification-layer for the same reason ``output_verdict`` is: a stronger model is
-    not reliably likelier to exercise what it just wrote. Silent when no execution
-    surface is connected — the advice would have nowhere to land — and once only,
-    because "there was nothing to run" is a legitimate answer the message asks for.
+    A recommendation, not a requirement, which is why it is bounded three ways: the
+    shared exercise budget, the feasibility gate, and the fact that "there was nothing
+    to run" is an answer the message explicitly accepts. Nothing downstream blocks on
+    it — an unexercised change concludes, and the ledger says so.
     """
     return (
-        nudge_count(execution_context, "unexercised") < NUDGE_MAX_UNEXERCISED
+        _exercise_budget_left(execution_context)
         and bool(execution_context.get("code_mutation_started"))
         and bool(execution_context.get("dirty_written_files"))
         and not has_pending_validation(execution_context)
         and not (execution_context.get("runs") or {})
-        and bool(names_with_cap(CODE_EXEC, getattr(agent, "tool_caps", None)))
-    )
-
-
-def _should_nudge_output_verdict(execution_context: dict[str, Any]) -> bool:
-    """Budget left, and a run's output is either unjudged or judged inconclusive.
-
-    A reality check, not a reasoning shim: the evidence is that a program was run and
-    nothing was said about what it printed. Verification-layer, so it runs at every
-    enforcement level — a stronger model is not more likely to volunteer that its own
-    green run produced a wrong answer, and exit 0 is all the loop can see by itself.
-
-    An ``unknown`` run stays outstanding, so both cases are the same condition; what
-    keeps the second from looping is the budget, which ``unknown`` does not re-arm.
-
-    Every nudge fires only on a turn with no tool calls (``maybe_append_nudge`` has a
-    single call site), so this asks at the moment the model tries to stop rather than
-    interrupting a working loop.
-    """
-    return (
-        nudge_count(execution_context, "output_verdict") < NUDGE_MAX_OUTPUT_VERDICT
-        and bool(unsettled_runs(execution_context))
-    )
-
-
-def _output_verdict_nudge_content(agent: Any, execution_context: dict[str, Any]) -> str:
-    """Ask for the missing verdict, or push a standing ``unknown`` towards resolution.
-
-    The tool to call is resolved from the live registry, never spelled out here — the
-    server that declares the capability owns the name.
-    """
-    judges = sorted(names_with_cap(JUDGE, getattr(agent, "tool_caps", None)))
-    tool = judges[0] if judges else "the verdict tool"
-    runs = unsettled_runs(execution_context)
-    return unjudged_output_nudge_message(
-        sorted((command, str(run.get("reason") or "") if run.get("verdict") == "unknown" else "")
-               for command, run in runs.items()),
-        tool,
+        and bool(_exercise_route(agent, execution_context))
     )
 
 
@@ -634,6 +806,41 @@ def _should_nudge_env_resolution(
         and bool(execution_context.get("unresolved_modules"))
         and not execution_context.get("env_probed")
         and nudge_count(execution_context, "env_resolution") < NUDGE_MAX_ENV_RESOLUTION
+    )
+
+
+def maybe_inject_env_resolution(
+    *,
+    agent: Any,
+    active_mode: str,
+    execution_context: dict[str, Any],
+    messages: list[dict[str, Any]],
+) -> bool:
+    """Fire the env-resolution cascade mid-loop, right after the call that failed.
+
+    Every other nudge answers "is the work done?", which is a question worth asking
+    once the model stops calling tools. This one answers "why did that just fail?", and
+    a step ceiling away from the failure the answer is worth much less: the model has
+    already spent its steps retrying against the same interpreter, and the generic
+    repeat guard only catches it when the retries are *identical*.
+
+    Charged to the same counter as the table row it duplicates, so whichever fires
+    first spends the single budget and the other stays silent. Same enforcement/mode
+    gate too — this changes *when* the cascade arrives, not *whether* it applies.
+    """
+    execution_context = _bootstrap_nudge_context(execution_context)
+    if "env_resolution" in (getattr(agent, "disabled_nudges", None) or set()):
+        return False
+    level = resolve_enforcement(agent)
+    if level == "off":
+        return False
+    if not _should_nudge_env_resolution(
+        execution_context, level=level, active_mode=active_mode
+    ):
+        return False
+    return _fire_nudge(
+        execution_context, messages, "env_resolution",
+        env_resolution_nudge_message(execution_context),
     )
 
 
@@ -788,6 +995,7 @@ class _CoreNudge:
     layer: str       # "verification" | "guidance"
     should_fire: Callable[[Any, str, str, dict[str, Any], str], bool]  # (agent, query, mode, ec, level)
     render: Callable[[Any, dict[str, Any]], str]                       # (agent, ec) -> text
+    budget_key: str = ""  # counter charged when rows ration a shared budget; default = name
 
 
 _CORE_NUDGES: tuple[_CoreNudge, ...] = (
@@ -804,10 +1012,19 @@ _CORE_NUDGES: tuple[_CoreNudge, ...] = (
         lambda agent, query, mode, ec, level: _should_nudge_error_recovery(ec),
         lambda agent, ec: error_recovery_nudge_message(_first_failing_edit_path(ec)),
     ),
+    # Ahead of the three advisory rows below, because it is the only one of the four
+    # that is required: a file the model modified and never checked is the one gap
+    # ``needs_incomplete_finalization`` refuses to conclude over.
+    _CoreNudge(
+        "validation", "verification",
+        lambda agent, query, mode, ec, level: _should_nudge_validation(ec, level=level, active_mode=mode),
+        lambda agent, ec: _validation_nudge_content(agent, ec),
+    ),
     _CoreNudge(
         "regression", "verification",
         lambda agent, query, mode, ec, level: _should_nudge_regression(ec),
         lambda agent, ec: regression_nudge_message(_untested_edited_sources(ec)),
+        budget_key=EXERCISE_BUDGET,
     ),
     # Between them by design: `regression` covers an edit whose tests already exist,
     # this one the change that has no run at all behind it.
@@ -815,27 +1032,15 @@ _CORE_NUDGES: tuple[_CoreNudge, ...] = (
         "unexercised", "verification",
         lambda agent, query, mode, ec, level: _should_nudge_unexercised_code(agent, ec),
         lambda agent, ec: unexercised_code_nudge_message(
-            sorted(ec.get("dirty_written_files") or ())),
+            sorted(ec.get("dirty_written_files") or ()), _exercise_route(agent, ec)),
+        budget_key=EXERCISE_BUDGET,
     ),
     _CoreNudge(
         "unfinished_plan", "verification",
         lambda agent, query, mode, ec, level: _should_nudge_unfinished_plan(ec),
         lambda agent, ec: unfinished_plan_nudge_message(_required_unchecked_steps(ec)),
     ),
-    _CoreNudge(
-        "output_verdict", "verification",
-        lambda agent, query, mode, ec, level: _should_nudge_output_verdict(ec),
-        lambda agent, ec: _output_verdict_nudge_content(agent, ec),
-    ),
     # ── Guidance (reasoning shim; each predicate owns its enforcement/mode gate) ──
-    # Validation leads the guidance layer: concluding on unvalidated code is the
-    # costliest mistake, so it is a light carve-out (see _GUIDANCE_BY_LEVEL_MODE) and
-    # tried before the softer reasoning nudges.
-    _CoreNudge(
-        "validation", "guidance",
-        lambda agent, query, mode, ec, level: _should_nudge_validation(ec, level=level, active_mode=mode),
-        lambda agent, ec: _validation_nudge_content(agent, ec),
-    ),
     _CoreNudge(
         "env_resolution", "guidance",
         lambda agent, query, mode, ec, level: _should_nudge_env_resolution(ec, level=level, active_mode=mode),
@@ -879,6 +1084,23 @@ _CORE_NUDGES: tuple[_CoreNudge, ...] = (
 )
 
 
+def _core_nudge_pending(
+    *,
+    agent: Any,
+    query: str,
+    active_mode: str,
+    execution_context: dict[str, Any],
+    layer: str,
+    level: str,
+) -> bool:
+    """Would any built-in row of *layer* fire? Same table, predicates only."""
+    return any(
+        spec.layer == layer
+        and spec.should_fire(agent, query, active_mode, execution_context, level)
+        for spec in _CORE_NUDGES
+    )
+
+
 def _append_core_nudge(
     *,
     agent: Any,
@@ -903,5 +1125,7 @@ def _append_core_nudge(
         content = spec.render(agent, execution_context)
         if not content or not str(content).strip():
             continue
-        return _fire_nudge(execution_context, messages, spec.name, str(content))
+        return _fire_nudge(
+            execution_context, messages, spec.name, str(content), spec.budget_key,
+        )
     return False

@@ -36,9 +36,10 @@ On top of that loop sits a policy and context layer:
   the machine observed. Judging arbitrary output — fields, convergence tables, plots, logs —
   is the one thing no parser generalises over, so it is asked of the model rather than
   guessed at.
-- **Context efficiency** — cached repository baseline, per-query read caching, cross-query
-  carry of discovery state with staleness eviction, and token-budget history trimming +
-  compaction.
+- **Context efficiency** — per-query read caching, cross-query carry of discovery state
+  with staleness eviction, and token-budget history trimming + compaction. Nothing about
+  the repository or the machine is injected up front: both are discovered on demand, by
+  the model's own tool calls.
 - **Throughput & UX** — real-time token streaming and parallel dispatch of independent calls.
 - **Skills** — automatic detection of a methodology prompt from the query and recent turns.
 
@@ -159,8 +160,8 @@ is documented in [`SETUP.md`](SETUP.md).
 │  │ search            │     │ strings           │   │ todo              │     │
 │  │ code_intel (nav)  │     │ datetime          │   │ agent (spawn)     │     │
 │  │ bash (exec/valid) │     │ symbolic_math     │   └───────────────────┘     │
-│  │ localgit          │     └───────────────────┘                             │
-│  └───────────────────┘                            interaction/               │
+│  └───────────────────┘     └───────────────────┘                             │
+│                                                   interaction/               │
 │                                                   ┌───────────────────┐      │
 │  external/                 hpc/                   │ ask_user_question │      │
 │  ┌───────────────────┐     ┌───────────────────┐  └───────────────────┘      │
@@ -182,7 +183,7 @@ Each server runs as a child process connected over stdio (MCP standard). The age
 all tools at startup and feeds their JSON-Schema definitions to the backend, which decides
 which tools to call. The client is organized under `mimir/client/` into `config/` (static
 config + tuning knobs), `context/` (execution-context schema + tool-capability registry),
-`prompt/` (repo baseline, hardware probe, system-prompt building), `extensions/` (the user's
+`prompt/` (system-prompt building), `extensions/` (the user's
 `.mimir/` servers / skills / plugins), `integration/` (MCP lifecycle), `guardrails/` (the
 precondition pipeline **plus** the soft nudges + shared workflow state), `query_engine/` (the
 agentic loop + backends), `tool_execution/` (arg normalization, caching, post-write
@@ -243,7 +244,7 @@ flowchart TD
 
 ## Registered Servers
 
-The client registers 22 servers by default; the authoritative registry lives in
+The client registers 21 servers by default; the authoritative registry lives in
 [`constants.py`](mimir/client/config/constants.py). Per-server tool details are in
 [`SERVERS_DETAILED.md`](SERVERS_DETAILED.md).
 
@@ -264,11 +265,10 @@ The client registers 22 servers by default; the authoritative registry lives in
 | `benchmark` | Lightweight micro-benchmarks (Python compute, memory copy, NumPy matmul) |
 | `system` | Read-only OS/CPU/memory/disk/uptime inspection |
 | `code_intel` | Symbol navigation (ctags + LSP): definition, references, outline, hover |
-| `bash` | Controlled workspace shell: allowlisted inspection + compile/run/validate/test (`gcc`/`python`/`pytest`/`ruff`/`mypy`/`nvcc`/`make`/`module`), TeX (`pdflatex`/`latexmk`) and file management (`mv`/`cp`/`mkdir`/`chmod`) |
-| `localgit` | Read-only git inspection (status/log/diff/show/branches/blame/grep) |
+| `bash` | Workspace shell: search, compile, run, validate, test, `git`, file management — any command but a short denylist, approval-gated and path-confined |
 | `todo` | Agent task checklist: create, read, update an ordered per-session todo list |
 | `interaction` | `ask_user_question` — pause mid-run to ask a structured clarifying question |
-| `agent` | `spawn_agent` — delegate a sub-task to a fresh agent that runs to completion |
+| `agent` | `spawn_agent` — fan work out to a fresh agent: `role="explore"` (read-only recon, answers with a cited conclusion) or `role="task"` (full toolkit) |
 | `finetune` | LoRA fine-tuning lifecycle (config, run local/Slurm, metrics, iterate, promote) |
 | `proxy` | Proxy registration, references, runs, benchmark suites, and the iterative eval loop (7 op-dispatched tools) |
 
@@ -293,8 +293,11 @@ Sandboxing and hardening highlights:
 - `web` allows only `http`/`https`, validates resolved IPs, and blocks internal/non-routable
   targets (SSRF protection).
 - `github` is read-only via the GitHub API (no local git credentials).
-- `bash` is an allowlist of mostly read-only commands (no shell interpreter, no `rm`).
-  Every path it names — a file operand, both ends of `mv`/`cp`, the target of a `cd` —
+- `bash` runs any command except a short denylist — shell interpreters (they nest a
+  command the validator never sees), a few irrecoverable destroyers (`dd`, `shred`), and
+  job submission (which has a tracked route of its own). Everything else, `rm` and `git`
+  included, runs under the approval prompt instead of being refused with no way to grant
+  it. Every path it names — a file operand, both ends of `mv`/`cp`, the target of a `cd` —
   is confined to the workspace; anything outside it goes to the user for approval
   first, whatever tool or syntax it arrives in. Every build/exec command is
   approval-gated too, in the workspace as much as outside it — so nothing runs unasked.
@@ -310,13 +313,14 @@ The authoritative definition of policy, completion gating, and workflow-state ru
 ## Client features
 
 - **Modes** — `/mode agent` (tool-use loop), `/mode plan` (read-only exploration ending in a
-  plan you approve before any work; an advisory evidence gate flags — never rejects — a
-  plan written with zero exploration on repo-touching queries), and `/mode ask` (read-only Q&A about the codebase —
-  same exploration-only tool surface, but no checklist, no evidence gate, no approval step).
+  plan you approve before any work; on repo-touching queries the plan-writing tool itself
+  is withheld until the model has actually read the code, so the plan is grounded in what
+  it found rather than a plan to go and look — and a plan whose axes are still exploration
+  ("audit the bindings", "investigate the gap") is handed back before you see it, since an
+  axis that is a question cannot be planned around), and `/mode ask` (read-only Q&A about the codebase —
+  same exploration-only tool surface, but no checklist, no explore phase, no approval step).
   The mode is **live**: switching it mid-query lands on the very next step — write tools are
   revoked (or restored) and the system prompt is rebuilt without waiting for the turn to end.
-- **Repository baseline** — a lazy, never-persisted `os.walk` snapshot injected as
-  orientation; `/rescan` refreshes it.
 - **Session carry-context** — discovery/read state is reused across queries in a session, with
   mtime-based staleness eviction so stale content is never used as an edit anchor.
 - **Caching** — read-only tool results are cached per query; a write invalidates cached reads
@@ -382,7 +386,7 @@ core edit, no registration call:
 | Skills | `.mimir/skills/<name>/SKILL.md` | `MIMIR_SKILLS_DIR` | user **overrides** bundled |
 | MCP servers | `.mimir/servers/server_<name>.py` (or `.js`) | `MIMIR_SERVERS_DIR` | user **skipped** (core protected) |
 | Policies, post-tool hooks + nudges | `.mimir/plugins/*.py` | `MIMIR_PLUGINS_DIR` | additive |
-| Base prompt | `.mimir/system_prompt.md` | `MIMIR_SYSTEM_PROMPT_FILE` | user **replaces** the built-in default |
+| Base prompt | `.mimir/system_prompt.md` | `MIMIR_SYSTEM_PROMPT_FILE` | user **replaces the doctrine half** of the built-in default |
 
 Agent **state** lives elsewhere, in a central per-workspace dir (`~/.mimir/<workspace-id>/`,
 override `MIMIR_STATE_DIR`): memory, sessions, plans, todos. The agent's **scratchpad** sits
@@ -400,11 +404,14 @@ capability-based policies/nudges (see the
 [capability reference](PLUGINS_DETAILED.md#tool-capabilities)). A foreign server with no MIMIR
 metadata is still connected.
 
-**Base prompt (general context)** — replace MIMIR's built-in system prompt with your own:
+**Base prompt (general context)** — give MIMIR your own persona and domain knowledge:
 set `MIMIR_SYSTEM_PROMPT_FILE` to any `.md` file, or drop `.mimir/system_prompt.md` in the
 workspace. Resolution order: `MIMIR_SYSTEM_PROMPT_FILE` → `.mimir/system_prompt.md` → built-in
-default; the dynamic platform / memory / todo / plan sections are still appended on top
-automatically. See [`SETUP.md`](SETUP.md) §4.
+doctrine. Your file replaces the **doctrine** half (identity, style, scope, workflow,
+reasoning); the **core** half (non-negotiables, tool contracts, discovery, editing,
+validation, running, planning) is appended after it either way and cannot be overridden. The
+dynamic memory / todo / plan sections are still appended on top automatically. See
+[`SETUP.md`](SETUP.md) §4.
 
 **Extension packs** — an application can plug in its own policies (which **block** a tool call)
 and nudges (which inject an advisory reminder) without editing core. Packs reference

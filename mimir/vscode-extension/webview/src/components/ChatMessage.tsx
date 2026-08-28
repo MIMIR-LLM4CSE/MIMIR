@@ -132,10 +132,6 @@ const ChatMessageInner: React.FC<Props> = ({ message, onApprovalResponse, onRetr
               )}
             </div>
           </div>
-        ) : message.kind === "streaming" ? (
-          // The animated status line lives at the bottom of the thread
-          // (ChatThread), not inside the growing bubble.
-          <MarkdownContent text={message.text ?? ""} />
         ) : message.kind === "text" && !isUser ? (
           <>
             {/* Reasoning is rendered in-stream via kind="thinking" panels, so it
@@ -151,15 +147,7 @@ const ChatMessageInner: React.FC<Props> = ({ message, onApprovalResponse, onRetr
             )}
           </>
         ) : (
-          <div className={message.nudge ? "user-text user-text--nudge" : "user-text"}>
-            {message.nudge && (
-              <span
-                className="nudge-badge"
-                title="Automated workflow reminder from MIMIR's guardrails — not sent by you"
-              >
-                ⚙ {message.nudge}
-              </span>
-            )}
+          <div className="user-text">
             {message.text}
             {message.queued && (
               <span className="steer-badge" title="Queued — will reach MIMIR at its next step">

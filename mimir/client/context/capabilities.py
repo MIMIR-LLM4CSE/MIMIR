@@ -30,6 +30,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Iterable
 
+from ..config.constants import TOOL_CALL_TIMEOUT_MAX_SECS, TOOL_CALL_TIMEOUT_SECS
+
 # ---------------------------------------------------------------------------
 # Capability vocabulary — orthogonal semantic flags a server declares per tool,
 # mirrored server-side in servers/_shared/capabilities.py (test_capabilities
@@ -43,7 +45,7 @@ from typing import Any, Iterable
 # Feeds edit/delete preconditions and the "did exploration happen" nudges.
 READ = "read"                          # _observe_read -> read_files (edit/overwrite precondition; evidence)
 SEARCH = "search"                      # _observe_search_flags (evidence; blast-radius)
-SEARCH_WITH_PATH = "search_with_path"  # results embed file paths the executor auto-follows
+SEARCH_WITH_PATH = "search_with_path"  # results locate hits by path and line
 CANDIDATE_SEARCH = "candidate_search"  # _observe_candidates -> path-clarification
 INSPECT_DIR = "inspect_dir"            # _observe_dir_inspect -> delete context
 CHECK_EXISTENCE = "check_existence"    # _observe_existence_check -> weaker delete context
@@ -78,6 +80,8 @@ TASK_PLANNING = "task_planning"        # records a task plan (checklist and/or p
 # to name the tool to the model resolves it from here, so the name lives in one place
 # — the server's declaration — and never in prompt or nudge copy.
 JUDGE = "judge"                        # records the model's verdict on a run's output
+DELEGATE = "delegate"                  # hands a self-contained sub-task to a fresh child agent that
+                                       # runs to completion and returns its answer
 
 # --- Approval & mode policy ------------------------------------------------
 # How much of a tool's effect can be taken back — the *declared* dimension, from which
@@ -108,10 +112,12 @@ BACKGROUNDABLE = "backgroundable"      # launches a long detached run; result ma
 
 
 
-# A server-name allowlist (not tool classification): the subset a read-only sub-agent
-# connects. Consumed by servers/agent_state/server_spawn_agent.py.
-_READONLY_SERVERS: frozenset[str] = frozenset({
-    "files", "search", "code", "math", "strings",
+# The subset an exploring sub-agent connects — a *connection-cost* filter, not the
+# read-only guarantee: `files` carries the write tools too. What makes the child
+# read-only is the read-only mode it runs in, where the capability-driven tool filter
+# and the dual-use call gate both apply. Consumed by server_spawn_agent.py.
+_EXPLORER_SERVERS: frozenset[str] = frozenset({
+    "files", "search", "code_intel", "bash", "web", "math", "strings",
     "datetime", "memory", "system", "platform",
 })
 
@@ -144,6 +150,13 @@ class ToolCaps:
     # reversible | recoverable | irreversible (see REVERSIBILITY_LEVELS). Always
     # populated — `_derive_reversibility` supplies a conservative value when undeclared.
     reversibility: str = RECOVERABLE
+    # The tool's own per-call wall, when the global default cannot bound its work.
+    # None -> the dispatcher's default applies.
+    timeout_secs: int | None = None
+    # For a PLAN_READONLY (dual-use) tool: {"arg": name, "values": [...]} naming the
+    # invocations that are the read-only ones. None -> the guard falls back to
+    # classifying the shell command it carries.
+    readonly_when: dict[str, Any] | None = None
 
     def has(self, cap: str) -> bool:
         return cap in self.capabilities
@@ -193,6 +206,23 @@ def _derive_reversibility(caps: set[str]) -> str:
     return REVERSIBLE
 
 
+def _declared_timeout(value: Any) -> int | None:
+    """A declared per-call wall, clamped. A third-party server does not get to hang the loop."""
+    if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+        return None
+    return min(value, TOOL_CALL_TIMEOUT_MAX_SECS)
+
+
+def _readonly_when(value: Any) -> dict[str, Any] | None:
+    """Normalise a dual-use tool's read-only-invocation spec; drop an incomplete one."""
+    if not isinstance(value, dict):
+        return None
+    arg, values = value.get("arg"), value.get("values")
+    if not isinstance(arg, str) or not isinstance(values, (list, tuple)) or not values:
+        return None
+    return {"arg": arg, "values": [str(v) for v in values]}
+
+
 def _caps_from_meta(name: str, desc: dict) -> ToolCaps:
     caps = set(desc.get("capabilities", []) or [])
     # Derived for file mutations so a server can't forget to declare it alongside its
@@ -230,6 +260,8 @@ def _caps_from_meta(name: str, desc: dict) -> ToolCaps:
         risk_note=desc.get("risk_note"),
         preview=preview,
         reversibility=reversibility,
+        timeout_secs=_declared_timeout(desc.get("timeout_secs")),
+        readonly_when=_readonly_when(desc.get("readonly_when")),
     )
 
 
@@ -394,6 +426,23 @@ def fallbacks(name: str, registry: dict[str, ToolCaps] | None = None) -> tuple[s
     return c.fallbacks if c else ()
 
 
+def readonly_invocation_spec(name: str, registry: dict[str, ToolCaps] | None = None) -> dict[str, Any] | None:
+    """A dual-use tool's declared read-only-invocation spec, if it has one."""
+    c = _registry(registry).get(name)
+    return c.readonly_when if c else None
+
+
+def timeout_for(name: str, registry: dict[str, ToolCaps] | None = None) -> int:
+    """This tool's per-call wall: what it declares, else the global default.
+
+    The default is calibrated on a search or a build step; a tool whose work is an
+    agent run of its own declares its own, and the dispatcher asks here instead of
+    holding a name-keyed table.
+    """
+    c = _registry(registry).get(name)
+    return c.timeout_secs if c and c.timeout_secs else TOOL_CALL_TIMEOUT_SECS
+
+
 def label_for(name: str, args: dict | None = None, registry: dict[str, ToolCaps] | None = None) -> str | None:
     """Render a tool's status label template, or ``None`` to fall back to the table.
 
@@ -449,8 +498,8 @@ def preview_spec(name: str, registry: dict[str, ToolCaps] | None = None) -> dict
     return c.preview if c else None
 
 
-def readonly_servers() -> frozenset[str]:
-    return _READONLY_SERVERS
+def explorer_servers() -> frozenset[str]:
+    return _EXPLORER_SERVERS
 
 
 def unannotated_live_tools(registry: dict[str, ToolCaps]) -> list[str]:
@@ -486,7 +535,9 @@ __all__ = [
     "risk_note_of",
     "fallbacks",
     "label_for",
-    "readonly_servers",
+    "explorer_servers",
+    "timeout_for",
+    "readonly_invocation_spec",
     "unannotated_live_tools",
     # capability constants
     "READ", "CACHEABLE", "SEARCH", "SEARCH_WITH_PATH", "CANDIDATE_SEARCH",
@@ -494,5 +545,5 @@ __all__ = [
     "REPLACEMENT_TRACK", "VALIDATE",
     "PLAN_BLOCKED", "PLAN_READONLY", "SENSITIVE", "NON_BATCH",
     "CODE_NAV", "ENV_DISCOVERY", "EXTERNAL_FETCH", "CLUSTER_SUBMIT", "ENV_MUTATE",
-    "BACKGROUNDABLE", "REMOVE", "OVERWRITE", "TASK_PLANNING",
+    "BACKGROUNDABLE", "REMOVE", "OVERWRITE", "TASK_PLANNING", "JUDGE", "DELEGATE",
 ]

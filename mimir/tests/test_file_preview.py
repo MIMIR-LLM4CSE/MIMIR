@@ -1,6 +1,6 @@
 """Hermetic tests for the registry-driven pre-write diff previews.
 
-``ui/file_preview.py`` reconstructs a proposed post-write diff from a tool call's
+``ui/ws/file_preview.py`` reconstructs a proposed post-write diff from a tool call's
 arguments, dispatching on the generic ``preview`` kind the tool declares — no
 tool names in shipped code. These tests build small registries via the real
 server-side descriptor helper so declaration and consumption are exercised

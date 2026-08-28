@@ -13,7 +13,7 @@ Run:
 import json
 import unittest
 
-from mimir.client.context.capabilities import ToolCaps, READ
+from mimir.client.context.capabilities import ToolCaps, READ, SEARCH_WITH_PATH
 from mimir.client.tool_execution.tool_status_messages import (
     summarize_tool_result,
     dedup_row_detail,
@@ -47,6 +47,43 @@ class LineRangeSummaryTests(unittest.TestCase):
         self.assertEqual(
             self._sum({"status": "ok", "content": "a\nb\nc"}),
             "3 lines")
+
+
+class ErrorRowTests(unittest.TestCase):
+    def test_error_row_carries_its_message(self) -> None:
+        ok, summary = summarize_tool_result(
+            "read_file_lines",
+            json.dumps({"status": "error", "error": "No such file"}), _REG)
+        self.assertFalse(ok)
+        self.assertEqual(summary, "No such file")
+
+
+class SearchRowCountTests(unittest.TestCase):
+    """A search row counts whatever list the tool reports its hits in.
+
+    The count used to read only "matches", which none of the tools carrying
+    SEARCH_WITH_PATH return — so every one of their rows was blank.
+    """
+
+    _CAPS = {"find_references": ToolCaps(name="find_references",
+                                         capabilities=frozenset({SEARCH_WITH_PATH}))}
+
+    def _sum(self, payload: dict) -> str:
+        return summarize_tool_result(
+            "find_references", json.dumps(payload), self._CAPS)[1]
+
+    def test_references_are_counted(self) -> None:
+        self.assertEqual(
+            self._sum({"status": "ok", "references": [{"line": 1}, {"line": 9}]}),
+            "2 references")
+
+    def test_a_single_hit_reads_singular(self) -> None:
+        self.assertEqual(
+            self._sum({"status": "ok", "references": [{"line": 1}]}),
+            "1 reference")
+
+    def test_no_hits_reads_zero_not_blank(self) -> None:
+        self.assertEqual(self._sum({"status": "ok", "references": []}), "0 references")
 
 
 class DedupRowDetailTests(unittest.TestCase):
@@ -104,7 +141,7 @@ class PolicyBlockSummaryTests(unittest.TestCase):
 class AppendedAdvisorySummaryTests(unittest.TestCase):
     """A successful edit must stay a success even when advisory text is appended.
 
-    The client appends AUTO_VALIDATION / READ_HINT / MORE_CONTENT text AFTER the JSON
+    The client appends AUTO_VALIDATION / MORE_CONTENT / OUTLINE text AFTER the JSON
     payload. A post-write validator (lint/typecheck/import) embedding a nested
     ``"status": "error"`` must NOT flip a successful edit's row to failed — the file
     was written; the validator finding is advisory.
@@ -150,7 +187,7 @@ class AppendedAdvisorySummaryTests(unittest.TestCase):
 class ErrorDetailTests(unittest.TestCase):
     """The row summary is a clipped one-liner; the UI panel needs the full text."""
 
-    def test_multiline_error_kept_whole_with_hint(self) -> None:
+    def test_multiline_error_kept_whole_without_hint(self) -> None:
         payload = {
             "status": "error",
             "error": "line one\nline two " + "x" * 200,
@@ -159,7 +196,8 @@ class ErrorDetailTests(unittest.TestCase):
         detail = error_detail(json.dumps(payload))
         self.assertIn("line two", detail)
         self.assertIn("x" * 200, detail)          # not clipped at 100 like the summary
-        self.assertIn("Hint: try a narrower query", detail)
+        # The hint is guidance for the model, not for the user reading the row.
+        self.assertNotIn("try a narrower query", detail)
 
     def test_policy_block_without_error_names_the_stage(self) -> None:
         detail = error_detail(json.dumps({"status": "error", "policy_stage": "approval"}))

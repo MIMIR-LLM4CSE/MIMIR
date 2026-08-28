@@ -15,7 +15,9 @@ import json
 from typing import Any
 
 from ..event_sink import emit
-from ..context.capabilities import PLAN_BLOCKED, PLAN_READONLY, has_cap
+from ..context.capabilities import (
+    PLAN_BLOCKED, PLAN_READONLY, has_cap, readonly_invocation_spec,
+)
 from ..guardrails.policy.bash_classify import bash_command_is_readonly
 from .streaming import _to_dict
 from .toollist import hidden_planning_tools
@@ -62,7 +64,23 @@ def filter_readonly_tool_calls(
             emit({"type": "status", "text": f"  ⚠ Blocked '{tc_name}' in {mode_label} mode"})
             messages.append({"role": "tool", "content": json.dumps({"status": "error", "error": f"Tool '{tc_name}' is not available in {mode_label} mode. " + _NO_PLANNING_REASON.get(mode_label, "")})})
         elif has_cap(tc_name, PLAN_READONLY, agent.tool_caps):
-            cmd = agent._normalize_arguments(fn.get("arguments") or {}).get("command", "")
+            args = agent._normalize_arguments(fn.get("arguments") or {})
+            # Two shapes of dual-use tool. One declares which argument value makes the
+            # call read-only; the other carries a shell command, which only the
+            # classifier can judge.
+            spec = readonly_invocation_spec(tc_name, agent.tool_caps)
+            if spec is not None:
+                value = str(args.get(spec["arg"], "")).strip().lower()
+                allowed = [v.lower() for v in spec["values"]]
+                # An omitted argument is the tool's own default, not a violation: a
+                # tool declaring this spec makes its read-only invocation the default.
+                if not value or value in allowed:
+                    safe.append(tc)
+                else:
+                    emit({"type": "status", "text": f"  ⚠ Blocked '{tc_name}' ({spec['arg']}={value or 'unset'}) in {mode_label} mode"})
+                    messages.append({"role": "tool", "content": json.dumps({"status": "error", "error": f"In {mode_label} mode '{tc_name}' is available only with {spec['arg']}={' or '.join(allowed)} — nothing may write, execute or mutate. Re-issue the call that way."})})
+                continue
+            cmd = args.get("command", "")
             if bash_command_is_readonly(cmd):
                 safe.append(tc)
             else:

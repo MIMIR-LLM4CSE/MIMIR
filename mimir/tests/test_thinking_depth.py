@@ -166,12 +166,6 @@ class _LoopAgent:
     def _get_todo_file():
         return ""
 
-    async def _ensure_repo_baseline(self, query):
-        return None
-
-    def _seed_execution_context_from_baseline(self, execution_context):
-        pass
-
     def _apply_carry_context(self, execution_context):
         pass
 

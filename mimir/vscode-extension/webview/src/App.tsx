@@ -78,7 +78,7 @@ export const App: React.FC = () => {
   // there are no stale-closure refs and the logic is unit-testable.
   const chatReducer = useMemo(() => createChatReducer(makeId), []);
   const [chatState, dispatch] = useReducer(chatReducer, initialChatState);
-  const { messages, busy, liveToolCalls, liveThinkingBlocks } = chatState;
+  const { messages, draft, busy, liveToolCalls, liveThinkingBlocks } = chatState;
   // Mirror of reducer state for reads inside event callbacks (approval lookup,
   // session-load message preservation) without stale closures.
   const chatStateRef = useRef(chatState);
@@ -199,7 +199,7 @@ export const App: React.FC = () => {
       return;
     }
     scrollToBottom();
-  }, [messages, liveToolCalls, liveThinkingBlocks, scrollToBottom]);
+  }, [messages, draft, liveToolCalls, liveThinkingBlocks, scrollToBottom]);
 
   // Force-scrolls to bottom when an approval arrives so the live editing card
   // is visible regardless of whether the user had scrolled up.
@@ -325,6 +325,17 @@ export const App: React.FC = () => {
           nextMessages = [];
         dispatch({ type: "session_loaded_messages", messages: nextMessages });
         setTodos(msg.todos ?? []);
+        if (prevSessionId !== msg.session_id) {
+          // Pending prompts belong to the turn of the session we just left — the
+          // server cancels that turn on a switch, so answering them here would
+          // reply to nothing (and a plan-approval card would linger forever).
+          // A reconnect to the *same* session keeps its cards: the worker is
+          // still parked on them and will never re-send them.
+          setUserQuestion(null);
+          setContinuePrompt(null);
+          setPendingResumeItems(null);
+          setBatchFiles([]);
+        }
         setContextUsage(null);
         setSessionLoading(false);
         scrollToBottom();
@@ -361,7 +372,7 @@ export const App: React.FC = () => {
       msg.type === "output" || msg.type === "status" ||
       msg.type === "token" || msg.type === "thinking" ||
       msg.type === "answer" || msg.type === "error" ||
-      msg.type === "tool_call"
+      msg.type === "tool_call" || msg.type === "subagent_event"
     ) {
       scrollToBottom();
     }
@@ -800,6 +811,7 @@ export const App: React.FC = () => {
         <ChatThread
           messages={messages}
           busy={busy}
+          draft={draft}
           liveToolCalls={liveToolCalls}
           liveThinkingBlocks={liveThinkingBlocks}
           loading={sessionLoading}

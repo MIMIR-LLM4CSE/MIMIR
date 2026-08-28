@@ -65,7 +65,7 @@ webview/src/
 │   └── useWebSocket.ts       ← postMessage bridge; send(), connect(), createSession(), …
 ├── App.tsx                   ← Root component: all React state, handleServerMessage()
 └── components/
-    ├── ChatMessage.tsx        ← Renders one ChatMessage (text/streaming/thinking/approval/editing/reading/error)
+    ├── ChatMessage.tsx        ← Renders one ChatMessage (text/thinking/approval/editing/tools/error)
     ├── InlineDiffApproval.tsx ← Per-file diff accept/discard card inside an approval message
     ├── BatchReviewBar.tsx     ← Sticky bar showing accumulated file changes after a turn
     ├── FileDiff.tsx           ← Unified-diff renderer (syntax-highlighted patch)
@@ -122,6 +122,7 @@ vitest (`mentionUtils.test.ts`, `slashUtils.test.ts`).
 | State variable | Type | Purpose |
 |----------------|------|---------|
 | `messages` | `ChatMessage[]` | Full chat history (persisted in memory across reconnects) |
+| `draft` | `string` | Prose of the turn in flight, held **out** of `messages` until the loop accepts it. A turn is only an answer once it ends with no tool call and no guardrail sends the model back to work; streaming it straight into the transcript is what made a finished-looking answer appear and then vanish. Committed on the next step's cards, on an approval/diff/error, or superseded by `answer`; dropped on `nudge_injected`. The drop is now the backstop rather than the norm: the client holds a turn's prose off the wire entirely when a guardrail could still refuse it (see `_DraftHold` in POLICY.md), so the draft mostly carries turns that will be kept. |
 | `batchFiles` | `DiffEntry[]` | Files accumulated in the BatchReviewBar since last accept/revert |
 | `liveThinkingBlocks` | `ThinkingBlock[]` | Currently-streaming "Working…" blocks |
 | `busy` | `boolean` | True while the agent is running (input disabled) |

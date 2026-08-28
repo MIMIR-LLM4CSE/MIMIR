@@ -1,7 +1,6 @@
 import contextlib
 import io
 import json
-import sys
 import time
 import unittest
 from pathlib import Path
@@ -22,7 +21,6 @@ import mimir.client.query_engine.history as history_module
 import mimir.client.query_engine.finalize as finalize_module
 import mimir.client.query_engine.dispatch as dispatch_module
 import mimir.client.human_pause as human_pause_module
-import mimir.client.prompt.repo_baseline as repo_baseline_module
 import mimir.client.prompt.system_prompt as context_builder_module
 import mimir.client.context.execution_context as execution_context_module
 import mimir.client.ui.cli.chat_session as chat_session_module
@@ -38,14 +36,6 @@ client_module = types.SimpleNamespace(
     SERVERS=__import__('mimir.client.config', fromlist=['SERVERS']).SERVERS,
     _BASE=__import__('mimir.client.agent_core', fromlist=['_BASE'])._BASE,
 )
-
-
-def _judging_agent(name: str = "judge_it"):
-    """An agent whose registry declares one verdict tool, under an arbitrary name."""
-    from mimir.client.context.capabilities import JUDGE, ToolCaps
-    return types.SimpleNamespace(
-        tool_caps={name: ToolCaps(name=name, capabilities=frozenset({JUDGE}))}
-    )
 
 
 class ClientHelperTests(unittest.TestCase):
@@ -66,7 +56,6 @@ class ClientHelperTests(unittest.TestCase):
         context = client_module.MimirAgent._new_execution_context()
         execution_context_module.validate_execution_context(context)
         self.assertIn("validation_fail_count_by_file", context)
-        self.assertIn("search_queries_used", context)
         self.assertIn("planned_edit_targets", context)
 
     def test_ensure_execution_context_backfills_missing_keys(self) -> None:
@@ -110,8 +99,6 @@ class ClientHelperTests(unittest.TestCase):
             # plan naming a file that was then deleted is exactly what the
             # "declared but never written" ledger line needs to still see.
             "planned_edit_targets", "declared_edit_set",
-            # Keyed by path but a dict of line counts, not a set of paths.
-            "read_file_line_counts",
             # Files passed to a test runner: a history of what ran, not path evidence.
             "tests_run",
             # Per-directory candidate names, a dict keyed by directory.
@@ -148,15 +135,18 @@ class ClientHelperTests(unittest.TestCase):
         """
         m = execution_context_module
         self.assertEqual(set(m.fields_with(m.CARRY)), {
-            "read_files", "existing_paths", "inspected_dirs", "search_queries_used",
+            "read_files", "delegated_read_files", "existing_paths", "inspected_dirs",
             "checked_paths"})
         self.assertEqual(set(m.fields_with(m.FILE_PATH)), {
-            "existing_paths", "read_files", "checked_paths", "dirty_written_files",
-            "validated_files", "snippet_read_files", "prev_query_written_files"})
+            "existing_paths", "read_files", "delegated_read_files", "checked_paths",
+            "dirty_written_files", "validated_files", "unverifiable_files",
+            "prev_query_written_files"})
         self.assertEqual(set(m.fields_with(m.KNOWN_FILE)), {
-            "existing_paths", "read_files", "checked_paths", "snippet_read_files"})
+            "existing_paths", "read_files", "delegated_read_files", "checked_paths"})
+        # `delegated_read_files` is a discovery signal in its own right: a sub-agent's
+        # reading is the model's own evidence, gathered at arm's length.
         self.assertEqual(set(m.DISCOVERY_EVIDENCE_SIGNALS), {
-            "searched", "read_files", "snippet_read_files", "checked_paths",
+            "searched", "read_files", "delegated_read_files", "checked_paths",
             "inspected_dirs"})
 
     def test_carried_path_purge_drops_the_inert_entry_and_keeps_dirs_out(self) -> None:
@@ -169,7 +159,8 @@ class ClientHelperTests(unittest.TestCase):
         """
         m = execution_context_module
         carried_paths = set(m.fields_with(m.CARRY, m.FILE_PATH))
-        self.assertEqual(carried_paths, {"read_files", "existing_paths", "checked_paths"})
+        self.assertEqual(carried_paths, {
+            "read_files", "delegated_read_files", "existing_paths", "checked_paths"})
         self.assertNotIn("dirty_written_files", carried_paths)
         self.assertNotIn("inspected_dirs", carried_paths)
 
@@ -178,37 +169,28 @@ class ClientHelperTests(unittest.TestCase):
         from mimir.client.guardrails.nudges import engine as nudge_engine
         ec = execution_context_module.build_execution_context()
         ec["read_files"].add("a.py")
-        ec["snippet_read_files"].add("b.py")
         ec["checked_paths"].add("c.py")
         ec["existing_paths"].add("d.py")
         ec["dirty_written_files"].add("written.py")  # written ≠ "encountered"
         shared = execution_context_module.known_existing_files(ec)
-        self.assertEqual(shared, {"a.py", "b.py", "c.py", "d.py"})
+        self.assertEqual(shared, {"a.py", "c.py", "d.py"})
         self.assertEqual(nudge_engine._known_existing_files(ec), shared)
 
-    def test_a_snippet_read_is_not_a_full_read(self) -> None:
-        """The rule POLICY.md states and the call sites could not previously express.
+    def test_a_read_says_nothing_about_how_much_was_read(self) -> None:
+        """The predicate answers "was it read", and deliberately not "was it read whole".
 
-        Partial context — a grep hit, a neighbour excerpt — is enough to plan against
-        and proves the file exists, but not enough to rewrite the file from. As bare
-        set membership the two fields were equally plausible at the call site; as named
-        predicates the wrong one cannot be reached for by accident.
+        Reads are capped and targeted, so a window that stopped at the cap is the normal
+        case. A gate demanding the whole file would be asking for the one thing the read
+        policy tells the model not to do.
         """
         m = execution_context_module
         ec = m.build_execution_context()
-        ec["snippet_read_files"].add("partial.py")
-        self.assertFalse(m.was_fully_read(ec, "partial.py"))
-
-        # Two different notions of "the model knows this file", deliberately not the
-        # same set. `known_existing_files` (path clarification, advisory) accepts a
-        # snippet; `is_known_to_exist` (the destructive and overwrite gates) does not —
-        # a guard that can delete or wipe a file demands the stronger evidence.
+        ec["read_files"].add("partial.py")
+        self.assertTrue(m.was_read(ec, "partial.py"))
+        # A read also proves the file exists.
         self.assertIn("partial.py", m.known_existing_files(ec))
-        self.assertFalse(m.is_known_to_exist(ec, "partial.py"))
 
-        ec["read_files"].add("whole.py")
-        self.assertTrue(m.was_fully_read(ec, "whole.py"))
-        self.assertTrue(m.is_known_to_exist(ec, "whole.py"))
+        self.assertFalse(m.was_read(ec, "never-read.py"))
 
     def test_a_checked_path_is_not_proof_of_existence(self) -> None:
         """`checked_paths` records that a look happened, including a negative one."""
@@ -217,19 +199,18 @@ class ClientHelperTests(unittest.TestCase):
         ec["checked_paths"].add("maybe.py")
         self.assertTrue(m.was_checked_for(ec, "maybe.py"))
         self.assertFalse(m.is_known_to_exist(ec, "maybe.py"))
-        self.assertFalse(m.was_fully_read(ec, "maybe.py"))
+        self.assertFalse(m.was_read(ec, "maybe.py"))
 
-    def test_overwrite_gate_refuses_a_file_seen_only_as_a_snippet(self) -> None:
+    def test_overwrite_gate_refuses_a_file_nobody_read(self) -> None:
         """The predicate pair, exercised through the guard that depends on it.
 
-        A file whose existence is known only from an excerpt must not be rewritable in
-        full — the failure mode the read-before-overwrite rule exists for.
+        A file known to exist but never read must not be rewritten in full: the failure
+        mode the read-before-overwrite rule exists for.
         """
         agent = client_module.MimirAgent()
         agent.tool_caps = build_declared_registry()
         ec = execution_context_module.build_execution_context()
         ec["existing_paths"].add("src/module.py")
-        ec["snippet_read_files"].add("src/module.py")
 
         violation = policy_runtime_module.check_write_policy(
             agent, "write_file", {"path": "src/module.py", "content": "x"}, ec,
@@ -237,6 +218,20 @@ class ClientHelperTests(unittest.TestCase):
 
         self.assertIsNotNone(violation)
         self.assertIn("requires reading it first", violation)
+
+    def test_overwrite_gate_accepts_a_file_read_in_part(self) -> None:
+        """A capped read clears the gate: it asks for a read, not for the whole file."""
+        agent = client_module.MimirAgent()
+        agent.tool_caps = build_declared_registry()
+        ec = execution_context_module.build_execution_context()
+        ec["existing_paths"].add("src/module.py")
+        ec["read_files"].add("src/module.py")
+
+        violation = policy_runtime_module.check_write_policy(
+            agent, "write_file", {"path": "src/module.py", "content": "x"}, ec,
+        )
+
+        self.assertIsNone(violation)
 
     def test_deleting_a_file_purges_it_from_every_path_field(self) -> None:
         """The purge actually runs — not just that the derived field set is right.
@@ -439,7 +434,6 @@ class ClientHelperTests(unittest.TestCase):
             "existing_paths": {"src/module.py"},
             "similar_candidates_by_dir": {},
             "search_tool_calls": 0,
-            "search_queries_used": {"compute"},
         }
 
         violation = policy_runtime_module.check_write_policy(
@@ -682,7 +676,6 @@ class ClientHelperTests(unittest.TestCase):
             "state_nudges": 0,
             "creation_nudges": 0,
             "planned_edit_targets": set(),
-            "search_queries_used": set(),
         }
 
         violation = policy_state_machine_module.check_state_machine_guard(
@@ -716,7 +709,6 @@ class ClientHelperTests(unittest.TestCase):
             "state_nudges": 0,
             "creation_nudges": 0,
             "planned_edit_targets": {"src/module.py"},
-            "search_queries_used": set(),
         }
 
         violation = policy_state_machine_module.check_state_machine_guard(
@@ -785,7 +777,6 @@ class ClientHelperTests(unittest.TestCase):
             "declared_edit_set": {"src/pending.py"},
             "denied_tool_calls": [],
             "code_mutation_started": True,
-            "search_queries_used": set(),
         }
 
         violation = policy_state_machine_module.check_state_machine_guard(
@@ -892,7 +883,6 @@ class ClientHelperTests(unittest.TestCase):
             tools = []
             tool_owner = {}
             tool_caps = {}
-            repo_baseline_context = ""
 
             @staticmethod
             def _new_execution_context():
@@ -901,12 +891,6 @@ class ClientHelperTests(unittest.TestCase):
             @staticmethod
             def _get_todo_file():
                 return ""
-
-            async def _ensure_repo_baseline(self, query):
-                return None
-
-            def _seed_execution_context_from_baseline(self, execution_context):
-                captured_context.update(execution_context)
 
             @staticmethod
             def _normalize_mode(mode):
@@ -929,7 +913,7 @@ class ClientHelperTests(unittest.TestCase):
             approvals = types.SimpleNamespace(flush_pending_review=lambda: None)
 
             def _apply_carry_context(self, execution_context):
-                pass
+                captured_context.update(execution_context)
 
             def _update_carry_context(self, execution_context):
                 pass
@@ -950,6 +934,21 @@ class ClientHelperTests(unittest.TestCase):
                 )
 
         self.assertEqual(result, "done")
+
+    def test_query_starts_with_no_discovery_evidence(self) -> None:
+        """Nothing may pre-fill a discovery signal on the model's behalf.
+
+        The repo-structure snapshot used to seed ``inspected_dirs`` at query start,
+        which silently satisfied any gate reading that field raw. The invariant is
+        cheaper to keep than the discount that used to compensate for it: a fresh
+        context carries zero evidence, so every gate measures the model's own work.
+        """
+        ec = execution_context_module
+        execution_context = client_module.MimirAgent._new_execution_context()
+        self.assertEqual(ec.discovery_signal_count(execution_context), 0)
+        for signal in ec.DISCOVERY_EVIDENCE_SIGNALS:
+            with self.subTest(signal=signal):
+                self.assertFalse(execution_context.get(signal))
 
     # ── soft step budget + continue checkpoint ─────────────────────────────────
 
@@ -1429,7 +1428,7 @@ class ClientHelperTests(unittest.TestCase):
 
         tool_calls = [{"id": "c1", "function": {"name": "bash_run",
                                                 "arguments": {"command": "ls"}}}]
-        with patch.object(dispatch_module, "_TOOL_TIMEOUT_SECS", 0.05), \
+        with patch.object(dispatch_module, "timeout_for", lambda *_a, **_k: 0.05), \
              patch.object(dispatch_module, "emit", events.append), \
              patch.object(dispatch_module, "summarize_tool_result", return_value=(True, "")):
             asyncio.run(dispatch_module._dispatch_tool_calls(
@@ -1499,6 +1498,69 @@ class ClientHelperTests(unittest.TestCase):
         self.assertIn("server_science.py", messages[0]["content"])
         self.assertEqual(execution_context["nudge_counts"]["creation"], 1)
 
+    def _pending_case(self, *, query, execution_context):
+        """(probe, fired) for one context — the probe read first, then the real call."""
+        import importlib
+        nudge_logic = importlib.import_module("mimir.client.guardrails.nudges.engine")
+
+        agent = types.SimpleNamespace(enforcement="strict", tool_caps={})
+        events: list = []
+        with event_sink_module.event_sink(events.append):
+            probe = nudge_logic.nudge_pending(
+                agent=agent, query=query, active_mode="agent",
+                execution_context=execution_context,
+            )
+        # Probing is read-only: it must not spend a budget or announce anything, or
+        # the real call right after it would behave differently for having been asked.
+        self.assertEqual(events, [])
+        self.assertEqual(execution_context["nudge_counts"], {})
+
+        messages: list = []
+        fired = nudge_logic.maybe_append_nudge(
+            agent=agent, query=query, active_mode="agent",
+            execution_context=execution_context, messages=messages,
+        )
+        return probe, fired
+
+    def test_the_probe_answers_what_the_real_call_will_do(self) -> None:
+        """``nudge_pending`` is read before the model call to decide whether the turn's
+        prose can be streamed. If it disagreed with ``maybe_append_nudge``, a refused
+        answer would reach the screen anyway — the symptom it exists to prevent."""
+        probe, fired = self._pending_case(
+            query="propose me an implementation for a new scientific computing server",
+            execution_context={
+                "workflow_state": "edit",
+                "code_mutation_started": False,
+                "searched": True,
+                "read_files": {"ref.py"},
+                "search_tool_calls": 2,
+                "denied_tool_calls": [],
+                "dirty_written_files": set(),
+                "validated_files": set(),
+                "planned_edit_targets": {"mimir/servers/server_science.py"},
+            },
+        )
+        self.assertTrue(fired)
+        self.assertTrue(probe)
+
+    def test_the_probe_stays_silent_when_nothing_would_fire(self) -> None:
+        probe, fired = self._pending_case(
+            query="what does this function return?",
+            execution_context={
+                "workflow_state": "discover",
+                "code_mutation_started": False,
+                "searched": True,
+                "read_files": {"ref.py"},
+                "search_tool_calls": 2,
+                "denied_tool_calls": [],
+                "dirty_written_files": set(),
+                "validated_files": set(),
+                "planned_edit_targets": set(),
+            },
+        )
+        self.assertFalse(fired)
+        self.assertFalse(probe)
+
     def test_nudge_injection_is_surfaced_as_an_event(self) -> None:
         """Every injected nudge emits ``nudge_injected`` so the run stays readable."""
         import importlib
@@ -1534,6 +1596,31 @@ class ClientHelperTests(unittest.TestCase):
         self.assertEqual([e["type"] for e in events], ["nudge_injected"])
         self.assertEqual(events[0]["category"], "creation")
         self.assertIn("write target was declared", events[0]["text"])
+
+    def test_every_injection_point_announces_itself_not_just_the_table(self) -> None:
+        """The loop-control reminders must emit the event too.
+
+        The webview holds the turn in flight outside the transcript and drops it on
+        ``nudge_injected``. A reminder injected silently leaves the rejected prose on
+        screen as if it were the answer, then swaps it for a different one when the
+        real answer lands — which is the display bug that survived the draft fix,
+        because only the nudge table went through the emitting path.
+        """
+        import importlib
+        nudges = importlib.import_module("mimir.client.guardrails.nudges")
+
+        messages: list = []
+        events: list = []
+        with event_sink_module.event_sink(events.append):
+            nudges.inject_reminder(
+                messages, "wrap it up", category="step_limit", tagged=False,
+            )
+
+        self.assertEqual([e["type"] for e in events], ["nudge_injected"])
+        self.assertEqual(events[0]["category"], "step_limit")
+        # Untagged: the plan/loop-control reminders are protocol, not advice, and the
+        # "apply judgment" banner invites the model to skip a step the loop requires.
+        self.assertEqual(messages, [{"role": "user", "content": "wrap it up"}])
 
     def test_creation_nudge_silent_without_a_declared_write_target(self) -> None:
         """Reading files while answering a question must not look like create intent.
@@ -1668,66 +1755,24 @@ class ClientHelperTests(unittest.TestCase):
             nudge_logic._should_nudge_todo(ctx, level="light", active_mode="agent")
         )
 
-    def test_output_verdict_nudge_fires_on_an_unjudged_run(self) -> None:
+    def test_an_unjudged_run_alone_nudges_nothing(self) -> None:
+        # There is deliberately no reminder asking for a verdict: it fired on the happy
+        # path (edit, run green, answer), discarded a finished answer, and bought a
+        # label the ledger already prints. The run is reported unjudged instead.
         import importlib
         nudge_logic = importlib.import_module("mimir.client.guardrails.nudges.engine")
 
-        ctx = {
+        agent = types.SimpleNamespace(enforcement="strict", tool_caps={})
+        ctx = nudge_logic._bootstrap_nudge_context({
             "runs": {"python solver.py": {"completed": True, "verdict": ""}},
-            "nudge_counts": {},
-        }
-        self.assertTrue(nudge_logic._should_nudge_output_verdict(ctx))
-        # Capped, so two ignored reminders do not become per-step spam.
-        ctx["nudge_counts"] = {"output_verdict": 2}
-        self.assertFalse(nudge_logic._should_nudge_output_verdict(ctx))
-
-    def test_a_run_that_never_completed_is_not_asked_about(self) -> None:
-        # Its non-zero exit is the finding; asking for a reading of output that never
-        # came would be asking for a guess.
-        import importlib
-        nudge_logic = importlib.import_module("mimir.client.guardrails.nudges.engine")
-        ctx = {
-            "runs": {"python solver.py": {"completed": False, "verdict": ""}},
-            "nudge_counts": {},
-        }
-        self.assertFalse(nudge_logic._should_nudge_output_verdict(ctx))
-
-    def test_output_verdict_nudge_fires_on_a_standing_unknown(self) -> None:
-        # "I cannot tell" is a legitimate answer and a starting point, not an ending:
-        # the run stays outstanding, and the ask names what would settle it.
-        import importlib
-        nudge_logic = importlib.import_module("mimir.client.guardrails.nudges.engine")
-
-        ctx = {
-            "runs": {
-                "python solver.py": {
-                    "completed": True, "verdict": "unknown", "reason": "no reference",
-                },
-            },
-            "nudge_counts": {},
-        }
-        self.assertTrue(nudge_logic._should_nudge_output_verdict(ctx))
-        content = nudge_logic._output_verdict_nudge_content(_judging_agent(), ctx)
-        self.assertIn("you judged this `unknown`: no reference", content)
-        self.assertIn("would settle it", content)
-
-    def test_the_unjudged_ask_names_the_runs_and_the_tool_from_the_registry(self) -> None:
-        import importlib
-        nudge_logic = importlib.import_module("mimir.client.guardrails.nudges.engine")
-
-        ctx = {
-            "runs": {
-                "pytest -q": {"completed": True, "verdict": ""},
-                "python bench.py": {"completed": True, "verdict": ""},
-            },
-            "nudge_counts": {},
-        }
-        self.assertTrue(nudge_logic._should_nudge_output_verdict(ctx))
-        content = nudge_logic._output_verdict_nudge_content(_judging_agent(), ctx)
-        self.assertIn("have not settled what its output showed", content)
-        self.assertIn("python bench.py", content)
-        # The tool is named from the live registry, never spelled out in the copy.
-        self.assertIn("judge_it", content)
+        })
+        messages: list[dict] = []
+        fired = nudge_logic.maybe_append_nudge(
+            agent=agent, query="run it", active_mode="agent",
+            execution_context=ctx, messages=messages,
+        )
+        self.assertFalse(fired)
+        self.assertEqual(messages, [])
 
     def test_a_run_never_makes_a_file_pending_a_check(self) -> None:
         # The two axes do not interact: an unjudged run leaves the file exactly as
@@ -1762,14 +1807,10 @@ class ClientHelperTests(unittest.TestCase):
         self.assertTrue(nudge_logic._has_local_discovery_evidence(
             {"searched": True, "read_files": {"a.py"}}
         ))
-        # The baseline-seeded inspected_dirs must NOT count toward the gate, or the
-        # snapshot would pre-satisfy discovery (it's seeded before the loop runs).
-        self.assertFalse(nudge_logic._has_local_discovery_evidence(
-            {"inspected_dirs": {"."}, "searched": True}
-        ))
-        # A directory the model inspected itself does count, as a second signal.
+        # A directory the model inspected itself counts, as a second signal —
+        # structural discovery is real exploration, not a lesser kind of it.
         self.assertTrue(nudge_logic._has_local_discovery_evidence(
-            {"inspected_dirs": {".", "mimir/servers"}, "searched": True}
+            {"inspected_dirs": {"mimir/servers"}, "searched": True}
         ))
 
     def test_discovery_nudge_fires_with_only_one_signal(self) -> None:
@@ -1813,7 +1854,7 @@ class ClientHelperTests(unittest.TestCase):
         # exploration (excluding the field outright made structural discovery worth
         # nothing, so only a grep or a file read could ever clear a gate).
         self.assertIn("inspected_dirs", ec.DISCOVERY_EVIDENCE_SIGNALS)
-        self.assertEqual(ec.discovery_signal_count({"inspected_dirs": set(ec.BASELINE_SEEDED_DIRS)}), 0)
+        self.assertEqual(ec.discovery_signal_count({}), 0)
         self.assertEqual(ec.discovery_signal_count({"inspected_dirs": {"mimir/servers"}}), 1)
         self.assertEqual(ec.discovery_signal_count({"inspected_dirs": {".", "mimir/servers"}}), 1)
 
@@ -2010,7 +2051,7 @@ class ClientHelperTests(unittest.TestCase):
         self.assertEqual(blast_ctx["nudge_counts"].get("blast_radius"), 1)
 
     def test_light_plan_fires_no_guidance(self) -> None:
-        # light-plan = no guidance nudges (plan relies on the evidence gate).
+        # light-plan = no guidance nudges (plan relies on its explore phase).
         import importlib
         nudge_logic = importlib.import_module("mimir.client.guardrails.nudges.engine")
 
@@ -2065,7 +2106,7 @@ class ClientHelperTests(unittest.TestCase):
             messages=messages,
         )
         self.assertTrue(fired, "regression nudge should fire for an un-run existing test")
-        self.assertEqual(ctx["nudge_counts"]["regression"], 1)
+        self.assertEqual(ctx["nudge_counts"]["exercise"], 1)
         self.assertIn("test_foo.py", messages[0]["content"])
 
     def test_regression_nudge_silent_when_test_was_run(self) -> None:
@@ -2191,7 +2232,6 @@ class ClientHelperTests(unittest.TestCase):
         execution_context = client_module.MimirAgent._new_execution_context()
         execution_context["dirty_written_files"].add("add.py")
         execution_context["read_files"].add("README.md")
-        execution_context["search_queries_used"].add("def add")
 
         answer = (
             "I implemented add.py with an add(a, b) function. "
@@ -2276,99 +2316,30 @@ class ClientHelperTests(unittest.TestCase):
             import os; os.unlink(tmp_path)
 
     # ── foundational context injection ────────────────────────────────────────
+    #
+    # Two absolute paths, and nothing describing the repo's contents or the machine.
+    # The repo-structure snapshot and the hardware probe that used to be injected here
+    # are gone: the snapshot pre-filled a discovery-evidence field, so a gate could be
+    # satisfied before the model had done anything, and neither block told the model
+    # what its task actually touches.
 
-    def test_build_system_content_injects_repo_baseline_both_modes(self) -> None:
-        for mode in ("agent", "plan"):
+    def test_no_repo_or_hardware_description_is_injected(self) -> None:
+        for mode in ("agent", "plan", "ask"):
             content = context_builder_module.build_system_content(
-                active_mode=mode,
-                tool_owner={},
-                sensitive_tools=set(),
-                repo_baseline_context="src/\n  solver.py\n  io.py",
+                active_mode=mode, tool_owner={}, sensitive_tools=set(),
             )
-            self.assertIn("Repository structure", content)
-            self.assertIn("solver.py", content)
-            # Orientation-only framing makes clear it is not a substitute for searching.
-            self.assertIn("orientation", content.lower())
+            with self.subTest(mode=mode):
+                self.assertNotIn("Repository structure", content)
+                self.assertNotIn("Target platform", content)
 
-    def test_build_system_content_injects_platform_summary(self) -> None:
-        content = context_builder_module.build_system_content(
-            active_mode="plan",
-            tool_owner={},
-            sensitive_tools=set(),
-            platform_profile_summary="CPU: x86_64; 64 logical CPUs\nGPU: 4 available",
-        )
-        self.assertIn("Target platform", content)
-        self.assertIn("64 logical CPUs", content)
-
-    def test_summarize_platform_profile_empty_is_blank(self) -> None:
-        self.assertEqual(context_builder_module.summarize_platform_profile({}), "")
-        self.assertEqual(context_builder_module.summarize_platform_profile(None), "")
-
-    def test_summarize_platform_profile_renders_hardware(self) -> None:
-        summary = context_builder_module.summarize_platform_profile({
-            "hostname": "node01",
-            "cpu": {"arch": "x86_64", "logical_cpus": 64},
-            "gpu": {"available": True, "count": 4},
-        })
-        self.assertIn("node01", summary)
-        self.assertIn("64 logical CPUs", summary)
-        self.assertIn("GPU: 4 available", summary)
-
-    # ── self-contained baseline + platform probe (no server dependency) ───────
-
-    def test_repo_baseline_is_self_contained_and_skips_noise(self) -> None:
-        import tempfile, os
-        with tempfile.TemporaryDirectory() as root:
-            os.makedirs(os.path.join(root, "src"))
-            os.makedirs(os.path.join(root, "__pycache__"))
-            os.makedirs(os.path.join(root, ".git"))
-            with open(os.path.join(root, "src", "solver.py"), "w") as f:
-                f.write("x = 1\n")
-            with open(os.path.join(root, "__pycache__", "junk.pyc"), "w") as f:
-                f.write("noise")
-
-            # No tool_owner / run_tool: the builder must work with zero servers.
-            snapshot = repo_baseline_module.build_repo_baseline_snapshot(root=root)
-
-        self.assertTrue(snapshot["searched"])
-        self.assertEqual(snapshot["inspected_dirs"], ["."])
-        ctx = snapshot["context"]
-        self.assertIn("solver.py", ctx)
-        self.assertIn("src", ctx)
-        # Noise dirs pruned from the always-on context.
-        self.assertNotIn("__pycache__", ctx)
-        self.assertNotIn(".git", ctx)
-
-    def test_repo_baseline_empty_dir_yields_root_only(self) -> None:
-        import tempfile, os
-        with tempfile.TemporaryDirectory() as root:
-            snapshot = repo_baseline_module.build_repo_baseline_snapshot(root=root)
-        # The root line is always emitted, so an empty dir is still oriented.
-        self.assertEqual(snapshot["inspected_dirs"], ["."])
-        self.assertIn("0 dirs, 0 files", snapshot["context"])
-
-    def test_repo_baseline_missing_root_yields_blank_context(self) -> None:
-        snapshot = repo_baseline_module.build_repo_baseline_snapshot(
-            root="/nonexistent/path/for/baseline/test"
-        )
-        self.assertEqual(snapshot["inspected_dirs"], [])
-        self.assertFalse(snapshot["searched"])
-        self.assertEqual(snapshot["context"], "")
-
-    def test_platform_probe_returns_expected_shape(self) -> None:
-        import importlib
-        probe = importlib.import_module("mimir.client.prompt.platform_probe")
-        profile = probe.probe_platform()
-        # Self-contained: always returns a dict with the core keys, no server needed.
-        self.assertIsInstance(profile, dict)
-        for key in ("hostname", "cpu", "memory", "gpu", "toolchains", "slurm"):
-            self.assertIn(key, profile)
-        self.assertIn("arch", profile["cpu"])
-        self.assertIn("logical_cpus", profile["cpu"])
-        # The probe output must render through the same summarizer.
-        self.assertIsInstance(
-            context_builder_module.summarize_platform_profile(profile), str
-        )
+    def test_absolute_paths_are_injected_in_every_mode(self) -> None:
+        for mode in ("agent", "plan", "ask"):
+            content = context_builder_module.build_system_content(
+                active_mode=mode, tool_owner={}, sensitive_tools=set(),
+            )
+            with self.subTest(mode=mode):
+                self.assertIn("Workspace root (absolute):", content)
+                self.assertIn("Scratchpad", content)
 
     def test_build_system_content_injects_checklist_in_agent_mode(self) -> None:
         content = context_builder_module.build_system_content(
@@ -2398,7 +2369,9 @@ class ClientHelperTests(unittest.TestCase):
             sensitive_tools=set(),
         )
         self.assertIn("Current mode: PLAN", content)
-        self.assertIn("orientation only", content)
+        # The mode used to say the injected repo/hardware blocks were "orientation
+        # only"; with no such block left, it states the same duty positively.
+        self.assertIn("Nothing in your context tells you what has to change", content)
         self.assertIn("exploration tools", content)
 
     def test_build_system_content_ask_mode_is_readonly_qa(self) -> None:
@@ -2409,7 +2382,6 @@ class ClientHelperTests(unittest.TestCase):
             plan_todos=["Read file", "Apply patch"],
         )
         self.assertIn("Current mode: ASK", content)
-        self.assertIn("orientation only", content)
         self.assertIn("exploration tools", content)
         # No checklist (agent-only) and no planning tool catalog (plan-only).
         self.assertNotIn("Task checklist", content)
@@ -2455,7 +2427,7 @@ class ClientHelperTests(unittest.TestCase):
                 query="/ledger", mode="agent", thinking=False, streaming=False,
                 batch_mode=False, set_mode=lambda v: None, set_thinking=lambda v: None,
                 set_streaming=lambda v: None, set_batch_mode=lambda v: None,
-                refresh_repo_baseline=None, show_ledger=show,
+                show_ledger=show,
             )
 
         handled, message = asyncio.run(_run(

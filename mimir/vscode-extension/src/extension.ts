@@ -195,14 +195,40 @@ const _diffContentProvider = new class implements vscode.TextDocumentContentProv
   }
 }();
 
-// ── Markdown preview freshness (plan .md) ─────────────────────────────────────
+// ── Plan preview: one virtual document, always read from disk ────────────────
 //
-// The agent rewrites a plan in place (same file), and VS Code's Markdown preview
-// re-renders the cached TextDocument only when its own file watcher fires — which
-// is unreliable for files on network mounts and races with the write. Re-issuing
-// `markdown.showPreview` on an already-previewed resource only reveals the tab,
-// so the user kept seeing the previous plan. We therefore force the refresh
-// ourselves and poll the previewed file so out-of-band rewrites land too.
+// The Markdown preview renders a *cached* TextDocument, and on a network mount
+// the file watcher may never fire, so previewing the plan file itself re-renders
+// the previous revision. We preview a `mimir-plan:` document instead: its content
+// provider re-reads the bytes on every request and we invalidate it on each
+// update. Trade-off: read-only, and relative links inside the plan do not
+// resolve; plans are prose, freshness matters more.
+//
+// The URI is CONSTANT — it names "the plan MIMIR is showing", not one plan file.
+// Keying it on the plan's path meant a second plan (new title → new file) became
+// a new resource, and switching an open preview's resource leaves it rendering
+// the old one; with a fixed resource every plan reuses the same preview tab and
+// the invalidation below is all it takes to swap the content.
+
+const _planChanged = new vscode.EventEmitter<vscode.Uri>();
+
+/** Absolute path of the plan the preview currently mirrors. */
+let _currentPlanPath: string | undefined;
+
+/** The single document the plan preview renders. `.md` types it as Markdown. */
+const PLAN_URI = vscode.Uri.from({ scheme: "mimir-plan", path: "/MIMIR plan.md" });
+
+const _planContentProvider = new class implements vscode.TextDocumentContentProvider {
+  readonly onDidChange = _planChanged.event;
+  provideTextDocumentContent(_uri: vscode.Uri): string {
+    if (!_currentPlanPath) return "No plan yet.";
+    try {
+      return fs.readFileSync(_currentPlanPath, "utf8");
+    } catch (e) {
+      return `Cannot read ${_currentPlanPath}\n\n${e}`;
+    }
+  }
+}();
 
 /** Poller for the currently previewed markdown file, if any. */
 let _previewWatch: { path: string; mtimeMs: number; timer: NodeJS.Timeout } | undefined;
@@ -214,41 +240,8 @@ function _stopPreviewWatch(): void {
   }
 }
 
-/**
- * Re-render every open Markdown preview with the file's current content.
- * Waits (bounded) for the text model to catch up with the bytes on disk so the
- * refresh does not simply re-render the stale cached document.
- */
-async function _refreshMarkdownPreview(uri: vscode.Uri): Promise<void> {
-  let onDisk: string | undefined;
-  try {
-    onDisk = fs.readFileSync(uri.fsPath, "utf8");
-  } catch {
-    onDisk = undefined;
-  }
-  if (onDisk !== undefined) {
-    for (let i = 0; i < 10; i++) {
-      try {
-        const doc = await vscode.workspace.openTextDocument(uri);
-        if (doc.isDirty || doc.getText() === onDisk) break;
-      } catch {
-        break;
-      }
-      await new Promise((resolve) => setTimeout(resolve, 100));
-    }
-  }
-  try {
-    await vscode.commands.executeCommand("markdown.preview.refresh");
-  } catch {
-    /* preview closed in the meantime */
-  }
-}
-
-/** Poll `abs` and refresh the preview whenever the file changes on disk. */
-function _watchPreviewedFile(uri: vscode.Uri): void {
-  const abs = uri.fsPath;
-  if (_previewWatch?.path === abs) return;
-  _stopPreviewWatch();
+/** Poll `abs` and re-render the plan document whenever the file changes on disk. */
+function _watchPreviewedFile(abs: string): void {
   const stamp = (): number => {
     try {
       return fs.statSync(abs).mtimeMs;
@@ -256,20 +249,45 @@ function _watchPreviewedFile(uri: vscode.Uri): void {
       return 0;
     }
   };
+  if (_previewWatch?.path === abs) {
+    // Same plan reopened: keep the poller, just re-baseline it.
+    _previewWatch.mtimeMs = stamp();
+    return;
+  }
+  _stopPreviewWatch();
   const timer = setInterval(() => {
     if (!_previewWatch) return;
     const mtimeMs = stamp();
     if (mtimeMs !== _previewWatch.mtimeMs) {
       _previewWatch.mtimeMs = mtimeMs;
-      void _refreshMarkdownPreview(uri);
+      _planChanged.fire(PLAN_URI);
     }
   }, 1000);
   _previewWatch = { path: abs, mtimeMs: stamp(), timer };
 }
 
+/** Point the plan preview at `abs` and open/refresh it. */
+function _showPlanPreview(abs: string): void {
+  _currentPlanPath = abs;
+  // Fire first: revealing an already-open preview does not re-request the
+  // content, so an earlier plan would still be on screen.
+  _planChanged.fire(PLAN_URI);
+  vscode.commands.executeCommand("markdown.showPreview", PLAN_URI).then(
+    () => {
+      _watchPreviewedFile(abs);
+      // Re-fire once the preview is up: a preview created by this very call
+      // renders before the first invalidation can reach it.
+      setTimeout(() => _planChanged.fire(PLAN_URI), 120);
+    },
+    () => vscode.window.showWarningMessage(`MIMIR: cannot preview ${abs}`)
+  );
+}
+
 export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(
-    vscode.workspace.registerTextDocumentContentProvider("mimir-diff", _diffContentProvider)
+    vscode.workspace.registerTextDocumentContentProvider("mimir-diff", _diffContentProvider),
+    vscode.workspace.registerTextDocumentContentProvider("mimir-plan", _planContentProvider),
+    _planChanged
   );
 
   const provider = new MimirAgentViewProvider(context.extensionUri);
@@ -792,18 +810,10 @@ class MimirAgentViewProvider implements vscode.WebviewViewProvider {
         const abs   = require("path").isAbsolute(rel)
           ? rel
           : require("path").join(base, rel);
-        const uri = vscode.Uri.file(abs);
         if (/\.mdx?$/i.test(abs)) {
-          vscode.commands.executeCommand("markdown.showPreview", uri).then(
-            () => {
-              // Revealing an existing preview does not re-read the file, so an
-              // updated plan would still show its previous revision.
-              void _refreshMarkdownPreview(uri);
-              _watchPreviewedFile(uri);
-            },
-            () => vscode.window.showWarningMessage(`MIMIR: cannot preview ${rel}`)
-          );
+          _showPlanPreview(abs);
         } else {
+          const uri = vscode.Uri.file(abs);
           vscode.workspace.openTextDocument(uri).then(
             (doc) => vscode.window.showTextDocument(doc, { preview: true }),
             () => vscode.window.showWarningMessage(`MIMIR: cannot open ${rel}`)

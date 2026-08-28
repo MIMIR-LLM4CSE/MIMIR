@@ -237,23 +237,30 @@ Set these in your shell profile (`.bashrc`, `.zshrc`) or in the SLURM job script
 | `MIMIR_EMBED_TIMEOUT` | `10` | HTTP timeout (seconds) for the vLLM embeddings call |
 | `MCP_FILES_ROOT` | current working directory | Workspace root. Paths a tool *names* are confined to it, and reaching outside prompts for approval — but a program the agent runs (`python`/`make`/`gcc`) is not itself constrained, so this is a guardrail on intent, not a sandbox ([scope](SERVERS_DETAILED.md#scope-of-the-sandbox-read-this-before-trusting-confined)) |
 | `GITHUB_TOKEN` | *(none)* | Raises GitHub API rate limit from 60 to 5 000 req/h |
-| `MIMIR_SYSTEM_PROMPT_FILE` | *(none)* | Path to a `.md` file that replaces the agent's general context (base system prompt). See below. |
+| `MIMIR_SYSTEM_PROMPT_FILE` | *(none)* | Path to a `.md` file that replaces the doctrine half of the agent's general context (base system prompt). See below. |
 
 ### Custom general context (base system prompt)
 
 The agent's "general context" — its base system prompt — defaults to a built-in
-profile, but you can replace it with your own `.md` file (e.g. for a different
-persona or domain). The first match wins:
+profile, but you can supply your own `.md` file (e.g. for a different persona or
+domain). The first match wins:
 
 1. **`MIMIR_SYSTEM_PROMPT_FILE`** — an absolute path to any `.md` file, anywhere on
    disk. Needs no `.mimir/` directory; best for ad-hoc use.
 2. **`.mimir/system_prompt.md`** in the workspace root. Nothing is auto-created —
    create this file yourself, using
    [`mimir/examples/system_prompt.md`](mimir/examples/system_prompt.md) as a template.
-3. Otherwise the built-in default is used.
+3. Otherwise the built-in doctrine is used.
 
-When a file is found, its content **fully replaces** the base prompt; the dynamic
-platform / memory / todo / plan sections are still appended automatically.
+The file replaces the **doctrine** half of the base prompt (identity, style, scope,
+workflow, reasoning). The **core** half — non-negotiables, latitude, tool results,
+discovery, editing, validation, running code, planning & todo — is appended after it either way
+and cannot be overridden: it carries facts about MIMIR's own tools and the obligations
+the agent loop checks at runtime, so an override that dropped them would leave the loop
+enforcing rules the model was never told (planning & todo is core for exactly that
+reason: the loop refuses to conclude on an open checklist step). The dynamic memory /
+todo / plan sections are still appended on top automatically. Details and the full section split:
+[PLUGINS_DETAILED.md](PLUGINS_DETAILED.md#base-prompt-general-context).
 
 The built-in default is structured as markdown sections (`## Non-negotiables`,
 `## Workflow`, `## Validation`, …) with one instruction per line, which is what
@@ -279,7 +286,7 @@ mimir --model nemotron-3-super:120b
 mimir --mode plan                 # reasoning-only, no tool calls
 ```
 
-Type `/help` at the prompt for the in-session commands (`/mode`, `/rescan`, `/think`,
+Type `/help` at the prompt for the in-session commands (`/mode`, `/think`,
 `/enforcement`, `/servers`, `/skills`, `/context`, `/trust`, …); `quit` exits.
 
 ---

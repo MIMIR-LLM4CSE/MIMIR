@@ -6,230 +6,124 @@ import os
 from typing import Any
 
 
+from ..event_sink import captured_emitter
 from ..guardrails.observations import record_tool_observation
 from ..guardrails.policy.engine import evaluate_tool_preconditions
-from ..context.execution_context import unsettled_runs
+from ..context.execution_context import failed_runs, unsettled_runs
 from ..context.capabilities import (
-    CACHEABLE, EDIT, JUDGE, SEARCH_WITH_PATH, has_cap, names_with_cap,
+    CACHEABLE, CODE_NAV, EDIT, JUDGE,
+    has_cap, names_with_cap,
 )
+from . import bash_effect
 from .plugins import PostToolRegistry
 from .validation import absolute_workspace_path, is_scratch_path
 from .normalizer import _make_hashable
 
-_READ_HINT_MAX_MATCHES = 3
-_READ_HINT_FALLBACK_WINDOW = 80
-_PYTHON_EXTS = {".py", ".pyx", ".pyi"}
 _CONTINUATION_CHUNK = 120
+_OUTLINE_HINT_MAX_SYMBOLS = 40
+# Symbol kinds that have a body worth reading. The budget is spent in document order, so
+# without a filter a Python file's imports and a TypedDict's fields fill all forty slots
+# and every function in the file goes unlisted. Spans both backends' vocabularies (LSP
+# kind names and ctags kind names).
+_OUTLINE_STRUCTURAL_KINDS = frozenset({
+    "class", "function", "method", "constructor", "struct", "interface", "enum",
+    "type", "typedef", "union", "namespace", "module", "subroutine", "prototype",
+    "macro",
+})
 
 
-def _fallback_range(hit_line: int) -> tuple[int, int]:
-    start = max(1, hit_line - 10)
-    return start, start + _READ_HINT_FALLBACK_WINDOW - 1
+def _build_continuation_hint(agent: Any, tool_name: str, payload: dict) -> str:
+    """Return a MORE_CONTENT hint when a read stopped short of the end of the file.
 
-
-def _indent_of(line: str) -> int:
-    """Return indentation depth; treat blank/whitespace-only lines as infinite."""
-    stripped = line.lstrip()
-    if not stripped.strip():
-        return 9999
-    return len(line) - len(stripped)
-
-
-def _is_def_line(line: str) -> bool:
-    return line.lstrip().startswith(("def ", "async def ", "class "))
-
-
-def _is_decorator_line(line: str) -> bool:
-    return line.lstrip().startswith("@")
-
-
-def _find_smart_range(abs_path: str, hit_line: int) -> tuple[int, int]:
-    """Return a (start, end) 1-based line range that covers the full
-    function/class block containing hit_line for Python files.
-    Falls back to a fixed window for non-Python files or unreadable files."""
-    _, ext = os.path.splitext(abs_path)
-    if ext.lower() not in _PYTHON_EXTS:
-        return _fallback_range(hit_line)
-
-    try:
-        with open(abs_path, "r", encoding="utf-8", errors="ignore") as fh:
-            raw = fh.readlines()
-    except OSError:
-        return _fallback_range(hit_line)
-
-    n = len(raw)
-    if n == 0:
-        return _fallback_range(hit_line)
-
-    hit_idx = max(0, min(hit_line - 1, n - 1))  # 0-based, clamped
-
-    # --- locate the innermost function/class that owns hit_line ---
-    # Walk backwards to find the def/class line whose indentation is strictly
-    # less than the hit line's indentation (or is the hit line itself).
-    hit_ind = _indent_of(raw[hit_idx])
-    if hit_ind == 9999:
-        # Hit is on a blank line — find the nearest non-blank indent
-        for i in range(hit_idx, -1, -1):
-            if raw[i].strip():
-                hit_ind = _indent_of(raw[i])
-                break
-        else:
-            return _fallback_range(hit_line)
-
-    owner_idx: int | None = None
-    owner_ind: int | None = None
-
-    if _is_def_line(raw[hit_idx]):
-        owner_idx = hit_idx
-        owner_ind = _indent_of(raw[hit_idx])
-    else:
-        for i in range(hit_idx - 1, -1, -1):
-            if not raw[i].strip():
-                continue
-            ind = _indent_of(raw[i])
-            if ind < hit_ind and _is_def_line(raw[i]):
-                owner_idx = i
-                owner_ind = ind
-                break
-            # If we reach a line with less indentation that is NOT a def/class
-            # (e.g. module-level assignment), the hit is at module level.
-            if ind < hit_ind and not _is_def_line(raw[i]) and not _is_decorator_line(raw[i]):
-                break
-
-    if owner_idx is None:
-        return _fallback_range(hit_line)
-
-    # --- walk back further to include leading decorators ---
-    decorator_start = owner_idx
-    for i in range(owner_idx - 1, -1, -1):
-        line = raw[i]
-        if not line.strip():
-            break
-        if _is_decorator_line(line) and _indent_of(line) == owner_ind:
-            decorator_start = i
-        else:
-            break
-
-    # --- find end of the owning block ---
-    # The block ends just before the next def/class/decorator at the same or
-    # lower indentation level, skipping blank lines.
-    end_idx = n - 1
-    for i in range(owner_idx + 1, n):
-        if not raw[i].strip():
-            continue
-        ind = _indent_of(raw[i])
-        if ind <= owner_ind and (_is_def_line(raw[i]) or _is_decorator_line(raw[i])):
-            end_idx = i - 1
-            # Trim trailing blank lines
-            while end_idx > owner_idx and not raw[end_idx].strip():
-                end_idx -= 1
-            break
-
-    # Clamp to valid range
-    start_1 = decorator_start + 1          # convert to 1-based
-    end_1 = min(end_idx + 1, n)            # convert to 1-based, clamped to file length
-    return start_1, end_1
-
-
-def _build_read_hint(tool_name: str, result: str, resolve_abs_path=None, registry=None) -> str:
-    """Return a READ_HINT block when a search result contains actionable file paths.
-    Uses smart function-boundary detection for Python files when resolve_abs_path
-    is provided; falls back to a fixed window otherwise."""
-    if not has_cap(tool_name, SEARCH_WITH_PATH, registry):
+    Read off what the server reported, not off the arguments: the window that comes
+    back is clamped by a default and by a per-call cap, so the range asked for is not
+    the range served — and a caller who is not told the difference cannot tell "this is
+    the file" from "this is its first page", which is how re-reading a header becomes a
+    loop.
+    """
+    if not payload.get("truncated"):
         return ""
-    try:
-        payload = json.loads(result)
-    except Exception:
+    path = payload.get("path") or ""
+    total = payload.get("total_lines")
+    next_start = payload.get("next_start_line")
+    if not path or not total or not next_start:
         return ""
-    if not isinstance(payload, dict) or payload.get("status") != "ok":
-        return ""
-
-    matches = payload.get("matches", [])
-    if not matches:
-        return ""
-
-    seen_paths: set[str] = set()
-    suggestions: list[str] = []
-
-    for match in matches:
-        if len(suggestions) >= _READ_HINT_MAX_MATCHES:
-            break
-
-        path = match.get("path", "")
-        snippets = match.get("snippets") or []
-        hit_line = int(snippets[0]["line"]) if snippets else 1
-
-        if not path:
-            continue
-
-        # Deduplicate: one read suggestion per file
-        if path in seen_paths:
-            continue
-        seen_paths.add(path)
-
-        # Determine smart range
-        if resolve_abs_path is not None:
-            try:
-                abs_path = resolve_abs_path(path)
-                start, end = _find_smart_range(abs_path, hit_line)
-            except Exception:
-                start, end = _fallback_range(hit_line)
-        else:
-            start, end = _fallback_range(hit_line)
-
-        _, ext = os.path.splitext(path)
-        if ext.lower() in _PYTHON_EXTS and resolve_abs_path is not None:
-            note = f"  # covering function/class at line {hit_line}"
-        else:
-            note = f"  # hit at line {hit_line}" if hit_line > 1 else ""
-
-        suggestions.append(
-            f'  read_file_lines("{path}", start_line={start}, end_line={end}){note}'
-        )
-
-    if not suggestions:
-        return ""
-
+    next_end = min(int(next_start) + _CONTINUATION_CHUNK - 1, int(total))
+    capped = (
+        f" At most {payload['line_cap']} lines are returned per call."
+        if payload.get("line_cap") else ""
+    )
     return (
-        "\n\nREAD_HINT: Use read_file_lines to inspect the top matches:\n"
-        + "\n".join(suggestions)
+        f"\n\nMORE_CONTENT: '{os.path.basename(path)}' has {total} lines; you received"
+        f" lines {payload.get('start_line')}–{payload.get('end_line')}.{capped}"
+        f" Continue with start_line={next_start}, end_line={next_end} — or search for the"
+        f" symbol you need instead of walking the file."
     )
 
 
-def _build_continuation_hint(tool_name: str, arguments: dict) -> str:
-    """Return a MORE_CONTENT hint when a read_file_lines call did not reach EOF.
+async def _build_outline_hint(
+    agent: Any, tool_name: str, payload: dict, execution_context: dict[str, Any] | None,
+) -> str:
+    """Return a symbol map of the file a truncated read only showed a slice of.
 
-    Tells the model the file has more lines and suggests the exact next call,
-    enabling the same iterative read strategy a human analyst uses: read a
-    chunk, decide if more context is needed, continue from where you left off.
+    A page of a large file is the wrong unit of orientation: it answers "what is at the
+    top?" when the question is "where is the thing I need?". The outline answers the
+    second in a few dozen tokens, which is the difference between one targeted read and
+    a walk through the file.
+
+    Advisory and best-effort — no outline backend, no annotation. Once per file per
+    query: a map the model ignored twice is noise.
     """
-    if tool_name != "read_file_lines":
+    if execution_context is None or not payload.get("truncated"):
+        return ""
+    path = payload.get("path") or ""
+    if not path or not agent._is_code_filepath(path):
+        return ""
+    outline_tools = sorted(names_with_cap(CODE_NAV, agent.tool_caps))
+    if not outline_tools:
         return ""
 
-    path = arguments.get("path") or arguments.get("filepath") or ""
-    end_line = arguments.get("end_line")
-    start_line = arguments.get("start_line", 1)
-    if not path or end_line is None:
+    counts = execution_context.get("nudge_counts")
+    key = f"outline_hint:{agent._normalize_workspace_path(path)}"
+    if not isinstance(counts, dict) or counts.get(key):
         return ""
+    counts[key] = 1
 
     try:
-        end_line = int(end_line)
-        start_line = int(start_line)
-        abs_path = absolute_workspace_path(path)
-        with open(abs_path, "r", encoding="utf-8", errors="ignore") as fh:
-            total = sum(1 for _ in fh)
-        if end_line >= total:
-            return ""
-        next_start = end_line + 1
-        next_end = min(end_line + _CONTINUATION_CHUNK, total)
-        return (
-            f"\n\nMORE_CONTENT: File has {total} lines total;"
-            f" you received lines {start_line}–{end_line}."
-            f' To read more: read_file_lines("{path}",'
-            f" start_line={next_start}, end_line={next_end})"
-        )
-    except (OSError, ValueError):
+        # No execution_context: this call is the machine's, not the model's, and
+        # read_files/checked_paths are discovery *evidence* the gates count. An
+        # annotation must not clear a gate on the model's behalf.
+        result = await agent._run_tool(outline_tools[0], {"path": path}, execution_context=None)
+        symbols = (agent._parse_tool_payload(result) or {}).get("symbols") or []
+    except Exception:
         return ""
+    if not symbols:
+        return ""
+
+    named = [s for s in symbols if s.get("name") and s.get("line")]
+    structural = [s for s in named if s.get("kind") in _OUTLINE_STRUCTURAL_KINDS]
+    # Kind alone does not separate a definition from an import: a language server reports
+    # `from typing import Iterable` as a class, because that is what Iterable is. What
+    # separates them is a body — an import spans its own single line.
+    with_body = [s for s in structural if int(s.get("end_line") or 0) > int(s["line"])]
+    # A backend that reports neither ends nor usable kinds still gets a map.
+    listable = with_body or structural or named
+    listed = ", ".join(
+        f"{s.get('name')}:{s.get('line')}"
+        + (f"-{s['end_line']}" if int(s.get("end_line") or 0) > int(s.get("line") or 0) else "")
+        for s in listable[:_OUTLINE_HINT_MAX_SYMBOLS]
+    )
+    if not listed:
+        return ""
+    hidden = len(listable) - _OUTLINE_HINT_MAX_SYMBOLS
+    more = f" (+{hidden} more)" if hidden > 0 else ""
+    return (
+        f"\n\nOUTLINE: symbols defined in '{os.path.basename(path)}', as name:start-end"
+        f" (end omitted where the backend does not report one) — read the whole span of"
+        f" the one you need in a single call, instead of paging toward its end a few"
+        f" lines at a time."
+        f"\n{listed}{more}"
+    )
 
 
 def _build_verdict_due_hint(
@@ -252,9 +146,43 @@ def _build_verdict_due_hint(
         return ""
     return (
         f"\n\nVERDICT_DUE: exit 0 says this reached its end, not that its answer is"
-        f" right. Nothing downstream can read this output, so read it yourself and report"
-        f" what it showed with {tool[0]} (run=\"{opened[0]}\"), naming the number, message"
-        f" or behaviour you read it from."
+        f" right, and nothing downstream can read this output for you. If it showed"
+        f" something worth recording, report it with {tool[0]} (run=\"{opened[0]}\"),"
+        f" naming the number, message or behaviour you read it from. If it settles"
+        f" nothing — a trivial command, a check whose exit code was the whole finding —"
+        f" moving on without one is fine."
+    )
+
+
+def _build_imputation_hint(
+    agent: Any, execution_context: dict[str, Any] | None, before: set[str],
+) -> str:
+    """Return an IMPUTATION_DUE line when this call left a run red for the first time.
+
+    The mirror of :func:`_build_verdict_due_hint`, for the other half of what an exit code
+    cannot say. A green exit does not say the answer is right; a red one does not say whose
+    fault it was — and only the second question has a wrong default, because a wall the
+    environment put there was being charged to the change and reported as an unfinished
+    task. Asked here, on the failing result itself, at the moment the model is deciding
+    what to do about it; the alternative it needs is precisely the one it never had.
+
+    Costs no extra step: the model was going to react to the red exit anyway.
+    """
+    if execution_context is None:
+        return ""
+    opened = sorted(set(failed_runs(execution_context)) - before)
+    if not opened:
+        return ""
+    tool = sorted(names_with_cap(JUDGE, agent.tool_caps))
+    if not tool:
+        return ""
+    return (
+        f"\n\nIMPUTATION_DUE: this failed, which says nothing about whose fault it is."
+        f" If the cause is in the change, fix it and re-run. If it is a prerequisite this"
+        f" environment does not have — a build to configure, a package, a dataset, an"
+        f" allocation — say so with {tool[0]} (verdict=\"blocked\", run=\"{opened[0]}\")"
+        f" and move on: that is a complete ending, not a failure to report, and it costs"
+        f" you no retry budget."
     )
 
 
@@ -277,40 +205,6 @@ def _path_stamp(agent: Any, arguments: dict) -> tuple | None:
     return (st.st_mtime_ns, st.st_size)
 
 
-def _repeat_read_acknowledgement(
-    agent: Any, tool_name: str, arguments: dict, execution_context: dict[str, Any] | None,
-) -> str:
-    """Short stand-in for a read the model already has, or "" to serve the full copy.
-
-    The cache spares the round trip but not the context: re-serving the same file puts
-    every line of it back in the history a second time. This answers the repeat with a
-    pointer instead, which costs tokens only on the turn the repetition happens.
-
-    Three cases still get the real content. A path the discovery sets no longer hold is
-    one the repair ladder deliberately evicted to force a fresh read
-    (``_observe_edit_outcome`` does this after two failed edits) — answering "you
-    already have it" there would break exactly the mechanism asking for it. Once the
-    context backstop has dropped older content, "above in your context" may simply be
-    false. And a pathless cacheable call has no file to reason about, so it is left
-    alone.
-    """
-    if execution_context is None or execution_context.get("history_truncated"):
-        return ""
-    path = agent._normalize_workspace_path(arguments.get("path") or arguments.get("filepath") or "")
-    if not path:
-        return ""
-    if path not in (execution_context.get("read_files") or set()):
-        return ""
-    return json.dumps({
-        "status": "ok",
-        "note": (
-            f"Identical read of '{path}' already returned earlier in this query, and the "
-            f"file has not changed since. Its content is above in your context — it is not "
-            f"repeated here. To read it again anyway, ask for a different line range."
-        ),
-    }, indent=2, ensure_ascii=False)
-
-
 def _fork_base_stem(stem: str) -> str:
     """*stem* minus a trailing ``_<word>``, or "" when it carries none.
 
@@ -326,6 +220,7 @@ def _fork_base_stem(stem: str) -> str:
 def _build_fork_hint(
     agent: Any, tool_name: str, arguments: dict, result: str,
     execution_context: dict[str, Any] | None,
+    require_edit_cap: bool = True,
 ) -> str:
     """Flag a file that duplicates one already written, or a probe in the wrong place.
 
@@ -338,8 +233,14 @@ def _build_fork_hint(
     Both triggers point at the scratchpad, which exists for exactly the file being
     misplaced here and costs no approval. Capped at one per query: the observation is
     worth making once, and a model that ignored it will ignore the second.
+
+    ``require_edit_cap=False`` is for the shell path, where the caller has already
+    established that the file was created — by observing the disk, since a shell tool
+    carries neither the EDIT capability nor a ``path`` argument.
     """
-    if execution_context is None or not has_cap(tool_name, EDIT, agent.tool_caps):
+    if execution_context is None:
+        return ""
+    if require_edit_cap and not has_cap(tool_name, EDIT, agent.tool_caps):
         return ""
     counts = execution_context.get("nudge_counts")
     if not isinstance(counts, dict) or counts.get("fork_hint"):
@@ -444,6 +345,59 @@ async def run_post_tool_annotations(
     return text
 
 
+def _make_subagent_progress_cb(call_id: str):
+    """Turn a tool's progress notifications into sub-agent activity events, or None.
+
+    A tool that delegates has a whole run happening inside one call; it reports what
+    its child is doing as progress notifications, which the MCP session correlates to
+    this call (and only this one), so concurrent delegations never cross. We forward
+    each one as an event carrying the parent's row id, and the frontend renders it as
+    an ordinary tool row under that parent.
+
+    Returns None when there is nothing to feed: no row to hang the activity on, or no
+    frontend bound — the CLI already prints raw event lines, and multiplying those by
+    every child tool call would be noise, not a view.
+    """
+    # Captured here, not read inside the callback: the callback runs on the session's
+    # receive loop, a task started at connect time whose context predates the sink.
+    emit_event = captured_emitter()
+    if not call_id or emit_event is None:
+        return None
+
+    async def _on_progress(progress: float, total: float | None, message: str | None) -> None:
+        # Runs on the session's receive loop: parse, emit, return. Anything slow here
+        # stalls every response on that session.
+        try:
+            payload = json.loads(message or "")
+        except Exception:
+            return
+        if not isinstance(payload, dict) or payload.get("v") != 1:
+            return
+        kind = payload.get("t")
+        # Child call ids come from the child's own model ("c1", "c2"), so siblings
+        # collide — namespace them under the parent's row id.
+        child_id = f"{call_id}:{payload.get('i', '')}"
+        if kind == "tc":
+            emit_event({
+                "type": "subagent_event", "kind": "tool_call", "parent_id": call_id,
+                "id": child_id, "name": payload.get("n", ""),
+                "label": payload.get("l", ""), "detail": payload.get("d", ""),
+            })
+        elif kind == "tr":
+            emit_event({
+                "type": "subagent_event", "kind": "tool_result", "parent_id": call_id,
+                "id": child_id, "ok": bool(payload.get("ok")),
+                "summary": payload.get("s", ""), "duration_ms": payload.get("ms"),
+            })
+        elif kind == "end":
+            emit_event({
+                "type": "subagent_event", "kind": "end", "parent_id": call_id,
+                "dropped": payload.get("dropped", 0),
+            })
+
+    return _on_progress
+
+
 async def execute_tool_call(
     *,
     agent: Any,
@@ -487,10 +441,7 @@ async def execute_tool_call(
         if hit is not None:
             cached_text, cached_stamp = hit
             if cached_stamp == cache_stamp:
-                short = _repeat_read_acknowledgement(
-                    agent, tool_name, arguments, execution_context
-                )
-                return short if short else cached_text
+                return cached_text
             # The file moved under us — a write that went around the edit tools (a
             # shell redirect, a script, the user's own editor). Fall through and read
             # it again rather than answer from a copy that is now wrong.
@@ -513,10 +464,20 @@ async def execute_tool_call(
             "available_tools": available,
         })
     session = agent.sessions[agent.tool_owner[tool_name]]
-    result = await session.call_tool(tool_name, arguments)
+    # Taken before the call and read after it: a shell write is the one mutation in the
+    # system that returns no diff, so what it did has to be observed rather than
+    # reported. Returns None for a read-only command, and never raises.
+    effect_probe = bash_effect.capture(agent, tool_name, arguments, execution_context)
+    # The progress callback is passed unconditionally: it only adds a progress token
+    # to the request, and a server that never reports progress pays nothing for it.
+    # Which tools are worth listening to is decided by what comes back, not by a list
+    # of names here.
+    result = await session.call_tool(
+        tool_name, arguments, progress_callback=_make_subagent_progress_cb(call_id))
     normalized = agent._normalize_tool_content(result)
 
     runs_before = set(unsettled_runs(execution_context or {}))
+    failed_before = set(failed_runs(execution_context or {}))
     record_tool_observation(agent, tool_name, arguments, normalized, execution_context, call_id)
 
     # Invalidate cached reads for a path when it has just been written.
@@ -527,31 +488,34 @@ async def execute_tool_call(
             for k in stale:
                 del cache[k]
 
-    # Store the result in cache if this was a cacheable read, stamped with the state
-    # of the file it read so a later hit can tell "unchanged" from "stale".
-    if cache_key is not None:
-        cache[cache_key] = (normalized, cache_stamp)
-
     # The tool's own payload, before any annotation is appended to it: the hints below
     # that read it as JSON must not be handed a blob with earlier hints already on it.
     payload_text = normalized
 
-    read_hint = _build_read_hint(
-        tool_name,
-        normalized,
-        resolve_abs_path=lambda p: absolute_workspace_path(p),
-        registry=agent.tool_caps,
-    )
-    if read_hint:
-        normalized += read_hint
-
-    continuation_hint = _build_continuation_hint(tool_name, arguments)
-    if continuation_hint:
-        normalized += continuation_hint
+    payload_dict = agent._parse_tool_payload(payload_text) or {}
+    normalized += _build_continuation_hint(agent, tool_name, payload_dict)
+    normalized += await _build_outline_hint(agent, tool_name, payload_dict, execution_context)
 
     normalized += _build_verdict_due_hint(agent, execution_context, runs_before)
+    normalized += _build_imputation_hint(agent, execution_context, failed_before)
 
     normalized += _build_fork_hint(agent, tool_name, arguments, payload_text, execution_context)
+    normalized += bash_effect.report(effect_probe)
+    # A file created by the shell is a fork candidate exactly like one created by the
+    # edit tool — `cp solver.py solver.py.bak` was the observed case. The probe already
+    # knows what appeared, so this reuses the existing rule instead of adding one.
+    for created in bash_effect.created_paths(effect_probe):
+        normalized += _build_fork_hint(
+            agent, tool_name, {"path": created},
+            json.dumps({"operation": "created"}), execution_context,
+            require_edit_cap=False,
+        )
+
+    # Cached with its annotations, stamped with the state of the file it read. The
+    # annotations are part of the answer: cached without them, a repeat of the same
+    # read came back missing the very lines telling it where to resume.
+    if cache_key is not None:
+        cache[cache_key] = (normalized, cache_stamp)
 
     # Auto-validation is advisory and runs AFTER the write has already succeeded
     # (the file is on disk). When the dispatcher opts out (run_auto_validation=

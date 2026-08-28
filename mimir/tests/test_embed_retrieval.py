@@ -105,7 +105,7 @@ class CapToolsLexicalFallbackTests(unittest.TestCase):
             _tool("beta", "convert dates and times between zones"),
             _tool("gamma", "run a benchmark to measure performance"),
         ]
-        kept = cap = toollist.cap_tools_by_relevance(
+        kept = toollist.cap_tools_by_relevance(
             tools, query="submit a cluster job", tool_caps=None, max_tools=1,
         )
         names = [t["function"]["name"] for t in kept]

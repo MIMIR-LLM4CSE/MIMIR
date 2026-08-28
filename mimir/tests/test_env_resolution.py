@@ -19,7 +19,10 @@ import unittest
 import mimir.client.guardrails.observations as runtime
 from mimir.client.context import capabilities as caps
 from mimir.client.context.execution_context import build_execution_context
-from mimir.client.guardrails.nudges.engine import maybe_append_nudge
+from mimir.client.guardrails.nudges.engine import (
+    maybe_append_nudge,
+    maybe_inject_env_resolution,
+)
 from mimir.tests._golden_caps import build_declared_registry
 
 _REGISTRY = build_declared_registry()
@@ -216,6 +219,101 @@ class EnvResolutionNudgeTests(unittest.TestCase):
             ctx["env_probed"] = False
             self._fire(ctx, enforcement=level)
             self.assertIsNone(ctx["nudge_counts"].get("env_resolution"), level)
+
+
+class MidLoopEnvResolutionTests(unittest.TestCase):
+    """The cascade arrives at the failing call, not a step ceiling later.
+
+    Same gate and same single budget as the end-of-turn table row — only the moment
+    differs, which is the whole point: by the time the loop ends, the model has spent
+    its steps retrying against the interpreter that could never resolve the module.
+    """
+
+    def _agent(self, enforcement="strict"):
+        return types.SimpleNamespace(
+            tool_caps=_REGISTRY, enforcement=enforcement,
+            _normalize_workspace_path=lambda p: p or "",
+        )
+
+    def test_fires_immediately_after_a_failing_call(self) -> None:
+        ctx = build_execution_context()
+        ctx["unresolved_modules"] = {"torch"}
+        messages: list[dict] = []
+        fired = maybe_inject_env_resolution(
+            agent=self._agent(), active_mode="agent",
+            execution_context=ctx, messages=messages,
+        )
+        self.assertTrue(fired)
+        self.assertEqual(len(messages), 1)
+        self.assertIn("environment", messages[0]["content"].lower())
+
+    def test_spends_the_budget_the_table_row_shares(self) -> None:
+        ctx = build_execution_context()
+        ctx["unresolved_modules"] = {"torch"}
+        agent = self._agent()
+        maybe_inject_env_resolution(
+            agent=agent, active_mode="agent", execution_context=ctx, messages=[],
+        )
+        self.assertEqual(ctx["nudge_counts"].get("env_resolution"), 1)
+        # The end-of-turn row must now stay silent rather than repeat the cascade.
+        end_of_turn: list[dict] = []
+        maybe_append_nudge(
+            agent=agent, query="check this file", active_mode="agent",
+            execution_context=ctx, messages=end_of_turn,
+        )
+        self.assertEqual(ctx["nudge_counts"].get("env_resolution"), 1)
+
+    def test_silent_without_an_unresolved_module(self) -> None:
+        ctx = build_execution_context()
+        self.assertFalse(maybe_inject_env_resolution(
+            agent=self._agent(), active_mode="agent",
+            execution_context=ctx, messages=[],
+        ))
+
+    def test_respects_enforcement(self) -> None:
+        for level in ("light", "off"):
+            ctx = build_execution_context()
+            ctx["unresolved_modules"] = {"torch"}
+            self.assertFalse(maybe_inject_env_resolution(
+                agent=self._agent(level), active_mode="agent",
+                execution_context=ctx, messages=[],
+            ), level)
+
+
+class ResolvedEnvironmentRearmsExerciseTests(unittest.TestCase):
+    """A successful execution retracts the unresolved-module flag.
+
+    The flag is read by the exercise-feasibility gate, so leaving it set after the
+    model found the right interpreter silenced the run/verdict advice for the rest of
+    the query — the one run proving the environment resolved was what used to bury it.
+    """
+
+    def _exec_tool(self) -> str:
+        names = caps.names_with_cap(caps.CODE_EXEC, _REGISTRY)
+        assert names, "no CODE_EXEC tool in the declared registry"
+        return sorted(names)[0]
+
+    def test_successful_execution_clears_the_flag(self) -> None:
+        ctx = build_execution_context()
+        agent = _agent()
+        tool = self._exec_tool()
+        runtime._observe_missing_module(
+            agent, tool, {"stderr": "No module named 'torch'"}, "error", ctx,
+        )
+        self.assertIn("torch", ctx["unresolved_modules"])
+        runtime._observe_missing_module(agent, tool, {"stdout": "ok"}, "ok", ctx)
+        self.assertFalse(ctx["unresolved_modules"])
+
+    def test_non_execution_success_leaves_it_alone(self) -> None:
+        # Reading a file that merely happens to succeed says nothing about the
+        # interpreter the check failed under.
+        ctx = build_execution_context()
+        agent = _agent()
+        runtime._observe_missing_module(
+            agent, self._exec_tool(), {"stderr": "No module named 'torch'"}, "error", ctx,
+        )
+        runtime._observe_missing_module(agent, "read_file", {"stdout": "ok"}, "ok", ctx)
+        self.assertIn("torch", ctx["unresolved_modules"])
 
 
 if __name__ == "__main__":

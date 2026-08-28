@@ -23,7 +23,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..",
 
 import mimir.client.guardrails.observations as observations
 import mimir.client.tool_execution.executor as executor
-from mimir.client.config.constants import VALIDATION_RETRY_BUDGET
+from mimir.client.config.constants import EXERCISE_BUDGET, VALIDATION_RETRY_BUDGET
 from mimir.client.context.capabilities import JUDGE, ToolCaps
 from mimir.client.context.execution_context import build_execution_context, record_run
 from mimir.client.guardrails.verdict import apply_verdict
@@ -162,18 +162,30 @@ class ApplyVerdictTests(unittest.TestCase):
         record_run(ec, "python foo.py", completed=False)
         self.assertEqual(apply_verdict("pass", "looked fine", "", ec), [])
 
-    def test_a_resolved_run_re_arms_the_reminder_budget(self) -> None:
+    def test_a_verdict_never_re_arms_the_advisory_budget(self) -> None:
+        # No reminder asks for a verdict any more, so there is nothing to hand back:
+        # what shares that budget is the recommendation to *run* something, and a model
+        # that just judged its run does not need to be told to go and run more.
         ec = self._ctx()
-        ec["nudge_counts"]["output_verdict"] = 2
+        ec["nudge_counts"][EXERCISE_BUDGET] = 1
         apply_verdict("pass", "fine", "", ec)
-        self.assertEqual(ec["nudge_counts"]["output_verdict"], 0)
+        self.assertEqual(ec["nudge_counts"][EXERCISE_BUDGET], 1)
 
-    def test_an_unknown_verdict_does_not_re_arm_it(self) -> None:
-        # The condition it was spent on is still open; re-arming would be spam.
+    def test_an_unknown_verdict_closes_the_advisory_axis(self) -> None:
+        # "I cannot tell what the output showed" answers the whole question — build it,
+        # run it, say what came out. Asking again is asking for a different answer.
         ec = self._ctx()
-        ec["nudge_counts"]["output_verdict"] = 2
+        ec["nudge_counts"][EXERCISE_BUDGET] = 1
         apply_verdict("unknown", "cannot tell", "", ec)
-        self.assertEqual(ec["nudge_counts"]["output_verdict"], 2)
+        self.assertEqual(ec["nudge_counts"][EXERCISE_BUDGET], 1)
+        self.assertTrue(ec["exercise_advice_closed"])
+
+    def test_settling_runs_leaves_the_budget_spent(self) -> None:
+        ec = self._two_runs()
+        ec["nudge_counts"][EXERCISE_BUDGET] = 1
+        apply_verdict("pass", "fine", "bench.py", ec)
+        apply_verdict("pass", "fine", "foo.py", ec)
+        self.assertEqual(ec["nudge_counts"][EXERCISE_BUDGET], 1)
 
 
 class VerdictToolTests(unittest.TestCase):
@@ -270,6 +282,108 @@ class VerdictDueHintTests(unittest.TestCase):
             self._agent(judge_name=None), self._ctx(["python foo.py"]), set(),
         )
         self.assertEqual(hint, "")
+
+
+class BlockedVerdictTests(unittest.TestCase):
+    """`blocked` re-imputes a red exit; it never argues with the exit code itself."""
+
+    def _failed(self, command="make", **kw):
+        ec = build_execution_context()
+        ec["dirty_written_files"] = {"solver.c"}
+        ec["code_mutation_started"] = True
+        record_run(ec, command, completed=False, **kw)
+        ec["runs"][command]["failures"] = 2
+        return ec
+
+    def test_it_returns_the_repair_budget_and_leaves_the_run_red(self) -> None:
+        ec = self._failed()
+        settled = apply_verdict("blocked", "no configured build tree here", "", ec)
+        run = ec["runs"]["make"]
+        self.assertEqual([r["command"] for r in settled], ["make"])
+        self.assertEqual(run["failures"], 0)
+        self.assertEqual(run["blocked"], "no configured build tree here")
+        # The machine saw a red exit and that stands: nothing here reads as a success.
+        self.assertFalse(run["completed"])
+        self.assertEqual(run["verdict"], "blocked")
+
+    def test_it_addresses_failed_runs_not_outstanding_ones(self) -> None:
+        # The two sets are disjoint by construction, so a green run awaiting a reading is
+        # never swept up by a statement about a wall.
+        ec = self._failed()
+        record_run(ec, "pytest -q", completed=True)
+        apply_verdict("blocked", "cmake is absent", "", ec)
+        self.assertEqual(ec["runs"]["pytest -q"]["verdict"], "")
+        self.assertEqual(ec["runs"]["make"]["verdict"], "blocked")
+
+    def test_it_cannot_rescue_a_completed_run(self) -> None:
+        ec = build_execution_context()
+        record_run(ec, "pytest -q", completed=True)
+        self.assertEqual(apply_verdict("blocked", "excuse", "", ec), [])
+        self.assertEqual(ec["runs"]["pytest -q"]["verdict"], "")
+
+    def test_a_scope_naming_nothing_still_speaks_for_every_failed_run(self) -> None:
+        ec = self._failed()
+        record_run(ec, "cmake --build .", completed=False)
+        apply_verdict("blocked", "no toolchain", "nonesuch", ec)
+        self.assertEqual(
+            {c for c, r in ec["runs"].items() if r["blocked"]},
+            {"make", "cmake --build ."},
+        )
+
+    def test_it_closes_the_advisory_axis_like_unknown(self) -> None:
+        ec = self._failed()
+        apply_verdict("blocked", "no configured build tree here", "", ec)
+        self.assertTrue(ec["exercise_advice_closed"])
+
+    def test_a_blocked_run_leaves_the_repair_release_reachable(self) -> None:
+        # failed_runs excludes it: left in, its permanent `failures == 0` would hold the
+        # "every failure is spent" release below its threshold for the rest of the query.
+        from mimir.client.context.execution_context import failed_runs
+
+        ec = self._failed()
+        apply_verdict("blocked", "no toolchain", "", ec)
+        self.assertEqual(failed_runs(ec), {})
+
+
+class ImputationDueHintTests(unittest.TestCase):
+    """The mirror ask, on the failing result: a red exit says nothing about whose fault."""
+
+    def _agent(self, judge_name: str | None = "judge_it"):
+        reg = {}
+        if judge_name:
+            reg[judge_name] = ToolCaps(name=judge_name, capabilities=frozenset({JUDGE}))
+        return types.SimpleNamespace(tool_caps=reg)
+
+    def _ctx(self, command="make", completed=False):
+        ec = build_execution_context()
+        record_run(ec, command, completed=completed)
+        return ec
+
+    def test_a_newly_failed_run_is_asked_who_it_belongs_to(self) -> None:
+        hint = executor._build_imputation_hint(self._agent(), self._ctx(), set())
+        self.assertIn("IMPUTATION_DUE", hint)
+        self.assertIn("judge_it", hint)
+        self.assertIn("blocked", hint)
+        self.assertIn("make", hint)
+
+    def test_it_is_silent_with_no_judging_tool_connected(self) -> None:
+        # Nothing to ask for: the alternative it offers would name no tool.
+        self.assertEqual(
+            executor._build_imputation_hint(self._agent(None), self._ctx(), set()), "",
+        )
+
+    def test_a_green_run_is_not_asked_about_here(self) -> None:
+        # That half is VERDICT_DUE's; the two never fire on the same result.
+        self.assertEqual(
+            executor._build_imputation_hint(
+                self._agent(), self._ctx(completed=True), set()), "",
+        )
+
+    def test_a_failure_already_seen_is_not_asked_about_twice(self) -> None:
+        ec = self._ctx()
+        self.assertEqual(
+            executor._build_imputation_hint(self._agent(), ec, {"make"}), "",
+        )
 
 
 if __name__ == "__main__":

@@ -116,7 +116,7 @@ class CodeIntelBackendLadderTest(unittest.TestCase):
                      "signature": "(self)"},
                 ]},
             }
-            res = code_intel.symbol_outline("a.py")
+            res = code_intel.symbol_outline(p)
         self.assertEqual(res["status"], "ok")
         self.assertEqual(res["backend"], "ctags")
         self.assertEqual([s["name"] for s in res["symbols"]], ["B", "m"])
@@ -161,9 +161,160 @@ class CodeIntelBackendLadderTest(unittest.TestCase):
             p = os.path.join(d, "a.py")
             with open(p, "w") as fh:
                 fh.write("x = 1\n")
-            res = code_intel.hover("a.py", 1, "x")
+            res = code_intel.hover(p, 1, "x")
         self.assertEqual(res["status"], "error")
         self.assertIn("language server", res["error"].lower())
+
+
+class SearchCarriesSourceContextTest(unittest.TestCase):
+    """A hit must be actionable on its own.
+
+    ``{path, line}`` locates a symbol but cannot be edited against: an anchor needs the
+    text exactly as it stands. Returning the line number alone is what makes a search
+    cost a follow-up read.
+    """
+
+    def setUp(self):
+        self._orig_client_for = code_intel._lsp.client_for
+        code_intel._lsp.client_for = lambda path: None
+        self._orig_index = code_intel._ctags_index
+        self._orig_root = code_intel.SEARCH_ROOT
+        self._tmp = tempfile.TemporaryDirectory()
+        code_intel.SEARCH_ROOT = self._tmp.name
+        code_intel._ctags_index = lambda force=False: None
+
+    def tearDown(self):
+        code_intel._lsp.client_for = self._orig_client_for
+        code_intel._ctags_index = self._orig_index
+        code_intel.SEARCH_ROOT = self._orig_root
+        self._tmp.cleanup()
+
+    def _write(self, body: str, name: str = "a.py") -> str:
+        p = os.path.join(self._tmp.name, name)
+        with open(p, "w") as fh:
+            fh.write(body)
+        return p
+
+    def test_reference_carries_numbered_surrounding_source(self):
+        self._write("".join(f"pad_{i} = {i}\n" for i in range(1, 10))
+                    + "    value = target\n")
+        res = code_intel.find_references("target", context_lines=3)
+        ctx = res["references"][0]["context"]
+        self.assertEqual(ctx["start_line"], 7)
+        self.assertEqual(ctx["end_line"], 10)
+        self.assertIn("10:     value = target", ctx["text"])
+
+    def test_context_preserves_exact_indentation(self):
+        self._write("def f():\n        deep = target\n")
+        ctx = code_intel.find_references(
+            "target", context_lines=3)["references"][0]["context"]
+        self.assertIn("2:         deep = target", ctx["text"])
+
+    def test_references_carry_no_excerpt_by_default(self):
+        # "Where is it used" is answered by the matching line; an excerpt per hit
+        # costs more than the answer.
+        self._write("v = target\n")
+        hit = code_intel.find_references("target")["references"][0]
+        self.assertNotIn("context", hit)
+        self.assertEqual(hit["text"], "v = target")
+
+    def test_context_lines_zero_disables_it(self):
+        self._write("v = target\n")
+        res = code_intel.find_references("target", context_lines=0)
+        self.assertNotIn("context", res["references"][0])
+
+    def test_context_lines_is_clamped(self):
+        self._write("".join(f"pad_{i} = {i}\n" for i in range(1, 200))
+                    + "v = target\n")
+        ctx = code_intel.find_references("target", context_lines=999)["references"][0]["context"]
+        self.assertEqual(ctx["end_line"] - ctx["start_line"], code_intel._MAX_CONTEXT_LINES)
+
+    def test_definition_carries_context_too(self):
+        p = self._write("class B:\n    pass\n")
+        code_intel._ctags_index = lambda force=False: {
+            "defs": {"B": [{"path": p, "line": 1, "kind": "class",
+                            "scope": "", "signature": ""}]},
+            "by_file": {},
+        }
+        res = code_intel.find_definition("B")
+        self.assertIn("1: class B:", res["definitions"][0]["context"]["text"])
+
+
+class SymbolOutlineSpansTest(unittest.TestCase):
+    """An outline says where each symbol ENDS, not only where it starts.
+
+    Root cause this covers: the edit tools are addressed by line, so a map of start
+    lines alone leaves "read the block around line N" to be found by widening the
+    window five lines at a time — the crawl seen in the wild (1486-1520, 1515-1525,
+    1510-1530, 1515-1535) before a single insert.
+    """
+
+    def test_flat_symbol_information_is_read_like_a_nested_one(self):
+        # Two shapes answer documentSymbol. Reading only the nested one put every
+        # symbol of a flat server at line 1 — an outline actively pointing the wrong way.
+        out: list[dict] = []
+        code_intel._flatten_doc_symbols([{
+            "name": "solve", "kind": 12,
+            "location": {"uri": "file:///f.py",
+                         "range": {"start": {"line": 41}, "end": {"line": 58}}},
+        }], out)
+        self.assertEqual((out[0]["line"], out[0]["end_line"]), (42, 59))
+
+    def test_end_comes_from_the_full_range_not_the_name(self):
+        # selectionRange covers the identifier alone; using its end would report
+        # every symbol as one line long.
+        out: list[dict] = []
+        code_intel._flatten_doc_symbols([{
+            "name": "solve", "kind": 12,
+            "range": {"start": {"line": 41}, "end": {"line": 58}},
+            "selectionRange": {"start": {"line": 41}, "end": {"line": 41}},
+        }], out)
+        self.assertEqual((out[0]["line"], out[0]["end_line"]), (42, 59))
+
+    def test_a_missing_end_is_derived_from_the_next_symbol(self):
+        # Exuberant ctags reports no end field, so most clusters have no exact answer.
+        entries = [{"name": "a", "line": 10, "end_line": 0, "depth": 0},
+                   {"name": "b", "line": 30, "end_line": 0, "depth": 0}]
+        filled = code_intel._fill_end_lines(entries, total_lines=100)
+        self.assertEqual([(e["line"], e["end_line"]) for e in filled], [(10, 29), (30, 100)])
+        self.assertTrue(all(e["inferred_end"] for e in filled))
+
+    def test_a_nested_symbol_does_not_end_its_parent(self):
+        entries = [{"name": "C", "line": 10, "end_line": 0, "depth": 0},
+                   {"name": "C.m", "line": 12, "end_line": 0, "depth": 1},
+                   {"name": "after", "line": 40, "end_line": 0, "depth": 0}]
+        filled = code_intel._fill_end_lines(entries, total_lines=80)
+        by_name = {e["name"]: e["end_line"] for e in filled}
+        self.assertEqual(by_name["C"], 39)      # runs to the next top-level symbol
+        self.assertEqual(by_name["C.m"], 39)    # its method, same upper bound
+        self.assertEqual(by_name["after"], 80)
+
+    def test_an_exact_end_is_left_alone(self):
+        entries = [{"name": "a", "line": 10, "end_line": 20, "depth": 0},
+                   {"name": "b", "line": 30, "end_line": 0, "depth": 0}]
+        filled = code_intel._fill_end_lines(entries, total_lines=100)
+        exact = next(e for e in filled if e["name"] == "a")
+        self.assertEqual(exact["end_line"], 20)
+        self.assertNotIn("inferred_end", exact)
+
+    def test_derived_spans_never_overlap(self):
+        # The -1 is what makes the spans a partition: the next symbol's first line is
+        # the next symbol's, so without it every pair would share a line and each span
+        # would carry the following declaration's header.
+        entries = [{"name": f"s{i}", "line": 1 + i * 20, "end_line": 0, "depth": 0}
+                   for i in range(5)]
+        filled = code_intel._fill_end_lines(entries, total_lines=200)
+        for earlier, later in zip(filled, filled[1:]):
+            self.assertEqual(earlier["end_line"] + 1, later["line"])
+
+    def test_the_rule_reads_only_line_and_depth(self):
+        # Nothing here parses source, so a Fortran subroutine, a C function and a Java
+        # method are the same problem. Kinds are passed through untouched.
+        entries = [{"name": "sub_a", "kind": "subroutine", "line": 1439, "end_line": 0, "depth": 0},
+                   {"name": "sub_b", "kind": "subroutine", "line": 1540, "end_line": 0, "depth": 0}]
+        filled = code_intel._fill_end_lines(entries, total_lines=1786)
+        self.assertEqual([(e["line"], e["end_line"]) for e in filled],
+                         [(1439, 1539), (1540, 1786)])
 
 
 if __name__ == "__main__":

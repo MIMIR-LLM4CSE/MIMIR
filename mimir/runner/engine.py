@@ -11,8 +11,8 @@ path (``allow_continue_prompt`` left False → fixed ``max_steps``, no human pro
 then hand the answer to the adapter's scorer.
 
 Two things make a run unattended:
-- A **fresh ``MimirAgent`` per task** so no state (``_repo_baseline``,
-  ``_carry_context``, ``_tool_cache``, history) leaks between tasks.
+- A **fresh ``MimirAgent`` per task** so no state (``_carry_context``,
+  ``_tool_cache``, history) leaks between tasks.
 - An **auto-approve hook** that replaces the interactive approval gate. Batch
   mode already auto-approves write/edit tools, but ``non_batch_tools`` (code
   execution / shell) would otherwise block on ``input()``; the hook approves

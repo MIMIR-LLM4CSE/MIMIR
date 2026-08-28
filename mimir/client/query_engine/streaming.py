@@ -55,6 +55,37 @@ def _partial_tag_at_end(text: str, tag: str) -> int:
     return 0
 
 
+class _DraftHold:
+    """Buffer for streamed answer prose the loop might still refuse.
+
+    A nudge — or the evidence handback — sends the model back to work, and the
+    front-end then drops the draft it was rendering: prose appeared as the answer
+    and vanished, which is what the user actually watches. Holding is the only fix
+    that does not show it in the first place. A held turn streams nothing; the
+    buffer is flushed verbatim the moment the turn proves itself (it called a
+    tool), and dropped silently when the loop refuses it. On the accepted-answer
+    path nothing is flushed: the final ``answer`` carries the text, post-processed
+    (verification report, incomplete-run finalization), so flushing the raw draft
+    first would only swap one visible text for another.
+    """
+
+    def __init__(self, sink: Any) -> None:
+        self._sink = sink
+        self._buf: list[str] = []
+
+    def capture(self, delta: str) -> None:
+        self._buf.append(delta)
+
+    def flush(self) -> None:
+        text = "".join(self._buf)
+        self._buf.clear()
+        if text:
+            self._sink(text)
+
+    def discard(self) -> None:
+        self._buf.clear()
+
+
 def _stream_chat(model: str,
                  messages: list[dict],
                  tools: list[dict],

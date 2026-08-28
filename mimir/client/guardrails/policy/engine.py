@@ -13,15 +13,16 @@ from ...context import ensure_execution_context, is_known_to_exist, known_existi
 from .state_machine import check_state_machine_guard
 from .gates import (
     _check_cluster_submit,
-    _check_external_fetch,
     _check_out_of_workspace_access,
+    _check_plan_shape,
     _check_proxy_exec,
     _out_of_workspace_targets,
 )
 # The exempt helper waives the approval prompt for side-effect-free discovery
 # commands in any mode (the read-only classifier itself lives in bash_classify.py).
 from .readonly_exempt import _readonly_bash_exempt
-from ..workflow import STAGE_HANDBACK, denial_stage
+from ..workflow import approval_is_settled
+from ...config.constants import DISCOVERY_EVIDENCE_MIN_DISTINCT
 from ...context.capabilities import EDIT, REMOVE, has_cap
 from ...context.execution_context import (
     has_discovery_evidence,
@@ -145,8 +146,12 @@ def _missing_evidence(execution_context: dict[str, Any] | None) -> list[str]:
     if state == "discover":
         # Coherent with the discovery gates: only guide toward discovery while the
         # model has no real (model-initiated) evidence yet. The signal set lives once
-        # in context.execution_context (has_discovery_evidence).
-        if not has_discovery_evidence(execution_context):
+        # in context.execution_context (has_discovery_evidence), at the same bar as
+        # the discovery nudge — two consumers of one definition must not disagree on
+        # how much evidence clears it.
+        if not has_discovery_evidence(
+            execution_context, min_distinct=DISCOVERY_EVIDENCE_MIN_DISTINCT
+        ):
             if not searched:
                 evidence.append("Run a targeted local search first.")
             if not read_files:
@@ -154,7 +159,7 @@ def _missing_evidence(execution_context: dict[str, Any] | None) -> list[str]:
 
     elif state == "edit":
         if not read_files:
-            evidence.append("Read the target file explicitly with read_file or read_file_lines before editing.")
+            evidence.append("Read the target file explicitly before editing it.")
         remaining_declared = unwritten_declared_files(execution_context)
         if remaining_declared:
             evidence.append(
@@ -359,20 +364,6 @@ def evaluate_tool_preconditions(
     if pre_mutation_eval is not None:
         return pre_mutation_eval
 
-    external_violation = _check_external_fetch(agent, normalized_tool_name, normalized_context)
-    if external_violation is not None:
-        return PolicyEvaluation(
-            tool_name=normalized_tool_name,
-            arguments=rewritten_arguments,
-            execution_context=normalized_context,
-            violation=_enrich_violation_payload(
-                violation=external_violation,
-                policy_stage="external_fetch",
-                execution_context=normalized_context,
-                tool_name=normalized_tool_name,
-            ),
-        )
-
     cluster_violation = _check_cluster_submit(agent, normalized_tool_name, normalized_context)
     if cluster_violation is not None:
         return PolicyEvaluation(
@@ -382,6 +373,21 @@ def evaluate_tool_preconditions(
             violation=_enrich_violation_payload(
                 violation=cluster_violation,
                 policy_stage="cluster_submit",
+                execution_context=normalized_context,
+                tool_name=normalized_tool_name,
+            ),
+        )
+
+    plan_shape_violation = _check_plan_shape(
+        agent, normalized_tool_name, rewritten_arguments, normalized_context)
+    if plan_shape_violation is not None:
+        return PolicyEvaluation(
+            tool_name=normalized_tool_name,
+            arguments=rewritten_arguments,
+            execution_context=normalized_context,
+            violation=_enrich_violation_payload(
+                violation=plan_shape_violation,
+                policy_stage="plan_shape",
                 execution_context=normalized_context,
                 tool_name=normalized_tool_name,
             ),
@@ -521,11 +527,13 @@ def evaluate_tool_preconditions(
     if (agent.approvals.is_sensitive(normalized_tool_name, rewritten_arguments)
             and not oow_targets
             and not _readonly_bash_exempt(agent, normalized_tool_name, rewritten_arguments)):
-        # Already refused to the end of the ladder: refuse it ourselves rather than
-        # putting the same card in front of the user a fourth time. Being asked again
-        # after saying no is the friction the ladder exists to remove.
+        # Already refused twice on this scope: refuse it ourselves rather than putting
+        # the same card in front of the user again. Being asked again after saying no is
+        # the friction the ladder exists to remove, and from `drop_or_stop` on the ladder
+        # has already ruled out another attempt at the same goal — which the same route
+        # most certainly is.
         scope = agent.approval_scope(normalized_tool_name, rewritten_arguments)
-        if denial_stage(normalized_context or {}, scope) == STAGE_HANDBACK:
+        if approval_is_settled(normalized_context or {}, scope):
             note = "already refused; not asked again"
             approved = False
         else:

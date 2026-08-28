@@ -16,7 +16,7 @@ add an extension, create the file yourself under `.mimir/` (or point the matchin
 | **MCP server** | `.mimir/servers/server_<name>.py` (or `.js`) | `MIMIR_SERVERS_DIR` | user **skipped** (core protected) |
 | **Policy** | `.mimir/plugins/*.py` | `MIMIR_PLUGINS_DIR` | additive (locked) |
 | **Nudge** | `.mimir/plugins/*.py` | `MIMIR_PLUGINS_DIR` | additive (toggleable) |
-| **Base prompt** | `.mimir/system_prompt.md` | `MIMIR_SYSTEM_PROMPT_FILE` | user **replaces** the built-in default |
+| **Base prompt** | `.mimir/system_prompt.md` | `MIMIR_SYSTEM_PROMPT_FILE` | user **replaces the doctrine half** of the built-in default |
 
 > **Golden rule for policies & nudges:** key off **capabilities**
 > (from `mimir.client.context.capabilities`), never literal tool names. This keeps a plugin
@@ -103,7 +103,7 @@ def read_note(path: str) -> str:
 |-------|------------|---------|
 | **Discovery** | `READ` | Reads a file's contents (exploration evidence; a read-before-edit precondition). |
 | | `SEARCH` | Searches file contents / patterns (exploration evidence). |
-| | `SEARCH_WITH_PATH` | A search whose results embed file paths MIMIR can auto-follow. |
+| | `SEARCH_WITH_PATH` | A search whose results locate each hit by path and line. |
 | | `CANDIDATE_SEARCH` | Finds candidate files by name / similarity (drives path clarification). |
 | | `INSPECT_DIR` | Lists / inspects a directory (evidence for a safe delete). |
 | | `CHECK_EXISTENCE` | Checks whether a path exists. |
@@ -124,7 +124,7 @@ def read_note(path: str) -> str:
 | | `NON_BATCH` | Must prompt immediately; never batched. |
 | | `PLAN_BLOCKED` | Never callable in a read-only mode — plan **or ask** (writes / exec / mutations). Name kept for compatibility. |
 | | `PLAN_READONLY` | Dual-use exec tool allowed in a read-only mode, but **only** for its read-only calls (the classifier decides per call — e.g. a shell tool running `grep` in plan mode, but not `gcc`). |
-| **Reach & cost** | `EXTERNAL_FETCH` | Reaches outside the workspace (network / remote API); held until local discovery. |
+| **Reach & cost** | `EXTERNAL_FETCH` | Opens a socket to a host (network / remote API). Carried by the HTTP and GitHub tools. No core gate consumes it — it exists as the rename-proof handle an application policy keys off, which is why the drift guard scans the shipped example packs as well as `client/`. |
 | | `CLUSTER_SUBMIT` | Expensive cluster launch (Slurm submit / batch run); held until local validation. |
 | | `ENV_MUTATE` | Mutates a Python environment (pip install / create / delete). |
 
@@ -286,16 +286,30 @@ Verification-layer nudges (`layer="verification"`) run at every level.
 
 ## Base prompt (general context)
 
-Replace MIMIR's built-in system prompt with your own, by ONE of:
+Give MIMIR your own persona and domain knowledge, by ONE of:
 
 1. set `MIMIR_SYSTEM_PROMPT_FILE=/abs/path/to/your_context.md`, or
 2. drop `.mimir/system_prompt.md` in the workspace root.
 
-Resolution order: `MIMIR_SYSTEM_PROMPT_FILE` → `.mimir/system_prompt.md` → built-in default. The
-resolved file's content **replaces** the base prompt; the dynamic platform / memory / todo /
-plan sections are still appended on top automatically. Keep it short — the built-in default
-(in `client/prompt/system_prompt.build_base_system_content`) is the fallback and a
-fuller reference. Skeleton example:
+Resolution order: `MIMIR_SYSTEM_PROMPT_FILE` → `.mimir/system_prompt.md` → built-in doctrine.
+
+The base prompt has two halves, and the resolved file replaces **only the first**:
+
+| half | sections | overridable |
+|---|---|---|
+| **doctrine** | identity, style, scope, workflow, reasoning | **yes** — your file replaces it wholesale |
+| **core** | non-negotiables, latitude, tool results, discovery, editing, validation, running code, planning & todo | **no** — appended after your file, always |
+
+A section is core if it is (a) a mechanical fact about MIMIR's own tools, which you have
+no way of knowing, (b) an obligation the loop checks at runtime — every verification-layer
+nudge and `needs_incomplete_finalization` — so dropping it would make the loop enforce a
+rule the model was never told, or (c) a rule whose violation is not self-correcting. There
+is no opt-out, for the same reason policy checks have none.
+
+Practical consequence: write persona, codebase map, house rules and vocabulary. Do **not**
+restate validation tiers, approval handling, checklist rules or edit-tool mechanics — that
+duplicates text already in context, as a copy that goes stale. The dynamic memory / todo /
+plan sections are still appended on top as usual. Skeleton example:
 [`mimir/examples/system_prompt.md`](mimir/examples/system_prompt.md).
 
 ---

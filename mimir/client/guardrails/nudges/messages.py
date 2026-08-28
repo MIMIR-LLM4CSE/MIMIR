@@ -43,15 +43,10 @@ def shell_tool_name(agent: Any) -> str:
 
 
 _DISCOVERY_NUDGE: str = (
-	"Before proposing a final solution, gather evidence first. "
-	"Evidence may be repository context, symbolic/numeric computation, or references. "
-	"Do the relevant subset now: (1) use the repository structure already in your context for orientation "
-	"only — it does not tell you which files this task touches, "
-	"(2) run targeted searches to locate the specific relevant files, "
-	"(3) read at least one relevant existing file to understand the established conventions, "
-	"(4) for a mathematical claim, derive or verify it with the symbolic-math tools rather than asserting it, "
-	"(5) for a factual/bibliographic claim, consult a reference instead of recalling it from memory; "
-	"then proceed with the task, grounded in those findings."
+	"Ground this in evidence before answering. Do the relevant subset now: search for the "
+	"files this task touches and read the section that matters; derive a mathematical claim "
+	"with the symbolic-math tools rather than asserting it; consult a reference for a "
+	"factual one. Then proceed from what you found."
 )
 
 # A refusal is an instruction, not an error to report and retry. The three readings
@@ -97,18 +92,18 @@ def state_nudge_message(agent: Any, execution_context: dict) -> str:
 		)
 	if state == "edit":
 		return (
-			"Workflow state is EDIT (produce the artifact). Read the exact target file first, "
-			"then apply a focused change and move to validation. "
-			"After any policy rejection, re-read the actual target before retrying — "
-			"do not revise a previous draft from memory."
+			"Workflow state is EDIT (produce the artifact). Work from the exact current text "
+			"of the target, then apply a focused change. "
+			"A successful edit returns its diff and the new line numbers it produced, and "
+			"a failed anchor returns the site's current text — use those rather than a "
+			"previous draft from memory, and read the file only when neither covers what you "
+			"need."
 		)
 	if state == "validate":
 		return (
 			f"Workflow state is VALIDATE (verify). Check the modified files through {tool} "
-			"(`python -m py_compile` / `ruff check` / `python -m mypy`) and resolve every error "
-			"before more edits. A check is not the whole of it: running the code — its entry "
-			"point, its callers, or the project's tests — is what produces a result, and that "
-			"result is yours to read and report."
+			"(`python -m py_compile` / `ruff check` / `python -m mypy`) and fix what they report. "
+			"Going back to editing — here or elsewhere — is a normal move, not a step out of order."
 		)
 	if state == "conclude":
 		return "Workflow state is CONCLUDE. Summarize completion and residual risks."
@@ -122,13 +117,18 @@ def _validation_nudge_message(pending_paths: list[str], tool: str) -> str:
 	empty one settles the file. `pytest` used to be listed here beside them, which taught
 	the model that a green suite validates a file — the exact reading the run/verdict
 	split exists to undo. Running the code is a separate step, owned by its own nudges.
+
+	The compiled-language example is the no-artifact one on purpose: what is required is
+	the check, and `-fsyntax-only` needs a compiler but no working build.
 	"""
 	pending_text = ", ".join(pending_paths[:5]) if pending_paths else "modified files"
 	return (
 		"Do not conclude success yet. The following code file(s) were modified but not yet "
-		f"checked: {pending_text}. Check each one through {tool} before finalizing — e.g. "
-		"`python -m py_compile <file>` (syntax), `ruff check <file>` (lint), "
-		"`python -m mypy <file>` (types). If a check reports errors, fix the code and re-run it. "
+		f"checked: {pending_text}. Checking each one through {tool} is required before "
+		"finalizing — e.g. `python -m py_compile <file>` (syntax), `ruff check <file>` (lint), "
+		"`python -m mypy <file>` (types), or for a compiled language `gcc -fsyntax-only <file>` "
+		"/ `gfortran -fsyntax-only <file>`. This is the cheap step, not the build and not the "
+		"run. If a check reports errors, fix the code and re-run it. "
 		"If an import cannot be resolved, the default interpreter may be wrong — pass the right "
 		"environment's python (the platform/environment query tool lists available environments). "
 		"If a validator is unavailable in every environment, say so and why, then proceed — do not loop."
@@ -169,8 +169,9 @@ def denial_nudge_message(execution_context: dict | None = None) -> str:
 def error_recovery_nudge_message(failing_path: str) -> str:
 	return (
 		f"Repeated edit failures detected on '{failing_path}'. "
-		"Re-read the relevant file section to refresh your context, then apply a "
-		"smaller, differently-anchored patch instead of repeating the same edit."
+		"A failed anchor returns the current text of the site in `anchor_excerpt` — "
+		"copy it from there rather than re-reading the file, then apply a smaller, "
+		"differently-anchored patch instead of repeating the same edit."
 	)
 
 
@@ -180,14 +181,18 @@ def regression_nudge_message(untested: list[tuple[str, str]]) -> str:
 		"You modified source file(s) that have existing tests you have not run "
 		"this session:\n"
 		+ preview
-		+ "\n\nRun the associated test(s) through the shell before concluding, so an edit "
-		"doesn't silently break existing behavior. Then say what the run showed — a suite "
-		"is an execution like any other, and its exit code is not its result. "
-		"If a test is intentionally out of scope, say so explicitly."
+		+ "\n\nThe test already exists, so running it is cheap and it is the one thing that "
+		"shows the edit did not silently break existing behavior — worth it whenever the "
+		"command is one you can issue as the project stands. Run it through the shell, then say "
+		"what the run showed — a suite is an execution like any other, and its exit code is not "
+		"its result. "
+		"If a test is intentionally out of scope, cannot run in this environment, or would "
+		"need an environment built before it could start, say so "
+		"explicitly instead — that is an ending too, and this is asked once."
 	)
 
 
-def unexercised_code_nudge_message(paths: list[str]) -> str:
+def unexercised_code_nudge_message(paths: list[str], route: str = "") -> str:
 	"""Everything you wrote is checked, and none of it has ever run.
 
 	Says what the checks did establish before asking for more, because a model told
@@ -195,69 +200,34 @@ def unexercised_code_nudge_message(paths: list[str]) -> str:
 	re-runs the lint. The three routes are listed because "run it" is not actionable
 	for a library, and the way out is stated in the same breath: a change with nothing
 	to run is a real answer, and this fires once.
+
+	``route`` is the direct command the gate actually found here. Naming it is what makes
+	the ask proportionate by construction: this only fires when one exists, so it points at
+	that one rather than asking the model to go looking for any of the three.
 	"""
 	preview = "\n".join(f"- {p}" for p in paths[:5])
 	more = f"\n(+{len(paths) - 5} more)" if len(paths) > 5 else ""
+	found = f"\nThe direct route from here is {route}. " if route else "\n"
 	return (
 		"These files are checked — they parse, import and lint:\n"
 		+ preview
 		+ more
 		+ "\n\nThat says they are written correctly. It says nothing about what they "
 		"compute, and nothing here has run yet, so there is no output for you or the "
-		"user to judge. Exercise the change one of three ways: run its entry point "
-		"directly, run whatever calls into it, or — when neither is reachable — add a "
+		"user to judge. Building and running it is recommended when it is simply "
+		"feasible — one direct command against the project as it stands. It is not, when "
+		"getting to that command needs a step of its own (configuring a build, installing "
+		"something, creating an environment, fetching data, an allocation)."
+		+ found
+		+ "Exercise the change one of three ways — run its entry point "
+		"directly, run whatever calls into it, or, when neither is reachable, add a "
 		"reproducible test to the project's test directory and run that. A test you "
 		"add there is a deliverable the user keeps, not a throwaway probe. Then say "
 		"what the output showed.\n"
 		"If this change genuinely has nothing to run — a comment, a docstring, a "
-		"rename — say so and move on."
-	)
-
-
-def unjudged_output_nudge_message(runs: list[tuple[str, str]], tool: str) -> str:
-	"""Ask what a run's output showed — or, for one already judged `unknown`, what would settle it.
-
-	Each entry is ``(command, unknown_reason)``; the reason is empty for a run nobody
-	has judged yet. Both are the same request at different stages, so they share one
-	message rather than two: what the model owes is a reading of that output.
-	"""
-	preview = "\n".join(
-		f"- {c}" + (f"  → you judged this `unknown`: {r}" if r else "") for c, r in runs[:5]
-	)
-	more = f"\n(+{len(runs) - 5} more)" if len(runs) > 5 else ""
-	standing = [c for c, r in runs if r]
-	return (
-		"You ran the following and have not settled what its output showed:\n"
-		+ preview
-		+ more
-		+ f"\n\nExit 0 only means the program reached its end — it is not a result. Call"
-		f" {tool} with what in the output settles it: the number, message or behaviour"
-		" you are reading it from. `fail` is expected sometimes and is not a setback: a"
-		" green run with a wrong answer is exactly what this catches. `unknown` is a"
-		" legitimate answer when the output does not settle the question — say what"
-		" would settle it and go get that, or explain why it is out of reach. Silence"
-		" is the one ending that is not available."
-		+ (
-			"\n\nAn `unknown` above is a starting point, not a conclusion. It means"
-			" what you know is not enough yet — so go extend it. Name what would settle"
-			" the question and get it: the reference implementation or prior version to"
-			" compare against, a documented or published value, an analytical limit the"
-			" result must reproduce, a conservation or symmetry property that must hold,"
-			" a coarser/finer run to check the trend, or the project's own tests. Read"
-			" the documentation, the literature, or the repository if the answer lives"
-			" there; fetch it from the web if you can reach it. And when the standard is"
-			" the user's to set rather than yours to find — their conventions, their"
-			" acceptance criteria, their data — ask them. Then re-run and judge again."
-			" If it is genuinely out of reach, say so in your final answer and name what"
-			" stays unverified: an explained dead end is an acceptable ending, and the"
-			" user is the one who decides what to do with it."
-			if standing else ""
-		)
-		+ (
-			"\n\nOne call per run when they showed different things, each naming"
-			" its own run."
-			if len(runs) > 1 else ""
-		)
+		"rename — if nothing here can build or run it, or if getting to a first run "
+		"would cost more than the change is worth, say which and why, and move on. "
+		"All three are complete answers."
 	)
 
 
@@ -270,9 +240,8 @@ def unfinished_plan_nudge_message(unchecked: list[dict]) -> str:
 		+ more
 		+ "\n\nEither complete them now, or — if a step is no longer needed, turned out "
 		"to be unnecessary, or is genuinely out of scope — say so explicitly in your "
-		"final answer and leave it unchecked. Both are acceptable endings; silently "
-		"concluding with open steps is not, because the checklist is what the user "
-		"reads as the definition of done. Never tick a step whose output does not exist."
+		"final answer and leave it unchecked. Both are acceptable endings; concluding "
+		"without mentioning them at all is the one that is not."
 	)
 
 
@@ -413,17 +382,12 @@ def validation_nudge_message(agent: Any, execution_context: dict) -> str:
     hint = ""
     last_replace_file = execution_context.get("last_replace_file", "")
     last_replace_old_text = execution_context.get("last_replace_old_text", "")
-    read_line_counts = execution_context.get("read_file_line_counts", {})
 
     if last_replace_file == hottest_path and last_replace_old_text:
         hint = (
             " Read the local failing region around the last replacement anchor first, "
             "then apply a smaller targeted fix."
         )
-    elif hottest_path in read_line_counts:
-        lines_read = int(read_line_counts.get(hottest_path, 0))
-        if lines_read < 50:
-            hint = " Read more of the file before retrying, so the fix is grounded in broader context."
 
     suffix = f"Validation has failed {hottest_count} time(s) for {hottest_path}."
     if hottest_count >= VALIDATION_RETRY_BUDGET:

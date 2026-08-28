@@ -7,10 +7,23 @@ operands are dropped rather than guessed.
 """
 import unittest
 
+from mimir.client.guardrails.observations import _PROJECT_VALIDATORS, _VALIDATOR_TIER
 from mimir.client.guardrails.policy.bash_classify import (
     Kind,
     bash_command_is_readonly,
     classify_bash_command,
+)
+from mimir.servers._shared.shell_paths import (
+    BUILD_COMMANDS,
+    EFFECT_BUILD,
+    EFFECT_ENV_SETUP,
+    EFFECT_RUN,
+    EFFECT_VALIDATE,
+    ENV_SETUP_COMMANDS,
+    EXEC_COMMANDS,
+    EXEC_EFFECTS,
+    RUN_COMMANDS,
+    VALIDATOR_COMMANDS,
 )
 
 
@@ -158,6 +171,51 @@ class ValidationCommandTests(unittest.TestCase):
         self.assertEqual(classify_bash_command("gcc a.c -o a.out")[0].head, "gcc")
 
 
+class ExecEffectTests(unittest.TestCase):
+    """What a successful EXEC segment would *prove*, declared rather than inferred.
+
+    The effect used to be derived by elimination — a head the validator table did not
+    know was taken to have run the project's code — so `source env.sh` was recorded as
+    a run owing a verdict. The four groups are declared instead, and the invariants
+    below are what keeps them from drifting apart from the tables that read them.
+    """
+
+    def _effect(self, command, index=0):
+        return classify_bash_command(command)[index].effect
+
+    def test_each_group_reports_its_own_effect(self):
+        self.assertEqual(self._effect("gcc -fsyntax-only a.c"), EFFECT_VALIDATE)
+        self.assertEqual(self._effect("make -f makefile.cmake"), EFFECT_BUILD)
+        self.assertEqual(self._effect("pytest -q"), EFFECT_RUN)
+        self.assertEqual(self._effect("source env.sh"), EFFECT_ENV_SETUP)
+        self.assertEqual(self._effect("./a.out"), EFFECT_RUN)
+
+    def test_a_module_invoked_validator_keeps_the_validator_effect(self):
+        # `python -m py_compile` is a check; falling back to `python`'s own effect
+        # would make it a run of the project's code.
+        self.assertEqual(self._effect("python -m py_compile foo.py"), EFFECT_VALIDATE)
+        self.assertEqual(self._effect("python -m ruff check ."), EFFECT_VALIDATE)
+        self.assertEqual(self._effect("python -m pytest"), EFFECT_RUN)
+
+    def test_an_unknown_module_falls_back_to_the_interpreter(self):
+        self.assertEqual(self._effect("python -m mypkg.cli"), EFFECT_RUN)
+
+    def test_every_exec_command_declares_an_effect(self):
+        self.assertEqual(set(EXEC_COMMANDS) - set(EXEC_EFFECTS), set())
+
+    def test_exec_commands_is_exactly_the_union_of_the_groups(self):
+        self.assertEqual(
+            EXEC_COMMANDS,
+            VALIDATOR_COMMANDS | BUILD_COMMANDS | RUN_COMMANDS | ENV_SETUP_COMMANDS,
+        )
+
+    def test_the_tier_tables_only_ever_grade_validators(self):
+        # A head absent from _VALIDATOR_TIER credits nothing; a head present in it that
+        # is not declared a validator would grade something that was never a check.
+        for head in (*_VALIDATOR_TIER, *_PROJECT_VALIDATORS):
+            self.assertEqual(EXEC_EFFECTS.get(head), EFFECT_VALIDATE, head)
+
+
 class ChdirTests(unittest.TestCase):
     """`cd` is its own CHDIR kind so a later segment's relative operand can be rebased."""
 
@@ -232,7 +290,8 @@ class ChdirTests(unittest.TestCase):
         # never folded into the argv of the line above (which would classify
         # `cat a.py` + `rm -rf .` as a single harmless read).
         self.assertEqual(_kinds("cat a.py\nls src"), [Kind.READ, Kind.INSPECT])
-        self.assertIsNone(classify_bash_command("cat a.py\nrm -rf ."))
+        self.assertEqual(_kinds("cat a.py\nrm -rf ."), [Kind.READ, Kind.UNKNOWN])
+        self.assertFalse(bash_command_is_readonly("cat a.py\nrm -rf ."))
         self.assertFalse(bash_command_is_readonly("cat a.py\npytest -q"))
         # A newline right after a connector continues the same chain.
         self.assertEqual(_kinds("cat a.py &&\nls src"), [Kind.READ, Kind.INSPECT])
@@ -246,11 +305,26 @@ class ChdirTests(unittest.TestCase):
         self.assertEqual(_kinds('python3 -c "\nimport re\nx = 1\n"'), [Kind.EXEC])
         self.assertEqual(_kinds("cat 'a\nb.py'"), [Kind.READ])
 
-    def test_unknown_leading_command_is_opaque(self):
-        self.assertIsNone(classify_bash_command("rm -rf ."))
-        self.assertIsNone(classify_bash_command("curl http://x"))
-        # A shell interpreter nests an unvalidated command — never classifiable.
-        self.assertIsNone(classify_bash_command("bash -c 'ls'"))
+    def test_unknown_leading_command_classifies_as_a_run(self):
+        """A head no group places still classifies — bash gates by denylist now.
+
+        Returning None instead would make the common case invisible to the
+        observation layer: nothing credited, no verdict owed, and the credit-rate
+        floor in test_bash_coverage would fall through. UNKNOWN is the conservative
+        reading — a run, so never plan-safe and never approval-exempt — while the
+        operands stay legible enough to credit and to confine.
+        """
+        for cmd in ("rm -rf .", "curl http://x", "awk '{print}' f.txt",
+                    "bash -c 'ls'", "git status"):
+            segments = classify_bash_command(cmd)
+            self.assertIsNotNone(segments, cmd)
+            self.assertEqual([s.kind for s in segments], [Kind.UNKNOWN], cmd)
+            self.assertFalse(bash_command_is_readonly(cmd), cmd)
+        # The operands are still extracted, which is what keeps them confined.
+        self.assertEqual(classify_bash_command("rm -rf build/")[0].operands, ["build/"])
+        # A wrapper is not the command it wraps.
+        self.assertEqual(_kinds("timeout 60 pytest -q"), [Kind.EXEC])
+        self.assertEqual(classify_bash_command("timeout 60 pytest -q")[0].head, "pytest")
 
 
 class CapabilityProbeTests(unittest.TestCase):
@@ -312,7 +386,7 @@ class TexTests(unittest.TestCase):
         self.assertEqual(classify_bash_command("pdflatex main.tex")[0].head, "pdflatex")
 
     def test_empty_and_malformed(self):
-        for cmd in ["", "   ", "ls\nrm -rf .", None]:
+        for cmd in ["", "   ", "&& ls", "cat $(cat f)", None]:
             self.assertIsNone(classify_bash_command(cmd), repr(cmd))
 
 

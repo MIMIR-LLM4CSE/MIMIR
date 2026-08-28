@@ -1,7 +1,7 @@
 """Plan mode: gather read-only evidence, record a plan, get approval, execute.
 
 ``_run_plan_mode`` mirrors the agent loop but with plan tools + the PLAN_BLOCKED/
-PLAN_READONLY guards and an evidence gate; on approval it tail-calls
+PLAN_READONLY guards and a two-phase explore/draft gate; on approval it tail-calls
 ``_run_agent_loop`` (lazy import to avoid the agent_loop↔plan_loop cycle). Extracted
 from ``agent_loop.py``.
 """
@@ -12,11 +12,12 @@ import json
 from typing import Any
 
 from ..event_sink import emit
-from ..context.execution_context import has_discovery_evidence
+from ..context.execution_context import plan_evidence_ready
+from ..context.capabilities import DELEGATE, arg_role, names_with_cap
 from ..context.signals import query_requires_repo_discovery
 from ..config.models import resolve_enforcement
 from ..config.constants import (
-    DISCOVERY_EVIDENCE_MIN_DISTINCT_PLAN, THINKING_DEPTH_AUTO, max_tools_for,
+    PLAN_EXPLORE_MAX_TURNS, THINKING_DEPTH_AUTO, max_tools_for,
 )
 from ..guardrails.workflow import (
     PLAN_TODO_NUDGE_EARLY,
@@ -24,14 +25,18 @@ from ..guardrails.workflow import (
     PLAN_DELIVER_ANSWER,
     PLAN_DELIVER_ANSWER_FIRM,
     PLAN_ALREADY_RECORDED_ERROR,
-    PLAN_EVIDENCE_NUDGE,
+    PLAN_EXPLORE_DELEGATE,
+    PLAN_EXPLORE_FIRST,
+    PLAN_EXPLORE_BUDGET_SPENT,
     PLAN_APPROVED_EXECUTE,
     PLAN_REWORK_NUDGE,
     PLAN_REJECTED_STOP,
     PLAN_REJECTED_ANSWER,
     plan_revision_nudge,
 )
-from .streaming import _stream_chat, _process_response, _to_dict
+from ..guardrails.nudges import inject_reminder
+from ..tool_execution.formatter import normalize_arguments
+from .streaming import _DraftHold, _stream_chat, _process_response, _to_dict
 from .dispatch import _dispatch_tool_calls
 from .finalize import _finalize_answer
 from .readonly_guard import filter_readonly_tool_calls
@@ -47,6 +52,51 @@ _PLAN_REWORK = "Rework"
 # never breaks that, since a turn that calls tools never reaches the delivery branch.
 # After this many further tool-calling turns its calls are dropped.
 _PLAN_POST_RECORD_TOOL_TURNS = 2
+
+
+def _plan_title_arg(name: str, agent: Any) -> str:
+    """Name of the argument that titles a plan document, for the tool *name*."""
+    roles = arg_role(name, "plan_title", agent.tool_caps)
+    return roles[0] if roles else ""
+
+
+def _plan_document_title(tool_calls: list[Any], agent: Any) -> str:
+    """Title carried by the plan-document write in *tool_calls*, if there is one."""
+    for tc in tool_calls:
+        fn = _to_dict(_to_dict(tc).get("function", {}))
+        arg = _plan_title_arg(fn.get("name", ""), agent)
+        if not arg:
+            continue
+        title = str(normalize_arguments(fn.get("arguments") or {}).get(arg) or "").strip()
+        if title:
+            return title
+    return ""
+
+
+def _pin_plan_title(tool_calls: list[Any], agent: Any, title: str) -> list[Any]:
+    """Force *title* onto every plan-document write in *tool_calls*.
+
+    The plan store derives a document's identity from its title, so a revision the
+    model re-titles lands in a *second* document: the user keeps reading the draft
+    they sent back and two plans compete to be "the" plan. Which document is under
+    review is this loop's to decide, not the model's, so the title it settled on is
+    reimposed and the revision overwrites the plan in place.
+    """
+    pinned: list[Any] = []
+    for tc in tool_calls:
+        tc_d = dict(_to_dict(tc))
+        fn = dict(_to_dict(tc_d.get("function", {})))
+        arg = _plan_title_arg(fn.get("name", ""), agent)
+        args = dict(normalize_arguments(fn.get("arguments") or {})) if arg else {}
+        if not arg or str(args.get(arg) or "").strip() == title:
+            pinned.append(tc)
+            continue
+        emit({"type": "status", "text": f"  ↻ Revising the plan in place: {title}"})
+        args[arg] = title
+        fn["arguments"] = args
+        tc_d["function"] = fn
+        pinned.append(tc_d)
+    return pinned
 
 
 def _reject_stalled_calls(tool_calls: list[Any], messages: list[dict]) -> None:
@@ -142,25 +192,51 @@ async def _run_plan_mode(
         _live_thinking, _live_thinking_budget, _sync_thinking_directive,
         _live_mode, _apply_mode_switch,
     )
-    plan_tools = tools_for_plan_mode(_advertised_tools(agent), agent.tool_caps)
-    plan_tools = cap_tools_by_relevance(
-        plan_tools, query=query, tool_caps=agent.tool_caps, max_tools=max_tools_for(agent.model),
-    )
+
+    def _plan_tools(*, exploring: bool) -> list:
+        tools = tools_for_plan_mode(_advertised_tools(agent), agent.tool_caps, exploring=exploring)
+        return cap_tools_by_relevance(
+            tools, query=query, tool_caps=agent.tool_caps, max_tools=max_tools_for(agent.model),
+        )
+
     answer = ""
     plan_recorded = False
+    # Title of the plan document under review. Deliberately NOT reset by revise/rework:
+    # it is what keeps every revision of this review cycle in the same document.
+    plan_title = ""
     # Both reset whenever the plan goes back to the drawing board (revise / rework).
     post_record_tool_turns = 0
     deliver_nudged = False
-    # Advisory evidence gate: a plan recorded with zero exploration is flagged once,
-    # never rejected. The query signal behind it is a deliberately broad exit filter
-    # (see context.signals) — it fires just as readily for a task that creates
-    # something new outside the repo, where no exploration could ever satisfy it.
-    # Skipped at enforcement "off": this is discovery babysitting, not a safety guard.
-    plan_explore_required = (
+    # Explore phase: while armed, the plan-document tool is withheld until the model
+    # has actually read the code. Offering it from the first turn — under a nudge
+    # calling the plan mandatory — is what made a plan *to explore* the cheapest way
+    # out; withholding it removes the move instead of policing the plan's wording.
+    # Armed by the same query signal as the old advisory gate, a deliberately broad
+    # exit filter (see context.signals): it fires just as readily for a task that
+    # creates something new outside the repo, where no exploration could satisfy it,
+    # hence the turn budget below. Skipped at enforcement "off" — this is discovery
+    # babysitting, not a safety guard.
+    exploring = (
         query_requires_repo_discovery(query)
         and resolve_enforcement(agent) != "off"
     )
-    plan_evidence_nudged = False
+    explore_turns = 0
+    plan_tools = _plan_tools(exploring=exploring)
+
+    def _nudge_toward_plan(step: int) -> None:
+        """Push toward whatever the current phase owes: evidence, then the document."""
+        if exploring:
+            text = PLAN_EXPLORE_FIRST
+            if names_with_cap(DELEGATE, agent.tool_caps):
+                text += PLAN_EXPLORE_DELEGATE
+            inject_reminder(messages, text, category="plan_explore", tagged=False)
+            return
+        inject_reminder(
+            messages,
+            PLAN_TODO_NUDGE_EARLY if step <= max_steps - 5 else PLAN_TODO_NUDGE_LATE,
+            category="plan_todo", tagged=False,
+        )
+
     base_options = {'temperature': 0.2, 'top_k': 25}
     auto_active = getattr(agent, "thinking_depth", None) == THINKING_DEPTH_AUTO
 
@@ -187,6 +263,25 @@ async def _run_plan_mode(
                 logger=logger,
                 cb=cb,
             )
+        # Phase flip: the plan-document tool appears once the model has actually read
+        # the code, or once the explore budget is spent — plan mode must always reach
+        # a plan, so thin evidence unlocks it too and the plan states its own gaps.
+        if exploring:
+            if plan_evidence_ready(execution_context):
+                exploring = False
+                emit({"type": "status", "text": "  ✔ Exploration complete — drafting the plan"})
+            elif explore_turns >= PLAN_EXPLORE_MAX_TURNS:
+                exploring = False
+                emit({"type": "status", "text": "  ⚠ Exploration thin — unlocking the plan tool"})
+                inject_reminder(messages, PLAN_EXPLORE_BUDGET_SPENT, category="plan_explore", tagged=False)
+            if exploring:
+                explore_turns += 1
+            else:
+                # Rebuilding the tool list breaks the prompt prefix cache once, the
+                # same sanctioned trade as a domain re-arm (see toollist): the phase
+                # flips at most once per run, and buys the tool the run now needs.
+                plan_tools = _plan_tools(exploring=False)
+
         # Re-read the reasoning depth so a rung moved mid-plan lands on this call.
         thinking = _live_thinking(agent, thinking)
         auto_active, _ = await _sync_thinking_directive(
@@ -196,18 +291,37 @@ async def _run_plan_mode(
         _tb = _live_thinking_budget(agent)
         if thinking and _tb > 0:
             options['thinking_budget'] = _tb
-        msg = _stream_chat(
-            agent.model,
-            messages,
-            plan_tools,
-            thinking,
-            streaming,
-            options,
-            cancel_flag=getattr(agent, "_cancel_flag", None),
-            **cb,
+        # Until the plan document exists, a turn that only talks is refused below and
+        # nudged back — so its prose is held rather than streamed, instead of showing
+        # a plan-shaped answer the loop is about to drop (see _DraftHold).
+        hold = (
+            _DraftHold(cb["token_callback"])
+            if not plan_recorded and cb.get("token_callback") is not None
+            else None
         )
+        step_cb = {**cb, "token_callback": hold.capture} if hold else cb
+        try:
+            msg = _stream_chat(
+                agent.model,
+                messages,
+                plan_tools,
+                thinking,
+                streaming,
+                options,
+                cancel_flag=getattr(agent, "_cancel_flag", None),
+                **step_cb,
+            )
+        except BaseException:
+            # Cancelled or given up on: nothing will refuse this turn any more.
+            if hold:
+                hold.flush()
+            raise
         _process_response(msg, messages, thinking, streamed_thinking=(streaming and cb["think_token_callback"] is not None))
         tool_calls = msg.get("tool_calls") or []
+        if hold and tool_calls:
+            # The turn acted: its prose is narration above the tool cards, not a
+            # plan-shaped answer waiting to be refused.
+            hold.flush()
         # Keep whatever prose the model emitted as a fallback answer.
         content = msg.get("content", "")
         if content:
@@ -229,10 +343,9 @@ async def _run_plan_mode(
             # recorded. A plan narrated as chat prose is not the result — nudge and
             # keep looping, so plan mode reliably produces a structured plan.
             if not plan_recorded:
-                if plan_nudges <= max_steps - 5:
-                    messages.append({"role": "user", "content": PLAN_TODO_NUDGE_EARLY})
-                else:
-                    messages.append({"role": "user", "content": PLAN_TODO_NUDGE_LATE})
+                if hold:
+                    hold.discard()
+                _nudge_toward_plan(plan_nudges)
                 continue
 
             # The plan is recorded and has been presented to the user. Ask them to
@@ -301,6 +414,8 @@ async def _run_plan_mode(
         tool_calls = filter_readonly_tool_calls(
             tool_calls, agent=agent, messages=messages, mode_label="plan",
         )
+        if plan_title:
+            tool_calls = _pin_plan_title(tool_calls, agent, plan_title)
 
         await _dispatch_tool_calls(tool_calls, agent, messages, execution_context)
         # Whether a plan exists is the execution context's call, never a second
@@ -308,27 +423,22 @@ async def _run_plan_mode(
         # the two TASK_PLANNING forms apart by the `plan_steps` arg-role and records
         # `plan_written` (prose document) — the only form plan mode produces.
         if execution_context.get("plan_written"):
-            if (plan_explore_required
-                    and not plan_evidence_nudged
-                    and not has_discovery_evidence(execution_context, min_distinct=DISCOVERY_EVIDENCE_MIN_DISTINCT_PLAN)):
-                # Advisory, not a rejection: told once, the model either strengthens the
-                # plan or says so on delivery. Blocking would discard the plan it just
-                # recorded, with nothing guaranteeing it submits that form again.
-                plan_evidence_nudged = True
-                emit({"type": "status", "text": "  ⚠ Plan not grounded in any exploration — flagged"})
-                messages.append({"role": "user", "content": PLAN_EVIDENCE_NUDGE})
+            # No grounding check here any more: the plan-document tool does not exist
+            # until the evidence bar is met, so a plan written over nothing is
+            # unreachable rather than flagged after the fact.
+            plan_title = plan_title or _plan_document_title(tool_calls, agent)
             plan_recorded = True
 
         if not plan_recorded:
-            messages.append({"role": "user", "content": (
-                PLAN_TODO_NUDGE_EARLY if plan_nudges <= max_steps - 5 else PLAN_TODO_NUDGE_LATE
-            )})
+            _nudge_toward_plan(plan_nudges)
         else:
             # Repeating the same deliver nudge verbatim is what the model echoes back;
             # escalate to the firm one once it has been ignored.
-            messages.append({"role": "user", "content": (
-                PLAN_DELIVER_ANSWER if not deliver_nudged else PLAN_DELIVER_ANSWER_FIRM
-            )})
+            inject_reminder(
+                messages,
+                PLAN_DELIVER_ANSWER if not deliver_nudged else PLAN_DELIVER_ANSWER_FIRM,
+                category="plan_deliver", tagged=False,
+            )
             deliver_nudged = True
 
     return await _finalize_answer(agent, query, answer, execution_context, messages, logger)

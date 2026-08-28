@@ -11,7 +11,7 @@ Servers are organized into domain-based subdirectories:
 | Directory | Purpose | Servers |
 |---|---|---|
 | `_shared/` | Cross-group utilities | `responses.py`, `capabilities.py`, `root_paths.py`, `approved_roots.py`, `trusted_read_roots.py`, `text_tools.py`, `module_env.py`, `platform_profile_store.py`, `embed.py`, `lsp_client.py`, `shell_paths.py`, `state_paths.py`, `numerics.py` |
-| `workspace/` | File & code interaction | `server_bash`, `server_localgit`, `server_files`, `server_search`, `server_code_intel` |
+| `workspace/` | File & code interaction | `server_bash`, `server_files`, `server_search`, `server_code_intel` |
 | `utilities/` | Stateless data helpers | `server_math`, `server_strings`, `server_datetime`, `server_symbolic_math` |
 | `agent_state/` | Agent memory, planning & delegation | `server_memory`, `server_todo`, `server_spawn_agent` |
 | `interaction/` | Asking the user structured questions | `server_interaction` |
@@ -48,14 +48,16 @@ one in tests.
 
 Client-side read cache:
 The following tools are cache-eligible within a single query (same `(tool, args)` returns the stored result instead of re-executing):
-`read_file_lines`, `read_files`, `tree_summary`, `list_directory` (plus the code-intel nav tools).
-Any successful write to a path invalidates cached reads for that path.
+`read_file_lines`, `tree_summary`, `list_directory` (plus the code-intel nav tools).
+Any successful write to a path invalidates cached reads for that path. Each entry is
+stamped with the file's `(mtime_ns, size)`, so a write that went around the edit tools
+(a `sed -i`, a script, the user's editor) drops the entry instead of being answered from
+a copy that is now wrong.
 
 ## Registered-by-default servers
 
 The client currently registers these servers by default:
 - `workspace/server_bash.py`
-- `workspace/server_localgit.py`
 - `workspace/server_files.py`
 - `workspace/server_search.py`
 - `workspace/server_code_intel.py`
@@ -162,13 +164,14 @@ plan, indexed by `PLANS.md`, with a `.active` pointer). The active session is re
 fall back to the shared legacy `todo_list.md`.
 
 Tools:
-- `todo_set_plan` — write a named plan (approach/rationale) and make it active
-- `todo_write` — replace the entire checklist with new steps
+- `todo_set_plan` — write a named plan (approach/rationale) and make it active. Declares two arg-roles so client-side consumers find its arguments without knowing its name: `plan_title` (the plan loop pins it so a revision overwrites in place) and `plan_document` (the plan-shape guard reads the body, and refuses a plan whose axes under *Approach* are exploration steps — see POLICY.md → *Plan-Shape Guard*)
+- `todo_write` — replace the entire checklist with new steps. Takes an optional `depends_on` (one list of prerequisite indices per step), so a plan whose steps are genuinely partially ordered is recorded as the DAG it is instead of being flattened into a line
 - `todo_read` — return the current checklist (index, text, done)
+- `todo_read_ready` — split the open steps into `ready` and `blocked` against that DAG (a step is ready once every step it depends on is done)
 - `todo_read_plan` — read the active (or a named) prose plan
 - `todo_list_plans` — browse the session's plan history
 - `todo_delete_plan` — delete one plan from the history
-- `todo_update` — mark one item done/undone
+- `todo_update` — mark one item done/undone. No ordering is enforced here or anywhere else in the server: which step is next is the model's call, and `## Planning & todo` in the system prompt says so — independent steps have no order, a real one is declared through `depends_on`, and the list is rewritten when the work diverges from the plan
 
 Notes:
 - None of these tools is approval-gated: they manage a markdown checklist and prose
@@ -182,7 +185,10 @@ Notes:
 - `todo_update` and the read tools are **not** hidden anywhere: the model may consult or
   tick an existing checklist in any mode.
 - In plan mode the model is expected to record the prose plan document (`todo_set_plan`)
-  before the turn ends. The ordered steps are recorded only after the user approves the
+  before the turn ends — but not before it has read the code: on a repo-touching query
+  the client withholds the document tool until the exploration is done (see the plan-mode
+  explore phase in `CLIENT_DETAILED.md`), so the plan cannot be a plan *to* explore.
+  The ordered steps are recorded only after the user approves the
   plan, at the start of the execution — a checklist written earlier tracks work nobody
   agreed to yet.
 - After the plan is recorded and presented, plan mode asks the user to approve it
@@ -248,19 +254,21 @@ Purpose: workspace-scoped file CRUD and surgical edit helpers.
 
 ### Absolute paths only
 
-Every model-facing tool here requires an **absolute** `path`; a relative one is rejected by `_require_abs` at the tool boundary (`apply_edits` checks each sub-edit's `path` in its validation phase, so a batch is not a way around the rule).
+Every model-facing tool here requires an **absolute** `path`; a relative one is rejected by `_require_abs` at the tool boundary. The check itself is `require_absolute()` in `servers/_shared/root_paths.py`, shared with the read-only servers (see below); `_require_abs` is the file server's thin wrapper over it.
 
 This is the structural fix for misplacement. `write_file` previously accepted *"absolute or relative to server start directory"* — a directory the model has no way to learn — so a relative path was silently resolved against a root it had to **infer**. Asked twice to create a solver *outside* the `codes` directory, MIMIR twice wrote it inside and reported the constraint satisfied. Two prompt-level attempts to make that inference reliable both failed; requiring an absolute path removes the inference, and the destination is stated in the call itself.
 
 The error is designed to be **self-correcting**: it names the path the relative form would have produced, so the model re-issues in one step, and it states the workspace root at the moment placement is being decided — which no static prompt section can do.
 
 ```
-Relative path 'wave_solver_2d/solver.py' — file tools require an absolute path.
+Relative path 'wave_solver_2d/solver.py' — this tool requires an absolute path.
 Inside the workspace that is /…/codes/wave_solver_2d/solver.py. If you meant
 somewhere else, give that absolute path instead. The workspace root is /…/codes.
 ```
 
-Deliberately unaffected: `bash_run` (requiring absolute operands in a shell would be absurd — its cwd is pinned to the workspace root instead), the read-only search/code-intel servers (a wrong relative path there returns wrong results, it does not misplace an artifact), the internal `list_files` helper (which is why the check sits at the tool boundary, not inside `_safe`), and `resolve_path_in_root` including its duplicate-root stripping — that becomes unreachable for file tools but still serves the read-only roots. The check runs *before* `_safe`, so the sandbox is unchanged: an absolute path outside the workspace is still refused.
+The rule now also covers the read-only tools that name a **file**: `read_file_lines` (`server_search`), `symbol_outline` and `hover` (`server_code_intel`) call the same `require_absolute()`. A read that quietly accepts a relative path teaches the model a habit the next write will refuse, so the two sides are held to one rule. Directory and scan roots keep their tolerant default — `path="."` for `list_directory` / `tree_summary` means the workspace, which is not an inference anyone can get wrong.
+
+Deliberately unaffected: `bash_run` (requiring absolute operands in a shell would be absurd — its cwd is pinned to the workspace root instead), the internal `list_files` helper (which is why the check sits at the tool boundary, not inside `_safe`), and `resolve_path_in_root` including its duplicate-root stripping — that becomes unreachable for file tools but still serves the read-only roots. The check runs *before* `_safe`, so the sandbox is unchanged: an absolute path outside the workspace is still refused.
 
 Client-side storage is untouched: `normalize_workspace_path` already converts absolute → workspace-relative, so `dirty_written_files`, `validated_files` and every gate comparing them keep their existing form.
 
@@ -268,13 +276,13 @@ Client-side storage is untouched: `normalize_workspace_path` already converts ab
 
 The rule above is only coherent if the model can **copy** paths rather than construct them. So discovery reports absolute paths too:
 
-- `server_search` — `read_file_lines`, `read_files`, `list_directory` (including a `path` per entry, not just `name`) and `tree_summary` echo the *resolved* path, not the argument they were given.
+- `server_search` — `read_file_lines`, `list_directory` (including a `path` per entry, not just `name`) and `tree_summary` echo the *resolved* path, not the argument they were given.
 - `server_code_intel` — `_out_path` (formerly `_rel`) returns absolute for every navigation result; the ctags `by_file` index is keyed the same way, so lookups stay consistent.
 - the client's discovery pin renders absolute (`system_prompt._pin_path`) — display only, `execution_context` still stores workspace-relative.
 
-Asymmetry is deliberate: these tools still **accept** relative input. Their failure mode is benign (wrong results, immediately visible) so rejecting relative would add friction without preventing anything irreversible — the justification for the write-side rule is the *silent, irreversible* misplacement of an artifact. What matters is the output side: hand back a relative path and the model must join the root itself, which is the inference the rule removed, reintroduced exactly where it is most likely to copy without thinking. The discovery pin makes this vivid — it says "use these paths directly", and for a while it said that above paths the next call would reject.
+What matters just as much is the output side: hand back a relative path and the model must join the root itself, which is the inference the rule removed, reintroduced exactly where it is most likely to copy without thinking. The discovery pin makes this vivid — it says "use these paths directly", and for a while it said that above paths the next call would reject.
 
-`tree_summary`'s root line is absolute for the same reason as `repo_baseline`'s: a bare basename root reads as a subdirectory of itself.
+`tree_summary`'s root line is absolute for the same reason the system prompt states the workspace root absolutely: a bare basename root reads as a subdirectory of itself.
 
 Tools:
 - `write_file`
@@ -283,7 +291,6 @@ Tools:
 - `replace_in_file`
 - `replace_all_in_file`
 - `replace_lines`
-- `apply_edits`
 
 Note: directory listing is owned by the search server's `list_directory`; the
 file server keeps an internal `list_files` helper only to back the `files://list`
@@ -296,8 +303,7 @@ Text search (`grep`/`rg`) is done via the bash server — classified read-only, 
 needs no approval and feeds the same discovery signals a dedicated tool would.
 
 Tools:
-- `read_file_lines` (pass `end_line=0` to read the whole file)
-- `read_files`
+- `read_file_lines` — at most `_MAX_READ_LINES` (400) lines per call, whatever the range asks for; `end_line=0` means "to EOF, up to that cap". A window that stops short reports `truncated`, `total_lines` and `next_start_line`. Takes an **absolute** path, like the file tools. Every returned line carries its file line number as an `N: ` prefix — the same format as the search excerpts and the post-edit context window. The edit tools are addressed *by number*, so a bare block left that binding to be counted by hand across the window; the way out of a miscount the model cannot detect is to re-read ever narrower ranges until the requested range is one line and the number is asserted by the arguments rather than inferred. The prefix is not part of the file: `replace_in_file` strips it from an anchor that only matches once un-numbered, and `replace_lines` strips it from a `new_content` numbered consecutively from `start_line` (a paste-back of what was read), leaving anything else literal.
 - `list_directory`
 - `tree_summary` (pass `use_cache=False` to force a fresh scan)
 
@@ -320,8 +326,9 @@ Tools (all read-only, cacheable, none approval-gated):
   definition is what you want.
 - `find_references(name)` — **use** sites across the workspace, as `{path, line, text}`.
   Prefers LSP reference resolution anchored at the definition; falls back to a whole-word
-  scan.
-- `symbol_outline(path)` — the ordered symbol tree of one file
+  scan. `context_lines` is **off by default**: the question is where a symbol is used, and
+  an excerpt per hit costs more than the answer. Raise it when the sites must be edited.
+- `symbol_outline(path)` — the ordered symbol tree of one file, each entry carrying `line` **and `end_line`**. The end is what makes "read the block around line N" a single call: without it the model widens its window a few lines at a time looking for where the construct closes. It is exact when the backend reports one (LSP ranges; universal-ctags `--fields=+e`) and otherwise **derived** — a symbol runs until the next one at the same or shallower depth, the last to EOF — with `inferred_end` marking that it is an upper bound. Deriving it matters because the common ctags on HPC systems is *Exuberant* 5.8, which has no end field at all. Both LSP reply shapes are read (nested `DocumentSymbol.range` and flat `SymbolInformation.location.range`); reading only the first put every symbol of a flat server at line 1.
   (`[{name, kind, line, depth}]`), from LSP document symbols or the file's ctags entries.
 - `hover(path, line, symbol="")` — type / signature / doc info at a position (`line` is
   1-based). **LSP-only**: it errors when no language server serves that file's language.
@@ -354,7 +361,7 @@ Tools:
 ## hpc/server_hpc.py
 
 Purpose: Slurm inspection and job-submission helpers. (Environment Modules /
-Lmod are handled directly via the bash server's allowlisted `module` command —
+Lmod are handled directly via the bash server's `module` command —
 discovery + load — not here.)
 
 Tools:
@@ -374,7 +381,7 @@ Purpose: platform profiling and architecture-aware recommendations.
 
 Tools:
 - `platform_probe` — collect and return a full platform profile (CPU, GPU, memory, Slurm, modules, toolchains). **Stateless** — built on demand and returned; nothing is persisted
-- `platform_get_profile` — build and return a fresh profile for the current host plus a live `sinfo` partition/node table so the agent knows what Slurm resources are available without a separate command. **Stateless** — always built fresh for the current host (so it can never serve another node's hardware), no cache, no `refresh_if_missing` arg. (The client also keeps its own self-contained probe for the always-on foundational context; these server tools are for deeper, on-demand queries.)
+- `platform_get_profile` — build and return a fresh profile for the current host plus a live `sinfo` partition/node table so the agent knows what Slurm resources are available without a separate command. **Stateless** — always built fresh for the current host (so it can never serve another node's hardware), no cache, no `refresh_if_missing` arg. These tools are the **only** source of platform facts: the client used to carry a duplicate probe whose output was injected into every system prompt, which paid for a full hardware summary on every query to answer a question most of them never asked.
 - `platform_compiler_recommendations` — recommend compiler flags based on detected SIMD and GPU
 - `platform_scientific_plan` — return a workload strategy (libraries, parallelism model, tuning hints) for a given problem type and scale
 - `platform_code_advisor` — analyse a code excerpt and return architecture-specific optimisation advice
@@ -431,19 +438,23 @@ Tools:
 
 ## workspace/server_bash.py
 
-Purpose: controlled workspace shell access with command validation. Read-mostly, but
-deliberately loosened so HPC/CUDA benchmark steps work end-to-end while keeping the
-allowlist + no-substitution model load-bearing. This is also the **text-search path**
+Purpose: workspace shell access with command validation. Any command runs except a
+short denylist; what governs the rest is the user's approval prompt plus path
+confinement, with the no-substitution model kept load-bearing. This is also the
+**text-search path**
 (`grep`/`rg`) — there is no dedicated grep tool; a leading `grep`/`rg` classifies
 read-only, so it needs no approval and feeds the same discovery signals a tool would.
 
 Tools:
-- `bash_allowed_commands`
 - `bash_run`
 - `report_verdict` — the model's reading of what a run's output showed (`judge`
   capability). It executes nothing: the client's observer settles the run it names on the
   blackboard (see POLICY.md → *Validation Policy*). It lives here because a verdict is
   owed by a run, and where nothing can be executed nothing needs judging.
+  Four values: `pass`/`fail`/`unknown` read what a green run showed; `blocked` re-imputes a
+  **red** one from the change to the environment (a build to configure, a package, a dataset,
+  an allocation). It never makes the run green — it stays reported as not completed — it only
+  stops it being charged as a defect. Unclaimed, a red exit drives the repair ladder as before.
 
 ### Scope of the sandbox (read this before trusting "confined")
 
@@ -500,29 +511,68 @@ The read-only vs write/exec decision is the client-side
 exemption in `readonly_exempt`; see POLICY.md). The server still validates and confines
 every accepted call independently.
 
-### The 74 allowed commands, by category
+### What is refused, and why
 
-One taxonomy, declared once in `servers/_shared/shell_paths.py` and read by both ends:
-the server builds `_ALLOWED_COMMANDS` from these groups, the client maps each to a
-capability `Kind`, and the category is what decides approval and plan-mode availability.
-`bash_allowed_commands()` returns it per command, so the agent can see the gating without
-probing for it. A parity test (`test_every_classified_command_is_one_the_server_can_run`)
-fails if a group names a command the server will not run, if an allowed command has no
-category, or if a category disagrees with how a call to it is actually gated.
+Anything not named below runs. These three groups are refused because no approval
+prompt could make them reviewable, and each rejection names the route that replaces it
+— a refusal with no route is a dead end the model retries variants of. The sets live in
+`servers/_shared/shell_paths.py` (`DENIED_COMMANDS`) so both ends read the same list, and
+`test_the_header_table_is_the_denylist` fails if the server's docstring table drifts
+from it.
+
+| Group | Commands | Why | Instead |
+|---|---|---|---|
+| interpreter | `bash` `sh` `zsh` `ksh` `dash` `csh` `tcsh` `fish` `eval` `exec` `.` `command` `sudo` `su` `doas` | runs a nested command the validator never sees, voiding segmentation and with it path confinement | write the command out; chain it; `./script.sh`; `source env.sh` |
+| destructive | `shred` `dd` `mkfs` `fdisk` `parted` `swapoff` `mkswap` | destroys data outside anything a command line can review | `rm` is available and confined |
+| cluster | `sbatch` `salloc` `scancel` | a second submission route would produce jobs nothing tracks | the typed HPC tools, which return a tracked job handle |
+
+Refused in every spelling, including by absolute path and behind a wrapper
+(`timeout 5 /bin/sh -c x` is refused on `sh`).
+
+### Wrappers are unwrapped, not denied
+
+A command whose argument list *is* another command — `timeout`, `nohup`, `env`,
+`xargs`, `stdbuf`, `nice`, `ionice`, `srun`, `mpirun`, `mpiexec` — is stripped by
+`shell_paths.unwrap_argv` before anything reads the head, recursively and depth-bounded.
+So `timeout 60 pytest -q` is validated, classified and credited as the pytest run it is,
+while `timeout 5 nohup bash -c x` is refused on `bash`. Two tests hold the line:
+`test_a_wrapper_is_unwrapped_never_denied` (the sets are disjoint, and every
+wrapper × interpreter pair unwraps to the interpreter) and
+`test_a_wrapper_cannot_smuggle_a_refused_command` (the behaviour end to end).
+
+### What a command's category still decides
+
+The taxonomy in `servers/_shared/shell_paths.py` is no longer a gate — it is what the
+client's classifier reads to decide approval and plan-mode availability.
 
 | Category | Commands | Plan mode | Approval |
 |---|---|---|---|
-| `neutral` (10) | `pwd` `echo` `which` `basename` `dirname` `realpath` `df` `true` `false` `:` | ✅ | ❌ |
-| `read` (18) | `cat` `head` `tail` `nl` `sed`◆ `wc` `cut` `sort`◆ `uniq` `comm` `tr` `fold` `column` `cksum` `md5sum` `sha256sum` `stat` `file` | ✅ | ❌ |
-| `search` (2) | `grep` `rg` | ✅ | ❌ |
-| `inspect` (3) | `ls` `find` `du` | ✅ | ❌ |
-| `chdir` (1) | `cd` | ✅ | ❌ |
-| `env` (7) ◆ | `module` `pip` `pip3` `conda` `conda3` `mamba` `mamba3` | query only | on mutation |
-| `write` (4) | `mv` `cp` `mkdir` `chmod` | ⛔ | ✅ |
-| `exec` (29) | `gcc` `g++` `gfortran` `nvcc` `javac` `java` `node` `python` `python3` · `make` `cmake` `ctest` · `pytest` `ruff` `mypy` `pyflakes` `black` · `pdflatex` `latex` `xelatex` `lualatex` `pdftex` `tex` `bibtex` `biber` `makeindex` `latexmk` `dvips` `dvipdf` | ⛔ | ✅ |
+| `neutral` | `pwd` `echo` `which` `basename` `dirname` `realpath` `df` `true` `false` `:` `printenv` `export` | ✅ | ❌ |
+| `read` | `cat` `head` `tail` `nl` `sed`◆ `wc` `cut` `sort`◆ `uniq` `comm` `tr` `fold` `column` `cksum` `md5sum` `sha256sum` `stat` `file` | ✅ | ❌ |
+| `search` | `grep` `rg` | ✅ | ❌ |
+| `inspect` | `ls` `find` `du` | ✅ | ❌ |
+| `chdir` | `cd` | ✅ | ❌ |
+| `env` ◆ | `module` `pip` `pip3` `conda` `conda3` `mamba` `mamba3` | query only | on mutation |
+| `write` | `mv` `cp` `mkdir` `chmod` | ⛔ | ✅ |
+| `exec` | the compilers (`gcc` `g++` `gfortran` `clang` `nvcc` `mpicc` …), the build drivers (`make` `cmake` `ninja` `meson` …), the runners (`python` `python3` `java` `node` `pytest` `ctest`), the checkers (`ruff` `mypy` `pyflakes` `black`), the TeX engines, and `source` | ⛔ | ✅ |
+| **unplaced** | **everything else** (`git`, `rm`, `curl`, `tar`, `awk`, …) | ⛔ | ✅ |
 
-`git` (use `localgit`) and deletion (`rm`/`rmdir`) remain intentionally excluded. A
-Makefile recipe is effectively arbitrary execution, but no shell-injection vector.
+The last row is the one that changed: a head no group places classifies as `UNKNOWN`,
+which is read as a **run** — never plan-safe, never approval-exempt, owing a verdict, and
+with its path operands still extracted so they are confined and prompted for. Widening
+what bash accepts therefore widens what the user is *asked* about, not what slips
+through. A parity test (`test_no_classified_command_is_one_the_server_refuses`) fails if
+a group names a denied command, or if a category disagrees with how a call to it is
+gated. (It also used to check the client-side platform probe's toolchain list against
+`EXEC_EFFECTS`; that probe is gone — the platform servers below are now the only source
+of hardware and toolchain facts, queried on demand rather than injected.)
+
+`printenv` and `export` are `neutral` because their arguments are words (`VAR=value`), not
+paths, and neither can run a command; an `export` holds only for the rest of the one chain,
+which is fresh per call. `source` is filed `exec` because it *runs* the file it reads — see
+the interpreter note below for why it is the one runner that is allowed.
+
+A Makefile recipe is effectively arbitrary execution, but no shell-injection vector.
 `chmod` is a write of a file's *mode* rather than its contents, and it is allowed for one
 reason: running a workspace script by path (`./build.sh`) is already supported, but a
 script arriving without the x bit — a fresh checkout, or a file the agent just wrote —
@@ -563,14 +613,13 @@ gating are already right for it, and its operand is credited as *validated* by
   the shared parser, the nested segment inherits the ordinary operand confinement **and**
   the client's out-of-workspace gate for free (`find /etc -exec cat {} \;` still refuses).
   This grants no new power: `python f.py` was already directly invocable. Previously the
-  whole family was denied on the `-exec` token alone, and the rejection hint suggested
-  chaining via `xargs` — which is permanently banned in `_SHELL_RUNNERS`, so read-only
-  fan-out had no working spelling at all.
+  whole family was denied on the `-exec` token alone, leaving read-only fan-out no
+  working spelling at all.
 - TeX shell-escape/`write18` in every spelling (plus `_safe_env` pinning
   `shell_escape=f`, `openout_any=p`, `openin_any=p`).
-- env managers: `uninstall`/`remove`/`clean`/`run`/`config`, `conda env` outside
-  {`create`,`list`,`export`,`update`}, any unrecognised sub-command; `module` outside
-  discovery+load.
+- env managers: `run`/`execute` only — they nest an arbitrary command. Install,
+  uninstall, create, remove and config all run under the approval prompt; every
+  `module` sub-command does too.
 - any path operand, write-flag value or redirection target outside the workspace and not
   approved; a `$VAR` in path or redirection-target position; a heredoc; backgrounding;
   substitution; a subshell; every shell interpreter and generic runner.
@@ -579,27 +628,45 @@ Approval nuances: `bash_run` is `SENSITIVE` + `NON_BATCH`, so it is never queued
 end-of-turn batch review; an "always" grant is scoped by `_scope_command_prefix` to the
 **first two tokens** (`pip install`, `gcc solver.c`) for the session; the headless runner
 auto-approves everything.
-- **Shell interpreters and generic runners** (`bash`, `sh`, `eval`, `source`, `env`,
-  `xargs`, `sudo`) are permanently excluded — they nest a command the validator never
-  sees. They get their own rejection message saying exactly that, so the agent stops
-  looking for a wrapper instead of trying one spelling after another.
-- A rejection **inlines the full allowlist** in an `allowed_commands` field rather than
-  pointing at `bash_allowed_commands`: the payload is the reply to a *shell* call, so
-  any "call X to find out" pointer reads as one more shell command to try — which is
-  how an agent ends up running the name of an MCP tool and failing again on it.
-- **No-ops** (`true`, `false`, `:`) are allowlisted so the capability probe
+- **Shell interpreters** (`bash`, `sh`, `eval`, `sudo`, `.`) are permanently excluded —
+  they nest a command the validator never sees. They get their own rejection message
+  saying exactly that, so the agent stops looking for a wrapper instead of trying one
+  spelling after another. Generic *wrappers* (`env`, `xargs`, `timeout`, `nohup`) are no
+  longer among them: they are unwrapped, so what is judged is what they carry.
+  `source` is the deliberate exception (filed under `exec`): its operand is a
+  *file*, confined like any other path, so it nests no more than the already-allowed
+  `./build.sh` — and unlike it, it sets the environment the rest of the chain runs in
+  (`source venv/bin/activate && pytest`), which no other command can do. Only the
+  readable spelling is offered: the `.` form stays refused.
+- A rejection **names the route that replaces it** and never points at a tool to call:
+  the payload is the reply to a *shell* call, so any "call X to find out" pointer reads
+  as one more shell command to try — which is how an agent ends up running the name of
+  an MCP tool and failing again on it. `test_every_denied_command_names_the_route_that_replaces_it`
+  holds every denied name to a non-empty hint.
+- **No-ops** (`true`, `false`, `:`) are classified `neutral` so the capability probe
   `which pdflatex 2>/dev/null || true` is expressible; without them the chain is
   rejected on its last segment and the agent has no way to ask "is X available?".
 - **A no-match is a result, not an error**: `grep`/`rg` exit 1 (no match) and `which`
   exit 1 (absent) with empty stdout are returned as `status: ok` with `matches: 0`.
   Reported as failures they read as broken commands and get re-run verbatim. A real
   failure (exit 2) stays an error. Only the *last* segment decides, since that is what
-  bash reports.
+  bash reports — and a search piped into `head` exits 0 on empty output, so an empty
+  stdout at exit 0 is treated as an empty search result too.
+- **An empty search reports its scope** (`_no_match_scope_note`): when the search covered
+  one file that has same-extension neighbours, the note adds how many sit beside it and
+  went unsearched. An empty result admits two readings — wrong pattern, wrong place — and
+  naming only the pattern is what makes the pattern the term that gets varied. Read off
+  the segment that *searched a file*, not the last of the chain: exit status belongs to
+  the tail of a pipe, the scope to its head. Deliberately **factual, with no
+  instruction**: many empty searches are presence checks where the file was the question,
+  and "widen the scope" would be wrong advice. One call cannot tell a probe from a hunt —
+  only a run of them can, which is the dispatch backstop's job, not this note's.
 - **TeX is sandboxed twice**: every shell-escape/`write18` flag is denylisted at
   validation, and `_safe_env` pins kpathsea's `shell_escape=f` / `openout_any=p` /
   `openin_any=p` so `\write18` stays off even if the site's `texmf.cnf` enables it.
 - **Command chaining is allowed** (`;`, `&&`, `||`, `|`) — each segment is tokenized and
-  validated against the allowlist independently, so the allowlist stays load-bearing.
+  validated independently, so one denied command anywhere rejects the call, and one
+  non-read-only segment makes the whole call non-read-only.
 - **Multi-line commands are accepted**: an *unquoted* newline is a command separator, so
   it is normalized to `;` before tokenizing and every line is validated on its own
   (never folded into the argv of the line above — that was the reason newlines were once
@@ -620,10 +687,10 @@ auto-approves everything.
   module the client's gate and classifier import — one tokenizer, so "where does this
   command end" and "is `out.txt` a write or an argument of `ls`" cannot be answered two
   different ways by the guard and the prompt. The server keeps only the *policy*: the
-  allowlist, the flag denylists, and confinement.
-- **`module` (HPC Lmod) is supported**, scoped to discovery + load only (`avail`,
-  `spider`, `list`, `show`, `load` — no `unload`/`swap`/`purge`/`reset` or
-  `save`/`restore`). Since `module` is a shell *function*, the server sources Lmod init
+  denylist, the flag denylists, and confinement.
+- **`module` (HPC Lmod) is supported**, every sub-command included: `load`, `unload`,
+  `swap` and `purge` change this one subprocess's environment and nothing else, which
+  the approval prompt covers. Since `module` is a shell *function*, the server sources Lmod init
   in the wrapper around the validated command, so `module load cuda && nvcc ...` works
   within one call; module args are gated by a strict regex and a curated `MODULE*`/`LMOD_*`
   env is passed through.
@@ -679,13 +746,18 @@ auto-approves everything.
   gate surfaces every path a command names (see POLICY.md) and a grant reaches this
   guard through the shared sidecar, so an approved `cat /data/runs/log.txt` runs.
 - **One source of truth for "which tokens are paths"**: `servers/_shared/shell_paths.py`
-  holds `EXEC_COMMANDS`, `PATH_SENSITIVE_COMMANDS`, `normalize_path_arg`,
+  holds `EXEC_COMMANDS`, `PATH_INSENSITIVE_COMMANDS`, `normalize_path_arg`,
   `segment_path_operands` and `cd_destination`, and is imported by this guard *and* by
   the client gate. This guard confines what that gate prompts for; two copies would
   fail silently in both directions — a path the gate misses cannot be granted, a path
-  this guard misses is never gated. `_ALLOWED_COMMANDS` is built from the same
-  `EXEC_COMMANDS` group, so a command added to the toolchain cannot be forgotten in the
-  confinement list (asserted in `test_server_contracts`).
+  this guard misses is never gated. Confinement is the *default* — `takes_path_operands`
+  is true for everything but the listed no-ops — so a command nobody classified has its
+  operands confined too, which is exactly the one that most needs it (asserted in
+  `test_server_contracts`). `EXEC_COMMANDS` is the union
+  of four declared by *effect* — `VALIDATOR_COMMANDS`, `BUILD_COMMANDS`, `RUN_COMMANDS`,
+  `ENV_SETUP_COMMANDS`, mapped by `EXEC_EFFECTS`. The sandbox treats all four alike; the
+  split exists because what a green exit *proves* differs, and the client's evidence
+  layer must not have to guess it (see POLICY.md → *Validation Policy*).
 - **There is no `working_directory` argument.** Every call starts at the workspace root;
   `cd` moves within it and holds for the rest of that call (`cd sub && pytest t.py`),
   but each call is a fresh subprocess so it does not carry over. One way to say "where",
@@ -697,26 +769,6 @@ auto-approves everything.
   sandbox. A `cd` that stays inside the workspace prompts for nothing; the command that
   follows it decides.
 
-## workspace/server_localgit.py
-
-Purpose: read-only inspection of the **local working tree** (the checkout the agent
-is operating on), complementing `external/server_github.py` (remote GitHub API).
-
-Tools:
-- `git(op, ...)` — single read-only dispatch; set `op` to one of: `status`, `log`
-  (uses `max_count`, `path`), `diff` (uses `path`, `staged`), `show` (uses `ref`),
-  `branches`, `blame` (uses `path`, `start_line`, `end_line`), `grep` (uses `pattern`, `path`).
-
-Safety model:
-- All tools are read-only, so none are approval-gated.
-- A single private runner executes `git` with `shell=False`, `cwd` pinned to the
-  workspace root, and a minimal environment; output is capped.
-- Only an allowlist of read-only subcommands is accepted (`status`, `log`, `show`,
-  `diff`, `branch`, `rev-parse`, `remote`, `ls-files`, `grep`, `describe`, `tag`,
-  `blame`).
-- The `-c` and `--exec-path` global options are refused outright (they are
-  config-injection code-execution vectors).
-
 ## agent_state/server_spawn_agent.py
 
 Purpose: delegate a self-contained sub-task to a **fresh** `MimirAgent` that runs to
@@ -724,22 +776,48 @@ completion and returns its answer, so the orchestrator can fan work out instead 
 carrying every intermediate step in its own context.
 
 Tools:
-- `spawn_agent(task, context="", model="", max_steps=30, readonly=False)` — spin up a
-  child agent, run it, return its answer. `context` is prepended to the task prompt;
-  `model` defaults to `MIMIR_DEFAULT_MODEL` then the parent's active model; `readonly=True`
-  connects only read/search servers, so the sub-agent can neither write files nor run code.
+- `spawn_agent(task, context="", role="explore", max_steps=30)` — spin up a child agent,
+  run it, return its answer. `context` is prepended to the task prompt; the model is
+  always the parent's (`MIMIR_DEFAULT_MODEL`, then the config default) since the backend
+  serves one at a time.
+  - `role="explore"` (default) — read-only reconnaissance. The child runs in a **read-only
+    mode**, which is what makes it read-only: the mode strips every `PLAN_BLOCKED` tool and
+    gates the dual-use shell at call time. The server-name set it connects
+    (`capabilities.explorer_servers()`) is a *connection-cost* filter, not the guarantee —
+    `files` carries the write tools too. The child is briefed to answer with a conclusion
+    citing files, symbols and line numbers rather than the contents it read; the caller
+    delegates precisely to keep those contents out of its window.
+  - `role="task"` — the full workspace toolkit, for a separable piece of work that must
+    write. Refused outright in plan/ask mode (see below).
+
+Capabilities and gating:
+- Declares `DELEGATE` (the channel prompt, guidance and observation all address by
+  capability rather than by name) and `PLAN_READONLY`. As a dual-use tool it stays visible
+  in the read-only modes — that is where a sweep is the whole of the work — and its
+  descriptor names which invocations are the read-only ones
+  (`readonly_when={"arg": "role", "values": ["explore"]}`), which the client's
+  `readonly_guard` reads off the descriptor. A `role="task"` call in plan/ask mode is
+  rejected with a tool-role error telling the model how to re-issue it.
+- Declared `reversibility="reversible"`, hence **not** approval-gated: a card in front of
+  every exploration is a card in front of the behaviour the tool exists to make cheap. A
+  writing child is gated by its own approval layer.
 
 Execution model:
 - The tool is synchronous from the model's point of view but runs the sub-agent in a
   dedicated thread with its own event loop, so it is safe to call from inside the parent's
   running asyncio loop. Several `spawn_agent` calls emitted in one model step are
-  dispatched **concurrently** by the parent's `asyncio.gather` in `dispatch.py`.
-- Hard cap of 600 s per sub-agent; a crash or timeout returns `status="error"` with the
-  partial answer rather than an `ok` payload, so the orchestrator branches on `status`
-  instead of string-matching the answer.
-- Success payload: `{"status": "ok", "answer", "completed", "files_written"}` —
-  `completed=False` means the sub-agent ran out of steps or reported the task incomplete
-  (the answer is still informative), and `files_written` lets a parent coordinating
+  dispatched **concurrently** by the parent's `asyncio.gather` in `dispatch.py` — which is
+  why the prompt asks for the fan-out in a single response.
+- Hard cap of `SUBAGENT_HARD_CAP_SECS` (600 s) per sub-agent, enforced here. The tool
+  *declares* a larger wall to the dispatcher (`timeout_secs`, read by
+  `capabilities.timeout_for`), so the inner cap always fires first and hands back the
+  child's partial answer instead of the parent killing the call with nothing to show.
+  Before this, the dispatcher's flat 120 s applied and no non-trivial delegation could
+  finish.
+- Success payload: `{"status": "ok", "answer", "completed", "files_read", "files_written"}`
+  — `completed=False` means the sub-agent ran out of steps or reported the task incomplete
+  (the answer is still informative); `files_read` is what the caller's observation layer
+  credits as delegated discovery evidence; `files_written` lets a parent coordinating
   concurrent sub-agents detect overlapping edits.
 - Sub-agent stdout is prefixed with the task name so its activity stays identifiable in
   the UI. The capability registry is strictly per-agent, which is what makes concurrent
@@ -1060,7 +1138,7 @@ declare surfaces instead of silently losing its policy/approval/caching semantic
 `bash`, `web`, `memory`, `todo`, `benchmark`, `hpc`,
 `finetune`, `proxy`) self-declares via
 `@mcp.tool(**tool_caps(...))`. Pure tools (math, string, datetime ops, read-only
-queries/advisors, `bash_allowed_commands`) declare nothing — they correctly carry no capability.
+queries/advisors) declare nothing — they correctly carry no capability.
 The expected classification is the golden oracle in `mimir/tests/_golden_caps.py`;
 `test_phase_b_servers.py` AST-parses every decorator and asserts the resulting
 registry reproduces it. A new server "just works": declare each tool's caps and the

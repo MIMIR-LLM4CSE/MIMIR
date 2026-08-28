@@ -1,4 +1,7 @@
 import type { ChatMessage, DiffEntry, ServerMessage, ToolActivity } from "../types";
+import {
+  insertAfterFamily, relabelOrigins, settleFamily,
+} from "../components/subAgentUtils";
 
 // A reasoning block — reasoning TEXT only. Tool calls are tracked separately
 // (see `liveToolCalls`); thinking and tools are fully decorrelated.
@@ -17,6 +20,12 @@ export type ThinkingBlock = {
 
 export interface ChatState {
   messages: ChatMessage[];
+  /** Prose of the turn in flight, held OUT of the transcript until the loop
+   *  accepts it. A turn only becomes an answer once it ends with no tool call
+   *  and no guardrail sends the model back to work, so anything streamed before
+   *  that is a draft: putting it straight into the message list is what made a
+   *  finished-looking answer appear and then vanish. */
+  draft: string;
   /** Live reasoning blocks for the current turn (text only). */
   liveThinkingBlocks: ThinkingBlock[];
   /** Live structured tool invocations for the current turn — independent of
@@ -24,7 +33,7 @@ export interface ChatState {
   liveToolCalls: ToolActivity[];
   busy: boolean;
   /** True when tool calls / a thinking phase occurred since the last token, so
-   *  the next token opens a fresh streaming bubble instead of appending. */
+   *  the next token starts a new paragraph in the draft. */
   toolCallAfterToken: boolean;
   /** Diffs accumulated for the current turn, attached to the final answer. */
   pendingDiffs: DiffEntry[];
@@ -34,6 +43,7 @@ export interface ChatState {
 
 export const initialChatState: ChatState = {
   messages: [],
+  draft: "",
   liveThinkingBlocks: [],
   liveToolCalls: [],
   busy: false,
@@ -61,7 +71,7 @@ const TOOL_ICONS: Record<string, string> = {
   grep: "🔍", search_code_patterns: "🔍", find_similar_files: "🔍", find_files: "🔍",
   list_directory: "📂", list_files: "📂", file_exists: "📂", get_file_info: "📂",
   tree_summary: "🌳",
-  write_file: "✏️", append_file: "✏️", apply_edits: "✏️", replace_all_in_file: "✏️",
+  write_file: "✏️", append_file: "✏️", replace_all_in_file: "✏️",
   insert_text: "✏️", replace_lines: "✏️",
   delete_file: "🗑️",
   web_fetch: "🌐",
@@ -82,6 +92,38 @@ export function iconForTool(name: string): string {
   if (name.includes("read") || name.includes("get")) return "📖";
   if (name.includes("write") || name.includes("edit") || name.includes("replace")) return "✏️";
   return "🔧";
+}
+
+/**
+ * Apply *transform* to whichever list currently holds the row *id*.
+ *
+ * A row lives in `liveToolCalls` during its step, then gets baked into a
+ * `kind:"tools"` message. Late-arriving news about it (its result, a verdict, a
+ * sub-agent step) can land on either side of that boundary — showing an approval
+ * card mid-flight runs freezePending on a still-running row — so every patch has to
+ * look in both places. Returns null when the row is nowhere: an event for a turn the
+ * user has already cleared is dropped, not applied to a stranger.
+ */
+function patchToolById(
+  state: ChatState,
+  id: string,
+  transform: (tools: ToolActivity[]) => ToolActivity[],
+): ChatState | null {
+  if (state.liveToolCalls.some((t) => t.id === id)) {
+    return { ...state, liveToolCalls: transform(state.liveToolCalls) };
+  }
+  const idx = state.messages.findIndex(
+    (m) => m.kind === "tools" && (m.tools ?? []).some((t) => t.id === id)
+  );
+  if (idx >= 0) {
+    return {
+      ...state,
+      messages: state.messages.map((m, i) =>
+        i === idx ? { ...m, tools: transform(m.tools ?? []) } : m
+      ),
+    };
+  }
+  return null;
 }
 
 /**
@@ -132,6 +174,26 @@ function freezePending(state: ChatState, makeId: () => string): ChatState {
 }
 
 /**
+ * Move the draft into the transcript, if there is anything in it.
+ *
+ * Called before anything else is appended below it — a card, a frozen tool list,
+ * an error — so committed prose keeps its place in the order it was written.
+ * NOT called on `answer` (the authoritative text supersedes the draft) or on
+ * `nudge_injected` (the turn was not accepted, so there is nothing to keep).
+ */
+function commitDraft(state: ChatState, makeId: () => string): ChatState {
+  if (!state.draft.trim()) return state.draft ? { ...state, draft: "" } : state;
+  return {
+    ...state,
+    draft: "",
+    messages: [
+      ...state.messages,
+      { id: makeId(), role: "agent", kind: "text", text: state.draft },
+    ],
+  };
+}
+
+/**
  * Pure reducer for the streaming / thinking / approval / diff state machine.
  * `makeId` is injected so the reducer stays deterministic under test.
  */
@@ -174,39 +236,33 @@ export function createChatReducer(makeId: () => string) {
         };
       }
 
-      // A guardrail nudge was injected into the agent's user turn. Rendered as its
-      // own bubble, tagged with the firing category: without it, a run that pivots
-      // after a nudge looks like the agent acting on its own.
-      case "nudge_injected": {
-        const nudgeMsg: ChatMessage = {
-          id: makeId(),
-          role: "user",
-          kind: "text",
-          text: action.text,
-          nudge: action.category,
-        };
-        return { ...state, messages: [...state.messages, nudgeMsg] };
-      }
+      // A guardrail nudge fired, which means the loop did not accept the turn the
+      // model just wrote as its answer. Two things follow.
+      //
+      // The nudge is not rendered: it occupies the user's turn slot without coming
+      // from the user, and as a bubble it reads as instructions nobody typed.
+      //
+      // The draft is dropped, because nothing has been answered yet — the model is
+      // about to reconsider and either go back to work or write a different ending.
+      // Nothing disappears from the transcript here: a provisional turn never
+      // entered it, which is the whole point of holding it in `draft`.
+      case "nudge_injected":
+        return state.draft ? { ...state, draft: "" } : state;
 
       case "reset":
         return initialChatState;
 
-      case "connection_lost":
-        return {
-          ...state,
-          busy: false,
-          liveThinkingBlocks: [],
-          liveToolCalls: [],
-          // Seal any in-progress streaming bubble so the typing indicator clears.
-          messages: state.messages.map((m) =>
-            m.kind === "streaming" ? { ...m, kind: "text" as const } : m
-          ),
-        };
+      case "connection_lost": {
+        // Keep whatever prose had arrived: the turn was cut off, not superseded.
+        const s = commitDraft(state, makeId);
+        return { ...s, busy: false, liveThinkingBlocks: [], liveToolCalls: [] };
+      }
 
       case "session_loaded_messages":
         return {
           ...state,
           messages: action.messages,
+          draft: "",
           liveThinkingBlocks: [],
           liveToolCalls: [],
           busy: false,
@@ -283,45 +339,32 @@ export function createChatReducer(makeId: () => string) {
         const delta = action.text;
         const isNewLLMStep = state.toolCallAfterToken;
         let s: ChatState = { ...state, toolCallAfterToken: false };
-        // Freeze pending thinking + tools so they stay above the new LLM text.
-        if (isNewLLMStep) s = freezePending(s, makeId);
-
         if (isNewLLMStep) {
-          let streamIdx = -1;
-          for (let i = s.messages.length - 1; i >= 0; i--) {
-            if (s.messages[i].kind === "streaming") { streamIdx = i; break; }
-          }
-          if (streamIdx >= 0) {
-            const prevText = s.messages[streamIdx].text ?? "";
-            const sep =
-              prevText === "" || /\s$/.test(prevText) || /^\s/.test(delta) ? "" : "\n\n";
-            // Keep the original id so React reuses the same DOM node.
-            const messages = s.messages.map((m, i) =>
-              i === streamIdx ? { ...m, text: prevText + sep + delta } : m
-            );
-            return { ...s, messages };
+          // Only a step that actually produced cards is a boundary worth breaking
+          // the prose at: prose written before this step's tools belongs above
+          // them, so it is committed first and the cards are frozen in under it.
+          // A bare status flagged activity that has nothing to show, and splitting
+          // one turn's prose over it would fragment it for nothing.
+          const hasCards =
+            s.liveToolCalls.length > 0 ||
+            s.liveThinkingBlocks.some((b) => b.text.trim().length > 0);
+          if (hasCards) {
+            s = freezePending(commitDraft(s, makeId), makeId);
+          } else if (s.draft && !/\s$/.test(s.draft) && !/^\s/.test(delta)) {
+            s = { ...s, draft: s.draft + "\n\n" };
           }
         }
-        const last = s.messages[s.messages.length - 1];
-        if (last && last.kind === "streaming") {
-          return {
-            ...s,
-            messages: [...s.messages.slice(0, -1), { ...last, text: (last.text ?? "") + delta }],
-          };
-        }
-        return {
-          ...s,
-          messages: [...s.messages, { id: makeId(), role: "agent", kind: "streaming", text: delta }],
-        };
+        return { ...s, draft: s.draft + delta };
       }
 
       case "file_progress": {
         const progressDiffs: DiffEntry[] = action.diffs ?? [];
         if (progressDiffs.length === 0) return state;
-        const liveIdx = state.messages.findIndex((m) => m.kind === "editing" && m.live);
+        const s0 = commitDraft(state, makeId);
+        const liveIdx = s0.messages.findIndex((m) => m.kind === "editing" && m.live);
         let messages: ChatMessage[];
         if (liveIdx >= 0) {
-          messages = state.messages.map((m, i) => {
+          messages = s0.messages.map((m, i) => {
             if (i !== liveIdx) return m;
             const existing = m.diffs ?? [];
             const merged = [...existing];
@@ -334,21 +377,17 @@ export function createChatReducer(makeId: () => string) {
           });
         } else {
           messages = [
-            ...state.messages,
+            ...s0.messages,
             { id: makeId(), role: "agent", kind: "editing", live: true, diffs: progressDiffs },
           ];
         }
-        return { ...state, messages };
+        return { ...s0, messages };
       }
 
       case "approval": {
-        let s = freezePending({ ...state, toolCallAfterToken: false }, makeId);
+        let s = freezePending(commitDraft({ ...state, toolCallAfterToken: false }, makeId), makeId);
         s = { ...s, busy: false, pendingDiffs: [] };
-        // Seal an in-progress streaming bubble so it doesn't blink above the card.
-        const sealed = s.messages.map((m) =>
-          m.kind === "streaming" ? { ...m, kind: "text" as const } : m
-        );
-        const base = sealed.map((m) =>
+        const base = s.messages.map((m) =>
           m.kind === "editing" && m.live ? { ...m, live: false } : m
         );
         let existingIdx = -1;
@@ -469,71 +508,100 @@ export function createChatReducer(makeId: () => string) {
                 durationMs: duration_ms,
               }
             : t;
-        // Common case: the tool is still live in the active step.
-        if (state.liveToolCalls.some((t) => t.id === id)) {
-          return { ...state, liveToolCalls: state.liveToolCalls.map(patch) };
-        }
-        // The row may have been frozen into a "tools" message BEFORE its result
-        // arrived: showing an approval card mid-flight runs freezePending, which
-        // bakes the still-running tool and clears liveToolCalls. Without this
-        // branch the post-approval result — carrying the exec IN/OUT panel and
-        // the real status/duration — would be dropped, leaving a stale "running"
-        // row baked as done with no output. Patch it in place instead.
-        const frozenIdx = state.messages.findIndex(
-          (m) => m.kind === "tools" && (m.tools ?? []).some((t) => t.id === id)
+        const now = Date.now();
+        // A delegating call's result also settles whatever its sub-agent left running.
+        return (
+          patchToolById(state, id, (tools) => settleFamily(tools.map(patch), id, now)) ??
+          state
         );
-        if (frozenIdx >= 0) {
-          const messages = state.messages.map((m, i) =>
-            i === frozenIdx ? { ...m, tools: (m.tools ?? []).map(patch) } : m
-          );
-          return { ...state, messages };
-        }
-        return state;
       }
 
       case "verdict": {
         // Lands on the row of the run it judges, which may already be frozen into a
         // "tools" message by the time the model gets around to judging it.
         const { id: vId, verdict } = action;
-        const patch = (t: ToolActivity): ToolActivity =>
-          t.id === vId ? { ...t, verdict } : t;
-        if (state.liveToolCalls.some((t) => t.id === vId)) {
-          return { ...state, liveToolCalls: state.liveToolCalls.map(patch) };
-        }
-        const idx = state.messages.findIndex(
-          (m) => m.kind === "tools" && (m.tools ?? []).some((t) => t.id === vId)
+        return (
+          patchToolById(state, vId, (tools) =>
+            tools.map((t) => (t.id === vId ? { ...t, verdict } : t))
+          ) ?? state
         );
-        if (idx >= 0) {
-          return {
-            ...state,
-            messages: state.messages.map((m, i) =>
-              i === idx ? { ...m, tools: (m.tools ?? []).map(patch) } : m
-            ),
-          };
+      }
+
+      case "subagent_event": {
+        // A sub-agent's step, shown as an ordinary tool row under the call that
+        // spawned it — same spinner, same timer, same freezing. Only the indent and
+        // the origin badge say it came from somewhere else.
+        const parentId = action.parent_id;
+        if (action.kind === "tool_call") {
+          return (
+            patchToolById(state, parentId, (tools) => {
+              const child: ToolActivity = {
+                id: action.id ?? `${parentId}:?`,
+                name: action.name ?? "",
+                icon: iconForTool(action.name ?? ""),
+                label: action.label ?? "",
+                detail: action.detail ?? "",
+                status: "running",
+                startedAt: Date.now(),
+                parentId,
+              };
+              return relabelOrigins(insertAfterFamily(tools, parentId, child));
+            }) ?? state
+          );
         }
-        return state;
+        if (action.kind === "tool_result") {
+          const childId = action.id ?? "";
+          return (
+            patchToolById(state, childId, (tools) =>
+              tools.map((t) =>
+                t.id === childId
+                  ? {
+                      ...t,
+                      status: action.ok ? ("ok" as const) : ("error" as const),
+                      summary: action.summary,
+                      durationMs: action.duration_ms,
+                    }
+                  : t
+              )
+            ) ?? state
+          );
+        }
+        // "end": how much of the child's activity was shed rather than shown.
+        return (
+          patchToolById(state, parentId, (tools) =>
+            tools.map((t) =>
+              t.id === parentId ? { ...t, childrenDropped: action.dropped } : t
+            )
+          ) ?? state
+        );
       }
 
       case "diff": {
         const { file: dFile, patch: dPatch } = action;
         const isNewFile = !dPatch || dPatch.includes("/dev/null");
-        const s = { ...state, pendingDiffs: [...state.pendingDiffs, { file: dFile, patch: dPatch }] };
+        // The emitter diffs against the turn's baseline snapshot, so each event
+        // already carries the file's full change: coalesce by path instead of
+        // stacking, or a file edited N times shows N near-identical cards.
+        const pending = [...state.pendingDiffs];
+        const pi = pending.findIndex((d) => d.file === dFile);
+        if (pi >= 0) pending[pi] = { ...pending[pi], patch: dPatch };
+        else pending.push({ file: dFile, patch: dPatch });
+        const s = commitDraft({ ...state, pendingDiffs: pending }, makeId);
         const liveIdx = s.messages.findIndex((m) => m.kind === "editing" && m.live);
         let messages: ChatMessage[];
         if (liveIdx >= 0) {
-          // One entry per diff event, not per file: a file written then edited twice
-          // owes three diffs, each carrying its own is_new — an edit is not a creation.
-          messages = s.messages.map((m, i) =>
-            i !== liveIdx
-              ? m
-              : {
-                  ...m,
-                  diffs: [
-                    ...(m.diffs ?? []),
-                    { file: dFile, patch: dPatch, is_new: isNewFile },
-                  ],
-                }
-          );
+          messages = s.messages.map((m, i) => {
+            if (i !== liveIdx) return m;
+            const diffs = [...(m.diffs ?? [])];
+            const fi = diffs.findIndex((d) => d.file === dFile);
+            if (fi >= 0) {
+              // is_new is sticky: a file created then edited is still a creation.
+              diffs[fi] = { ...diffs[fi], patch: dPatch, is_new: diffs[fi].is_new || isNewFile };
+            } else {
+              diffs.push({ file: dFile, patch: dPatch, is_new: isNewFile });
+            }
+            return { ...m, diffs };
+          });
         } else {
           messages = [
             ...s.messages,
@@ -550,7 +618,9 @@ export function createChatReducer(makeId: () => string) {
       }
 
       case "answer": {
-        let s = freezePending({ ...state, toolCallAfterToken: false }, makeId);
+        // The draft is discarded rather than committed: `action.text` is the same
+        // turn, authoritative and complete (it carries the verification ledger).
+        let s = freezePending({ ...state, draft: "", toolCallAfterToken: false }, makeId);
         const diffs = [...s.pendingDiffs];
         const thinkingText = s.pendingThinking;
         s = { ...s, pendingDiffs: [], pendingThinking: "", busy: false };
@@ -558,33 +628,28 @@ export function createChatReducer(makeId: () => string) {
         const finalized = noApproval.map((m) =>
           m.kind === "editing" && m.live ? { ...m, live: false } : m
         );
-        const streamIdx = finalized.reduce((idx, m, i) => (m.kind === "streaming" ? i : idx), -1);
         const hasEditCard = finalized.some((m) => m.kind === "editing");
         const attachDiffs = !hasEditCard && diffs.length > 0 ? diffs : undefined;
-        let messages: ChatMessage[];
-        if (streamIdx !== -1) {
-          messages = finalized.map((m, i) =>
-            i === streamIdx
-              ? { ...m, kind: "text" as const, text: action.text, diffs: attachDiffs, thinking: thinkingText || undefined }
-              : m
-          );
-        } else {
-          messages = [
-            ...finalized,
-            { id: makeId(), role: "agent", kind: "text", text: action.text, diffs: attachDiffs, thinking: thinkingText || undefined },
-          ];
-        }
+        const messages: ChatMessage[] = [
+          ...finalized,
+          {
+            id: makeId(),
+            role: "agent",
+            kind: "text",
+            text: action.text,
+            diffs: attachDiffs,
+            thinking: thinkingText || undefined,
+          },
+        ];
         return { ...s, messages };
       }
 
       case "error": {
-        const s = freezePending({ ...state, toolCallAfterToken: false }, makeId);
+        const s = freezePending(commitDraft({ ...state, toolCallAfterToken: false }, makeId), makeId);
         const messages: ChatMessage[] = [
-          ...s.messages.map((m) => {
-            // Seal an in-progress streaming bubble so its typing indicator clears.
-            if (m.kind === "streaming") return { ...m, kind: "text" as const };
-            return m.kind === "editing" && m.live ? { ...m, live: false } : m;
-          }),
+          ...s.messages.map((m) =>
+            m.kind === "editing" && m.live ? { ...m, live: false } : m
+          ),
           { id: makeId(), role: "agent", kind: "error", text: action.text },
         ];
         return { ...s, busy: false, messages };

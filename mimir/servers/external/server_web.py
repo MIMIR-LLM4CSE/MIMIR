@@ -18,7 +18,7 @@ import urllib.request
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '_shared'))
 
 from mcp.server.fastmcp import FastMCP
-from capabilities import tool_caps, PLAN_BLOCKED, IRREVERSIBLE
+from capabilities import tool_caps, EXTERNAL_FETCH, PLAN_BLOCKED, IRREVERSIBLE
 from responses import err, ok
 
 mcp = FastMCP(
@@ -128,6 +128,7 @@ def _http_request(method: str, url: str, headers: dict = None, data: bytes = Non
     # sensitive when the URL targets an authenticated/mutating endpoint. The `host`
     # scope (which arg carries the URL) is what drives that conditional gate and
     # narrows any "always" approval to one destination host.
+    caps=[EXTERNAL_FETCH],
     scope={"args": ["url"], "kind": "host"},
     risk_note="fetches from an authenticated or otherwise sensitive endpoint",
     label="Fetching {url}",
@@ -156,7 +157,7 @@ def http_get(url: str, headers: dict = None) -> dict:
 
 
 @mcp.tool(**tool_caps(
-    caps=[PLAN_BLOCKED], reversibility=IRREVERSIBLE, non_batch=True,
+    caps=[EXTERNAL_FETCH, PLAN_BLOCKED], reversibility=IRREVERSIBLE, non_batch=True,
     scope={"args": ["url"], "kind": "host"},
     risk_note="sends data to an external service",
     label="Posting to {url}",

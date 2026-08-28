@@ -31,6 +31,12 @@ TARGETED_LINE_READ_EXTENSIONS: tuple[str, ...] = (
     ".csv",
 )
 
+# The single ranged-read entrypoint, and the window its server applies when the caller
+# names none. Mirrored here so a call can be made to say what it asks for before it
+# leaves the client (see rewrite_tool_for_context).
+RANGED_READ_TOOL = "read_file_lines"
+DEFAULT_READ_WINDOW = 200
+
 # Utility to recursively convert unhashable types (list → tuple, dict → frozenset) for cache keys
 def _make_hashable(obj: Any) -> Any:
     """Recursively convert unhashable types (list → tuple, dict → frozenset) for cache keys."""
@@ -95,10 +101,10 @@ def rewrite_tool_for_context(
     normalize_workspace_path_fn: Callable[[str | None], str],
 ) -> tuple[str, dict]:
     """Rewrite broad tool calls into cheaper equivalents when safe."""
-    if tool_name != "read_file":
+    if tool_name not in ("read_file", RANGED_READ_TOOL):
         return tool_name, arguments
 
-    if "read_file_lines" not in tool_owner:
+    if RANGED_READ_TOOL not in tool_owner:
         return tool_name, arguments
 
     path = normalize_workspace_path_fn(arguments.get("path"))
@@ -113,11 +119,18 @@ def rewrite_tool_for_context(
 
     rewritten = dict(arguments)
     rewritten.setdefault("start_line", 1)
-    if is_targeted_text:
+    if tool_name == RANGED_READ_TOOL:
+        # A range the model left out is a range the *server* would pick. Filling it in
+        # here is what makes the request say what it asks for: everything downstream
+        # (coverage accounting, the repeat guards, the cache key) reads the arguments,
+        # and a call that names no range is indistinguishable from one asking for the
+        # whole file — which is how "read the file" kept meaning "read its header".
+        rewritten.setdefault("end_line", DEFAULT_READ_WINDOW)
+    elif is_targeted_text:
         rewritten.setdefault("end_line", 120 if is_code_filepath(path) else 160)
     else:
         rewritten.setdefault("end_line", 0)
-    return "read_file_lines", rewritten
+    return RANGED_READ_TOOL, rewritten
 
 
 def parent_path(path: str) -> str:

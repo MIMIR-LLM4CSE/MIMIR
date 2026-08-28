@@ -137,6 +137,12 @@ def tool_status_message(name: str, args: dict) -> str:
 # Argument keys that carry a runnable command / code body, in priority order.
 _COMMAND_KEYS = ("command", "cmd", "script", "code")
 _PATH_KEYS = ("path", "filepath", "file")
+# Result-list key → its singular, for the row count of a search that reports hits.
+_SEARCH_RESULT_KEYS = {
+    "matches": "match",
+    "references": "reference",
+    "definitions": "definition",
+}
 
 
 def tool_arg_preview(name: str, args: dict) -> str:
@@ -217,9 +223,10 @@ def error_detail(result: str) -> str:
 
     ``summarize_tool_result`` deliberately clips its summary to a single 100-char
     line so the activity row stays compact; that clipped line is useless on its own
-    for diagnosing a failure. This returns the untruncated message (plus the hint
-    and any policy reason, when the payload carries them) so the UI can show it in
-    a full-width panel under the row.
+    for diagnosing a failure. This returns the untruncated message (plus any policy
+    reason, when the payload carries one) so the UI can show it in a full-width
+    panel under the row. The payload's ``hint`` is guidance aimed at the model, not
+    at the user, and is deliberately left out.
 
     Returns "" when no error text can be extracted (the caller then falls back to
     the summary).
@@ -245,9 +252,6 @@ def error_detail(result: str) -> str:
         stage = payload.get("policy_stage")
         if stage and not err:
             parts.append(f"blocked by policy ({stage})")
-        hint = payload.get("hint")
-        if hint:
-            parts.append(f"Hint: {str(hint).strip()}")
         detail = "\n\n".join(p for p in parts if p)
     else:
         detail = text
@@ -272,7 +276,7 @@ def summarize_tool_result(name: str, result: str, tool_caps=None) -> tuple[bool,
     text = result.strip()
     if text.startswith("{"):
         # Parse only the LEADING JSON object: the client appends advisory text
-        # (AUTO_VALIDATION, READ_HINT, MORE_CONTENT) after the payload, and a full
+        # (AUTO_VALIDATION, MORE_CONTENT, OUTLINE) after the payload, and a full
         # json.loads on the combined string fails into the plain-text heuristic below —
         # where a validator's embedded "status": "error" flips a successful edit to a
         # failed row. raw_decode ignores the trailing text.
@@ -295,10 +299,13 @@ def summarize_tool_result(name: str, result: str, tool_caps=None) -> tuple[bool,
             err = str(payload.get("error") or "failed")
             return False, err.splitlines()[0].strip()[:100]
         if has_cap(name, SEARCH_WITH_PATH, tool_caps):
-            matches = payload.get("matches")
-            if isinstance(matches, list):
-                n = len(matches)
-                return True, f"{n} match{'es' if n != 1 else ''}"
+            # Each search names its own result list; counting only "matches" left the
+            # row of every tool that carries this capability blank.
+            for plural, singular in _SEARCH_RESULT_KEYS.items():
+                hits = payload.get(plural)
+                if isinstance(hits, list):
+                    n = len(hits)
+                    return True, f"{n} {singular if n == 1 else plural}"
         if has_cap(name, READ, tool_caps):
             # Prefer the exact line range read (read_file_lines returns the actual
             # start/end) so the activity row says "lines 207-211" instead of a bare

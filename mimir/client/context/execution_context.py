@@ -5,32 +5,38 @@ from dataclasses import dataclass, field
 from collections.abc import Iterable
 from typing import Any, Callable, TypedDict, cast
 
+from ..config.constants import (
+    DISCOVERY_EVIDENCE_MIN_DISTINCT_PLAN, PLAN_EVIDENCE_MIN_FILES_READ,
+)
+
 
 class ExecutionContext(TypedDict):
     # ── Discovery: what the agent has searched, inspected, and read ────────────
     searched: bool                                  # True once any SEARCH-capability tool has run (discovery-evidence signal)
     planned_edit_targets: set[str]                  # files the model intends to / has begun editing (union'd with dirty for todo + blast gating)
-    inspected_dirs: set[str]                        # directories listed/inspected (delete context, discovery); counts as evidence beyond BASELINE_SEEDED_DIRS
+    inspected_dirs: set[str]                        # directories listed/inspected (delete context, discovery-evidence signal)
     checked_paths: set[str]                         # paths whose existence was probed via an existence check
     read_files: set[str]                            # files whose content was read (edit/overwrite precondition; dropped to force a re-read after repeated edit failures)
     existing_paths: set[str]                        # paths proven to exist on disk (reads, existence hits, candidate matches, written files + their parent dirs)
+    delegated_read_files: set[str]                  # files a delegated sub-agent read and reported back; discovery evidence for the caller, never a substitute for read_files
     similar_candidates_by_dir: dict[str, set[str]]  # per-directory near-name candidates from candidate searches (path clarification)
     search_tool_calls: int                          # count of successful search calls (blast-radius gate)
     action_op_count: int                            # count of successful substantive actions (PLAN_BLOCKED: writes/exec/mutations); drives the todo op-count trigger
     # ── Edit: planned and in-flight mutations ──────────────────────────────────
     dirty_written_files: set[str]                   # code files successfully written this query and not yet re-validated
     validated_files: set[str]                       # dirty files that have since passed a checker (syntax/imports/lint) — never an execution
-    validation_tier_by_file: dict[str, str]         # per-file strength of that validation: syntax|static (completion ledger)
+    validation_tier_by_file: dict[str, str]         # per-file strength of that validation: syntax|static|compiled (completion ledger)
     validation_fail_count_by_file: dict[str, int]   # per-file count of failed checks (retry-budget exhaustion)
-    runs: dict[str, dict[str, Any]]                 # command -> {call_id, completed: bool, verdict: ''|pass|fail|unknown, reason, failures: int, attempts: [str]}: everything about an execution, which is judged on its own and credits no file
+    unverifiable_files: set[str]                    # dirty files whose language has no checker in this environment: reported, never demanded
+    runs: dict[str, dict[str, Any]]                 # command -> {call_id, completed: bool, effect: run|build, verdict: ''|pass|fail|unknown, reason, failures: int, attempts: [str]}: everything about an execution, which is judged on its own and credits no file
+    exercise_advice_closed: bool                    # True once the model answered the run/verdict advice; the shared exercise budget never re-arms after that
+    exercise_blocked_reason: str                    # why running the change was out of reach (no exec tool, unresolved imports, needs a build): reported in the ledger instead of silently dropping the advice
+    evidence_handback_used: bool                    # True once the model was handed the completion ledger to rewrite its summary (once per query)
     denied_tool_calls: list[dict[str, Any]]         # tool calls blocked by policy/approval (denial nudge + finalization)
     denial_history: list[dict[str, Any]]            # append-only refusal log keyed by approval scope; drives the escalation ladder (never cleared, unlike denied_tool_calls)
     workflow_state: str                             # coarse phase of the loop: "discover" | "edit" | "validate" | "conclude"
     code_mutation_started: bool                     # True once the first code file was successfully edited this query
-    cluster_submit_warned: bool                     # True once the pre-submission HPC guard has fired once this query
     nudge_counts: dict[str, int]                    # per-category nudge fire counts (frequency caps). keys: discovery, validation, denial, state, creation, blast_radius, doc, todo, error_recovery, regression
-    search_queries_used: set[str]                   # normalized query/pattern strings already searched (redundant-search detection)
-    read_file_line_counts: dict[str, int]           # per-file cumulative lines read (10_000 sentinel == whole file)
     cross_file_grep_old_text: str | None            # old_text of a confirmed workspace-wide replace, seeding the cross-file completeness check
     cross_file_grep_source: str | None              # file where that workspace-wide replacement originated
     last_replace_old_text: str | None               # old_text of the most recent tracked replacement (completeness checking)
@@ -40,7 +46,6 @@ class ExecutionContext(TypedDict):
     edit_fail_streak_by_file: dict[str, int]        # path -> consecutive edit failures regardless of patch (force-re-read + error_recovery)
     steps_since_last_edit: int                      # agent-loop steps since the last successful edit (idle gating)
     declared_edit_set: set[str]                     # source files named in a task-checklist declaration (multi-file plan completeness)
-    snippet_read_files: set                         # files whose content was only partially/snippet-read
     tests_run: set[str]                             # files passed to a tests-kind validator this query (regression guard)
     # ── Environment: what the run needs and what it changed ────────────────────
     unresolved_modules: set[str]                     # imports a run failed to resolve (env-resolution nudge)
@@ -59,8 +64,8 @@ class ExecutionContext(TypedDict):
     history_truncated: bool                          # the context backstop dropped older content this query; a cached read may no longer be "above in your context"
 
 
-# Per-query loop-control bookkeeping used only by agent_loop's tool-dispatch spin
-# guards (repeated-failure + redundant-success). Deliberately kept OUT of the
+# Per-query loop-control bookkeeping used only by the tool-dispatch dedup and the
+# repeated-failing-call guard. Deliberately kept OUT of the
 # ExecutionContext contract above: these are private dedup implementation details,
 # reset fresh each query, not semantic discovery/edit/validation state. They live in
 # one object stored under the private ``_loop_control`` context key (via
@@ -70,9 +75,8 @@ class LoopControlState:
     write_calls: set = field(default_factory=set)          # (tool, args) writes already dispatched this query
     call_fails: dict = field(default_factory=dict)         # (tool, args) -> identical-FAILED dispatch count
     repeat_warned: set = field(default_factory=set)        # keys the soft repeated-call corrective fired for
-    call_results: dict = field(default_factory=dict)       # (tool, args) -> (result_hash, redundant_repeat_count)
-    redundant_warned: set = field(default_factory=set)     # keys the soft redundant-read corrective fired for
-    redundant_call_ids: dict = field(default_factory=dict)  # (tool, args) -> ordered identical-content call_ids
+    call_results: dict = field(default_factory=dict)       # (tool, args) -> (result digest, identical-SUCCESS count)
+    repeat_noted: set = field(default_factory=set)         # keys the identical-success annotation fired for
 
 
 _LOOP_CONTROL_KEY = "_loop_control"
@@ -202,22 +206,20 @@ _FIELD_SPECS: tuple[_FieldSpec, ...] = (
     # RecencySet: rendered into the pin, which shows a bounded slice — recency is what
     # makes that slice useful (see recent_first).
     ("read_files", RecencySet, (set,), frozenset({CARRY, FILE_PATH, KNOWN_FILE, DISCOVERY})),
-    # Not DISCOVERY: existence can be established by the repo baseline rather than by
-    # the model's own exploration, which is exactly what the discovery gates must not
-    # accept as evidence.
+    # Not DISCOVERY: a path's existence can be established as a side effect of the
+    # loop's own bookkeeping rather than by the model's own exploration, which is
+    # exactly what the discovery gates must not accept as evidence.
     ("existing_paths", RecencySet, (set,), frozenset({CARRY, FILE_PATH, KNOWN_FILE})),
+    # Read by a sub-agent the model sent, and reported back with the finding: the
+    # model's own discovery, done at arm's length. Kept apart from `read_files`
+    # because that field also gates editing, and the model has not read these.
+    ("delegated_read_files", RecencySet, (set,), frozenset({CARRY, FILE_PATH, KNOWN_FILE, DISCOVERY})),
     ("similar_candidates_by_dir", dict, (dict,), _NO_TRAITS),
     ("search_tool_calls", lambda: 0, (int,), _NO_TRAITS),
     # Count of successful substantive actions (writes/exec/mutations — any PLAN_BLOCKED
     # tool). Read by the todo nudge so a many-operation task is recognised as
     # multi-step even when it touches only one (or zero) files.
     ("action_op_count", lambda: 0, (int,), _NO_TRAITS),
-    # Carried, but NOT FILE_PATH: these are search patterns, not paths.
-    ("search_queries_used", RecencySet, (set,), frozenset({CARRY})),
-    ("read_file_line_counts", dict, (dict,), _NO_TRAITS),
-    # Partial context only — never CARRY, and never proof of a full read (see
-    # ``was_fully_read``). It is still KNOWN_FILE: seeing a snippet proves the file exists.
-    ("snippet_read_files", set, (set,), frozenset({FILE_PATH, KNOWN_FILE, DISCOVERY})),
     # ── Edit: planned and in-flight mutations ──────────────────────────────────
     ("planned_edit_targets", RecencySet, (set,), _NO_TRAITS),
     ("declared_edit_set", set, (set,), _NO_TRAITS),
@@ -235,11 +237,14 @@ _FIELD_SPECS: tuple[_FieldSpec, ...] = (
     ("validated_files", set, (set,), frozenset({FILE_PATH})),
     ("validation_tier_by_file", dict, (dict,), _NO_TRAITS),
     ("validation_fail_count_by_file", dict, (dict,), _NO_TRAITS),
+    ("unverifiable_files", set, (set,), frozenset({FILE_PATH})),
     ("runs", dict, (dict,), _NO_TRAITS),
+    ("exercise_advice_closed", lambda: False, (bool,), _NO_TRAITS),
+    ("exercise_blocked_reason", lambda: "", (str,), _NO_TRAITS),
+    ("evidence_handback_used", lambda: False, (bool,), _NO_TRAITS),
     # ── Workflow + policy ──────────────────────────────────────────────────────
     ("workflow_state", lambda: "discover", (str,), _NO_TRAITS),
     ("code_mutation_started", lambda: False, (bool,), _NO_TRAITS),
-    ("cluster_submit_warned", lambda: False, (bool,), _NO_TRAITS),
     ("nudge_counts", dict, (dict,), _NO_TRAITS),
     ("denied_tool_calls", list, (list,), _NO_TRAITS),
     ("denial_history", list, (list,), _NO_TRAITS),
@@ -349,14 +354,12 @@ def fields_with(*traits: str) -> tuple[str, ...]:
     return tuple(name for name, _f, _t, field_traits in _FIELD_SPECS if wanted <= field_traits)
 
 
-def was_fully_read(execution_context: dict[str, Any], path: str) -> bool:
-    """Whether *path* was read in full through a direct read tool.
+def was_read(execution_context: dict[str, Any], path: str) -> bool:
+    """Whether *path* was read through a direct read tool this query.
 
-    **A snippet does not count.** ``snippet_read_files`` records partial context — a
-    grep hit, a neighbour excerpt — which is enough to plan against but not to rewrite
-    a file from. POLICY.md has always said so; until this predicate existed the rule
-    lived only in prose, while the call site was a bare ``path in ec["read_files"]``
-    sitting next to an equally plausible ``ec["snippet_read_files"]``.
+    Says nothing about *how much* of it was read, and deliberately so: reads are
+    targeted, a capped window is the normal case, and a gate that asked for the whole
+    file would be asking for the one thing the read policy tells the model not to do.
     """
     return path in (execution_context.get("read_files") or set())
 
@@ -368,7 +371,7 @@ def is_known_to_exist(execution_context: dict[str, Any], path: str) -> bool:
     """
     return (
         path in (execution_context.get("existing_paths") or set())
-        or was_fully_read(execution_context, path)
+        or was_read(execution_context, path)
     )
 
 
@@ -408,7 +411,7 @@ def known_existing_files(execution_context: dict[str, Any]) -> set[str]:
 #   WRITER                                   FIELDS WRITTEN                              READ BY
 #   guardrails.observations.record_tool_observation   searched, read_files, inspected_dirs,      engine (tools_for_context,
 #     (the ordered _observe_* handlers,        checked_paths, existing_paths,             _missing_evidence, guards),
-#      run after every tool call)              search_tool_calls, snippet_read_files,     runtime (check_write_policy),
+#      run after every tool call)              search_tool_calls,                          runtime (check_write_policy),
 #                                              similar_candidates_by_dir,                 state_machine (guards),
 #                                              dirty_written_files, declared_edit_set,    nudge_logic (all nudges),
 #                                              edit_loop_state, edit_fail_streak_by_file,  agent_loop (correctives)
@@ -420,14 +423,15 @@ def known_existing_files(execution_context: dict[str, Any]) -> set[str]:
 #                                              action_op_count,
 #                                              todo_written, plan_written
 #   guardrails.verdict.apply_verdict           runs[cmd].verdict/reason/failures,        verification (ledger rows),
-#     (runs on the judging tool's call,        attempts                                   nudge_logic (output_verdict),
-#      via _observe_verdict_tool)                                                         workflow (completion report)
+#     (runs on the judging tool's call,        attempts                                   workflow (completion report)
+#      via _observe_verdict_tool)
 #   context/workflow.set_workflow_state       workflow_state                             every layer's state gates
 #   query_engine/nudge_logic._fire_nudge      nudge_counts[<category>]                    nudge_logic (per-category caps)
 #   query_engine/agent_loop                   steps_since_last_edit (increment),          nudge_logic (idle gates),
-#     (loop body + loop-control correctives)    LoopControlState (the private             agent_loop (repeat/redundant
-#                                              _loop_control object: write_calls,          guards)
-#                                              call_fails, call_results, …)
+#     (loop body + loop-control correctives)    LoopControlState (the private             agent_loop (dedup +
+#                                              _loop_control object: write_calls,          repeated-failure guard)
+#                                              call_fails, repeat_warned),
+#                                              evidence_handback_used                      agent_loop (once per query)
 #   policy/engine + agent_core (approval)  denied_tool_calls, denial_history          state_machine (blocking denials),
 #                                                                                         nudge_logic (denial nudge),
 #                                                                                         workflow (escalation ladder)
@@ -439,41 +443,26 @@ def known_existing_files(execution_context: dict[str, Any]) -> set[str]:
 
 # ── Discovery-evidence semantics: the single definition of "what counts as the
 # model's own exploration this query." Every consumer (the agent-mode discovery
-# nudge, the plan-mode evidence gate, engine._missing_evidence) reads these helpers
+# nudge, the plan-mode explore phase, engine._missing_evidence) reads these helpers
 # instead of hand-picking its own subset of fields — that duplicated subset-picking
 # was the source of cross-layer coherence bugs.
 #
-# ``inspected_dirs`` counts, but only beyond what the repo baseline seeded: a
-# snapshot must never pre-satisfy a gate on the model's behalf, while a directory
-# the model actually inspected is real exploration. Excluding the field outright
-# (as it was) made structural discovery — listing/summarising a subtree — worth
-# nothing, so a gate could only ever be cleared by a grep or a file read, which is
-# the wrong bar for a task that is about layout rather than about one symbol.
-# Every other signal below is only ever set by the model's own tool calls this
-# query (see guardrails.observations._observe_*).
-BASELINE_SEEDED_DIRS: frozenset[str] = frozenset({"."})
+# Every signal below is only ever set by the model's own tool calls this query (see
+# guardrails.observations._observe_*), so presence is the whole test. Nothing seeds
+# these fields any more: a structural snapshot used to pre-fill ``inspected_dirs``,
+# which meant a gate could be satisfied before the model had done anything, and the
+# discount that existed to undo it was itself a field only some consumers applied.
 
 # Derived from the ``DISCOVERY`` trait rather than hand-listed, so a new discovery
-# field cannot be added to the schema and forgotten here. The membership is unchanged:
-# searched, read_files, snippet_read_files, checked_paths, inspected_dirs.
+# field cannot be added to the schema and forgotten here. Membership:
+# searched, read_files, checked_paths, inspected_dirs, delegated_read_files.
 DISCOVERY_EVIDENCE_SIGNALS: tuple[str, ...] = fields_with(DISCOVERY)
-
-
-def _signal_present(execution_context: dict[str, Any], signal: str) -> bool:
-    """Whether *signal* carries the model's own evidence.
-
-    ``inspected_dirs`` is the one field with a pre-seeded component, so the seeded
-    entries are discounted before the truth test; every other signal is taken as-is.
-    """
-    value = execution_context.get(signal)
-    if signal == "inspected_dirs":
-        return bool(set(value or ()) - BASELINE_SEEDED_DIRS)
-    return bool(value)
 
 
 def discovery_signal_count(execution_context: dict[str, Any]) -> int:
     """Number of distinct model-initiated discovery signals present in *execution_context*."""
-    return sum(1 for s in DISCOVERY_EVIDENCE_SIGNALS if _signal_present(execution_context, s))
+    return sum(1 for s in DISCOVERY_EVIDENCE_SIGNALS
+               if execution_context.get(s))
 
 
 def nudge_count(execution_context: dict[str, Any], category: str) -> int:
@@ -498,6 +487,31 @@ def idle_steps(execution_context: dict[str, Any]) -> int:
 def has_discovery_evidence(execution_context: dict[str, Any], *, min_distinct: int = 1) -> bool:
     """True once the model has done at least *min_distinct* distinct discovery actions."""
     return discovery_signal_count(execution_context) >= min_distinct
+
+
+def plan_evidence_ready(
+    execution_context: dict[str, Any],
+    *,
+    min_files: int = PLAN_EVIDENCE_MIN_FILES_READ,
+    min_distinct: int = DISCOVERY_EVIDENCE_MIN_DISTINCT_PLAN,
+) -> bool:
+    """True once the model has actually read code, not merely located it.
+
+    The bar plan mode holds the plan-document tool behind. Distinct signal *kinds*
+    alone do not express it: listing a directory and running a find scores two while
+    grounding nothing, which is how a plan could be written over file names. Reading
+    file contents is what a plan's "WHERE" rests on, so the read count carries the
+    gate and the kind count stays as the breadth term beside it.
+    """
+    read = set(execution_context.get("read_files") or ())
+    # A file a sub-agent read and reported on counts here: the plan's "WHERE" rests on
+    # code that was read and whose finding is in the model's context. It does NOT count
+    # toward the pre-edit gate, which asks whether *this* agent holds the lines.
+    read |= set(execution_context.get("delegated_read_files") or ())
+    return (
+        len(read) >= min_files
+        and has_discovery_evidence(execution_context, min_distinct=min_distinct)
+    )
 
 
 def _declared_target_written(declared: str, written: set[str], root: str) -> bool:
@@ -566,7 +580,12 @@ def declared_edit_set_complete(execution_context: dict[str, Any]) -> bool:
 # Ordered weakest→strongest. Report-only: nothing gates, blocks, or nudges on the
 # tier — it is read by the completion ledger so the *answer* can say what was
 # actually established.
-VALIDATION_TIERS: tuple[str, ...] = ("syntax", "static")
+#
+# ``compiled`` sits at the top and is the one tier nothing ever *demands*: producing
+# an object or a binary needs a toolchain the environment may not have, so a build is
+# recommended when it is available, never required. It still credits the file, a
+# fortiori — a translation unit that linked also parsed.
+VALIDATION_TIERS: tuple[str, ...] = ("syntax", "static", "compiled")
 _TIER_RANK = {name: i for i, name in enumerate(VALIDATION_TIERS)}
 
 
@@ -630,11 +649,14 @@ def files_below_tier(execution_context: dict[str, Any], tier: str) -> list[str]:
 # own statement about it, which is a format the model controls. Kept on the run rather
 # than on a file, and rendered under its own heading in the ledger, so a claim is never
 # mistaken for an observation and "the file lints" is never read as "the answer is right".
-VERDICTS: tuple[str, ...] = ("pass", "fail", "unknown")
+# ``blocked`` grades nothing either, and settles nothing: it re-imputes a red exit from
+# the change to the environment, leaving the run as red as the machine saw it.
+VERDICTS: tuple[str, ...] = ("pass", "fail", "unknown", "blocked")
 
 
 def record_run(
     execution_context: dict[str, Any], command: str, *, completed: bool, call_id: str = "",
+    effect: str = "run",
 ) -> dict[str, Any]:
     """Register an execution, or re-register one being run again.
 
@@ -642,16 +664,23 @@ def record_run(
     and a re-run is newer than the record it replaces. Its failure history is carried
     over — the repair budget counts attempts at the same command, and a re-run is the
     next attempt, not a fresh start.
+
+    ``effect`` distinguishes a build from a run of the project's code, so the completion
+    report can name what actually hit a wall.
     """
     runs = execution_context.setdefault("runs", {})
     previous = runs.pop(command, None) or {}
     run = {
         "call_id": call_id,
         "completed": completed,
+        "effect": effect,
         "verdict": "",
         "reason": "",
         "failures": int(previous.get("failures", 0)),
         "attempts": list(previous.get("attempts") or ()),
+        # Not carried over from `previous`, unlike the two above: a re-run is a fresh
+        # attempt at the wall, so re-running retracts the blocked standing by itself.
+        "blocked": "",
     }
     runs[command] = run
     return run
@@ -671,10 +700,15 @@ def unsettled_runs(execution_context: dict[str, Any]) -> dict[str, dict[str, Any
 
 
 def failed_runs(execution_context: dict[str, Any]) -> dict[str, dict[str, Any]]:
-    """Runs that did not reach their end, or whose output the model judged wrong."""
+    """Runs that did not reach their end, or whose output the model judged wrong.
+
+    A blocked run is excluded: it charges no repair budget, so leaving it here would hold
+    the "every failure is spent" release below its threshold for the rest of the query.
+    """
     return {
         command: run for command, run in (execution_context.get("runs") or {}).items()
-        if not run.get("completed") or run.get("verdict") == "fail"
+        if (not run.get("completed") or run.get("verdict") == "fail")
+        and not run.get("blocked")
     }
 
 
@@ -734,10 +768,6 @@ def validate_execution_context(execution_context: dict[str, Any]) -> None:
                 f"execution_context['runs'][{key!r}]['verdict'] must be '' or one of "
                 f"{VERDICTS}; got {run.get('verdict')!r}"
             )
-
-    for query in execution_context["search_queries_used"]:
-        if not isinstance(query, str):
-            raise TypeError("execution_context['search_queries_used'] values must be str")
 
 
 def ensure_execution_context(execution_context: dict[str, Any] | None) -> ExecutionContext | None:

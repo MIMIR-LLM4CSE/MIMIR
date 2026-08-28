@@ -188,7 +188,6 @@ class RunnerConvergenceRequirementTests(_TmpStorageTest):
 
     def _write_sweep_proxy(self) -> str:
         """A proxy whose error scales as h^2 across the {n} sweep."""
-        import sys as _sys
         path = os.path.join(self.root, "sweep.py")
         with open(path, "w") as fh:
             fh.write(

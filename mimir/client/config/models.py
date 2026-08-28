@@ -75,7 +75,7 @@ def enforcement_level(model: str) -> str:
     """How much reasoning babysitting to apply, from the model's vLLM profile.
 
     Governs ONLY the **guidance** nudge layer (env resolution/cleanup, discovery, doc,
-    state, blast-radius, creation, todo, validation) plus the plan-mode evidence gate —
+    state, blast-radius, creation, todo, validation) plus the plan-mode explore phase —
     never safety, approval, write-policy or verification guards, which run at every
     level. Which categories survive per level and mode is the single table
     ``_GUIDANCE_BY_LEVEL_MODE`` in ``guardrails/nudges/engine.py``:

@@ -28,10 +28,12 @@ import mimir.client.event_sink as event_sink_module
 from mimir.client.context.capabilities import (
     PLAN_BLOCKED, PLAN_READONLY, TASK_PLANNING, ToolCaps,
 )
+from mimir.client.config.constants import PLAN_EXPLORE_MAX_TURNS
 from mimir.client.context.execution_context import build_execution_context, loop_control
 from mimir.client.guardrails.observations import _observe_todo_flags
 from mimir.client.query_engine.streaming import _to_dict
 from mimir.client.tool_execution.normalizer import _make_hashable
+from mimir.client.tool_execution.formatter import normalize_arguments
 from mimir.client.agent_core import MimirAgent
 from mimir.tests._fake_backend import ScriptedBackend
 
@@ -56,6 +58,7 @@ _CHECKLIST_CAPS = {
     "todo_set_plan": ToolCaps(
         name="todo_set_plan",
         capabilities=frozenset({TASK_PLANNING}),
+        arg_roles={"plan_title": ("title",)},
     ),
 }
 
@@ -268,7 +271,7 @@ class RunPlanModeTests(unittest.TestCase):
         messages = [{"role": "system", "content": "S"}, {"role": "user", "content": "plan it"}]
 
         with patch.object(streaming_module, "get_backend", lambda: backend), \
-             patch.object(plan_loop_module, "tools_for_plan_mode", lambda tools, caps: []), \
+             patch.object(plan_loop_module, "tools_for_plan_mode", lambda tools, caps, **kw: []), \
              patch.object(plan_loop_module, "_dispatch_tool_calls", _plan_dispatch), \
              patch.object(plan_loop_module, "_finalize_answer", _finalize):
             result = asyncio.run(
@@ -309,7 +312,7 @@ class RunPlanModeTests(unittest.TestCase):
         messages = [{"role": "system", "content": "S"}, {"role": "user", "content": "plan it"}]
 
         with patch.object(streaming_module, "get_backend", lambda: backend), \
-             patch.object(plan_loop_module, "tools_for_plan_mode", lambda tools, caps: []), \
+             patch.object(plan_loop_module, "tools_for_plan_mode", lambda tools, caps, **kw: []), \
              patch.object(plan_loop_module, "_dispatch_tool_calls", _plan_dispatch), \
              patch.object(plan_loop_module, "_finalize_answer", _finalize):
             result = asyncio.run(
@@ -358,7 +361,7 @@ class RunPlanModeTests(unittest.TestCase):
         messages = [{"role": "system", "content": "S"}, {"role": "user", "content": "plan it"}]
 
         with patch.object(streaming_module, "get_backend", lambda: backend), \
-             patch.object(plan_loop_module, "tools_for_plan_mode", lambda tools, caps: []), \
+             patch.object(plan_loop_module, "tools_for_plan_mode", lambda tools, caps, **kw: []), \
              patch.object(plan_loop_module, "_dispatch_tool_calls", _plan_dispatch), \
              patch.object(plan_loop_module, "_finalize_answer", _finalize):
             result = asyncio.run(
@@ -396,7 +399,7 @@ class RunPlanModeTests(unittest.TestCase):
         messages = [{"role": "system", "content": "S"}, {"role": "user", "content": "plan it"}]
 
         with patch.object(streaming_module, "get_backend", lambda: backend), \
-             patch.object(plan_loop_module, "tools_for_plan_mode", lambda tools, caps: []), \
+             patch.object(plan_loop_module, "tools_for_plan_mode", lambda tools, caps, **kw: []), \
              patch.object(plan_loop_module, "_dispatch_tool_calls", _plan_dispatch), \
              patch.object(plan_loop_module, "_finalize_answer", _finalize):
             asyncio.run(
@@ -439,7 +442,7 @@ class RunPlanModeTests(unittest.TestCase):
         messages = [{"role": "system", "content": "S"}, {"role": "user", "content": "plan it"}]
 
         with patch.object(streaming_module, "get_backend", lambda: backend), \
-             patch.object(plan_loop_module, "tools_for_plan_mode", lambda tools, caps: []), \
+             patch.object(plan_loop_module, "tools_for_plan_mode", lambda tools, caps, **kw: []), \
              patch.object(plan_loop_module, "_dispatch_tool_calls", _plan_dispatch), \
              patch.object(plan_loop_module, "_finalize_answer", _finalize):
             asyncio.run(
@@ -477,7 +480,7 @@ class RunPlanModeTests(unittest.TestCase):
         messages = [{"role": "system", "content": "S"}, {"role": "user", "content": "plan it"}]
 
         with patch.object(streaming_module, "get_backend", lambda: backend), \
-             patch.object(plan_loop_module, "tools_for_plan_mode", lambda tools, caps: []), \
+             patch.object(plan_loop_module, "tools_for_plan_mode", lambda tools, caps, **kw: []), \
              patch.object(plan_loop_module, "_dispatch_tool_calls", _plan_dispatch), \
              patch.object(plan_loop_module, "_finalize_answer", _finalize):
             result = asyncio.run(
@@ -526,7 +529,7 @@ class RunPlanModeTests(unittest.TestCase):
         messages = [{"role": "system", "content": "S"}, {"role": "user", "content": "plan it"}]
 
         with patch.object(streaming_module, "get_backend", lambda: backend), \
-             patch.object(plan_loop_module, "tools_for_plan_mode", lambda tools, caps: []), \
+             patch.object(plan_loop_module, "tools_for_plan_mode", lambda tools, caps, **kw: []), \
              patch.object(plan_loop_module, "_dispatch_tool_calls", _plan_dispatch), \
              patch.object(agent_loop_module, "_run_agent_loop", _fake_agent_loop):
             result = asyncio.run(
@@ -582,7 +585,7 @@ class RunPlanModeTests(unittest.TestCase):
         messages = [{"role": "system", "content": "S"}, {"role": "user", "content": "plan it"}]
 
         with patch.object(streaming_module, "get_backend", lambda: backend), \
-             patch.object(plan_loop_module, "tools_for_plan_mode", lambda tools, caps: []), \
+             patch.object(plan_loop_module, "tools_for_plan_mode", lambda tools, caps, **kw: []), \
              patch.object(plan_loop_module, "_dispatch_tool_calls", _plan_dispatch), \
              patch.object(agent_loop_module, "_run_agent_loop", _fake_agent_loop):
             result = asyncio.run(
@@ -601,6 +604,64 @@ class RunPlanModeTests(unittest.TestCase):
             m["role"] == "user" and "add an error-handling step" in m["content"]
             for m in messages
         ))
+
+    def test_revision_stays_in_the_same_plan_document(self) -> None:
+        # The plan store names a document after its title, so a re-titled revision
+        # would create a second plan: the user keeps reading the draft they sent
+        # back, and two documents compete to be the one that gets executed. The
+        # title of the document under review is reimposed on every revision.
+        backend = ScriptedBackend([
+            {"content": "plan v1", "tool_calls": [
+                _tool_call("todo_set_plan", '{"text": "v1", "title": "Refactor state dir"}')]},
+            {"content": "Here is plan v1."},   # review #1 → revise
+            {"content": "plan v2", "tool_calls": [
+                _tool_call("todo_set_plan", '{"text": "v2", "title": "Refactor state dir (revised)"}')]},
+            {"content": "Here is plan v2."},   # review #2 → accept
+        ])
+        dispatched: list[dict] = []
+
+        async def _plan_dispatch(tool_calls, agent, messages, execution_context):
+            for tc in tool_calls:
+                fn = _to_dict(_to_dict(tc).get("function", {}))
+                dispatched.append(dict(normalize_arguments(fn.get("arguments") or {})))
+            _record_plan_flags(tool_calls, agent, execution_context)
+
+        async def _fake_agent_loop(**kwargs):
+            return "executed"
+
+        async def _build_system(active_mode: str) -> str:
+            return f"SYS::{active_mode}"
+
+        calls = {"n": 0}
+
+        def _ask(questions):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return {"answers": [{"selected": [], "other_text": "add an error-handling step"}]}
+            return {"answers": [{"selected": [plan_loop_module._PLAN_ACCEPT], "other_text": None}]}
+
+        agent = types.SimpleNamespace(
+            model="m", tools=[], tool_caps=dict(_CHECKLIST_CAPS),
+            _request_user_question=_ask, _build_system_content=_build_system,
+        )
+        messages = [{"role": "system", "content": "S"}, {"role": "user", "content": "plan it"}]
+
+        with patch.object(streaming_module, "get_backend", lambda: backend), \
+             patch.object(plan_loop_module, "tools_for_plan_mode", lambda tools, caps, **kw: []), \
+             patch.object(plan_loop_module, "_dispatch_tool_calls", _plan_dispatch), \
+             patch.object(agent_loop_module, "_run_agent_loop", _fake_agent_loop):
+            asyncio.run(
+                plan_loop_module._run_plan_mode(
+                    agent=agent, query="q", messages=messages, execution_context=build_execution_context(),
+                    max_steps=10, thinking=False, streaming=False, logger=None,
+                    cb={"think_token_callback": None},
+                )
+            )
+
+        self.assertEqual([a["title"] for a in dispatched],
+                         ["Refactor state dir", "Refactor state dir"])
+        # Only the title is pinned — the revised body is written unchanged.
+        self.assertEqual([a["text"] for a in dispatched], ["v1", "v2"])
 
     def test_reject_stops_without_executing(self) -> None:
         # User rejects the plan: no hand-off to agent mode, no re-planning — the
@@ -628,7 +689,7 @@ class RunPlanModeTests(unittest.TestCase):
         messages = [{"role": "system", "content": "S"}, {"role": "user", "content": "plan it"}]
 
         with patch.object(streaming_module, "get_backend", lambda: backend), \
-             patch.object(plan_loop_module, "tools_for_plan_mode", lambda tools, caps: []), \
+             patch.object(plan_loop_module, "tools_for_plan_mode", lambda tools, caps, **kw: []), \
              patch.object(plan_loop_module, "_dispatch_tool_calls", _plan_dispatch), \
              patch.object(plan_loop_module, "_finalize_answer", _finalize), \
              patch.object(agent_loop_module, "_run_agent_loop", _fake_agent_loop):
@@ -646,84 +707,124 @@ class RunPlanModeTests(unittest.TestCase):
             m["role"] == "user" and "REJECTED" in m["content"] for m in messages
         ))
 
-    def test_plan_without_evidence_is_flagged_not_rejected(self) -> None:
-        # Repo-touching query + zero exploration evidence: the plan is flagged with a
-        # one-shot advisory nudge but STANDS. It used to be rejected, which discarded
-        # the plan the model had just recorded with nothing guaranteeing it would
-        # submit that form again — a model that answered by re-writing its prose
-        # document instead then spun until max_steps and delivered nothing.
+    def _explore_phase_run(self, *, backend, query, agent, messages, max_steps=20, reads=()):
+        """Run plan mode recording the ``exploring`` flag the tool list was built with.
+
+        ``reads`` are the files the fake dispatch credits on its first call, standing
+        in for the model reading code: what flips the phase is the execution context,
+        exactly as in production.
+        """
+        seen_exploring: list[bool] = []
+
+        def _tools(tools, caps, **kw):
+            seen_exploring.append(bool(kw.get("exploring")))
+            return []
+
+        async def _plan_dispatch(tool_calls, agent_, messages_, execution_context):
+            if reads and not execution_context.get("read_files"):
+                execution_context["read_files"] = set(reads)
+                execution_context["searched"] = True
+            _record_plan_flags(tool_calls, agent_, execution_context)
+
+        async def _finalize(agent_, query_, answer, execution_context, messages_, logger):
+            return answer
+
+        with patch.object(streaming_module, "get_backend", lambda: backend), \
+             patch.object(plan_loop_module, "tools_for_plan_mode", _tools), \
+             patch.object(plan_loop_module, "_dispatch_tool_calls", _plan_dispatch), \
+             patch.object(plan_loop_module, "_finalize_answer", _finalize):
+            result = asyncio.run(
+                plan_loop_module._run_plan_mode(
+                    agent=agent, query=query, messages=messages,
+                    execution_context=build_execution_context(), max_steps=max_steps,
+                    thinking=False, streaming=False, logger=None,
+                    cb={"think_token_callback": None},
+                )
+            )
+        return result, seen_exploring
+
+    def test_plan_tool_is_withheld_until_the_code_is_read(self) -> None:
+        # The cause of the "plan to explore" plan: the document tool was offered from
+        # turn 1 under a nudge calling the plan mandatory, so recording a survey
+        # checklist was the cheapest way out. On a repo-touching query the tool is now
+        # withheld until the model has actually read files, and the nudge asks for the
+        # exploration rather than for the plan.
         backend = ScriptedBackend([
+            {"content": "looking", "tool_calls": [_tool_call("read_file_lines")]},
             {"content": "planning", "tool_calls": [_tool_call("todo_set_plan")]},
             {"content": "Here is the plan."},
         ])
-
-        async def _plan_dispatch(tool_calls, agent, messages, execution_context):
-            _record_plan_flags(tool_calls, agent, execution_context)
-
-        async def _finalize(agent, query, answer, execution_context, messages, logger):
-            return answer
-
         agent = types.SimpleNamespace(model="m", tools=[], tool_caps=dict(_CHECKLIST_CAPS))
-        messages = [{"role": "system", "content": "S"}, {"role": "user", "content": "refactor the solver in the repo"}]
+        query = "refactor the solver in the repo"
+        messages = [{"role": "system", "content": "S"}, {"role": "user", "content": query}]
 
-        with patch.object(streaming_module, "get_backend", lambda: backend), \
-             patch.object(plan_loop_module, "tools_for_plan_mode", lambda tools, caps: []), \
-             patch.object(plan_loop_module, "_dispatch_tool_calls", _plan_dispatch), \
-             patch.object(plan_loop_module, "_finalize_answer", _finalize):
-            result = asyncio.run(
-                plan_loop_module._run_plan_mode(
-                    agent=agent, query="refactor the solver in the repo", messages=messages,
-                    execution_context=build_execution_context(), max_steps=10, thinking=False, streaming=False,
-                    logger=None, cb={"think_token_callback": None},
-                )
-            )
+        result, seen_exploring = self._explore_phase_run(
+            backend=backend, query=query, agent=agent, messages=messages,
+            reads=("a.py", "b.py", "c.py"),
+        )
 
         self.assertEqual(result, "Here is the plan.")
-        # The one-shot evidence nudge must have been appended...
+        # Turn 1 explores with the document withheld; the reads flip the phase for turn 2.
+        self.assertEqual(seen_exploring, [True, False])
         self.assertTrue(any(
-            m["role"] == "user" and m["content"] == plan_loop_module.PLAN_EVIDENCE_NUDGE
+            m["role"] == "user" and m["content"] == plan_loop_module.PLAN_EXPLORE_FIRST
             for m in messages
         ))
-        # ...alongside the deliver nudge, not instead of it: the plan was accepted on
-        # the spot, so no extra round trip was spent re-recording it.
-        self.assertTrue(any(
-            m["role"] == "user" and m["content"] == plan_loop_module.PLAN_DELIVER_ANSWER
-            for m in messages
-        ))
-        self.assertEqual(len(backend.calls), 2)
+        # And the record nudge never fired while the tool did not exist.
+        explore_at = [i for i, m in enumerate(messages) if m.get("content") == plan_loop_module.PLAN_EXPLORE_FIRST]
+        record_at = [i for i, m in enumerate(messages) if m.get("content") == plan_loop_module.PLAN_TODO_NUDGE_EARLY]
+        self.assertTrue(explore_at)
+        self.assertTrue(all(r > explore_at[0] for r in record_at))
 
-    def test_plan_evidence_gate_skipped_when_enforcement_off(self) -> None:
-        # At enforcement level "off" the plan-evidence gate is disabled: the first
-        # recorded plan (zero evidence) is accepted without a rejection nudge.
+    def test_explore_budget_unlocks_the_plan_tool(self) -> None:
+        # Escape hatch: the query signal arming the phase is a broad filter and fires
+        # for tasks no exploration could ground. Plan mode must always reach a plan, so
+        # the budget unlocks the tool over thin evidence and the model is told to state
+        # the gaps rather than paper over them.
+        script = [{"content": "looking", "tool_calls": [_tool_call("grep_files")]}] * 12
+        script.append({"content": "planning", "tool_calls": [_tool_call("todo_set_plan")]})
+        script.append({"content": "Here is the plan."})
+        agent = types.SimpleNamespace(model="m", tools=[], tool_caps=dict(_CHECKLIST_CAPS))
+        query = "refactor the solver in the repo"
+        messages = [{"role": "system", "content": "S"}, {"role": "user", "content": query}]
+
+        result, seen_exploring = self._explore_phase_run(
+            backend=ScriptedBackend(script), query=query, agent=agent, messages=messages,
+        )
+
+        self.assertEqual(result, "Here is the plan.")
+        # The list is built once per phase, never per turn: one cache break, no more.
+        self.assertEqual(seen_exploring, [True, False])
+        self.assertEqual(
+            sum(1 for m in messages if m.get("content") == plan_loop_module.PLAN_EXPLORE_FIRST),
+            PLAN_EXPLORE_MAX_TURNS,
+        )
+        self.assertTrue(any(
+            m["role"] == "user" and m["content"] == plan_loop_module.PLAN_EXPLORE_BUDGET_SPENT
+            for m in messages
+        ))
+
+    def test_explore_phase_skipped_when_enforcement_off(self) -> None:
+        # At enforcement "off" the phase gate is disabled outright: the document tool
+        # is available from turn 1 and no exploration is demanded.
         backend = ScriptedBackend([
             {"content": "planning", "tool_calls": [_tool_call("todo_set_plan")]},
             {"content": "Here is the plan."},
         ])
+        agent = types.SimpleNamespace(
+            model="m", tools=[], tool_caps=dict(_CHECKLIST_CAPS), enforcement="off",
+        )
+        query = "refactor the solver in the repo"
+        messages = [{"role": "system", "content": "S"}, {"role": "user", "content": query}]
 
-        async def _plan_dispatch(tool_calls, agent, messages, execution_context):
-            _record_plan_flags(tool_calls, agent, execution_context)
-
-        async def _finalize(agent, query, answer, execution_context, messages, logger):
-            return answer
-
-        agent = types.SimpleNamespace(model="m", tools=[], tool_caps=dict(_CHECKLIST_CAPS), enforcement="off")
-        messages = [{"role": "system", "content": "S"}, {"role": "user", "content": "refactor the solver in the repo"}]
-
-        with patch.object(streaming_module, "get_backend", lambda: backend), \
-             patch.object(plan_loop_module, "tools_for_plan_mode", lambda tools, caps: []), \
-             patch.object(plan_loop_module, "_dispatch_tool_calls", _plan_dispatch), \
-             patch.object(plan_loop_module, "_finalize_answer", _finalize):
-            result = asyncio.run(
-                plan_loop_module._run_plan_mode(
-                    agent=agent, query="refactor the solver in the repo", messages=messages,
-                    execution_context=build_execution_context(), max_steps=10, thinking=False, streaming=False,
-                    logger=None, cb={"think_token_callback": None},
-                )
-            )
+        result, seen_exploring = self._explore_phase_run(
+            backend=backend, query=query, agent=agent, messages=messages, max_steps=10,
+        )
 
         self.assertEqual(result, "Here is the plan.")
+        self.assertFalse(any(seen_exploring))
         self.assertFalse(any(
-            m["role"] == "user" and "without gathering any evidence" in m["content"]
+            m["role"] == "user" and m["content"] == plan_loop_module.PLAN_EXPLORE_FIRST
             for m in messages
         ))
         self.assertEqual(len(backend.calls), 2)
@@ -737,7 +838,6 @@ class RunAgentQueryNonInteractiveTests(unittest.TestCase):
             tools = []
             tool_owner = {}
             tool_caps = {}
-            repo_baseline_context = ""
             thinking_budget = -1
             allow_continue_prompt = False
             _cancel_flag = None
@@ -749,12 +849,6 @@ class RunAgentQueryNonInteractiveTests(unittest.TestCase):
             @staticmethod
             def _get_todo_file():
                 return ""
-
-            async def _ensure_repo_baseline(self, query):
-                return None
-
-            def _seed_execution_context_from_baseline(self, execution_context):
-                pass
 
             @staticmethod
             def _normalize_mode(mode):
@@ -817,6 +911,45 @@ class RunAgentQueryNonInteractiveTests(unittest.TestCase):
         self.assertEqual(result, "final answer")
         self.assertEqual(continue_calls["n"], 0)   # non-interactive: never prompts
         self.assertEqual(len(backend.calls), 2)     # tool-call step, then final answer
+
+
+class LiveMessagesExposureTests(RunAgentQueryNonInteractiveTests):
+    """The in-flight transcript is readable mid-run and released at the end.
+
+    The WS context bar reads it every second; if it were only published at the end
+    the bar would sit frozen for the whole turn.
+    """
+
+    def test_live_messages_track_the_run_then_clear(self) -> None:
+        agent = self._query_agent({"n": 0})
+        seen: list[int] = []
+
+        backend = ScriptedBackend([
+            {"content": "working", "tool_calls": [_tool_call("noop")]},
+            {"content": "final answer"},
+        ])
+
+        async def _noop_async(*a, **k):
+            return None
+
+        async def _snapshot(*a, **k):
+            seen.append(len(agent._live_messages or []))
+
+        m = agent_loop_module
+        with patch.object(streaming_module, "get_backend", lambda: backend), \
+             patch.object(finalize_module, "auto_store_memory", new=_noop_async), \
+             patch.object(agent_loop_module, "_dispatch_tool_calls", _noop_async), \
+             patch.object(agent_loop_module, "_post_dispatch_inject", _snapshot), \
+             patch.object(history_module, "_trim_tool_history", lambda *a, **k: None), \
+             patch.object(history_module, "_maybe_compact_intra_query", lambda *a, **k: None), \
+             patch.object(m, "_inject_pin", lambda *a, **k: None), \
+             patch.object(m, "tools_for_context", lambda **k: []), \
+             patch.object(m, "needs_incomplete_finalization", lambda ec: False):
+            asyncio.run(m.run_agent_query(agent=agent, query="do a thing", max_steps=5))
+
+        self.assertEqual(len(seen), 1)
+        self.assertGreaterEqual(seen[0], 3)  # system + user + assistant turn
+        self.assertIsNone(agent._live_messages)
 
 
 class DrainSteerTests(unittest.TestCase):
@@ -895,6 +1028,55 @@ class SteerInjectionInLoopTests(RunAgentQueryNonInteractiveTests):
         step2_users = [msg["content"] for msg in backend.calls[1]["messages"] if msg["role"] == "user"]
         self.assertNotIn("focus on the parser", step1_users)
         self.assertIn("focus on the parser", step2_users)
+
+
+class EvidenceHandbackTests(RunAgentQueryNonInteractiveTests):
+    """The model gets the ledger BEFORE it writes the conclusion, once per query.
+
+    Guards the "successfully implemented, complete and correct" summary printed above
+    "Modified files never checked": the completion report is assembled after the model
+    has spoken and appended below it, so the model never saw what it was contradicting.
+    """
+
+    def _run_two_answers(self, ec_holder):
+        continue_calls = {"n": 0}
+        agent = self._query_agent(continue_calls)
+        backend = ScriptedBackend([
+            {"content": "All done, complete and correct."},
+            {"content": "Edited solver.f90; it was never checked."},
+        ])
+
+        async def _noop_async(*a, **k):
+            return None
+
+        m = agent_loop_module
+        with patch.object(streaming_module, "get_backend", lambda: backend), \
+             patch.object(finalize_module, "auto_store_memory", new=_noop_async), \
+             patch.object(agent_loop_module, "_dispatch_tool_calls", _noop_async), \
+             patch.object(agent_loop_module, "_post_dispatch_inject", _noop_async), \
+             patch.object(history_module, "_trim_tool_history", lambda *a, **k: None), \
+             patch.object(history_module, "_maybe_compact_intra_query", lambda *a, **k: None), \
+             patch.object(m, "_inject_pin", lambda *a, **k: None), \
+             patch.object(m, "tools_for_context", lambda **k: []), \
+             patch.object(m, "maybe_append_nudge", lambda **k: False), \
+             patch.object(m, "needs_incomplete_finalization", lambda ec: ec_holder.append(ec) or True):
+            result = asyncio.run(
+                m.run_agent_query(agent=agent, query="fix the solver", max_steps=5)
+            )
+        return backend, result
+
+    def test_the_ledger_is_handed_back_once_before_the_report(self):
+        ec_holder: list = []
+        backend, result = self._run_two_answers(ec_holder)
+        # Two model calls: the first answer was handed back, not returned.
+        self.assertEqual(len(backend.calls), 2)
+        self.assertNotIn("All done, complete and correct.", result)
+        second_users = [m["content"] for m in backend.calls[1]["messages"] if m["role"] == "user"]
+        self.assertTrue(any("machine-recorded facts" in c for c in second_users))
+        # And only once: the corrected answer goes straight to the report.
+        self.assertTrue(ec_holder[-1]["evidence_handback_used"])
+        self.assertIn("What the model claims", result)
+        self.assertIn("Edited solver.f90", result)
 
 
 class DomainRearmInLoopTests(RunAgentQueryNonInteractiveTests):
@@ -988,7 +1170,7 @@ class NormalizeModeTests(unittest.TestCase):
 class AskModeInLoopTests(RunAgentQueryNonInteractiveTests):
     """Ask mode runs the ordinary agent loop with a read-only tool surface.
 
-    Unlike plan mode it has no checklist requirement, no evidence gate, and no
+    Unlike plan mode it has no checklist requirement, no explore phase, and no
     approval prompt — it just explores and answers.
     """
 
@@ -1245,7 +1427,7 @@ class PlanLoopModeSwitchTests(unittest.TestCase):
         with patch.object(streaming_module, "get_backend", lambda: backend), \
              patch.object(agent_loop_module, "_run_agent_loop", _fake_agent_loop), \
              patch.object(agent_loop_module, "emit", lambda ev: None), \
-             patch.object(plan_loop_module, "tools_for_plan_mode", lambda tools, caps: []):
+             patch.object(plan_loop_module, "tools_for_plan_mode", lambda tools, caps, **kw: []):
             result = asyncio.run(
                 plan_loop_module._run_plan_mode(
                     agent=agent, query="q", messages=messages, execution_context=ec,
@@ -1390,100 +1572,6 @@ class RepeatedFailingCallGuardTests(unittest.TestCase):
         self.assertIn("failed to execute", payload["error"])
         self.assertIn("Connection closed", payload["error"])
 
-    def test_successful_call_with_changing_content_never_blocks(self) -> None:
-        """A non-write call that returns DIFFERENT content each time (e.g. reading a file
-        that was edited between reads) must never be counted as redundant or blocked."""
-        calls = {"n": 0}
-
-        async def run_tool(name, args, execution_context=None, run_auto_validation=True, call_id=""):
-            calls["n"] += 1
-            return f'{{"status": "ok", "n": {calls["n"]}}}'  # different content every call
-
-        agent = self._agent(run_tool)
-        ec = build_execution_context()
-        for _ in range(6):
-            self._dispatch(agent, ec)
-        self.assertEqual(calls["n"], 6)            # every call executed
-        self.assertNotIn("_redundant_alert", ec)
-        key = ("code_check_file", _make_hashable({"filepath": "a.py"}))
-        # Count keeps resetting to 0 because the result hash changes each time.
-        self.assertEqual(loop_control(ec).call_results[key][1], 0)
-
-    def test_warns_then_blocks_redundant_successful_call(self) -> None:
-        """A non-write call that keeps SUCCEEDING with identical content is warned on the
-        first repeat (REDUNDANT_SOFT_THRESHOLD) and hard-blocked on the second
-        (REDUNDANT_HARD_LIMIT)."""
-        calls = {"n": 0}
-
-        async def run_tool(name, args, execution_context=None, run_auto_validation=True, call_id=""):
-            calls["n"] += 1
-            return '{"status": "ok", "content": "unchanged"}'  # identical every time
-
-        agent = self._agent(run_tool)
-        ec = build_execution_context()
-        key = ("code_check_file", _make_hashable({"filepath": "a.py"}))
-
-        # Call 1: first observation, count starts at 0, no corrective.
-        self._dispatch(agent, ec)
-        self.assertEqual(loop_control(ec).call_results[key][1], 0)
-        self.assertNotIn("_redundant_alert", ec)
-
-        # Call 2 (1st repeat): count reaches REDUNDANT_SOFT_THRESHOLD → corrective once.
-        self._dispatch(agent, ec)
-        self.assertEqual(loop_control(ec).call_results[key][1], dispatch_module.REDUNDANT_SOFT_THRESHOLD)
-        self.assertEqual(ec["_redundant_alert"][0], "code_check_file")
-        ec.pop("_redundant_alert")
-
-        # Call 3 (2nd repeat): count reaches REDUNDANT_HARD_LIMIT; still executed, not re-warned.
-        self._dispatch(agent, ec)
-        self.assertEqual(loop_control(ec).call_results[key][1], dispatch_module.REDUNDANT_HARD_LIMIT)
-        self.assertNotIn("_redundant_alert", ec)
-        executed_before = calls["n"]
-
-        # Call 4: hard-blocked — the tool is NOT executed, a synthetic notice is returned.
-        msgs = self._dispatch(agent, ec)
-        self.assertEqual(calls["n"], executed_before)            # no further execution
-        self.assertEqual(len(msgs), 1)
-        self.assertEqual(msgs[0]["role"], "tool")
-        self.assertIn("skipped", msgs[0]["content"].lower())
-
-    def test_hard_block_strips_redundant_history_to_first(self) -> None:
-        """On the hard block, the intermediate identical exchanges are removed from
-        history, leaving only the first occurrence (plus the current block notice)."""
-
-        async def run_tool(name, args, execution_context=None, run_auto_validation=True, call_id=""):
-            return '{"status": "ok", "content": "unchanged"}'  # identical every time
-
-        agent = self._agent(run_tool)
-        ec = build_execution_context()
-        messages: list[dict] = []
-
-        def turn(cid: str) -> None:
-            tc = _tool_call("code_check_file", '{"filepath": "a.py"}', call_id=cid)
-            # Mirror _process_response: the assistant tool_calls turn is appended first.
-            messages.append({"role": "assistant", "content": "", "tool_calls": [tc]})
-            asyncio.run(dispatch_module._dispatch_tool_calls([tc], agent, messages, ec))
-
-        turn("c1")   # keeper, count 0
-        turn("c2")   # count 1 (soft)
-        turn("c3")   # count 2
-        turn("c4")   # blocked → strip c2, c3 from history
-
-        tool_ids = [m["tool_call_id"] for m in messages if m.get("role") == "tool"]
-        # Only the first occurrence and the current (blocked) notice survive.
-        self.assertEqual(tool_ids, ["c1", "c4"])
-        # The redundant assistant turns (c2, c3) are gone entirely.
-        assistant_call_ids = [
-            dispatch_module._tc_id(tc)
-            for m in messages if m.get("role") == "assistant"
-            for tc in (m.get("tool_calls") or [])
-        ]
-        self.assertEqual(assistant_call_ids, ["c1", "c4"])
-        # Tracking collapses to the surviving keeper.
-        key = ("code_check_file", _make_hashable({"filepath": "a.py"}))
-        self.assertEqual(loop_control(ec).redundant_call_ids[key], ["c1"])
-
-
 class WriteDiffEmitTests(unittest.TestCase):
     """The post-execution diff card must reflect the *outcome* of the write.
 
@@ -1612,5 +1700,160 @@ class WriteDiffEmitTests(unittest.TestCase):
             self.assertIn("new content", diffs[0]["patch"])
 
 
+class HeldDraftTests(RunAgentQueryNonInteractiveTests):
+    """A turn the loop is about to refuse never reaches the screen.
+
+    Nudges discard the turn the model just wrote, and the front-end drops the draft
+    it was rendering with it — an answer that streams in and then vanishes. The loop
+    probes the guardrails before the call and holds the prose when one could still
+    fire.
+    """
+
+    def _run(self, responses, *, pending, nudge_fires):
+        agent = self._query_agent({"n": 0})
+        backend = ScriptedBackend(responses)
+        streamed: list[str] = []
+        fired = {"n": 0}
+
+        def _nudge(**kwargs):
+            if fired["n"] >= nudge_fires:
+                return False
+            fired["n"] += 1
+            kwargs["messages"].append({"role": "user", "content": "check it first"})
+            return True
+
+        async def _noop_async(*a, **k):
+            return None
+
+        m = agent_loop_module
+        with patch.object(streaming_module, "get_backend", lambda: backend), \
+             patch.object(finalize_module, "auto_store_memory", new=_noop_async), \
+             patch.object(agent_loop_module, "_dispatch_tool_calls", _noop_async), \
+             patch.object(agent_loop_module, "_post_dispatch_inject", _noop_async), \
+             patch.object(history_module, "_trim_tool_history", lambda *a, **k: None), \
+             patch.object(history_module, "_maybe_compact_intra_query", lambda *a, **k: None), \
+             patch.object(m, "_inject_pin", lambda *a, **k: None), \
+             patch.object(m, "tools_for_context", lambda **k: []), \
+             patch.object(m, "nudge_pending", lambda **k: pending), \
+             patch.object(m, "maybe_append_nudge", _nudge), \
+             patch.object(m, "needs_incomplete_finalization", lambda ec: False):
+            result = asyncio.run(
+                m.run_agent_query(
+                    agent=agent,
+                    query="do a thing",
+                    max_steps=5,
+                    token_callback=streamed.append,
+                )
+            )
+        return result, "".join(streamed)
+
+    def test_a_refused_turn_streams_nothing(self) -> None:
+        result, streamed = self._run(
+            [{"content": "doomed answer"}, {"content": "real answer"}],
+            pending=True, nudge_fires=1,
+        )
+        self.assertEqual(result, "real answer")
+        self.assertNotIn("doomed answer", streamed)
+
+    def test_nothing_pending_streams_live(self) -> None:
+        result, streamed = self._run(
+            [{"content": "final answer"}], pending=False, nudge_fires=0,
+        )
+        self.assertEqual(result, "final answer")
+        self.assertIn("final answer", streamed)
+
+    def test_a_held_turn_that_acts_releases_its_narration(self) -> None:
+        """Prose written before a tool call is narration, not a refusable answer."""
+        result, streamed = self._run(
+            [
+                {"content": "narration", "tool_calls": [_tool_call("noop")]},
+                {"content": "real answer"},
+            ],
+            pending=True, nudge_fires=0,
+        )
+        self.assertEqual(result, "real answer")
+        self.assertIn("narration", streamed)
+
+
 if __name__ == "__main__":
     unittest.main()
+
+
+class IdenticalSuccessRepeatTests(unittest.TestCase):
+    """A call that keeps returning the same answer is told so, and never blocked.
+
+    The failing-call guard next to this counts only failures, and a nudge fires only
+    once the model stops calling tools — which a spinning model never does. So a `find`
+    returning nothing four times in a row, or the same range of the same file read six
+    times, passed through every guard in the loop untouched.
+
+    Said as an annotation on the result. Two guards that withheld or rewrote a repeated
+    *success* were built here before and removed, because refusing the content only sent
+    the model to fetch the same thing another way; nothing is withheld here.
+    """
+
+    def _agent(self, result: str = "(no output)"):
+        calls = {"n": 0}
+
+        async def _run_tool(name, args, **kw):
+            calls["n"] += 1
+            return result() if callable(result) else result
+
+        agent = types.SimpleNamespace(
+            tool_caps={},
+            approvals=types.SimpleNamespace(record_snapshot=lambda p: None),
+            get_tool_file_targets=lambda name, args: [],
+            _is_write_tool=lambda name: False,
+            _normalize_arguments=lambda args: dict(args),
+            _rewrite_tool_for_context=lambda name, args: (name, args),
+            _run_tool=_run_tool,
+        )
+        return agent, calls
+
+    def _dispatch(self, agent, messages, ec, name="bash_run", args=None):
+        call = {"id": f"c{len(messages)}", "function": {
+            "name": name, "arguments": args if args is not None else {"command": "find . -name '*.x'"}}}
+        asyncio.run(dispatch_module._dispatch_tool_calls([call], agent, messages, ec))
+        return messages[-1]["content"]
+
+    def test_the_third_identical_result_is_annotated(self) -> None:
+        agent, calls = self._agent()
+        ec, messages = build_execution_context(), []
+        first = self._dispatch(agent, messages, ec)
+        second = self._dispatch(agent, messages, ec)
+        third = self._dispatch(agent, messages, ec)
+        self.assertNotIn("IDENTICAL_REPEAT", first)
+        self.assertNotIn("IDENTICAL_REPEAT", second)
+        self.assertIn("IDENTICAL_REPEAT", third)
+        self.assertIn("3 times", third)
+        # Nothing withheld: the call still ran and its own output is still there.
+        self.assertEqual(calls["n"], 3)
+        self.assertIn("(no output)", third)
+
+    def test_it_is_said_once_and_then_drops_quiet(self) -> None:
+        agent, _ = self._agent()
+        ec, messages = build_execution_context(), []
+        for _ in range(3):
+            self._dispatch(agent, messages, ec)
+        fourth = self._dispatch(agent, messages, ec)
+        self.assertNotIn("IDENTICAL_REPEAT", fourth)
+
+    def test_a_changing_result_never_annotates(self) -> None:
+        counter = {"n": 0}
+
+        def _varying():
+            counter["n"] += 1
+            return f"result {counter['n']}"
+
+        agent, _ = self._agent(result=_varying)
+        ec, messages = build_execution_context(), []
+        outs = [self._dispatch(agent, messages, ec) for _ in range(5)]
+        self.assertFalse(any("IDENTICAL_REPEAT" in out for out in outs))
+
+    def test_a_different_call_keeps_its_own_count(self) -> None:
+        agent, _ = self._agent()
+        ec, messages = build_execution_context(), []
+        for _ in range(3):
+            self._dispatch(agent, messages, ec, args={"command": "find . -name '*.x'"})
+        other = self._dispatch(agent, messages, ec, args={"command": "find . -name '*.y'"})
+        self.assertNotIn("IDENTICAL_REPEAT", other)

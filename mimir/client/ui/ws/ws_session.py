@@ -24,6 +24,7 @@ from ...config import THINKING_DEPTH_LABELS, thinking_depth_from_label
 import asyncio
 import json
 import os
+import time
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:  # annotation-only; avoids the runtime import cycle the methods dodge
@@ -32,6 +33,12 @@ if TYPE_CHECKING:  # annotation-only; avoids the runtime import cycle the method
 # The websocket connection handle passed in by the server (websockets library type
 # varies by version); kept as an untyped alias so the annotation resolves.
 _WS = Any
+
+
+# How long a session switch waits for a cancelled turn to unwind (10 ms ticks)
+# before loading the next session anyway — bounded so the UI never hangs on a
+# tool call that ignores cancellation.
+_CANCEL_SETTLE_TICKS = 200
 
 
 class _Session:
@@ -54,6 +61,9 @@ class _Session:
         self._unsaved_session_meta: "SessionMeta | None" = None
         # In-flight session-summary refresh (one at a time per connection).
         self._summary_task: asyncio.Task | None = None
+        # Last `used_tokens` pushed to the client, so the periodic mid-turn refresh
+        # only sends a frame when the number actually moved.
+        self._last_context_usage: int | None = None
 
     async def run(self) -> None:
         # Send ready immediately so the webview transitions out of "connecting".
@@ -168,6 +178,7 @@ class _Session:
             }))
         except Exception:
             pass
+        self._last_context_usage = None  # client cleared its bar on session_loaded
         await self._emit_context_usage()
 
     async def _load_session(self, session_id: str) -> None:
@@ -217,6 +228,7 @@ class _Session:
                 }))
             except Exception:
                 pass
+        self._last_context_usage = None  # client cleared its bar on session_loaded
         await self._emit_context_usage()
 
     def _restore_todos(self, todos: list[dict], todo_deps: list | None = None) -> None:
@@ -380,17 +392,26 @@ class _Session:
         """Push a context_usage event to the WS client (best-effort, never raises)."""
         try:
             total, reserved = self._ctx_budget()
+            # While a query runs, the transcript that matters is the agent's in-flight
+            # one: `self.history` only gains the turn once the answer lands, so the bar
+            # would sit frozen for the whole run.
+            messages = self.worker.live_history()
+            if messages is None:
+                messages = self.history
             # allow_network=False: on the WS event loop, which must not block on a
             # tokenize round-trip. Already-counted messages hit the shared cache for
             # exact numbers; the rest fall back to the heuristic.
             history_used = get_backend().count_messages_tokens(
-                self.worker.model, self.history, allow_network=False
+                self.worker.model, messages, allow_network=False
             )
             # Include the fixed per-call overhead (system prompt + tools schema).
             # Without it the bar shows only the conversation and hides the ~8–12k
             # tokens that actually push the prompt over the model window.
             overhead = self.worker.context_overhead_tokens()
             used = history_used + overhead
+            if used == self._last_context_usage:
+                return  # nothing moved — don't spend a frame on an identical payload
+            self._last_context_usage = used
             await self.ws.send(json.dumps({
                 "type": "context_usage",
                 "used_tokens": used,
@@ -420,9 +441,28 @@ class _Session:
             except Exception:
                 pass
 
+        _last_ctx_tick = 0.0
+
+        async def _tick_context_usage() -> None:
+            """Refresh the bar during a running turn, at most once a second.
+
+            A turn can run dozens of tool calls over several minutes; without this the
+            bar only moves when the answer lands and looks frozen for the whole run.
+            """
+            nonlocal _last_ctx_tick
+            if not self.worker.is_busy():
+                return
+            now = time.monotonic()
+            if now - _last_ctx_tick < 1.0:
+                return
+            _last_ctx_tick = now
+            await self._emit_context_usage()
+
         while True:
             events = self.worker.drain()
             for ev in events:
+                if self._is_foreign_event(ev):
+                    continue
                 # Unwrap embedded JSON events (e.g. diff) from output lines.
                 if ev.get("type") == "output":
                     text = ev.get("text", "").strip()
@@ -497,6 +537,7 @@ class _Session:
                     await self._handle_job_complete(ev)
             await asyncio.sleep(0.005)
             await _check_and_push_todos()
+            await _tick_context_usage()
 
     # Maps an inbound WS message "type" to the _Session handler method that serves it.
     # Replaces the former 13-branch ``if mtype == …`` chain in _handle.
@@ -741,11 +782,56 @@ class _Session:
         self.worker._clear_todos()
         await self.ws.send(json.dumps({"type": "todo", "items": []}))
 
+    def _is_foreign_event(self, ev: dict) -> bool:
+        """True when *ev* was produced for a session other than the active one.
+
+        The worker stamps every event of a running turn with the session it began
+        in; one worker serves every session, so a turn that outlives a switch would
+        otherwise stream into the conversation now on screen. Unstamped events
+        (produced outside a query) always pass.
+        """
+        ev_session = ev.get("session_id")
+        return ev_session is not None and ev_session != self._active_session_id
+
+    async def _abandon_running_turn(self) -> bool:
+        """Cancel the in-flight turn, if any, and drop its pending prompts.
+
+        Leaving a session cuts the turn loose: the single shared worker cannot keep
+        streaming it anywhere the user can see, and a parked approval/question would
+        answer the *old* turn from the new session's UI — which is how a reworked
+        plan ended up written into another session's plans/ directory. Cancelling
+        here, before the active-session pointer moves, closes that window; we then
+        give the worker a moment to actually unwind so a tool call still in flight
+        cannot land in the session we are about to make active.
+        """
+        if not self.worker.is_busy():
+            return False
+        self.worker.cancel()
+        self.worker.flush_prompts()
+        for _ in range(_CANCEL_SETTLE_TICKS):
+            if not self.worker.is_busy():
+                break
+            await asyncio.sleep(0.01)
+        return True
+
     async def _handle_create_session(self, msg: dict) -> None:
+        cancelled = await self._abandon_running_turn()
         # Save current session before creating a new one.
         self._autosave_session(list(self._display_messages))
         await self._create_new_session()
+        if cancelled:
+            await self._notify_turn_abandoned()
         await self._send_sessions_list()
+
+    async def _notify_turn_abandoned(self) -> None:
+        """Tell the user the turn they left behind was stopped, not lost silently."""
+        try:
+            await self.ws.send(json.dumps({
+                "type": "output",
+                "text": "  ⏹ Previous turn cancelled — session changed.\n",
+            }))
+        except Exception:
+            pass
 
     async def _handle_switch_session(self, msg: dict) -> None:
         target_id = (msg.get("session_id") or "").strip()
@@ -753,9 +839,12 @@ class _Session:
             return
         if target_id == self._active_session_id:
             return
+        cancelled = await self._abandon_running_turn()
         # Save current before switching.
         self._autosave_session(list(self._display_messages))
         await self._load_session(target_id)
+        if cancelled:
+            await self._notify_turn_abandoned()
         await self._send_sessions_list()
 
     async def _handle_delete_session(self, msg: dict) -> None:

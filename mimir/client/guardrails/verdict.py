@@ -28,15 +28,22 @@ stating a verdict right after reading an output is speaking about.
 
 ``unknown`` is the one verdict that addresses a run without closing it. The run stays
 outstanding, carrying the stated verdict, because "I cannot tell" is a state somebody has
-to be told about at the end. What stops that from becoming a loop is the reminder budget,
-which ``unknown`` deliberately does not re-arm: the model is asked at most twice, then the
-run is reported unresolved and the turn moves on.
+to be told about at the end. Nothing loops on that: no reminder asks for a verdict, so an
+outstanding run is simply reported unresolved in the ledger and the turn moves on.
+
+``blocked`` is the only one that speaks about a run the machine already judged red, and it
+does not argue with that judgement — it re-imputes it. An exit code says *that* a run
+failed, never *whose* fault it was, and a wall the environment put there is not a defect in
+the change: it costs no repair budget and is reported as a limitation rather than as an
+unfinished task. The run stays as red as the machine saw it, so nothing is raised past that;
+what changes is only who is charged. And it is a retraction the model must claim: an
+unclaimed red exit drives the repair ladder exactly as before.
 """
 from __future__ import annotations
 
 from typing import Any
 
-from ..context import VERDICTS, unsettled_runs
+from ..context import VERDICTS, failed_runs, unsettled_runs
 from .observations import _register_run_failure
 
 
@@ -70,6 +77,8 @@ def apply_verdict(
       the statement did not mean costs nothing but a re-judgement.
     - ``pass`` settles the run it addresses and no other: the one it names, or — unscoped
       — the most recent one. The rest stay outstanding and are asked about on their own.
+    - ``blocked`` addresses *failed* runs instead, which is a disjoint set: a run that never
+      completed is not outstanding, it is already judged. See :func:`_apply_blocked`.
 
     A scope naming a run nobody can find is read as no scope at all, rather than
     discarded. Dropping it silently was the worse failure: nothing recorded, nothing
@@ -84,6 +93,8 @@ def apply_verdict(
     """
     if execution_context is None or verdict not in VERDICTS:
         return []
+    if verdict == "blocked":
+        return _apply_blocked(reason, scope, execution_context)
     runs = unsettled_runs(execution_context)
     if not runs:
         return []
@@ -100,20 +111,48 @@ def apply_verdict(
         if verdict == "fail":
             _register_run_failure(execution_context, command, reason)
         settled.append({**run, "command": command})
-    _rearm_verdict_reminders(execution_context, verdict)
+    _close_exercise_advice(execution_context, verdict)
     return settled
 
 
-def _rearm_verdict_reminders(execution_context: dict[str, Any], verdict: str) -> None:
-    """Give the reminder budget back once the model has actually judged something.
+def _apply_blocked(
+    reason: str, scope: str, execution_context: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Re-impute failed runs from the change to the environment; return the ones addressed.
 
-    The cap exists so two ignored reminders do not become per-step spam, but it must not
-    mute the reminder for the rest of the query: a later run left unjudged deserves a
-    fresh one. Mirrors the error_recovery re-arm — the budget stays spent while the
-    condition persists, which an ``unknown`` verdict is (the question is still open).
+    Scoped like ``fail``: unscoped it speaks for every failed run, because a wall this box
+    put there is rarely specific to one command, and a scope naming nothing falls back to
+    all of them rather than being dropped.
+
+    Returning the repair budget is the whole effect. The run keeps ``completed=False`` — the
+    machine saw a red exit and that stands — so no caller can read this as a success; what
+    stops is only the ladder that was treating it as a defect to fix.
     """
-    if verdict == "unknown":
-        return
-    counts = execution_context.get("nudge_counts")
-    if isinstance(counts, dict):
-        counts["output_verdict"] = 0
+    runs = failed_runs(execution_context)
+    if not runs:
+        return []
+    addressed = _runs_addressed(runs, scope) or runs
+    settled: list[dict[str, Any]] = []
+    for command, run in addressed.items():
+        run["verdict"], run["reason"], run["blocked"] = "blocked", reason, reason
+        run["failures"] = 0
+        settled.append({**run, "command": command})
+    _close_exercise_advice(execution_context, "blocked")
+    return settled
+
+
+def _close_exercise_advice(execution_context: dict[str, Any], verdict: str) -> None:
+    """``unknown`` and ``blocked`` end the build-it/run-it recommendation for this query.
+
+    Both are accepted answers to the whole advisory question — one says the output cannot
+    be read, the other that the environment will not produce one — and asking again after
+    either is asking for a different answer to a question already answered.
+
+    The other verdicts do nothing here. There used to be a symmetric re-arm, handing the
+    shared exercise budget back once nothing was left outstanding, because a reminder
+    asked for the verdict itself; that reminder is gone (see the advisory-axis comment
+    in nudges/engine.py) and re-arming a *run* recommendation on the strength of a
+    verdict would only ask a model that just judged its run to go and run more.
+    """
+    if verdict in ("unknown", "blocked"):
+        execution_context["exercise_advice_closed"] = True

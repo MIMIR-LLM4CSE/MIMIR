@@ -3,7 +3,7 @@
 The *expected classification* now lives in ``_golden_caps.py`` and is verified
 against the live server declarations by ``test_phase_b_servers.py``. This file
 covers the registry's pure logic: ``infer_tool_caps`` precedence, the server-side
-``tool_caps`` helper round-trip, the unannotated-tool report, and ``readonly_servers``.
+``tool_caps`` helper round-trip, the unannotated-tool report, and ``explorer_servers``.
 """
 
 import types
@@ -80,12 +80,18 @@ class RegistryHelpersTest(unittest.TestCase):
         }
         self.assertEqual(caps.unannotated_live_tools(reg), ["add", "mystery"])
 
-    def test_readonly_servers(self):
-        self.assertEqual(
-            caps.readonly_servers(),
-            frozenset({"files", "search", "code", "math", "strings",
-                       "datetime", "memory", "system", "platform"}),
-        )
+    def test_explorer_servers_are_real_server_keys(self):
+        """A name that matches no server is silently dropped at connect time.
+
+        That is how the set carried "code" — the server is "code_intel" — leaving an
+        exploring sub-agent with no symbol navigation at all, and nothing said so.
+        """
+        from mimir.client.config.constants import SERVERS
+        self.assertEqual(caps.explorer_servers() - set(SERVERS), set())
+
+    def test_explorer_servers_exclude_the_spawn_server(self):
+        """A child that can spawn its own children recurses without a budget."""
+        self.assertNotIn("agent", caps.explorer_servers())
 
 
 class ServerDeclarationTest(unittest.TestCase):
@@ -101,7 +107,7 @@ class ServerDeclarationTest(unittest.TestCase):
             caps.PLAN_BLOCKED, caps.PLAN_READONLY, caps.CODE_EXEC, caps.SENSITIVE, caps.NON_BATCH,
             caps.CODE_NAV, caps.ENV_DISCOVERY, caps.EXTERNAL_FETCH, caps.CLUSTER_SUBMIT,
             caps.ENV_MUTATE, caps.BACKGROUNDABLE,
-            caps.REMOVE, caps.OVERWRITE, caps.TASK_PLANNING, caps.JUDGE,
+            caps.REMOVE, caps.OVERWRITE, caps.TASK_PLANNING, caps.JUDGE, caps.DELEGATE,
         }
         server_vocab = {
             srv.READ, srv.CACHEABLE, srv.SEARCH, srv.SEARCH_WITH_PATH,
@@ -111,9 +117,38 @@ class ServerDeclarationTest(unittest.TestCase):
             srv.PLAN_BLOCKED, srv.PLAN_READONLY, srv.CODE_EXEC, srv.SENSITIVE, srv.NON_BATCH,
             srv.CODE_NAV, srv.ENV_DISCOVERY, srv.EXTERNAL_FETCH, srv.CLUSTER_SUBMIT,
             srv.ENV_MUTATE, srv.BACKGROUNDABLE,
-            srv.REMOVE, srv.OVERWRITE, srv.TASK_PLANNING, srv.JUDGE,
+            srv.REMOVE, srv.OVERWRITE, srv.TASK_PLANNING, srv.JUDGE, srv.DELEGATE,
         }
         self.assertEqual(client_vocab, server_vocab)
+
+    def test_declared_timeout_round_trips_and_is_clamped(self):
+        from mimir.client.config.constants import TOOL_CALL_TIMEOUT_MAX_SECS
+        from mimir.servers._shared import capabilities as srv
+        for declared, expected in (
+            (660, 660),
+            (99_999, TOOL_CALL_TIMEOUT_MAX_SECS),   # a server does not get to hang the loop
+            (0, None),
+            (None, None),
+        ):
+            with self.subTest(declared=declared):
+                desc = srv.build_descriptor(caps=[srv.READ], timeout_secs=declared)
+                fake = types.SimpleNamespace(
+                    name="t", meta={"mimir": desc}, annotations=None, inputSchema=None)
+                self.assertEqual(caps.infer_tool_caps(fake).timeout_secs, expected)
+
+    def test_readonly_invocation_spec_round_trips_and_drops_incomplete_specs(self):
+        from mimir.servers._shared import capabilities as srv
+        for spec, expected in (
+            ({"arg": "role", "values": ["explore"]}, {"arg": "role", "values": ["explore"]}),
+            ({"arg": "role"}, None),
+            ({"values": ["explore"]}, None),
+            (None, None),
+        ):
+            with self.subTest(spec=spec):
+                desc = srv.build_descriptor(caps=[srv.READ], readonly_when=spec)
+                fake = types.SimpleNamespace(
+                    name="t", meta={"mimir": desc}, annotations=None, inputSchema=None)
+                self.assertEqual(caps.infer_tool_caps(fake).readonly_when, expected)
 
     def test_reversibility_vocab_in_sync(self):
         # Declared on one side, consumed on the other — the two spellings must match
@@ -286,7 +321,11 @@ class ReversibilityDerivationTest(unittest.TestCase):
             with self.subTest(enforcement=level):
                 agent = _Agent()
                 agent.enforcement = level
-                ctx: dict = {}
+                # A session that edited something and checked nothing — the state the
+                # guard exists for. An untouched session is exempt by design (nothing
+                # was changed, so nothing ought to have been checked), which is about
+                # reachability of the exit, not about the dial.
+                ctx: dict = {"dirty_written_files": {"job.py"}}
                 self.assertIsNotNone(
                     gates._check_cluster_submit(agent, "submit", ctx),
                     "an irreversible action was softened by the enforcement dial",

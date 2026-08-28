@@ -251,7 +251,7 @@ def tools_for_context(
     )
 
 
-def hidden_planning_tools(mode: str, tool_caps: Any = None) -> set[str]:
+def hidden_planning_tools(mode: str, tool_caps: Any = None, *, exploring: bool = False) -> set[str]:
     """Plan-writing tools *mode* does not expose, by capability rather than by name.
 
     ASK answers and records nothing, so every ``TASK_PLANNING`` writer is hidden.
@@ -260,16 +260,26 @@ def hidden_planning_tools(mode: str, tool_caps: Any = None) -> set[str]:
     ``plan_steps`` arg-role is hidden. Withdrawing the tool is what lets the prompt
     drop the matching "do not write a plan / a checklist" prohibitions: a tool the
     model cannot see needs no rule, no nudge, and no prompt tokens.
+
+    ``exploring`` extends that to the document tool itself (the ``plan_title``
+    arg-role) for plan mode's first phase. A plan mode that offers the document from
+    the first turn, under a nudge calling the plan mandatory, makes a plan *to
+    explore* the cheapest way out — so the exploration is not asked for in prose, it
+    is the only thing the tool list allows.
     """
     if mode == "ask":
         return names_with_cap(TASK_PLANNING, tool_caps)
     if mode == "plan":
-        return names_with_arg_role("plan_steps", tool_caps)
+        hidden = names_with_arg_role("plan_steps", tool_caps)
+        if exploring:
+            hidden = hidden | names_with_arg_role("plan_title", tool_caps)
+        return hidden
     return set()
 
 
 def tools_for_readonly_mode(
     tools: list[dict[str, Any]], tool_caps: Any = None, mode: str = "",
+    *, exploring: bool = False,
 ) -> list[dict[str, Any]]:
     """Return the exploration-safe subset of tools allowed in a read-only mode.
 
@@ -282,13 +292,21 @@ def tools_for_readonly_mode(
     :func:`readonly_guard.filter_readonly_tool_calls`) — is kept so the model can
     gather the evidence its answer or plan is grounded in.
     """
-    hidden = names_with_cap(PLAN_BLOCKED, tool_caps) | hidden_planning_tools(mode, tool_caps)
+    hidden = names_with_cap(PLAN_BLOCKED, tool_caps) | hidden_planning_tools(
+        mode, tool_caps, exploring=exploring,
+    )
     return [
         tool for tool in tools
         if tool.get("function", {}).get("name") not in hidden
     ]
 
 
-def tools_for_plan_mode(tools: list[dict[str, Any]], tool_caps: Any = None) -> list[dict[str, Any]]:
-    """The read-only subset for plan mode. Its own name because plan_loop imports it."""
-    return tools_for_readonly_mode(tools, tool_caps, mode="plan")
+def tools_for_plan_mode(
+    tools: list[dict[str, Any]], tool_caps: Any = None, *, exploring: bool = False,
+) -> list[dict[str, Any]]:
+    """The read-only subset for plan mode. Its own name because plan_loop imports it.
+
+    ``exploring`` withholds the plan-document tool for the explore phase; plan_loop
+    rebuilds the list once when the evidence bar is met.
+    """
+    return tools_for_readonly_mode(tools, tool_caps, mode="plan", exploring=exploring)

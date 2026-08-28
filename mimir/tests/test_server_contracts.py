@@ -5,6 +5,8 @@ import unittest
 from pathlib import Path
 import sys
 
+from mimir.servers._shared import shell_paths as _shell_paths
+
 
 SERVERS_DIR = Path(__file__).resolve().parents[1] / "servers"
 _SHARED_DIR = SERVERS_DIR / "_shared"
@@ -211,6 +213,39 @@ class RepresentativeServerContractTests(unittest.TestCase):
     def test_files_missing_file_is_structured_error(self) -> None:
         payload = server_search.read_file_lines("does-not-exist.txt")
         self.assertEqual(payload["status"], "error")
+
+    def test_search_read_is_capped_and_says_where_to_resume(self) -> None:
+        # No call may return a whole large file: the cap is what keeps reading targeted.
+        with tempfile.TemporaryDirectory() as d:
+            old_root = server_search.SEARCH_ROOT
+            server_search.SEARCH_ROOT = d
+            try:
+                path = Path(d) / "big.f90"
+                path.write_text("".join(f"line {i}\n" for i in range(1, 1001)))
+                payload = server_search.read_file_lines(str(path), 1, 0)
+                self.assertEqual(payload["status"], "ok")
+                self.assertEqual(payload["lines_returned"], server_search._MAX_READ_LINES)
+                self.assertEqual(payload["total_lines"], 1000)
+                self.assertTrue(payload["truncated"])
+                self.assertEqual(
+                    payload["next_start_line"], server_search._MAX_READ_LINES + 1
+                )
+                self.assertEqual(payload["line_cap"], server_search._MAX_READ_LINES)
+            finally:
+                server_search.SEARCH_ROOT = old_root
+
+    def test_search_read_of_a_short_file_comes_back_whole(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            old_root = server_search.SEARCH_ROOT
+            server_search.SEARCH_ROOT = d
+            try:
+                (Path(d) / "small.py").write_text("x = 1\ny = 2\n")
+                payload = server_search.read_file_lines(str(Path(d) / "small.py"), 1, 0)
+                self.assertEqual(payload["lines_returned"], 2)
+                self.assertNotIn("truncated", payload)
+                self.assertNotIn("line_cap", payload)
+            finally:
+                server_search.SEARCH_ROOT = old_root
 
     def test_benchmark_python_compute_has_structured_success(self) -> None:
         payload = server_benchmark.benchmark_python_compute(n=10000, repeats=1)
@@ -488,28 +523,35 @@ class SymbolicMathServerTests(unittest.TestCase):
 
 
 class BashServerTests(unittest.TestCase):
-    def test_bash_allowed_commands_returns_list(self) -> None:
-        payload = server_bash.bash_allowed_commands()
-        self.assertEqual(payload["status"], "ok")
-        self.assertIn("commands", payload)
-        self.assertIn("ls", payload["commands"])
-        self.assertGreater(payload["count"], 0)
+    def test_an_unlisted_command_runs(self) -> None:
+        """The default answer is "run it", not "not allowed".
+
+        A refusal by name is a dead end: nothing in the approval layer can grant a
+        *command*, only a path, so the agent could only retry spellings of it. The
+        gate is now the denylist plus the user's prompt.
+        """
+        cwd = server_bash._WORKSPACE_ROOT
+        for cmd in ("git status", "awk '{print $1}' notes.txt", "tar -tf a.tar",
+                    "rm -rf build", "clang --version", "mpicc -o a.out a.c",
+                    "curl -s https://example.com"):
+            self.assertEqual(
+                server_bash._validate_command(cmd, cwd)["status"], "ok", cmd)
 
     def test_bash_run_chaining_is_validated_per_command(self) -> None:
-        # Chaining is allowed, but each command is validated against the
-        # allowlist, so a disallowed command anywhere in the chain is rejected.
-        payload = server_bash.bash_run("ls && rm -rf .")
+        # Chaining is allowed, but each command is validated on its own, so a
+        # denied command anywhere in the chain rejects the call.
+        payload = server_bash.bash_run("ls && sh script.sh")
         self.assertEqual(payload["status"], "error")
-        self.assertIn("not allowed", payload["error"])
+        self.assertIn("not available here", payload["error"])
 
     def test_bash_multiline_command_is_validated_per_line(self) -> None:
         # An unquoted newline chains like ';': each line must be validated on its
         # own, so a disallowed command on a later line is rejected instead of
         # being read as an extra argument of the line above.
         cwd = server_bash._WORKSPACE_ROOT
-        payload = server_bash._validate_command("ls\nrm -rf .", cwd)
+        payload = server_bash._validate_command("ls\nsh script.sh", cwd)
         self.assertEqual(payload["status"], "error")
-        self.assertIn("not allowed", payload["error"])
+        self.assertIn("not available here", payload["error"])
         # ... and the confinement of every line still applies.
         payload = server_bash._validate_command("ls\ncat /etc/passwd", cwd)
         self.assertEqual(payload["status"], "error")
@@ -546,8 +588,10 @@ class BashServerTests(unittest.TestCase):
     def test_find_hidden_target_flags_are_still_denied(self) -> None:
         # These hide their target in flag-value position (or prompt on a tty the
         # agent does not have); they were never about nesting and stay denied.
+        # ('-delete' is not among them: it deletes the matches, whose paths the
+        # confinement check does see, so it runs under the approval prompt.)
         cwd = server_bash._WORKSPACE_ROOT
-        for cmd in (r"find . -ok rm {} \;", "find . -delete",
+        for cmd in (r"find . -ok rm {} \;",
                     "find . -fprint /tmp/out", "find . -fls /tmp/out"):
             payload = server_bash._validate_command(cmd, cwd)
             self.assertEqual(payload["status"], "error", f"{cmd} -> {payload}")
@@ -606,26 +650,26 @@ class BashServerTests(unittest.TestCase):
                     "nvcc -L/usr/local/cuda/lib64 k.cu -o k.out"):
             self.assertEqual(server_bash._validate_command(cmd, cwd)["status"], "ok", cmd)
 
-    def test_bash_env_managers_are_scoped_to_query_and_add(self) -> None:
-        """pip/conda provision the environment, but cannot tear it down.
+    def test_bash_env_managers_only_lose_the_sub_command_that_nests(self) -> None:
+        """pip/conda run their whole surface; 'conda run' is the one exception.
 
-        Same scope as `module`: query and add. Removal has no way back, and a
-        sub-command that nests a command ('conda run') would void the validator.
+        Install and uninstall alike are reviewable from the command line, which is
+        what the approval prompt is for. 'conda run' is not: it executes a nested
+        command this validator never sees, exactly like a shell interpreter.
         """
         cwd = server_bash._WORKSPACE_ROOT
         for cmd in ("pip install requests", "pip3 install -r requirements.txt",
                     "pip list", "conda create -n myenv python=3.11",
                     "conda env create -f env.yml", "mamba install -y numpy",
-                    "conda list"):
-            self.assertEqual(server_bash._validate_command(cmd, cwd)["status"], "ok", cmd)
-        for cmd in ("pip uninstall requests", "conda remove numpy",
+                    "conda list", "pip uninstall requests", "conda remove numpy",
                     "conda env remove -n x", "conda clean --all",
-                    "conda run -n x python a.py", "pip config set global.index x",
-                    "pip", "pip wheel ."):
+                    "pip config set global.index x", "pip wheel ."):
+            self.assertEqual(server_bash._validate_command(cmd, cwd)["status"], "ok", cmd)
+        for cmd in ("conda run -n x python a.py", "mamba run -n x ls"):
             payload = server_bash._validate_command(cmd, cwd)
             self.assertEqual(payload["status"], "error", cmd)
-            self.assertIn("not allowed" if len(cmd.split()) > 1 else "sub-command",
-                          payload["error"], cmd)
+            self.assertIn("nested command", payload["hint"], cmd)
+        self.assertIn("sub-command", server_bash._validate_command("pip", cwd)["error"])
 
     def test_bash_env_manager_file_operands_are_confined(self) -> None:
         # A requirements file / local wheel is a file operand like any other: it can
@@ -716,7 +760,7 @@ class BashServerTests(unittest.TestCase):
             self.assertEqual(payload["status"], "error", cmd)
 
     def test_bash_run_allows_glob_and_simple_pipe(self) -> None:
-        # Globbing and a single pipe of allowlisted commands must still work.
+        # Globbing and a single pipe must still work.
         payload = server_bash.bash_run(
             "cd mimir/servers/workspace && ls *.py | head")
         self.assertEqual(payload["status"], "ok")
@@ -728,10 +772,21 @@ class BashServerTests(unittest.TestCase):
         self.assertEqual(payload["status"], "error")
         self.assertIn("outside workspace", payload["error"])
 
-    def test_bash_run_rejects_disallowed_command(self) -> None:
+    def test_bash_run_rejects_a_denied_command(self) -> None:
+        payload = server_bash.bash_run("shred -u notes.txt")
+        self.assertEqual(payload["status"], "error")
+        self.assertIn("not available here", payload["error"])
+        self.assertEqual(payload["denial"], "destructive")
+
+    def test_deletion_is_allowed_but_still_confined(self) -> None:
+        # 'rm' is destructive and reviewable, which is exactly what the approval
+        # prompt is for; what it may not do is reach outside the workspace.
+        cwd = server_bash._WORKSPACE_ROOT
+        self.assertEqual(
+            server_bash._validate_command("rm -rf build", cwd)["status"], "ok")
         payload = server_bash.bash_run("rm -rf /tmp/something")
         self.assertEqual(payload["status"], "error")
-        self.assertIn("not allowed", payload["error"])
+        self.assertIn("outside workspace", payload["error"])
 
     def test_bash_run_confines_file_redirection(self) -> None:
         # Redirecting to a file is allowed, but the target is a path like any
@@ -780,55 +835,48 @@ class BashServerTests(unittest.TestCase):
             payload = server_bash.bash_run(cmd)
             self.assertEqual(payload["status"], "ok", cmd)
 
-    def test_bash_run_allows_nvcc_make_cmake_in_allowlist(self) -> None:
-        commands = server_bash.bash_allowed_commands()["commands"]
-        for tool in ("nvcc", "make", "cmake"):
-            self.assertIn(tool, commands)
-
-    def test_bash_run_allows_python_validators_in_allowlist(self) -> None:
-        # ruff / pyflakes / mypy / black replace the removed dedicated validator
-        # tools; they must be invocable by name so the model can validate via bash.
-        commands = server_bash.bash_allowed_commands()["commands"]
-        for tool in ("ruff", "pyflakes", "mypy", "black", "pytest"):
-            self.assertIn(tool, commands)
-
-    def test_bash_run_accepts_module_discovery_and_load(self) -> None:
-        # Discovery + load are valid; 'module' is in the allowlist and a
-        # load-then-use chain validates as two segments.
-        self.assertIn("module", server_bash.bash_allowed_commands()["commands"])
+    def test_bash_run_accepts_every_module_subcommand(self) -> None:
+        # Load, unload, swap and purge all change this one subprocess's environment
+        # and nothing else; the approval prompt covers that. What is still checked
+        # is the shape of what reaches Lmod, which evaluates modulefiles.
         for cmd in ("module avail", "module list", "module load cuda",
+                    "module unload cuda", "module purge",
                     "module load gcc/11.3.0 && gcc --version"):
-            self.assertIsNone(server_bash._validate_module_args(cmd.split("&&")[0].split()))
-
-    def test_bash_run_rejects_module_destructive_subcommands(self) -> None:
-        # Only discovery + load are allowed; unload/swap/purge/save/restore and
-        # bogus subcommands are rejected.
-        for sub in ("unload", "rm", "swap", "purge", "reset", "save",
-                    "restore", "frobnicate"):
-            payload = server_bash.bash_run(f"module {sub} cuda")
-            self.assertEqual(payload["status"], "error", sub)
+            self.assertIsNone(
+                server_bash._validate_module_args(cmd.split("&&")[0].split()), cmd)
 
     def test_bash_run_rejects_unsafe_module_argument(self) -> None:
         payload = server_bash.bash_run("module load ../../etc/passwd")
         self.assertEqual(payload["status"], "error")
 
-    def test_rejection_inlines_the_allowlist_instead_of_pointing_at_a_tool(self) -> None:
-        # The reply to a *shell* call must not name something to "call" — the
-        # agent reads any such pointer as another shell command and burns turns
-        # failing on it. The approved list ships in the payload instead.
-        payload = server_bash.bash_run("pdflatex2 main.tex")
-        self.assertEqual(payload["status"], "error")
-        self.assertIn("ls", payload["allowed_commands"])
-        self.assertNotIn("bash_allowed_commands", payload["hint"])
+    def test_every_denied_command_names_the_route_that_replaces_it(self) -> None:
+        # A refusal that names no route is one the agent retries variants of. The
+        # reply to a *shell* call must not name something to "call" either — that
+        # reads as another shell command to try.
+        cwd = server_bash._WORKSPACE_ROOT
+        for name in sorted(_shell_paths.DENIED_COMMANDS):
+            payload = server_bash._validate_command(f"{name} x", cwd)
+            self.assertEqual(payload["status"], "error", name)
+            self.assertIn(name, payload["error"], name)
+            self.assertTrue(payload["hint"].strip(), name)
+            self.assertNotIn("()", payload["hint"], name)
 
-    def test_shell_runners_are_rejected_with_a_terminal_explanation(self) -> None:
-        # 'bash'/'sh'/'eval' would nest an unvalidated command. The hint must say
-        # so, so the agent stops hunting for a wrapper.
-        for cmd in ("bash -c 'ls'", "sh script.sh", "eval ls", "env ls",
-                    "xargs ls", "sudo ls"):
+    def test_shell_interpreters_are_rejected_with_a_terminal_explanation(self) -> None:
+        # 'bash'/'sh'/'eval' would nest a command this validator never sees. The
+        # hint must say so, so the agent stops hunting for a wrapper.
+        for cmd in ("bash -c 'ls'", "sh script.sh", "eval ls", "sudo ls"):
             payload = server_bash.bash_run(cmd)
             self.assertEqual(payload["status"], "error", cmd)
-            self.assertIn("bypass this validator", payload["hint"], cmd)
+            self.assertIn("never sees", payload["hint"], cmd)
+
+    def test_a_wrapper_that_nests_nothing_unvalidated_runs(self) -> None:
+        # 'timeout'/'env'/'xargs' were refused as runners; they are unwrapped now,
+        # so what is validated is the command they carry.
+        cwd = server_bash._WORKSPACE_ROOT
+        for cmd in ("timeout 5 ls", "env ls", "xargs ls", "nohup ls",
+                    "env A=B python3 x.py", "timeout 60 pytest -q"):
+            self.assertEqual(
+                server_bash._validate_command(cmd, cwd)["status"], "ok", cmd)
 
     def test_noop_commands_enable_the_capability_probe(self) -> None:
         # `which X || true` is how availability is established; without the
@@ -925,10 +973,16 @@ class BashServerTests(unittest.TestCase):
         self.assertEqual(payload["status"], "ok", payload)
         self.assertIn("server_bash.py", payload["stdout"])
 
-    def test_deletion_stays_rejected(self) -> None:
-        # 'rm' is the one write with no recovery path; adding mv/cp does not open it.
+    def test_deletion_runs_but_only_inside_the_workspace(self) -> None:
+        # 'rm' is destructive and reviewable, which is what the approval prompt is
+        # for. What it may not do is reach outside the workspace.
+        cwd = server_bash._WORKSPACE_ROOT
         for cmd in ("rm f.txt", "rm -rf build", "rmdir build"):
-            self.assertEqual(server_bash.bash_run(cmd)["status"], "error", cmd)
+            self.assertEqual(server_bash._validate_command(cmd, cwd)["status"], "ok", cmd)
+        for cmd in ("rm /etc/passwd", "rm -rf ../../elsewhere"):
+            payload = server_bash._validate_command(cmd, cwd)
+            self.assertEqual(payload["status"], "error", cmd)
+            self.assertIn("outside workspace", payload["error"], cmd)
 
     def test_exec_commands_confine_their_file_operands(self) -> None:
         # Regression: confining the readers (`cat`) while leaving the executors
@@ -957,36 +1011,41 @@ class BashServerTests(unittest.TestCase):
             self.assertEqual(server_bash._validate_command(cmd, cwd)["status"], "ok", cmd)
 
     def test_every_command_that_opens_a_file_is_path_confined(self) -> None:
-        # The allowlist and the confinement list are fed from the same groups, so a
-        # command added to one can never be forgotten in the other. The two documented
-        # exemptions are the only ones: `tr`'s arguments are character sets, and the
-        # metadata words (`echo`, `which`, `pwd`, `df`) open nothing.
-        from mimir.servers._shared.shell_paths import PATH_SENSITIVE_COMMANDS
-        self.assertTrue(server_bash._EXEC_COMMANDS <= server_bash._ALLOWED_COMMANDS)
-        self.assertTrue(server_bash._EXEC_COMMANDS <= PATH_SENSITIVE_COMMANDS)
-        unconfined = server_bash._ALLOWED_COMMANDS - PATH_SENSITIVE_COMMANDS
+        # Confinement is the default, exceptions listed — which is what keeps a
+        # command nobody classified from escaping it. The exemptions are the words
+        # that open nothing: `tr`'s arguments are character sets, and the metadata
+        # no-ops (`echo`, `which`, `pwd`, `df`) take words, not paths.
+        from mimir.servers._shared.shell_paths import (
+            PATH_INSENSITIVE_COMMANDS, takes_path_operands,
+        )
         self.assertEqual(
-            unconfined,
+            PATH_INSENSITIVE_COMMANDS,
             {"tr", "echo", "which", "pwd", "df", "basename", "dirname",
-             "true", "false", ":", "cd", "module"},
-            "an allowlisted command stopped being path-confined")
+             "true", "false", ":", "printenv", "export"},
+            "a command stopped being path-confined")
+        for command in ("cat", "gcc", "python3", "cd", "module", "rm", "git",
+                        "a-command-nobody-classified", "./a.out"):
+            self.assertTrue(takes_path_operands(command), command)
 
     def test_a_workspace_script_can_be_made_executable_and_run(self) -> None:
         # Running a workspace script by path is already supported, but a script
         # without the x bit (fresh checkout, or one the agent just wrote) used to be
-        # a dead end: './build.sh' failed with "Permission denied", 'chmod' was not
-        # allowlisted and 'bash build.sh' is refused by design, so nothing could
-        # grant it. Both halves must stay available for the sequence to work.
+        # a dead end: './build.sh' failed with "Permission denied", 'chmod' was
+        # refused and 'bash build.sh' is refused by design, so nothing could grant it.
+        # Both halves must stay available for the sequence to work.
         cwd = server_bash._WORKSPACE_ROOT
         for cmd in ("chmod +x ./build.sh", "chmod 755 tools/run.sh", "./build.sh"):
             self.assertEqual(server_bash._validate_command(cmd, cwd)["status"], "ok", cmd)
 
-    def test_chmod_stays_confined_and_non_recursive(self) -> None:
-        # chmod is a write like any other: its operand is confined to the workspace,
-        # and '-R' is refused because one token would re-mode a whole tree.
+    def test_chmod_stays_confined(self) -> None:
+        # chmod is a write like any other: its operand is confined to the workspace.
+        # '-R' is no longer refused — it re-modes a tree whose root is confined, and
+        # deletion, which is worse, runs under the prompt.
         cwd = server_bash._WORKSPACE_ROOT
-        for cmd in ("chmod +x /etc/passwd", "chmod -R 777 .", "chmod --recursive 700 src"):
-            self.assertEqual(server_bash._validate_command(cmd, cwd)["status"], "error", cmd)
+        self.assertEqual(
+            server_bash._validate_command("chmod +x /etc/passwd", cwd)["status"], "error")
+        for cmd in ("chmod -R 777 .", "chmod --recursive 700 src"):
+            self.assertEqual(server_bash._validate_command(cmd, cwd)["status"], "ok", cmd)
 
     def test_single_quoted_substitution_markers_are_literal(self) -> None:
         # Single quotes make these characters text, and a search pattern is where
@@ -1034,15 +1093,15 @@ class BashServerTests(unittest.TestCase):
         for cmd in ("./build.sh", "./a.out data.txt"):
             self.assertEqual(server_bash._validate_command(cmd, cwd)["status"], "ok", cmd)
 
-    def test_shell_runner_is_refused_by_path_too(self) -> None:
-        # The escape hatch the rule above must not open: a shell runner spelled as a
+    def test_shell_interpreter_is_refused_by_path_too(self) -> None:
+        # The escape hatch the rule above must not open: an interpreter spelled as a
         # path would otherwise become approvable, and one approved root would restore
         # the arbitrary-nested-command bypass that refusing 'bash' exists to prevent.
         cwd = server_bash._WORKSPACE_ROOT
         for cmd in ("/bin/sh -c 'rm -rf /'", "../outside/bash script.sh", "./sh -c x"):
             payload = server_bash._validate_command(cmd, cwd)
             self.assertEqual(payload["status"], "error", cmd)
-            self.assertIn("is not allowed", payload["error"], cmd)
+            self.assertIn("not available here", payload["error"], cmd)
 
     def test_program_path_is_an_operand_for_both_sides(self) -> None:
         # The client's gate and the server's guard walk the same extractor, so the
@@ -1133,25 +1192,35 @@ class BashServerTests(unittest.TestCase):
                     "module load cuda && nvcc -L$CUDA_HOME/lib64 k.cu -o k.out"):
             self.assertEqual(server_bash._validate_command(cmd, cwd)["status"], "ok", cmd)
 
-    def test_every_classified_command_is_one_the_server_can_run(self) -> None:
-        """No command group may name something the allowlist does not.
+    def test_no_classified_command_is_one_the_server_refuses(self) -> None:
+        """A command cannot be both classified and denied.
 
-        A command the classifier knows but the server refuses is dead weight that
-        reads as a supported capability: every consumer of the kind (plan mode, the
-        approval waiver, the blackboard) treats "opaque" and "known" identically for
-        a call that never runs. So the groups must stay a subset of what runs.
+        A command the classifier files under a kind but the server refuses is dead
+        weight that reads as a supported capability: every consumer of the kind (plan
+        mode, the approval waiver, the blackboard) treats a call that never runs as
+        one that does. The taxonomy and the denylist must stay disjoint.
         """
         from mimir.client.guardrails import observations as obs
         from mimir.client.guardrails.policy.bash_classify import (
             READONLY_KINDS, classify_bash_command,
         )
         from mimir.servers._shared.shell_paths import (
-            COMMAND_CATEGORIES, ENV_MANAGER_COMMANDS, EXEC_COMMANDS, INSPECT_COMMANDS,
-            NEUTRAL_COMMANDS, PATH_SENSITIVE_COMMANDS, READ_COMMANDS, SEARCH_COMMANDS,
+            DENIED_COMMANDS, ENV_MANAGER_COMMANDS, EXEC_COMMANDS, INSPECT_COMMANDS,
+            NEUTRAL_COMMANDS, READ_COMMANDS, SEARCH_COMMANDS,
             WRITE_COMMANDS, WRITE_VALUE_FLAGS_BY_CMD,
         )
 
-        allowed = set(server_bash._ALLOWED_COMMANDS)
+        categories = {
+            **{c: "read" for c in READ_COMMANDS},
+            **{c: "search" for c in SEARCH_COMMANDS},
+            **{c: "inspect" for c in INSPECT_COMMANDS},
+            **{c: "write" for c in WRITE_COMMANDS},
+            **{c: "exec" for c in EXEC_COMMANDS},
+            **{c: "env" for c in ENV_MANAGER_COMMANDS},
+            **{c: "neutral" for c in NEUTRAL_COMMANDS},
+            "module": "env",
+            "cd": "chdir",
+        }
         groups = {
             "EXEC_COMMANDS": set(EXEC_COMMANDS),
             "ENV_MANAGER_COMMANDS": set(ENV_MANAGER_COMMANDS),
@@ -1160,25 +1229,18 @@ class BashServerTests(unittest.TestCase):
             "INSPECT_COMMANDS": set(INSPECT_COMMANDS),
             "WRITE_COMMANDS": set(WRITE_COMMANDS),
             "NEUTRAL_COMMANDS": set(NEUTRAL_COMMANDS),
-            "PATH_SENSITIVE_COMMANDS": set(PATH_SENSITIVE_COMMANDS),
             "WRITE_VALUE_FLAGS_BY_CMD": set(WRITE_VALUE_FLAGS_BY_CMD),
-            "COMMAND_CATEGORIES": set(COMMAND_CATEGORIES),
         }
         for name, group in groups.items():
-            self.assertEqual(sorted(group - allowed), [],
+            self.assertEqual(sorted(group & set(DENIED_COMMANDS)), [],
                              f"shell_paths.{name} names commands the bash server "
-                             f"will not run")
-        # And the converse: an allowlisted command with no category has no kind either,
-        # so it classifies as opaque and loses the plan-mode/approval treatment its
-        # peers get (the taxonomy is what both ends read).
-        self.assertEqual(sorted(allowed - set(COMMAND_CATEGORIES)), [],
-                         "allowlisted commands absent from COMMAND_CATEGORIES")
+                             f"refuses to run")
         # The category a command is filed under must agree with how a call to it is
         # actually gated: the side-effect-free categories are exactly the plan-safe ones.
         probe = {"cd": "cd sub", "module": "module avail", "grep": "grep p f.py",
                  "rg": "rg p", "sed": "sed -n 1p f.py", "tr": "tr a b",
                  "mv": "mv a b", "cp": "cp a b", "find": "find . -name x"}
-        for command, category in sorted(COMMAND_CATEGORIES.items()):
+        for command, category in sorted(categories.items()):
             if category == "env":
                 continue  # the sub-command decides; covered by its own tests
             cmd = probe.get(command, f"{command} x")
@@ -1190,11 +1252,11 @@ class BashServerTests(unittest.TestCase):
                 f"{command!r} is filed as {category!r} but classifies "
                 f"{segments[0].kind!r}")
         # The project-wide validators carry the same invariant, stated in their own
-        # comment but never checked: a validator the server cannot run (or the
+        # comment but never checked: a validator the server refuses (or the
         # classifier cannot tag EXEC) never clears a pending file. `py_compile` runs as
         # `python -m py_compile`, which _exec_head reports as the module name.
         self.assertEqual(
-            sorted(obs._PROJECT_VALIDATORS - allowed - {"py_compile"}), [],
+            sorted(obs._PROJECT_VALIDATORS & set(DENIED_COMMANDS)), [],
             "project validators the bash server will not run")
         self.assertEqual(
             sorted(obs._PROJECT_VALIDATORS - set(EXEC_COMMANDS) - {"py_compile"}), [],
@@ -1207,53 +1269,59 @@ class BashServerTests(unittest.TestCase):
             sorted(obs._PROJECT_VALIDATORS - set(obs._VALIDATOR_TIER)), [],
             "project checkers absent from _VALIDATOR_TIER are unreachable")
 
-    def test_the_header_table_is_the_allowlist(self) -> None:
-        """The module docstring is the allowlist's only human-readable form.
+    def test_the_header_table_is_the_denylist(self) -> None:
+        """The module docstring is the denylist's only human-readable form.
 
-        It is also the first thing a reader trusts about this server, and it drifts
-        silently: `chmod` was allowlisted and never added to the table, so the headline
-        count went stale with it — one omission, showing up as two wrong facts. Nothing
-        checked either, because the count is prose and prose is not imported.
+        It is also the first thing a reader trusts about this server, and prose
+        drifts silently because prose is not imported. A denied command missing from
+        the table reads as available; a listed one that is not denied reads as
+        refused. Both are wrong facts about the one thing this file still gates.
         """
         doc = server_bash.__doc__ or ""
-        allowed = sorted(server_bash._ALLOWED_COMMANDS)
-        headline = re.search(r"THE (\d+) ALLOWED COMMANDS", doc)
-        self.assertIsNotNone(headline, "the headline count is gone from the docstring")
-        self.assertEqual(int(headline.group(1)), len(allowed),
-                         "the docstring's headline count is not the allowlist's size")
-        # The by-category table sits between the second and third rule lines.
-        table = doc.split("===========  =========  ========")[2]
+        denied = sorted(_shell_paths.DENIED_COMMANDS)
+        table = doc.split("=============  ====================")[2]
         missing = [
-            c for c in allowed
+            c for c in denied
             if not re.search(rf"(?<![\w.+-]){re.escape(c)}(?![\w.+-])", table)
         ]
-        self.assertEqual(missing, [], "allowlisted commands absent from the header table")
+        self.assertEqual(missing, [], "denied commands absent from the header table")
 
-    def test_no_command_wrapper_is_allowlisted(self) -> None:
-        """A wrapper in the allowlist makes the allowlist decorative.
+    def test_a_wrapper_is_unwrapped_never_denied(self) -> None:
+        """A wrapper may not be denied, and a denied head may not be a wrapper.
 
-        The validator checks argv[0]. A command whose argument list *is* another
-        command therefore approves its own head and nothing it runs — which is what
-        `_SHELL_RUNNERS` exists to refuse, and the one thing its rejection message
-        promises can never be allowed. Stated in that comment since it was written,
-        never checked: `timeout` reached the allowlist through `EXEC_COMMANDS` and
-        re-opened `bash -c` behind a head nobody was looking at.
+        The validator reads a head. A command whose argument list *is* another
+        command would otherwise clear the denylist on its own name and nothing it
+        runs, so wrappers are unwrapped instead of listed — and the two sets must
+        stay disjoint or a wrapper would be refused before it could be unwrapped.
         """
         self.assertEqual(
-            sorted(server_bash._SHELL_RUNNERS & set(server_bash._ALLOWED_COMMANDS)), [],
-            "a command runner is allowlisted; its nested command is never validated")
+            sorted(_shell_paths.COMMAND_WRAPPERS & _shell_paths.DENIED_COMMANDS), [],
+            "a wrapper is denylisted; it would be refused instead of unwrapped")
+        for wrapper in sorted(_shell_paths.COMMAND_WRAPPERS):
+            for denied in sorted(_shell_paths.SHELL_INTERPRETERS):
+                argv, _ = _shell_paths.unwrap_argv([wrapper, denied, "x"])
+                self.assertEqual(argv[0], denied, f"{wrapper} {denied}")
 
     def test_a_wrapper_cannot_smuggle_a_refused_command(self) -> None:
         """The behaviour the set invariant above protects, spelled out end to end."""
         cwd = server_bash._WORKSPACE_ROOT
-        for cmd in ("timeout 5 rm -rf build", "timeout 5 bash -c 'echo hi'",
-                    "nohup rm -rf build", "/usr/bin/timeout 5 rm -rf build"):
+        for cmd in ("timeout 5 bash -c 'echo hi'", "nohup sudo ls",
+                    "env A=B sh script.sh", "/usr/bin/timeout 5 /bin/sh -c x",
+                    "timeout 5 nohup bash -c x", "xargs -n1 bash",
+                    "nice -n 10 sbatch job.sh"):
             with self.subTest(command=cmd):
                 self.assertEqual(server_bash._validate_command(cmd, cwd).get("status"),
-                                 "error", f"{cmd!r} smuggled a command past the allowlist")
+                                 "error", f"{cmd!r} smuggled a denied command through")
         # …without costing the ordinary run its own timeout, which is the tool's to set.
         self.assertEqual(
             server_bash._validate_command("python solver.py", cwd).get("status"), "ok")
+
+    def test_unwrapping_terminates(self) -> None:
+        # A chain deeper than the bound stops unwrapping rather than looping, and
+        # never loses the head — what is left is still validated.
+        argv, wrappers = _shell_paths.unwrap_argv(["timeout", "5"] * 10 + ["ls"])
+        self.assertLessEqual(len(wrappers), 4)
+        self.assertTrue(argv)
 
     def test_every_refused_path_is_one_the_user_can_be_asked_about(self) -> None:
         """The invariant tying the guard to the gate.
@@ -1310,11 +1378,12 @@ class BashServerTests(unittest.TestCase):
             self.assertIn(refused, offered,
                           f"{cmd!r}: guard refuses {refused} but the gate never offers it")
 
-    def test_tex_toolchain_is_allowlisted(self) -> None:
-        commands = server_bash.bash_allowed_commands()["commands"]
+    def test_tex_toolchain_is_classified_as_a_build(self) -> None:
+        # It runs, like anything else; what matters is that it is not read-only, so
+        # a document compile is approval-gated and owes a verdict.
         for tool in ("pdflatex", "xelatex", "lualatex", "latexmk", "bibtex",
                      "biber", "makeindex"):
-            self.assertIn(tool, commands)
+            self.assertEqual(_shell_paths.EXEC_EFFECTS.get(tool), "build", tool)
 
     def test_tex_shell_escape_is_rejected(self) -> None:
         # \write18 is arbitrary execution outside the validator; every spelling
@@ -1352,11 +1421,11 @@ class BashServerTests(unittest.TestCase):
         payload = server_bash.bash_run("ls ../../..")
         self.assertEqual(payload["status"], "error")
 
-    def test_bash_run_rejects_git_now_handled_by_localgit(self) -> None:
-        # git was removed from the bash allowlist; it lives in the localgit server.
-        payload = server_bash.bash_run("git status")
-        self.assertEqual(payload["status"], "error")
-        self.assertIn("not allowed", payload["error"])
+    def test_bash_run_runs_git(self) -> None:
+        # git ran through a dedicated server only because bash refused it; that
+        # server is gone, and git is an ordinary approval-gated command here.
+        payload = server_bash.bash_run("git status --short")
+        self.assertEqual(payload["status"], "ok", payload)
 
     def test_bash_run_allows_python_as_code_fallback(self) -> None:
         # python is now an allowed build/exec tool so the code server can fall
@@ -1372,11 +1441,23 @@ class BashServerTests(unittest.TestCase):
         self.assertIn("1", payload["stdout"])
         self.assertIn("2", payload["stdout"])
 
+    def test_the_timeout_is_clamped_and_the_clamp_is_reported(self) -> None:
+        # The ceiling is a real limit the model must be able to see it hit: a silently
+        # shortened run reads as a hang. Below it, the call's own value is honoured.
+        payload = server_bash.bash_run("pwd", timeout=server_bash._MAX_TIMEOUT + 60)
+        self.assertEqual(payload["status"], "ok")
+        self.assertTrue(payload["timeout_clamped"])
+        self.assertEqual(payload["requested_timeout"], server_bash._MAX_TIMEOUT + 60)
+        self.assertNotIn("timeout_clamped", server_bash.bash_run("pwd", timeout=120))
+        # And the default is sized for a build or a suite, not for a `ls`.
+        self.assertGreaterEqual(server_bash._DEFAULT_TIMEOUT, 30)
+        self.assertLessEqual(server_bash._DEFAULT_TIMEOUT, server_bash._MAX_TIMEOUT)
+
     def test_bash_run_chaining_validates_each_command(self) -> None:
-        # A disallowed command anywhere in the chain is rejected.
-        payload = server_bash.bash_run("pwd && git status")
+        # A denied command anywhere in the chain rejects the call.
+        payload = server_bash.bash_run("pwd && eval ls")
         self.assertEqual(payload["status"], "error")
-        self.assertIn("not allowed", payload["error"])
+        self.assertIn("not available here", payload["error"])
 
     def test_bash_run_quoted_semicolon_is_literal_not_chaining(self) -> None:
         # A ';' inside a quoted argument is literal text, so python runs normally.

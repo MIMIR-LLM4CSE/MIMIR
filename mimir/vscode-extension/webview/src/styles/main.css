@@ -463,28 +463,6 @@ body {
 
 .user-text { white-space: pre-wrap; word-break: break-word; }
 
-/* Guardrail nudge injected into the user's turn slot. Dimmed and italic so it
-   never reads as something the user typed, while staying legible. */
-.user-text--nudge {
-  font-style: italic;
-  opacity: 0.75;
-  font-size: 0.92em;
-}
-
-.nudge-badge {
-  display: inline-block;
-  margin-right: 8px;
-  padding: 1px 6px;
-  border-radius: 8px;
-  font-size: 0.72em;
-  font-weight: 600;
-  font-style: normal;
-  letter-spacing: 0.02em;
-  vertical-align: middle;
-  background: var(--vscode-badge-background, rgba(120, 120, 120, 0.25));
-  color: var(--vscode-badge-foreground, inherit);
-}
-
 /* Mid-run steer message awaiting injection into the running turn. */
 .steer-badge {
   display: inline-block;
@@ -948,6 +926,26 @@ body {
   min-width: 0;
 }
 
+/* A sub-agent's step. Same row as the agent's own work — it IS the same kind of
+   work — set back a notch and slightly dimmed so the eye can follow one run at a
+   time, with a badge naming which sub-agent it came from. */
+.tool-row--child .tool-row-head {
+  padding-left: 20px;
+  opacity: 0.82;
+}
+
+.tool-origin {
+  font-family: var(--mono);
+  font-size: 0.72em;
+  color: var(--fg-dim);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 0 4px;
+  white-space: nowrap;
+  flex-shrink: 0;
+  opacity: 0.75;
+}
+
 .tool-row-head {
   all: unset;
   box-sizing: border-box;
@@ -1029,7 +1027,12 @@ body {
    (and label) absorb the shrink when the row is width-constrained.
    Only failures carry a glyph — success is left unmarked. */
 .tool-status-glyph { font-size: 0.85em; font-weight: 700; flex-shrink: 0; }
-.tool-status-glyph--error { color: var(--danger); }
+.tool-status-glyph--error {
+  color: var(--danger);
+  /* Leads the row, sized like the icon column so labels stay aligned. */
+  width: 10px;
+  text-align: center;
+}
 
 /* The model's reading of the run's output — a claim, not a measurement, so it is
    tinted rather than glyphed and never competes with the exit-code status. */
@@ -1057,9 +1060,6 @@ body {
 }
 
 .tool-chevron { font-size: 0.72em; color: var(--fg-dim); opacity: 0.7; flex-shrink: 0; }
-
-.tool-row--error .tool-label,
-.tool-row--error .tool-label-verb { color: var(--danger); }
 
 /* ── Exec in/out panel (expanded row of a shell / code-runner tool) ─────────── */
 
@@ -1248,30 +1248,6 @@ body {
   color: var(--danger);
   background: color-mix(in srgb, var(--danger) 16%, transparent);
 }
-/* Collapsed state of a failed row: exactly one line, full width, ellipsized at
-   the row edge (never crammed into the narrow tail). Click to open the panel. */
-.tool-error-brief {
-  display: block;
-  width: calc(100% - 12px);
-  margin: 0 6px 5px 6px;
-  padding: 3px 8px;
-  text-align: left;
-  font-family: var(--mono);
-  font-size: 11px;
-  line-height: 1.4;
-  color: var(--danger);
-  background: color-mix(in srgb, var(--danger) 7%, transparent);
-  border: 1px solid color-mix(in srgb, var(--danger) 30%, transparent);
-  border-radius: var(--radius-md);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  cursor: pointer;
-}
-.tool-error-brief:hover {
-  background: color-mix(in srgb, var(--danger) 13%, transparent);
-}
-
 .tool-error .tool-exec-meta {
   border-top: 1px solid color-mix(in srgb, var(--danger) 30%, var(--border));
 }
@@ -2611,6 +2587,23 @@ body {
 .agent-thinking {
   display: flex;
   padding: 6px 0;
+  align-items: center;
+}
+
+/* ── The turn in flight ───────────────────────────────────────────────────────
+   Held outside the transcript until the loop accepts it, and marked as such: a
+   guardrail can still send the model back to work, and this must not read as an
+   answer that was given and then taken away. ────────────────────────────────── */
+
+.chat-draft .message-body {
+  opacity: 0.85;
+  border-left: 2px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.35));
+  padding-left: 8px;
+}
+
+.chat-draft__status {
+  display: flex;
+  padding-top: 4px;
   align-items: center;
 }
 

@@ -48,20 +48,6 @@ class DeclaredClassificationTest(unittest.TestCase):
         with_sig = {n for n, c in self.reg.items() if c.arg_roles.get("edit_sig")}
         self.assertEqual(with_sig, set(golden.EDIT_SIG_ARGS))
 
-    def test_line_range_roles_match_golden(self):
-        for tool, expected in golden.LINE_RANGE_ARGS.items():
-            with self.subTest(tool=tool):
-                self.assertEqual(caps.arg_role(tool, "line_range", self.reg), expected)
-        with_range = {n for n, c in self.reg.items() if c.arg_roles.get("line_range")}
-        self.assertEqual(with_range, set(golden.LINE_RANGE_ARGS))
-
-    def test_edit_batch_roles_match_golden(self):
-        for tool, expected in golden.EDIT_BATCH_ARGS.items():
-            with self.subTest(tool=tool):
-                self.assertEqual(caps.arg_role(tool, "edit_batch", self.reg), expected)
-        with_batch = {n for n, c in self.reg.items() if c.arg_roles.get("edit_batch")}
-        self.assertEqual(with_batch, set(golden.EDIT_BATCH_ARGS))
-
     def test_plan_steps_roles_match_golden(self):
         for tool, expected in golden.PLAN_STEPS_ARGS.items():
             with self.subTest(tool=tool):

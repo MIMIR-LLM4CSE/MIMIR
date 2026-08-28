@@ -82,8 +82,6 @@ class PinCapTests(unittest.TestCase):
         for i in range(200):
             ctx["read_files"].add(f"src/module_{i:03d}.py")
             ctx["existing_paths"].add(f"src/e_{i:03d}.py")
-        for i in range(100):
-            ctx["search_queries_used"].add(f"pattern_{i:03d}")
         for i in range(40):
             ctx["dirty_written_files"].add(f"src/w_{i:03d}.py")
         for i in range(20):
@@ -92,7 +90,7 @@ class PinCapTests(unittest.TestCase):
         return ctx
 
     def test_every_section_is_capped(self) -> None:
-        pin = build_discovery_pin_block(self._saturated(), max_files=10, max_queries=5)
+        pin = build_discovery_pin_block(self._saturated(), max_files=10)
         shown = _pin_paths(pin)
         for stem, cap in (("module_", 10), ("e_", 10), ("w_", 10), ("p_", 10), ("q_", 10)):
             # Match the basename's own prefix: a plain substring test would count
@@ -109,7 +107,7 @@ class PinCapTests(unittest.TestCase):
         self.assertIn("... and 10 more", pin)  # 20 planned / 20 previous-query
 
     def test_saturated_pin_stays_bounded(self) -> None:
-        pin = build_discovery_pin_block(self._saturated(), max_files=10, max_queries=5)
+        pin = build_discovery_pin_block(self._saturated(), max_files=10)
         # 6 sections x (10 entries + header + "more") — comfortably under the ~6.5k
         # chars the uncapped version produced for the same state.
         self.assertLess(len(pin), 4000)

@@ -6,7 +6,13 @@ and the ``guardrails.workflow`` state model. ``plugins`` mirrors
 ``policy.plugins`` (NudgeRule/NudgeRegistry/register_nudge ↔ PolicyCheck/...).
 """
 
-from .engine import maybe_append_nudge, needs_incomplete_finalization
+from .engine import (
+    inject_reminder,
+    maybe_append_nudge,
+    maybe_inject_env_resolution,
+    needs_incomplete_finalization,
+    nudge_pending,
+)
 from .plugins import (
     NudgeRule,
     NudgeRegistry,
@@ -16,8 +22,11 @@ from .plugins import (
 )
 
 __all__ = [
+    "inject_reminder",
     "maybe_append_nudge",
+    "maybe_inject_env_resolution",
     "needs_incomplete_finalization",
+    "nudge_pending",
     "NudgeRule",
     "NudgeRegistry",
     "register_nudge",

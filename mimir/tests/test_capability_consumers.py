@@ -6,7 +6,11 @@ no capability). This guards the *vocabulary* side: a capability constant that
 lingers in the vocab after its last consumer was removed — exactly what happened
 to ``VALIDATION_BYPASS`` once its only reader (a never-firing policy branch) was
 deleted. A capability only earns its place if some client control-flow reacts to
-it; servers merely *declare* caps, so consumption is measured in ``client/``.
+it; servers merely *declare* caps, so consumption is measured in ``client/`` — plus the shipped
+example packs, because part of the vocabulary is **pack-facing**: a capability whose job
+is to give an application policy a rename-proof handle (``EXTERNAL_FETCH``) has its
+consumer in a plugin, not in core. Scanning core alone reported such a capability as an
+orphan, pushing toward deleting the seam rather than the dead code.
 
 Static AST scan (no runtime / model / mcp deps) so it runs on the x86 build host,
 same approach as ``_golden_caps.build_declared_registry``.
@@ -27,6 +31,10 @@ from mimir.client.context import capabilities as caps
 
 CLIENT_DIR = pathlib.Path(caps.__file__).resolve().parents[1]
 CAP_DEF_FILE = pathlib.Path(caps.__file__).resolve()
+# Version-controlled reference packs. They are never auto-loaded, but they are the
+# canonical demonstration of the pack-facing vocabulary, so a capability they key off
+# is consumed, not orphaned.
+EXAMPLE_PACKS_DIR = CLIENT_DIR.parent / "examples" / "plugins"
 
 
 def capability_constants() -> set[str]:
@@ -44,7 +52,8 @@ def referenced_identifiers(*, exclude: set[pathlib.Path]) -> set[str]:
     using it is an unused import, not a consumer.
     """
     used: set[str] = set()
-    for path in CLIENT_DIR.rglob("*.py"):
+    sources = list(CLIENT_DIR.rglob("*.py")) + list(EXAMPLE_PACKS_DIR.rglob("*.py"))
+    for path in sources:
         if path.resolve() in exclude:
             continue
         tree = ast.parse(path.read_text(), filename=str(path))

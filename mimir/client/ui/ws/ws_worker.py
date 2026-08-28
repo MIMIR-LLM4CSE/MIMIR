@@ -55,6 +55,10 @@ class _AgentWorker:
 
         self._current_task: asyncio.Task | None = None
         self.active_session_id: str | None = None  # kept in sync by _Session
+        # Session a running query belongs to, captured when it starts. One worker
+        # serves every session, so events must carry the session they were produced
+        # for or a turn that outlives a switch lands in the wrong conversation.
+        self._query_session_id: str | None = None
         # Background-job watchers: job_key -> asyncio.Task polling a detached run to
         # completion. Registered by the agent loop via _register_bg_job (below).
         self._bg_jobs: dict[str, asyncio.Task] = {}
@@ -187,13 +191,6 @@ class _AgentWorker:
             # worker watches the run to completion, then notifies + auto-resumes.
             agent._register_background_job = self._register_bg_job
 
-            try:
-                # Repo baseline is built lazily on the first repo-touching query
-                # (see _ensure_repo_baseline); only refresh the cheap platform profile here.
-                await agent._refresh_platform_profile()
-            except Exception:
-                pass
-
             self._agent = agent
             self.out_q.put({"type": "ready", "model": self.model})
         except Exception as exc:
@@ -246,8 +243,10 @@ class _AgentWorker:
                 return  # shutdown sentinel
 
             self._current_task = asyncio.current_task()
+            self._query_session_id = self.active_session_id
             await self._run_query(item)
             self._current_task = None
+            self._query_session_id = None
 
     async def _run_query(self, item: dict) -> None:
         query = item.get("text", "")
@@ -430,7 +429,7 @@ class _AgentWorker:
         prompt to the client and puts the response in _approval_q.
         """
         from ...context.capabilities import (
-            arg_role, label_for, preview_spec, reversibility_of,
+            label_for, preview_spec, reversibility_of,
         )
         from ...tool_execution.tool_status_messages import shorten_display_args
         from .file_preview import build_preview_diffs
@@ -480,20 +479,6 @@ class _AgentWorker:
             return False, "cancelled"
 
         choice = response.get("choice", "n")
-        approved_files = response.get("approved_files")  # list[str] | None
-
-        # Per-file filtering for batch-edit tools (edit_batch arg-role names the
-        # arg carrying the sub-edit list) when the user selected a subset.
-        batch_args = arg_role(tool_name, "edit_batch", agent.tool_caps)
-        if choice == "y" and approved_files is not None and batch_args:
-            try:
-                import json as _json
-                edits = _json.loads(arguments.get(batch_args[0], "[]"))
-                approved_set = set(approved_files)
-                filtered = [e for e in edits if isinstance(e, dict) and str(e.get("path", "")).strip() in approved_set]
-                arguments[batch_args[0]] = _json.dumps(filtered)
-            except Exception:
-                pass  # filtering failed — let full approval proceed
 
         if choice == "a":
             scope = agent.approvals._approval_scope(tool_name, server_name, arguments)
@@ -617,6 +602,20 @@ class _AgentWorker:
         msgs = getattr(self._agent, "_last_full_messages", None)
         return list(msgs) if msgs else None
 
+    def live_history(self) -> list | None:
+        """The in-flight transcript of the query currently running (system excluded).
+
+        The agent mutates this list in place at every step, so reading it gives the
+        context as it grows *during* a turn — which is what the context bar needs.
+        ``None`` when no query is running.
+        """
+        if self._agent is None:
+            return None
+        msgs = getattr(self._agent, "_live_messages", None)
+        if not msgs:
+            return None
+        return list(msgs)[1:]  # drop the system message (counted as overhead)
+
     def export_agent_state(self) -> dict:
         """Export carry_context from the agent."""
         if self._agent is not None:
@@ -643,18 +642,29 @@ class _AgentWorker:
     def reset_session_guards(self) -> None:
         """Clear session-scoped guard state on session change.
 
-        Out-of-workspace approvals and the persistent repeated-failing-call counts
-        are both session-scoped: a new session starts with a clean slate.
+        Out-of-workspace approvals are session-scoped: a new session starts with a
+        clean slate.
         """
         if self._agent is not None:
             try:
                 self._agent.approvals.reset_allowed_paths()
             except Exception:
                 pass
-            try:
-                self._agent._persistent_call_fails.clear()
-            except Exception:
-                pass
+
+    def flush_prompts(self) -> None:
+        """Drop every pending human-pause answer and steer message.
+
+        Called right after ``cancel()`` when the turn they belong to is abandoned: a
+        queued answer left behind would be handed to the *next* turn's prompt,
+        approving something the user never saw.
+        """
+        for q in (self._approval_q, self._continue_q, self._question_q):
+            while True:
+                try:
+                    q.get_nowait()
+                except _queue.Empty:
+                    break
+        self._drain_steer_q()
 
     def _drain_steer_q(self) -> list[str]:
         """Pop and return all queued steer messages (the agent's ``_poll_steer``)."""
@@ -919,13 +929,21 @@ class _AgentWorker:
         return False
 
     def drain(self) -> list[dict]:
-        """Drain all pending output events (non-blocking)."""
+        """Drain all pending output events (non-blocking), stamped with their session.
+
+        Single choke point for everything the engine emits, so the stamp is applied
+        here rather than at the dozens of emit sites. Events produced outside a query
+        carry ``None`` and are never filtered.
+        """
         events: list[dict] = []
         while True:
             try:
-                events.append(self.out_q.get_nowait())
+                ev = self.out_q.get_nowait()
             except _queue.Empty:
                 break
+            if isinstance(ev, dict):
+                ev.setdefault("session_id", self._query_session_id)
+            events.append(ev)
         return events
 
     def shutdown(self) -> None:

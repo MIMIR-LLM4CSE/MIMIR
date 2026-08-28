@@ -35,7 +35,7 @@ class BashCommandReadonlyTests(unittest.TestCase):
         ]:
             self.assertTrue(bash_command_is_readonly(cmd), cmd)
 
-    def test_build_and_exec_commands_rejected(self):
+    def test_build_and_exec_commands_are_not_read_only(self):
         for cmd in [
             "gcc solver.c -o solver.out -lm",
             "python -m pytest tests/",
@@ -50,6 +50,19 @@ class BashCommandReadonlyTests(unittest.TestCase):
             "rg foo && python bar.py",  # one exec segment poisons the chain
             "pdflatex main.tex",        # a TeX engine writes its artefacts: an exec
             "cat foo > out.txt",        # redirection to a file
+        ]:
+            self.assertFalse(bash_command_is_readonly(cmd), cmd)
+
+    def test_an_unplaced_command_is_not_read_only(self):
+        # The default the denylist rests on: a head the taxonomy does not place runs,
+        # but never unattended and never while planning. Which is why widening what
+        # bash accepts widens what the user is *asked* about, not what slips through.
+        for cmd in [
+            "git status",               # reads, but nothing here knows that
+            "rm -rf build",
+            "curl -sL https://example.com",
+            "tar -xzf archive.tar.gz",
+            "ls && tox -e py311",       # one unplaced segment poisons the chain
         ]:
             self.assertFalse(bash_command_is_readonly(cmd), cmd)
 
@@ -69,7 +82,7 @@ class BashCommandReadonlyTests(unittest.TestCase):
     def test_inplace_and_output_write_flags_rejected(self):
         # sed -i / sort -o mutate the filesystem without a redirection, so they
         # are writes, not read-only discovery — even though their leading command
-        # is in the inspection allowlist.
+        # is filed as a read.
         for cmd in [
             "sed -i 's/x/y/' file.py",
             "sed -i.bak 's/x/y/' file.py",
@@ -143,14 +156,14 @@ class PlanModeToolVisibilityTests(unittest.TestCase):
         kept = {t["function"]["name"] for t in tools_for_plan_mode(tools, registry)}
         self.assertEqual(kept, {"bash_run", "grep"})
 
-    def test_each_readonly_mode_hides_the_planning_tools_it_cannot_use(self):
-        # ASK records nothing, so both plan-writing tools go. PLAN writes the prose
-        # document only — the checklist tool (the `plan_steps` arg-role) goes, the
-        # document tool stays. Withdrawing them is what lets the prompt drop the
-        # matching "do not write a plan / a checklist" prohibitions.
+    def _planning_registry(self):
+        """A registry telling the two planning tools apart by arg-role, as production does."""
         registry = {
             "grep": ToolCaps(name="grep", capabilities=frozenset()),
-            "todo_set_plan": ToolCaps(name="todo_set_plan", capabilities=frozenset({TASK_PLANNING})),
+            "todo_set_plan": ToolCaps(
+                name="todo_set_plan", capabilities=frozenset({TASK_PLANNING}),
+                arg_roles={"plan_title": ("title",)},
+            ),
             "todo_write": ToolCaps(
                 name="todo_write", capabilities=frozenset({TASK_PLANNING}),
                 arg_roles={"plan_steps": ("steps",)},
@@ -161,6 +174,24 @@ class PlanModeToolVisibilityTests(unittest.TestCase):
             {"function": {"name": "todo_set_plan"}},
             {"function": {"name": "todo_write"}},
         ]
+        return registry, tools
+
+    def test_explore_phase_withholds_the_plan_document_tool(self):
+        # Plan mode's first phase is the exploration itself. Offering the document tool
+        # there is what let a model answer the "record a plan" pressure with a plan to
+        # explore; withholding it removes the move rather than policing the wording.
+        registry, tools = self._planning_registry()
+        self.assertEqual(
+            {t["function"]["name"] for t in tools_for_plan_mode(tools, registry, exploring=True)},
+            {"grep"},
+        )
+
+    def test_each_readonly_mode_hides_the_planning_tools_it_cannot_use(self):
+        # ASK records nothing, so both plan-writing tools go. PLAN writes the prose
+        # document only — the checklist tool (the `plan_steps` arg-role) goes, the
+        # document tool stays. Withdrawing them is what lets the prompt drop the
+        # matching "do not write a plan / a checklist" prohibitions.
+        registry, tools = self._planning_registry()
         self.assertEqual(
             {t["function"]["name"] for t in tools_for_plan_mode(tools, registry)},
             {"grep", "todo_set_plan"},

@@ -32,52 +32,58 @@ rules here, and not implemented.
 Read "confined" throughout this file with that scope in mind; SERVERS_DETAILED.md
 carries the same note with the bounds on what an "always" approval grants.
 
-THE 74 ALLOWED COMMANDS, BY CATEGORY
-------------------------------------
-One taxonomy, declared in ``_shared/shell_paths.py`` and read by both ends: the
-allowlist below is the union of those groups, the client's classifier maps each to a
-capability kind, and the category is what decides approval and plan-mode availability.
-``bash_allowed_commands()`` reports it per command. The parity test in
-``test_server_contracts.py`` fails if the two ends drift.
+WHAT IS REFUSED, AND WHY
+------------------------
+Anything not named below runs. The three groups here are refused because no approval
+prompt could make them reviewable, and each rejection names the route that replaces it
+— a refusal with no route is a dead end the model retries variants of.
 
-===========  =========  ========  ==================================================
-category     in plan?   approval  commands
-===========  =========  ========  ==================================================
-neutral      yes        no        pwd echo which basename dirname realpath df
-                                  true false :
-read         yes        no        cat head tail nl sed◆ wc cut sort◆ uniq comm tr
-                                  fold column cksum md5sum sha256sum stat file
-search       yes        no        grep rg
-inspect      yes        no        ls find du
-chdir        yes        no        cd
-env          query      mutation  module pip pip3 conda conda3 mamba mamba3  ◆
-write        no         yes       mv cp mkdir chmod
-exec         no         yes       gcc g++ gfortran nvcc javac java node python
-                                  python3 make cmake ctest pytest ruff mypy pyflakes
-                                  black pdflatex latex xelatex lualatex pdftex tex
-                                  bibtex biber makeindex latexmk dvips dvipdf
-===========  =========  ========  ==================================================
+=============  ==================================================================
+group          commands
+=============  ==================================================================
+interpreter    bash sh zsh ksh dash csh tcsh fish eval exec . command sudo su doas
+destructive    shred dd mkfs fdisk parted swapoff mkswap
+cluster        sbatch salloc scancel
+=============  ==================================================================
 
-◆ Per-call shifts: ``sed -i`` / ``sort -o FILE`` and a ``> file`` redirection turn a
+An interpreter runs a nested command this validator never sees, which would void
+segmentation and with it path confinement — so it stays refused in every spelling,
+including by absolute path and behind a wrapper (``timeout 5 /bin/sh -c x`` is refused
+on ``sh``). ``source`` is the deliberate exception: its operand is a *file*, confined
+like any other path, and it is the only way to set the environment the rest of a chain
+runs in (``source venv/bin/activate && pytest``). The ``.`` spelling stays refused.
+Job submission has one route, the typed cluster tools, which return a handle this
+session tracks; ``squeue``/``sinfo``/``sacct`` run here freely. Deletion (``rm``) is
+*not* refused — destructive but reviewable, so it runs under the approval prompt with
+its operands confined, like any other write.
+
+Wrappers whose argument list is another command — ``timeout``, ``nohup``, ``env``,
+``xargs``, ``stdbuf``, ``nice``, ``ionice``, ``srun``, ``mpirun``, ``mpiexec`` — are
+unwrapped before validation (``shell_paths.unwrap_argv``), so ``timeout 60 pytest -q``
+is validated and classified as the pytest run it is.
+
+WHAT A COMMAND'S *CATEGORY* STILL DECIDES
+-----------------------------------------
+The taxonomy in ``_shared/shell_paths.py`` is no longer a gate; it is what the client's
+classifier reads to decide approval and plan-mode availability. Read/search/inspect
+commands (``cat``, ``grep``, ``ls``, ``pip list``, ``module avail``, ``cd``) are
+read-only: they run unattended and are available while planning. Everything else —
+writes, execution, installs, and every head the taxonomy does not place — is
+approval-gated and blocked while planning.
+
+Per-call shifts: ``sed -i`` / ``sort -o FILE`` and a ``> file`` redirection turn a
 side-effect-free command into a **write**; ``< file`` and fd redirection change nothing;
 for the env managers the sub-command decides (query vs mutation), and an unknown one is
 assumed to mutate. In a chain, one non-read-only segment makes the whole call
-non-read-only. ``git`` (use the ``localgit`` server), deletion (``rm``/``rmdir``) and
-every shell interpreter are excluded outright.
+non-read-only.
 
 This server is intentionally restricted:
 - only runs inside the workspace root
-- only the allowlist above is accepted. It is the primary surface for
-  compile/run/test/validate — invoke the toolchain directly with the exact flags the
-  task needs. A rejection inlines the full allowlist in its payload: the reply to a
-  shell call must never point at something that reads as another shell command
-  to try.
-- shell interpreters and generic runners (bash, sh, eval, env, xargs, sudo …)
-  are permanently excluded — they nest an unvalidated command — and say so
-  explicitly when rejected, so the agent stops looking for a wrapper
+- it is the primary surface for compile/run/test/validate — invoke the toolchain
+  directly with the exact flags the task needs
 - command chaining is allowed (``;``, ``&&``, ``||``, ``|``) since real tasks
   often need several commands in one call; each command between separators is
-  tokenized and validated against the allowlist independently
+  tokenized and validated independently
 - redirection is allowed — fd forms (``2>&1``, ``1>&2``, ``2>/dev/null``) and
   named files (``> run.log``, ``>> run.log``, ``< input.txt``). A redirection
   target is a path operand written with an operator instead of a flag, so it is
@@ -90,21 +96,19 @@ This server is intentionally restricted:
 - still rejected: backgrounding (``&``), command/process substitution
   (``$(...)``, backticks, ``<(...)``, ``${...}``) and subshells
 - runs ``bash -c`` only after validation, so globbing (``*.py``) and ``$VAR``
-  expansion still work for the allowed command form
-- the environment managers (``pip``, ``conda``, ``mamba``) are available, scoped to
-  querying and adding: ``pip install``, ``conda create``/``conda env create`` and
-  the local queries, but no ``uninstall``/``remove``/``clean`` (the write with no
-  way back), no ``conda run`` (it nests an unvalidated command) and no
-  ``config`` (it would persist settings past the session). An install writes into
-  the target interpreter's site-packages — outside the workspace by construction,
-  so the approval prompt, not a path check, is what governs it
+  expansion still work
+- the environment managers (``pip``, ``conda``, ``mamba``) run their whole surface,
+  install and uninstall alike, minus ``conda run``/``mamba run``, which nest an
+  unvalidated command. An install writes into the target interpreter's
+  site-packages — outside the workspace by construction, so the approval prompt,
+  not a path check, is what governs it
 - ``module`` (HPC Lmod) is supported: it is a shell *function*, so the server
   defines it by sourcing Lmod's init in the wrapper it builds around the
   validated command. This means ``module load cuda && nvcc ...`` works in a
   single call; a load does not persist to the next call (fresh subprocess)
 
 Every call starts at the workspace root — there is no working-directory argument.
-``cd`` is allowlisted and holds for the rest of a single call (``cd sub && pytest
+``cd`` holds for the rest of a single call (``cd sub && pytest
 t.py``), but each call is a fresh subprocess so it does not carry over. One way to
 say "where", not two: a second mechanism was only ever a second thing to keep
 confined, and the root is the one base every path in the call is judged against.
@@ -115,8 +119,8 @@ Critical hardening applied:
   so the guard that *confines* a path and the gate that *prompts* for it can never
   read the same command two ways (see that module's docstring)
 - treats an unquoted newline as the command separator it is, so every line of a
-  multi-line command is validated against the allowlist (never folded into the
-  argv of the line above)
+  multi-line command is validated on its own (never folded into the argv of the
+  line above)
 - resolves every path operand with realpath() to prevent symlink escapes
 - per-command denylist of flags whose write/exec target the operand extraction
   cannot see (find ``-exec``/``-fprint``, rg ``--pre``, grep ``-f``)
@@ -140,22 +144,19 @@ from mcp.server.fastmcp import FastMCP
 from capabilities import tool_caps, PLAN_READONLY, CODE_EXEC, JUDGE, RECOVERABLE
 from responses import err, ok
 from shell_paths import (
-    COMMAND_CATEGORIES as _COMMAND_CATEGORIES,
+    CLUSTER_SUBMIT_COMMANDS,
+    DESTRUCTIVE_COMMANDS,
     ENV_MANAGER_COMMANDS as _ENV_MANAGER_COMMANDS,
-    EXEC_COMMANDS as _EXEC_COMMANDS,
-    INSPECT_COMMANDS as _INSPECT_COMMANDS,
-    NEUTRAL_COMMANDS as _NEUTRAL_COMMANDS,
-    READ_COMMANDS as _READ_COMMANDS,
     READONLY_NESTED_COMMANDS,
-    SEARCH_COMMANDS as _SEARCH_COMMANDS,
-    WRITE_COMMANDS as _WRITE_COMMANDS,
+    SHELL_INTERPRETERS,
     ShellParseError as _ShellParseError,
     cd_destination as _cd_destination,
     expansion_operands,
-    is_path_like_command as _is_path_like_command,
     normalize_path_arg as _normalize_path_arg,
+    denied_command,
     parse_segments as _parse_segments,
     segment_path_operands,
+    unwrap_argv,
 )
 
 mcp = FastMCP(
@@ -168,108 +169,41 @@ _WORKSPACE_ROOT = os.path.realpath(
     os.path.abspath(os.environ.get("MCP_FILES_ROOT", os.getcwd()))
 )
 _MAX_OUTPUT = 64 * 1024
-_DEFAULT_TIMEOUT = 10
+# Sized for the work this shell actually does now that it compiles and runs: a default
+# that survives an ordinary build or test suite, and a ceiling past which a run belongs
+# to the background-job route rather than to a call that blocks the turn.
+_DEFAULT_TIMEOUT = 30
+_MAX_TIMEOUT = 300
 
 # Commands run with the user's real home as HOME (see _safe_env, which rebuilds the
 # env from scratch); the validator needs the same value to know where a bare 'cd' lands.
 _REAL_HOME = os.path.realpath(os.path.abspath(os.path.expanduser("~")))
 
-# Union of the command *groups* in _shared/shell_paths.py, which the client's gate and
-# classifier import too. Add a command to a *group*, never here — two copies of the
-# taxonomy drift silently, and test_server_contracts.py enforces parity.
-_ALLOWED_COMMANDS = {
-    *_EXEC_COMMANDS,
-    # 'sed' is dual-use: read-only when printing, a real write with '-i'. Paths are
-    # confined either way; the client classifier gates 'sed -i' as a write.
-    *_READ_COMMANDS,
-    *_SEARCH_COMMANDS,
-    *_INSPECT_COMMANDS,
-    # Real writes, approval-gated and rejected in plan mode. Every operand — source
-    # AND destination — is confined. Deletion ('rm'/'rmdir') stays out: the one write
-    # with no recovery path, and no build/benchmark flow needs it.
-    *_WRITE_COMMANDS,
-    # The no-ops are what makes the capability probe expressible:
-    # `which pdflatex 2>/dev/null || true` would otherwise be rejected on its last
-    # segment, leaving no way to ask "is X available?".
-    *_NEUTRAL_COMMANDS,
-    # One 'cd' rebases every later path in the chain.
-    "cd",
-    # Lmod 'module' is a shell *function*, not a binary, so it cannot run under
-    # 'bash --norc' alone — the server sources Lmod's init in the wrapper it builds
-    # (see _module_preamble), letting 'module load cuda && nvcc ...' work in one call.
-    # Args are validated against _MODULE_SUBCOMMANDS below.
-    "module",
-    # Query and provision only, scoped by _ENV_MANAGER_SUBCOMMANDS below: never
-    # remove, never a sub-command that nests another ('conda run' would bypass this
-    # validator exactly as 'bash -c' would). The one group whose effect is
-    # deliberately outside the workspace — an install writes into the target
-    # interpreter's site-packages, bounded by the approval prompt rather than a path
-    # check. PATH puts MIMIR's own interpreter first (_safe_env), so a bare
-    # 'pip install' provisions *that* env unless the agent names another.
-    *_ENV_MANAGER_COMMANDS,
-}
-
-# Discovery and load only — no destruction (unload/rm/swap/purge/reset) and no
-# collection persistence (save/restore). Anything else is rejected.
-_MODULE_SUBCOMMANDS = {
-    # discovery / read-only
-    "list", "avail", "av", "show", "display", "spider", "whatis",
-    "help", "keyword", "overview", "is-loaded", "is-avail", "help",
-    # load only
-    "load", "add",
-}
-
-# By family ('pip3' → pip, 'mamba' → conda). Query and add only — an uninstall or env
-# removal is the write with no way back. Also absent, for separate reasons:
-# 'conda run'/'mamba run' nest an arbitrary command (see _SHELL_RUNNERS), and
-# 'pip config'/'conda config' persist settings past the session. Anything
-# unrecognised is rejected rather than passed through.
-_ENV_MANAGER_SUBCOMMANDS = {
-    "pip": {"install", "download", "list", "show", "freeze", "check", "inspect",
-            "index", "help"},
-    "conda": {"install", "create", "update", "upgrade", "list", "info", "search",
-              "env", "help"},
-}
-
-# 'conda env <sub>': the container sub-command needs its own gate, since it holds both
-# a creation ('conda env create -f env.yml') and a removal.
-_CONDA_ENV_SUBCOMMANDS = {"create", "list", "export", "update"}
+# Sub-commands that run an arbitrary nested command, refused for the same reason a
+# shell interpreter is: this validator would never see what they execute. Everything
+# else an environment manager does — install, uninstall, create, remove, config — is
+# reviewable from the command line and runs under the approval prompt.
+_ENV_MANAGER_NESTING_SUBCOMMANDS = {"run", "execute"}
 
 
-def _env_manager_family(argv0: str) -> str:
-    """Which sub-command table governs *argv0* ('pip3' → pip, 'mamba3' → conda)."""
-    return "pip" if argv0.startswith("pip") else "conda"
 
 
 def _validate_env_manager_args(argv: list[str]) -> dict | None:
-    """Confine an environment manager to querying and adding (see the tables above)."""
-    family = _env_manager_family(argv[0])
-    allowed = _ENV_MANAGER_SUBCOMMANDS[family]
+    """Keep an environment manager from nesting a command (see the set above)."""
     positionals = [a for a in argv[1:] if not a.startswith("-")]
     sub = positionals[0] if positionals else None
     if sub is None:
         return err(
             f"'{argv[0]}' needs a sub-command.",
-            hint=f"Accepted here: {', '.join(sorted(allowed))}.",
+            hint="Name what to do, e.g. 'install', 'list', 'freeze'.",
         )
-    if sub not in allowed:
+    if sub in _ENV_MANAGER_NESTING_SUBCOMMANDS:
         return err(
-            f"'{argv[0]} {sub}' is not allowed.",
-            hint=f"This server scopes environment managers to querying and adding: "
-                 f"{', '.join(sorted(allowed))}. Removal is not available (no "
-                 f"uninstall/remove/clean — it is the write with no way back), and "
-                 f"neither is a sub-command that runs another command or persists "
-                 f"configuration. Report the limitation rather than looking for "
-                 f"another spelling of it.",
+            f"'{argv[0]} {sub}' is not available here.",
+            hint=f"'{argv[0]} {sub}' executes a nested command this validator never "
+                 f"sees. Write that command out directly instead; to run it in another "
+                 f"environment, invoke that environment's interpreter by path.",
         )
-    if family == "conda" and sub == "env":
-        env_sub = positionals[1] if len(positionals) > 1 else None
-        if env_sub not in _CONDA_ENV_SUBCOMMANDS:
-            named = f" {env_sub}" if env_sub else ""
-            return err(
-                f"'{argv[0]} env{named}' is not allowed.",
-                hint=f"Accepted after 'env': {', '.join(sorted(_CONDA_ENV_SUBCOMMANDS))}.",
-            )
     return None
 
 
@@ -292,7 +226,7 @@ _MODULE_ENV_PASSTHROUGH = (
 # Why a command could not be segmented → what the agent should do about it. The
 # refusal itself (and its wording) comes from shell_paths.parse_segments, which the
 # client shares; only the remedy is server-side, since only this side has an
-# allowlist to point at.
+# denylist to point at.
 _PARSE_HINTS = {
     "empty": "Provide at least one command.",
     "separator": "Check for a leading or doubled ';', '&&', '||' or '|'.",
@@ -328,31 +262,52 @@ _TEX_FORBIDDEN_FLAGS = {
 _FORBIDDEN_ARG_TOKENS_BY_CMD = {
     # -exec/-execdir are NOT here: the parser lifts their payload into its own nested
     # segment, judged on the nested command's own head (see _validate_command).
-    # -ok/-okdir stay — they prompt on a tty the agent does not have.
-    "find": {"-ok", "-okdir", "-delete",
+    # -ok/-okdir stay — they prompt on a tty the agent does not have; -delete
+    # does not, and its operand is confined like any other.
+    "find": {"-ok", "-okdir",
              "-fprint", "-fprint0", "-fprintf", "-fls", "--in-place"},
     "rg":   {"--pre", "--pre-glob", "--hostname-bin", "--search-zip", "-f", "--file"},
     # '-f/--file' reads patterns from a file — a read whose operand sits in flag-value
     # position, exactly where the pattern-skipping rule stops looking.
     "grep": {"-f", "--file"},
-    # Not about *where* chmod reaches (operands are confined like any other) but how
-    # much one token rewrites: '-R' re-modes a whole tree, unreviewable from the call.
-    # Single-path forms are the point of allowing chmod at all and stay available.
-    "chmod": {"-R", "--recursive"},
     **{cmd: _TEX_FORBIDDEN_FLAGS for cmd in _TEX_COMMANDS},
 }
 
-# Shell interpreters and generic command runners. Allowlisting any of them would
-# void the whole validator (argv[0] is what gets checked), so they stay out — but
-# they are the first thing a model reaches for, so they get a specific rejection
-# telling it what to do instead, rather than the generic allowlist pointer.
-_SHELL_RUNNERS = {
-    "bash", "sh", "zsh", "ksh", "dash", "csh", "tcsh", "fish",
-    "eval", "exec", "source", ".", "command", "env", "xargs", "nohup", "sudo",
-    # `timeout` wraps a command like `nohup` does, so allowlisting it would approve its
-    # own head and nothing it runs. The tool's own `timeout` parameter covers the need.
-    "timeout",
+# Why each denied group is denied, and what to do instead. A refusal that names no
+# route is a dead end, and the model retries variants of it.
+_DENIAL_HINTS = {
+    "interpreter": (
+        "'{name}' runs a nested command this validator never sees, so allowing it "
+        "would void every check that follows — path confinement included. Write the "
+        "command out directly: chaining (';', '&&', '||', '|') and redirection are "
+        "supported, so anything you would put in a script can be one chain. To run a "
+        "script that exists in the workspace, invoke it by path ('./build.sh'), with "
+        "'chmod +x ./build.sh' first if needed. To set up an environment for the rest "
+        "of a chain, use 'source env.sh'."
+    ),
+    "destructive": (
+        "'{name}' destroys data outside anything this session can review or undo. "
+        "There is no variant of it that is available — report the limitation. To "
+        "remove files from the workspace, 'rm' is available and its operands are "
+        "checked."
+    ),
+    "cluster": (
+        "'{name}' submits a job, which goes through the cluster submission tool "
+        "instead: it returns a job handle this session tracks, resuming on its own "
+        "when the job ends. A job submitted from a shell is tracked by nothing. "
+        "'squeue'/'sinfo'/'sacct' are available here for inspection."
+    ),
 }
+
+
+def _denial_kind(name: str) -> str:
+    if name in SHELL_INTERPRETERS:
+        return "interpreter"
+    if name in DESTRUCTIVE_COMMANDS:
+        return "destructive"
+    assert name in CLUSTER_SUBMIT_COMMANDS
+    return "cluster"
+
 
 # Commands whose exit status 1 means "nothing found" rather than "failed" — a
 # legitimate answer the model would otherwise re-run unchanged. A clean no-match
@@ -421,21 +376,18 @@ def _module_preamble() -> str:
 
 
 def _validate_module_args(argv: list[str]) -> dict | None:
-    """Validate a 'module ...' invocation against the allowed subcommand set."""
+    """Check a 'module ...' invocation's argument shapes.
+
+    Every sub-command is available — load, unload, swap and purge all change the
+    session's environment and nothing else, and the approval prompt covers that. What
+    is checked is the shape of what reaches Lmod, which evaluates modulefiles.
+    """
     if len(argv) < 2:
         return err(
             "'module' needs a subcommand.",
             hint="Use e.g. 'module avail', 'module list', or 'module load cuda'.",
         )
-    sub = argv[1]
-    if sub not in _MODULE_SUBCOMMANDS:
-        return err(
-            f"'module {sub}' is not a supported subcommand.",
-            hint="Allowed: discovery (avail, list, show, spider, whatis) and "
-                 "load/add only. Unload, swap, purge, save and restore are not "
-                 "permitted.",
-        )
-    for arg in argv[2:]:
+    for arg in argv[1:]:
         if not _MODULE_ARG_RE.match(arg):
             return err(
                 f"Unsafe argument to module: {arg!r}",
@@ -525,7 +477,7 @@ def _validate_redirections(segment, cwd: str) -> dict | None:
 def _resolve_cd_target(argv: list[str], cwd: str, call_cwd: str) -> tuple[str | None, dict | None]:
     """Resolve where a ``cd`` segment moves the shell, or reject it.
 
-    ``cd`` is allowlisted, so it must be confined like any other path operand —
+    ``cd``'s target is a path operand, confined like any other —
     and, crucially, the directory it lands in becomes the base against which every
     *later* segment's paths are validated. Without that propagation the confinement
     of the rest of the chain is validated against a directory the shell has already
@@ -588,7 +540,8 @@ def _validate_path_args(argv: list[str], cwd: str) -> dict | None:
 
 def _validate_command(command: str, cwd: str) -> dict:
     # Segmentation comes from shell_paths.parse_segments, shared with the client's
-    # gate. What is left here is the *policy*: allowlist, flag denylists, confinement.
+    # gate. What is left here is the *policy*: the denylist, per-command flag rules and
+    # path confinement. Everything else runs — the approval prompt is the barrier.
     try:
         segments = _parse_segments(command)
     except _ShellParseError as e:
@@ -598,40 +551,19 @@ def _validate_command(command: str, cwd: str) -> dict:
     # Base for path confinement; a 'cd' segment moves it (see _resolve_cd_target).
     seg_cwd = cwd
     for segment in segments:
-        argv = segment.argv
-        # A program named by path is judged as a path (confinement check below), not
-        # against the allowlist of command *names*. Shell runners stay refused whatever
-        # the spelling: allowing '/bin/sh' by path reinstates the very bypass.
-        argv0_is_path = _is_path_like_command(argv[0])
-        runner = os.path.basename(argv[0]) if argv0_is_path else argv[0]
-        if argv[0] not in _ALLOWED_COMMANDS and (
-            not argv0_is_path or runner in _SHELL_RUNNERS
-        ):
-            if runner in _SHELL_RUNNERS:
-                hint = (
-                    f"'{argv[0]}' runs an arbitrary nested command, which would "
-                    "bypass this validator, so it can never be allowed. Write the "
-                    "command out directly instead — chaining (';', '&&', '||', "
-                    "'|') is supported, so anything you would put in a script can "
-                    "be expressed as one chain of approved commands. To run a "
-                    "script that already exists in the workspace, invoke it by "
-                    "path ('./build.sh'), adding 'chmod +x ./build.sh' first if it "
-                    "is not executable."
-                )
-            else:
-                hint = (
-                    "This command is not part of the toolchain available here, and "
-                    "no wrapper will make it available — do not retry a variant of "
-                    "it. Either use one of the approved commands below, or report "
-                    "that the capability is unavailable. To run a binary you "
-                    "compiled, reference it by a workspace path such as './a.out'."
-                )
-            # Inlined rather than pointed at: in a reply to a *shell* call, any
-            # "call X() to find out" pointer reads as another shell command to try.
+        # A wrapper's argument list is another command ('timeout 60 pytest -q'), so
+        # unwrap before anything reads the head — otherwise every check below judges
+        # the wrapper and none of them judges what actually runs.
+        argv, _wrappers = unwrap_argv(segment.argv)
+        # Matched by basename too: '/bin/sh' is the 'sh' that is refused, and allowing
+        # it by path would reinstate the very bypass.
+        denied = denied_command(argv[0])
+        if denied is not None:
+            kind = _denial_kind(denied)
             return err(
-                f"Command '{argv[0]}' is not allowed.",
-                hint=hint,
-                allowed_commands=sorted(_ALLOWED_COMMANDS),
+                f"Command '{denied}' is not available here.",
+                hint=_DENIAL_HINTS[kind].format(name=denied),
+                denial=kind,
             )
 
         if argv[0] == "module":
@@ -805,33 +737,15 @@ def _run(
     except subprocess.TimeoutExpired:
         return err(
             f"Command timed out after {timeout}s.",
-            hint="Use a narrower search scope or a shorter command.",
+            hint=f"Raise the call's own 'timeout' (up to {_MAX_TIMEOUT}s) if the work "
+                 f"genuinely takes that long, or narrow the scope. Past that ceiling a "
+                 f"run does not belong in a call that blocks the turn: submit it as a "
+                 f"background job, which returns a handle this session tracks and "
+                 f"resumes on.",
             cwd=cwd,
         )
     except Exception as e:
         return err(str(e), cwd=cwd)
-
-
-@mcp.tool()
-def bash_allowed_commands() -> dict:
-    """Return the allowlist of commands supported by this server, with their category.
-
-    Use this before bash_run when you are unsure whether a command is permitted.
-
-    The category says what running it does, which is also what decides how it is
-    gated: 'read', 'search', 'inspect', 'neutral' and 'chdir' are side-effect-free —
-    they run unattended and are available while planning. 'write', 'exec' and 'env'
-    (pip/conda/module) prompt for approval and are unavailable while planning. Two
-    things shift a command out of its category for one call: an in-place/output flag
-    ('sed -i', 'sort -o') and a redirection to a file ('ls > out.txt') make it a
-    write, while an 'env' command's sub-command decides between query and mutation.
-    """
-    return ok({
-        "commands": sorted(_ALLOWED_COMMANDS),
-        "categories": {c: _COMMAND_CATEGORIES.get(c, "exec")
-                       for c in sorted(_ALLOWED_COMMANDS)},
-        "count": len(_ALLOWED_COMMANDS),
-    })
 
 
 @mcp.tool(**tool_caps(
@@ -848,19 +762,24 @@ def bash_run(command: str, timeout: int = _DEFAULT_TIMEOUT) -> dict:
     and the primary way to compile, run, validate and test code — invoke the toolchain
     directly with the exact flags the task needs.
 
-        grep -rn "FastMCP" mimir            # search; rg works too
-        sed -n '1,40p' path/to/file.py      # read a line range
+        grep -rn "FastMCP" mimir            # search; rg works too. Always -n: a hit
+                                            # without its line number costs a read
         gcc solver.c -O3 -o solver.out -lm && ./solver.out
         python -m pytest tests/test_thing.py -q     # also ruff / mypy / py_compile
         ./solver.out > run.log 2>&1 && tail -20 run.log
         module load cuda && nvcc kernel.cu -o kernel.out
         pip list | grep -i numpy            # then: pip install <pkg>
 
-    Gating: read-only commands (search, read, inspect, `pip list`, `module avail`) run
-    unattended and are available while planning. Writes, execution and installs prompt
-    for approval and are blocked while planning. `bash_allowed_commands()` reports the
-    category of every command; a rejection inlines the whole allowlist, so there is
-    never a reason to go hunting for it.
+    Read files with the dedicated read tool, not with `sed -n`/`cat` here: it numbers
+    the lines it returns, and the edit tools are addressed by line number. Text that
+    arrives through this shell carries no numbers, so acting on it means counting them
+    by hand — which is how one edit becomes a series of narrowing re-reads.
+
+    Gating: any command runs. Read-only ones (search, read, inspect, `pip list`,
+    `module avail`) run unattended and are available while planning; everything else —
+    a write, an execution, an install, a `git` call — is shown to the user for approval
+    and is blocked while planning. There is no list of permitted commands to consult:
+    reach for the tool the task needs. A refusal names why and what replaces it.
 
     Syntax that works:
     - chaining (';', '&&', '||', '|'), globbing ('*.py'), and multi-line commands (an
@@ -875,12 +794,13 @@ def bash_run(command: str, timeout: int = _DEFAULT_TIMEOUT) -> dict:
     - every path — file operand, '-o' target, redirection target, 'cd' destination —
       must be inside the workspace, or the user must approve that path. Ask for it
       rather than looking for a way around it.
-    - no shell interpreter or wrapper (bash, sh, eval, env, xargs, sudo): write the
-      command out directly, chaining covers what a script would do. No heredoc — pass
-      the text as a quoted argument. No backgrounding, substitution or subshell.
-    - no deletion ('rm'), no uninstall/remove for pip/conda, no git (use the
-      'localgit' server). These are absent by design: report the limitation instead of
-      trying another spelling.
+    - no shell interpreter (bash, sh, eval, sudo): it would run a command nothing
+      here can check, and chaining covers what a script would do. Wrappers that take a
+      command are fine ('timeout 60 pytest -q', 'env A=B ./run'). No heredoc — pass the
+      text as a quoted argument. No backgrounding, substitution or subshell.
+    - no job submission (sbatch/salloc): the cluster tools return a handle this session
+      tracks. No 'dd'/'shred'. These are absent by design: report the limitation
+      instead of trying another spelling.
     - 'sed -i' rewrites in place (prefer the file-edit tools); a bare 'pip install'
       provisions the interpreter MIMIR itself runs under.
     - an empty result from a probe ('which pdflatex') is a conclusive "absent", not an
@@ -888,7 +808,8 @@ def bash_run(command: str, timeout: int = _DEFAULT_TIMEOUT) -> dict:
 
     Args:
         command: Shell command string (single command or simple pipeline).
-        timeout: Timeout in seconds.
+        timeout: Seconds to wait, capped at 300. Raise it for a real build or suite;
+            past the cap, submit the run as a background job instead.
     """
     cwd = _WORKSPACE_ROOT
 
@@ -902,7 +823,7 @@ def bash_run(command: str, timeout: int = _DEFAULT_TIMEOUT) -> dict:
     preamble = _module_preamble() if needs_modules else ""
 
     requested_timeout = timeout
-    timeout = max(1, min(timeout, 30))
+    timeout = max(1, min(timeout, _MAX_TIMEOUT))
     result = _run(command, cwd, timeout, preamble=preamble, segments=validation["segments"])
     if timeout != requested_timeout:
         result["timeout_clamped"] = True
@@ -910,7 +831,7 @@ def bash_run(command: str, timeout: int = _DEFAULT_TIMEOUT) -> dict:
     return result
 
 
-_VERDICT_VALUES = ("pass", "fail", "unknown")
+_VERDICT_VALUES = ("pass", "fail", "unknown", "blocked")
 
 
 @mcp.tool(**tool_caps(
@@ -921,42 +842,53 @@ _VERDICT_VALUES = ("pass", "fail", "unknown")
     label="Verdict: {verdict}",
 ))
 def report_verdict(verdict: str, reason: str, run: str = "") -> dict:
-    """State what a run's output showed. Call this after every execution you must read.
+    """State what a run's output showed. Recommended after any execution you had to read.
 
     Exit 0 means a program reached its end, never that its answer is right, and nothing
     downstream can read the output for you. Until you report it, the run stands as
-    something that happened and nothing more, and the answer has to say so. A syntax,
-    lint or type check needs no report — its exit code is the finding, and it is also
-    all it establishes: that the file parses and lints, never that the result is right.
+    something that happened and nothing more. A run whose output settles nothing, and a
+    syntax, lint or type check, need no report — an exit code is the whole finding
+    there, and all it establishes: that the file parses and lints, never that the result
+    is right.
 
     Report as soon as you have read the output, in the same step you would move on:
 
         report_verdict("pass", "l2_rel=3.1e-4 against the analytic solution, under the 1e-3 bound")
         report_verdict("fail", "energy grows from 1.56 to 4.02 — the absorbing layer reflects")
         report_verdict("unknown", "only prints 'Simulation completed.', nothing about correctness")
+        report_verdict("blocked", "cmake needs a configured build tree; there is none here")
 
     Name the number, message or behaviour you read it from; "it worked" is not a
     reason. `fail` on a green run is expected sometimes and is not a setback — fix and
     re-run.
 
     `unknown` is the honest answer when the output does not settle the question, and it
-    is a starting point rather than a conclusion: it says what you know is not enough
-    yet, so go extend it. Say what would settle the question and get it — a reference
-    implementation, a documented value, an analytical limit, an invariant, a refinement
-    trend. Read the documentation, the literature or the repository, and fetch from the
+    is a complete one: it stands as reported and counts against nothing. When the
+    question is worth settling, it is also a starting point — say what would settle it
+    and get it, in proportion to what the answer is worth — a reference implementation,
+    a documented value, an analytical limit, an invariant, a refinement trend. Read the
+    documentation, the literature or the repository, and fetch from the
     web if you can reach it. When the standard is the user's to set rather than yours to
     find — their conventions, their acceptance criteria, their data — ask them. Then
     report again. If it stays out of reach, say so and name what is unverified: you are
     not blocked on being certain, and the user is the last judge of what you could not
     settle.
 
+    `blocked` is for a run that failed on a wall that is not in your change: a build to
+    configure, a package that is not installed, a dataset, an allocation. It does not make
+    the run a success — it stays reported as not completed, with your reason attached. It
+    says only that repairing it is not the next piece of this work, which stops it counting
+    against you as an unfinished task. Use it when reaching a first run would cost a step of
+    its own; never to avoid a fix you could make.
+
     Args:
-        verdict: "pass", "fail" or "unknown".
+        verdict: "pass", "fail", "unknown" or "blocked".
         reason:  What in the output shows it — the number, message or behaviour.
         run:     Which run is being judged, as its command — a recognisable fragment is
                  enough. Optional: left out, a "pass" settles the most recent run, so
                  name the run whenever you are judging an earlier one. "fail" and
-                 "unknown" address everything outstanding and never need it.
+                 "unknown" address everything outstanding and never need it; "blocked"
+                 addresses every failed run the same way.
     """
     value = (verdict or "").strip().lower()
     if value not in _VERDICT_VALUES:

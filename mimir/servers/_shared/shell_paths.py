@@ -28,31 +28,87 @@ decision (the server checks workspace membership plus the user's session grants;
 the client checks membership to decide whether to prompt).
 """
 
+import functools
 import os
 import re
 import shlex
+import shutil
 from dataclasses import dataclass, field
 
 # The command taxonomy, split by *effect* — read, search, inspect, write, execute,
-# provision — because that is what both sides key off: the bash server builds its
-# allowlist from these groups, and the client's classifier maps each to a capability
-# kind, which decides approval and plan-mode availability.
+# provision. It is a *classification*, not a gate: bash runs anything outside
+# DENIED_COMMANDS, and these groups say what a command's effect is, which decides
+# approval (read-only is waived) and plan-mode availability. A head in no group is
+# still runnable — it classifies as unknown, hence always approval-gated.
 
 # Build / execution. An interpreter or compiler takes a file operand exactly as ``cat``
 # does, so ``python /tmp/evil.py`` is confined for the same reason ``cat /etc/passwd``
-# is — and it additionally *executes* what it reads.
-EXEC_COMMANDS = frozenset({
-    "python", "python3", "gcc", "g++", "gfortran", "javac", "java", "node", "pytest",
+# is — and it additionally *executes* what it reads. The sandbox treats all four groups
+# below identically; they are kept apart because what a green exit *proves* differs, and
+# that difference is what the client's evidence layer keys off (see EXEC_EFFECTS).
+
+# Checkers: they read the code, emit diagnostics, and exit non-zero when they found
+# something. Nothing of the project runs, so there is no output for anyone to judge —
+# the exit code is the whole finding. A compiler belongs here even when it emits an
+# object: what it *reports* is diagnostics.
+VALIDATOR_COMMANDS = frozenset({
+    "gcc", "g++", "gfortran", "nvcc", "javac",
+    "clang", "clang++", "icc", "icpc", "ifort", "ifx",
+    # MPI compiler wrappers: they drive one of the compilers above. Named here so the
+    # platform probe cannot advertise a toolchain whose runs owe no verdict.
+    "mpicc", "mpicxx", "mpic++", "mpiCC", "mpifort", "mpif90", "mpif77",
     # Lint / typecheck / format, invocable by name or via ``python -m <tool>``. These
     # are the validator surface — there are no dedicated code-quality tools.
     "ruff", "pyflakes", "mypy", "black",
-    # GPU / build-system toolchain. A Makefile recipe is effectively arbitrary
-    # execution, but no more so than the gcc/python already here.
-    "nvcc", "make", "cmake", "ctest",
-    # TeX/LaTeX: a real execution writing artefacts next to the source, as ``gcc -o`` does.
+})
+
+# Build drivers: they orchestrate compilers over a whole project. A Makefile recipe is
+# effectively arbitrary execution, but no more so than the gcc already above, and like a
+# compiler it is judged by its exit code — a build either produced its artefacts or said
+# why not. TeX is a build for the same reason: it compiles a document.
+BUILD_COMMANDS = frozenset({
+    "make", "cmake", "pmake", "ninja", "meson",
     "pdflatex", "latex", "xelatex", "lualatex", "pdftex", "tex",
     "bibtex", "biber", "makeindex", "latexmk", "dvips", "dvipdf",
 })
+
+# Executions proper: they run the project's code, so exit 0 means the program reached
+# its end and nothing more. What it printed is the result, and only a reader can say
+# whether that result is right. A test runner is here, not above: a suite is a run
+# judged on its own output, however green it exits.
+RUN_COMMANDS = frozenset({
+    "python", "python3", "java", "node", "pytest", "ctest",
+})
+
+# ``source env.sh`` runs the file's contents in the *current* shell, so the rest of the
+# chain sees the environment it sets — which is why './env.sh' cannot replace it. It
+# executes what it reads, like every entry above, and its file operand is confined the
+# same way. The ``.`` spelling stays refused (see SHELL_INTERPRETERS). What it proves about
+# the project, though, is nothing: it is preparation, not evidence.
+ENV_SETUP_COMMANDS = frozenset({"source"})
+
+EXEC_COMMANDS = (
+    VALIDATOR_COMMANDS | BUILD_COMMANDS | RUN_COMMANDS | ENV_SETUP_COMMANDS
+)
+
+# head → which of the four groups it belongs to, for the client's evidence layer. Kept
+# here beside the groups so a command added to one of them cannot be forgotten in the
+# mapping; the sandbox side keeps consulting ``EXEC_COMMANDS`` alone.
+EFFECT_VALIDATE: str = "validate"
+EFFECT_BUILD: str = "build"
+EFFECT_RUN: str = "run"
+EFFECT_ENV_SETUP: str = "env_setup"
+
+EXEC_EFFECTS = {
+    **{c: EFFECT_VALIDATE for c in VALIDATOR_COMMANDS},
+    **{c: EFFECT_BUILD for c in BUILD_COMMANDS},
+    **{c: EFFECT_RUN for c in RUN_COMMANDS},
+    **{c: EFFECT_ENV_SETUP for c in ENV_SETUP_COMMANDS},
+    # Reached only as ``python -m py_compile``: a checker with no command of its own,
+    # so it is deliberately absent from EXEC_COMMANDS (nothing should file it as a bare
+    # head) while still being named here, where effects are read.
+    "py_compile": EFFECT_VALIDATE,
+}
 
 # Package/env provisioning. Kept apart from EXEC_COMMANDS ("compiles or runs the
 # project's code") because these mutate the *interpreter environment* instead. They
@@ -85,7 +141,146 @@ WRITE_COMMANDS = frozenset({"mv", "cp", "mkdir", "chmod"})
 NEUTRAL_COMMANDS = frozenset({
     "pwd", "echo", "which", "basename", "dirname", "realpath", "df",
     "true", "false", ":",
+    # Read and set the environment. Their arguments are words (``VAR=value``), not
+    # paths, and unlike ``env`` neither can run a command; an ``export`` holds only
+    # for the rest of the one chain, which is fresh per call.
+    "printenv", "export",
 })
+
+# ── What bash refuses outright ─────────────────────────────────────────────────
+#
+# Everything not named below runs, subject to the user's approval prompt and to path
+# confinement. These three sets are the exceptions, each for its own structural reason,
+# and each rejection names the route that replaces it.
+
+# They execute a command this validator never sees, which would void segmentation —
+# and with it path confinement and every classification keyed on the head. Refused in
+# any spelling, including by absolute path and behind a wrapper. ``source`` is the
+# deliberate exception (ENV_SETUP_COMMANDS): its operand is a *file*, confined like any
+# other path. Only the readable spelling is offered, so ``.`` stays here.
+SHELL_INTERPRETERS = frozenset({
+    "bash", "sh", "zsh", "ksh", "dash", "csh", "tcsh", "fish",
+    "eval", "exec", ".", "command", "sudo", "su", "doas",
+})
+
+# Destroy data outside any notion of a workspace, or repartition the machine. No
+# approval prompt makes these reviewable from a command line, and no coding task needs
+# them. (``rm``/``rmdir`` are deliberately NOT here: destructive but reviewable, so they
+# run under the approval prompt with their operands confined.)
+DESTRUCTIVE_COMMANDS = frozenset({
+    "shred", "dd", "mkfs", "fdisk", "parted", "swapoff", "mkswap",
+})
+
+# Job submission has one route: the typed HPC tools, which return the background-job
+# descriptor the client's watcher polls. A second route through bash would submit jobs
+# nothing tracks.
+CLUSTER_SUBMIT_COMMANDS = frozenset({"sbatch", "salloc", "scancel"})
+
+DENIED_COMMANDS = (
+    SHELL_INTERPRETERS | DESTRUCTIVE_COMMANDS | CLUSTER_SUBMIT_COMMANDS
+)
+
+
+# ── Wrappers: commands whose argument list is another command ──────────────────
+#
+# ``timeout 60 pytest -q`` is a pytest run, and must be validated and classified as
+# one. Unwrapping is what lets these through without letting them smuggle anything: the
+# inner head is re-tested against DENIED_COMMANDS at every layer, so ``timeout 5 bash
+# -c x`` is refused on ``bash``.
+
+# Wrapper flags that take a separate value, which must be skipped with the flag or the
+# value would be mistaken for the inner command. Glued (``-n1``) and ``=`` forms need no
+# entry — they are one token.
+_WRAPPER_VALUE_FLAGS = {
+    "timeout": ("-k", "--kill-after", "-s", "--signal"),
+    "nice": ("-n", "--adjustment"),
+    "ionice": ("-c", "--class", "-n", "--classdata", "-p", "--pid"),
+    "stdbuf": ("-i", "--input", "-o", "--output", "-e", "--error"),
+    "xargs": ("-I", "-i", "--replace", "-n", "--max-args", "-L", "-P", "--max-procs",
+              "-d", "--delimiter", "-E", "-s", "--max-chars", "-a", "--arg-file"),
+    "nohup": (),
+    "env": (),
+    "srun": ("-n", "--ntasks", "-N", "--nodes", "-c", "--cpus-per-task",
+             "-p", "--partition", "-t", "--time", "-J", "--job-name",
+             "-A", "--account", "-w", "--nodelist", "--gres", "--mem",
+             "--ntasks-per-node", "--cpu-bind", "-o", "--output", "-e", "--error"),
+    "mpirun": ("-n", "-np", "--n", "--np", "-c", "-N", "--host", "--hostfile",
+               "--machinefile", "--map-by", "--bind-to", "-x"),
+    "mpiexec": ("-n", "-np", "--n", "--np", "-c", "-N", "--host", "--hostfile",
+                "--machinefile", "--map-by", "--bind-to", "-x"),
+}
+COMMAND_WRAPPERS = frozenset(_WRAPPER_VALUE_FLAGS)
+
+# Wrappers whose first bare positional is their own argument, not the command:
+# ``timeout 5s cmd``. Recognised by shape (a duration), so ``timeout cmd`` — invalid
+# anyway — does not silently eat the command.
+_WRAPPER_LEADING_DURATION = frozenset({"timeout"})
+_DURATION_RE = re.compile(r"^\d+(?:\.\d+)?[smhd]?$")
+
+# A wrapper chain deeper than this is not a shape any real call has; the bound is what
+# keeps unwrapping terminating on adversarial input.
+_MAX_UNWRAP_DEPTH = 4
+
+
+def _unwrap_once(argv: list[str]) -> list[str] | None:
+    """The command *argv* wraps, or None when argv[0] is not a wrapper (or wraps nothing)."""
+    if not argv:
+        return None
+    head = os.path.basename(argv[0]) if is_path_like_command(argv[0]) else argv[0]
+    if head not in COMMAND_WRAPPERS:
+        return None
+    value_flags = _WRAPPER_VALUE_FLAGS[head]
+    took_duration = False
+    i, n = 1, len(argv)
+    while i < n:
+        tok = argv[i]
+        if tok.startswith("-") and tok != "-":
+            i += 2 if tok in value_flags and i + 1 < n else 1
+            continue
+        # 'env A=B cmd': assignments precede the command.
+        if head == "env" and "=" in tok and not tok.startswith("="):
+            i += 1
+            continue
+        if head in _WRAPPER_LEADING_DURATION and not took_duration and _DURATION_RE.match(tok):
+            took_duration = True
+            i += 1
+            continue
+        break
+    inner = argv[i:]
+    # No inner command: the wrapper is doing its own job ('env' prints the environment).
+    return inner or None
+
+
+def unwrap_argv(argv: list[str]) -> tuple[list[str], list[str]]:
+    """(*argv* with its wrappers stripped, the wrapper heads that were stripped).
+
+    Callers validate and classify the returned argv as if the wrappers were not there,
+    which is what the shell effectively does — while the wrapper list lets a caller that
+    cares (a rejection message) name what it went through.
+    """
+    wrappers: list[str] = []
+    current = list(argv)
+    for _ in range(_MAX_UNWRAP_DEPTH):
+        inner = _unwrap_once(current)
+        if inner is None:
+            break
+        wrappers.append(current[0])
+        current = inner
+    return current, wrappers
+
+
+def denied_command(argv0: str) -> str | None:
+    """The denylisted name *argv0* resolves to, or None.
+
+    Matches by basename too, so ``/bin/bash`` is the ``bash`` that is refused.
+    """
+    if not argv0:
+        return None
+    for name in (argv0, os.path.basename(argv0)):
+        if name in DENIED_COMMANDS:
+            return name
+    return None
+
 
 # What may appear as a nested command (``find … -exec CMD {} \;``). Writers, execs and
 # provisioners stay out: a nested command's operands include the ``{}`` placeholder,
@@ -95,35 +290,20 @@ READONLY_NESTED_COMMANDS = frozenset(
     READ_COMMANDS | SEARCH_COMMANDS | INSPECT_COMMANDS | NEUTRAL_COMMANDS
 )
 
-# Every command whose non-option arguments name files or directories. Derived from the
-# groups rather than re-listed, so a command cannot be added to one and forgotten here.
-# The derivation's two exceptions: ``tr`` reads stdin only and its arguments are
-# character SETS (``'a-z'``, ``'/'``), so confining them would reject a legitimate set;
-# ``realpath`` is otherwise a no-op whose argument *is* a path.
-PATH_SENSITIVE_COMMANDS = frozenset(
-    (READ_COMMANDS - {"tr"})
-    | {"realpath"}
-    | SEARCH_COMMANDS
-    | INSPECT_COMMANDS
-    | WRITE_COMMANDS
-    | EXEC_COMMANDS
-    | ENV_MANAGER_COMMANDS
-)
+# The commands whose arguments are *not* paths: their operands are words (``echo
+# $HOME``), or character sets (``tr 'a-z' 'A-Z'``). Listing the exceptions rather than
+# the path-takers is what makes an unknown command's operands confined by default —
+# with a denylist, an unlisted head is the common case, and a head nobody classified is
+# exactly the one whose operands most need the confinement. ``realpath`` is a no-op
+# whose argument *is* a path, hence its exclusion from the exception.
+PATH_INSENSITIVE_COMMANDS = frozenset((NEUTRAL_COMMANDS - {"realpath"}) | {"tr"})
 
-# command → what running it does, for the one caller that *reports* the taxonomy rather
-# than acting on it (the server's allowlist introspection). ``cd`` and the environment
-# managers depend on their argument, hence their own labels.
-COMMAND_CATEGORIES = {
-    **{c: "read" for c in READ_COMMANDS},
-    **{c: "search" for c in SEARCH_COMMANDS},
-    **{c: "inspect" for c in INSPECT_COMMANDS},
-    **{c: "write" for c in WRITE_COMMANDS},
-    **{c: "exec" for c in EXEC_COMMANDS},
-    **{c: "env" for c in ENV_MANAGER_COMMANDS},
-    **{c: "neutral" for c in NEUTRAL_COMMANDS},
-    "module": "env",
-    "cd": "chdir",
-}
+# Every head the taxonomy above places. Used where a rule needs to know whether the
+# operand shapes are *understood* rather than merely present — see expansion_operands.
+KNOWN_COMMANDS = frozenset(
+    READ_COMMANDS | SEARCH_COMMANDS | INSPECT_COMMANDS | WRITE_COMMANDS
+    | EXEC_COMMANDS | ENV_MANAGER_COMMANDS | NEUTRAL_COMMANDS | {"cd", "module"}
+)
 
 
 _TRAILING_SEPARATOR = re.compile(r"(?:^|\s)(?:&&|\|\||\||;|&)$")
@@ -135,14 +315,14 @@ def flatten_unquoted_newlines(command: str) -> str:
 
     A raw newline is a shell command separator, so a validator that tokenizes with
     ``shlex`` (where newline is mere whitespace) would read ``cat a\\nrm -rf b`` as
-    *one* command ``cat`` with extra arguments — argv[0] passes the allowlist while
+    *one* command ``cat`` with extra arguments — only argv[0] is judged, while
     bash actually runs both. That is why both validators used to refuse newlines
     outright. Refusing them also refuses the legitimate shape they usually carry: a
     multi-line ``python3 -c "..."`` body, or a chain written one command per line.
 
     So instead of rejecting, normalize: every **unquoted** newline becomes an
-    explicit ``;`` and validation proceeds unchanged, which keeps the allowlist
-    load-bearing per command. Newlines *inside* quotes are left exactly as they are
+    explicit ``;`` and validation proceeds unchanged, so every command in the chain
+    is judged on its own. Newlines *inside* quotes are left exactly as they are
     — they are data (the ``-c`` body), not separators — and a backslash-newline is
     removed, as the shell does. No ``;`` is inserted where the line already ends (or
     the next begins) with a separator, so ``make &&\\n./a.out`` stays valid.
@@ -236,10 +416,17 @@ def unquoted_substitution_marker(command: str) -> str | None:
 
 # Separators that join several commands in one call. Each command between them is
 # a separate argv, validated (server) and classified (client) on its own.
+# Whether any of these commands exists on this machine. Cached: the answer cannot change
+# usefully within a call, and both sides ask it per segment.
+@functools.lru_cache(maxsize=None)
+def any_command_on_path(commands: tuple[str, ...]) -> bool:
+    return any(shutil.which(c) for c in commands)
+
+
 COMMAND_SEPARATORS = frozenset({";", "&&", "||", "|"})
 
 # Markers that run or inline *another* command — refused outright, since what the
-# allowlist said about argv[0] tells us nothing about what the substitution executes.
+# head tells us nothing about what the substitution executes.
 # Only where the shell would *act* on them: inside single quotes these are ordinary
 # text (a search pattern is the usual place). See :func:`unquoted_substitution_marker`.
 SUBSTITUTION_MARKERS = ("$(", "`", "${", "<(", ">(")
@@ -616,13 +803,12 @@ def path_operand_tokens(argv: list[str]) -> list[str]:
 def takes_path_operands(argv0: str) -> bool:
     """True when *argv0*'s arguments name files/dirs, so they must be checked.
 
-    ``cd`` counts: its target is a directory the caller resolves. ``echo``/``which``
-    do not — their arguments are words, and treating them as paths would refuse
-    ``echo $HOME`` for no reason.
+    True by default, including for a command nobody classified: its operands are
+    confined by the server and prompted for by the client, rather than escaping both.
+    ``echo``/``which`` are the exception — their arguments are words, and treating
+    them as paths would refuse ``echo $HOME`` for no reason.
     """
-    return (argv0 in PATH_SENSITIVE_COMMANDS
-            or argv0 == "cd"
-            or is_path_like_command(argv0))
+    return bool(argv0) and argv0 not in PATH_INSENSITIVE_COMMANDS
 
 
 def expansion_operands(argv: list[str]) -> list[str]:
@@ -638,8 +824,15 @@ def expansion_operands(argv: list[str]) -> list[str]:
     Only path position, and only for commands that open paths at all:
     ``-I$CUDA_HOME/include`` is a flag and ``echo $HOME`` opens nothing, so both
     keep working — the HPC idioms are untouched.
+
+    Restricted to heads the taxonomy places, because the refusal only buys a guarantee
+    where the operand shapes are understood. For an unclassified head a positional is a
+    guess — ``awk '{print $1}'`` is a program, not a path — so its expansions are left
+    alone and the approval prompt, which shows the command verbatim, carries the call.
     """
-    if not argv or not takes_path_operands(argv[0]):
+    if not argv or argv[0] not in KNOWN_COMMANDS and not is_path_like_command(argv[0]):
+        return []
+    if not takes_path_operands(argv[0]):
         return []
     return [t for t in path_operand_tokens(argv) if "$" in t or "`" in t]
 
@@ -651,9 +844,7 @@ def segment_path_operands(argv: list[str], cwd: str) -> list[str]:
     segment of a chain uniformly. Tokens carrying an expansion are excluded — see
     :func:`expansion_operands`, which the server rejects on separately.
     """
-    if not argv:
-        return []
-    if argv[0] not in PATH_SENSITIVE_COMMANDS and not is_path_like_command(argv[0]):
+    if not argv or not takes_path_operands(argv[0]):
         return []
     out: list[str] = []
     for arg in path_operand_tokens(argv):

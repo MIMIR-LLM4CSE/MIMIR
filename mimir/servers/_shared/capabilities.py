@@ -71,6 +71,11 @@ TASK_PLANNING = "task_planning"          # records a task plan (checklist and/or
 # the client can find the channel by capability instead of by name.
 JUDGE = "judge"
 
+# Hands a self-contained sub-task to a fresh child agent that runs to completion and
+# returns its answer. Declared so prompt, guidance and observation can all speak of the
+# delegation channel without naming the tool.
+DELEGATE = "delegate"
+
 # Approval & mode policy
 SENSITIVE = "sensitive"
 NON_BATCH = "non_batch"
@@ -123,6 +128,8 @@ def build_descriptor(
     scope: dict[str, Any] | None = None,
     risk_note: str | None = None,
     preview: dict[str, Any] | None = None,
+    timeout_secs: int | None = None,
+    readonly_when: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build the ``meta["mimir"]`` descriptor dict (pure / stdlib-only).
 
@@ -180,6 +187,21 @@ def build_descriptor(
     if risk_note:
         descriptor["risk_note"] = risk_note
 
+    # A tool's own wall, for the few whose work the global per-call default cannot
+    # bound. Omitted when undeclared so the existing catalog's descriptors are
+    # untouched; the client clamps whatever is declared.
+    if isinstance(timeout_secs, int) and timeout_secs > 0:
+        descriptor["timeout_secs"] = timeout_secs
+
+    # Which invocations of a PLAN_READONLY (dual-use) tool are the read-only ones:
+    # {"arg": "<name>", "values": [...]}. Lets a dual-use tool whose read-only-ness is
+    # a plain argument value say so, instead of the client's guard knowing its shape.
+    if readonly_when and readonly_when.get("arg") and readonly_when.get("values"):
+        descriptor["readonly_when"] = {
+            "arg": str(readonly_when["arg"]),
+            "values": [str(v) for v in readonly_when["values"]],
+        }
+
     # Pre-write diff preview: the generic edit shape (`kind`) plus the arg(s) the
     # client builder reads to reconstruct the post-write content. Unlike `scope`, an
     # argless spec is valid (a deletion has a shape but no content args); a kindless
@@ -211,6 +233,8 @@ def tool_caps(
     scope: dict[str, Any] | None = None,
     risk_note: str | None = None,
     preview: dict[str, Any] | None = None,
+    timeout_secs: int | None = None,
+    readonly_when: dict[str, Any] | None = None,
     read_only: bool | None = None,
     destructive: bool | None = None,
 ) -> dict[str, Any]:
@@ -236,6 +260,8 @@ def tool_caps(
         scope=scope,
         risk_note=risk_note,
         preview=preview,
+        timeout_secs=timeout_secs,
+        readonly_when=readonly_when,
     )
     kwargs: dict[str, Any] = {"meta": {"mimir": descriptor}}
 

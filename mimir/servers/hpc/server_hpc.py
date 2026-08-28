@@ -7,7 +7,7 @@ This server is designed for cluster usage where:
 - Slurm tools are available (`sinfo`, `squeue`, `scontrol`, `salloc`, `sbatch`)
 
 Environment Modules / Lmod are handled directly through the bash server's
-allowlisted `module` command (discovery + load), not here.
+`module` command, not here.
 
 Safety model:
 - Query tools are read-only.

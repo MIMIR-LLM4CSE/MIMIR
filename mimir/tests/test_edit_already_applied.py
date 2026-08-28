@@ -82,22 +82,6 @@ class AlreadyAppliedTests(unittest.TestCase):
                                      new_text="zeta9 = 9", confirm=True)
         self.assertEqual(res.get("status"), "error")
 
-    def test_apply_edits_skips_already_applied_subedit(self) -> None:
-        import json
-        fp = self._write("beta = 2\nN = 10\n")
-        edits = json.dumps([
-            {"operation": "replace_in_file", "path": fp,
-             "old_text": "alpha = 1", "new_text": "beta = 2"},   # already applied
-            {"operation": "replace_in_file", "path": fp,
-             "old_text": "N = 10", "new_text": "N = 20"},        # real
-        ])
-        res = sf.apply_edits(edits_json=edits, confirm=True)
-        self.assertEqual(res.get("status"), "ok")
-        statuses = [e.get("status") for e in res.get("per_edit_results", [])]
-        self.assertIn("noop", statuses)
-        with open(os.path.join(self._tmp.name, "t.py")) as fh:
-            self.assertEqual(fh.read(), "beta = 2\nN = 20\n")
-
 
 if __name__ == "__main__":
     unittest.main()

@@ -33,8 +33,10 @@ from typing import NamedTuple
 # the bash *server* validates with, so classification tracks what the server
 # actually permits and confines — one implementation, no drift (see its docstring).
 from ....servers._shared.shell_paths import (
+    EFFECT_RUN,
     ENV_MANAGER_COMMANDS,
     EXEC_COMMANDS,
+    EXEC_EFFECTS,
     INSPECT_COMMANDS,
     NEUTRAL_COMMANDS,
     READ_COMMANDS,
@@ -44,6 +46,7 @@ from ....servers._shared.shell_paths import (
     ShellParseError,
     is_path_like_command,
     parse_segments,
+    unwrap_argv,
     path_operand_tokens,
     write_value_operands,
 )
@@ -60,6 +63,10 @@ class Kind:
     ENV_MUTATE = "env_mutate"
     CHDIR = "chdir"
     NEUTRAL = "neutral"
+    # A head no group places. Runnable (bash gates by denylist), so it must classify —
+    # as an execution, which is the conservative reading: never plan-safe, never
+    # approval-exempt, and owing a verdict like any other run.
+    UNKNOWN = "unknown"
 
 
 # Kinds with no filesystem/exec side effect — what makes a command "plan-safe"
@@ -74,6 +81,11 @@ class Segment(NamedTuple):
     kind: str
     operands: list[str]  # files/dirs/patterns the segment acts on (may be empty)
     head: str = ""       # leading command of an EXEC segment (module for `python -m X`), else ""
+    argv: tuple[str, ...] = ()  # the segment's raw tokens; operands drop the flags
+    # What an EXEC segment's success would *prove* (see shell_paths.EXEC_EFFECTS).
+    # Deliberately not a Kind: policy, plan mode and approval treat all four alike,
+    # and only the evidence layer tells a check from a build from a run.
+    effect: str = ""
 
 
 # A token still carrying one of these after tokenization is opaque to *classification*:
@@ -82,8 +94,8 @@ class Segment(NamedTuple):
 # here — the shared parser has already lifted redirections out and refused subshells.)
 _BASH_FORBIDDEN_CHARS = frozenset("()<>`$&")
 
-# Leading command → kind comes from the shell_paths command *groups*, the same ones the
-# bash server builds its allowlist from, so classification cannot drift from what runs.
+# Leading command → kind comes from the shell_paths command *groups*, the same module
+# the bash server validates with, so classification cannot drift from what runs.
 # This module owns what a group cannot express: which option or sub-command changes the
 # effect (`sed -i` writes, `module load` mutates, `> file` turns a read into a write).
 # `cd` gets its own kind so its target can rebase later segments' relative operands.
@@ -298,14 +310,17 @@ def _env_manager_segment(argv: list[str]) -> Segment:
     return Segment(Kind.ENV_MUTATE, names)
 
 
-def _classify_segment(argv: list[str]) -> Segment | None:
-    """Map one command's argv to a Segment, or None if the leading command is opaque."""
+def _classify_segment(argv: list[str]) -> Segment:
+    """Map one command's argv to a Segment. Never None: an unplaced head is UNKNOWN."""
+    # `timeout 60 pytest -q` is a pytest run: the wrapper is stripped before anything
+    # else reads the head, so kind, effect and operands are the inner command's.
+    argv, _wrappers = unwrap_argv(argv)
     head = argv[0]
 
     # A workspace-local executable (./a.out) is an execution. Same test the server
     # uses to decide an argv0 names a program by path rather than by name.
     if is_path_like_command(head):
-        return Segment(Kind.EXEC, _exec_operands(argv), head)
+        return Segment(Kind.EXEC, _exec_operands(argv), head, effect=EFFECT_RUN)
 
     if head == "cd":
         # Target dir (first positional; `cd`, `cd -`, `cd ~` carry none we can rebase).
@@ -317,7 +332,11 @@ def _classify_segment(argv: list[str]) -> Segment | None:
     if head in ENV_MANAGER_COMMANDS:
         return _env_manager_segment(argv)
     if head in EXEC_COMMANDS:
-        return Segment(Kind.EXEC, _exec_operands(argv), _exec_head(argv))
+        exec_head = _exec_head(argv)
+        # An unknown ``python -m <module>`` resolves to no effect of its own; it runs
+        # whatever the module does, which is the interpreter's own effect.
+        effect = EXEC_EFFECTS.get(exec_head) or EXEC_EFFECTS.get(head, "")
+        return Segment(Kind.EXEC, _exec_operands(argv), exec_head, effect=effect)
     if head in WRITE_COMMANDS:
         return Segment(Kind.WRITE, _destination_operands(argv))
     if head in SEARCH_COMMANDS:
@@ -330,7 +349,9 @@ def _classify_segment(argv: list[str]) -> Segment | None:
         return Segment(Kind.READ, _read_operands(argv))
     if head in NEUTRAL_COMMANDS:
         return Segment(Kind.NEUTRAL, [])
-    return None  # unrecognised leading command → opaque
+    # Unplaced head: read as a run. Its path-position operands are still credited and
+    # confined, which is what an unclassified command most needs.
+    return Segment(Kind.UNKNOWN, _file_operands(argv), head, effect=EFFECT_RUN)
 
 
 def shell_segments(
@@ -382,8 +403,10 @@ def shell_segments(
 def classify_bash_command(command: str) -> list[Segment] | None:
     """Classify *command* into per-segment (kind, operands), or None if opaque.
 
-    Opaque for everything :func:`shell_segments` rejects, plus an unrecognised
-    leading command in any segment. A returned list always has at least one segment.
+    Opaque for everything :func:`shell_segments` rejects — a substitution, a subshell,
+    a heredoc, a token whose value only the running shell knows. An *unrecognised*
+    leading command is not opaque: it classifies as UNKNOWN, which is a run. A returned
+    list always has at least one segment.
 
     A redirection to a file is a write the leading command's own kind does not
     show: ``ls > out.txt`` creates a file, so the segment cannot stay INSPECT and be
@@ -399,12 +422,10 @@ def classify_bash_command(command: str) -> list[Segment] | None:
     segments: list[Segment] = []
     for segment in parsed:
         seg = _classify_segment(segment.argv)
-        if seg is None:
-            return None
         written = segment.write_targets
         if written and seg.kind in READONLY_KINDS:
             seg = Segment(Kind.WRITE, [t for t in written if _looks_like_path(t)])
-        segments.append(seg)
+        segments.append(seg._replace(argv=tuple(segment.argv)))
     return segments
 
 
@@ -450,8 +471,9 @@ def bash_command_is_readonly(command: str) -> bool:
     - plan mode, to keep a drafted plan side-effect-free (exec is rejected); and
     - the approval layer, to waive the prompt for read-only bash in **any** mode.
 
-    Conservative by design — on any parse ambiguity or unrecognised leading command
-    the classifier returns None and this returns ``False`` (the safe default). The
+    Conservative by design — on any parse ambiguity the classifier returns None and
+    this returns ``False``, and an unrecognised command classifies UNKNOWN, which is
+    not a read-only kind, so it too returns ``False`` (the safe default). The
     bash server still fully validates every accepted call, so this is a policy
     predicate, not the security boundary.
     """

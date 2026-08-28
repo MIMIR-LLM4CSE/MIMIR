@@ -60,7 +60,9 @@ flowchart TD
     E -- yes --> X
     E -- ok --> F{"Launching a costly cluster job<br/>before testing locally?"}
     F -- yes --> X
-    F -- ok --> G{"Right moment in<br/>the workflow?"}
+    F -- ok --> P{"Planning to go and look,<br/>instead of to change?"}
+    P -- yes --> X
+    P -- ok --> G{"Right moment in<br/>the workflow?"}
     G -- no --> X
     G -- ok --> H{"Writing a file before<br/>understanding it?"}
     H -- yes --> X
@@ -79,7 +81,7 @@ flowchart TD
 
     class A,K entry;
     class B,L step;
-    class C,D,E,F,G,H,I,J decision;
+    class C,D,E,F,P,G,H,I,J decision;
     class X,Y block;
 ```
 
@@ -166,8 +168,8 @@ runner just walks the table.
   - `evaluate_tool_preconditions` orchestrator
   - registry validation
   - tool rewrite handling
-  - registry → external-fetch guard → cluster-submit guard → proxy-exec guard → state guard → write policy → out-of-workspace guard → approval pipeline
-  - capability-driven call-time guards (no hardcoded tool names), all living in `guardrails/policy/gates.py`: `_check_external_fetch` (EXTERNAL_FETCH gated on local discovery), `_check_cluster_submit` (CLUSTER_SUBMIT held once until local-validation evidence — see Cluster-Submission Guard), `_check_proxy_exec` (CODE_EXEC tools blocked from running the proxy under optimization directly — see Proxy Direct-Execution Guard), and `_check_out_of_workspace_access` (any path outside the workspace root prompts before running — see Out-of-Workspace Access Approval)
+  - registry → cluster-submit guard → plan-shape guard → proxy-exec guard → state guard → write policy → out-of-workspace guard → approval pipeline
+  - capability-driven call-time guards (no hardcoded tool names), all living in `guardrails/policy/gates.py`: `_check_cluster_submit` (CLUSTER_SUBMIT held until local-validation evidence, unless the session wrote nothing — see Cluster-Submission Guard), `_check_proxy_exec` (CODE_EXEC tools blocked from running the proxy under optimization directly — see Proxy Direct-Execution Guard), `_check_out_of_workspace_access` (any path outside the workspace root prompts before running — see Out-of-Workspace Access Approval), and `_check_plan_shape` (a plan document whose axes are exploration steps is refused before it is recorded — see Plan-Shape Guard)
   - interactive path clarification (interactive sessions only)
   - violation payload enrichment with:
     - `policy_stage`
@@ -191,42 +193,52 @@ runner just walks the table.
 - `mimir/client/guardrails/policy/readonly_exempt.py`
   - `_readonly_bash_exempt`: waives the sensitive-approval prompt for a **read-only** dual-use bash command (per `bash_command_is_readonly`) **in any mode** — running `rg`/`cat`/`sed -n` unattended is safe; an exec command or an in-place write (`sed -i`) still hits the normal gate. Formerly `plan_mode.py` (plan-mode-only), generalised when the exemption was extended to agent mode
 
+- `mimir/client/tool_execution/bash_effect.py`
+  - `capture` / `report` / `created_paths`: what a shell command changed on disk, appended to its result as the `BASH_EFFECT` annotation (see What a Shell Command Changed)
+  - triggered by `bash_command_is_readonly` being false, never by the command's classified kind; detection is a `git status`/`git diff --numstat` delta, or a bounded `os.scandir` outside a repo
+
 - `mimir/client/agent_core.py`
   - tool routing
   - approval prompts
   - integration order: precondition → execution → observation
 
 - `mimir/client/guardrails/nudges/engine.py` — `maybe_append_nudge` appends **at most one** reminder per agent step. Built-in nudges are a single ordered table, `_CORE_NUDGES` (each row: `name`, `layer`, a `should_fire` predicate, a `render`), walked by the generic runner `_append_core_nudge`; application packs add more through the `NudgeRegistry` (`_append_custom_nudge`). Both share the same shape, so a built-in and a pack nudge are described identically. There are two layers:
-  - **Verification layer** (`layer="verification"`) — reality checks that run at **every** enforcement level: denial, error-recovery, the **regression** nudge (you edited a source file whose associated test exists on disk but was never run this query — `tests_run` vs. the discovered `test_<stem>.py`/`<stem>_test.py`), and the **unfinished-plan** nudge (code was written while the model's own checklist still has open non-optional steps). These point at facts about disk/process state and output honesty that no amount of model capability removes. `test_nudge_table.py` asserts the verification set is disjoint from `_ALL_GUIDANCE`, so a verification row can never be silently switched off by enforcement.
-  - **Guidance layer** (`layer="guidance"`) — reasoning babysitting that is **skipped entirely when `enforcement_level == "off"`**: validation, env_resolution, env_cleanup, discovery, documentation, state, blast-radius, creation, and todo. Which categories survive at each `(enforcement, mode)` is the single table `_GUIDANCE_BY_LEVEL_MODE` (consulted via `_guidance_enabled`, **inside each guidance predicate**): `strict` permits all; `light` keeps only `blast_radius` + `env_cleanup` + `validation` (agent mode). See Enforcement Levels for the full table — it is the authority, and this line is a summary of it.
+  - **Verification layer** (`layer="verification"`) — reality checks that run at **every** enforcement level: denial, error-recovery, the **validation** nudge (a file you modified was never checked — the one axis the conclude gate blocks on), the **regression** nudge (you edited a source file whose associated test exists on disk but was never run this query — `tests_run` vs. the discovered `test_<stem>.py`/`<stem>_test.py`), the **unexercised** nudge (everything checked, nothing ever run), the **unfinished-plan** nudge (code was written while the model's own checklist still has open non-optional steps), and the **output-verdict** nudge. These point at facts about disk/process state and output honesty that no amount of model capability removes. `test_nudge_table.py` asserts the verification set is disjoint from `_ALL_GUIDANCE`, so a verification row can never be silently switched off by enforcement.
+  - **Guidance layer** (`layer="guidance"`) — reasoning babysitting that is **skipped entirely when `enforcement_level == "off"`**: env_resolution, env_cleanup, discovery, documentation, state, blast-radius, creation, and todo. Which categories survive at each `(enforcement, mode)` is the single table `_GUIDANCE_BY_LEVEL_MODE` (consulted via `_guidance_enabled`, **inside each guidance predicate**): `strict` permits all; `light` keeps only `blast_radius` + `env_cleanup` (agent mode). See Enforcement Levels for the full table — it is the authority, and this line is a summary of it.
 
   Order per step: **core verification → pack verification → (stop if `off`) → core guidance → pack guidance**; the first row whose `should_fire` is true fires and wins. Each nudge's per-query frequency cap (`nudge_count(ec, category) < NUDGE_MAX_*`) lives inside its own predicate. Nudge and prompt text refers to tools by **capability/category**, never by literal MCP tool name (the plan output via "the plan/todo tool"). The lone exception is validation, which names the bash **commands** it steers toward (`python -m py_compile` / `pytest` / `ruff` / `mypy`) since those are shell invocations, not MCP tools.
 
   The nudge **message copy** (the `render` text for every built-in nudge, plus the stateful `validation_nudge_message` builder) lives in `mimir/client/guardrails/nudges/messages.py` — inside the nudges subsystem, since only it consumes them. `guardrails/workflow.py` keeps only the shared **state model + predicates** (`set_workflow_state`, `has_pending_validation`, `has_blocking_denials`, `pending_validation_paths`, plus the denial ladder — `denial_stage`, `worst_denial_stage`, `handback_required`) and the agent-loop plan/loop copy.
 
-  Separately from the `guardrails/nudges/engine.py` layers, the agent loop itself fires **loop-control correctives** mid-tool-loop (in `agent_loop.py`) when a call is over-repeated: the failing-call guard (identical *failed* non-write call → correct, then hard-block) and the redundant-success guard (non-write call returning byte-identical content → correct on the 1st repeat, hard-block + history-strip on the 2nd, with a neutral `status:"skipped"` notice so the model proceeds rather than retries); and, once refusals reach the end of the denial ladder, a one-time **hand-back stop** (`handback_corrective_message()`), which is mid-loop for the same reason — a model that has been told to hand back and hasn't is still calling tools, where no nudge can reach it. The **firing decision** lives in the loop; the corrective message **TEXT** lives alongside the other loop-control copy in `mimir/client/guardrails/workflow.py` (`repeat_corrective_message()` / `redundant_corrective_message()` / `handback_corrective_message()`), keeping wording consistent.
+  Separately from the `guardrails/nudges/engine.py` layers, the agent loop itself fires **loop-control correctives** mid-tool-loop (in `agent_loop.py`) when a call is over-repeated: the failing-call guard (identical *failed* non-write call → correct, then hard-block); and, once refusals reach the end of the denial ladder, a one-time **hand-back stop** (`handback_corrective_message()`), which is mid-loop for the same reason — a model that has been told to hand back and hasn't is still calling tools, where no nudge can reach it. A repeated *successful* call is **annotated, never guarded**. Two guards for it were built and both removed — a line-coverage ledger that narrowed reads, and a redundant-success guard that hashed results, blocked, and rewrote history; each cost more than the repetition it caught, and refusing content sent the model to `bash` to read the same file another way. What remains is the part neither of them was: `IDENTICAL_REPEAT`, appended to the result once a call has returned the *same digest* `IDENTICAL_REPEAT_THRESHOLD` times (counted in `LoopControlState.call_results`, beside the failure counter that ignores successes). Nothing is withheld and nothing is rewritten, so the objection that retired the guards does not apply; the per-query cache still answers the repeat itself. It is said once per call key: a model that ignored it will ignore the second. The **firing decision** lives in the loop; the corrective message **TEXT** lives alongside the other loop-control copy in `mimir/client/guardrails/workflow.py` (`repeat_corrective_message()` / `handback_corrective_message()`), keeping wording consistent.
+
+  **`env_resolution` is guidance, but it is delivered mid-loop.** It is the one category whose subject is *recovery* rather than *completion*: every other row answers "is the work done?", which is a question worth holding until the model stops calling tools, while this one answers "why did that just fail?" — and by the time the turn ends, the steps it would have saved are already spent. Worse, the generic failing-call guard only catches the retries that are byte-identical, so a model varying the interpreter or the flags each time is never caught at all. `maybe_inject_env_resolution()` therefore runs from `_post_dispatch_inject()` immediately after the failing dispatch, under the **same `_GUIDANCE_BY_LEVEL_MODE` gate, the same `disabled_nudges` toggle and the same single budget** as the table row that still backs it up — whichever fires first spends `NUDGE_MAX_ENV_RESOLUTION`, and the other stays silent. What changed is the moment, not the policy.
+
+  **One injection path, no exceptions.** Every machine-generated message put in the user's turn slot goes through `guardrails.nudges.inject_reminder(messages, text, category=..., tagged=...)`: the nudge table, the step-limit reminder, the post-dispatch correctives, and the plan-mode control flow. The `nudge_injected` event it emits is not decoration — the webview holds the turn in flight *outside* the transcript and commits it only once the loop accepts it, so a reminder injected with a bare `messages.append` leaves the rejected prose on screen looking like the answer, to be swapped for a different one when the real answer lands. `tagged=False` is for the reminders that are protocol rather than advice (plan-mode delivery, the step limit): the `_NUDGE_TAG` banner says "advisory, apply judgment", which invites the model to skip a step the loop actually requires. The reminders that follow a *user decision* (plan accepted / revised / rejected) do **not** go through it — the delivered prose they answer is legitimate transcript, not a rejected turn.
+
+  **The refused turn is never streamed in the first place.** Dropping the draft on `nudge_injected` keeps the transcript honest, but the user still watched an answer stream in and disappear. So the loop asks *before* the model call whether it would refuse a bare turn produced now — `nudges.nudge_pending()` walks the same table and the same registry in the same layer order, evaluating predicates only (nothing rendered, injected or counted), plus the loop's own two grounds: the no-op streak cap and the once-per-query evidence handback. When something is pending, the step's `token_callback` is swapped for a `_DraftHold` (`query_engine/streaming.py`) that buffers the prose instead of emitting it: released verbatim the moment the turn calls a tool (narration belongs above its cards) or the call is cancelled, dropped silently when the guardrail does refuse it, and left unflushed on the accepted path — the final `answer` carries the text post-processed, so flushing the raw draft would only swap one visible text for another. Plan mode holds on the same principle with an exact condition instead of a probe: until the plan document is recorded, a turn that only talks is always nudged back. Nothing that reaches the screen can be taken back; the cost is that an at-risk turn lands at once rather than token by token.
 
 ---
 
 ## Enforcement Levels (model-tiered)
 
-`config.models.enforcement_level(model)` resolves a per-model knob from the vLLM profile: `"strict"` | `"light"` (**default**) | `"off"`. It governs **only the reasoning-babysitting layer** — the guidance nudges (env resolution/cleanup, discovery, doc, state, blast-radius, creation, todo, validation) and the plan-mode evidence gate. Which guidance categories survive at each `(enforcement, mode)` is the single declarative table `_GUIDANCE_BY_LEVEL_MODE` in `guardrails/nudges/engine.py` (consulted via `_guidance_enabled`); each nudge then layers its own `active_mode`/situational conditions on top:
+`config.models.enforcement_level(model)` resolves a per-model knob from the vLLM profile: `"strict"` | `"light"` (**default**) | `"off"`. It governs **only the reasoning-babysitting layer** — the guidance nudges (env resolution/cleanup, discovery, doc, state, blast-radius, creation, todo) and the plan-mode explore phase. Which guidance categories survive at each `(enforcement, mode)` is the single declarative table `_GUIDANCE_BY_LEVEL_MODE` in `guardrails/nudges/engine.py` (consulted via `_guidance_enabled`); each nudge then layers its own `active_mode`/situational conditions on top:
 
-| level  | agent-mode guidance nudges                                                         | plan-mode guidance nudges          | plan-mode evidence gate |
+| level  | agent-mode guidance nudges                                                         | plan-mode guidance nudges          | plan-mode explore phase |
 |--------|-----------------------------------------------------------------------------------|------------------------------------|-------------------------|
-| strict | **all** (env_resolution, env_cleanup, discovery, doc, state, blast_radius, creation, todo, validation) | all except `validation` (branch `active_mode` gates still apply) | on |
-| **light** *(default)* | **`blast_radius`, `env_cleanup`, `validation` only**                    | none                               | on                      |
+| strict | **all** (env_resolution, env_cleanup, discovery, doc, state, blast_radius, creation, todo) | all (branch `active_mode` gates still apply) | on |
+| **light** *(default)* | **`blast_radius`, `env_cleanup` only**                              | none                               | on                      |
 | off    | none                                                                               | none                               | off                     |
 
-The plan-mode evidence gate is **advisory at every level it is on**: it appends a one-shot nudge to a plan recorded with no exploration, and the plan stands either way. `off` suppresses the nudge entirely. It never rejects a plan — doing so discarded what the model had just recorded, with nothing guaranteeing it would submit that form again, and its trigger (`query_requires_repo_discovery`) is a deliberately broad exit filter that fires just as readily for greenfield work outside the repo, where no exploration could satisfy it.
+The plan-mode explore phase **withholds the plan-document tool** until the model has actually read code (`plan_evidence_ready`), so a plan written over nothing is unreachable rather than flagged after the fact; `off` disables the phase entirely and offers the tool from turn 1. It still never leaves the run without a plan: its trigger (`query_requires_repo_discovery`) is a deliberately broad exit filter that fires just as readily for greenfield work outside the repo, where no exploration could satisfy it, so `PLAN_EXPLORE_MAX_TURNS` unlocks the tool regardless and the plan states its own gaps.
 
-`light` is the **default**, and the reason is that its membership rule is the only one stated as a criterion rather than as a list: keep the nudges guarding a mistake that is **costly, hard to detect, and non-self-correcting** — `blast_radius` (changing a definition without checking callers), `env_cleanup` (a package install / created env that persists outside the session), `validation` (concluding on code that was never checked). Everything it drops (discovery, env_resolution, doc, state, creation, todo) is procedural hand-holding a capable model does unprompted, and it is not free: each nudge is a message injected into the model's own reasoning stream mid-plan, priced in tokens and in interruption. Having that as the opt-*down* put the burden of proof on the wrong side.
+`light` is the **default**, and the reason is that its membership rule is the only one stated as a criterion rather than as a list: keep the nudges guarding a mistake that is **costly, hard to detect, and non-self-correcting** — `blast_radius` (changing a definition without checking callers) and `env_cleanup` (a package install / created env that persists outside the session). Concluding on code that was never checked used to be on this list; it is no longer guidance at all, because it is not a reasoning shim to dial down — `validation` is a verification row now, and fires at `off` too. Everything `light` drops (discovery, env_resolution, doc, state, creation, todo) is procedural hand-holding a capable model does unprompted, and it is not free: each nudge is a message injected into the model's own reasoning stream mid-plan, priced in tokens and in interruption. Having that as the opt-*down* put the burden of proof on the wrong side.
 
 `strict` permits every guidance branch and is now the **opt-in**, declared per model with `"enforcement": "strict"` in `vllm_model_profiles.json`. The branches' own `active_mode == "agent"` gates mean agent-only nudges still don't leak into plan mode, so `strict` does not strip guidance by mode. `off` cuts the whole guidance layer. Ask mode is empty at every level — it neither plans nor edits, so nothing in the guidance layer applies. The line is per-mode, so adding (say) a plan-mode `light` nudge later is a one-line table edit.
 
 Which models opt back in: the marker is **empirical, not a guess about model families** — a profile that already carries a recorded workaround is a model that has been observed struggling. Today that is `devstral` (which also carries a tool-count cap). `test_client_helpers` pins it, so flipping the default can never silently un-rail it.
 
-**Verification and safety/correctness enforcement is never tiered:** the verification-layer nudges (denial, error-recovery, regression, unfinished-plan), write-policy, approval/sensitivity, the workflow state-machine anti-thrashing guard, and plan-blocked tool hiding run at every level.
+**Verification and safety/correctness enforcement is never tiered:** the verification-layer nudges (denial, error-recovery, validation, regression, unexercised, unfinished-plan, output-verdict), write-policy, approval/sensitivity, the workflow state-machine anti-thrashing guard, and plan-blocked tool hiding run at every level.
 
 **Resolution and runtime override.** The level is resolved **once** at agent construction (`MimirAgent.__init__` → `self.enforcement = enforcement_level(model)`) — the model is immutable for an agent's lifetime, so there is nothing to re-resolve per turn. Consumers read it via `config.models.resolve_enforcement(agent)` (cached attribute, with a fall-back to `enforcement_level(agent.model)` for agent-like objects that predate the attribute). It can be changed at runtime with the `/enforcement strict|light|off` command (`MimirAgent.set_enforcement`), wired in both the CLI (`chat_commands.py`) and the WebSocket server (`ws_server._handle_command`), and surfaced in `/status`.
 
@@ -234,7 +246,13 @@ Which models opt back in: the marker is **empirical, not a guess about model fam
 
 ## Discovery-Evidence Definition (single owner)
 
-"What counts as the model's own discovery this query" is defined **once** in `context/execution_context.py`: `DISCOVERY_EVIDENCE_SIGNALS` — now *derived* from the `DISCOVERY` field trait rather than hand-listed, so a new discovery field cannot be added to the schema and forgotten here (membership unchanged: `searched`, `read_files`, `snippet_read_files`, `checked_paths`, `inspected_dirs`) — plus `has_discovery_evidence(ctx, *, min_distinct)`. `inspected_dirs` counts only **beyond `BASELINE_SEEDED_DIRS`** (`{"."}` — the same constant `repo_baseline` seeds from, so the two cannot drift): the repo-baseline snapshot must never pre-satisfy a gate on the model's behalf, but a subtree the model inspected itself is real exploration. Excluding the field outright, as it was, made structural discovery worth nothing and left a grep or a file read as the only way to clear any gate — the wrong bar for a task about layout rather than about one symbol. The agent-mode discovery nudge (min 2), the plan-mode evidence gate (min 1), and `engine._missing_evidence` all read this one definition instead of hand-picking field subsets.
+"What counts as the model's own discovery this query" is defined **once** in `context/execution_context.py`: `DISCOVERY_EVIDENCE_SIGNALS` — now *derived* from the `DISCOVERY` field trait rather than hand-listed, so a new discovery field cannot be added to the schema and forgotten here (membership: `searched`, `read_files`, `delegated_read_files`, `checked_paths`, `inspected_dirs`) — plus `has_discovery_evidence(ctx, *, min_distinct)`. **Presence is the whole test**: nothing seeds these fields, so a fresh context carries zero evidence.
+
+That is the fix for a bug worth recording, because it was invisible in both directions. A structural snapshot used to pre-fill `inspected_dirs`, and a discount (`BASELINE_SEEDED_DIRS`) was written into `_signal_present` to subtract it back out. The discount worked only for consumers that went through the shared helper; `_check_external_fetch` read the field raw, so on any repo-touching query it was satisfied before the model acted and never fired — while on a bibliography query, where no snapshot was built, it was the one thing that *did* fire. A guard that is a no-op exactly where it was meant to bite, and bites exactly where the prompt says not to explore. Deleting the seeding removed the need for the discount and the class of bug with it.
+
+The agent-mode discovery nudge, the plan-mode explore phase (via `plan_evidence_ready`, which adds a floor on `read_files` — locating files is not reading them), and `engine._missing_evidence` all read this one definition instead of hand-picking field subsets, and all at the same `DISCOVERY_EVIDENCE_MIN_DISTINCT` bar — `_missing_evidence` used to take the default of 1 while the nudge asked 2, so two consumers of "one definition" still disagreed on how much cleared it.
+
+**Delegated reading counts here, and only here.** `delegated_read_files` holds what a sub-agent opened and reported back (credited by `_observe_delegated_exploration`, keyed on the `DELEGATE` capability). These gates ask whether the model has *facts about the code* or is working off file names, and a finding that came back into its conversation is such a fact — `plan_evidence_ready` therefore counts it toward its read floor, or plan mode would punish the fan-out its own prompt asks for and drain the explore budget. It stays out of `read_files`, which answers a second and stricter question — *does this agent hold the lines it is about to edit* — that only a read of its own can settle. Two questions, two fields.
 
 ---
 
@@ -256,7 +274,6 @@ The context tracks:
 - `edit_loop_state`: per-file `(signature, count)` of repeated identical **failed** edit attempts
 - `steps_since_last_edit`: steps elapsed since the last successful code edit
 - `declared_edit_set`: file paths the model committed to editing via `todo_write`
-- `snippet_read_files`: files observed via snippet/context tools but **not** treated as fully read
 - `similar_candidates_by_dir`: known nearby peer files used to reason about placement and duplication
 
 ### Field traits: what a field *is*, declared once
@@ -278,13 +295,12 @@ These answers used to live in **eight hand-maintained name lists** across `agent
 
 ### Important semantic distinctions
 
-These are enforced by named predicates in `context/execution_context.py`, not by convention: `was_fully_read()`, `is_known_to_exist()`, `was_checked_for()`. As bare set membership the right field and the wrong one looked equally plausible at the call site.
+These are enforced by named predicates in `context/execution_context.py`, not by convention: `was_read()`, `is_known_to_exist()`, `was_checked_for()`. As bare set membership the right field and the wrong one looked equally plausible at the call site.
 
-- `read_files` means the file was explicitly read through a direct read tool (`read_file_lines`).
-- `snippet_read_files` means the model saw only partial context and **must not** be treated as having fully read the file.
+- `read_files` means the file was explicitly read through a direct read tool (`read_file_lines`). It says a read happened, and deliberately not how much of the file it returned — see *Reading is localized* below.
 - `checked_paths` means a pre-check was attempted; it **does not prove existence**.
 - `existing_paths` is stronger evidence than `checked_paths`.
-- `validated_files` means a **checker** ran and passed on the file: it parses, its imports resolve, it lints. It does **not** mean the artifact is correct, and nothing on this axis ever will — correctness lives on the run axis, where the model's verdict is recorded. `validation_tier_by_file` says which kind of check it was (`syntax` < `static`).
+- `validated_files` means a **checker** ran and passed on the file: it parses, its imports resolve, it lints. It does **not** mean the artifact is correct, and nothing on this axis ever will — correctness lives on the run axis, where the model's verdict is recorded. `validation_tier_by_file` says which kind of check it was (`syntax` < `static` < `compiled`).
 - `runs` is the other axis: one entry per execution, holding whether it completed, the model's verdict on what it printed, and its failure history. A run credits no file, and a file's check says nothing about a run.
 - scratchpad paths (see Out-of-Workspace Access Approval) never enter `dirty_written_files`: they are working material, not produced work.
 
@@ -294,12 +310,11 @@ Policy changes must preserve this contract or explicitly migrate it.
 
 ## Query Context Lifecycle
 
-Execution context is query-scoped, but selected discovery evidence can be reused across repeated queries with the same canonical query key.
+Execution context is **query-scoped**. Nothing pre-fills it: a fresh context carries zero discovery evidence, so every gate that asks "has the model explored?" measures the model's own tool calls this query and nothing else.
 
 Current behavior:
-- each run normalizes `query_id` with canonical whitespace/lowercase normalization
-- baseline seeding can replay cached relevant discovery only for the same canonical query key
-- cache storage is bounded and only stores discovery evidence subsets (search/read/inspection context)
+- each query builds a fresh `ExecutionContext`; the only thing merged into it is the session **carry-context** (`_apply_carry_context`), which replays long-lived path knowledge — never the discovery *flags* a gate reads
+- a structural repo snapshot used to seed `inspected_dirs` here. It was removed along with the snapshot itself: it made a discovery-evidence field non-empty before the model had acted, which any consumer reading the field raw took as exploration (`_check_external_fetch` did exactly that). A per-query cache keyed on a normalized query string was described here too and had already been unwired
 - unrelated queries do not reuse cached discovery evidence
 
 Rationale:
@@ -320,7 +335,6 @@ Current rule:
     - search activity
     - directory inspection
     - explicit reads
-    - snippet reads
     - successful path checks
 
 Rationale:
@@ -332,19 +346,27 @@ Rationale:
 
 ## Read Policy
 
-For source files, broad full-file reads are still treated more carefully than targeted reads.
+Reading is localized. A read answers "what is at this place in this file", never "what
+is in this file" — and the policy layer is built to match, rather than to police the
+difference.
 
 Current design:
-- explicit reads (`read_file_lines`) are treated as strong evidence
-- snippet/context reads (`read_neighbor_files`) are tracked separately in `snippet_read_files`
-- snippet reads **do not** satisfy per-file “already read” requirements for source edits
-
-This separation is important because partial context is often sufficient for search/planning, but not sufficient for structural edits.
+- `read_file_lines` caps every call (`_MAX_READ_LINES`) whatever range it is given, and a
+  window that stops short says so: `truncated`, `total_lines`, `next_start_line`,
+  `line_cap`. The client turns that into `MORE_CONTENT`, and into an `OUTLINE` symbol map
+  for a code file, so the next call can be aimed instead of paged.
+- explicit reads (`read_file_lines`) are recorded in `read_files` as discovery evidence.
+  **Nothing records how much of the file came back**, and no gate asks.
+- the one read precondition left is read-before-overwrite: rewriting a file that already
+  exists requires having read it. Any extent satisfies it.
 
 Rationale:
-- preserve context efficiency
-- avoid treating grep/snippet context as proof that a file was fully inspected
-- reduce broken local edits caused by acting on partial file context
+- a gate on "was it read whole" rewards the exhaustive read the rest of the policy
+  argues against, and measures nothing else
+- the line-coverage ledger that used to answer it cost four context fields, an mtime
+  stamp, a diff re-indexer and a crediting path per tool, to spare the tokens of a slid
+  window — and duplicated the redundant-call guard while short-circuiting it
+- a repeated read is a loop-control concern, handled where the other repeats are
 
 ---
 
@@ -365,7 +387,7 @@ Write actions are guarded more aggressively than reads, but the current policy i
    - `replace_in_file`
    - `replace_lines`
 7. after a successful code edit, the workflow enters `validate` only when the declared planned edit set is complete; otherwise it remains in `edit`.
-8. `read_neighbor_files` does **not** count as a strong prior read for source-edit policy.
+8. a read of any extent satisfies the read-before-overwrite rule: reading is localized, so demanding the whole file would ask for the one thing the read policy forbids.
 
 ### Design intent
 
@@ -402,6 +424,8 @@ The workflow states still exist and still mean something — they drive the nudg
 conclude gate and the finalization buckets. What they no longer do is *gate edits* on
 anything but a file that has demonstrably stopped converging.
 
+The prompt matches that: `## Workflow` names the four as *modes you move between, not a pipeline traversed once*, and says outright that going back to discovery mid-edit, editing again after a check, or holding several files at different stages is the normal shape of the work. The arrow-shaped wording it replaced described a machine that never existed — every transition in `observations` already runs both ways — and a model that reads the loop as one-way spends turns apologising for re-entering a state, or defers an edit it should just make.
+
 Rationale:
 - editing is reversible; a wrong edit costs a diff, and the approval layer snapshots it
 - unrelated drift is a *judgement* about the model's plan, not a fact about disk, so it
@@ -413,14 +437,43 @@ Rationale:
 
 ## Validation Policy
 
-After source edits, success cannot be reported until validation is complete or the answer explicitly states that the task remains incomplete.
+After source edits, success cannot be reported until every modified file has been **checked** or the answer explicitly states that the task remains incomplete. Building it and running it are recommended, never required.
+
+**Three axes, one requirement.** They answer different questions and only the first is owed:
+
+| axis | what it is | standing |
+| --- | --- | --- |
+| **check** | parse, resolve imports, lint — no artifact, nothing executed: `py_compile`, `ruff`, `mypy`, `pyflakes`, `black`, `gcc -fsyntax-only`, `gfortran -fsyntax-only` | **required** for every modified file, at every enforcement level |
+| **build** | a compile that emits an object or a binary: `gcc -c`, `nvcc`, `javac`, `make`, `cmake`, `pmake`, the TeX chain | recommended where one direct command reaches it; owes **no** verdict — its exit code is the finding |
+| **run** | `pytest`, `python solver.py`, `./solver`, `python -c …`, `ctest` | recommended where one direct command reaches it, and expected when tests already cover the change; a verdict on its output is recommended, never charged |
+
+**"Simply feasible" has three endings, not two.** The criterion is what the step costs, not what the machine happens to carry: *one direct command, against the project as it stands*. Anything that needs a step of its own first — configuring a build, installing a package, creating an environment, fetching data, an allocation, repairing an already-red build — is out of proportion by default, and that list is the whole test. (An always-on *Target platform* block used to carry the pre-flight, listing every command the ladder names so a step could be weighed before being spent. It was removed with the client-side probe: it charged every query for a hardware summary to spare the rare one an error that is cheap and more informative than the guess — the same reasoning that already kept Python imports on the try-then-resolve path.) Absence is not the end of the obligation, only of the attempt: an axis that cannot run must be named, explained, **and handed back as the exact command that would run it once what is missing is in place**, so the user can close the gap the agent could not. Two things are deliberately *not* pre-flighted this way: a dataset or a GPU, which no cheap probe settles, and a Python import, where the failure is cheap and more informative than any guess — those keep the try-then-resolve path (see `env_resolution` above).
+
+**The third ending: disproportionate.** A step is *simply feasible* when one direct invocation of something the probed block lists reaches it against the project as it stands; it is not when the first invocation needs a step of its own — configuring or generating a build system, installing a package, creating an environment, fetching or generating a dataset, obtaining an allocation, or repairing a build that was already red before the edit. Disproportionate is reported exactly like impossible — named, explained, handed back as the command — and is **never** a completion issue. The prose does not carry that rule; the state layer does, on both sides of an attempt:
+
+- *Before.* `_exercise_route` (`guardrails/nudges/engine.py`) returns the one direct command it can find here, in descending order of what it proves: a Python test that already covers the edit; a file this box starts directly; **a suite already registered** (`CTestTestfile.cmake` seen — generated at configure time and only when tests exist — plus `ctest` on PATH); **a build already configured** (`Makefile`/`CMakeCache.txt` seen this session, driver on PATH). `CMakeLists.txt` alone is not a route, because configuring is the step of its own — and neither is a compiled test *source*, because reaching it still means building first, which is the same rule applied to itself. No route, no recommendation, and `exercise_blocked_reason` records why. The recommendation names the route it found, so it is proportionate by construction.
+- *After.* A red exit says *that* a run failed, never *whose* fault it was. `report_verdict("blocked", …)` re-imputes it from the change to the environment: no repair budget, no steer back to `edit`, reported by `blocked_run_lines` as a limitation instead of an issue — so attempting a recommended step can no longer turn a finished task into `Task is incomplete.` It never makes the run green (`completed` stays false), so nothing is raised past what the machine saw, and it must be claimed: an unclaimed red exit drives the repair ladder exactly as before. The question is put in-band by the `IMPUTATION_DUE` annotation on the failing result itself.
+
+The one wall the machine names alone is a command that is not installed (`_bash_validation_scan` reads `argv[0]` of each segment that ran, built or checked). Everything else — a build to configure, a dataset, an allocation — needs the model to say so, because deciding it means reading output, which mimir never does.
+
+**Which axis a command is on is declared, never inferred.** `shell_paths` splits the exec taxonomy into `VALIDATOR_COMMANDS` / `BUILD_COMMANDS` / `RUN_COMMANDS` / `ENV_SETUP_COMMANDS` (`EXEC_COMMANDS` is their union), and `EXEC_EFFECTS` maps each head to its effect; `bash_classify` carries it on the segment. It used to be derived by elimination — a head the validator tier table did not know had, by that fact alone, *run the project's code* — so `source set_env_cmake.sh` was recorded as a run owing a verdict, and every `make` came back as "ran but never judged" despite the row above saying builds owe none. Environment setup proves nothing and is recorded as nothing; a build is settled by its exit code; a run in the same chain outranks the build before it (`make && ./solver` produced output somebody must read). A green build still credits **no file**: which sources it compiled is not recorded anywhere, and the check axis is the one that has to stay honest.
+
+Only the check axis blocks: `needs_incomplete_finalization` refuses to conclude over a file that was modified and never checked, and reads **nothing else** — not `workflow_state`, not the run ledger. That third condition used to be there (`code_mutation_started and workflow_state != "conclude"`) and it silently promoted the recommendations to requirements: a failed run — or a `fail` verdict, which drives the same ladder — sends the state machine back to `edit`, so every answer came back `Task is incomplete.` until the run had failed `VALIDATION_RETRY_BUDGET` times. The state machine is *steering*, not evidence. Nothing blocks on a build or a run — a toolchain, a queue, a dataset or a GPU may simply not be there, and a gate that cannot be satisfied is a dead end, not a guarantee. What an unbuilt or unrun change owes instead is a *statement*: the ledger says it was checked and not run, `_collect_completion_issues` names every run left **failing**, `unjudged_run_lines` names every run left unjudged without charging it, and the answer says why.
+
+**One ask for the advisory axis.** `regression` and `unexercised` ration a single `nudge_counts` budget (`EXERCISE_BUDGET`, cap `NUDGE_MAX_EXERCISE`), and an `unknown` verdict sets `exercise_advice_closed`, which retires the question for the rest of the query. They are two phrasings of "does anything actually show this works?", and separate budgets turned one conclusion into several re-prompts. Both stay silent when running is visibly out of reach (`_exercise_looks_feasible`): an unresolved import, no `CODE_EXEC` tool, or a change confined to sources that need a build first. **Silent, but recorded** — the gate writes the obstacle to `exercise_blocked_reason` and the ledger prints it next to "nothing here was built or run". Suppressing an ask the environment cannot satisfy is the point; suppressing the fact that it could not be satisfied was a side effect nobody wanted, and it left the reader with an unexercised change and no reason given.
+
+**A missing module retracts on the next successful run.** `unresolved_modules` gates that feasibility check, so it must not be a one-way flag: it used to be set by the first `ModuleNotFoundError` and never cleared, which meant one transient import failure silenced the run/verdict advice for the whole query — including the case where the model went on to find the right interpreter, whose successful run is precisely the evidence that the environment resolved. A successful `CODE_EXEC` call now clears it (`_observe_missing_module`).
+
+**No nudge asks for a verdict.** There was one (`output_verdict`), and it fired on the *happy* path: edit, run, everything green, final answer — the answer streamed, the reminder discarded it, and the model typically re-ran the command to recover output it no longer had in front of it, all to obtain a label the ledger already prints (`its output was never judged`). A recommended axis must not be able to reject a finished answer. The verdict is asked for where it costs nothing: in-band on the run's own result (`VERDICT_DUE`) and in the judging tool's docstring; when it never comes, the ledger and `unjudged_run_lines` say so, and neither charges completion. Both wordings are recommendations rather than demands — `VERDICT_DUE` names the run and then names the case for skipping it (output that settles nothing), because a hint the model cannot decline is a demand wearing a softer word.
+
+**When nothing here can check a file at all** — a `.cu` with no `nvcc`, a `.f90` with no `gfortran`, or a language for which no checker is declared at all (`.rs`, `.go`, `.js`: no checker is declared for them, so nothing credits them) — it is recorded in `unverifiable_files` at write time (`observations._language_checker_missing`, a `shutil.which` probe over `_CHECKER_COMMANDS_BY_EXTENSION`), removed from `pending_validation_paths`, and named in the ledger as *not checked (no checker here)*. The requirement holds where it is possible; elsewhere it is reported. Two invariants keep this honest: no checker is on the shell's denylist (one it refuses is a check nobody can perform), and every extension in the checker table is also in `SOURCE_FILE_EXTENSIONS` — `.f03` was in one and not the other, so a Fortran 2003 edit was never recorded as modified and no check was ever asked for.
 
 Current behavior:
 - modified code files are tracked in `dirty_written_files`
-- **validation and execution are two axes, and they never mix.** `observations._observe_bash_validation` drives both from one command, status-agnostically. A **checker** (`py_compile` → `syntax`; `ruff`/`mypy`/`pyflakes`/`black` and the compilers `gcc`/`g++`/`gfortran`/`nvcc`/`javac` → `static`) validates the files it *names*: its output is a list of problems and an empty one is the finding, so exit 0 settles it and nobody has to read anything; a non-zero exit charges that file's retry budget and returns the workflow to `edit`. An **execution** (`pytest`, `python solver.py`, `./solver`, `python -c …`, `ctest`) validates **no file at all** — it is recorded in `runs`. A leading `cd` rebases relative operands so the resolved path matches the dirty path exactly. **Whole project:** a green run of a recognised project *checker* that names no specific file (`ruff check .`, `mypy src/`) covers every pending file at once. Test files go into `tests_run` either way (feeds the regression nudge). A plugin server's dedicated `VALIDATE` tool contributes the same way via `_observe_validation_tool`.
+- **validation and execution are two axes, and they never mix.** `observations._observe_bash_validation` drives both from one command, status-agnostically. A **checker** (`py_compile` → `syntax`; `ruff`/`mypy`/`pyflakes`/`black` → `static`; the compilers `gcc`/`g++`/`gfortran`/`nvcc`/`javac` → `compiled`, demoted to `syntax` when the invocation carries `-fsyntax-only`) validates the files it *names*: its output is a list of problems and an empty one is the finding, so exit 0 settles it and nobody has to read anything; a non-zero exit charges that file's retry budget and returns the workflow to `edit`. An **execution** (`pytest`, `python solver.py`, `./solver`, `python -c …`, `ctest`) validates **no file at all** — it is recorded in `runs`, as is a **build**, which is recorded settled (its exit code is its verdict) so it can never surface as unjudged. A leading `cd` rebases relative operands so the resolved path matches the dirty path exactly. **Whole project:** a green run of a recognised project *checker* that names no specific file (`ruff check .`, `mypy src/`) covers every pending file at once. Test files go into `tests_run` either way (feeds the regression nudge). A plugin server's dedicated `VALIDATE` tool contributes the same way via `_observe_validation_tool`.
 - **Why the split.** "It compiles" and "it is right" are different claims, and one word for both is what let a green `pytest` be reported as a verified solver. A checker's answer is falsifiable from outside the process; a run's is not, which is exactly why the run's answer has to come from the model and be labelled as a claim. Merging them also forced an *attribution* nobody could compute: `python main.py` exercises `mesh.py` without naming it, and every rule for guessing which file a run credited was a guess — the single-pending-file fallback credited `solver.py` for a `python -c "print(2+2)"`. With the axes apart the question disappears: the run is the subject.
-- **Exit 0 is not a result; the model's verdict is.** Exit 0 says a program ended, never that its answer is right, and nothing downstream can read what it printed — no parser generalises across fields, convergence tables, plots, logs and physical units. So mimir never reads the *program's* output for a pass/fail; it records the model's own statement about it. That statement arrives as a **tool call** — the tool declaring the `judge` capability, whose `verdict` / `verdict_reason` / `verdict_scope` arg-roles `observations._observe_verdict_tool` reads before handing them to `guardrails/verdict.apply_verdict`. A structured channel rather than a line of prose, for two reasons: bookkeeping has no business in what the user reads, and there is no grammar left for a model to get wrong. The model is told *when* one is due without any tool name in the system prompt — the tool's own docstring, the `VERDICT_DUE` line appended to the result of the run that opened it (`executor._build_verdict_due_hint`, name resolved from the live registry), and the `output_verdict` nudge when a turn tries to end with a run unjudged.
-  - **Every execution owes one**, whether or not it names a file the model edited, whether or not anything was written at all. An analysis-only session — "does the suite pass?", "why does this blow up?" — is precisely the one whose whole answer rests on a run's output. Nor is it gated on the command being readable: `classify_bash_command` is all-or-nothing and a single pair of parentheses makes `python -c "print(f(x))"` opaque, while the base prompt actively asks for one-off checks to go inline, so `opaque_command_executes` reads the command-position heads against the same `EXEC_COMMANDS` vocabulary — an unparseable `python -c`, heredoc or `./solver $(cat args)` still owes a verdict, an unparseable `cat` or `grep` owes nothing.
+- **Exit 0 is not a result; the model's verdict is.** Exit 0 says a program ended, never that its answer is right, and nothing downstream can read what it printed — no parser generalises across fields, convergence tables, plots, logs and physical units. So mimir never reads the *program's* output for a pass/fail; it records the model's own statement about it. That statement arrives as a **tool call** — the tool declaring the `judge` capability, whose `verdict` / `verdict_reason` / `verdict_scope` arg-roles `observations._observe_verdict_tool` reads before handing them to `guardrails/verdict.apply_verdict`. A structured channel rather than a line of prose, for two reasons: bookkeeping has no business in what the user reads, and there is no grammar left for a model to get wrong. The model is told *when* one is due without any tool name in the system prompt — the tool's own docstring, the `VERDICT_DUE` line appended to the result of the run that opened it (`executor._build_verdict_due_hint`, name resolved from the live registry). No turn-end reminder asks for it — see above.
+  - **Recommended for every execution**, whether or not it names a file the model edited, whether or not anything was written at all — recommended, not owed: nothing blocks on it and nothing is charged for its absence. An analysis-only session — "does the suite pass?", "why does this blow up?" — is precisely the one whose whole answer rests on a run's output. Nor is it gated on the command being readable: `classify_bash_command` is all-or-nothing and a single pair of parentheses makes `python -c "print(f(x))"` opaque, while the base prompt actively asks for one-off checks to go inline, so `opaque_command_executes` reads the command-position heads against the same `EXEC_COMMANDS` vocabulary — an unparseable `python -c`, heredoc or `./solver $(cat args)` is still recorded as a run whose output is worth judging, an unparseable `cat` or `grep` is not.
   - **A run that did not complete owes nothing.** Its non-zero exit is the finding, in the one direction an exit code is trustworthy; it goes straight onto the repair ladder. Asking the model to judge output that never came would be asking for a guess.
   - `pass` → recorded on the run. It validates no file: a reading of an output says nothing about whether the source parses.
   - `fail` → `observations._register_run_failure`, the *same* ladder a non-zero exit drives: the run's failure count, its attempt log, back to `edit`, and — past `VALIDATION_RETRY_BUDGET` attempts at the same command — release to `conclude` rather than a wedged loop. There is no second mechanism. **A model may lower its own credit, never raise it.**
@@ -429,7 +482,7 @@ Current behavior:
   - **Execution tools** owe a verdict too, not just bash: `_observe_tool_run` fires for any tool carrying `CODE_EXEC` that does **not** declare a `command_prefix` scope (`proxy_exec`, `proxy_eval`, the `benchmark_*` family). The split is by *surface*: a shell tool's calls differ in kind call by call, so only the command text can decide; a structured tool's call *is* the execution. Mutually exclusive by construction, so no run is registered twice.
   - A re-run of the same command replaces its record but **carries the failure history over**: the budget counts attempts at that command, and a re-run is the next attempt, not a fresh start. Re-editing a file retracts that file's check (evidence is about one revision) but never a run — a run is a past event, and a verdict is a statement about what that event showed.
 - **A run's declared verdict outranks its exit code, one way only.** A check that evaluates its own criteria, prints that they were not met and returns 0 anyway is a green exit over a red result — observed in the wild: a self-written boundary test reported "significant reflection may be present", exited 0, and was recorded as validated. So a `check=fail` (or `verdict=fail`) line in stdout — strict whole-line `key=value` grammar, `numerics.observed_failure_verdict` — demotes the run to one that did not complete. A `check=pass` line never rescues a red one.
-- **Check strength is graded, not boolean.** `validated_files` answers "was it checked?"; `validation_tier_by_file` answers "with what?", on the ladder `syntax` < `static` (`context/execution_context.VALIDATION_TIERS`). The tier comes from the command head, is raised monotonically, and is retracted whenever `validated_files` is (a re-edit or a failed check), since evidence is about one revision of a file. There is no rung above `static`: everything stronger is a statement about a *result*, and results are judged on the run axis.
+- **Check strength is graded, not boolean.** `validated_files` answers "was it checked?"; `validation_tier_by_file` answers "with what?", on the ladder `syntax` < `static` < `compiled` (`context/execution_context.VALIDATION_TIERS`). The tier comes from the command head (and, for a compiler, from whether the invocation asked for an artifact at all), is raised monotonically, and is retracted whenever `validated_files` is (a re-edit or a failed check), since evidence is about one revision of a file. `compiled` is the top rung and the one nothing demands: it needs a toolchain the environment may not have. There is no rung above it: everything stronger is a statement about a *result*, and results are judged on the run axis.
 
   **Why a printed invariant earns nothing.** A route existed and was removed: a green run whose stdout carried an `l2_rel=…`-style line was promoted to an `oracle` tier. It rewarded a *string*. The value was never interpreted — it could not be, a forged number is unfalsifiable from out here, which is exactly why the proxy seals references server-side — so the signal amounted to "the run printed something in the right shape". The answer to a run's output is the model's stated verdict, not a regex.
 
@@ -463,15 +516,91 @@ Rationale:
 
 ---
 
+## Plan-Shape Guard
+
+PHASE 2 of the plan-mode prompt has always stated the rule — *"exploring, surveying,
+examining, reviewing and identifying gaps … are never steps or axes of the plan"* — and
+nothing checked it. `_check_plan_shape` does, refusing the plan **before** it is
+recorded, so there is no document to clear afterwards.
+
+Observed in the wild, and the reason this exists: a plan whose first axis was *"Audit
+Existing Bindings"*. The audit came back "nothing is missing", every axis after it was
+vacuous, and the run was padded with cosmetic edits rather than re-decided. An axis that
+is a question cannot be planned around, because the plan is then a guess about what the
+answer will be.
+
+- **Targeted by capability and arg-role, never by tool name**: `TASK_PLANNING` plus the
+  `plan_document` role. That reaches the prose plan and never the checklist
+  (`plan_steps`), where "validate the solver" is a legitimate implementation step.
+- **Only axis titles are read.** `PLAN_EXPLORE_BUDGET_SPENT` explicitly asks the model to
+  state which assumptions it could not verify, and that sentence belongs in the body.
+  Stating an open assumption is honest; making it an axis is not. The two instructions
+  cannot collide because the guard never looks at prose.
+- Structure is excluded by construction: the section boundary is computed from the
+  Approach heading's own level (a fixed one cut the section at its first axis), and the
+  prescribed headings — Overview, Approach, Decisions & risks, **Validation** — never
+  match.
+- `map` and `list` are deliberately not exploration verbs: both can head a real change
+  ("map the old API onto the new one"), and refusing a legitimate axis costs a turn for
+  nothing.
+
+---
+
+## What a Shell Command Changed
+
+An edit through the file tools returns a diff, and `_SECTION_EDITING` tells the model to
+check it. A write through the shell returns nothing — `sed -i` prints an empty line and
+exits 0 — so the one actor that could catch a bad edit is the one with nothing to look
+at. Observed in the wild: a `sed -i` whose address matched every closing brace inserted
+its block **eight times** into a C++ header; the model saw `(no output)` and the
+corruption survived to the end of the run.
+
+`tool_execution/bash_effect.py` closes that gap with the `BASH_EFFECT` annotation.
+
+- **The trigger is `bash_command_is_readonly` being false, not `Kind.WRITE`.** Classifying
+  by kind misses precisely the surprising cases: `git checkout -- f.py` and `patch -p1`
+  come back `unknown` with no operands at all, and `python fix.py` comes back `exec`
+  crediting the script rather than the twelve files it rewrites. The read-only predicate
+  already draws the line the other way round and already backs the approval exemption, so
+  it is reused rather than re-derived. A `grep` that prints nothing stays silent: its
+  silence *is* the finding.
+- **Detection is observation, never parsing.** In a repo it is the delta of
+  `git status --porcelain` + `git diff --numstat` across the call — pre-existing edits
+  cancel out, `.gitignore` removes build trees, nothing is snapshotted. Outside one it is
+  a bounded, non-recursive `os.scandir` over the workspace root, the dirs already written
+  to, and any the command names. The candidate set cannot be derived from the command
+  alone and no version of it should be: `printf … >> hdr.h` yields its format string
+  rather than the redirect target, and the multi-line `sed` that motivated this is opaque
+  to the classifier outright.
+- **`DUPLICATION_SUSPECTED` tests for a period, not a repeated window.** A window scan
+  fires on ordinary code — three closing braces recur in every C++ file — and once a
+  block genuinely repeats, every longer window repeats too, so the largest match says
+  nothing. A period says the whole inserted region is one block over and over, which is
+  the signature of an unanchored address applying everywhere it matched. The shortest
+  period is reported, so the block named is the unit actually written.
+- Added lines are claimed for the command only when the file was **clean** before it:
+  there the whole diff against HEAD is this command's work. Blaming this call for a block
+  somebody else added is worse than saying nothing.
+- An annotation, never a refusal — nothing is lost by the write, and `write.py` blocks
+  only losses. The same probe supplies the created paths that feed `FORK_SUSPECTED` and
+  `PROBE_PLACEMENT`, so `cp solver.py solver.py.bak` reaches the existing rule instead of
+  needing a new one. Fails open throughout: a git error, an oversized delta or a binary
+  file costs the annotation, never the call.
+
+---
+
 ## Cluster-Submission Guard
 
 Expensive cluster launches consume real allocation hours, so a trivial unvalidated error is costly. Tools that submit/launch on the cluster declare the `CLUSTER_SUBMIT` capability (`salloc_submit`, `ft_run_slurm`, `proxy_slurm`); `engine._check_cluster_submit` runs as a call-time precondition (before approval).
 
 Behavior:
 - if the tool lacks `CLUSTER_SUBMIT`, or there is local-validation evidence (`validated_files` non-empty), the call proceeds;
-- otherwise the call is **held, and stays held**, with a structured warning (`policy_stage: "cluster_submit"`, `suggested_next_tool_class: "local_validation"`). `cluster_submit_warned` no longer lifts the guard — it only shortens the message after the first hold.
+- **if the session wrote nothing** (`dirty_written_files` empty), the call proceeds;
+- otherwise the call is **held, and stays held**, with a structured warning (`policy_stage: "cluster_submit"`, `suggested_next_tool_class: "local_validation"`).
 
-**This used to be one-shot** (warn once, set the flag, let the next call through). That made it a reminder, not a guard: against a model that simply calls again — the normal reaction to an error — it cost one round trip and constrained nothing, on the most expensive and least reversible action in the system. The condition is a fact about the session ("has anything been validated?"), not a nagging budget, so it holds until that fact changes; the error names exactly what clears it, so this is a precondition with a stated exit rather than a wall. Pinned by `test_policy_manager.test_cluster_submit_stays_held_until_something_is_validated`.
+**The stated exit has to be reachable, or the hold is a wall.** `validated_files` is credited only by a checker run against a file the model edited, so a session whose whole job is to launch something that already exists ("resubmit this job on 64 nodes") can never satisfy the condition however many times it tries — the guard named an exit the run had no way to take. Nothing was changed, so there is nothing that ought to have been checked; the user's approval prompt, which these `IRREVERSIBLE`/`non_batch` tools always raise, is the protection that applies to that session. Pinned by `test_cluster_submit_not_held_when_the_session_wrote_nothing`.
+
+**This used to be one-shot** (warn once, set the flag, let the next call through). That made it a reminder, not a guard: against a model that simply calls again — the normal reaction to an error — it cost one round trip and constrained nothing, on the most expensive and least reversible action in the system. The condition is a fact about the session ("has anything been validated?"), not a nagging budget, so it holds until that fact changes; the error names exactly what clears it, so this is a precondition with a stated exit rather than a wall. Pinned by `test_policy_manager.test_cluster_submit_stays_held_until_something_is_validated`. The `cluster_submit_warned` latch that shortened the message on later attempts is gone: it was the only `execution_context` field written from inside `gates.py`, against the one-writer rule the schema states, and it bought a slightly terser second message.
 
 This is a **verification-class** guard: it checks a fact (was anything validated locally?), independent of model strength, so it is **never** enforcement-tiered. It is capability-driven — no hardcoded tool names — so a new cluster-launch tool is covered simply by declaring the capability.
 
@@ -548,25 +677,25 @@ Nudges are guidance, not hard blocks.
 The current nudge layer is intentionally softer than the write/state guards.
 
 Nudges are split into two layers (see Enforcement Modules / Enforcement Levels):
-- **Verification nudges** (denial, error_recovery, regression, unfinished_plan, output_verdict) check *reality* and run at every enforcement level.
-- **Guidance nudges** (validation, env_resolution, env_cleanup, discovery, documentation, state, blast-radius, creation, todo) babysit *reasoning* and are skipped entirely at `enforcement == "off"`; at `"light"` only `blast_radius` + `env_cleanup` + `validation` survive (agent mode) per the `_GUIDANCE_BY_LEVEL_MODE` table — see Enforcement Levels for the authoritative table.
+- **Verification nudges** (denial, error_recovery, validation, regression, unexercised, unfinished_plan) check *reality* and run at every enforcement level.
+- **Guidance nudges** (env_resolution, env_cleanup, discovery, documentation, state, blast-radius, creation, todo) babysit *reasoning* and are skipped entirely at `enforcement == "off"`; at `"light"` only `blast_radius` + `env_cleanup` survive (agent mode) per the `_GUIDANCE_BY_LEVEL_MODE` table — see Enforcement Levels for the authoritative table.
 
-Verification is evaluated first, so a pending verification reminder always preempts a guidance reminder.
+Verification is evaluated first, so a pending verification reminder always preempts a guidance reminder. Within verification, the required axis speaks before the recommended one: `validation` precedes the three rows sharing `EXERCISE_BUDGET`.
 
-### Regression nudge (verification)
-Appended once when the model edited a Python source file whose associated test (`test_<stem>.py` / `<stem>_test.py`) is **known to exist** (seen via discovery) but is **not** in `tests_run` for this query. `tests_run` is populated by `observations._observe_command` whenever a bash command runs a test file (e.g. `pytest test_x.py`). Reality check — the test is on disk and was not executed — so it is model-strength independent.
+### Regression nudge (verification, advisory axis)
+Appended when the model edited a Python source file whose associated test (`test_<stem>.py` / `<stem>_test.py`) is **known to exist** (seen via discovery) but is **not** in `tests_run` for this query. `tests_run` is populated by `observations._observe_command` whenever a bash command runs a test file (e.g. `pytest test_x.py`). Reality check — the test is on disk and was not executed — so it is model-strength independent, and it is the strongest case on the advisory axis: the test already exists, so running it is cheap. It still shares the one `EXERCISE_BUDGET` ask, and "out of scope" or "cannot run here" are accepted endings.
 
 ### Unfinished-plan nudge (verification)
 Appended once (`NUDGE_MAX_UNFINISHED_PLAN = 1`) when code has been written **and** the model's own checklist still has non-optional `- [ ]` steps. A reality check — the open boxes are in a file on disk that the model itself wrote — so it runs at every enforcement level, like the other verification rows. The message offers **two** valid exits: do the steps, or say explicitly in the final answer that a step is out of scope and leave it unchecked. A nudge with only one acceptable answer is a loop.
 
+The same predicate also **blocks** finalization (`needs_incomplete_finalization` tests it first, before either validation shortcut). That is why `## Planning & todo` sits in `_CORE_SYSTEM_CONTENT` rather than in the overridable doctrine half: the nudge alone asks nothing the model must have been told in advance, but the blocker is a contract about an artifact — the checklist — that only that section describes, and an application `.mimir/system_prompt.md` used to delete it while the loop kept enforcing it. `CoreNudgeCoverageTests` now maps this row like every other verification nudge, with no exemptions.
+
 Requires `code_mutation_started`, so a discovery-only turn is never nudged, and degrades to silent when there is no checklist (`unchecked_checklist_items` fails closed to `[]` on a missing or unreadable file), which is the majority of runs. Note the checklist must also be *visible* to the model for this to be fair — see the live checklist in the discovery pin (`build_discovery_pin_block`), which is the only live channel for it since the copy in `messages[0]` is a build-time snapshot.
 
-### Output-verdict nudge (verification)
-Appended up to `NUDGE_MAX_OUTPUT_VERDICT = 2` times while a run that *completed* is still outstanding — never judged, or judged `unknown` and left there. A reality check of the plainest kind: a program was run and nothing was said about what it printed. One condition, one message; a run already judged `unknown` is listed with the reason it was given, and the copy asks what would settle it. A run that did not complete is never nudged — its exit code is the finding.
+### Output-verdict nudge — removed
+There is no turn-end reminder asking for a verdict. It existed and was withdrawn: its condition (a completed run nobody judged) is satisfied on the ordinary successful session, so it fired *after* the final answer had streamed, discarded it, and sent the model back to re-run the command to recover the output — the whole cost of a rejected turn for a label the ledger already prints. An `unknown` verdict still closes the advisory axis (`exercise_advice_closed`), and an outstanding run is carried to the ledger (`its output was never judged`) and to the completion report under its own heading, *Ran, with no verdict on record* (`unjudged_run_lines`). That heading is deliberately not *Remaining issues*: both a run nobody judged and a run judged `unknown` used to be `_collect_completion_issues` lines, which made a recommended axis decide the `Task is incomplete.` headline and taught the model to emit a label for every command it issued rather than for every output it read. Same standing as `blocked_run_lines`: reported, never counted. The ask itself lives where it costs nothing: the `VERDICT_DUE` annotation on the result of the run that opened it, and the judging tool's own docstring.
 
-Every nudge fires only on a turn with no tool calls (`maybe_append_nudge` has a single call site), so this asks at the moment the model tries to *stop*, never mid-loop. The counter is re-armed once a verdict actually settles the pending runs, so a later unjudged run earns fresh reminders — the cap is anti-spam, not a mute button. An `unknown` verdict does not re-arm it: after two asks the loop stops asking, and the run is carried to the completion report and the ledger instead (`Judged inconclusive, still unresolved: …`). Stop retrying, report, move on — the same shape as the retry budget.
-
-Two message variants: name the commands left unjudged, or push a standing `unknown` towards resolution (find the reference, the documented value, the analytical limit, the invariant, the refinement trend — then re-judge, or say explicitly why it is out of reach). Three acceptable endings, one unacceptable: silence.
+Two message variants: name the commands left unjudged, or push a standing `unknown` towards resolution (find the reference, the documented value, the analytical limit, the invariant, the refinement trend — then re-judge, or say explicitly why it is out of reach). Both are recommendations: `unknown` is a complete ending that counts against nothing, and extending it is worth doing only in proportion to what the answer is worth.
 
 The guidance `validation` nudge needs no special case against it any more. The two axes do not interact: an unjudged run leaves a file exactly as unchecked as it was, so "pending a check" and "pending a judgement" are no longer the same state wearing one label — which is what the deferral existed to disentangle.
 
@@ -647,7 +776,7 @@ The approval prompt shows the level on its own `Undo :` line (`ApprovalManager.d
 
 **Scope-narrowed `always` grants.** A tool may declare a `scope` spec (`{"args": [...], "kind": "<kind>", "noun": ...}`) so that choosing **always** narrows the grant to a per-call scope token rather than the whole tool. The derivation `kind` is generic and reused across tools — `command_prefix` (the first two argv tokens of a shell command, skipping leading `cd`/connectors, so `cd /work && python3 …` and `python3 …` share one scope), `host` (URL netloc), `basename` (a path-like arg), `packages` (sorted package set), `lang_target` (`language:target` for a code job). An argless or kindless spec is dropped; tools without a spec keep the coarse `server:tool` scope. This lets the user grant "always for *this* command family / *these* packages / *this* host" without re-approving every unrelated call to the same tool.
 
-**Where these classifications live.** There are **no hardcoded classification lists** in the client. Each tool's capabilities (`sensitive`, `plan_blocked`, `edit`, `non_batch`, …) are declared by its server via `@mcp.tool(**tool_caps(...))` and resolved at connect time into a **per-agent** live registry (`agent.tool_caps`) by `infer_tool_caps` (`tool.meta["mimir"]` › standard `annotations` › conservative default — no static fallback). The policy/approval/execution layers query that registry (`has_cap(name, cap, agent.tool_caps)` / `names_with_cap(cap, agent.tool_caps)`); the approval manager is seeded from it after connect (`MimirAgent.seed_classification_from_caps`). So a new MCP server is classified correctly with zero client edits. At startup the client logs an info line listing connected tools that declared no caps (`unannotated_live_tools` — either genuinely pure tools or one that forgot to declare). The registry is strictly per-agent because `spawn_agent` runs sub-agents concurrently with a subset of servers.
+**Where these classifications live.** There are **no hardcoded classification lists** in the client. Each tool's capabilities (`sensitive`, `plan_blocked`, `edit`, `non_batch`, …) are declared by its server via `@mcp.tool(**tool_caps(...))` and resolved at connect time into a **per-agent** live registry (`agent.tool_caps`) by `infer_tool_caps` (`tool.meta["mimir"]` › standard `annotations` › conservative default — no static fallback). The policy/approval/execution layers query that registry (`has_cap(name, cap, agent.tool_caps)` / `names_with_cap(cap, agent.tool_caps)`); the approval manager is seeded from it after connect (`MimirAgent.seed_classification_from_caps`). So a new MCP server is classified correctly with zero client edits. At startup the client logs an info line listing connected tools that declared no caps (`unannotated_live_tools` — either genuinely pure tools or one that forgot to declare). The registry is strictly per-agent because `spawn_agent` runs sub-agents concurrently with a subset of servers. The registry also carries two per-tool declarations the loop reads instead of holding name-keyed tables: `timeout_secs` (the tool's own per-call wall, clamped by `TOOL_CALL_TIMEOUT_MAX_SECS`, read by `timeout_for` in `dispatch`) and `readonly_when` (which argument value makes a dual-use `PLAN_READONLY` call the read-only one, read by `readonly_guard`). Both exist because the flat defaults were wrong for exactly one tool each and a client-side exception list is the thing this design removed.
 
 ### If approval is refused
 
@@ -665,7 +794,7 @@ The client does not guess which one the user meant, but it does put a floor unde
 | `drop_or_stop` | 2nd refusal of the scope, or 3 refusals in the query | (2) or (3) — another route to the same goal is off the table |
 | `handback` | 3rd refusal of the scope, 4 in the query, or the run was cancelled at the prompt | (3) only |
 
-At `handback`, further sensitive calls on that scope are **refused by the gate without prompting again** — being shown the same card a fourth time after saying no three times is precisely the friction this removes.
+At `drop_or_stop`, further sensitive calls on that scope are **refused by the gate without prompting again** (`workflow.approval_is_settled`, read once in `policy/engine.py`) — the ladder has already ruled out another attempt at the same goal, and the same route is one. Being shown the same card a third time after saying no twice is precisely the friction this removes. The query-wide hand-back keeps its own reach: past four refusals nothing sensitive is worth another prompt, whatever scope it belongs to.
 
 The stage reaches the model through three carriers, all saying the same thing: the tool result it gets mid-loop (`agent_core._denied_tool_result`, which also carries `denial_reason` / `denial_kind` / `denial_stage`), the denial nudge once it stops calling tools (`nudges/messages.denial_nudge_message`), and — at `handback` only — a one-time mid-loop stop injected from `query_engine/dispatch.py`, since a model that has been told to hand back and hasn't is by definition still calling tools. The ladder is stated once in the system prompt's **Non-negotiables**, the only carrier that survives every enforcement level.
 
@@ -676,7 +805,7 @@ Two ledgers are kept, deliberately: `denied_tool_calls` is the *open* set that f
 - `Task complete, except for what you refused.` — refusal absorbed, everything else done; risk **medium**, with the skipped actions listed under *Not performed*
 - `Task is incomplete.` — some other blocker is open
 
-A skipped step is never silent, whichever headline applies.
+A skipped step is never silent, whichever headline applies. Two report sections sit outside the issue list that picks the headline, on the same principle: *Not attempted (a prerequisite this environment does not have)* (`blocked_run_lines`) and *Ran, with no verdict on record* (`unjudged_run_lines`). Both are recommended axes, so they are reported in full and charged at nothing — a headline a recommendation can set is a requirement.
 
 ### Interactive clarification vs approval
 
@@ -732,6 +861,7 @@ Blocking conditions include:
 - denied required actions
 - workflow not progressed to `conclude` after code mutation
 - files declared in the plan but never written (medium residual risk)
+- a run left red — not completed, or the model judged it `fail` — raises residual risk to medium. It is `failed_runs()`, so a **blocked** run is excluded and a missing toolchain stays a limitation rather than a defect of the change. A run merely unjudged is deliberately not charged: a verdict is a recommendation, and charging its absence is the trade refused above. Until this read the run ledger the level contradicted the lines above it — `Run failing, unresolved` and `Residual risk: low.` three lines apart was observed in the wild
 
 Incomplete finalization reports:
 - completed sub-conditions
@@ -742,7 +872,7 @@ Incomplete finalization reports:
 - denied actions with fallback hints
 - residual risk level
 
-If all dirty files are already validated but `workflow_state` did not reach `conclude` through the normal path, `needs_incomplete_finalization()` returns `False` unless denials still block completion — **or** the checklist still has open non-optional steps. `_collect_completion_issues` also reports the achieved evidence level: `All modified files validated (weakest evidence: executed)`, governed by the **weakest** tier across the change, since a change is only as well established as its least-checked file. (The label said "highest" while printing the floor — the exact inversion a model reads back as licence.) The bare, unqualified form of that sentence was what a model read back as licence to report the work as verified.
+`needs_incomplete_finalization()` blocks on exactly two things: a modified file that still owes a check, and denials that still block completion — **plus** open non-optional checklist steps, which are tested first (validating the two files you wrote is no evidence about the three steps you never started). `workflow_state` is reported nowhere either: "still in 'edit' state" names no gap the user can act on, and every real one has its own line. `_collect_completion_issues` also reports the achieved evidence level: `All modified files validated (weakest evidence: executed)`, governed by the **weakest** tier across the change, since a change is only as well established as its least-checked file. (The label said "highest" while printing the floor — the exact inversion a model reads back as licence.) The bare, unqualified form of that sentence was what a model read back as licence to report the work as verified.
 
 If all remaining pending files are already budget-exhausted, the system suppresses further validation/state nudges and relies on incomplete finalization to describe residual risk cleanly.
 
@@ -780,8 +910,9 @@ When changing policy behavior, update all relevant items:
 ## Known Notes
 
 - `checked_paths` proves that a pre-check happened; it must not be treated as proof that a file exists.
-- `snippet_read_files` is not equivalent to `read_files`; it records partial context only.
+- a read records that a file was looked at, not how much of it was returned; nothing in the context tracks read extent.
 - successful code edits may keep the workflow in `edit` until the declared edit set is complete; this is intentional.
 - repeated edit blocking is based on repeated identical **failed** edits, not on the first retry.
 - success payload helpers intentionally drop reserved protocol keys; if a success payload needs `hint`, attach it after `ok()` construction or change the helper contract explicitly.
 - after `_rewrite_tool_for_context(...)`, the rewritten tool name must still be validated against the registered tool registry.
+- a `role="task"` sub-agent writes under **its own** approval layer, not the parent's: `_run_sub_agent` patches no approval shim, so a child's prompts surface from its thread rather than as a card on the parent's call. The spawn tool is deliberately not `SENSITIVE` (per-tool granularity would gate the exploring role too, which is the behaviour the design exists to make cheap); closing this properly means wiring the shim, not changing the declaration.

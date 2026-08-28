@@ -1,8 +1,9 @@
 """Unit coverage for the modular general-context loader.
 
 Verifies the resolution order (env var → workspace file → built-in default), the
-replace-not-append semantics, defensive fallbacks (missing/empty/unreadable), and
-that the dynamic sections still layer on top of a loaded base.
+replace-the-doctrine-half semantics (the core half survives every override),
+defensive fallbacks (missing/empty/unreadable), and that the dynamic sections still
+layer on top of a loaded base.
 
 Plain ``unittest`` to match the rest of the suite.
 """
@@ -37,29 +38,33 @@ class ResolveContextFileTests(unittest.TestCase):
             f.write(text)
         return path
 
+    def _assert_doctrine_is(self, expected: str, resolved: str) -> None:
+        """The override replaces the doctrine half; the core half is always appended."""
+        self.assertEqual(resolved, expected + "\n\n" + cb._CORE_SYSTEM_CONTENT)
+
     def test_default_when_nothing_set(self) -> None:
         self.assertEqual(cb.build_base_system_content(), cb._DEFAULT_BASE_SYSTEM_CONTENT)
 
     def test_env_var_replaces_base(self) -> None:
         path = self._write("custom.md", "MY CUSTOM CONTEXT")
         os.environ[SYSTEM_PROMPT_ENV] = path
-        self.assertEqual(cb.build_base_system_content(), "MY CUSTOM CONTEXT")
+        self._assert_doctrine_is("MY CUSTOM CONTEXT", cb.build_base_system_content())
 
     def test_workspace_file_used_when_env_unset(self) -> None:
         self._write(SYSTEM_PROMPT_FILENAME, "WORKSPACE CONTEXT")
-        self.assertEqual(cb.build_base_system_content(), "WORKSPACE CONTEXT")
+        self._assert_doctrine_is("WORKSPACE CONTEXT", cb.build_base_system_content())
 
     def test_env_var_takes_precedence_over_workspace_file(self) -> None:
         self._write(SYSTEM_PROMPT_FILENAME, "WORKSPACE CONTEXT")
         path = self._write("custom.md", "ENV CONTEXT")
         os.environ[SYSTEM_PROMPT_ENV] = path
-        self.assertEqual(cb.build_base_system_content(), "ENV CONTEXT")
+        self._assert_doctrine_is("ENV CONTEXT", cb.build_base_system_content())
 
     def test_explicit_override_arg_wins(self) -> None:
         self._write(SYSTEM_PROMPT_FILENAME, "WORKSPACE CONTEXT")
         path = self._write("explicit.md", "EXPLICIT CONTEXT")
         os.environ[SYSTEM_PROMPT_ENV] = self._write("env.md", "ENV CONTEXT")
-        self.assertEqual(cb.build_base_system_content(path), "EXPLICIT CONTEXT")
+        self._assert_doctrine_is("EXPLICIT CONTEXT", cb.build_base_system_content(path))
 
     def test_missing_file_falls_back_to_default(self) -> None:
         os.environ[SYSTEM_PROMPT_ENV] = os.path.join(self.tmp, "does_not_exist.md")
@@ -81,6 +86,49 @@ class ResolveContextFileTests(unittest.TestCase):
         self.assertTrue(out.startswith("BASE"))
         # The dynamic memory-pointer section is still appended on top of the base.
         self.assertIn("Persistent memories are stored under:", out)
+
+
+class CoreSurvivesOverrideTests(unittest.TestCase):
+    """An application prompt replaces the doctrine half and nothing else.
+
+    The failure this guards is silent: a ``.mimir/system_prompt.md`` is a persona
+    document, so it never restates the non-negotiables or the tool contracts, and a
+    whole-prompt replacement drops them without a word in the trace.
+    """
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        p1 = patch.object(sp_resolver, "MIMIR_DIR", self._tmp.name)
+        p1.start(); self.addCleanup(p1.stop)
+        p2 = patch.dict(os.environ, {}, clear=False)
+        p2.start(); self.addCleanup(p2.stop)
+        os.environ.pop(SYSTEM_PROMPT_ENV, None)
+        path = os.path.join(self._tmp.name, SYSTEM_PROMPT_FILENAME)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("# Identity: domain engineer\n\nYou work on a specific platform.")
+        self.out = cb.build_base_system_content()
+
+    def test_core_sections_are_still_present(self) -> None:
+        for heading in (
+            "## Non-negotiables", "## Latitude", "## Tool results",
+            "## Discovery", "## Editing", "## Validation", "## Running code",
+            "## Planning & todo",
+        ):
+            with self.subTest(section=heading):
+                self.assertIn(heading, self.out)
+
+    def test_doctrine_sections_are_gone(self) -> None:
+        # "## Planning & todo" is deliberately absent from this list: it is core, not
+        # doctrine, because the finalization blocker reads the checklist it describes.
+        for heading in ("## Style", "## Scope", "## Workflow", "## Reasoning"):
+            with self.subTest(section=heading):
+                self.assertNotIn(heading, self.out)
+        self.assertNotIn("Mathematical Intelligence", self.out)
+
+    def test_override_opens_the_prompt(self) -> None:
+        # Identity first, hard rules in the recency slot.
+        self.assertTrue(self.out.startswith("# Identity: domain engineer"))
 
 
 class DefaultBaseShapeTests(unittest.TestCase):
@@ -145,7 +193,27 @@ class DefaultBaseShapeTests(unittest.TestCase):
         # scratchpad rule sends the test to the wrong tree. The acquisition list for an
         # `unknown` is deliberately NOT here — it is situational, and the nudge that
         # fires on a standing `unknown` carries it in full.
-        self.assertLess(len(cb._DEFAULT_BASE_SYSTEM_CONTENT), 12900)
+        # Went the other way once: -567 chars by moving call mechanics (verdict
+        # outcomes, new_text rules, sub-agent signature, todo call order, shell
+        # gating) to the tool descriptions that receive those calls. The dividing
+        # line is reach, not repetition — a tool description is only in context when
+        # its tool is advertised, and `tools_for_context` prunes by domain, so the
+        # prompt keeps every *when/whether* rule and the tools keep the *how*.
+        # Raised 12900 → 13000 for the latitude rebalance: the prompt sat at 12780.
+        # Net cost is 53 chars, because the additions — the workflow modes being
+        # re-entrant, a checklist tracking progress rather than scripting it, and
+        # declaring a real step dependency instead of implying a total order — were
+        # paid for by deleting a sentence that restated the "NEVER fake validation"
+        # non-negotiable almost word for word. What they buy is the three readings
+        # this loop kept producing: that the phases run once in order, that every
+        # checklist step is owed, and that build/run are owed wherever possible.
+        # Raised 13000 → 13500: the two foundational context blocks (repo structure,
+        # target platform) were removed, and with them the two prompt lines that
+        # referred to them; what came back in their place is the pair of
+        # non-negotiables naming the allocation and optimization-session gates, whose
+        # rules previously existed only in a violation payload the model read after
+        # being blocked. Base sat at 13004 against the old ceiling.
+        self.assertLess(len(cb._DEFAULT_BASE_SYSTEM_CONTENT), 13500)
 
     def test_env_resolution_cascade_lives_in_the_nudges_not_the_prompt(self) -> None:
         # The 5-step cascade is covered by env_resolution/env_cleanup nudges, which
@@ -171,12 +239,13 @@ class NudgeCoverageTests(unittest.TestCase):
     """
 
     # nudge category -> a phrase in the prompt carrying the same obligation.
+    # `validation` is absent because it is no longer guidance: it is a verification
+    # row that fires at every enforcement level, so the prompt is not its only carrier.
     _EXPECTED = {
-        "validation": "treat validation as a primary objective",
         "discovery": "Grep first, read second",
         "state": "discover (gather evidence)",
         "doc": "Update documentation when a change affects",
-        "todo": "record the concrete ordered steps as a todo list",
+        "todo": "record the concrete steps as a todo list",
         "blast_radius": "search all references and summarise the impact",
         "env_resolution": "environment problem, not a code defect",
         "env_cleanup": "reversible obligation",
@@ -202,23 +271,98 @@ class NudgeCoverageTests(unittest.TestCase):
                 self.assertIn(phrase, base)
 
 
-class SubAgentSectionGateTests(unittest.TestCase):
-    """The sub-agent contract is injected only when a sub-agent tool is connected."""
+class CoreNudgeCoverageTests(unittest.TestCase):
+    """Every verification-layer obligation must live in the un-overridable half.
 
-    def _build(self, tool_owner: dict[str, str]) -> str:
+    Stricter than NudgeCoverageTests above and for a different reason: verification
+    nudges fire at every enforcement level, so an application prompt that dropped
+    their rule would leave the loop demanding something the model was never told.
+    """
+
+    _EXPECTED = {
+        "denial": "A refused approval is an instruction, not an error",
+        "error_recovery": "Copy anchor text verbatim from your most recent read",
+        "validation": "REQUIRED for every file you modified",
+        "regression": "the project already has tests covering what you touched",
+        "unexercised": "judging presupposes running",
+        "unfinished_plan": "closed by saying so in your answer, not by ticking it",
+    }
+    # No exemption. `unfinished_plan` used to be exempt on the ground that the nudge
+    # states both acceptable endings, so it asks for nothing told in advance. That
+    # covered the nudge and not the blocker: `needs_incomplete_finalization` refuses to
+    # conclude while a non-optional step is open, which is a contract about an artifact
+    # — the checklist — that only ## Planning & todo describes. While that section sat
+    # in the overridable doctrine half, an application prompt deleted it and the loop
+    # then blocked on something the model was never told to keep.
+    _EXEMPT: set[str] = set()
+
+    def test_every_verification_nudge_has_a_core_counterpart(self) -> None:
+        from mimir.client.guardrails.nudges.engine import _CORE_NUDGES
+
+        core = cb._CORE_SYSTEM_CONTENT
+        verification = {n.name for n in _CORE_NUDGES if n.layer == "verification"}
+        self.assertEqual(
+            verification - self._EXEMPT,
+            set(self._EXPECTED),
+            "a verification nudge was added or renamed: state its rule in "
+            "_CORE_SYSTEM_CONTENT and map it here, or justify an exemption",
+        )
+        for category, phrase in self._EXPECTED.items():
+            with self.subTest(nudge=category):
+                self.assertIn(phrase, core)
+
+    def test_the_prompt_names_the_third_ending(self) -> None:
+        # Done, impossible, disproportionate. The third is the one a trim would drop
+        # first, and dropping it puts back the "if it is possible, it is owed" reading.
+        core = cb._CORE_SYSTEM_CONTENT
+        self.assertIn("SIMPLY feasible", core)
+        self.assertIn("out of proportion", core)
+        self.assertIn("correct ending", core)
+
+    def test_core_stays_within_budget(self) -> None:
+        # The core is the incompressible part every application pays for, on top of
+        # its own prompt. Its own ceiling so that growth shows up here, where it is
+        # least affordable, rather than being absorbed by the whole-base budget.
+        # Raised 10000 → 10500 when ## Planning & todo moved into core: the loop
+        # blocks finalization on the checklist it describes, so leaving it in the
+        # overridable half let an application prompt delete a rule the loop still
+        # enforces. The move costs core ~700 chars and the base nothing.
+        self.assertLess(len(cb._CORE_SYSTEM_CONTENT), 10500)
+
+
+class SubAgentSectionGateTests(unittest.TestCase):
+    """The sub-agent contract is injected only when a delegation capability is connected."""
+
+    def _build(self, delegation: bool, mode: str = "agent") -> str:
         return cb.build_system_content(
-            active_mode="agent",
-            tool_owner=tool_owner,
+            active_mode=mode,
+            tool_owner={},
             sensitive_tools=set(),
+            delegation_available=delegation,
         )
 
     def test_section_absent_without_the_capability(self) -> None:
-        self.assertNotIn("## Sub-agents", self._build({}))
+        self.assertNotIn("## Sub-agents", self._build(False))
 
     def test_section_present_when_connected(self) -> None:
-        out = self._build({"spawn_agent": "agent"})
+        out = self._build(True)
         self.assertIn("## Sub-agents", out)
-        self.assertIn("readonly=True", out)
+        # The section carries the delegation policy, not the call signature: how to
+        # call it is the tool's own description, which is in context whenever the
+        # tool is.
+        self.assertIn("Broad reconnaissance is delegated by default", out)
+        self.assertNotIn("readonly=True", out)
+        self.assertNotIn("spawn_agent", out)
+
+    def test_section_asks_for_the_fan_out_in_one_response(self) -> None:
+        """Issued one per turn, the children do not run in parallel — which is the point."""
+        self.assertIn("SAME response", self._build(True))
+
+    def test_readonly_modes_carry_the_clause_only_when_it_can_be_acted_on(self) -> None:
+        for mode in ("plan", "ask"):
+            with self.subTest(mode=mode):
+                self.assertIn("This exploration parallelises", self._build(True, mode))
+                self.assertNotIn("This exploration parallelises", self._build(False, mode))
 
     def test_section_is_not_baked_into_the_default_base(self) -> None:
         self.assertNotIn("## Sub-agents", cb._DEFAULT_BASE_SYSTEM_CONTENT)

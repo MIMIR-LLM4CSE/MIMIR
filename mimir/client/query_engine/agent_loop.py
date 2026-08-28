@@ -6,7 +6,7 @@ from typing import Any
 from . import streaming as _streaming
 from ..event_sink import emit
 from .toollist import domains_signaled_by_text, tools_for_context, tools_for_readonly_mode
-from .streaming import _process_response, _stream_chat
+from .streaming import _DraftHold, _process_response, _stream_chat
 from .history import _enforce_context_budget, reconcile_tool_pairs
 from .finalize import _finalize_answer
 from .dispatch import _dispatch_tool_calls, _post_dispatch_inject
@@ -24,9 +24,20 @@ from ..config.constants import (
 )
 from ..config.models import resolve_pin_role, READONLY_MODES, VALID_MODES
 from ..context import validate_execution_context
-from ..guardrails.workflow import finalize_incomplete_answer, STEP_LIMIT_NUDGE
+from ..guardrails.workflow import (
+    evidence_handback_message,
+    finalize_incomplete_answer,
+    STEP_LIMIT_NUDGE,
+    TERMINATION_STEP_LIMIT,
+    TERMINATION_USER_STOPPED,
+)
 from ..prompt.system_prompt import build_discovery_pin_block, _PIN_MARKER
-from ..guardrails.nudges import maybe_append_nudge, needs_incomplete_finalization
+from ..guardrails.nudges import (
+    inject_reminder,
+    maybe_append_nudge,
+    needs_incomplete_finalization,
+    nudge_pending,
+)
 
 
 def _live_thinking(agent: Any, fallback: bool) -> bool:
@@ -297,6 +308,28 @@ def _maybe_rearm_domains(
 
 
 
+def _turn_may_be_rejected(
+    agent: Any, query: str, active_mode: str, execution_context: dict,
+) -> bool:
+    """True if a bare final turn produced *now* would be sent back to the model.
+
+    Mirrors, before the call, the two post-call branches below that refuse an
+    answer: a pending nudge (subject to the same no-op streak cap) and the
+    once-per-query evidence handback.
+    """
+    prospective_noop = execution_context.get("consecutive_noop_turns", 0) + 1
+    if prospective_noop <= NUDGE_MAX_CONSECUTIVE_NOOP and nudge_pending(
+        agent=agent,
+        query=query,
+        active_mode=active_mode,
+        execution_context=execution_context,
+    ):
+        return True
+    return needs_incomplete_finalization(execution_context) and not execution_context.get(
+        "evidence_handback_used"
+    )
+
+
 def _checkpoint_summary(messages: list[dict], execution_context: dict, step: int) -> str:
     """Build a short progress blurb shown to the user at a soft-budget checkpoint."""
     last_assistant = ""
@@ -358,12 +391,15 @@ async def _run_agent_loop(
     # query-stable (pruning + relevance cap depend only on the query, not on the
     # evolving execution_context), so recomputing per step only churned the prompt
     # prefix and broke vLLM prefix caching. The former discover-gated *hiding* of
-    # write/external-fetch tools now lives in the call-time policy
-    # (check_write_policy / _check_external_fetch), keeping this list stable.
+    # write tools now lives in the call-time policy (check_write_policy), keeping
+    # this list stable.
     # A read-only mode (ask) runs this same loop, so its write/exec tools are
     # stripped up front — before the context filter, which only prunes by relevance.
     readonly = active_mode in READONLY_MODES
     query_tools = _mode_tools(agent, query, execution_context, active_mode)
+    # Only the two exits below reach the post-loop report; a final answer returns
+    # from inside the loop.
+    termination = TERMINATION_STEP_LIMIT
 
     while step < hard:
         # Pick up anything the user typed mid-run (chat-while-busy steering) and
@@ -397,7 +433,7 @@ async def _run_agent_loop(
         # summarise what's done and what remains so the handoff (user checkpoint
         # or final answer) is meaningful rather than a bare "reached limit".
         if budget - 3 <= step < budget - 1:
-            messages.append({"role": "user", "content": STEP_LIMIT_NUDGE})
+            inject_reminder(messages, STEP_LIMIT_NUDGE, category="step_limit", tagged=False)
 
         # Track how many steps have elapsed since the last successful edit,
         # so nudge_logic can distinguish mid-refactor from a paused state.
@@ -438,6 +474,18 @@ async def _run_agent_loop(
                 _scaled_tb = max(512, _base_tb // 4)
             step_options['thinking_budget'] = _scaled_tb
 
+        # Hold this turn's prose off the screen when the loop still has grounds to
+        # refuse it (see _DraftHold): rendering a turn that a nudge then discards is
+        # what makes an answer appear and vanish. Turns with nothing pending stream
+        # straight through, which is the common case.
+        hold = (
+            _DraftHold(cb["token_callback"])
+            if cb.get("token_callback") is not None
+            and _turn_may_be_rejected(agent, query, active_mode, execution_context)
+            else None
+        )
+        step_cb = {**cb, "token_callback": hold.capture} if hold else cb
+
         # Inject the discovery pin as a transient tail message for THIS call only,
         # then strip it immediately (even on cancellation) so it never persists
         # into history or the next step's cacheable prefix.
@@ -451,13 +499,24 @@ async def _run_agent_loop(
                 streaming,
                 step_options,
                 cancel_flag=getattr(agent, "_cancel_flag", None),
-                **cb,
+                **step_cb,
             )
+        except BaseException:
+            # Cancelled, or the backend gave up: no guardrail will get to refuse
+            # this turn, so whatever prose was held is the user's to keep.
+            if hold:
+                hold.flush()
+            raise
         finally:
             _remove_pin(messages, pin_token)
         _process_response(msg, messages, thinking, streamed_thinking=(streaming and cb["think_token_callback"] is not None))
 
         tool_calls = msg.get("tool_calls") or []
+        if hold and tool_calls:
+            # The turn acted: its prose is narration in the transcript, not an
+            # answer anyone can refuse. Released before the tool cards so it keeps
+            # its place above them.
+            hold.flush()
         if not tool_calls:
             # No tool call -> the model has produced a final answer.
             answer = msg.get("content", "")
@@ -476,9 +535,25 @@ async def _run_agent_loop(
                 execution_context=execution_context,
                 messages=messages,
             ):
+                if hold:
+                    hold.discard()
                 step += 1
                 continue
             if needs_incomplete_finalization(execution_context):
+                # Once per query, before the report is assembled: the model has never
+                # seen the ledger its summary is about to contradict.
+                if not execution_context.get("evidence_handback_used"):
+                    execution_context["evidence_handback_used"] = True
+                    inject_reminder(
+                        messages,
+                        evidence_handback_message(execution_context),
+                        category="evidence_handback",
+                        tagged=False,
+                    )
+                    if hold:
+                        hold.discard()
+                    step += 1
+                    continue
                 answer = finalize_incomplete_answer(answer, execution_context)
             answer = await _finalize_answer(agent, query, answer, execution_context, messages, logger)
 
@@ -505,7 +580,9 @@ async def _run_agent_loop(
             )
         _pre_dispatch_len = len(messages)
         await _dispatch_tool_calls(tool_calls, agent, messages, execution_context)
-        await _post_dispatch_inject(agent, messages, execution_context)
+        await _post_dispatch_inject(
+            agent, messages, execution_context, active_mode=active_mode,
+        )
         # What the step produced can reveal a tool domain the opening query never
         # mentioned; re-arming it here is the one sanctioned break of the frozen list.
         query_tools = _maybe_rearm_domains(
@@ -535,14 +612,19 @@ async def _run_agent_loop(
                 emit({"type": "status", "text": f"  ▸ Continuing — extended to {budget} steps."})
             else:
                 emit({"type": "status", "text": "  ▸ Stopping at user request."})
+                termination = TERMINATION_USER_STOPPED
                 break
 
-    answer = "Reached the maximum number of steps without a final answer."
+    answer = (
+        "Stopped at the step checkpoint, at your request."
+        if termination == TERMINATION_USER_STOPPED
+        else "Reached the maximum number of steps without a final answer."
+    )
     if needs_incomplete_finalization(execution_context):
         # A run that ran out of steps is unfinished whatever else the ledger says —
         # in particular it must never borrow the "complete except for what you
         # refused" headline just because a refusal was the only thing recorded.
-        answer = finalize_incomplete_answer(answer, execution_context, ran_out_of_steps=True)
+        answer = finalize_incomplete_answer(answer, execution_context, termination)
     agent.approvals.flush_pending_review()
     answer = await _finalize_answer(agent, query, answer, execution_context, messages, logger)
     return answer
@@ -571,12 +653,6 @@ async def run_agent_query(
     """
     agent._tool_cache = {}
     execution_context = agent._new_execution_context()
-    # Lazily build the structural baseline on the first repo-touching query (no-op for
-    # pure-math/bibliography queries, and idempotent after the first build). Must run
-    # before its consumers: the execution-context seed and the foundational repo-structure
-    # section injected by _build_system_content.
-    await agent._ensure_repo_baseline(query)
-    agent._seed_execution_context_from_baseline(execution_context)
     agent._apply_carry_context(execution_context)
     validate_execution_context(execution_context)
     active_mode = agent._normalize_mode(mode or agent.mode)
@@ -619,6 +695,10 @@ async def run_agent_query(
     # is covered too, and no backend ever has to cope with a dangling pair.
     messages[:] = reconcile_tool_pairs(messages)
 
+    # Every loop below mutates this exact list in place, so handing the reference out
+    # is enough for a front-end to read the in-flight context without polling the agent.
+    agent._live_messages = messages
+
     # -------------------------------------------------------
     # Skill detection (explicit first, then implicit)
     # -------------------------------------------------------
@@ -659,11 +739,25 @@ async def run_agent_query(
         "think_end_callback": think_end_callback,
     }
 
-    if active_mode == "plan":
-        return await _run_plan_mode(
+    try:
+        if active_mode == "plan":
+            return await _run_plan_mode(
+                agent=agent,
+                query=query,
+                messages=messages,
+                execution_context=execution_context,
+                max_steps=max_steps,
+                thinking=thinking,
+                streaming=streaming,
+                logger=logger,
+                cb=cb,
+            )
+        return await _run_agent_loop(
             agent=agent,
             query=query,
+            active_mode=active_mode,
             messages=messages,
+            system_content=system_content,
             execution_context=execution_context,
             max_steps=max_steps,
             thinking=thinking,
@@ -671,16 +765,5 @@ async def run_agent_query(
             logger=logger,
             cb=cb,
         )
-    return await _run_agent_loop(
-        agent=agent,
-        query=query,
-        active_mode=active_mode,
-        messages=messages,
-        system_content=system_content,
-        execution_context=execution_context,
-        max_steps=max_steps,
-        thinking=thinking,
-        streaming=streaming,
-        logger=logger,
-        cb=cb,
-    )
+    finally:
+        agent._live_messages = None

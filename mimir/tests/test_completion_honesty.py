@@ -20,17 +20,20 @@ Pure-Python + temp files (no live model/servers): runs on x86 and ARM.
 from __future__ import annotations
 
 import os
+import shutil
 import tempfile
 import types
 import unittest
+from unittest import mock
 
-from mimir.client.config.constants import NUDGE_VALIDATION_IDLE_STEPS
+from mimir.client.config.constants import EXERCISE_BUDGET, NUDGE_VALIDATION_IDLE_STEPS
 from mimir.client.context.capabilities import CODE_EXEC, JUDGE, ToolCaps
 from mimir.client.context.execution_context import (
     build_execution_context,
     raise_validation_tier,
     record_run,
 )
+from mimir.client.event_sink import reset_event_sink, set_event_sink
 from mimir.client.guardrails.nudges.engine import needs_incomplete_finalization
 from mimir.client.guardrails.nudges import maybe_append_nudge
 from mimir.client.guardrails.nudges.messages import unexercised_code_nudge_message
@@ -39,10 +42,13 @@ from mimir.client.guardrails.workflow import (
     HEADLINE_HANDBACK,
     HEADLINE_INCOMPLETE,
     HEADLINE_REFUSED_ONLY,
+    TERMINATION_STEP_LIMIT,
+    TERMINATION_USER_STOPPED,
     _collect_completion_issues,
     finalize_incomplete_answer,
     is_incomplete_answer,
     unchecked_checklist_items,
+    unjudged_run_lines,
 )
 from mimir.client.query_engine.finalize import _annotate_answer_with_changes
 from mimir.client.query_engine.verification import (
@@ -121,7 +127,7 @@ class VerificationLedgerTests(_ChecklistFixture):
         # sent the reader to an empty half of the ledger — the way a caveat stops being
         # read at all.
         out = _annotate_answer_with_changes("Done.", _written({"solver.py"}, tier="static"))
-        self.assertIn("nothing here was run", out)
+        self.assertIn("nothing here was built or run", out)
         self.assertNotIn("rows below", out)
 
     def test_a_judged_run_replaces_the_caveat(self):
@@ -231,6 +237,18 @@ class LedgerMarkerTests(_ChecklistFixture):
         self.assertEqual(build_ledger(_written({"a.py"}, tier="static"))["status"], "note")
         self.assertEqual(build_ledger(_written({"a.py"}, validated=False))["status"], "warn")
 
+    def test_why_nothing_ran_is_reported_not_merely_omitted(self):
+        # Suppressing the run recommendation and suppressing the fact that it could not
+        # be followed are different things; the second is what the reader needs.
+        ec = _written({"a.py"}, tier="static")
+        ec["exercise_blocked_reason"] = "no execution tool is connected to this session"
+        rows = "\n".join(build_ledger(ec)["rows"])
+        self.assertIn("no execution tool is connected", rows)
+        # Silent when nothing blocked it: an ordinary unexercised change says enough.
+        self.assertNotIn(
+            "out of reach", "\n".join(build_ledger(_written({"a.py"}, tier="static"))["rows"]),
+        )
+
     def test_only_rows_needing_action_are_emphasised(self):
         """Bold is what the webview tints rows by, so it must mark exactly the gaps."""
         settled = _annotate_answer_with_changes("Done.", _written({"a.py"}, tier="static"))
@@ -304,21 +322,32 @@ class OutputVerdictLedgerTests(_ChecklistFixture):
         ec["code_mutation_started"] = True
         issues, _ = _collect_completion_issues(ec)
         joined = "\n".join(issues)
-        self.assertIn("no further retries", joined)
+        self.assertIn("budget exhausted", joined)
         self.assertIn("0.00% amplitude reduction", joined)
         self.assertIn("energy grew by 0.6%", joined)
 
+    def test_the_report_never_promises_a_retry(self):
+        # The loop is over by the time this is rendered; a retry budget with room
+        # left describes what the loop *would* have done, not what will happen.
+        ec = self._run(verdict="fail", reason="segfault", failures=1)
+        ec["dirty_written_files"] = {"solver.py"}
+        ec["validated_files"] = {"solver.py"}
+        ec["code_mutation_started"] = True
+        joined = "\n".join(_collect_completion_issues(ec)[0])
+        self.assertIn("unresolved", joined)
+        self.assertNotIn("will retry", joined)
+
 
 class WorkflowNudgeSequenceTests(unittest.TestCase):
-    """The three verification nudges are one workflow, and never speak over each other.
+    """The verification nudges are one workflow, and never speak over each other.
 
-    Write → check → run → judge. Each step has exactly one nudge that owns it, and the
+    Write → check → run. Each step has exactly one nudge that owns it, and the
     predicates are written so that at most one can fire at a time: `validation` while a
     file still owes a check, `unexercised` once the checks are green and nothing has
-    run, `output_verdict` once a run owes a verdict. The gap this pins is the middle
-    one — before it existed, a model could write code, lint it, and stop, and the whole
-    judging machinery stayed unreachable because it is only ever entered by running
-    something.
+    run. The gap this pins is the second one — before it existed, a model could write
+    code, lint it, and stop, and the whole judging machinery stayed unreachable because
+    it is only ever entered by running something. Judging is where the sequence ends:
+    no nudge asks for a verdict.
     """
 
     def _agent(self, *, exec_tool=True, judge_tool=True):
@@ -333,22 +362,25 @@ class WorkflowNudgeSequenceTests(unittest.TestCase):
     def _fired(self, ec, *, agent=None):
         """The category of the one nudge this call fires, or "" for none.
 
-        Read as a diff of the counters, not as "any counter is set": exactly one nudge
-        fires per turn, and asserting on the whole map would make an earlier turn's
-        reminder look like this one's.
+        Read off the emitted event rather than the counters: the advisory rows ration
+        one shared budget, so a counter diff would name the budget instead of the
+        reminder that actually spoke.
         """
         # Two distinct discovery signals, else the guidance layer's `discovery` nudge
         # speaks first and this reads as "no workflow nudge fired".
         ec.setdefault("read_files", set()).add("solver.py")
         ec["searched"] = True
-        before = dict(ec["nudge_counts"])
-        messages: list[dict] = []
-        maybe_append_nudge(
-            agent=agent or self._agent(), query="fix the solver",
-            active_mode="agent", execution_context=ec, messages=messages,
-        )
+        events: list[dict] = []
+        token = set_event_sink(events.append)
+        try:
+            maybe_append_nudge(
+                agent=agent or self._agent(), query="fix the solver",
+                active_mode="agent", execution_context=ec, messages=[],
+            )
+        finally:
+            reset_event_sink(token)
         return next(
-            (c for c, n in ec["nudge_counts"].items() if n > before.get(c, 0)), "",
+            (e["category"] for e in events if e.get("type") == "nudge_injected"), "",
         )
 
     def test_each_step_of_the_workflow_has_exactly_one_nudge(self) -> None:
@@ -366,7 +398,10 @@ class WorkflowNudgeSequenceTests(unittest.TestCase):
 
         ec = _written({"solver.py"}, tier="static")
         record_run(ec, "python solver.py", completed=True)
-        self.assertEqual(self._fired(ec), "output_verdict")
+        self.assertEqual(
+            self._fired(ec), "",
+            "a run that happened ends the sequence — nothing asks for the verdict",
+        )
 
         ec = _written({"solver.py"}, tier="static")
         record_run(ec, "python solver.py", completed=True)
@@ -385,6 +420,25 @@ class WorkflowNudgeSequenceTests(unittest.TestCase):
         ec = _written({"solver.py"}, tier="static")
         self.assertEqual(self._fired(ec, agent=self._agent(exec_tool=False)), "")
 
+    def test_it_stays_silent_when_running_it_would_take_a_build_first(self) -> None:
+        # A recommendation, not a requirement: exercising a CUDA kernel means a
+        # toolchain and a GPU, and asking for it here only teaches the model to talk
+        # its way past the reminder.
+        ec = _written({"kernel.cu"}, tier="static")
+        self.assertEqual(self._fired(ec), "")
+
+    def test_it_stays_silent_when_the_environment_could_not_even_import(self) -> None:
+        # The env-resolution advice owns this moment; "you never ran it" would be
+        # asking for the run that just failed to start.
+        ec = _written({"solver.py"}, tier="static")
+        ec["unresolved_modules"] = {"numpy"}
+        self.assertNotEqual(self._fired(ec), "unexercised")
+
+    def test_an_unrun_change_still_concludes(self) -> None:
+        # The whole point of the split: the check is required, the run is recommended.
+        ec = _written({"solver.py"}, tier="static")
+        self.assertFalse(needs_incomplete_finalization(ec))
+
     def test_a_discovery_only_turn_is_never_told_to_run_something(self) -> None:
         self.assertEqual(self._fired(build_execution_context()), "")
 
@@ -397,7 +451,7 @@ class WorkflowNudgeSequenceTests(unittest.TestCase):
             messages: list[dict] = []
             maybe_append_nudge(agent=agent, query="fix it", active_mode="agent",
                                execution_context=ec, messages=messages)
-        self.assertEqual(ec["nudge_counts"]["unexercised"], 1)
+        self.assertEqual(ec["nudge_counts"][EXERCISE_BUDGET], 1)
 
     def test_the_reminder_names_the_three_routes_and_the_way_out(self) -> None:
         text = unexercised_code_nudge_message(["solver.py"])
@@ -469,6 +523,70 @@ class IncompleteFinalizationTests(_ChecklistFixture):
         self.assertFalse(needs_incomplete_finalization(ec))
 
 
+class RecommendedAxesDoNotBlockTests(_ChecklistFixture):
+    """Only the check axis blocks. Build and run are recommended, and stay that way.
+
+    `workflow_state` used to be a third condition in the gate, which quietly made the
+    recommendation mandatory: a failed run — or a `fail` verdict, which drives the same
+    ladder — sends the state machine back to `edit`, so every answer came back "Task is
+    incomplete" until the run had failed VALIDATION_RETRY_BUDGET times. That is what
+    made the model keep insisting on a validation it had been told was optional.
+    """
+
+    def test_a_failing_run_does_not_make_a_checked_change_incomplete(self):
+        from mimir.client.guardrails.observations import _register_run_failure
+        ec = _written({"solver.py"}, tier="static")
+        record_run(ec, "python solver.py", completed=False)
+        _register_run_failure(ec, "python solver.py", "segfault")
+        # The state machine still steers the model back to the code — it just no
+        # longer doubles as the completion gate.
+        self.assertEqual(ec["workflow_state"], "edit")
+        self.assertFalse(needs_incomplete_finalization(ec))
+
+    def test_a_fail_verdict_does_not_either(self):
+        ec = _written({"solver.py"}, tier="static")
+        record_run(ec, "python solver.py", completed=True)
+        apply_verdict("fail", "energy grows", "", ec)
+        self.assertFalse(needs_incomplete_finalization(ec))
+
+    def test_an_unjudged_run_is_reported_without_blocking(self):
+        # Reported, never charged: it gets its own report section, stays out of the
+        # issue list that decides the headline, and never reaches the gate. Asking
+        # for a verdict is a recommendation, so its absence is a gap in the record
+        # and not a defect in the change.
+        ec = _written({"solver.py"}, tier="static")
+        record_run(ec, "python solver.py", completed=True)
+        issues, _ = _collect_completion_issues(ec)
+        self.assertTrue(any("never judged" in line for line in unjudged_run_lines(ec)))
+        self.assertFalse(any("never judged" in i for i in issues))
+        self.assertFalse(needs_incomplete_finalization(ec))
+
+    def test_an_unknown_verdict_is_reported_without_blocking(self):
+        # `unknown` is documented as the honest answer for output that settles
+        # nothing; charging it as an issue contradicted that in the same breath.
+        ec = _written({"solver.py"}, tier="static")
+        record_run(ec, "python solver.py", completed=True)
+        apply_verdict("unknown", "only prints 'done'", "", ec)
+        issues, _ = _collect_completion_issues(ec)
+        self.assertTrue(any("inconclusive" in line for line in unjudged_run_lines(ec)))
+        self.assertFalse(any("inconclusive" in i for i in issues))
+        self.assertFalse(needs_incomplete_finalization(ec))
+
+    def test_a_file_nothing_here_can_check_still_concludes(self):
+        # The Fortran-without-gfortran case: no check was asked for, so declaring the
+        # task incomplete over it is the loop blaming the model for its own silence.
+        ec = _ctx(
+            dirty_written_files={"model.f90"},
+            unverifiable_files={"model.f90"},
+            code_mutation_started=True,
+            workflow_state="edit",
+        )
+        self.assertFalse(needs_incomplete_finalization(ec))
+
+    def test_an_unchecked_file_still_blocks(self):
+        self.assertTrue(needs_incomplete_finalization(_written({"a.py"}, validated=False)))
+
+
 class RefusedActionReportTests(_ChecklistFixture):
     """How a refused approval reads in the closing report.
 
@@ -525,10 +643,20 @@ class RefusedActionReportTests(_ChecklistFixture):
         out = finalize_incomplete_answer(
             "Reached the maximum number of steps without a final answer.",
             self._refused(),
-            ran_out_of_steps=True,
+            TERMINATION_STEP_LIMIT,
         )
         self.assertTrue(out.startswith(HEADLINE_INCOMPLETE))
         self.assertIn("Not performed (you refused these", out)
+        self.assertIn("the step budget ran out", out)
+
+    def test_a_user_stop_is_not_reported_as_a_step_limit(self):
+        out = finalize_incomplete_answer(
+            "Stopped at the step checkpoint, at your request.",
+            self._refused(),
+            TERMINATION_USER_STOPPED,
+        )
+        self.assertIn("you declined to continue", out)
+        self.assertNotIn("step budget ran out", out)
 
     def test_only_a_hand_back_counts_as_an_unfinished_answer(self):
         self.assertTrue(is_incomplete_answer(HEADLINE_INCOMPLETE + "\n..."))
@@ -611,54 +739,46 @@ class UnfinishedPlanNudgeTests(_ChecklistFixture):
 
 
 class WorkspaceRootIsNameableTests(unittest.TestCase):
-    """The workspace root must be unambiguous in the injected orientation.
+    """The workspace root must be stated absolutely, on every query.
 
     Regression, observed twice. A run told to create files "outside of the codes
     directory" created them in the workspace root — which *is* `codes` — and reported
-    the constraint satisfied. The first fix added an absolute "Workspace root" line but
-    left the tree rendered from the basename (`codes/ (6 dirs, 18 files)`), so the root
-    still read as a *child* of the workspace and "the workspace root" still looked like
-    a way out of it. The tree's own root line has to be absolute: that is where the
-    model actually reads containment from.
+    the constraint satisfied. The root used to be disclosed inside the repo-structure
+    orientation block; that block is gone, so the line stands on its own and is
+    injected unconditionally. Unconditional matters: the block was built only for a
+    query classified as repo-touching, which left the root unstated on exactly the
+    greenfield runs where a misplaced file is least visible.
     """
 
-    def _snapshot(self):
-        import tempfile
-        from mimir.client.prompt.repo_baseline import build_repo_baseline_snapshot
-        root = os.path.join(tempfile.mkdtemp(), "codes")
-        os.makedirs(os.path.join(root, "mimir"))
-        open(os.path.join(root, "README.md"), "w").close()
-        self.addCleanup(lambda: __import__("shutil").rmtree(root, ignore_errors=True))
-        return root, build_repo_baseline_snapshot(root=root)
-
-    def test_tree_root_line_is_absolute_not_a_bare_name(self):
-        root, snap = self._snapshot()
-        ctx = snap["context"]
-        self.assertIn(f"{root}/ (", ctx)
-        # The bare-basename form is what made the root look like a subdirectory.
-        self.assertNotRegex(ctx, r"(?m)^codes/ \(")
+    def _content(self, root: str) -> str:
+        from mimir.client.prompt.system_prompt import build_system_content
+        with mock.patch.dict(os.environ, {"SEARCH_ROOT": root}):
+            return build_system_content(
+                active_mode="agent", tool_owner={}, sensitive_tools=set(),
+                memory_context_file="", todo_file="", plan_todos=None,
+            )
 
     def test_absolute_root_is_stated_explicitly(self):
-        root, snap = self._snapshot()
-        self.assertIn(f"Workspace root (absolute): {root}", snap["context"])
-        self.assertEqual(snap["root"], root)
+        root = os.path.join(tempfile.mkdtemp(), "codes")
+        self.addCleanup(lambda: shutil.rmtree(root, ignore_errors=True))
+        self.assertIn(f"Workspace root (absolute): {root}", self._content(root))
+
+    def test_root_is_stated_even_with_nothing_on_disk(self):
+        # No walk, no snapshot, no classification of the query: the line is a fact
+        # about where the client resolves paths, so an empty or absent workspace
+        # states it exactly like a populated one.
+        root = os.path.join(tempfile.mkdtemp(), "gone")
+        self.assertIn(f"Workspace root (absolute): {root}", self._content(root))
 
     def test_prompt_points_at_the_root_for_building_absolute_paths(self):
-        """The root is now a *prerequisite*, not a hint.
+        """The root is a *prerequisite*, not a hint.
 
         Placement is enforced at the tool boundary (file tools reject relative
         paths), so the prompt no longer argues about how relative paths resolve —
         it only has to tell the model where to join from. The prose that tried to
         make the inference reliable is gone; see server_files._require_abs.
         """
-        from mimir.client.prompt.system_prompt import build_system_content
-        root, snap = self._snapshot()
-        content = build_system_content(
-            active_mode="agent", tool_owner={}, sensitive_tools=set(),
-            platform_profile_summary="", repo_baseline_context=snap["context"],
-            memory_context_file="", todo_file="", plan_todos=None,
-        )
-        self.assertIn(snap["context"], content)
+        content = self._content(os.getcwd())
         self.assertIn("File tools take absolute paths", content)
         # The superseded band-aids must not linger alongside the structural fix.
         self.assertNotIn("workspace root is NOT a way out of it", content)
@@ -671,6 +791,216 @@ class WorkspaceRootIsNameableTests(unittest.TestCase):
         out = _annotate_answer_with_changes("Created outside the codes directory.", ec)
         self.assertIn("`wave_solver_2d/solver.py` — checked: syntax", out)
         self.assertNotIn("workspace root", out)
+
+
+class BlockedRunIsALimitationTests(unittest.TestCase):
+    """Attempting a recommended step must not turn a finished task into a failure.
+
+    The incentive this removes is the whole complaint: build and run are *recommended*,
+    but a red exit from one was charged to the change and reported as an unfinished task,
+    so the cheapest way to a clean report was to force a green run at any cost.
+    """
+
+    def _blocked(self, reason="make is not installed here", command="make"):
+        ec = _ctx(
+            dirty_written_files={"solver.c"},
+            validated_files={"solver.c"},
+            code_mutation_started=True,
+        )
+        ec["validation_tier_by_file"] = {"solver.c": "compiled"}
+        run = record_run(ec, command, completed=False, effect="build")
+        run["blocked"] = reason
+        run["reason"] = reason
+        return ec
+
+    def test_a_blocked_run_is_never_a_completion_issue(self):
+        issues, _ = _collect_completion_issues(self._blocked())
+        self.assertEqual([i for i in issues if "make" in i], [])
+
+    def test_attempting_a_recommended_step_cannot_make_a_finished_task_incomplete(self):
+        # The acceptance criterion, first half: checks green and one build that never
+        # really ran here does not make the run need an incomplete report at all.
+        self.assertFalse(needs_incomplete_finalization(self._blocked()))
+
+    def test_when_something_else_is_open_the_wall_is_reported_but_not_charged(self):
+        # Second half: once a report *is* rendered for another reason, the blocked run
+        # appears under its own heading and never among the issues that drive the
+        # headline. This is where the wall used to be counted as a defect.
+        ec = self._blocked()
+        ec["dirty_written_files"].add("mesh.c")  # a file that still owes a check
+        summary = finalize_incomplete_answer("Done.", ec)
+        self.assertIn(
+            "Not attempted (a prerequisite this environment does not have)", summary,
+        )
+        self.assertIn("make is not installed here", summary)
+        remaining = summary.split("Remaining issues:")[1]
+        self.assertNotIn("make", remaining)
+
+    def test_the_unknown_blocker_line_never_fires_over_a_limitation(self):
+        issues, _ = _collect_completion_issues(self._blocked())
+        self.assertNotIn(
+            "Unknown blocker; explicit completion criteria were not met", issues,
+        )
+
+    def test_the_ledger_says_not_attempted_and_stays_at_note(self):
+        ledger = build_ledger(self._blocked())
+        rows = "\n".join(ledger["rows"])
+        self.assertIn("**not attempted**", rows)
+        self.assertIn("make is not installed here", rows)
+        # `warn` is what the panel colours as a gap to act on — the incentive, via the UI.
+        self.assertNotEqual(ledger["status"], "warn")
+        self.assertIn("1 not attempted", ledger["summary"])
+        self.assertNotIn("failed", ledger["summary"])
+
+    def test_a_genuinely_failing_run_is_still_an_issue(self):
+        # The negative control: nothing here swallows a real failure.
+        ec = self._blocked()
+        ec["runs"]["make"]["blocked"] = ""
+        issues, _ = _collect_completion_issues(ec)
+        self.assertTrue(any("make" in i for i in issues))
+        self.assertTrue(finalize_incomplete_answer("Done.", ec).startswith(HEADLINE_INCOMPLETE))
+
+
+class ExerciseRouteTests(unittest.TestCase):
+    """"Simply feasible" is decided here, not recited in the prompt.
+
+    A route is one direct command against the project as it stands. Anything that needs a
+    step of its own first is out of proportion, and the gate stays silent — so the model is
+    never pushed toward a step it would then have to talk its way out of.
+    """
+
+    def _agent(self):
+        return types.SimpleNamespace(
+            tool_caps={"bash_run": ToolCaps(
+                name="bash_run", capabilities=frozenset({CODE_EXEC}))},
+            enforcement="strict", model="test",
+        )
+
+    def _route(self, dirty, *, seen=(), absent=()):
+        from mimir.client.guardrails.nudges import engine
+
+        ec = _ctx(dirty_written_files=set(dirty), code_mutation_started=True)
+        ec["read_files"] = set(seen)
+        real = engine._any_command_on_path
+        engine._any_command_on_path = lambda cmds: not any(c in absent for c in cmds)
+        try:
+            return engine._exercise_route(self._agent(), ec), ec
+        finally:
+            engine._any_command_on_path = real
+
+    def test_a_compiled_edit_with_a_configured_build_is_a_route(self):
+        # The branch a `.py`/`.sh` suffix test used to refuse by category, which left
+        # every compiled change with no recommendation at all.
+        route, _ = self._route({"solver.c"}, seen={"Makefile"})
+        self.assertIn("Makefile", route)
+
+    def test_an_unconfigured_build_tree_is_not_a_route(self):
+        # The criterion itself: a configured tree is one command, configuring one is a
+        # step of its own.
+        route, ec = self._route({"solver.c"}, seen={"CMakeLists.txt"})
+        self.assertEqual(route, "")
+        self.assertEqual(
+            ec["exercise_blocked_reason"], "nothing written here starts with one direct command",
+        )
+
+    def test_a_build_file_nobody_has_seen_is_not_a_route(self):
+        # Evidence only: recommending `make` against a Makefile nobody laid eyes on is
+        # not obviously proportionate either.
+        self.assertEqual(self._route({"solver.c"})[0], "")
+
+    def test_a_build_driver_that_is_not_installed_is_not_a_route(self):
+        self.assertEqual(
+            self._route({"solver.c"}, seen={"Makefile"}, absent=("make",))[0], "",
+        )
+
+    def test_a_python_edit_with_no_interpreter_here_is_not_a_route(self):
+        # The runner is asked of PATH, never assumed from the suffix.
+        self.assertEqual(
+            self._route({"solver.py"}, absent=("python3", "python"))[0], "",
+        )
+
+    def test_a_python_edit_this_box_can_start_is_a_route(self):
+        route, _ = self._route({"solver.py"})
+        self.assertIn("solver.py", route)
+
+    def test_a_registered_suite_is_the_route_for_a_compiled_edit(self):
+        # What route 1 is for a language whose test file would still have to be built:
+        # the suite is registered against a configured tree, so it is one command.
+        route, _ = self._route({"solver.f90"}, seen={"CTestTestfile.cmake"})
+        self.assertIn("ctest", route)
+
+    def test_a_registered_suite_outranks_a_plain_build(self):
+        # A build says the code is well formed; only a run produces a result to judge.
+        route, _ = self._route(
+            {"solver.cpp"}, seen={"CTestTestfile.cmake", "Makefile", "CMakeCache.txt"})
+        self.assertIn("ctest", route)
+
+    def test_a_configured_tree_with_no_registered_tests_falls_back_to_the_build(self):
+        # CTestTestfile.cmake is generated only when tests exist, so its absence is the
+        # signal — never assume a suite that was never registered.
+        route, _ = self._route({"solver.cpp"}, seen={"CMakeCache.txt"})
+        self.assertIn("CMakeCache.txt", route)
+
+    def test_a_compiled_test_source_alone_is_not_a_route(self):
+        # Pairing test_solver.f90 to solver.f90 would name something that still has to be
+        # built — the criterion this gate exists to apply, violated.
+        self.assertEqual(self._route({"solver.f90"}, seen={"test_solver.f90"})[0], "")
+
+    def test_the_recommendation_names_the_route_it_found(self):
+        message = unexercised_code_nudge_message(["solver.c"], "the build already configured here (Makefile)")
+        self.assertIn("the build already configured here (Makefile)", message)
+        self.assertIn("simply feasible", message)
+        # The pinned way out survives, and gains the third ending.
+        self.assertIn("nothing to run", message)
+        self.assertIn("All three are complete answers", message)
+
+
+class TestRedRunRaisesResidualRisk(unittest.TestCase):
+    """A run left red must not be reported under `Residual risk: low`.
+
+    Observed in the wild: a report listing two `Run failing, unresolved` lines and
+    closing three lines later with `Residual risk: low.` The level read only the file
+    axis, so the run ledger — the axis that carries whether the thing actually works —
+    contributed nothing to it.
+    """
+
+    def _clean_but_for_runs(self):
+        # Everything on the file axis settled, so the runs are the only open fact.
+        ec = _written({"a.py"}, tier="static")
+        ec["workflow_state"] = "conclude"
+        return ec
+
+    def test_a_failing_run_lifts_low_to_medium(self):
+        ec = self._clean_but_for_runs()
+        record_run(ec, "pytest -q", completed=False)
+        out = finalize_incomplete_answer("Done.", ec)
+        self.assertIn("failing, unresolved", out)
+        self.assertIn("Residual risk: medium.", out)
+
+    def test_a_model_stated_fail_lifts_low_to_medium(self):
+        ec = self._clean_but_for_runs()
+        record_run(ec, "./solver", completed=True)
+        ec["runs"]["./solver"]["verdict"] = "fail"
+        self.assertIn("Residual risk: medium.", finalize_incomplete_answer("Done.", ec))
+
+    def test_a_blocked_run_stays_low(self):
+        # A prerequisite this box does not have is a limitation, never a defect of the
+        # change — POLICY is explicit that it must not be charged against completion.
+        ec = self._clean_but_for_runs()
+        record_run(ec, "cmake --build .", completed=False)
+        ec["runs"]["cmake --build ."]["blocked"] = "cmake is not installed here"
+        out = finalize_incomplete_answer("Done.", ec)
+        self.assertIn("Not attempted", out)
+        self.assertIn("Residual risk: low.", out)
+
+    def test_an_unjudged_run_stays_low(self):
+        # Deliberately not charged: a verdict is a recommendation, and charging its
+        # absence is the trade POLICY already refused.
+        ec = self._clean_but_for_runs()
+        record_run(ec, "python solver.py", completed=True)
+        out = finalize_incomplete_answer("Done.", ec)
+        self.assertIn("no verdict on record", out)
+        self.assertIn("Residual risk: low.", out)
 
 
 if __name__ == "__main__":

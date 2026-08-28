@@ -247,22 +247,30 @@ def _delete_deps() -> None:
 
 # ── tools ─────────────────────────────────────────────────────────────────────
 
-@mcp.tool(**tool_caps(caps=[TASK_PLANNING]))
+@mcp.tool(**tool_caps(
+    caps=[TASK_PLANNING],
+    # Two roles, because two client-side consumers need to find different arguments
+    # without knowing this tool's name: the plan loop pins the title so a revision
+    # overwrites in place, and the plan-shape gate reads the body.
+    arg_roles={"plan_title": ["title"], "plan_document": ["text"]},
+))
 def todo_set_plan(text: str, title: str) -> dict:
     """Write a named prose plan (approach and rationale) for the current task.
 
     Call this BEFORE todo_write when tackling a multi-step task — in plan mode it is
     the only plan tool available, since the checklist is written once the user has
-    approved this document. This written
-    plan is what the user reads to understand and approve the work, so make it a
-    short design note, not a bare list of steps. Structure it with Markdown
+    approved this document. Write it only once you have finished exploring: the
+    plan rests on code you have read, and exploring, surveying, examining and
+    identifying gaps are what you did to write it, never steps or axes of it. This
+    written plan is what the user reads to understand and approve the work, so make
+    it a short design note, not a bare list of steps. Structure it with Markdown
     headings and a few sentences of prose under each:
 
       * ## Overview — the goal and the outcome the change produces.
       * ## Approach — broken into the main axes of the work (one subsection per
-        component, layer, or concern). Under each, explain WHAT changes, WHERE
-        (concrete files/symbols you located while exploring), and WHY this
-        approach over the alternatives.
+        component, layer, or concern). Each axis is a change to make: explain WHAT
+        changes, WHERE (concrete files/symbols you located while exploring), and
+        WHY this approach over the alternatives.
       * ## Decisions & risks — key design decisions, trade-offs, assumptions,
         and edge cases worth calling out.
       * ## Validation — how the result will be checked (tests, manual steps).

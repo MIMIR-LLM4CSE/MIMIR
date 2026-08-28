@@ -50,7 +50,7 @@ PLAN_BLOCKED_TOOLS = {
     "ft_config_set", "ft_run", "ft_run_slurm", "ft_stop",
     "ft_runner_promote", "benchmark_summary", "benchmark_memory_copy",
     "benchmark_numpy_matmul", "benchmark_python_compute",
-    "proxy_manage", "proxy_exec", "proxy_eval", "proxy_slurm", "apply_edits",
+    "proxy_manage", "proxy_exec", "proxy_eval", "proxy_slurm",
     "salloc_submit", "sbatch_submit",
     "env_pip_install", "env_pip_uninstall", "env_create", "env_delete",
 }
@@ -73,13 +73,14 @@ BACKGROUNDABLE_TOOLS = {
     "proxy_eval", "proxy_slurm", "sbatch_submit",
 }
 
-# Dual-use exec tools kept available in plan mode for read-only discovery only.
-PLAN_READONLY_TOOLS = {"bash_run"}
+# Dual-use tools kept available in a read-only mode for read-only invocations only:
+# the shell (judged per command), and the sub-agent spawn (judged per role).
+PLAN_READONLY_TOOLS = {"bash_run", "spawn_agent"}
 
 SEARCH_TOOLS = set()
 EDIT_TOOLS = {
     "write_file", "append_file", "replace_in_file", "replace_all_in_file",
-    "replace_lines", "apply_edits",
+    "replace_lines",
 }
 CONTENT_WRITE_TOOLS = {"append_file", "write_file"}
 REPLACEMENT_TRACK_TOOLS = {"replace_in_file", "replace_all_in_file"}
@@ -88,13 +89,17 @@ CANDIDATE_SEARCH_TOOLS = set()
 INSPECT_DIR_TOOLS = {"list_directory", "tree_summary"}
 CHECK_EXISTENCE_TOOLS = set()
 CACHEABLE_TOOLS = {
-    "read_file_lines", "read_files",
+    "read_file_lines",
     "tree_summary", "list_directory",
 }
 SEARCH_WITH_PATH_TOOLS = set()
+# Every tool that opens a socket to a host. The two HTTP tools take an arbitrary
+# model-supplied URL and were the ones NOT carrying the capability, while the GitHub
+# tools — one fixed, well-known host — were the only ones that did.
 EXTERNAL_FETCH_TOOLS = {
     "github_repo_info", "github_list_branches", "github_list_issues",
     "github_get_file", "github_search_repositories",
+    "http_get", "http_post",
 }
 
 # --- file-mutation / planning behavioral categories --------------------------
@@ -102,6 +107,7 @@ REMOVE_TOOLS = {"delete_file", "env_delete"}
 OVERWRITE_TOOLS = {"write_file"}
 TASK_PLANNING_TOOLS = {"todo_write", "todo_set_plan"}
 JUDGE_TOOLS = {"report_verdict"}
+DELEGATE_TOOLS = {"spawn_agent"}
 
 # --- code-intelligence navigation (server_code_intel.py) ---------------------
 # These nav tools join the broad read/search caps.
@@ -125,25 +131,13 @@ FALLBACK_TOOLS = {
     "delete_file": ("read_file_lines",),
 }
 
-# edit_sig arg-role: the args a server declares as identifying an edit (used by
-# the dedup-signature builder in policy/runtime.py instead of hardcoded branches).
+# edit_sig arg-role: the args a server declares as identifying an edit (used by the
+# dedup-signature builder in guardrails/observations.py instead of hardcoded branches).
 EDIT_SIG_ARGS = {
     "write_file": ("content",),
     "append_file": ("content",),
     "replace_in_file": ("old_text", "new_text"),
     "replace_lines": ("start_line", "end_line", "new_content"),
-}
-
-# line_range arg-role: the args a ranged read declares so policy/runtime.py can do
-# its line accounting off the declared role instead of a hardcoded tool name.
-LINE_RANGE_ARGS = {
-    "read_file_lines": ("start_line", "end_line"),
-}
-
-# edit_batch arg-role: the arg a batch-edit tool declares as carrying its list of
-# sub-edits (so the observers/targeting find the paths without naming the tool).
-EDIT_BATCH_ARGS = {
-    "apply_edits": ("edits_json",),
 }
 
 # plan_steps arg-role: the arg the task-checklist tool declares as carrying its ordered
@@ -169,11 +163,10 @@ VERDICT_SCOPE_ARGS = {
 # read-only preview and a real mutation; drives is_sensitive for these tools.
 CONFIRM_GATE_ARGS = {
     "replace_all_in_file": ("confirm",),
-    "apply_edits": ("confirm",),
 }
 
 # preview kind: the generic diff-shape a file-mutating tool declares so the WS UI
-# reconstructs a pre-write diff (ui/file_preview.py) and auto-approves the call
+# reconstructs a pre-write diff (ui/ws/file_preview.py) and auto-approves the call
 # without naming tools. A tool with no preview spec gets the normal approval flow.
 PREVIEW_KIND_BY_TOOL = {
     "write_file": "content",
@@ -202,7 +195,7 @@ SCOPE_KIND_BY_TOOL = {
 # against a sensitive tool silently losing its risk_note in the descriptor migration.
 RISK_NOTE_TOOLS = {
     "write_file", "append_file", "delete_file", "replace_in_file",
-    "replace_all_in_file", "apply_edits",
+    "replace_all_in_file",
     "bash_run", "http_get", "http_post",
     "env_pip_install", "env_pip_uninstall", "env_create", "env_delete",
     "salloc_submit", "sbatch_submit", "benchmark_summary", "memory_delete",
@@ -233,20 +226,51 @@ GOLDEN = {
     "overwrite": OVERWRITE_TOOLS,
     "task_planning": TASK_PLANNING_TOOLS,
     "judge": JUDGE_TOOLS,
+    "delegate": DELEGATE_TOOLS,
 }
 
 
 # --- the declared registry, parsed from server source via AST ----------------
-def _literal(node):
+_BINOPS = {ast.Add: lambda a, b: a + b, ast.Sub: lambda a, b: a - b,
+           ast.Mult: lambda a, b: a * b}
+
+
+def _literal(node, module_consts: dict | None = None):
+    consts = module_consts or {}
     if isinstance(node, ast.List):
-        return [_literal(e) for e in node.elts]
+        return [_literal(e, consts) for e in node.elts]
     if isinstance(node, ast.Dict):
-        return {_literal(k): _literal(v) for k, v in zip(node.keys, node.values)}
+        return {_literal(k, consts): _literal(v, consts)
+                for k, v in zip(node.keys, node.values)}
     if isinstance(node, ast.Constant):
         return node.value
     if isinstance(node, ast.Name):
-        return getattr(srv, node.id)  # a capability constant (e.g. INSPECT_DIR)
+        # A capability constant, or one the declaring server defines for itself
+        # (a role name, its own time cap).
+        if node.id in consts:
+            return consts[node.id]
+        return getattr(srv, node.id)
+    if isinstance(node, ast.BinOp) and type(node.op) in _BINOPS:
+        return _BINOPS[type(node.op)](
+            _literal(node.left, consts), _literal(node.right, consts),
+        )
     raise AssertionError(f"unexpected tool_caps arg node: {ast.dump(node)}")
+
+
+def _module_constants(tree: ast.Module) -> dict:
+    """Module-level ``NAME = <literal>`` bindings, so a decorator may name its own."""
+    consts: dict = {}
+    for node in tree.body:
+        if not isinstance(node, ast.Assign) or len(node.targets) != 1:
+            continue
+        target = node.targets[0]
+        if not isinstance(target, ast.Name):
+            continue
+        try:
+            consts[target.id] = ast.literal_eval(node.value)
+        except (ValueError, TypeError, SyntaxError):
+            continue
+    return consts
 
 
 def build_declared_registry() -> dict:
@@ -257,6 +281,7 @@ def build_declared_registry() -> dict:
     declared: dict = {}
     for path in SERVERS_DIR.rglob("*.py"):
         tree = ast.parse(path.read_text(), filename=str(path))
+        module_consts = _module_constants(tree)
         for node in ast.walk(tree):
             if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue
@@ -269,7 +294,8 @@ def build_declared_registry() -> dict:
                     if (kw.arg is None
                             and isinstance(kw.value, ast.Call)
                             and getattr(kw.value.func, "id", None) == "tool_caps"):
-                        kwargs = {k.arg: _literal(k.value) for k in kw.value.keywords
+                        kwargs = {k.arg: _literal(k.value, module_consts)
+                                  for k in kw.value.keywords
                                   if k.arg in _BUILD_DESCRIPTOR_PARAMS}
                         desc = srv.build_descriptor(**kwargs)
                         fake = types.SimpleNamespace(

@@ -3,7 +3,11 @@ from __future__ import annotations
 import warnings
 
 from ..context.signals import SOURCE_FILE_EXTENSIONS
-from ..context.execution_context import unwritten_declared_files, weakest_validation_tier
+from ..context.execution_context import (
+	failed_runs,
+	unwritten_declared_files,
+	weakest_validation_tier,
+)
 # Re-exported here for backward compatibility; the canonical definition lives in
 # config.constants alongside the other agent-loop tuning knobs.
 from ..config.constants import VALIDATION_RETRY_BUDGET
@@ -13,9 +17,20 @@ WORKFLOW_STATES: tuple[str, ...] = ("discover", "edit", "validate", "conclude")
 
 
 def pending_validation_paths(execution_context: dict) -> list[str]:
+	"""Dirty files that still owe a check, minus the ones nothing here can check.
+
+	The mandatory axis is the cheap one — parse, resolve imports, lint — and it is only
+	mandatory where it is possible: a Fortran source on a box with no compiler has no
+	checker to run, and demanding one turns a completion gate into a dead end. Those
+	files leave this list and enter the ledger instead, named as unchecked.
+	"""
 	dirty_files = set(execution_context.get("dirty_written_files", set()))
 	validated_files = set(execution_context.get("validated_files", set()))
-	return sorted(path for path in dirty_files if path not in validated_files)
+	unverifiable = set(execution_context.get("unverifiable_files", set()) or set())
+	return sorted(
+		path for path in dirty_files
+		if path not in validated_files and path not in unverifiable
+	)
 
 
 def has_pending_validation(execution_context: dict) -> bool:
@@ -112,6 +127,23 @@ def handback_required(execution_context: dict) -> bool:
 		worst_denial_stage(execution_context) == STAGE_HANDBACK
 
 
+def approval_is_settled(execution_context: dict, scope: str) -> bool:
+	"""True when raising an approval card for *scope* would re-ask an answered question.
+
+	The ladder tells the model what a refusal *means*; it cannot stop it re-issuing the
+	call, and each retry costs the user another card for a decision already made. From
+	the second refusal of one scope, "another route to the same goal" is off the table —
+	and the same route most certainly is one, so the gate answers instead of the user.
+	The query-wide hand-back keeps its own reach: past that point nothing sensitive is
+	worth another prompt, whatever scope it belongs to.
+	"""
+	from ..config.constants import DENIAL_SCOPE_DROP_AFTER
+	return (
+		denial_scope_count(execution_context, scope) >= DENIAL_SCOPE_DROP_AFTER
+		or denial_stage(execution_context, scope) == STAGE_HANDBACK
+	)
+
+
 def handback_scopes(execution_context: dict) -> list[dict]:
 	"""The refusal records whose scope reached ``handback``, newest first."""
 	history = execution_context.get("denial_history", [])
@@ -165,10 +197,38 @@ def _plural_runs(n: int) -> str:
 	return "1 run" if n == 1 else f"{n} runs"
 
 
-def _collect_completion_issues(execution_context: dict) -> tuple[list[str], list[str]]:
-	"""Return (issues, completed) describing the current completion state."""
+# ── How the loop ended ────────────────────────────────────────────────────────
+# Computed once, where the loop exits, instead of being inferred downstream from
+# budgets. A retry budget with room left means "the loop would try again" only while
+# the loop is running; read from the completion report it became a promise nobody was
+# ever going to keep ("Checks failing (will retry)" on the last line of a finished
+# run). The report below therefore speaks only in the past tense, and this says why it
+# stopped speaking at all.
+TERMINATION_ANSWERED: str = "answered"        # the model produced a final answer
+TERMINATION_STEP_LIMIT: str = "step_limit"   # the step budget ran out
+TERMINATION_USER_STOPPED: str = "user_stopped"  # the user declined to continue
+
+_TERMINATION_ISSUE: dict[str, str] = {
+	TERMINATION_STEP_LIMIT: "Stopped: the step budget ran out before the work was finished.",
+	TERMINATION_USER_STOPPED: "Stopped: you declined to continue at the step checkpoint.",
+}
+
+
+def _run_label(run: dict) -> str:
+	""""Build" or "Run" — what hit the wall, in the user's vocabulary."""
+	return "Build" if run.get("effect") == "build" else "Run"
+
+
+def _collect_completion_issues(
+	execution_context: dict, termination: str = TERMINATION_ANSWERED,
+) -> tuple[list[str], list[str]]:
+	"""Return (issues, completed) describing the final completion state."""
 	issues: list[str] = []
 	completed: list[str] = []
+
+	termination_issue = _TERMINATION_ISSUE.get(termination)
+	if termination_issue:
+		issues.append(termination_issue)
 
 	pending = pending_validation_paths(execution_context)
 	fail_counts: dict = execution_context.get("validation_fail_count_by_file", {})
@@ -180,9 +240,9 @@ def _collect_completion_issues(execution_context: dict) -> tuple[list[str], list
 		retry_paths = [p for p in pending if fail_counts.get(p, 0) > 0 and fail_counts.get(p, 0) < VALIDATION_RETRY_BUDGET]
 		fresh_paths = [p for p in pending if fail_counts.get(p, 0) == 0]
 		if stuck_paths:
-			issues.append("Check budget exhausted (no further retries): " + ", ".join(stuck_paths[:5]))
+			issues.append("Checks failing, budget exhausted: " + ", ".join(stuck_paths[:5]))
 		if retry_paths:
-			issues.append("Checks failing (will retry): " + ", ".join(retry_paths[:5]))
+			issues.append("Checks failing, unresolved: " + ", ".join(retry_paths[:5]))
 		if fresh_paths:
 			issues.append("Modified files never checked: " + ", ".join(fresh_paths[:5]))
 	else:
@@ -205,10 +265,10 @@ def _collect_completion_issues(execution_context: dict) -> tuple[list[str], list
 	elif not denied_calls:
 		completed.append("No denied actions")
 
-	if execution_context.get("code_mutation_started") and execution_context.get("workflow_state") != "conclude":
-		issues.append("Workflow not completed: still in '" + str(execution_context.get("workflow_state")) + "' state")
-	elif execution_context.get("workflow_state") == "conclude":
-		completed.append("Workflow reached conclude state")
+	# `workflow_state` is deliberately NOT reported: it is the loop's own steering
+	# variable, and "still in 'edit' state" names no gap the user can act on. Every
+	# real one — a file unchecked, a run failing or unjudged, a step never started —
+	# has its own line here.
 
 	# The plan-vs-implementation check, obtained from state that already exists:
 	# declared_edit_set is scraped from the checklist's own step text and until now
@@ -223,16 +283,20 @@ def _collect_completion_issues(execution_context: dict) -> tuple[list[str], list
 	runs = execution_context.get("runs") or {}
 	never_judged = [c for c, r in sorted(runs.items()) if r.get("completed") and not r.get("verdict")]
 	unresolved = [c for c, r in sorted(runs.items()) if r.get("verdict") == "unknown"]
+	# A blocked run is red, and stays reported as red — but by a wall this environment put
+	# there, not by the change. Charging it here is what turned "I tried the recommended
+	# build and gcc is not installed" into "Task is incomplete."; see blocked_run_lines.
 	broken = [(c, r) for c, r in sorted(runs.items())
-	          if not r.get("completed") or r.get("verdict") == "fail"]
-	if never_judged:
-		issues.append("Ran but never judged: " + ", ".join(never_judged[:5]))
-	if unresolved:
-		issues.append("Judged inconclusive, still unresolved: " + ", ".join(unresolved[:5]))
+	          if (not r.get("completed") or r.get("verdict") == "fail")
+	          and not r.get("blocked")]
+	# never_judged / unresolved are reported by unjudged_run_lines, not charged here: a
+	# verdict is a recommendation, and charging its absence made the model spend turns
+	# producing a label to clear the headline rather than because it had read something.
+	# A run that actually *failed* stays an issue below — that is a machine fact.
 	for command, run in broken[:5]:
 		spent = int(run.get("failures", 0)) >= VALIDATION_RETRY_BUDGET
-		label = "no further retries" if spent else "will retry"
-		issues.append(f"Run failing ({label}): {command}")
+		label = "budget exhausted" if spent else "unresolved"
+		issues.append(f"{_run_label(run)} failing, {label}: {command}")
 		# Naming the run says a wall was hit; naming the attempts says what the wall was,
 		# which is the part the user needs to take it from here.
 		attempts = run.get("attempts") or []
@@ -248,10 +312,50 @@ def _collect_completion_issues(execution_context: dict) -> tuple[list[str], list
 			+ "; ".join(it["text"] for it in unchecked[:3])
 		)
 
-	if not issues and not refused_action_lines(execution_context):
+	if (
+		not issues
+		and not refused_action_lines(execution_context)
+		and not blocked_run_lines(execution_context)
+		and not unjudged_run_lines(execution_context)
+	):
 		issues.append("Unknown blocker; explicit completion criteria were not met")
 
 	return issues, completed
+
+
+def unjudged_run_lines(execution_context: dict) -> list[str]:
+	"""One line per run whose output was never read out, for the report.
+
+	Same standing as :func:`blocked_run_lines`: reported, never counted. A verdict says
+	what a run showed, and asking for one is a recommendation — so a missing or `unknown`
+	verdict is a gap in the record, not a defect in the change. Charging it here is what
+	taught the model to emit a label for every command it issued.
+	"""
+	runs = execution_context.get("runs") or {}
+	lines = [
+		f"{command} — ran; its output was never judged"
+		for command, run in sorted(runs.items())
+		if run.get("completed") and not run.get("verdict")
+	]
+	lines += [
+		f"{command} — judged inconclusive"
+		for command, run in sorted(runs.items()) if run.get("verdict") == "unknown"
+	]
+	return lines[:5]
+
+
+def blocked_run_lines(execution_context: dict) -> list[str]:
+	"""One line per run that hit a wall this environment put there, for the report.
+
+	Reported, never counted: a prerequisite that is missing is a limitation the user has to
+	see, and never a defect in the change to be charged against completion. Kept out of
+	``_collect_completion_issues`` for that reason alone — it is what decides the headline.
+	"""
+	runs = execution_context.get("runs") or {}
+	return [
+		f"{_run_label(run)} not attempted — {run['blocked']}: {command}"
+		for command, run in sorted(runs.items()) if run.get("blocked")
+	][:5]
 
 
 def refused_action_lines(execution_context: dict) -> list[str]:
@@ -295,9 +399,9 @@ def is_incomplete_answer(answer: str) -> bool:
 
 
 def finalize_incomplete_answer(
-	answer: str, execution_context: dict, ran_out_of_steps: bool = False,
+	answer: str, execution_context: dict, termination: str = TERMINATION_ANSWERED,
 ) -> str:
-	issues, completed = _collect_completion_issues(execution_context)
+	issues, completed = _collect_completion_issues(execution_context, termination)
 	pending = pending_validation_paths(execution_context)
 	denied_calls = execution_context.get("denied_tool_calls", [])
 	refused = refused_action_lines(execution_context)
@@ -309,12 +413,21 @@ def finalize_incomplete_answer(
 	# run that never reached a final answer ends the run unfinished.
 	if handback:
 		headline = HEADLINE_HANDBACK
-	elif refused and not issues and not ran_out_of_steps:
+	elif refused and not issues and termination == TERMINATION_ANSWERED:
 		headline = HEADLINE_REFUSED_ONLY
 	else:
 		headline = HEADLINE_INCOMPLETE
 
 	summary = headline + "\n\nCompleted:\n- " + "\n- ".join(completed)
+	blocked = blocked_run_lines(execution_context)
+	if blocked:
+		summary += (
+			"\n\nNot attempted (a prerequisite this environment does not have):\n- "
+			+ "\n- ".join(blocked)
+		)
+	unjudged = unjudged_run_lines(execution_context)
+	if unjudged:
+		summary += "\n\nRan, with no verdict on record:\n- " + "\n- ".join(unjudged)
 	if issues:
 		summary += "\n\nRemaining issues:\n- " + "\n- ".join(issues)
 	if refused and not handback:
@@ -331,13 +444,23 @@ def finalize_incomplete_answer(
 	_unwritten = unwritten_declared_files(execution_context)
 	# A refusal the run stopped on stays high risk — work was cut short. A refusal the
 	# run absorbed and continued past is a known, named gap: medium, never "low".
+	#
+	# A run left red is one too: the ledger already prints it as an issue, and the level
+	# printed underneath used to contradict it — "Run failing, unresolved" above
+	# "Residual risk: low" was observed in the wild. `failed_runs` excludes blocked runs,
+	# which keeps a missing toolchain a limitation rather than a defect of the change.
+	# Runs merely unjudged are deliberately NOT charged here: a verdict is a
+	# recommendation, and charging its absence is the trade POLICY already refused.
+	_failed_runs = failed_runs(execution_context)
 	risk_level = (
 		"high" if _pending_code or handback
-		else ("medium" if pending or _unwritten or denied_calls else "low")
+		else ("medium" if pending or _unwritten or denied_calls or _failed_runs else "low")
 	)
 	summary += f"\n\nResidual risk: {risk_level}."
 	if answer.strip():
-		summary += "\n\nLatest model answer:\n" + answer.strip()
+		# Named as a claim, not as the answer: everything above is machine-recorded, and
+		# what follows is what the model says about the same run.
+		summary += "\n\nWhat the model claims:\n" + answer.strip()
 	return summary
 
 # --- Loop-control nudge copy -----------------------------------------------
@@ -348,10 +471,33 @@ def finalize_incomplete_answer(
 # sits in one module regardless of which loop fires it.
 
 # Plan-mode user nudges.
+# Explore phase: the plan-document tool is withheld until the code has actually been
+# read, so this nudge asks for the exploration rather than for the plan. Nothing here
+# forbids a plan-to-explore — the tool list does, by not offering the document yet.
+PLAN_EXPLORE_FIRST = (
+	"The plan tool is not available yet: this phase of plan mode is the exploration itself, and the plan is written once it is done. "
+	"Use the read-only exploration tools now (search, read, inspect, platform/memory queries) to READ the code this task touches — not just to locate it. "
+	"Listing directories and matching file names tells you nothing about what has to change; open the files, follow the symbols, and find the boundaries the work runs into. "
+	"Keep going until you could name the concrete files and symbols the change touches and say what happens to each. "
+)
+# Appended to the above when a delegation capability is connected. Kept separate so the
+# reminder stays true when it is not: the fan-out is an instruction only where it can be
+# carried out.
+PLAN_EXPLORE_DELEGATE = (
+	"This exploration parallelises: rather than reading every area yourself, split it into one to three self-contained questions and send them out as read-only sub-agents in the SAME response, so they run at once. "
+	"Each returns a conclusion naming the files and symbols it found; you then read for yourself only the places those answers point at. "
+)
+# Escape hatch: the explore-turn budget is spent and the evidence is still thin. The
+# tool is unlocked regardless — plan mode must always reach a plan — so the plan is
+# written over what was found, with its gaps stated rather than papered over.
+PLAN_EXPLORE_BUDGET_SPENT = (
+	"You have spent the exploration budget for this task, so the plan tool is now available whatever you found. "
+	"Record the plan over the evidence you actually gathered, and state plainly in it which parts rest on assumptions you could not verify and what would settle them. "
+)
 PLAN_TODO_NUDGE_EARLY = (
 	"You have not yet recorded a plan, which is mandatory to produce a valid plan output. "
 	"Record it with the plan tool as a written plan document (structured markdown prose — an overview, the approach broken into its main axes with the reasoning and the concrete files/symbols each touches, key decisions/risks, and how you'll validate). "
-	"If you need more information to write the plan, you may ask the user for clarification or call the read-only exploration tools (search, read, inspect, platform/memory queries) to gather evidence. "
+	"The exploration is already done and is not part of the plan: write the plan over what you found. "
 	"The plan must focus on detailed key actions and validations needed to complete the task (implementations, tests, validations, etc.). "
 	"Steps such as discovery, analysis, or information gathering that are not directly part of the implementation/validation plan should be omitted. "
 )
@@ -377,17 +523,32 @@ PLAN_ALREADY_RECORDED_ERROR = (
 	"The plan is already recorded and unchanged — this call was skipped. "
 	"Do not call any more tools: answer the user in prose now."
 )
-# Advisory, not a rejection: the plan stands either way. Rejecting it used to discard
-# the plan the model had just recorded, with nothing guaranteeing it would submit that
-# form again — which is how a run could spin without ever delivering anything.
-PLAN_EVIDENCE_NUDGE = (
-	"Your plan is not grounded in any exploration of the code. The repository structure and platform "
-	"summary in your context are orientation only — they do not tell you which files, symbols, or boundaries "
-	"this task touches. If locating the relevant code would materially change this plan, use the read-only "
-	"exploration tools (search, read, inspect, platform/memory queries) now and refine it. If it would not — "
-	"a task that touches no existing code, for instance — keep the plan as it is and say plainly in your "
-	"answer that it rests on assumptions rather than on the code."
-)
+
+
+def evidence_handback_message(execution_context: dict) -> str:
+	"""Hand the model the machine-recorded state before it writes its conclusion.
+
+	The gap this closes: the completion report is assembled *after* the model has
+	written its summary and appended below it, so the model has never seen the ledger
+	it is contradicting. "Successfully implemented, complete and correct" printed above
+	"Modified files never checked" is not a rhetoric problem to police in the prose —
+	it is a missing fact at the moment the prose is written. Sent once per query; if the
+	corrected summary still contradicts the record, the report below states the record
+	and the two stand side by side.
+	"""
+	issues, _ = _collect_completion_issues(execution_context)
+	return (
+		"Before you conclude, here is what this run actually recorded:\n- "
+		+ "\n- ".join(issues)
+		+ "\n\nThese are machine-recorded facts, not an opinion about your work. Rewrite your "
+		"summary so it matches them: say what was done, name each gap above as unfinished or "
+		"unverified, and do not describe as complete or correct anything the record does not "
+		"support. If you can still close one of these gaps with a tool call, do that instead."
+	)
+# The plan-grounding check no longer lives here as an after-the-fact advisory: plan
+# mode withholds the document tool until the evidence bar is met (see plan_loop), so a
+# plan written over nothing is unreachable rather than flagged. PLAN_EXPLORE_FIRST and
+# PLAN_EXPLORE_BUDGET_SPENT above are what remains of it.
 
 # Plan-approval workflow nudges. After the user reviews a proposed plan they may
 # accept it (switch to agent mode and execute), reject it (drop it and stop), ask for a
@@ -395,14 +556,18 @@ PLAN_EVIDENCE_NUDGE = (
 # in, then re-present for approval).
 PLAN_APPROVED_EXECUTE = (
 	"The user has APPROVED your plan. You are now switching to agent mode to carry it out. "
+	"The exploration behind this plan is already done and its findings are in the plan: do not survey the "
+	"code again from scratch — re-read a specific file only when you are about to change it. "
 	"No task checklist exists yet: before starting the work, record the ordered implementation/validation "
 	"steps of the approved plan with the plan/todo tool, unless the task is small enough not to warrant one. "
 	"The steps must be the key actions and validations the task needs (implementations, tests, validations, "
 	"etc.); omit discovery, analysis, and information-gathering steps. "
-	"Then execute the approved plan end to end, making the necessary edits, running the relevant validations, "
+	"Then carry out the approved plan, making the necessary edits, running the relevant validations, "
 	"and marking each step done with the plan/todo update tool as you complete it. "
-	"You may ask for re-plan or re-approval "
-	"if you notice any issues as you execute the plan, otherwise act on the plan you already agreed with the user."
+	"The plan is what you agreed with the user, not a script: where the code turns out differently than "
+	"it assumed, adapt — rewrite the checklist, drop a step that proved unnecessary, add one it missed — "
+	"and say what you changed and why in your final answer. Ask for re-plan or re-approval when the "
+	"difference is large enough to change what the user approved."
 )
 PLAN_REJECTED_STOP = (
 	"The user has REJECTED this plan. Do not execute any part of it and do not write a new plan. "
@@ -465,15 +630,4 @@ def handback_corrective_message(refusals: list[dict]) -> str:
 		"what the refusal leaves undone, and what you need from the user to go further. If "
 		"other, unrelated parts of the task remain and are unaffected by the refusal, finish "
 		"those first, then hand back."
-	)
-
-
-def redundant_corrective_message(tool_name: str, repeats: int) -> str:
-	"""One-time mid-loop reminder when a non-write call keeps returning identical content."""
-	return (
-		f"[automated workflow reminder — not from the user; advisory, apply judgment]\n\n"
-		f"You have already made this exact call {repeats + 1} times and received the same "
-		"result each time. The content is unchanged and already in the conversation above — "
-		"re-reading it adds nothing. Use what you already have: act on it, read something "
-		"different (another file or line range), or conclude. Do not repeat this call."
 	)

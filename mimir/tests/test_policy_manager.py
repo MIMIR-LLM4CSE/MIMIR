@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import mimir.client.guardrails.policy.engine as policy_manager_module
+import mimir.client.guardrails.policy.gates as gates
 from mimir.client.query_engine import toollist
 from mimir.tests._golden_caps import build_declared_registry
 
@@ -155,29 +156,29 @@ class PolicyManagerTests(unittest.TestCase):
         self.assertEqual(before, after)
         self.assertIn("replace_in_file", [t["function"]["name"] for t in before])
 
-    def test_external_fetch_blocked_before_discovery_then_allowed(self) -> None:
-        """An EXTERNAL_FETCH tool is rejected at call time until local discovery,
-        then allowed — capability-driven, no hardcoded github names."""
+    def test_external_fetch_is_not_gated_on_local_discovery(self) -> None:
+        """Reaching outside the workspace does not require having looked inside it.
+
+        There was a gate here holding every EXTERNAL_FETCH call until the model had
+        searched or read locally. It was removed rather than repaired. It contradicted
+        the prompt, which tells the model to skip the survey for work that builds
+        something new outside the repository and lets a literature task conclude
+        straight from discovery; it ignored two of the five discovery signals, so a
+        model that delegated its exploration — which the sub-agent section asks for —
+        counted as having done nothing; and a structural snapshot pre-filled the one
+        field it did read, so on a repo-touching query it never fired at all. It bit
+        only on the bibliography turn it was least entitled to block.
+        """
         agent = _FakeAgent()
         agent.tool_owner["github_get_file"] = "github"
-        args = {"owner": "o", "repo": "r", "path": "x"}
 
-        before = policy_manager_module.evaluate_tool_preconditions(
+        result = policy_manager_module.evaluate_tool_preconditions(
             agent=agent,
             tool_name="github_get_file",
-            arguments=args,
+            arguments={"owner": "o", "repo": "r", "path": "x"},
             execution_context={},
         )
-        self.assertIsNotNone(before.violation)
-        self.assertIn("blocked", before.violation.lower())
-
-        after = policy_manager_module.evaluate_tool_preconditions(
-            agent=agent,
-            tool_name="github_get_file",
-            arguments=args,
-            execution_context={"searched": True},
-        )
-        self.assertIsNone(after.violation)
+        self.assertIsNone(result.violation)
 
     def test_cluster_submit_stays_held_until_something_is_validated(self) -> None:
         """The hold is a precondition, not a counter — retrying alone must not clear it.
@@ -186,13 +187,13 @@ class PolicyManagerTests(unittest.TestCase):
         a model that simply calls again (the normal reaction to an error) that cost one
         round trip and constrained nothing, on the most expensive action in the system —
         a submission that burns real allocation hours and cannot be taken back. The
-        condition is a fact about the session, so it holds until the fact changes; only
-        the wording shortens after the first hold.
+        condition is a fact about the session, so it holds until the fact changes.
         """
         agent = _FakeAgent()
         agent.tool_owner["salloc_submit"] = "hpc"
         args = {"command": "sbatch job.sh", "confirm": True}
-        ctx: dict = {}
+        # Something was edited and never checked: the state the hold is about.
+        ctx: dict = {"dirty_written_files": {"job.py"}}
 
         def _submit():
             return policy_manager_module.evaluate_tool_preconditions(
@@ -202,15 +203,34 @@ class PolicyManagerTests(unittest.TestCase):
         first = _submit()
         self.assertIsNotNone(first)
         self.assertIn("held", first.lower())
-        self.assertTrue(ctx.get("cluster_submit_warned"))
 
         second = _submit()
         self.assertIsNotNone(second, "a bare retry must not clear the hold")
-        self.assertIn("still held", second.lower())
+        self.assertIn("held", second.lower())
 
         # The stated exit — one local check that passes — is the only thing that lifts it.
         ctx["validated_files"] = {"job.py"}
         self.assertIsNone(_submit())
+
+    def test_cluster_submit_not_held_when_the_session_wrote_nothing(self) -> None:
+        """The stated exit has to be reachable, or the hold is a wall.
+
+        ``validated_files`` is credited only by a checker run against a file the model
+        edited. A session whose whole job is to launch something that already exists
+        ("resubmit this job on 64 nodes") edits nothing, so it can never satisfy the
+        condition however many times it tries. Nothing changed ⇒ nothing ought to have
+        been checked; the user's approval prompt, which these irreversible tools always
+        raise, is the protection that applies there.
+        """
+        agent = _FakeAgent()
+        agent.tool_owner["salloc_submit"] = "hpc"
+        result = policy_manager_module.evaluate_tool_preconditions(
+            agent=agent,
+            tool_name="salloc_submit",
+            arguments={"command": "sbatch existing_job.sh", "confirm": True},
+            execution_context={},
+        )
+        self.assertIsNone(result.violation)
 
     def test_cluster_submit_allowed_when_validated_locally(self) -> None:
         """With local-validation evidence (validated_files), the submit is not held."""
@@ -542,7 +562,6 @@ class MissingEvidenceTests(unittest.TestCase):
 
 class ValidationNudgeTests(unittest.TestCase):
     def test_validation_nudge_message_includes_line_hint(self) -> None:
-        from mimir.client.guardrails import policy as policy_module
         from mimir.client.guardrails.nudges import messages as state_machine
 
         agent = _FakeAgent()
@@ -554,14 +573,12 @@ class ValidationNudgeTests(unittest.TestCase):
             "validation_fail_count_by_file": {"src/foo.py": 3},
             "last_replace_file": "src/foo.py",
             "last_replace_old_text": "def foo():",
-            "read_file_line_counts": {},
         }
         with patch.object(state_machine, "_validation_nudge_message", return_value=""):
             nudge = state_machine.validation_nudge_message(agent, context)
         self.assertIn("Read the local failing region around the last replacement anchor first", nudge)
 
     def test_validation_nudge_message_without_line_hint_falls_back(self) -> None:
-        from mimir.client.guardrails import policy as policy_module
         from mimir.client.guardrails.nudges import messages as state_machine
 
         agent = _FakeAgent()
@@ -573,7 +590,6 @@ class ValidationNudgeTests(unittest.TestCase):
             "validation_fail_count_by_file": {"src/bar.py": 4},
             "last_replace_file": "",
             "last_replace_old_text": "",
-            "read_file_line_counts": {},
         }
         with patch.object(state_machine, "_validation_nudge_message", return_value=""):
             nudge = state_machine.validation_nudge_message(agent, context)
@@ -582,3 +598,75 @@ class ValidationNudgeTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PlanShapeGateTests(unittest.TestCase):
+    """A plan axis is a change to make, never a step of the exploration.
+
+    PHASE 2 of the plan-mode prompt has always said so; nothing checked it. Observed in
+    the wild: a plan whose first axis was "Audit Existing Bindings". The audit then
+    reported nothing missing, every axis after it was vacuous, and the run was padded
+    with cosmetic edits rather than re-decided.
+    """
+
+    def setUp(self) -> None:
+        self.agent = _FakeAgent()
+        self.agent.tool_caps = dict(_DECLARED_REGISTRY)
+
+    def _check(self, text: str):
+        return gates._check_plan_shape(
+            self.agent, "todo_set_plan", {"text": text, "title": "t"}, {})
+
+    _FUNTIDES = (
+        "## Overview\nBindings exist for gradient, model and solver.\n"
+        "## Approach\n"
+        "### 1. Audit Existing Bindings\nList every public class.\n"
+        "### 2. Extend Bindings for Missing Components\nAdd the declarations.\n"
+        "## Validation\n- Run the examples.\n"
+    )
+
+    def test_an_exploration_axis_is_refused_and_named(self) -> None:
+        violation = self._check(self._FUNTIDES)
+        self.assertIsNotNone(violation)
+        # The refusal has to be trivially clearable, so it quotes the offending axis.
+        self.assertIn("Audit Existing Bindings", violation)
+        self.assertNotIn("Extend Bindings", violation)
+
+    def test_a_plan_of_changes_passes(self) -> None:
+        self.assertIsNone(self._check(
+            "## Approach\n### Extend the solver bindings\nAdd the six methods.\n"
+            "### Wire them into the DG module\n## Validation\n- pytest\n"))
+
+    def test_a_gerund_and_a_numbered_list_are_the_same_axis(self) -> None:
+        violation = self._check(
+            "# Approach\n1. Auditing the mesh module\n2. Rewrite the dispatch table\n")
+        self.assertIsNotNone(violation)
+        self.assertIn("Auditing the mesh module", violation)
+
+    def test_the_prescribed_validation_section_never_fires(self) -> None:
+        # "## Validation" is structure the tool's own docstring asks for, and the axes
+        # under Approach are the only thing read.
+        self.assertIsNone(self._check(
+            "## Approach\n### Add the missing methods\n"
+            "## Validation\n### Review the diff\n### Verify the build\n"))
+
+    def test_an_unverified_assumption_in_prose_is_not_an_axis(self) -> None:
+        # PLAN_EXPLORE_BUDGET_SPENT explicitly asks for this sentence. Only axis titles
+        # are read, so the two instructions cannot collide.
+        self.assertIsNone(self._check(
+            "## Approach\n### Extend the solver bindings\n"
+            "I could not verify whether orders 4-9 are reachable; reviewing the "
+            "builders would settle it. Identifying that gap is left open.\n"))
+
+    def test_the_checklist_tool_is_never_inspected(self) -> None:
+        # todo_write carries plan_steps, not plan_document: "validate the solver" is a
+        # legitimate implementation step there.
+        self.assertIsNone(gates._check_plan_shape(
+            self.agent, "todo_write", {"steps": ["Audit the bindings"]}, {}))
+
+    def test_a_non_planning_tool_is_never_inspected(self) -> None:
+        self.assertIsNone(gates._check_plan_shape(
+            self.agent, "read_file_lines", {"text": self._FUNTIDES}, {}))
+
+    def test_an_empty_plan_is_left_to_the_other_gates(self) -> None:
+        self.assertIsNone(self._check("   "))

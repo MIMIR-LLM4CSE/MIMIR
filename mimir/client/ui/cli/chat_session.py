@@ -111,11 +111,6 @@ def _offer_session_resume() -> bool:
 
 
 async def run_chat_session(agent: Any) -> None:
-    # Repo baseline is built lazily on the first repo-touching query (see
-    # _ensure_repo_baseline), so it is not scanned eagerly here. The platform profile
-    # refresh is a cheap no-op when the cached profile already exists.
-    await agent._refresh_platform_profile()
-
     checklist_tool = name_with_arg_role("plan_steps", agent.tool_caps)
     if checklist_tool:
         if not _offer_session_resume():
@@ -123,7 +118,7 @@ async def run_chat_session(agent: Any) -> None:
 
     print("\n✅ MIMIR ready. Type 'quit' to exit.")
     print(
-        "   Commands: /mode [agent|plan], /rescan, "
+        "   Commands: /mode [agent|plan], "
         "/status, /think on|off, /stream on|off, /batch on|off, /help\n"
     )
 
@@ -198,7 +193,6 @@ async def run_chat_session(agent: Any) -> None:
             set_batch_mode=agent.set_batch_mode,
             set_context_mode=agent.set_context_mode,
             set_enforcement=agent.set_enforcement,
-            refresh_repo_baseline=agent._refresh_repo_baseline,
             trust_tool=agent.approvals.trust_tool,
             untrust_tool=agent.approvals.untrust_tool,
             trusted_tools=agent.approvals.trusted_tools_view(),

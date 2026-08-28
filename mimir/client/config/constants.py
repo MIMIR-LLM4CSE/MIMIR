@@ -10,18 +10,6 @@ from ...servers._shared.state_paths import workspace_id  # noqa: F401  (re-expor
 SERVER_BASE = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "servers")) + os.sep
 SKILL_BASE = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "skills")) + os.sep
 
-# Directories the self-contained repo-baseline walk prunes. Mirrors the search
-# server's _SKIP_DIRS (server_search.py) so the deterministic baseline matches what
-# the search tools would show — kept as a client-local copy because the baseline is
-# built independently of any server (it must work even if the search server is off).
-BASELINE_SKIP_DIRS: frozenset[str] = frozenset({
-    ".git", "__pycache__", ".pytest_cache", ".mypy_cache",
-    ".ruff_cache", ".tox", ".eggs", "node_modules",
-    ".venv", "venv", "env", ".env",
-    "dist", "build", "site-packages",
-    ".mcp_backups", ".continue",
-})
-
 # Workspace root: the folder the agent operates on. Matches the convention the
 # MCP servers use (MCP_FILES_ROOT, set by server_manager / the extension), so the
 # client and the server subprocesses resolve .mimir to the same place. Falls back
@@ -95,6 +83,11 @@ def resolve_extension_dir(env_var: str, dirname: str) -> str:
 # Hard wall for a single MCP tool call (seconds). Keeps a hung bash_run / web_get
 # from blocking the agent loop indefinitely.
 TOOL_CALL_TIMEOUT_SECS: int = 120
+
+# A tool may declare its own wall (``timeout_secs`` in its descriptor) when the global
+# default, calibrated on a grep, cannot bound what it actually does — a sub-agent run
+# is the case in point. The client keeps the last word via this ceiling.
+TOOL_CALL_TIMEOUT_MAX_SECS: int = 900
 
 # Separate budget for the post-write auto-validation ladder (syntax/imports/lint/
 # typecheck/format + completeness + cross-file grep). It runs AFTER the write has
@@ -226,14 +219,15 @@ LLM_RETRY_MAX_DELAY_SECS: float = 20.0
 NUDGE_MAX_VALIDATION: int = 2
 NUDGE_MAX_DENIAL: int = 2
 NUDGE_MAX_ERROR_RECOVERY: int = 2
-NUDGE_MAX_REGRESSION: int = 1
-# Once only, and deliberately: "you never ran it" is a standing fact about the change,
-# not a condition that evolves, and a change with nothing to run is a legitimate answer.
-NUDGE_MAX_UNEXERCISED: int = 1
 NUDGE_MAX_UNFINISHED_PLAN: int = 1
-# Matches error_recovery rather than the once-only reminders: an unjudged run is a
-# recurring condition, and the counter is re-armed whenever the pending set clears.
-NUDGE_MAX_OUTPUT_VERDICT: int = 2
+# One shared budget for the whole advisory axis — "run the existing test"
+# (regression) and "nothing has been exercised" (unexercised) are two phrasings of one
+# question, and running is a recommendation, not a requirement: the toolchain or the
+# data may simply not be here. One ask per query, and an answer of "not runnable here"
+# closes it for good (``exercise_advice_closed``).
+NUDGE_MAX_EXERCISE: int = 1
+# The ``nudge_counts`` key those two rows share.
+EXERCISE_BUDGET: str = "exercise"
 NUDGE_MAX_DISCOVERY: int = 3
 NUDGE_MAX_ENV_RESOLUTION: int = 1
 NUDGE_MAX_ENV_CLEANUP: int = 1
@@ -289,11 +283,42 @@ DOMAIN_REARM_MAX_PER_QUERY: int = 1
 # Distinct discovery-evidence signals required before the agent-mode discovery
 # gate is satisfied (local exploration). A single stray search/read is not enough.
 DISCOVERY_EVIDENCE_MIN_DISTINCT: int = 2
-# Weaker bar for the plan-mode evidence gate (a plan needs only some grounding).
-DISCOVERY_EVIDENCE_MIN_DISTINCT_PLAN: int = 1
+# Same bar for plan mode, where it now gates the *draft phase* rather than flagging a
+# plan already written: a plan rests on at least a search and some reads.
+DISCOVERY_EVIDENCE_MIN_DISTINCT_PLAN: int = 2
+# Files whose content the model must have read before the plan-document tool is
+# offered. Distinct signal kinds alone are too weak a bar — `ls` plus `find` scores
+# two without a line of code having been read — so the bar is about reading, not
+# about volume: one real read plus the breadth term above, which keeps a one-file
+# task cheap while still rejecting a plan written over file names.
+PLAN_EVIDENCE_MIN_FILES_READ: int = 1
+# Explore-phase turns after which the plan tool is unlocked whatever the evidence.
+# Plan mode must always reach a plan: past this budget the model is told to record
+# what it has and say plainly what it could not establish.
+PLAN_EXPLORE_MAX_TURNS: int = 8
 
 # Repeated identical failed edit attempts on one file before the write is blocked.
 REPEATED_EDIT_FAILURE_LIMIT: int = 2
+
+# Identical successful calls (same tool, same args, same result) before the result is
+# annotated. Three, not two: a second identical call is often a legitimate re-read
+# after an edit elsewhere, while a third has stopped being about the file.
+IDENTICAL_REPEAT_THRESHOLD: int = 3
+
+
+# ── What a bash command changed (BASH_EFFECT annotation) ──────────────────────
+# A shell write returns nothing, so the model that just ran one is the only actor in
+# the loop with no diff to check. These bound the report it gets back.
+BASH_EFFECT_MAX_FILES: int = 8
+BASH_EFFECT_DIFF_MAX_LINES: int = 40
+# Shortest repeated block that counts as suspicious duplication. Below three lines a
+# repetition is ordinary code (closing braces, blank lines, decorators).
+BASH_EFFECT_DUP_MIN_BLOCK: int = 3
+# Added-line ceiling for the periodicity scan, which is quadratic in this number.
+BASH_EFFECT_DUP_MAX_LINES: int = 1_000
+# Per-file ceiling for the no-git fallback, which snapshots content in memory.
+BASH_EFFECT_SNAPSHOT_MAX_BYTES: int = 512_000
+BASH_EFFECT_SNAPSHOT_MAX_FILES: int = 200
 
 
 # ── Context-window budget ──────────────────────────────────────────────────────
@@ -383,7 +408,6 @@ SERVERS: dict[str, str] = {
     "system": SERVER_BASE + "external/server_system.py",
     "code_intel": SERVER_BASE + "workspace/server_code_intel.py",
     "bash": SERVER_BASE + "workspace/server_bash.py",
-    "localgit": SERVER_BASE + "workspace/server_localgit.py",
     "todo": SERVER_BASE + "agent_state/server_todo.py",
     "symbolic_math": SERVER_BASE + "utilities/server_symbolic_math.py",
     "finetune":    SERVER_BASE + "ml/server_finetune.py",
@@ -409,12 +433,11 @@ SERVER_DESCRIPTIONS: dict[str, str] = {
     "benchmark": "Lightweight micro-benchmarks for architecture calibration.",
     "system": "Read-only OS metrics and environment inspection.",
     "code_intel": "Code navigation: definitions, references, symbol outline (LSP/ctags).",
-    "bash": "Controlled read-only bash command execution (strict allowlist).",
-    "localgit": "Read-only git inspection of the local repository.",
+    "bash": "Shell command execution: search, compile, run, validate, test.",
     "todo": "Live task checklist and prose plan for the agent.",
     "symbolic_math": "Symbolic math (SymPy): algebra, calculus, matrices (symbolic).",
     "finetune": "Manage LoRA fine-tuning runs (local + Slurm backends).",
     "proxy": "Proxy/surrogate registry, benchmarks, runs, and optimization loop.",
-    "agent": "Spawn fresh sub-agents to handle self-contained sub-tasks.",
+    "agent": "Fan work out to fresh sub-agents: read-only exploration, or a separable sub-task.",
     "interaction": "Ask the user structured questions via the elicitation channel.",
 }

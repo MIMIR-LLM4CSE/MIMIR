@@ -37,6 +37,7 @@ from ..context.capabilities import (
     CANDIDATE_SEARCH,
     CHECK_EXISTENCE,
     CODE_EXEC,
+    DELEGATE,
     EDIT,
     ENV_DISCOVERY,
     ENV_MUTATE,
@@ -56,8 +57,20 @@ from ..context.capabilities import (
     path_args,
     scope_spec,
 )
-from ..tool_execution.validation import is_python_test_filepath, is_scratch_path
-from .policy.bash_classify import Kind, classify_bash_command, opaque_command_executes
+from ..tool_execution.validation import (
+    is_python_test_filepath,
+    is_scratch_path,
+)
+from ...servers._shared.shell_paths import (
+    EFFECT_BUILD,
+    EFFECT_RUN,
+    EFFECT_VALIDATE,
+    any_command_on_path as _any_command_on_path,
+    is_path_like_command,
+)
+from .policy.bash_classify import (
+    Kind, classify_bash_command, opaque_command_executes,
+)
 
 
 # Source-file path regex derived from the canonical extension set so it stays in sync
@@ -135,13 +148,63 @@ def _clear_edit_fail_streak(execution_context: dict[str, Any], path: str) -> Non
             counts["error_recovery"] = 0
 
 
+# What performs the mandatory check for a language, by extension: the cheap one, the
+# one that parses and resolves without producing an artifact. Any of the listed
+# commands will do, and only commands the controlled shell will actually run are
+# listed — a checker bash refuses is a check nobody can perform, which is the same
+# dead end as a checker that is not installed.
+#
+# An extension ABSENT from this table has no checker here at all: the file is recorded
+# unverifiable and reported as such. That default used to be the opposite ("the model
+# may well know a checker this file does not"), which wedged every language outside
+# the table — a `.js` or `.rs` edit stayed pending for a check no runnable command
+# could ever credit, and the run could not conclude.
+_CHECKER_COMMANDS_BY_EXTENSION: dict[str, tuple[str, ...]] = {
+    ".py": ("python3", "python"),
+    ".pyi": ("python3", "python"),
+    ".c": ("gcc",),
+    ".h": ("gcc",),
+    ".cc": ("g++",),
+    ".cpp": ("g++",),
+    ".cxx": ("g++",),
+    ".c++": ("g++",),
+    ".hh": ("g++",),
+    ".hpp": ("g++",),
+    ".hxx": ("g++",),
+    ".h++": ("g++",),
+    ".f": ("gfortran",),
+    ".for": ("gfortran",),
+    ".ftn": ("gfortran",),
+    ".f77": ("gfortran",),
+    ".f90": ("gfortran",),
+    ".f95": ("gfortran",),
+    ".f03": ("gfortran",),
+    ".f08": ("gfortran",),
+    ".f18": ("gfortran",),
+    ".cu": ("nvcc",),
+    ".cuh": ("nvcc",),
+    ".java": ("javac",),
+}
+
+
+def _language_checker_missing(path: str) -> bool:
+    """True when this environment has nothing that could check *path* at all.
+
+    The mandatory axis is mandatory only where it is possible. A ``.cu`` edited on a
+    login node with no CUDA toolkit owes no check nobody can run: the file is recorded
+    as unverifiable and the answer says so, which is the honest ending — as opposed to
+    a completion gate that never opens, or a model inventing a check to satisfy it.
+    A language with no entry in the table is the same situation for the same reason.
+    """
+    commands = _CHECKER_COMMANDS_BY_EXTENSION.get(os.path.splitext(path)[1].lower())
+    return not commands or not _any_command_on_path(commands)
+
+
 def _record_code_edit(execution_context: dict[str, Any], edited_path: str) -> None:
     """Mark one successfully-written code file dirty (the per-path edit slice).
 
-    Shared by the single-file edit path (:func:`_observe_edit_outcome`) and the
-    batch-edit per-sub-path loop (:func:`_observe_apply_edits`), which recorded an
-    identical slice. The caller owns the post-edit transition (see
-    :func:`_enter_post_edit_state`).
+    Split out of :func:`_observe_edit_outcome` so the post-edit transition
+    (:func:`_enter_post_edit_state`) stays the caller's to make.
     """
     # Scratchpad files are working material, not produced work: recording them
     # would put throwaway probe scripts in the change ledger and make them demand
@@ -158,6 +221,8 @@ def _record_code_edit(execution_context: dict[str, Any], edited_path: str) -> No
     execution_context["planned_edit_targets"].add(edited_path)
     execution_context["dirty_written_files"].add(edited_path)
     execution_context["validated_files"].discard(edited_path)
+    if _language_checker_missing(edited_path):
+        execution_context["unverifiable_files"].add(edited_path)
     # Evidence is about a specific revision: rewriting the file retracts it. Runs are
     # not retracted — a run is a past event, and its verdict is a statement about what
     # that event showed, which re-editing does not undo.
@@ -167,12 +232,20 @@ def _record_code_edit(execution_context: dict[str, Any], edited_path: str) -> No
 
 
 def _enter_post_edit_state(execution_context: dict[str, Any]) -> None:
-    """Reset the idle counter and move to validate (if the declared set is done) or edit."""
+    """Reset the idle counter and move to validate (if the declared set is done) or edit.
+
+    Straight to ``conclude`` when the declared set is done and nothing owes a check:
+    every file written is one nothing here can check, so there is no validate step to
+    enter and telling the model to check them is asking for a command that does not
+    exist on this machine.
+    """
     execution_context["steps_since_last_edit"] = 0
-    if _should_enter_validate(execution_context):
+    if not _should_enter_validate(execution_context):
+        set_workflow_state(execution_context, "edit")
+    elif has_pending_validation(execution_context):
         set_workflow_state(execution_context, "validate")
     else:
-        set_workflow_state(execution_context, "edit")
+        set_workflow_state(execution_context, "conclude")
 
 
 def _observe_edit_outcome(
@@ -181,8 +254,7 @@ def _observe_edit_outcome(
     """Record the outcome of a single-file code edit.
 
     Success: mark the file dirty and advance the workflow state.
-    Failure: track repeated identical patches; after two, drop the file from read
-    context so the model is forced to re-read (stale context is the usual cause).
+    Failure: track repeated identical patches, and the per-file streak of wrong anchors.
     These are the two status branches of one event, so they share a single guard.
     """
     if not has_cap(tool_name, EDIT, agent.tool_caps):
@@ -209,13 +281,12 @@ def _observe_edit_outcome(
     # Per-file streak, incremented whether or not the patch changed — this is what
     # escalates a model trying *different* wrong anchors on the same file. The
     # signature-based count above resets per patch and only guards identical-patch spin.
+    # The file is deliberately NOT evicted from the read sets here: a wrong anchor is not
+    # missing content, and forging "you have not read this" to provoke a re-read buys a
+    # blind reread where the failure itself already carries the current text (see
+    # server_files._anchor_retry_hint).
     streak = int(execution_context["edit_fail_streak_by_file"].get(edited_path, 0)) + 1
     execution_context["edit_fail_streak_by_file"][edited_path] = streak
-    # After 2 consecutive failures on the file (any patch) force the model to re-read it:
-    # drop it from the discovery sets so the discovery gate demands a fresh read.
-    if streak >= 2:
-        execution_context["read_files"].discard(edited_path)
-        execution_context["snippet_read_files"].discard(edited_path)
 
 
 def _observe_todo_flags(agent: Any, tool_name: str, status: Any, execution_context: dict[str, Any]) -> None:
@@ -256,40 +327,6 @@ def _observe_replacement_tracking(
     if arguments.get("confirm"):
         execution_context["cross_file_grep_old_text"] = old_text
         execution_context["cross_file_grep_source"] = edited_path or ""
-
-
-def _observe_apply_edits(
-    agent: Any, tool_name: str, arguments: dict, status: Any, execution_context: dict[str, Any],
-) -> bool:
-    """Register the confirmed sub-paths of a batch-edit call.
-
-    A batch edit is any edit tool that declares an ``edit_batch`` arg-role — the arg
-    holding its list of sub-edits — rather than a path arg. Returns True to halt all
-    further observation: preview-only mode (confirm=False) must not mark files dirty or
-    trigger any downstream transition.
-    """
-    batch_args = arg_role(tool_name, "edit_batch", agent.tool_caps)
-    if not (batch_args and status == "ok"):
-        return False
-    # Preview-only mode must not mark files as dirty
-    if not arguments.get("confirm", False):
-        return True
-    edits_raw = arguments.get(batch_args[0], "[]")
-    try:
-        sub_edits = json.loads(edits_raw) if isinstance(edits_raw, str) else edits_raw
-    except (json.JSONDecodeError, TypeError):
-        sub_edits = []
-
-    has_code_edit = False
-    for sub in (sub_edits if isinstance(sub_edits, list) else []):
-        sub_path = agent._normalize_workspace_path(sub.get("path"))
-        if sub_path and agent._is_code_filepath(sub_path):
-            has_code_edit = True
-            _record_code_edit(execution_context, sub_path)
-
-    if has_code_edit:
-        _enter_post_edit_state(execution_context)
-    return False
 
 
 def _mark_file_validated(
@@ -379,8 +416,16 @@ def _observe_missing_module(
     successful read of a file that merely *mentions* the text does not trip it:
     any failing tool result whose text matches the module-not-found pattern (e.g. a
     bash ``python``/``pytest`` that raised ``ModuleNotFoundError``).
+
+    A *successful* execution retracts the flag. Without that, one transient
+    ModuleNotFoundError stuck for the rest of the query: ``_exercise_looks_feasible``
+    reads this set and would keep the exercise nudges silent long after the model had
+    found the right interpreter — the one run that proves the environment resolved is
+    exactly the one that used to leave it marked unresolvable.
     """
     if status == "ok":
+        if has_cap(tool_name, CODE_EXEC, getattr(agent, "tool_caps", None)):
+            execution_context.get("unresolved_modules", set()).clear()
         return
     unresolved = execution_context.setdefault("unresolved_modules", set())
     text_fields = (
@@ -499,10 +544,6 @@ def _observe_search_flags(
         return
     execution_context["searched"] = True
     execution_context["search_tool_calls"] += 1
-    for key in ("query", "pattern", "filename", "filename_hint", "name"):
-        value = arguments.get(key)
-        if isinstance(value, str) and value.strip():
-            execution_context["search_queries_used"].add(value.strip().lower())
 
 
 def _observe_discover_transition(payload: dict, execution_context: dict[str, Any]) -> None:
@@ -513,7 +554,7 @@ def _observe_discover_transition(payload: dict, execution_context: dict[str, Any
         payload.get("matches")
         or payload.get("files")
         or payload.get("results")
-        or payload.get("content")
+        or payload.get("lines_returned")
         or payload.get("tree")
         or payload.get("entries")
     )
@@ -566,30 +607,39 @@ def _observe_existence_check(
 
 
 def _observe_read(
-    agent: Any, tool_name: str, arguments: dict, status: Any, execution_context: dict[str, Any],
+    agent: Any, tool_name: str, arguments: dict, status: Any,
+    execution_context: dict[str, Any],
 ) -> None:
     if not (has_cap(tool_name, READ, agent.tool_caps) and status == "ok"):
         return
-    checked = agent._normalize_workspace_path(arguments.get("path"))
-    if not checked:
+    path = agent._normalize_workspace_path(arguments.get("path"))
+    if not path:
         return
-    execution_context["read_files"].add(checked)
-    _register_known_path(execution_context, checked)
-    execution_context["checked_paths"].add(checked)
 
-    # A ranged read declares a line-range arg-role (start/end); a whole-file read does
-    # not. Drive the line accounting off that declared role, not the tool name.
-    range_args = arg_role(tool_name, "line_range", agent.tool_caps)
-    is_ranged = bool(range_args)
-    if is_ranged:
-        start_arg, end_arg = (range_args + ("start_line", "end_line"))[:2]
-        start = int(arguments.get(start_arg, 1))
-        end = int(arguments.get(end_arg, start))
-        lines_read = max(0, end - start + 1)
-        prev = execution_context["read_file_line_counts"].get(checked, 0)
-        execution_context["read_file_line_counts"][checked] = min(10_000, prev + lines_read)
-    else:
-        execution_context["read_file_line_counts"][checked] = 10_000
+    execution_context["read_files"].add(path)
+    _register_known_path(execution_context, path)
+    execution_context["checked_paths"].add(path)
+
+
+def _observe_delegated_exploration(
+    agent: Any, tool_name: str, payload: dict, status: Any,
+    execution_context: dict[str, Any],
+) -> None:
+    """Credit what a sub-agent read back to the caller that sent it.
+
+    These gates ask whether the model has facts about the code or is working off file
+    names. A file a child opened, and whose finding came back into this conversation,
+    is such a fact — so it is discovery evidence here. It stays out of ``read_files``,
+    which also answers "does this agent hold the lines it is about to edit": that one
+    only a read of its own can settle.
+    """
+    if not (has_cap(tool_name, DELEGATE, agent.tool_caps) and status == "ok"):
+        return
+    for raw in payload.get("files_read") or ():
+        path = agent._normalize_workspace_path(raw)
+        if path:
+            execution_context["delegated_read_files"].add(path)
+            _register_known_path(execution_context, path)
 
 
 def _observe_declared_edit_set(
@@ -672,36 +722,39 @@ def _observe_tool_run(
 # specific source file (`ruff check .`, `mypy src/`) clears every pending file at once;
 # per-file crediting is already language-agnostic, this set only adds the shortcut.
 #
-# Every entry must also be in `_VALIDATOR_TIER` below — a head absent from it is an
-# execution, and `_bash_validation_scan` never reaches the whole-project test for one.
-# That is why `pytest` and `ctest` are not here: running a suite is a run, judged on its
-# own output, and it credits no file however green it exits.
-#
-# INVARIANT: every entry must also be in the bash server's `_ALLOWED_COMMANDS` AND
-# `bash_classify._EXEC_COMMANDS`, or it is dead — rejected by the server or untaggable
-# by the classifier. Declare a new project checker in those two places first.
+# INVARIANT (test-enforced): every entry is in `shell_paths.EXEC_EFFECTS` with effect
+# `validate`, and in `_VALIDATOR_TIER` below. That is also why `pytest` and `ctest` are
+# not here: they are declared `run`, and running a suite is judged on its own output —
+# it credits no file however green it exits.
 _PROJECT_VALIDATORS = frozenset({
     "ruff", "mypy", "pyflakes", "black", "py_compile",
 })
 # A positional that names a specific file (has a dotted extension), vs a directory/`.`.
 _FILE_EXT_RE = _re.compile(r"\.[A-Za-z0-9]+$")
 
-# The checkers, keyed by command head, and what kind of check each one is. A head that
-# is *not* here is an execution: it runs the code, so its exit code says the program
-# reached its end and nothing more, and what it printed is judged as a run.
+# The checkers, keyed by command head, and what kind of check each one is. Reached only
+# for a segment `shell_paths.EXEC_EFFECTS` already declared a *validator*: a head absent
+# from this table credits nothing, it does not thereby become an execution.
 _VALIDATOR_TIER = {
     "py_compile": "syntax",
     "ruff": "static", "mypy": "static", "pyflakes": "static", "black": "static",
     # A compiler is a checker, not a run: it emits diagnostics and exit 0 means there
     # were none. Like the linters, its output *is* the verdict — nothing was executed,
-    # so there is no result for anyone to judge.
-    "gcc": "static", "g++": "static", "gfortran": "static", "nvcc": "static",
-    "javac": "static",
+    # so there is no result for anyone to judge. It sits on its own tier because it is
+    # the one check that needs a toolchain to exist: demanded of nobody, credited when
+    # it happens.
+    "gcc": "compiled", "g++": "compiled", "gfortran": "compiled", "nvcc": "compiled",
+    "javac": "compiled",
 }
+# What turns a compiler invocation back into the cheap, always-affordable check: it
+# parses and type-checks the translation unit without emitting an object, so it is the
+# mandatory floor for a compiled language the way ``py_compile`` is for Python.
+_SYNTAX_ONLY_FLAGS = ("-fsyntax-only", "--fsyntax-only")
 
 # Reason recorded when the run itself declared the failure, so the model is not asked to
 # judge output that already carries its own verdict.
 _SELF_DECLARED_FAILURE = "the run's own output declared check=fail"
+_BUILD_EXIT_IS_THE_VERDICT = "the build exited 0; a build reports diagnostics, not results"
 
 
 def _outside_workspace(path: str) -> bool:
@@ -714,10 +767,12 @@ def _outside_workspace(path: str) -> bool:
     return os.path.isabs(path) or path == ".." or path.startswith(".." + os.sep)
 
 
-def _bash_validation_scan(agent: Any, command: str) -> tuple[list[str], bool, str, bool]:
-    """Scan a bash command, telling checks apart from executions.
+def _bash_validation_scan(
+    agent: Any, command: str,
+) -> tuple[list[str], bool, str, str, str]:
+    """Scan a bash command, telling checks from builds from executions.
 
-    Returns ``(explicit_targets, whole_project, tier, ran_program)``:
+    Returns ``(explicit_targets, whole_project, tier, execution, missing_head)``:
     - ``explicit_targets`` — normalized workspace paths of the files named by EXEC
       segments, with a leading ``cd`` rebasing later relative operands (``cd sub &&
       ruff check t.py`` → ``sub/t.py``).
@@ -725,23 +780,37 @@ def _bash_validation_scan(agent: Any, command: str) -> tuple[list[str], bool, st
       file (``ruff check .``, ``mypy src/``): a green run then validates every pending
       file, not just a named one.
     - ``tier`` — the strongest check any segment performed, or ``""`` when none did.
-    - ``ran_program`` — True when any segment *executed* the code rather than checking
-      it. That run owes a reading of its output whether or not it named a file, which
-      ``python -c …`` and a bare ``./solver`` also do.
+    - ``execution`` — ``EFFECT_RUN`` when a segment ran the project's code, ``EFFECT_BUILD``
+      when the strongest thing it did was drive a build, ``""`` when nothing was executed.
+      A run outranks a build in the same chain (``make && ./solver``): the build's exit
+      code settles it, the run's output still owes a reading. Which of the two a segment
+      is comes from :data:`shell_paths.EXEC_EFFECTS`, declared beside the command
+      groups — never from a head's absence from the tier table below, which is how
+      ``source env.sh`` came to be recorded as a run owing a verdict.
+    - ``missing_head`` — the first command in the chain that is not installed here, or
+      ``""``. The one imputation the machine can settle alone: a command the shell could
+      not find said nothing about the change, so its red exit is a wall, not a defect.
+      Three conditions, each guarding a real trap. It reads ``argv[0]``, never ``head``,
+      which is the *module* for ``python -m X`` and so never on PATH (``py_compile`` is a
+      checker with no command of its own). It skips a path-like argv0, because a missing
+      ``./solver`` is a build that did not happen, which is attributable. And it only looks
+      at segments that ran, built or checked something — ``source`` is a shell builtin and
+      would otherwise fail this test on every chain that sets up an environment.
     For a command the classifier cannot read at all, the first three are empty — nothing
-    is attributable — but ``ran_program`` still comes from its command-position heads
+    is attributable — but ``execution`` still comes from its command-position heads
     (:func:`opaque_command_executes`). Opacity is a reason not to credit; it is not
     a reason to believe nothing ran, and inline payloads (which the base prompt asks for)
     are opaque by construction.
     """
     segments = classify_bash_command(command)
     if not segments:
-        return [], False, "", opaque_command_executes(command)
+        return [], False, "", EFFECT_RUN if opaque_command_executes(command) else "", ""
     rel_base = ""
     targets: list[str] = []
     whole_project = False
     tier_rank = -1
-    ran_program = False
+    execution = ""
+    missing_head = ""
     for seg in segments:
         if seg.kind == Kind.CHDIR:
             new_dir = seg.operands[0] if seg.operands else ""
@@ -750,37 +819,75 @@ def _bash_validation_scan(agent: Any, command: str) -> tuple[list[str], bool, st
                     os.path.join(rel_base, new_dir) if rel_base else new_dir
                 )
             continue
-        if seg.kind != Kind.EXEC:
+        # UNKNOWN is an execution too: a head the taxonomy does not place ran
+        # something, and a run owes a verdict whether or not we can name it.
+        if seg.kind not in (Kind.EXEC, Kind.UNKNOWN):
             continue
+        if (
+            not missing_head
+            and seg.effect in (EFFECT_RUN, EFFECT_BUILD, EFFECT_VALIDATE)
+            and seg.argv
+            and not is_path_like_command(seg.argv[0])
+            and not _any_command_on_path((seg.argv[0],))
+        ):
+            missing_head = seg.argv[0]
         for op in seg.operands:
             based = op if (os.path.isabs(op) or not rel_base) else os.path.join(rel_base, op)
             path = agent._normalize_workspace_path(based)
             if path:
                 targets.append(path)
+        if seg.effect == EFFECT_RUN:
+            execution = EFFECT_RUN
+            continue
+        if seg.effect == EFFECT_BUILD:
+            execution = execution or EFFECT_BUILD
+            continue
+        if seg.effect != EFFECT_VALIDATE:
+            continue  # env setup: preparation, not evidence
         seg_tier = _VALIDATOR_TIER.get(seg.head)
         if seg_tier is None:
-            ran_program = True
             continue
+        if seg_tier == "compiled" and any(f in seg.argv for f in _SYNTAX_ONLY_FLAGS):
+            seg_tier = "syntax"
         tier_rank = max(tier_rank, VALIDATION_TIERS.index(seg_tier))
         if seg.head in _PROJECT_VALIDATORS and not any(_FILE_EXT_RE.search(op) for op in seg.operands):
             whole_project = True
     tier = VALIDATION_TIERS[tier_rank] if tier_rank >= 0 else ""
-    return targets, whole_project, tier, ran_program
+    return targets, whole_project, tier, execution, missing_head
 
 
 def _record_run_outcome(
     execution_context: dict[str, Any], command: str, completed: bool,
-    call_id: str = "", reason: str = "",
+    call_id: str = "", reason: str = "", effect: str = EFFECT_RUN,
+    missing_head: str = "",
 ) -> None:
     """Register an execution and, when it did not complete, charge the repair budget.
 
     A run that exited non-zero is already judged — by the machine, in the only direction
     an exit code is trustworthy — so it owes no verdict and goes straight onto the
     repair ladder. A green one owes a reading of what it printed.
+
+    A **build** owes nothing in either direction: like the compilers it drives, what it
+    reports is diagnostics, and a green exit means the artefacts were produced. It is
+    still recorded — a failed build is a wall the user must see — but settled by the
+    machine, so it can never surface as "ran but never judged".
+
+    ``missing_head`` is the one wall the machine can name without being told: a command
+    that is not installed said nothing about the patch, so it charges no repair budget and
+    steers nothing. Every other wall needs the model to claim it (``guardrails/verdict.py``);
+    unclaimed, a red exit drives the repair ladder exactly as it always did.
     """
-    record_run(execution_context, command, completed=completed, call_id=call_id)
+    run = record_run(execution_context, command, completed=completed, call_id=call_id, effect=effect)
+    if completed and effect == EFFECT_BUILD:
+        run["verdict"] = "pass"
+        run["reason"] = _BUILD_EXIT_IS_THE_VERDICT
     if not completed:
-        _register_run_failure(execution_context, command, reason)
+        if missing_head:
+            run["blocked"] = f"{missing_head} is not installed here"
+            execution_context["exercise_blocked_reason"] = run["blocked"]
+            execution_context["exercise_advice_closed"] = True
+        else:
+            _register_run_failure(execution_context, command, reason)
 
 
 def _register_run_failure(
@@ -836,10 +943,12 @@ def _observe_bash_validation(
     if command_args is None:
         return
     command = str(arguments.get(command_args[0], "") or "")
-    explicit, whole_project, tier, ran_program = _bash_validation_scan(agent, command)
-    # `ran_program` (not just a named target) is what catches `python -c …` and a bare
+    explicit, whole_project, tier, execution, missing_head = _bash_validation_scan(
+        agent, command,
+    )
+    # `execution` (not just a named target) is what catches `python -c …` and a bare
     # `./solver`: they validate nothing, but they produced output somebody must judge.
-    if not explicit and not whole_project and not ran_program:
+    if not explicit and not whole_project and not execution:
         return
     stdout = str(payload.get("stdout") or "")
     # A run that computes its own criteria, reports them unmet and still returns 0 is a
@@ -867,10 +976,11 @@ def _observe_bash_validation(
     if tier and whole_project and status == "ok":
         for target in list(pending_validation_paths(execution_context)):
             _mark_file_validated(execution_context, target, tier)
-    if ran_program:
+    if execution:
         _record_run_outcome(
             execution_context, command, status == "ok", call_id,
             _SELF_DECLARED_FAILURE if declared_failure else "",
+            effect=execution, missing_head=missing_head,
         )
 
 
@@ -926,9 +1036,6 @@ def _observe_command(
         elif kind == Kind.SEARCH:
             execution_context["searched"] = True
             execution_context["search_tool_calls"] += 1
-            for pattern in operands:
-                if isinstance(pattern, str) and pattern.strip():
-                    execution_context["search_queries_used"].add(pattern.strip().lower())
         elif kind == Kind.INSPECT:
             for op in operands:
                 path = _resolve(op)
@@ -942,7 +1049,7 @@ def _observe_command(
                     _record_code_edit(execution_context, path)
                     execution_context["last_edit_success_path"] = path
                     _enter_post_edit_state(execution_context)
-        elif kind == Kind.EXEC:
+        elif kind in (Kind.EXEC, Kind.UNKNOWN):
             # Marking a dirty file validated (or failed) is handled status-agnostically
             # by _observe_bash_validation; here we only count the substantive action.
             execution_context["action_op_count"] = int(execution_context.get("action_op_count", 0)) + 1
@@ -1022,8 +1129,6 @@ def record_tool_observation(
     _observe_edit_outcome(agent, tool_name, arguments, status, execution_context)
     _observe_todo_flags(agent, tool_name, status, execution_context)
     _observe_replacement_tracking(agent, tool_name, arguments, status, execution_context)
-    if _observe_apply_edits(agent, tool_name, arguments, status, execution_context):
-        return
     _observe_validation_tool(agent, tool_name, arguments, status, execution_context)
     _observe_missing_module(agent, tool_name, payload, status, execution_context)
     _observe_env_probe(agent, tool_name, execution_context)
@@ -1037,6 +1142,7 @@ def record_tool_observation(
     _observe_dir_inspect(agent, tool_name, status, path, payload, execution_context)
     _observe_existence_check(agent, tool_name, arguments, status, payload, execution_context)
     _observe_read(agent, tool_name, arguments, status, execution_context)
+    _observe_delegated_exploration(agent, tool_name, payload, status, execution_context)
     _observe_declared_edit_set(agent, tool_name, arguments, status, execution_context)
     _observe_bash_validation(agent, tool_name, arguments, status, payload, execution_context, call_id)
     _observe_command(agent, tool_name, arguments, status, payload, execution_context)

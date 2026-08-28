@@ -178,7 +178,11 @@ def _collect_modules() -> dict:
 
 def _collect_toolchains() -> dict:
     tools = {}
-    for name in ["gcc", "g++", "clang", "python3", "mpicc", "mpicxx", "nvcc"]:
+    for name in [
+        "gcc", "g++", "gfortran", "clang", "nvcc", "mpicc", "mpicxx",
+        "make", "cmake",
+        "python3", "pytest", "ruff", "mypy",
+    ]:
         if _cmd_exists(name):
             out = _run([name, "--version"])
             first = (out["stdout"].splitlines() or out["stderr"].splitlines() or [""])[0]
