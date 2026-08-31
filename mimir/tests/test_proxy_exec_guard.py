@@ -67,7 +67,7 @@ class ProxyExecGuardTests(unittest.TestCase):
             store._opt_config_file(name),
             {"proxy_name": name, "proxy_source_path": self.src},
         )
-        store._write_json_atomic(store.registry_path(), {name: {"executable": self.exe}})
+        store._write_json_atomic(store.registry_path(), {name: {"executable_path": self.exe}})
         store._write_active_session(name)
 
     def _check(self, tool: str, **args) -> str | None:
@@ -141,8 +141,18 @@ class ProxyExecGuardTests(unittest.TestCase):
     def test_ended_session_allows_execution(self) -> None:
         self._init_session()
         self._assert_blocked(self._check("bash_run", command=f"python {self.src}"))
-        store._clear_active_session()  # op='end'
+        store._clear_active_session()  # what proxy_eval(op='end') does
         self.assertIsNone(self._check("bash_run", command=f"python {self.src}"))
+
+    def test_registered_executable_is_read_under_its_real_key(self) -> None:
+        """The registry stores the binary under ``executable_path``.
+
+        Reading any other key silently narrows the target set to the source file,
+        letting ``./the_binary`` through while the session is active.
+        """
+        self._init_session()
+        self.assertIn(os.path.abspath(self.exe), gates._proxy_exec_targets())
+        self.assertIn(os.path.basename(self.exe), gates._proxy_exec_targets())
 
 
 if __name__ == "__main__":

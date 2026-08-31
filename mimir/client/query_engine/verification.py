@@ -36,14 +36,15 @@ LEDGER_FRAMING = "Verification ledger — machine-recorded, not model-authored:"
 # below it, and sending the reader to an empty half of the ledger is how a caveat stops
 # being read at all.
 _UNCHECKED_OUTPUT_NOTE = (
-    "A checker says a file parses, imports and lints. It says nothing about whether the "
+    "A check says a file parses and is whole. It says nothing about whether the "
     "answer is right, and nothing here was built or run — so no result was produced, and "
     "none was judged."
 )
-# Not a gap the model can close: nothing on this machine can check these files at all.
+# Not a gap the model can close, and now the only one of its kind: the mandatory check
+# runs in-process, so a file escapes it only by not being text at all.
 _UNVERIFIABLE_NOTE = (
-    "No checker for these files exists in this environment, so the check that is "
-    "otherwise required could not be run on them."
+    "These files are not readable as text here, so the check that is otherwise "
+    "required could not be run on them."
 )
 # Said next to _UNCHECKED_OUTPUT_NOTE, never alone: "nothing ran" is the finding, this
 # is why. Recorded by the feasibility gate that suppressed the run recommendation, so
@@ -115,11 +116,11 @@ def build_ledger(execution_context: dict) -> dict | None:
     for f in written:
         if f in unvalidated:
             rows.append(
-                f"`{f}` — **not checked** (no checker here)" if f in unverifiable
+                f"`{f}` — **not checked** (not readable as text)" if f in unverifiable
                 else f"`{f}` — **not checked**"
             )
         else:
-            rows.append(f"`{f}` — checked: {validation_tier(execution_context, f) or 'static'}")
+            rows.append(f"`{f}` — checked: {validation_tier(execution_context, f) or 'structural'}")
 
     for command, run in sorted(runs.items()):
         rows.append(_run_row(command, run))

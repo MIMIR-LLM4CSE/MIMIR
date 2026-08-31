@@ -1788,6 +1788,7 @@ class ClientHelperTests(unittest.TestCase):
             "declared_edit_set": set(),
             "steps_since_last_edit": 5,
             "runs": {"python solver.py": {"completed": True, "verdict": ""}},
+            "builtin_check_findings": {"solver.py": "line 3: '{' is never closed"},
             "nudge_counts": {},
         }
         self.assertTrue(

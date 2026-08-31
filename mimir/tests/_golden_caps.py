@@ -34,7 +34,7 @@ _BUILD_DESCRIPTOR_PARAMS = frozenset(inspect.signature(srv.build_descriptor).par
 # --- golden expected classification (independent literal snapshots) ----------
 SENSITIVE_TOOLS = {
     "delete_file", "bash_run", "http_post",
-    "salloc_submit", "sbatch_submit", "benchmark_summary", "memory_delete",
+    "salloc_submit", "sbatch_submit", "memory_delete",
     "memory_clear", "todo_delete_plan",
     "ft_config_set", "ft_run", "ft_run_slurm", "ft_stop", "ft_runner_promote",
     "proxy_manage", "proxy_exec", "proxy_eval", "proxy_slurm",
@@ -48,8 +48,7 @@ PLAN_BLOCKED_TOOLS = {
     "replace_all_in_file", "replace_lines", "write_file", "salloc_submit",
     "http_post", "memory_delete", "memory_clear",
     "ft_config_set", "ft_run", "ft_run_slurm", "ft_stop",
-    "ft_runner_promote", "benchmark_summary", "benchmark_memory_copy",
-    "benchmark_numpy_matmul", "benchmark_python_compute",
+    "ft_runner_promote",
     "proxy_manage", "proxy_exec", "proxy_eval", "proxy_slurm",
     "salloc_submit", "sbatch_submit",
     "env_pip_install", "env_pip_uninstall", "env_create", "env_delete",
@@ -60,7 +59,7 @@ NON_BATCH_TOOLS = {
     "salloc_submit", "sbatch_submit", "ft_run", "ft_run_slurm", "ft_stop",
     "ft_runner_promote",
     "bash_run", "http_post", "memory_delete",
-    "memory_clear", "todo_delete_plan", "benchmark_summary",
+    "memory_clear", "todo_delete_plan",
     "env_pip_install", "env_pip_uninstall", "env_create", "env_delete",
 }
 
@@ -198,7 +197,7 @@ RISK_NOTE_TOOLS = {
     "replace_all_in_file",
     "bash_run", "http_get", "http_post",
     "env_pip_install", "env_pip_uninstall", "env_create", "env_delete",
-    "salloc_submit", "sbatch_submit", "benchmark_summary", "memory_delete",
+    "salloc_submit", "sbatch_submit", "memory_delete",
     "memory_clear", "todo_delete_plan", "proxy_slurm",
 }
 
@@ -240,8 +239,15 @@ def _literal(node, module_consts: dict | None = None):
     if isinstance(node, ast.List):
         return [_literal(e, consts) for e in node.elts]
     if isinstance(node, ast.Dict):
-        return {_literal(k, consts): _literal(v, consts)
-                for k, v in zip(node.keys, node.values)}
+        # A `**base` entry parses as a None key; merge the mapping it unpacks so a
+        # declaration can extend a shared constant instead of restating it.
+        out: dict = {}
+        for k, v in zip(node.keys, node.values):
+            if k is None:
+                out.update(_literal(v, consts))
+            else:
+                out[_literal(k, consts)] = _literal(v, consts)
+        return out
     if isinstance(node, ast.Constant):
         return node.value
     if isinstance(node, ast.Name):

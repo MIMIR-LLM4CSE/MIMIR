@@ -171,9 +171,8 @@ def _missing_evidence(execution_context: dict[str, Any] | None) -> list[str]:
         pending = sorted(dirty_files - validated_files)
         if pending:
             evidence.append(
-                "Validate modified files through the shell before concluding "
-                "(python -m py_compile / pytest -q / ruff check / python -m mypy): "
-                + ", ".join(pending[:5])
+                "These modified files are still waiting on the check that runs before "
+                "this run may conclude: " + ", ".join(pending[:5])
             )
 
     if dirty_files and not validated_files:

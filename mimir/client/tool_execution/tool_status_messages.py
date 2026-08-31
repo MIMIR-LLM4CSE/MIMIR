@@ -14,7 +14,7 @@ def _relpath(path: str) -> str:
 
     Tools now take and report absolute paths (see ``server_files._require_abs``),
     which is right for the model and unreadable for a person: a row reading
-    ``Reading file: /shared/data1/Projects/.../mimir/client/foo.py`` buries the one
+    ``Reading file: /long/absolute/path/.../mimir/client/foo.py`` buries the one
     token that matters. The row answers "what is it touching right now", and the
     file name answers that.
 

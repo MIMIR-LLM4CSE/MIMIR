@@ -60,12 +60,12 @@ async def auto_validate_written_file(
     """Post-write completeness checks after a source-file write.
 
     The deterministic syntax→imports→lint→typecheck→tests validation *ladder* was
-    removed: validating written code now happens through the bash server
-    (``python -m py_compile`` / ``pytest`` / ``ruff`` / ``mypy``), steered by the
-    validation guidance nudge rather than run automatically here. What remains are the
-    two *completeness* checks that have no bash equivalent and never depended on a
-    validator tool — a leftover ``old_text`` after a replace, and stale cross-file
-    references after a workspace-wide rename. Best-effort and advisory only.
+    removed, and the mandatory check that replaced it does not run here either: it is
+    one sweep at the conclusion gate (``guardrails.builtin_check``), so a file the model
+    edits back and forth is read once, on its final content, rather than once per write.
+    What remains here are the two *completeness* checks that belong to the edit itself —
+    a leftover ``old_text`` after a replace, and stale cross-file references after a
+    workspace-wide rename. Best-effort and advisory only.
     """
     if execution_context is None or not path or not is_code_filepath(path):
         return ""

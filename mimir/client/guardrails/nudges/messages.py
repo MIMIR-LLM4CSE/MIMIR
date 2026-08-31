@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from ..builtin_check import builtin_check_failures
 from ..workflow import (
 	pending_validation_paths,
 	worst_denial_stage,
@@ -20,8 +21,6 @@ from ..workflow import (
 )
 from ...context import (
     bootstrap_state_context,
-    declared_edit_set_complete,
-    unwritten_declared_files,
 )
 from ...context.capabilities import scope_spec
 
@@ -83,7 +82,6 @@ def discovery_nudge_message() -> str:
 
 def state_nudge_message(agent: Any, execution_context: dict) -> str:
 	state = execution_context.get("workflow_state", "discover")
-	tool = shell_tool_name(agent)
 	if state == "discover":
 		return (
 			"Workflow state is DISCOVER (gather evidence). Collect enough material — repository context "
@@ -101,37 +99,34 @@ def state_nudge_message(agent: Any, execution_context: dict) -> str:
 		)
 	if state == "validate":
 		return (
-			f"Workflow state is VALIDATE (verify). Check the modified files through {tool} "
-			"(`python -m py_compile` / `ruff check` / `python -m mypy`) and fix what they report. "
-			"Going back to editing — here or elsewhere — is a normal move, not a step out of order."
+			"Workflow state is VALIDATE (verify). The modified files are checked here, without "
+			"you having to invoke anything; repair whatever that check reports. Exercising the "
+			"change on top of it — building it, running it, running the tests around it — is the "
+			"part that is yours, wherever it is simply feasible. Going back to editing, here or "
+			"elsewhere, is a normal move, not a step out of order."
 		)
 	if state == "conclude":
 		return "Workflow state is CONCLUDE. Summarize completion and residual risks."
 	return f"Unknown workflow state '{state}'. Expected one of: {', '.join(WORKFLOW_STATES)}."
 
 
-def _validation_nudge_message(pending_paths: list[str], tool: str) -> str:
-	"""Ask for the *checks* the pending files still owe — and only those.
+def _validation_nudge_message(findings: dict[str, str]) -> str:
+	"""Report what the built-in check found, file by file.
 
-	The examples are checkers alone: a tool whose output is a list of problems, so an
-	empty one settles the file. `pytest` used to be listed here beside them, which taught
-	the model that a green suite validates a file — the exact reading the run/verdict
-	split exists to undo. Running the code is a separate step, owned by its own nudges.
-
-	The compiled-language example is the no-artifact one on purpose: what is required is
-	the check, and `-fsyntax-only` needs a compiler but no working build.
+	The check itself is no longer asked for: it runs here, in-process, over every
+	modified file before the loop may conclude. So this message is not a request to go
+	validate — it is the result, and the only thing it asks for is the repair. It names
+	no tool for the same reason it names no command: nothing outside had to be installed
+	for the defect below to be found.
 	"""
-	pending_text = ", ".join(pending_paths[:5]) if pending_paths else "modified files"
+	lines = "\n".join(f"- {path}: {detail}" for path, detail in findings.items())
 	return (
-		"Do not conclude success yet. The following code file(s) were modified but not yet "
-		f"checked: {pending_text}. Checking each one through {tool} is required before "
-		"finalizing — e.g. `python -m py_compile <file>` (syntax), `ruff check <file>` (lint), "
-		"`python -m mypy <file>` (types), or for a compiled language `gcc -fsyntax-only <file>` "
-		"/ `gfortran -fsyntax-only <file>`. This is the cheap step, not the build and not the "
-		"run. If a check reports errors, fix the code and re-run it. "
-		"If an import cannot be resolved, the default interpreter may be wrong — pass the right "
-		"environment's python (the platform/environment query tool lists available environments). "
-		"If a validator is unavailable in every environment, say so and why, then proceed — do not loop."
+		"Do not conclude success yet. The mandatory check ran on the files you modified "
+		"and rejected these:\n"
+		+ lines
+		+ "\n\nRead the reported location and repair it. The check runs again on its own "
+		"once you stop editing — you do not have to invoke anything. A file that is "
+		"truncated or half-written is the usual cause; re-read the region before rewriting it."
 	)
 
 
@@ -341,66 +336,46 @@ def todo_nudge_message(execution_context: dict) -> str:
 
 
 def validation_nudge_message(agent: Any, execution_context: dict) -> str:
+    """What the model is told about the files the built-in check rejected.
+
+    No longer a push toward doing the check — the loop already did it. The message is
+    the finding, so the branches that used to soften it (mid-refactor, just-edited)
+    are gone with the request they were softening.
+    """
     execution_context = bootstrap_state_context(execution_context) or {}
 
-    # If the model is still in the middle of a declared multi-file edit set,
-    # do not push too hard toward validation yet.
-    declared_complete = declared_edit_set_complete(execution_context)
-    steps_since_last_edit = int(execution_context.get("steps_since_last_edit", 0))
-
-    base_message = _validation_nudge_message(
-        pending_validation_paths(execution_context), shell_tool_name(agent),
-    )
-
-    if not declared_complete:
-        remaining = unwritten_declared_files(execution_context)
-        if remaining:
-            remaining_preview = ", ".join(remaining[:5])
-            return (
-                "You appear to still be completing a planned multi-file edit. "
-                f"Finish the remaining declared targets first: {remaining_preview}. "
-                "Then validate the modified files."
-            )
-
-    # If the model just edited very recently, keep the nudge softer.
-    if steps_since_last_edit < 2:
+    findings = builtin_check_failures(execution_context)
+    if not findings:
+        # Nothing was rejected: the pending files are ones the sweep has not reached
+        # yet — it runs where the loop asks whether it may conclude, not after every
+        # write. Say that plainly rather than inventing a defect.
+        pending = pending_validation_paths(execution_context)
         return (
-            base_message
-            + " If you are still finishing the current refactor, complete it first; "
-              "otherwise start validation now."
+            "Do not conclude success yet. These files were modified and are still "
+            f"waiting on the mandatory check: {', '.join(pending[:5])}."
         )
 
-    fail_counts = execution_context.get("validation_fail_count_by_file", {})
-    if not fail_counts:
-        return base_message
+    base_message = _validation_nudge_message(findings)
 
-    hottest_path = max(fail_counts, key=fail_counts.get)
+    fail_counts = execution_context.get("validation_fail_count_by_file", {})
+    hottest_path = max(findings, key=lambda path: int(fail_counts.get(path, 0)))
     hottest_count = int(fail_counts.get(hottest_path, 0))
     if hottest_count < 2:
         return base_message
 
-    hint = ""
+    suffix = f" The check has now failed {hottest_count} time(s) for {hottest_path}."
     last_replace_file = execution_context.get("last_replace_file", "")
     last_replace_old_text = execution_context.get("last_replace_old_text", "")
-
     if last_replace_file == hottest_path and last_replace_old_text:
-        hint = (
-            " Read the local failing region around the last replacement anchor first, "
-            "then apply a smaller targeted fix."
+        return (
+            base_message + suffix
+            + " Read the local failing region around the last replacement anchor first, "
+              "then apply a smaller targeted fix."
         )
-
-    suffix = f"Validation has failed {hottest_count} time(s) for {hottest_path}."
     if hottest_count >= VALIDATION_RETRY_BUDGET:
-        suffix += (
-            " The retry budget for this file is exhausted; avoid another broad rewrite unless the user explicitly wants it."
+        return (
+            base_message + suffix
+            + " The retry budget for this file is exhausted; avoid another broad rewrite "
+              "unless the user explicitly wants it."
         )
-
-    if hint:
-        return base_message + " " + suffix + hint
-
-    return (
-        base_message
-        + " "
-        + suffix
-        + " Prefer a smaller, localized repair and re-run validation."
-    )
+    return base_message + suffix + " Prefer a smaller, localized repair."

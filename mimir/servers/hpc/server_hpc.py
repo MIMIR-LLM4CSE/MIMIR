@@ -11,9 +11,12 @@ Environment Modules / Lmod are handled directly through the bash server's
 
 Safety model:
 - Query tools are read-only.
-- Allocation/batch submission is separated and intended to be approval-gated by
-  the client. ``sbatch_submit`` returns a ``background_job`` descriptor that the
-  client watcher polls to completion via ``slurm_job_status``.
+- Both submitters take resources as *arguments* and build the command themselves —
+  the model never hands over a command string — and launch it as argv, never through
+  a shell. They are approval-gated client-side (``CLUSTER_SUBMIT``). The read-only
+  queries do use a shell, for ``$USER`` expansion; their filters are quoted.
+- ``sbatch_submit`` returns a ``background_job`` descriptor that the client watcher
+  polls to completion via ``slurm_job_status``.
 """
 
 import os
@@ -27,6 +30,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'
 from mcp.server.fastmcp import FastMCP
 from capabilities import tool_caps, PLAN_BLOCKED, CLUSTER_SUBMIT, BACKGROUNDABLE, IRREVERSIBLE
 from responses import err, ok
+from state_paths import state_dir
 
 mcp = FastMCP(
     "HPCServer",
@@ -39,9 +43,10 @@ _TIMEOUT_ALLOC = 20
 _TIMEOUT_SUBMIT = 30
 _MAX_OUTPUT = 128 * 1024
 
-# Where async batch jobs stash their script + Slurm log (env-overridable for tests).
-_HPC_JOBS_DIR = os.environ.get(
-    "MIMIR_HPC_JOBS_DIR", os.path.expanduser("~/.cache/mimir_hpc/jobs"))
+# Where async batch jobs stash their script + Slurm log: under the agent's own state
+# dir like every other persistent artefact, not a second home-relative location
+# (env-overridable for tests).
+_HPC_JOBS_DIR = os.environ.get("MIMIR_HPC_JOBS_DIR", os.path.join(state_dir(), "hpc_jobs"))
 
 
 def _run_bash(script: str, timeout: int) -> dict:
@@ -111,25 +116,189 @@ def slurm_partitions() -> dict:
     return ok({"partitions": rows, "count": len(rows)})
 
 
+# Node facts we read out of `scontrol show node -o`. Values containing spaces (OS,
+# Reason) are deliberately not among them, so a simple `KEY=<non-space>` scan is enough.
+_NODE_FIELDS = (
+    "NodeName", "Arch", "CPUTot", "CPUAlloc", "CPULoad", "RealMemory", "AllocMem",
+    "FreeMem", "Sockets", "CoresPerSocket", "ThreadsPerCore", "Gres",
+    "AvailableFeatures", "State", "Partitions",
+)
+
+
+def _as_int(value: str) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _clean_gres(value: str) -> str:
+    """'gpu:a100:8(S:1,3,5,7)' -> 'gpu:a100:8'; '(null)' -> ''."""
+    if not value or value == "(null)":
+        return ""
+    return re.sub(r"\(S:[^)]*\)", "", value)
+
+
+def _parse_scontrol_nodes(stdout: str) -> list[dict]:
+    nodes = []
+    for line in stdout.splitlines():
+        if "NodeName=" not in line:
+            continue
+        raw = {k: v for k, v in re.findall(r"\b(\w+)=([^\s]+)", line)}
+        gres = _clean_gres(raw.get("Gres", ""))
+        cpu_tot, cpu_alloc = _as_int(raw.get("CPUTot", "")), _as_int(raw.get("CPUAlloc", ""))
+        features = raw.get("AvailableFeatures", "")
+        nodes.append({
+            "node":             raw.get("NodeName", ""),
+            "arch":             raw.get("Arch", ""),
+            "state":            raw.get("State", ""),
+            "partitions":       [p for p in raw.get("Partitions", "").split(",") if p],
+            "cpus":             cpu_tot,
+            "cpus_allocated":   cpu_alloc,
+            "cpus_free":        (cpu_tot - cpu_alloc) if None not in (cpu_tot, cpu_alloc) else None,
+            "cpu_load":         raw.get("CPULoad", ""),
+            "sockets":          _as_int(raw.get("Sockets", "")),
+            "cores_per_socket": _as_int(raw.get("CoresPerSocket", "")),
+            "threads_per_core": _as_int(raw.get("ThreadsPerCore", "")),
+            "mem_mb":           _as_int(raw.get("RealMemory", "")),
+            "mem_free_mb":      _as_int(raw.get("FreeMem", "")),
+            "gres":             gres,
+            "features":         "" if features == "(null)" else features,
+        })
+    return nodes
+
+
+def _aggregate_node_types(nodes: list[dict]) -> list[dict]:
+    """Collapse nodes onto their hardware signature.
+
+    A 124-node cluster listed one row per node buries the answer in noise; what the
+    caller is choosing between is the handful of *kinds* of machine, and how much of
+    each is free right now.
+    """
+    groups: dict[tuple, dict] = {}
+    for n in nodes:
+        key = (n["arch"], n["cpus"], n["mem_mb"], n["gres"],
+               n["sockets"], n["cores_per_socket"], n["threads_per_core"], n["features"])
+        g = groups.setdefault(key, {
+            "arch": n["arch"], "cpus": n["cpus"], "mem_mb": n["mem_mb"],
+            "mem_gb": round(n["mem_mb"] / 1024, 1) if n["mem_mb"] else None,
+            "gres": n["gres"], "sockets": n["sockets"],
+            "cores_per_socket": n["cores_per_socket"], "threads_per_core": n["threads_per_core"],
+            "features": n["features"], "partitions": set(), "nodes_total": 0,
+            "by_state": {}, "cpus_free_total": 0, "example_nodes": [],
+        })
+        g["partitions"].update(n["partitions"])
+        g["nodes_total"] += 1
+        state = (n["state"] or "UNKNOWN").split("+")[0].lower()
+        g["by_state"][state] = g["by_state"].get(state, 0) + 1
+        if n["cpus_free"]:
+            g["cpus_free_total"] += n["cpus_free"]
+        if len(g["example_nodes"]) < 3:
+            g["example_nodes"].append(n["node"])
+
+    out = []
+    for g in groups.values():
+        g["partitions"] = sorted(g["partitions"])
+        out.append(g)
+    # Most immediately usable first: idle nodes, then raw size.
+    out.sort(key=lambda g: (-g["by_state"].get("idle", 0), -(g["cpus"] or 0)))
+    return out
+
+
+def _sinfo_nodes() -> list[dict]:
+    """Degraded node list for a cluster whose `scontrol show node` is restricted.
+
+    sinfo is readable everywhere but does not carry the architecture, so callers are
+    told the field is unknown rather than being handed a wrong default.
+    """
+    result = _run_bash("sinfo -N -h -o '%N|%P|%t|%c|%m|%e|%G|%X|%Y|%Z'", _TIMEOUT_READ)
+    if result["status"] != "ok":
+        return []
+    rows = _parse_pipe_table(result.get("stdout", ""), [
+        "node", "partition", "state", "cpus", "mem_mb", "mem_free_mb", "gres",
+        "sockets", "cores_per_socket", "threads_per_core",
+    ])
+    # sinfo -N emits one row per (node, partition), so a node in three partitions
+    # appears three times; merge on the node name or every count is inflated.
+    nodes: list[dict] = []
+    by_name: dict[str, dict] = {}
+    for r in rows:
+        part = r["partition"].rstrip("*")
+        if r["node"] in by_name:
+            if part not in by_name[r["node"]]["partitions"]:
+                by_name[r["node"]]["partitions"].append(part)
+            continue
+        by_name[r["node"]] = {
+            "node": r["node"], "arch": "", "state": r["state"].upper(),
+            "partitions": [part],
+            "cpus": _as_int(r["cpus"].rstrip("+")), "cpus_allocated": None, "cpus_free": None,
+            "cpu_load": "", "sockets": _as_int(r["sockets"]),
+            "cores_per_socket": _as_int(r["cores_per_socket"]),
+            "threads_per_core": _as_int(r["threads_per_core"]),
+            "mem_mb": _as_int(r["mem_mb"]), "mem_free_mb": _as_int(r["mem_free_mb"]),
+            "gres": _clean_gres(r["gres"]), "features": "",
+        }
+        nodes.append(by_name[r["node"]])
+    return nodes
+
+
 @mcp.tool()
-def slurm_nodes(partition: str = "", states: str = "") -> dict:
-    """List Slurm nodes and their resources/state.
+def slurm_nodes(partition: str = "", states: str = "", node: str = "", detail: bool = False) -> dict:
+    """Inventory the cluster's compute nodes: hardware, GPUs, and what is free right now.
+
+    Read-only and instant — it reads Slurm's own node database, which is what actually
+    governs placement, so it allocates nothing. Use it before a submission to pick the
+    partition and resources that fit: note that **architecture varies between nodes** on
+    a mixed cluster, so a binary built on the login node will not necessarily run on the
+    node you submit to.
+
+    Returns node *types* (nodes collapsed onto their hardware signature, with a count
+    per state) unless you ask for detail or name a node — a per-node listing of a large
+    cluster is mostly noise.
 
     Args:
-        partition: Optional partition filter.
-        states: Optional state filter (comma-separated), e.g. 'idle,mix,alloc'.
+        partition: Only nodes in this partition.
+        states: Comma-separated state filter, e.g. 'idle,mix,alloc'.
+        node: A single node name; implies detail.
+        detail: List every matching node individually instead of aggregating.
     """
-    p = f" -p {shlex.quote(partition)}" if partition else ""
-    s = f" -t {shlex.quote(states)}" if states else ""
-    cmd = f"sinfo -N -h{p}{s} -o '%N|%P|%t|%c|%m|%G'"
-    result = _run_bash(cmd, _TIMEOUT_READ)
-    if result["status"] != "ok":
-        return err(result.get("stderr") or result.get("error", "sinfo node query failed"))
-    rows = _parse_pipe_table(
-        result.get("stdout", ""),
-        ["node", "partition", "state", "cpus", "mem_mb", "gres"],
-    )
-    return ok({"nodes": rows, "count": len(rows)})
+    degraded = ""
+    result = _run_argv(["scontrol", "show", "node", "-o"], _TIMEOUT_READ)
+    if result["status"] == "ok":
+        nodes = _parse_scontrol_nodes(result.get("stdout", ""))
+    else:
+        nodes = _sinfo_nodes()
+        degraded = "scontrol unavailable: architecture and live CPU occupancy are unknown."
+    if not nodes:
+        return err(result.get("stderr") or result.get("error", "node query failed"),
+                   hint="Ensure Slurm commands are available on this host.")
+
+    if node:
+        wanted = {n.strip() for n in node.split(",") if n.strip()}
+        nodes = [n for n in nodes if n["node"] in wanted]
+    if partition:
+        nodes = [n for n in nodes if partition in n["partitions"]]
+    if states:
+        wanted = {s.strip().lower() for s in states.split(",") if s.strip()}
+        nodes = [n for n in nodes if any(part.lower() in wanted for part in (n["state"] or "").split("+"))]
+
+    if not nodes:
+        return ok({"nodes": [], "count": 0,
+                   "note": "No node matched the filters."})
+    if detail or node:
+        payload = {"nodes": nodes, "count": len(nodes)}
+    else:
+        types = _aggregate_node_types(nodes)
+        payload = {
+            "node_types":   types,
+            "type_count":   len(types),
+            "nodes_total":  len(nodes),
+            "architectures": sorted({n["arch"] for n in nodes if n["arch"]}),
+            "note": "Aggregated by hardware signature; pass detail=True or node='<name>' for individual nodes.",
+        }
+    if degraded:
+        payload["degraded"] = degraded
+    return ok(payload)
 
 
 @mcp.tool()
@@ -153,8 +322,69 @@ def slurm_queue(user_only: bool = True, states: str = "") -> dict:
     return ok({"jobs": rows, "count": len(rows)})
 
 
-@mcp.tool()
-def salloc_build_command(
+def _run_argv(argv: list[str], timeout: int) -> dict:
+    """Run a command as argv — no shell, so no argument can inject a second command."""
+    try:
+        res = subprocess.run(
+            argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=timeout,
+        )
+        return {
+            "status": "ok" if res.returncode == 0 else "error",
+            "returncode": res.returncode,
+            "stdout": res.stdout[:_MAX_OUTPUT],
+            "stderr": res.stderr[:_MAX_OUTPUT],
+        }
+    except subprocess.TimeoutExpired:
+        return {"status": "error", "error": f"Command timed out after {timeout}s."}
+    except Exception as e:
+        return err(str(e))
+
+
+def _salloc_argv(partition: str, account: str, qos: str, nodes: int, ntasks: int,
+                 cpus_per_task: int, mem: str, time: str, gres: str, constraint: str,
+                 job_name: str, extra_args: str) -> tuple[list[str], dict | None]:
+    """Build a validated salloc argv, or return the rejection."""
+    if not partition.strip():
+        return [], err("partition is required.", hint="Use slurm_partitions() to list them.")
+    if nodes < 1 or ntasks < 1 or cpus_per_task < 1:
+        return [], err("nodes, ntasks, and cpus_per_task must be >= 1")
+    if time and not _validate_time(time):
+        return [], err("Invalid Slurm time format", hint="Use HH:MM:SS or D-HH:MM:SS")
+    if mem and not _validate_mem(mem):
+        return [], err("Invalid mem format", hint="Use values like 8G, 32000M, 1T")
+
+    argv = [
+        "salloc",
+        f"--partition={partition}",
+        f"--nodes={nodes}",
+        f"--ntasks={ntasks}",
+        f"--cpus-per-task={cpus_per_task}",
+        f"--time={time}",
+        f"--job-name={job_name}",
+    ]
+    for flag, value in (("account", account), ("qos", qos), ("mem", mem),
+                        ("gres", gres), ("constraint", constraint)):
+        if value:
+            argv.append(f"--{flag}={value}")
+    if extra_args:
+        # argv never reaches a shell, so metacharacters cannot inject; requiring a
+        # leading dash is what stops extra_args smuggling in a *command* to allocate for.
+        try:
+            extra = shlex.split(extra_args)
+        except ValueError as exc:
+            return [], err(f"Could not parse extra_args: {exc}")
+        if any(not tok.startswith("-") for tok in extra):
+            return [], err("extra_args accepts salloc flags only.",
+                           hint="Every token must start with '-'; pass resources via the named arguments.")
+        argv += extra
+    return argv, None
+
+
+@mcp.tool(**tool_caps(
+    caps=[PLAN_BLOCKED, CLUSTER_SUBMIT], reversibility=IRREVERSIBLE, non_batch=True,
+    risk_note="requests Slurm resource allocation",
+))
+def salloc_submit(
     partition: str,
     account: str = "",
     qos: str = "",
@@ -165,93 +395,58 @@ def salloc_build_command(
     time: str = "01:00:00",
     gres: str = "",
     constraint: str = "",
-    job_name: str = "mcp-interactive",
+    job_name: str = "mimir-interactive",
+    confirm: bool = False,
+    timeout_seconds: int = _TIMEOUT_ALLOC,
     extra_args: str = "",
 ) -> dict:
-    """Build a validated salloc command without executing it.
+    """Request an interactive Slurm allocation (sensitive, synchronous).
 
-    Use this first to preview requested resources before submitting.
-    """
-    if nodes < 1 or ntasks < 1 or cpus_per_task < 1:
-        return err("nodes, ntasks, and cpus_per_task must be >= 1")
-    if time and not _validate_time(time):
-        return err("Invalid Slurm time format", hint="Use HH:MM:SS or D-HH:MM:SS")
-    if mem and not _validate_mem(mem):
-        return err("Invalid mem format", hint="Use values like 8G, 32000M, 1T")
-
-    parts = ["salloc"]
-    parts.append(f"--partition={shlex.quote(partition)}")
-    parts.append(f"--nodes={nodes}")
-    parts.append(f"--ntasks={ntasks}")
-    parts.append(f"--cpus-per-task={cpus_per_task}")
-    parts.append(f"--time={shlex.quote(time)}")
-    parts.append(f"--job-name={shlex.quote(job_name)}")
-
-    if account:
-        parts.append(f"--account={shlex.quote(account)}")
-    if qos:
-        parts.append(f"--qos={shlex.quote(qos)}")
-    if mem:
-        parts.append(f"--mem={shlex.quote(mem)}")
-    if gres:
-        parts.append(f"--gres={shlex.quote(gres)}")
-    if constraint:
-        parts.append(f"--constraint={shlex.quote(constraint)}")
-    if extra_args:
-        # extra_args is pre-built by the user/agent so we pass it through,
-        # but strip shell operators that could escape the salloc context.
-        _FORBIDDEN = {";", "&&", "||", "$(", "`", ">", ">>"}
-        if any(tok in extra_args for tok in _FORBIDDEN):
-            return err("extra_args contains forbidden shell tokens.", hint="Pass plain salloc flags only.")
-        parts.append(extra_args)
-
-    cmd = " ".join(parts)
-    return ok(
-        {
-            "command": cmd,
-            "note": "Dry-run only. Use salloc_submit(command, confirm=True) to execute.",
-        }
-    )
-
-
-@mcp.tool(**tool_caps(
-    caps=[PLAN_BLOCKED, CLUSTER_SUBMIT], reversibility=IRREVERSIBLE, non_batch=True,
-    risk_note="requests Slurm resource allocation",
-))
-def salloc_submit(command: str, confirm: bool = False, timeout_seconds: int = _TIMEOUT_ALLOC) -> dict:
-    """Submit an salloc command.
-
-    This is a sensitive action and should be approval-gated by the MCP client.
+    Takes the resources as arguments and builds the salloc command itself, so what is
+    validated is what runs. Call with confirm=False first to see the exact command
+    without executing it. For a non-blocking run use sbatch_submit instead.
 
     Args:
-        command: Full salloc command string.
-        confirm: Must be true to execute.
-        timeout_seconds: Max time to wait for command response.
+        partition: Slurm partition (required).
+        account: Slurm account to charge (optional).
+        qos: Quality of service (optional).
+        nodes: Nodes to allocate.
+        ntasks: Tasks to run.
+        cpus_per_task: CPU cores per task.
+        mem: Memory in Slurm format (e.g. '8G'); empty = scheduler default.
+        time: Wall-clock limit HH:MM:SS or D-HH:MM:SS.
+        gres: Generic resources, e.g. 'gpu:2'.
+        constraint: Node feature constraint.
+        job_name: Slurm job name.
+        confirm: Must be True to execute; False returns the command as a preview.
+        timeout_seconds: Max time to wait for the allocation response.
+        extra_args: Additional salloc flags; every token must start with '-'.
     """
-    if not command.strip().startswith("salloc "):
-        return err("Only commands starting with 'salloc ' are allowed")
+    argv, error = _salloc_argv(partition, account, qos, nodes, ntasks, cpus_per_task,
+                               mem, time, gres, constraint, job_name, extra_args)
+    if error:
+        return error
+    preview = shlex.join(argv)
     if not confirm:
-        return err(
-            "Execution not confirmed.",
-            hint="Set confirm=True only after user approval.",
-        )
+        return err("Execution not confirmed.",
+                   hint="Review the command, then call again with confirm=True after user approval.",
+                   command=preview)
 
-    timeout_seconds = max(5, min(timeout_seconds, 120))
-    result = _run_bash(command, timeout_seconds)
+    result = _run_argv(argv, max(5, min(timeout_seconds, 120)))
     if result["status"] == "ok":
-        return ok(
-            {
-                "stdout": result.get("stdout", ""),
-                "stderr": result.get("stderr", ""),
-                "returncode": result.get("returncode", 0),
-            }
-        )
+        return ok({
+            "command": preview,
+            "stdout": result.get("stdout", ""),
+            "stderr": result.get("stderr", ""),
+            "returncode": result.get("returncode", 0),
+        })
     return err(
         result.get("stderr") or result.get("error", "salloc submission failed"),
         hint=(
             "Allocation may be pending/denied. Check partitions, account/qos, and requested resources. "
             "Use slurm_partitions() and slurm_queue() for diagnostics."
         ),
+        command=preview,
     )
 
 
@@ -388,7 +583,7 @@ def sbatch_submit(
     except OSError as exc:
         return err(f"Could not write batch script: {exc}")
 
-    res = _run_bash(f"sbatch {shlex.quote(script_path)}", _TIMEOUT_SUBMIT)
+    res = _run_argv(["sbatch", script_path], _TIMEOUT_SUBMIT)
     if res.get("status") != "ok":
         return err(res.get("stderr") or res.get("error", "sbatch failed"),
                    hint="Check partition, account/qos, and requested resources.")

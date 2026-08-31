@@ -155,6 +155,12 @@ const ToolRow: React.FC<RowProps> = ({ tool }) => {
     if (hasExec && !isError) setExpanded(true);
   }, [hasExec, isError]);
 
+  // The row's arg preview IS the command line for an exec-shaped row, so while the
+  // IN pane below is open it says it twice — cropped up here, in full down there.
+  // Dropped only while the panel is open: collapsed, the one-liner is the only
+  // trace of what ran.
+  const showsCommandBelow = expanded && hasExec && !!tool.exec?.command;
+
   const running = tool.status === "running";
   const elapsed = useElapsed(tool.startedAt, running);
   const duration = tool.durationMs ?? elapsed;
@@ -201,7 +207,9 @@ const ToolRow: React.FC<RowProps> = ({ tool }) => {
           </span>
         )}
         <ToolLabel label={tool.label} />
-        {tool.detail && <span className="tool-detail">{tool.detail}</span>}
+        {tool.detail && !showsCommandBelow && (
+          <span className="tool-detail">{tool.detail}</span>
+        )}
         <span className="tool-row-tail">
           {tool.childrenDropped ? (
             <span

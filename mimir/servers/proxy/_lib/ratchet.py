@@ -148,29 +148,3 @@ def _append_ledger(proxy_name: str, entry: dict) -> None:
     except OSError:
         pass
 
-
-def _select_best_run(proxy_name: str, primary_metric: str, goal: str):
-    """Scan feasible run dirs and return ``(run_id, primary_value)`` of the best.
-
-    A robustness/fallback complement to the incrementally maintained best.json;
-    returns ``(None, None)`` when no feasible run exists.
-    """
-    session_dir = store._opt_session_runs_dir(proxy_name)
-    if not os.path.isdir(session_dir):
-        return None, None
-    best_id: str | None = None
-    best_val = None
-    for name in sorted(os.listdir(session_dir)):
-        run_dir = os.path.join(session_dir, name)
-        mp = os.path.join(run_dir, "metrics.json")
-        if name == "active" or not os.path.isdir(run_dir) or not os.path.isfile(mp):
-            continue
-        m = store._read_json(mp)
-        if not isinstance(m, dict) or not m.get("all_passed"):
-            continue
-        val = _run_primary_value(m, primary_metric)
-        if val is None:
-            continue
-        if best_val is None or _is_improvement(val, best_val, goal, 0.0):
-            best_id, best_val = name, val
-    return best_id, best_val

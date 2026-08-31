@@ -10,13 +10,13 @@ Servers are organized into domain-based subdirectories:
 
 | Directory | Purpose | Servers |
 |---|---|---|
-| `_shared/` | Cross-group utilities | `responses.py`, `capabilities.py`, `root_paths.py`, `approved_roots.py`, `trusted_read_roots.py`, `text_tools.py`, `module_env.py`, `platform_profile_store.py`, `embed.py`, `lsp_client.py`, `shell_paths.py`, `state_paths.py`, `numerics.py` |
+| `_shared/` | Cross-group utilities | `responses.py`, `capabilities.py`, `root_paths.py`, `approved_roots.py`, `trusted_read_roots.py`, `text_tools.py`, `module_env.py`, `embed.py`, `lsp_client.py`, `shell_paths.py`, `state_paths.py`, `numerics.py` |
 | `workspace/` | File & code interaction | `server_bash`, `server_files`, `server_search`, `server_code_intel` |
 | `utilities/` | Stateless data helpers | `server_math`, `server_strings`, `server_datetime`, `server_symbolic_math` |
 | `agent_state/` | Agent memory, planning & delegation | `server_memory`, `server_todo`, `server_spawn_agent` |
 | `interaction/` | Asking the user structured questions | `server_interaction` |
 | `external/` | Network & remote APIs | `server_github`, `server_web`, `server_system` |
-| `hpc/` | HPC & platform profiling | `server_hpc`, `server_platform`, `server_env`, `server_benchmark` |
+| `hpc/` | HPC & platform profiling | `server_hpc`, `server_platform`, `server_env` |
 | `proxy/` | Scientific proxy optimization | `server_proxy` (7 op-dispatched tools: registry, refs, runs, suites, eval loop, Slurm) |
 | `ml/` | Machine learning workflows | `server_finetune` |
 
@@ -75,7 +75,6 @@ The client currently registers these servers by default:
 - `hpc/server_hpc.py`
 - `hpc/server_platform.py`
 - `hpc/server_env.py`
-- `hpc/server_benchmark.py`
 - `ml/server_finetune.py`
 - `proxy/server_proxy.py`
 
@@ -366,25 +365,23 @@ discovery + load — not here.)
 
 Tools:
 - `slurm_partitions`
-- `slurm_nodes`
+- `slurm_nodes(partition="", states="", node="", detail=False)` — **compute-node inventory**: architecture, CPU topology, memory, GPU type/count, node features, and live occupancy (allocated/free CPUs, free memory, load), read from `scontrol show node` — Slurm's own database, which is what actually governs placement. Read-only and instant: it allocates nothing, so it can be consulted *before* choosing where to submit, unlike running a probe on the node (that needs `srun`, i.e. a queued allocation billed against your hours). Aggregates nodes onto their hardware signature by default with a count per state, since a per-node listing of a large cluster is mostly noise; `detail=True` or `node="<name>"` gives individual nodes. Falls back to `sinfo -N` where `scontrol` is restricted, flagging in `degraded` that architecture and CPU occupancy are then unknown.
+  > **Architecture is the field that earns the tool.** Where a cluster mixes architectures, a binary built where the agent runs will not run on a node of a different one — and nothing else in the toolkit reports that. What it cannot report is on-node software (SIMD flags, modules, toolchains); that needs execution there, and the standard answer is to compile inside the job.
 - `slurm_queue`
-- `salloc_build_command`
-- `salloc_submit`
-- `sbatch_submit` — non-blocking Slurm **batch** submission (unlike synchronous `salloc_submit`): returns a `job_id` immediately plus a `background_job` descriptor (`BACKGROUNDABLE`), so the run is watched off the critical path and auto-resumes the agent on completion. Writes the script/log under `~/.cache/mimir_hpc/jobs/<ts>/` (env `MIMIR_HPC_JOBS_DIR`).
+- `salloc_submit` — synchronous **interactive** allocation. Takes the resources as arguments (partition, nodes, ntasks, cpus, mem, time, gres, constraint, account/qos) and builds the `salloc` command itself, so the validated command is the one that runs; launched as argv, never through a shell. `confirm=False` returns the exact command as a preview instead of executing — the old two-step `salloc_build_command` + free-form `salloc_submit(command=...)` is gone, because the validation lived entirely in the step nothing forced you to call
+- `sbatch_submit` — non-blocking Slurm **batch** submission (unlike synchronous `salloc_submit`): returns a `job_id` immediately plus a `background_job` descriptor (`BACKGROUNDABLE`), so the run is watched off the critical path and auto-resumes the agent on completion. Writes the script/log under `state_dir()/hpc_jobs/<ts>/` (env `MIMIR_HPC_JOBS_DIR`).
 - `slurm_job_status(job_id)` — normalized per-job state (running|pending|done|crashed|unknown) via squeue (active) + sacct (terminal); the poll target the background-job watcher uses.
 
 > `salloc_submit` / `sbatch_submit` declare the `CLUSTER_SUBMIT` capability (shared with `ft_run_slurm` and `proxy_slurm`). The client's pre-submission guard holds the first such call each query until something has been validated locally, then lets the retry through (see `POLICY.md` → Cluster-Submission Guard). `sbatch_submit`, `proxy_eval(op='run')`, and `proxy_slurm(op='eval')` additionally declare `BACKGROUNDABLE` (see the background-jobs note under `proxy_eval`).
 
 ## hpc/server_platform.py
 
-Purpose: platform profiling and architecture-aware recommendations.
+Purpose: report what this host actually is — hardware, scheduler, toolchains, Python environments.
 
 Tools:
-- `platform_probe` — collect and return a full platform profile (CPU, GPU, memory, Slurm, modules, toolchains). **Stateless** — built on demand and returned; nothing is persisted
-- `platform_get_profile` — build and return a fresh profile for the current host plus a live `sinfo` partition/node table so the agent knows what Slurm resources are available without a separate command. **Stateless** — always built fresh for the current host (so it can never serve another node's hardware), no cache, no `refresh_if_missing` arg. These tools are the **only** source of platform facts: the client used to carry a duplicate probe whose output was injected into every system prompt, which paid for a full hardware summary on every query to answer a question most of them never asked.
-- `platform_compiler_recommendations` — recommend compiler flags based on detected SIMD and GPU
-- `platform_scientific_plan` — return a workload strategy (libraries, parallelism model, tuning hints) for a given problem type and scale
-- `platform_code_advisor` — analyse a code excerpt and return architecture-specific optimisation advice
+- `platform_probe` — collect and return a full platform profile (CPU, GPU, memory, Slurm, modules, toolchains, Python environments). **Stateless** — built on demand and returned; nothing is persisted
+  > **Nothing here assumes an architecture or a vendor.** The reported ISA extensions come from a per-architecture table (`_ISA_EXTENSIONS`: AVX/FMA/AMX on x86_64, ASIMD/SVE/BF16 on aarch64, VSX on ppc64le) read from whichever key that host's `lscpu` uses — `Flags:` on x86, `Features:` on aarch64 — and an architecture with no entry says so rather than reporting a vector unit it never looked for. The accelerator probe detects NVIDIA, AMD and Intel tooling and only *enumerates* NVIDIA, reporting the others as present-but-unenumerated: answering "no GPU" on a host whose accelerator it cannot read would be a lie. The toolchain scan covers GNU, LLVM, Intel oneAPI, the NVIDIA HPC SDK, ROCm and Cray wrappers; whatever is absent simply does not appear.
+- `platform_get_profile` — build and return a fresh profile for the current host plus a live `sinfo` partition/node table so the agent knows what Slurm resources are available without a separate command. **Stateless** — always built fresh for the current host (so it can never serve another node's hardware), no cache, no `refresh_if_missing` arg. The collectors whose answer cannot change while the process lives (CPU, GPU, Slurm, modules, toolchains) are memoized, so a second probe costs a fraction of the first. These two tools are the **only** source of platform facts: the client used to carry a duplicate probe whose output was injected into every system prompt, which paid for a full hardware summary on every query to answer a question most of them never asked.
 
 ## hpc/server_env.py
 
@@ -399,7 +396,7 @@ operations are restricted to paths that actually look like Python environments.
 Tools (all declared `reversibility="recoverable"` → approval-gated, plus `non_batch` → always prompt, never batched; all plan-blocked):
 - `env_pip_install(packages, python_executable="python3")` — install packages into an existing environment
 - `env_pip_uninstall(packages, python_executable="python3")` — the cleanup for `env_pip_install`
-- `env_create(name, kind="venv", packages=None, python_executable="python3")` — create a new venv/conda environment
+- `env_create(name, kind="venv", packages=None, python_executable="python3")` — create a new venv/conda environment. New venvs land under `state_dir()/envs/`, not in the workspace (a venv is agent state, and one dropped in the repo shows up in `git status`); a new conda env's interpreter is resolved by asking `conda env list --json` where the env actually is, since `envs_dirs` is routinely configured away from `~/.conda/envs` on a cluster
 - `env_delete(target, kind="venv")` — delete an environment created by `env_create`
 
 > A bare `python`/`python3` resolves to the server's own interpreter; an absolute path
@@ -407,16 +404,6 @@ Tools (all declared `reversibility="recoverable"` → approval-gated, plus `non_
 > registry-driven approval **scope** (package-set for the pip tools, env basename for
 > create/delete) so an `always` grant narrows to those packages / that environment
 > rather than the whole tool (see `POLICY.md` → Sensitive Tool Approval).
-
-## hpc/server_benchmark.py
-
-Purpose: lightweight benchmark helpers and summary generation.
-
-Tools:
-- `benchmark_python_compute`
-- `benchmark_memory_copy`
-- `benchmark_numpy_matmul`
-- `benchmark_summary`
 
 ## external/server_system.py
 
@@ -989,19 +976,17 @@ Configuration fields (set via `ft_config_set`):
 
 ## proxy/_lib/ — shared helper library
 
-Helper package (not an MCP server) imported by `proxy/server_proxy.py`, the `proxy/_ops/` modules, and `_proxy_runner.py`.  Split of the former `_shared_proxy.py` god-module into cohesive units; dependency direction is `store ← procs/metrics/command/report ← execute/ratchet`.
+Helper package (not an MCP server) imported by `proxy/server_proxy.py`, the `proxy/_ops/` modules, and `_proxy_runner.py`.  Dependency direction is `store ← procs/metrics/command/report ← execute/ratchet`.
 
 | module | contents |
 |---|---|
-| `store.py` | Storage root `_CACHE_DIR` (env-overridable via `MIMIR_PROXY_BENCH_DIR`, default `~/.cache/proxy_bench`); every path derives from it **at call time** via functions (`registry_path()`, `runs_dir()`, `refs_dir()`, `suites_dir()`, `scaffolds_dir()`, `opt_runs_dir()`, …), so a hermetic test repoints one attribute. Generic atomic IO (`_read_json`, `_write_json_atomic`, `_write_text_atomic`, `_atomic_symlink`); registry I/O (`_load_registry` with corrupt-JSON backup, `_save_registry`, `_registry_lock()` — exclusive `fcntl.flock`, thread-local re-entrancy depth); suite persistence (`_load_suite`/`_save_suite`/`_latest_suite_results`); reference layout (`_ref_dir`, `_load_ref_metrics`, `_ref_output_path`); optimization-session layout (`_opt_config_file`, `_opt_session_runs_dir`, `_opt_ledger_file`, `_opt_best_file`, `_resolve_proxy_name`, `_write_active_session`). |
+| `store.py` | Storage root `_CACHE_DIR` (env-overridable via `MIMIR_PROXY_BENCH_DIR`, default `~/.cache/proxy_bench`); every path derives from it **at call time** via functions (`registry_path()`, `runs_dir()`, `refs_dir()`, `suites_dir()`, `scaffolds_dir()`, `opt_runs_dir()`, …), so a hermetic test repoints one attribute. Generic atomic IO (`_read_json`, `_write_json_atomic`, `_write_text_atomic`, `_atomic_symlink`); registry I/O (`_load_registry` with corrupt-JSON backup, `_save_registry`, `_registry_lock()` — exclusive `fcntl.flock`, thread-local re-entrancy depth; `_file_lock(path)` for any other exclusive section); suite persistence (`_load_suite`/`_save_suite`/`_latest_suite_results`); reference layout (`_ref_dir`, `_load_ref_metrics`, `_ref_output_path`); optimization-session layout (`_opt_config_file`, `_opt_session_runs_dir`, `_opt_ledger_file`, `_opt_best_file`, `_resolve_proxy_name`, `_write_active_session`). |
 | `procs.py` | Process/run state: pid + `/proc` starttime bookkeeping (PID-recycling and zombie detection in `_is_running`), `_squeue_state`, `_run_state`; log access (`_log_path`, `_read_log` capped at `_MAX_LOG`); run lifecycle — `_new_run_dir`, `_write_run_config`, `_launch_detached`, `_submit_sbatch`, `_cancel_run` (`scancel` else SIGTERM → SIGKILL), `_validate_slurm_args`; active-run symlinks. |
 | `metrics.py` | `_parse_metrics_block` (block-delimited; strict fallback scan), `_RESERVED_METRICS` + `_strip_reserved_metrics` (server-side invariants the proxy cannot forge), `_normalize_time_metrics` (server-measured `wall_time_s` + `time_s` plausibility guard), field I/O + `_field_norms`, invariants (`_finite_check`, `_conservation_residual`, `_convergence_order`), `_evaluate_requirements`. |
 | `command.py` | `_render_param_file`, `_expand_cmd_template` (single template-expansion path for local + sbatch), `_build_run_cmd`, `_sbatch_header`, `_build_sbatch` (injection-safe `repr()` postrun; captures solver wall time + exit code for the post-run guard). |
 | `report.py` | Roofline (`_resolve_roofline` with platform-profile fallback, `_compute_roofline`, `_arch_label`), `_row_with_extra`, `_diff_run_dirs`. |
-| `execute.py` | The three run paths every launch funnels through: `_run_benchmark_case` (synchronous case; reserved-metrics purge, time_s guard, non-zero-exit gate), `_seal_reference` (immutable reference store), `_post_run_finalize` (settles detached local/Slurm runs with the same invariants). |
-| `ratchet.py` | Optimization ratchet: `_ratchet_verdict` / `_is_improvement` / `_run_primary_value` / `_select_best_case` / `_select_best_run`, best-so-far persistence (`_load_best`/`_save_best` incl. `wall_value` for the timing audit), `_append_ledger`. |
-
-`proxy/_shared_proxy.py` remains as a ~20-line **legacy facade**: generated `postrun.py` scripts in old run directories (possibly still queued on Slurm) import `_post_run_finalize` from it by name, so the module must keep existing; new code imports from `_lib.*` directly.
+| `execute.py` | The three run paths every launch funnels through: `_run_benchmark_case` (synchronous case), `_seal_reference` (immutable reference store), `_post_run_finalize` (settles detached local/Slurm runs). All three share `_settle_metrics` (reserved-metrics purge, time_s guard, returncode) and `_apply_invariants` (reference comparison + lifted error norms, `finite`, `conservation_residual`), so a detached run carries exactly the metrics a synchronous one does. |
+| `ratchet.py` | Optimization ratchet: `_ratchet_verdict` / `_is_improvement` / `_run_primary_value` / `_select_best_case`, best-so-far persistence (`_load_best`/`_save_best` incl. `wall_value` for the timing audit), `_append_ledger`. |
 
 ---
 
@@ -1009,7 +994,9 @@ Helper package (not an MCP server) imported by `proxy/server_proxy.py`, the `pro
 
 Purpose: registration, benchmarking, execution, and iterative optimization of proxy scientific-computing codes — behind **seven op-dispatched tools**.
 
-Each tool takes an `op` parameter selecting the operation; the docstring carries the full ops table with per-op required args. Ops are grouped strictly by capability class, because capabilities are declared per tool: read-only tools carry no caps, mutating tools are `sensitive` + `PLAN_BLOCKED` + `non_batch` with a `confirm=True` gate on every op, and Slurm submission is isolated on its own `CLUSTER_SUBMIT` tool. Unknown ops and missing per-op args return `err()` with a corrective hint. Eval-loop responses include a `next_step` field naming the exact next call.
+Each tool takes an `op` parameter selecting the operation; the docstring carries the full ops table with per-op required args. Ops are grouped strictly by capability class, because capabilities are declared per tool: read-only tools carry no caps, mutating tools are `sensitive` + `PLAN_BLOCKED` + `non_batch` with a `confirm=True` gate on every op, and Slurm submission is isolated on its own `CLUSTER_SUBMIT` tool. Unknown ops and missing per-op args return `err()` with a corrective hint. **Every** `ok()` response carries a `next_step` field naming the exact next call to make — read-only listings included, so an empty registry points at the call that would fill it.
+
+`proxy_eval`, `proxy_eval_status` and `proxy_exec` also declare a **`run_outcome`** spec (`_RUN_OUTCOME` in `server_proxy.py`), which tells the client what *this server* saw of a run it performed: `run_dir` identifies the run, `state="crashed"` means it did not complete, `feasible=False` means its result failed the session's requirements, and `state="done"` credits the client-side `measured` validation tier for the session's source file. `proxy_exec` extends it with a `rows` clause so each failing case of a suite run — which answers `ok` overall — fails its own run. This is a floor, never a credit: there is no way to declare a *passing* verdict, and a ratchet `reject` (measured fine, just no better than the incumbent) is deliberately not a failure. See `POLICY.md` → the run-outcome floor.
 
 Tool bodies live in `proxy/_ops/` as plain functions (no `@mcp.tool` decorators there — the AST-based capability parity gate only sees the seven declarations in `server_proxy.py`):
 
@@ -1044,7 +1031,7 @@ Param file system:
 Proxy output protocol:
 - The proxy writes a `PROXY_METRICS_BEGIN … PROXY_METRICS_END` block to stdout with `key=value` pairs.
 - A special `output_file=<path>` key triggers the server to copy the named file into the run directory and include it in output comparisons.
-- Optional roofline keys: `flops` (total FP operations), `bytes_moved` (bytes transferred), `time_s` (wall time). Roofline peaks come from the registration `metadata` (`peak_gflops_per_s`, `peak_bandwidth_gbytes_per_s`), falling back to the latest `benchmark_summary` in the platform profile.
+- Optional roofline keys: `flops` (total FP operations), `bytes_moved` (bytes transferred), `time_s` (wall time). Roofline peaks come from the registration `metadata` (`peak_gflops_per_s`, `peak_bandwidth_gbytes_per_s`) only; unset means no roofline row rather than a guessed ceiling.
 - If no block markers are found, the server falls back to scanning the last stdout lines for `KEY=VALUE` (single-token RHS only).
 
 Suite case schema (for `proxy_manage(op='suite_define')`):
@@ -1135,7 +1122,7 @@ the client logs the connected tools that declared no caps, so a tool that forgot
 declare surfaces instead of silently losing its policy/approval/caching semantics.
 
 **Status:** every classified first-party tool (across `files`, `search`, `code_intel`,
-`bash`, `web`, `memory`, `todo`, `benchmark`, `hpc`,
+`bash`, `web`, `memory`, `todo`, `hpc`,
 `finetune`, `proxy`) self-declares via
 `@mcp.tool(**tool_caps(...))`. Pure tools (math, string, datetime ops, read-only
 queries/advisors) declare nothing — they correctly carry no capability.

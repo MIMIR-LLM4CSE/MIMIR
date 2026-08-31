@@ -1,9 +1,11 @@
 """
 MCP Platform Server
 ===================
-Builds a platform profile on demand so the agent can propose architecture-aware
-scientific solutions (compiler flags, resource requests, CPU/GPU strategy). Stateless:
-tools return their answer to the caller; nothing is persisted to disk.
+Reports what this host actually is — CPU/SIMD, memory, GPU, Slurm, modules,
+toolchains, Python environments. Facts only: the architecture-aware *advice* that
+used to live here was a frozen lookup table the model already knows better, paid for
+with a full hardware probe per call. Stateless: nothing is persisted to disk; the
+collectors whose answer cannot change mid-process are memoized.
 """
 
 import os
@@ -14,14 +16,19 @@ import subprocess
 import sys
 import time
 import json
+from datetime import datetime, timezone
+from functools import lru_cache
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '_shared'))
 
 from mcp.server.fastmcp import FastMCP
-from platform_profile_store import now_iso
 from module_env import module_shell_script
 from capabilities import tool_caps, ENV_DISCOVERY
 from responses import err, ok
+
+def now_iso() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
 
 mcp = FastMCP(
     "PlatformServer",
@@ -68,6 +75,18 @@ def _parse_lscpu(text: str) -> dict:
     return info
 
 
+# ISA extensions worth reporting, per architecture. There is no portable name for
+# "the vector unit": asking an aarch64 host whether it has AVX-512 always answers no,
+# which reads as "no SIMD" rather than "a different SIMD". lscpu prints these under
+# "Flags:" on x86 and "Features:" on aarch64, so both keys are read.
+_ISA_EXTENSIONS: dict[str, tuple[str, ...]] = {
+    "x86_64":  ("avx2", "avx512f", "avx512bw", "avx512vl", "fma", "amx_tile"),
+    "aarch64": ("asimd", "sve", "sve2", "bf16", "i8mm"),
+    "ppc64le": ("vsx",),
+}
+
+
+@lru_cache(maxsize=1)
 def _collect_cpu() -> dict:
     data = {
         "arch": platform.machine(),
@@ -77,7 +96,8 @@ def _collect_cpu() -> dict:
         out = _run(["lscpu"])
         if out["ok"]:
             ls = _parse_lscpu(out["stdout"])
-            flags = ls.get("flags", "").split()
+            flags = set((ls.get("flags") or ls.get("features") or "").split())
+            known = _ISA_EXTENSIONS.get(data["arch"], ())
             data.update(
                 {
                     "model": ls.get("model name", ""),
@@ -85,13 +105,11 @@ def _collect_cpu() -> dict:
                     "cores_per_socket": ls.get("core(s) per socket", ""),
                     "threads_per_core": ls.get("thread(s) per core", ""),
                     "numa_nodes": ls.get("numa node(s)", ""),
-                    "simd": {
-                        "avx2": "avx2" in flags,
-                        "avx512f": "avx512f" in flags,
-                        "fma": "fma" in flags,
-                    },
+                    "simd": {name: name in flags for name in known},
                 }
             )
+            if not known:
+                data["simd_note"] = f"No ISA extension list known for {data['arch']}."
     return data
 
 
@@ -116,21 +134,38 @@ def _collect_memory() -> dict:
     return data
 
 
+# Vendor CLI -> the tool that proves a GPU of that vendor is present locally. Only the
+# NVIDIA output is parsed into devices; the others are detected and reported as such,
+# because claiming "no GPU" on a machine whose accelerator this probe cannot read is
+# worse than saying so. Cluster-wide GPU truth comes from Slurm GRES (slurm_nodes),
+# which is vendor-neutral.
+_GPU_PROBES = (("nvidia", "nvidia-smi"), ("amd", "rocm-smi"), ("intel", "xpu-smi"))
+
+
+@lru_cache(maxsize=1)
 def _collect_gpu() -> dict:
-    if not _cmd_exists("nvidia-smi"):
-        return {"available": False}
+    present = [vendor for vendor, cmd in _GPU_PROBES if _cmd_exists(cmd)]
+    if not present:
+        return {"available": False, "probed": [cmd for _, cmd in _GPU_PROBES]}
+    if "nvidia" not in present:
+        return {
+            "available": True, "vendors": present, "devices": [],
+            "note": "Accelerator detected but not enumerated: only the NVIDIA probe is "
+                    "parsed here. Ask Slurm (slurm_nodes) for GPU type and count.",
+        }
     query = "nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv,noheader"
     out = _run_shell(query)
     if not out["ok"]:
-        return {"available": False, "error": out["stderr"].strip()}
+        return {"available": False, "vendors": present, "error": out["stderr"].strip()}
     gpus = []
     for line in out["stdout"].splitlines():
         parts = [p.strip() for p in line.split(",")]
         if len(parts) >= 3:
             gpus.append({"name": parts[0], "memory": parts[1], "driver": parts[2]})
-    return {"available": bool(gpus), "count": len(gpus), "devices": gpus}
+    return {"available": bool(gpus), "vendors": present, "count": len(gpus), "devices": gpus}
 
 
+@lru_cache(maxsize=1)
 def _collect_slurm() -> dict:
     if not _cmd_exists("sinfo"):
         return {"available": False}
@@ -167,6 +202,7 @@ def _collect_sinfo() -> dict:
     return {"available": True, "partitions": rows}
 
 
+@lru_cache(maxsize=1)
 def _collect_modules() -> dict:
     script = module_shell_script("module -t avail 2>&1 | head -n 120")
     out = _run_shell(script)
@@ -176,11 +212,20 @@ def _collect_modules() -> dict:
     return {"available": True, "sample": lines[:80], "count_sample": len(lines[:80])}
 
 
+@lru_cache(maxsize=1)
 def _collect_toolchains() -> dict:
     tools = {}
+    # Vendor-plural on purpose: a site may ship GNU, LLVM, Intel oneAPI, the NVIDIA
+    # HPC SDK, AMD ROCm or Cray wrappers, and an absent one simply does not appear.
     for name in [
-        "gcc", "g++", "gfortran", "clang", "nvcc", "mpicc", "mpicxx",
-        "make", "cmake",
+        "gcc", "g++", "gfortran",
+        "clang", "clang++", "flang",
+        "icx", "icpx", "ifx",
+        "nvc", "nvc++", "nvfortran", "nvcc",
+        "hipcc",
+        "cc", "CC", "ftn",
+        "mpicc", "mpicxx", "mpifort",
+        "make", "cmake", "ninja",
         "python3", "pytest", "ruff", "mypy",
     ]:
         if _cmd_exists(name):
@@ -302,42 +347,6 @@ def _build_profile() -> dict:
 
 
 
-def _latest_benchmark_summary(profile: dict) -> dict:
-    benches = profile.get("benchmarks", {}) if isinstance(profile, dict) else {}
-    latest = benches.get("latest", {}) if isinstance(benches, dict) else {}
-    return {
-        "python_mops": latest.get("python_compute", {}).get("throughput_mops"),
-        "memory_gbps": latest.get("memory_copy", {}).get("throughput_gbps"),
-        "numpy_gflops": latest.get("numpy_matmul", {}).get("gflops"),
-        "timestamp": latest.get("timestamp"),
-    }
-
-
-def _infer_code_traits(code_excerpt: str, language: str) -> list[str]:
-    text = (code_excerpt or "").lower()
-    traits = []
-
-    if "for " in text or "while " in text:
-        traits.append("iterative-kernel")
-    if "numpy" in text or "np." in text:
-        traits.append("numpy")
-    if "mpi" in text or "mpi_" in text or "mpirun" in text:
-        traits.append("mpi")
-    if "openmp" in text or "#pragma omp" in text:
-        traits.append("openmp")
-    if "cuda" in text or "__global__" in text:
-        traits.append("cuda")
-    if "csr" in text or "sparse" in text:
-        traits.append("sparse")
-    if "fft" in text:
-        traits.append("fft")
-    if "float" in text and "double" not in text:
-        traits.append("single-precision-like")
-
-    if not traits:
-        traits.append(f"generic-{language}")
-    return sorted(set(traits))
-
 @mcp.tool(**tool_caps(caps=[ENV_DISCOVERY]))
 def platform_probe() -> dict:
     """Collect and return a fresh platform profile.
@@ -359,160 +368,6 @@ def platform_get_profile() -> dict:
     correct, never stale) and returned to the caller; nothing is persisted.
     """
     return ok({"profile": _build_profile(), "sinfo": _collect_sinfo()})
-
-
-@mcp.tool()
-def platform_compiler_recommendations(language: str = "cpp", precision: str = "double") -> dict:
-    """Recommend compiler and flags according to detected architecture.
-
-    Args:
-        language: cpp, c, fortran, python.
-        precision: single or double.
-    """
-    profile = _build_profile()  # stateless: build fresh, never read a persisted cache
-    simd = profile.get("cpu", {}).get("simd", {})
-    gpu = profile.get("gpu", {}).get("available", False)
-
-    flags = ["-O3", "-fopenmp"]
-    if simd.get("avx512f"):
-        flags += ["-mavx512f", "-mfma"]
-    elif simd.get("avx2"):
-        flags += ["-mavx2", "-mfma"]
-
-    if precision == "single":
-        flags += ["-DUSE_FLOAT32"]
-    else:
-        flags += ["-DUSE_FLOAT64"]
-
-    recommendations = {
-        "language": language,
-        "precision": precision,
-        "cpu_flags": flags,
-        "gpu_available": gpu,
-        "notes": [],
-    }
-    if gpu:
-        recommendations["notes"].append("GPU detected: consider CUDA/OpenACC/OpenMP target offload.")
-    if profile.get("slurm", {}).get("available"):
-        recommendations["notes"].append("Slurm detected: validate scaling with single-node then multi-node jobs.")
-    return ok(recommendations)
-
-
-@mcp.tool()
-def platform_scientific_plan(problem_type: str, scale: str = "medium", precision: str = "double") -> dict:
-    """Return an architecture-aware strategy for scientific workloads.
-
-    Args:
-        problem_type: pde, linear-algebra, sparse, fft, monte-carlo, ml, other.
-        scale: small, medium, large.
-        precision: single or double.
-    """
-    profile = _build_profile()  # stateless: build fresh, never read a persisted cache
-    gpu = profile.get("gpu", {}).get("available", False)
-    slurm = profile.get("slurm", {}).get("available", False)
-
-    libs = []
-    strategy = []
-    slurm_hints = []
-
-    if problem_type in {"linear-algebra", "fft"}:
-        libs += ["BLAS/LAPACK", "FFTW"]
-        strategy += ["Start with threaded CPU baseline (OpenMP)."]
-        if gpu:
-            libs += ["cuBLAS", "cuFFT"]
-            strategy += ["Evaluate GPU offload for large dense kernels."]
-    elif problem_type in {"sparse", "pde"}:
-        libs += ["PETSc", "Trilinos"]
-        strategy += ["Use domain decomposition + MPI + OpenMP hybrid model."]
-    elif problem_type == "monte-carlo":
-        libs += ["OpenMP", "MPI"]
-        strategy += ["Use embarrassingly parallel sampling with per-rank RNG streams."]
-    else:
-        libs += ["NumPy/SciPy", "OpenMP", "MPI"]
-        strategy += ["Prototype in Python, then offload hotspots to C++ kernels."]
-
-    if scale == "large" and slurm:
-        slurm_hints += [
-            "Use batch mode with checkpoints.",
-            "Request resources incrementally after baseline scaling tests.",
-        ]
-    elif slurm:
-        slurm_hints += ["Use interactive allocation first (salloc) for rapid tuning."]
-
-    return ok({
-        "problem_type": problem_type,
-        "scale": scale,
-        "precision": precision,
-        "gpu_available": gpu,
-        "slurm_available": slurm,
-        "recommended_libraries": libs,
-        "strategy": strategy,
-        "slurm_hints": slurm_hints,
-    })
-
-
-@mcp.tool()
-def platform_code_advisor(
-    code_excerpt: str,
-    language: str = "cpp",
-    problem_type: str = "other",
-    scale: str = "medium",
-    precision: str = "double",
-) -> dict:
-    """Analyze a code excerpt and return platform-aware optimization advice.
-
-    Args:
-        code_excerpt: Short code snippet to inspect.
-        language: cpp, c, fortran, python, cuda, other.
-        problem_type: pde, linear-algebra, sparse, fft, monte-carlo, ml, other.
-        scale: small, medium, large.
-        precision: single or double.
-    """
-    if not code_excerpt.strip():
-        return err("code_excerpt is empty.", hint="Provide at least a short loop/kernel or function body.")
-
-    profile = _build_profile()  # stateless: build fresh, never read a persisted cache
-    compiler = platform_compiler_recommendations(language=language, precision=precision)
-    plan = platform_scientific_plan(problem_type=problem_type, scale=scale, precision=precision)
-    traits = _infer_code_traits(code_excerpt, language)
-    bench = _latest_benchmark_summary(profile)
-
-    actions = []
-    if "iterative-kernel" in traits and "openmp" not in traits:
-        actions.append("Parallelize outer loops with OpenMP and verify thread affinity.")
-    if "numpy" in traits and (bench.get("numpy_gflops") is None or bench.get("numpy_gflops") < 50):
-        actions.append("Verify BLAS backend (MKL/OpenBLAS) and tune OMP_NUM_THREADS.")
-    if "mpi" not in traits and scale == "large" and profile.get("slurm", {}).get("available"):
-        actions.append("Plan MPI decomposition before increasing node count.")
-    if "cuda" in traits and not profile.get("gpu", {}).get("available", False):
-        actions.append("CUDA code detected but no GPU found on this node; keep CPU fallback path.")
-    if "sparse" in traits:
-        actions.append("Use sparse-native kernels and reduce indirect memory access where possible.")
-    if "fft" in traits:
-        actions.append("Prefer batched FFT plans and reuse plans across timesteps.")
-    if precision == "single" and "single-precision-like" not in traits:
-        actions.append("If numerically stable, consider float32 for memory-bandwidth-bound kernels.")
-
-    if not actions:
-        actions.append("Establish baseline runtime, then profile and optimize top hotspots only.")
-
-    return ok({
-        "language": language,
-        "problem_type": problem_type,
-        "scale": scale,
-        "precision": precision,
-        "detected_traits": traits,
-        "platform_snapshot": {
-            "cpu": profile.get("cpu", {}),
-            "gpu": profile.get("gpu", {}),
-            "slurm": profile.get("slurm", {}),
-        },
-        "benchmark_snapshot": bench,
-        "compiler_recommendations": compiler,
-        "scientific_plan": plan,
-        "action_items": actions,
-        "next_step": "Run benchmark_summary(persist_to_platform_profile=True), then re-run platform_code_advisor after code changes.",
-    })
 
 
 if __name__ == "__main__":

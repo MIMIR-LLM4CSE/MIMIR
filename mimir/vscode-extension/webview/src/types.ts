@@ -306,6 +306,11 @@ export interface ContextUsageMessage {
   reserved_tokens: number;
   /** Fixed per-call overhead (system prompt + tools schema) included in used_tokens. */
   overhead_tokens?: number;
+  /** Messages in the window the model actually sees this turn. */
+  history_messages?: number;
+  /** Messages in the untrimmed record a resume would start from. Larger than
+   *  `history_messages` once the budget has trimmed the window. */
+  history_messages_full?: number;
 }
 
 export interface FileProgressMessage {
@@ -400,6 +405,18 @@ export type ServerMessage =
 export interface QueryMessage {
   type: "query";
   text: string;
+}
+
+/** The rendered chat, handed to the server so a reload can show it again.
+ *
+ *  Tool rows, reasoning panels and diff cards are assembled here and nowhere else,
+ *  so the server cannot rebuild them — it stores this copy verbatim. `session_id`
+ *  is what stops a transcript still in flight from landing on a session the user
+ *  has since switched to. */
+export interface TranscriptMessage {
+  type: "transcript";
+  session_id: string;
+  messages: ChatMessage[];
 }
 
 /** A message typed while the agent is busy — injected into the running turn. */
@@ -499,6 +516,7 @@ export interface ToggleSkillMessage {
 
 export type ClientMessage =
   | QueryMessage
+  | TranscriptMessage
   | SteerMessage
   | ApprovalResponseMessage
   | ContinueResponseMessage

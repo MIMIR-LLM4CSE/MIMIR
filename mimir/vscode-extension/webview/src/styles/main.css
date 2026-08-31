@@ -1104,7 +1104,7 @@ body {
   flex: 1 1 auto;
   min-width: 0;
   overflow: auto;
-  max-height: 104px;
+  max-height: 78px;
 }
 .tool-exec-section--in > .tool-exec-body-col {
   max-height: 62px;
@@ -1118,7 +1118,7 @@ body {
 /* Lone pane (a command with no output, or output with no command): nothing to
    share the panel with, so it takes the whole budget. */
 .tool-exec-section:only-child > .tool-exec-body-col {
-  max-height: 116px;
+  max-height: 88px;
 }
 .tool-exec--full .tool-exec-section:only-child > .tool-exec-body-col {
   max-height: 320px;

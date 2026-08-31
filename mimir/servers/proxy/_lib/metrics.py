@@ -77,22 +77,9 @@ def _parse_metrics_block(stdout: str) -> dict:
 
 # ── reserved server-side invariants ───────────────────────────────────────────
 
-# Metrics computed server-side as integrity invariants. Any value the proxy prints for
-# these keys is discarded before evaluation: the code under optimization must not be
-# able to satisfy its own acceptance constraints. (Seen in the wild: an agent-edited
-# proxy printing conservation_residual=<its own drift> to pass a requirement whose
-# sealed reference was missing.) ``wall_time_s`` is the server's own wall-clock
-# measurement — the tamper-proof twin of self-reported ``time_s``.
-#
-# The name set lives in _shared because the client's validation observer reads the same
-# vocabulary for the opposite purpose: one of these keys in a validation command's
-# output distinguishes "the code ran" from "the code was compared against something".
-_RESERVED_METRICS = RESERVED_METRICS
-
-
 def _strip_reserved_metrics(metrics: dict) -> list[str]:
     """Drop reserved keys the proxy tried to emit; return what was dropped."""
-    forged = sorted(_RESERVED_METRICS.intersection(metrics))
+    forged = sorted(RESERVED_METRICS.intersection(metrics))
     for key in forged:
         metrics.pop(key, None)
     return forged
@@ -101,14 +88,11 @@ def _strip_reserved_metrics(metrics: dict) -> list[str]:
 def _normalize_time_metrics(metrics: dict, wall_s: float) -> None:
     """Record the server-measured wall time and guard the self-reported time_s.
 
-    ``wall_time_s`` is always the server's own measurement of the solver
-    process (reserved: proxy-printed values are stripped upstream).  ``time_s``
-    stays proxy-reported so a kernel may legitimately exclude startup/IO, but a
-    claim that is non-positive or exceeds the measured wall time is physically
-    impossible: it is discarded (kept under ``time_s_ignored`` for the audit
-    trail) and replaced by the wall time.  ``time_s`` is the default primary
-    objective of the optimization ratchet, so this guard is what keeps a forged
-    timer from ratcheting the best-so-far.
+    ``time_s`` stays proxy-reported (a kernel may legitimately exclude startup),
+    but a non-positive claim or one exceeding the measured wall time is
+    impossible: it moves to ``time_s_ignored`` and the wall time replaces it.
+    ``time_s`` is the ratchet's default objective, so this is what stops a
+    forged timer from ratcheting the best-so-far.
     """
     metrics["wall_time_s"] = wall_s
     reported = metrics.get("time_s")
@@ -284,7 +268,7 @@ def _evaluate_requirements(metrics: dict, requirements: list[dict]) -> dict:
                         "sealed reference (proxy_exec op='benchmark_create') "
                         "and/or a registry conserved_metric; values printed by "
                         "the proxy for this metric are ignored"
-                        if metric in _RESERVED_METRICS else
+                        if metric in RESERVED_METRICS else
                         "metric not found in results"
                     ) if actual_raw is None else
                     "invalid operator" if operator not in _VALID_OPT_OPERATORS else

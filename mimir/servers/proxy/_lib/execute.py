@@ -8,7 +8,11 @@ The three entry points every launch path funnels through:
 * ``_seal_reference``    — blocking run whose output becomes an immutable
   reference dataset.
 * ``_post_run_finalize`` — settles a *detached* run (local wrapper or Slurm
-  postrun.py) into metrics.json with the same invariants.
+  postrun.py) into metrics.json.
+
+All three share ``_settle_metrics`` (purge + timing guard) and
+``_apply_invariants`` (reference comparison, finiteness, conservation), so a
+detached run carries exactly the metrics a synchronous one does.
 """
 
 from __future__ import annotations
@@ -26,6 +30,58 @@ from _lib import command, metrics as metrics_mod, procs, report, store
 
 _DEFAULT_MAX_OUTPUT_MB = 512
 _REF_RUN_TIMEOUT       = 3600         # seconds
+
+
+# ── shared metrics settling ───────────────────────────────────────────────────
+
+def _settle_metrics(stdout: str, wall_s: float | None, returncode: int | None) -> dict:
+    """Parse a run's metrics block and apply the purge + timing guard.
+
+    Every launch path funnels through here so a forged reserved metric or an
+    implausible self-reported time_s is caught identically everywhere.
+    """
+    run_metrics = metrics_mod._parse_metrics_block(stdout)
+    forged = metrics_mod._strip_reserved_metrics(run_metrics)
+    if forged:
+        run_metrics["reserved_metrics_ignored"] = forged
+    if wall_s is not None:
+        metrics_mod._normalize_time_metrics(run_metrics, wall_s)
+    if returncode is not None:
+        run_metrics["returncode"] = returncode
+    return run_metrics
+
+
+def _apply_invariants(
+    run_metrics: dict,
+    run_out: str,
+    output_format: str,
+    entry: dict,
+    reference_name: str,
+) -> dict:
+    """Attach reference comparison + numerical invariants; return the comparison.
+
+    Lifts the error norms to top-level metrics so requirements can gate on them,
+    and adds ``finite`` / ``conservation_residual`` — the invariants the
+    reserved-metrics design exists to compute server-side.
+    """
+    comparison: dict = {}
+    if reference_name:
+        comparison = _compare_to_reference(run_out, reference_name, output_format)
+        run_metrics["comparison_to_reference"] = {"reference": reference_name, **comparison}
+        for k in ("l2_abs", "l2_rel", "linf_abs", "linf_rel"):
+            if isinstance(comparison.get(k), (int, float)):
+                run_metrics[k] = comparison[k]
+
+    field = metrics_mod._load_field(run_out, output_format)
+    if field is not None:
+        run_metrics["finite"] = 1 if metrics_mod._finite_check(field) else 0
+    conserved_key = entry.get("conserved_metric")
+    if conserved_key and reference_name:
+        residual = metrics_mod._conservation_residual(
+            run_metrics, store._load_ref_metrics(reference_name) or {}, conserved_key)
+        if residual is not None:
+            run_metrics["conservation_residual"] = residual
+    return comparison
 
 
 def _compare_to_reference(
@@ -81,8 +137,7 @@ def _run_benchmark_case(
         "compare_to_reference": reference_name,
         "started_at":           datetime.now(timezone.utc).isoformat(),
     }
-    with open(os.path.join(run_dir, "config.json"), "w") as fh:
-        json.dump(config, fh, indent=2)
+    procs._write_run_config(run_dir, config)
 
     _remaining = deadline - time.monotonic()
     if _remaining <= 0:
@@ -117,12 +172,7 @@ def _run_benchmark_case(
 
     stdout = procs._read_log(run_dir)
 
-    run_metrics = metrics_mod._parse_metrics_block(stdout)
-    forged = metrics_mod._strip_reserved_metrics(run_metrics)
-    if forged:
-        run_metrics["reserved_metrics_ignored"] = forged
-    metrics_mod._normalize_time_metrics(run_metrics, elapsed)
-    run_metrics["returncode"] = proc.returncode
+    run_metrics = _settle_metrics(stdout, elapsed, proc.returncode)
 
     proxy_out_key = run_metrics.pop("output_file", None)
     ext = command._output_ext(entry.get("output_format", "npz"))
@@ -134,28 +184,8 @@ def _run_benchmark_case(
             pass
 
     output_format = entry.get("output_format", "npz")
-    comparison: dict = {}
-    if reference_name:
-        comparison = _compare_to_reference(run_out, reference_name, output_format)
-        run_metrics["comparison_to_reference"] = {"reference": reference_name, **comparison}
-        # Lift error norms to top-level metrics so they are usable as requirements
-        # (e.g. {"metric": "l2_rel", "operator": "lt", "threshold": 1e-3}).
-        for k in ("l2_abs", "l2_rel", "linf_abs", "linf_rel"):
-            if isinstance(comparison.get(k), (int, float)):
-                run_metrics[k] = comparison[k]
-
-    # Numerical invariants (server-side): finiteness of the output field, and an
-    # optional conserved-quantity residual vs the reference metrics.  Both surface
-    # as ordinary metrics so they can gate feasibility via requirements.
-    field = metrics_mod._load_field(run_out, output_format)
-    if field is not None:
-        run_metrics["finite"] = 1 if metrics_mod._finite_check(field) else 0
-    conserved_key = entry.get("conserved_metric")
-    if conserved_key and reference_name:
-        residual = metrics_mod._conservation_residual(
-            run_metrics, store._load_ref_metrics(reference_name) or {}, conserved_key)
-        if residual is not None:
-            run_metrics["conservation_residual"] = residual
+    comparison = _apply_invariants(
+        run_metrics, run_out, output_format, entry, reference_name)
 
     with open(os.path.join(run_dir, "metrics.json"), "w") as fh:
         json.dump(run_metrics, fh, indent=2)
@@ -207,8 +237,7 @@ def _seal_reference(
         "reference_name": reference_name,
         "created_at":     datetime.now(timezone.utc).isoformat(),
     }
-    with open(os.path.join(rd, "config.json"), "w") as fh:
-        json.dump(config, fh, indent=2)
+    procs._write_run_config(rd, config)
 
     try:
         argv = command._build_run_cmd(entry, tmp_run_dir, extra_params, param_overrides)
@@ -236,12 +265,7 @@ def _seal_reference(
                          hint=f"Check stdout.log at {log_file}. Last output:\n"
                               + stdout[-500:])
 
-    ref_metrics = metrics_mod._parse_metrics_block(stdout)
-    forged = metrics_mod._strip_reserved_metrics(ref_metrics)
-    if forged:
-        ref_metrics["reserved_metrics_ignored"] = forged
-    metrics_mod._normalize_time_metrics(ref_metrics, elapsed)
-    ref_metrics["returncode"] = proc.returncode
+    ref_metrics = _settle_metrics(stdout, elapsed, proc.returncode)
     ref_metrics["proxy_name"] = proxy_name
 
     output_stored: str | None = None
@@ -303,22 +327,15 @@ def _post_run_finalize(
             wall_s = round(wall_ms / 1000.0, 3)
 
     stdout = procs._read_log(run_dir)
-    run_metrics = metrics_mod._parse_metrics_block(stdout)
-    forged = metrics_mod._strip_reserved_metrics(run_metrics)
-    if forged:
-        run_metrics["reserved_metrics_ignored"] = forged
-    if wall_s is not None:
-        metrics_mod._normalize_time_metrics(run_metrics, wall_s)
-    if returncode is not None:
-        run_metrics["returncode"] = returncode
-    if compare_to_reference:
-        output_ext = command._output_ext(output_format)
-        run_out    = os.path.join(run_dir, f"output.{output_ext}")
-        comparison = _compare_to_reference(run_out, compare_to_reference, output_format)
-        run_metrics["comparison_to_reference"] = {
-            "reference": compare_to_reference,
-            **comparison,
-        }
+    run_metrics = _settle_metrics(stdout, wall_s, returncode)
+
+    # The registry entry only carries conserved_metric here; a missing or
+    # unreadable registry just means no conservation residual, not a failure.
+    reg, _ = store._load_registry_or_err()
+    entry  = (reg or {}).get(proxy_name) or {}
+    run_out = os.path.join(run_dir, f"output.{command._output_ext(output_format)}")
+    _apply_invariants(run_metrics, run_out, output_format, entry, compare_to_reference)
+
     mp = os.path.join(run_dir, "metrics.json")
     try:
         with open(mp, "w") as fh:

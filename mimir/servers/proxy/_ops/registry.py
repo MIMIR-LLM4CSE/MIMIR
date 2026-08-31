@@ -2,17 +2,16 @@
 
 from __future__ import annotations
 
-import json
 import os
-import re
 from datetime import datetime, timezone
 
-from _ops import err, ok
+from _ops import _check_name, _with_next, err, ok
 from _lib.command import _PARAM_EXT
 from _lib.procs import _run_state
 from _lib.store import (
     _load_registry_or_err, _save_registry, _registry_lock,
     _proxy_runs_dir,
+    _read_json,
 )
 
 # Descriptive registration fields carried by the ``metadata`` dict parameter.
@@ -141,7 +140,9 @@ def list_proxies() -> dict:
     reg, _reg_err = _load_registry_or_err()
     if _reg_err:
         return err(_reg_err)
-    return ok({"proxies": list(reg.values()), "count": len(reg)})
+    hint = (f"proxy_get(op='proxy', name='{next(iter(reg))}') to inspect one."
+            if reg else "proxy_manage(op='register', ...) to register a proxy.")
+    return ok(_with_next({"proxies": list(reg.values()), "count": len(reg)}, hint))
 
 
 def inspect_proxy(name: str) -> dict:
@@ -174,19 +175,16 @@ def inspect_proxy(name: str) -> dict:
             rs = _run_state(run_dir)
             row: dict = {"run_id": f"{name}/{tag}", "state": rs["state"],
                          "elapsed_s": rs["elapsed_s"]}
-            mp = os.path.join(run_dir, "metrics.json")
-            if os.path.isfile(mp):
-                try:
-                    with open(mp) as fh:
-                        m = json.load(fh)
-                    row["time_s"] = m.get("time_s")
-                    row["misfit"] = m.get("misfit")
-                    row["l2_rel"] = m.get("comparison_to_reference", {}).get("l2_rel")
-                except (json.JSONDecodeError, OSError):
-                    pass
+            m = _read_json(os.path.join(run_dir, "metrics.json"))
+            if isinstance(m, dict):
+                row["time_s"] = m.get("time_s")
+                row["misfit"] = m.get("misfit")
+                row["l2_rel"] = m.get("comparison_to_reference", {}).get("l2_rel")
             recent_runs.append(row)
 
-    return ok({"proxy": entry, "readme": readme_text, "recent_runs": recent_runs})
+    return ok(_with_next(
+        {"proxy": entry, "readme": readme_text, "recent_runs": recent_runs},
+        f"proxy_exec(op='run', proxy_name='{name}', confirm=True) to run it."))
 
 
 # ── mutations (confirm already checked by the dispatch tool) ──────────────────
@@ -202,8 +200,8 @@ def register(
     param_file_format: str = "text",
     metadata: dict | None = None,
 ) -> dict:
-    if not name or not re.match(r"^[A-Za-z0-9_\-]+$", name):
-        return err("name must be non-empty and contain only [A-Za-z0-9_-].")
+    if bad := _check_name("name", name):
+        return bad
     if output_format not in ("npz", "raw_float64", "none"):
         return err(f"Invalid output_format '{output_format}'.",
                    hint="Use: npz, raw_float64, or none.")
@@ -240,7 +238,10 @@ def register(
         }
         reg[name] = entry
         _save_registry(reg)
-    return ok({"registered": entry})
+    return ok(_with_next(
+        {"registered": entry},
+        f"proxy_exec(op='reference', proxy_name='{name}', reference_name='"
+        f"{name}_ref', confirm=True) to seal a reference for comparisons."))
 
 
 def update(
@@ -291,7 +292,8 @@ def update(
         entry["updated_at"] = datetime.now(timezone.utc).isoformat()
         reg[name] = entry
         _save_registry(reg)
-    return ok({"updated": entry})
+    return ok(_with_next({"updated": entry},
+                         f"proxy_get(op='proxy', name='{name}') to review the entry."))
 
 
 def unregister(name: str) -> dict:
@@ -303,5 +305,7 @@ def unregister(name: str) -> dict:
             return err(f"Proxy '{name}' not found in registry.")
         removed = reg.pop(name)
         _save_registry(reg)
-    return ok({"unregistered": removed,
-               "note": "Run history for this proxy is preserved."})
+    return ok(_with_next(
+        {"unregistered": removed,
+         "note": "Run history for this proxy is preserved."},
+        "proxy_get(op='proxies') to see what remains registered."))

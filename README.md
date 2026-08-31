@@ -29,6 +29,13 @@ On top of that loop sits a policy and context layer:
   broken code. A check seen failing before the fix and passing after counts; one that was
   only ever green does not. "The tests passed" and "the result is correct" are tracked as
   different claims, for any language, not just numerical code.
+- **Every modified file is checked, on any machine** — the one required check runs inside
+  MIMIR rather than as a binary on the PATH: a stdlib parser where one exists (Python,
+  JSON, TOML, XML, INI — MIMIR is itself a Python process, so these are free), a structural
+  scan (unbalanced delimiters, unterminated comment, leftover conflict marker) for every
+  other text file. One sweep at the conclusion gate, on final content, so an edit loop is
+  read once. A linter or compiler the model chooses to run raises the strength recorded,
+  and is never required.
 - **Exit 0 is not a result** — a linter or compiler validates on its exit code, because its
   output *is* the verdict. Anything that *executes* leaves the file unvalidated until the
   model reports what the output showed, through a dedicated tool call rather than a line in
@@ -167,7 +174,7 @@ is documented in [`SETUP.md`](SETUP.md).
 │  ┌───────────────────┐     ┌───────────────────┐  └───────────────────┘      │
 │  │ github            │     │ hpc               │                             │
 │  │ web               │     │ platform          │                             │
-│  │ system            │     │ benchmark  env    │                             │
+│  │ system            │     │ env               │                             │
 │  └───────────────────┘     └───────────────────┘                             │
 │                                                                             │
 │  ml/                       proxy/                                            │
@@ -259,10 +266,9 @@ The client registers 21 servers by default; the authoritative registry lives in
 | `search` | File/pattern search, file reads, cached tree summaries, directory listing, ranking |
 | `web` | Safe HTTP GET/POST, JSON parsing and field extraction (SSRF-hardened) |
 | `github` | Read-only GitHub search, metadata, issues, branches, file fetch |
-| `hpc` | Slurm tools (`sinfo`, `squeue`, `salloc`, `sbatch`) + async batch tracking (Environment Modules go through `bash`'s `module`) |
-| `platform` | Platform profiling (CPU/NUMA/memory/GPU/Slurm/toolchains) + arch-aware advice |
+| `hpc` | Slurm: partition/queue queries, compute-node inventory (arch, GPUs, live occupancy) for choosing where to submit, `salloc`/`sbatch` submission + async batch tracking (Environment Modules go through `bash`'s `module`) |
+| `platform` | Platform profiling: CPU/NUMA/memory/GPU/Slurm/toolchains/Python environments |
 | `env` | Mutating Python-environment management (pip install/uninstall, create/delete) |
-| `benchmark` | Lightweight micro-benchmarks (Python compute, memory copy, NumPy matmul) |
 | `system` | Read-only OS/CPU/memory/disk/uptime inspection |
 | `code_intel` | Symbol navigation (ctags + LSP): definition, references, outline, hover |
 | `bash` | Workspace shell: search, compile, run, validate, test, `git`, file management — any command but a short denylist, approval-gated and path-confined |
@@ -280,8 +286,8 @@ selection, chaining, and recovery.
 
 The client gates sensitive tool calls through an interactive approval prompt (`yes` /
 `no` / `always`). Approval-gated actions include file writes, memory mutation, code
-execution/compilation, shell commands, external POST requests, Slurm allocation, and benchmark
-persistence. A refusal is handed back as an instruction, not an error to retry: MIMIR weighs
+execution/compilation, shell commands, external POST requests, Slurm allocation, and Python-environment
+changes. A refusal is handed back as an instruction, not an error to retry: MIMIR weighs
 whether you meant "not this way" (reach the goal another way), "that's unnecessary" (drop the
 step and carry on, saying it was skipped) or "stop" (end the turn and report what is blocked) —
 and after repeated refusals of the same action it stops asking you at all. See

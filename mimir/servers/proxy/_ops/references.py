@@ -2,21 +2,22 @@
 
 from __future__ import annotations
 
-import json
 import os
 
-from _ops import err, ok
+from _ops import _check_name, _with_next, err, ok
 from _lib.execute import _DEFAULT_MAX_OUTPUT_MB, _REF_RUN_TIMEOUT, _seal_reference
 from _lib.store import (
     refs_dir,
     _load_registry_or_err,
     _ref_dir, _load_ref_metrics, _ref_output_path,
+    _read_json,
 )
 
 
 def list_references() -> dict:
     if not os.path.isdir(refs_dir()):
-        return ok({"references": [], "count": 0})
+        return ok(_with_next({"references": [], "count": 0},
+                             "proxy_exec(op='reference', ...) to seal a first reference."))
 
     out = []
     for name in sorted(os.listdir(refs_dir())):
@@ -24,20 +25,18 @@ def list_references() -> dict:
         if not os.path.isdir(rd):
             continue
         entry: dict = {"name": name}
-        cfg_p = os.path.join(rd, "config.json")
-        if os.path.isfile(cfg_p):
-            try:
-                with open(cfg_p) as fh:
-                    entry["config"] = json.load(fh)
-            except (json.JSONDecodeError, OSError):
-                pass
+        cfg = _read_json(os.path.join(rd, "config.json"))
+        if cfg is not None:
+            entry["config"] = cfg
         m = _load_ref_metrics(name)
         if m:
             entry["metrics"] = m
         entry["has_field_output"] = _ref_output_path(name) is not None
         out.append(entry)
 
-    return ok({"references": out, "count": len(out)})
+    return ok(_with_next(
+        {"references": out, "count": len(out)},
+        "proxy_exec(op='run', compare_to_reference=..., confirm=True) to score a run."))
 
 
 def create(
@@ -49,6 +48,8 @@ def create(
     timeout_s: int = _REF_RUN_TIMEOUT,
 ) -> dict:
     """Run a proxy synchronously and seal its output as an immutable reference."""
+    if bad := _check_name("reference_name", reference_name):
+        return bad
     reg, _reg_err = _load_registry_or_err()
     if _reg_err:
         return err(_reg_err)
@@ -65,9 +66,8 @@ def create(
     if error:
         return error
 
-    result["next_step"] = (
+    return ok(_with_next(
+        result,
         f"proxy_exec(op='run', proxy_name='{proxy_name}', "
         f"compare_to_reference='{reference_name}', confirm=True) to compare "
-        "new runs against this reference."
-    )
-    return ok(result)
+        "new runs against this reference."))

@@ -1,6 +1,7 @@
 """Optimization-session ops.
 
-Act ops (dispatched by ``proxy_eval``): init, configure, run, stop, reset.
+Act ops (dispatched by ``proxy_eval``): init, configure, run, stop, reset,
+reset_to_best, end.
 Observe ops (dispatched by ``proxy_eval_status``): status, results, log,
 runs, diff, config.  Every response carries a ``next_step`` hint naming the
 exact next call, so the loop is self-describing.
@@ -15,7 +16,7 @@ import sys
 from datetime import datetime, timezone
 
 from _ops import _PROXY_DIR, _with_next, err, ok
-from _lib.metrics import _VALID_OPT_OPERATORS
+from _lib.metrics import _VALID_OPT_OPERATORS, _coerce
 from _lib.procs import (
     _log_path, _read_log, _run_state,
     _new_run_dir, _write_run_config, _launch_detached, _cancel_run,
@@ -25,21 +26,19 @@ from _lib.ratchet import (
     _load_best, _save_best, _append_ledger, _ratchet_verdict,
     _run_primary_value,
 )
-from _lib.report import _diff_run_dirs
+from _lib.report import _diff_run_pair
 from _lib.store import (
     opt_canonical_dir,
     _load_registry_or_err, _load_suite,
     _opt_config_file, _opt_session_runs_dir, _opt_best_source_path,
     _resolve_proxy_name, _write_active_session, _clear_active_session,
-    _read_json, _write_json_atomic,
+    _read_json, _write_json_atomic, _file_lock, _run_dir_names,
 )
 
 _OPT_RUNNER = os.path.join(_PROXY_DIR, "_proxy_runner.py")
 
-# Requirements on these metrics only make sense when every benchmark case
-# compares against a sealed reference — they are computed server-side and
-# proxy-emitted values are ignored, so without a reference they can never be
-# satisfied and the session would be a dead end.
+# Computed server-side from a sealed reference, so a requirement on one of these
+# can never be satisfied when a case has no reference — refuse it up front.
 _REFERENCE_METRICS = ("conservation_residual", "l2_abs", "l2_rel",
                       "linf_abs", "linf_rel")
 
@@ -466,24 +465,19 @@ def end(proxy_name: str = "") -> dict:
                    hint="proxy_eval(op='stop', confirm=True), then proxy_eval(op='end', confirm=True).")
 
     _clear_active_session()
-    return ok({
+    return ok(_with_next({
         "ended":  name,
         "note": "Optimization session ended; source/snapshots/ledger kept for history. "
                 "The proxy can be run directly again. Re-init to optimize further.",
-        "next_step": "proxy_eval(op='init', ...) to start a new session, or you are done.",
-    })
+    }, "proxy_eval(op='init', ...) to start a new session, or you are done."))
 
 
 def _ratchet_state(proxy_name: str, run_dir: str, final_metrics: dict, cfg: dict) -> dict:
     """Compute the ratchet outcome for a completed run, persisting it once.
 
-    Settled by the *runner itself* at run completion (so ledger/best are the
-    source of truth even if the agent never calls ``results``) and replayed by
-    ``results``; whichever gets there first wins.  The verdict is frozen to
-    ``<run_dir>/ratchet.json`` and the session's best-so-far / ledger / stall
-    counter are updated exactly once — a per-session flock serializes the
-    runner-vs-observer race, and the frozen outcome is re-checked under the
-    lock so best/stall never move twice for the same run.
+    Whichever of the runner or ``results`` gets here first wins: the verdict is
+    frozen to ``<run_dir>/ratchet.json`` under a per-session flock and re-checked
+    inside it, so best/ledger/stall never move twice for the same run.
     """
     name = cfg.get("proxy_name") or proxy_name
     outcome_path = os.path.join(run_dir, "ratchet.json")
@@ -499,19 +493,11 @@ def _ratchet_state(proxy_name: str, run_dir: str, final_metrics: dict, cfg: dict
     if out is not None:
         return out
 
-    import fcntl
-    lock_path = os.path.join(_opt_session_runs_dir(name), ".ratchet.lock")
-    os.makedirs(os.path.dirname(lock_path), exist_ok=True)
-    with open(lock_path, "w") as lock_fd:
-        fcntl.flock(lock_fd, fcntl.LOCK_EX)
-        try:
-            out = _frozen()
-            if out is not None:
-                return out
-            return _ratchet_settle_locked(
-                name, run_dir, final_metrics, cfg, outcome_path)
-        finally:
-            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+    with _file_lock(os.path.join(_opt_session_runs_dir(name), ".ratchet.lock")):
+        out = _frozen()
+        if out is not None:
+            return out
+        return _ratchet_settle_locked(name, run_dir, final_metrics, cfg, outcome_path)
 
 
 def _ratchet_settle_locked(
@@ -537,11 +523,8 @@ def _ratchet_settle_locked(
 
     verdict = _ratchet_verdict(feasible, primary_value, best, goal, min_improvement)
 
-    # Timing audit: time_s is self-reported by the proxy (only impossible
-    # values are stripped upstream), so when it is the objective, an accepted
-    # improvement whose server-measured wall time regressed vs the incumbent
-    # deserves a warning — plausible I/O noise, but also the signature of a
-    # tampered timer.
+    # An accepted time_s improvement whose measured wall time regressed is
+    # plausible I/O noise, but also the signature of a tampered timer: warn.
     timing_warning: str | None = None
     if verdict == "accept" and primary_metric == "time_s" and best is not None:
         prev_wall = best.get("wall_value")
@@ -641,13 +624,6 @@ def results(proxy_name: str = "") -> dict:
 
     content = _read_log(run_dir)
 
-    def _coerce_token(v: str):
-        try:
-            return float(v) if "." in v else (
-                True if v.lower() == "true" else (False if v.lower() == "false" else int(v)))
-        except ValueError:
-            return v
-
     cases:   list[dict] = []
     summary: dict       = {}
     for line in content.splitlines():
@@ -657,14 +633,14 @@ def results(proxy_name: str = "") -> dict:
             for part in line.split()[1:]:
                 if "=" in part:
                     k, _, v = part.partition("=")
-                    row[k] = _coerce_token(v)
+                    row[k] = _coerce(v)
             if row:
                 cases.append(row)
         elif line.startswith("[proxy_runner] summary "):
             for part in line.split()[2:]:
                 if "=" in part:
                     k, _, v = part.partition("=")
-                    summary[k] = _coerce_token(v)
+                    summary[k] = _coerce(v)
 
     final_metrics = _read_json(os.path.join(run_dir, "metrics.json"))
 
@@ -762,27 +738,26 @@ def log(proxy_name: str = "", tail: int = 50) -> dict:
 
     all_lines = content.splitlines()
     rs        = _run_state(run_dir)
-    return ok({
+    return ok(_with_next({
         "run_dir":     run_dir,
         "state":       rs["state"],
         "total_lines": len(all_lines),
         "lines":       all_lines[-tail:],
-    })
+    }, "proxy_eval(op='status') for the ratchet verdict on this run."))
 
 
 def runs_list(proxy_name: str = "") -> dict:
     resolved = _resolve_proxy_name(proxy_name)
     if not resolved:
-        return ok({"runs": [], "count": 0, "note": "No proxy name or active session."})
+        return ok(_with_next({"runs": [], "count": 0,
+                              "note": "No proxy name or active session."},
+                             "proxy_eval(op='init', ...) to start a session."))
     session_dir = _opt_session_runs_dir(resolved)
     if not os.path.isdir(session_dir):
-        return ok({"runs": [], "count": 0})
+        return ok(_with_next({"runs": [], "count": 0},
+                             "proxy_eval(op='run', confirm=True) to produce a first run."))
 
-    names = sorted(
-        [d for d in os.listdir(session_dir)
-         if d != "active" and os.path.isdir(os.path.join(session_dir, d))],
-        reverse=True,
-    )
+    names = _run_dir_names(session_dir)
     best        = _load_best(resolved)
     best_run_id = best.get("run_id") if best else None
     runs: list[dict] = []
@@ -798,7 +773,9 @@ def runs_list(proxy_name: str = "") -> dict:
                       "best_case", "best_time_s", "convergence_order"):
                 entry[k] = m.get(k)
         runs.append(entry)
-    return ok({"runs": runs, "count": len(runs), "best_run_id": best_run_id})
+    return ok(_with_next(
+        {"runs": runs, "count": len(runs), "best_run_id": best_run_id},
+        "proxy_eval(op='diff') to compare the last two runs."))
 
 
 def runs_diff(run_a: str = "", run_b: str = "", proxy_name: str = "") -> dict:
@@ -809,28 +786,17 @@ def runs_diff(run_a: str = "", run_b: str = "", proxy_name: str = "") -> dict:
     if not os.path.isdir(session_dir):
         return err("No optimization runs found.")
 
-    all_runs = sorted(
-        [d for d in os.listdir(session_dir)
-         if d != "active" and os.path.isdir(os.path.join(session_dir, d))],
-        reverse=True,
-    )
-    if len(all_runs) < 2:
-        return err("Need at least 2 runs to compare.",
-                   hint="Run proxy_eval(op='run', confirm=True) more times first.")
+    all_runs = _run_dir_names(session_dir)
 
     def _resolve(rid: str, default_idx: int) -> str:
-        if not rid:
-            return os.path.join(session_dir, all_runs[default_idx])
+        rid = rid or all_runs[default_idx]
         return rid if os.path.isabs(rid) else os.path.join(session_dir, rid)
 
-    dir_a = _resolve(run_a, 1)
-    dir_b = _resolve(run_b, 0)
-    for d, label in ((dir_a, "run_a"), (dir_b, "run_b")):
-        if not os.path.isdir(d):
-            return err(f"{label} not found: {d}")
-
-    diff = _diff_run_dirs(dir_a, dir_b)
-    return ok({"run_a": dir_a, "run_b": dir_b, **diff})
+    payload, error = _diff_run_pair(all_runs, run_a, run_b, _resolve)
+    if error:
+        return err(error, hint="Run proxy_eval(op='run', confirm=True) more times first.")
+    return ok(_with_next(payload,
+                         "proxy_eval(op='results') for the ratchet view across all runs."))
 
 
 def config_get(proxy_name: str = "") -> dict:
@@ -838,4 +804,5 @@ def config_get(proxy_name: str = "") -> dict:
     if not cfg:
         return ok(_with_next({"config": None, "note": "No optimization session initialized."},
                              "proxy_eval(op='init', ...)"))
-    return ok({"config": cfg})
+    return ok(_with_next({"config": cfg},
+                         "proxy_eval(op='configure', ...) to change it, or op='run' to use it."))

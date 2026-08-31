@@ -18,6 +18,7 @@ const _VLLM_TOOL_CALL_PARSERS_FALLBACK: Record<string, string> = {
   "devstral":     "mistral",
   "mixtral":      "mistral",
   "nemotron":     "qwen3_coder",
+  "qwen3.8":      "qwen3_xml",
   "qwen3-coder":  "qwen3_coder",
   "qwen3":        "hermes",
   "qwen2.5-coder": "hermes",
@@ -207,8 +208,16 @@ const _diffContentProvider = new class implements vscode.TextDocumentContentProv
 // The URI is CONSTANT — it names "the plan MIMIR is showing", not one plan file.
 // Keying it on the plan's path meant a second plan (new title → new file) became
 // a new resource, and switching an open preview's resource leaves it rendering
-// the old one; with a fixed resource every plan reuses the same preview tab and
-// the invalidation below is all it takes to swap the content.
+// the old one; with a fixed resource every plan reuses the same preview tab.
+//
+// Invalidating that resource is necessary but NOT sufficient. Nothing holds an
+// editor on the virtual document, so VS Code drops it once it is unreferenced;
+// firing the change event on a dropped document is a no-op, and the preview keeps
+// rendering the plan it last saw — which is why a plan written minutes earlier (in
+// this session or another) stayed on screen for every plan after it. Hence the
+// three steps in _showPlanPreview: reopen the document (fresh provider read),
+// invalidate it (fresh content if it was still open), then force the preview to
+// re-render (revealing an existing preview re-renders nothing by itself).
 
 const _planChanged = new vscode.EventEmitter<vscode.Uri>();
 
@@ -260,26 +269,50 @@ function _watchPreviewedFile(abs: string): void {
     const mtimeMs = stamp();
     if (mtimeMs !== _previewWatch.mtimeMs) {
       _previewWatch.mtimeMs = mtimeMs;
-      _planChanged.fire(PLAN_URI);
+      void _invalidatePlanDocument();
     }
   }, 1000);
   _previewWatch = { path: abs, mtimeMs: stamp(), timer };
 }
 
+/** Re-render every open Markdown preview from its (re-read) document. */
+async function _refreshPlanPreview(): Promise<void> {
+  try {
+    await vscode.commands.executeCommand("markdown.preview.refresh");
+  } catch {
+    /* command absent on this VS Code build — the invalidation is all we have */
+  }
+}
+
+/** Re-read the plan document and push the new bytes to the preview. */
+async function _invalidatePlanDocument(): Promise<void> {
+  // Reopening resurrects the document if VS Code dropped it (no editor holds it),
+  // which re-runs the content provider on the current path; the fire covers the
+  // opposite case, a document still open on the previous plan's bytes.
+  try {
+    await vscode.workspace.openTextDocument(PLAN_URI);
+  } catch {
+    /* provider threw — the fire below still reaches an open document */
+  }
+  _planChanged.fire(PLAN_URI);
+  await _refreshPlanPreview();
+}
+
 /** Point the plan preview at `abs` and open/refresh it. */
 function _showPlanPreview(abs: string): void {
   _currentPlanPath = abs;
-  // Fire first: revealing an already-open preview does not re-request the
+  // Before revealing: revealing an already-open preview does not re-request the
   // content, so an earlier plan would still be on screen.
-  _planChanged.fire(PLAN_URI);
-  vscode.commands.executeCommand("markdown.showPreview", PLAN_URI).then(
-    () => {
-      _watchPreviewedFile(abs);
-      // Re-fire once the preview is up: a preview created by this very call
-      // renders before the first invalidation can reach it.
-      setTimeout(() => _planChanged.fire(PLAN_URI), 120);
-    },
-    () => vscode.window.showWarningMessage(`MIMIR: cannot preview ${abs}`)
+  void _invalidatePlanDocument().then(() =>
+    vscode.commands.executeCommand("markdown.showPreview", PLAN_URI).then(
+      () => {
+        _watchPreviewedFile(abs);
+        // Again once the preview is up: a preview created by this very call
+        // renders before the first invalidation can reach it.
+        setTimeout(() => void _invalidatePlanDocument(), 120);
+      },
+      () => vscode.window.showWarningMessage(`MIMIR: cannot preview ${abs}`)
+    )
   );
 }
 

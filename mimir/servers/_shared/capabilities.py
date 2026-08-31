@@ -116,6 +116,32 @@ IRREVERSIBLE = "irreversible"
 REVERSIBILITY_LEVELS = (REVERSIBLE, RECOVERABLE, IRREVERSIBLE)
 
 
+# Condition kinds a run-outcome spec may carry. The `_present` forms fire on a field
+# merely being there and truthy — a per-case error string has no enumerable value set.
+# `measured_when` is the one positive form, and it credits *evidence level* only —
+# that the file was exercised and measured, never that the measurement was good. That
+# claim is a verdict on the run, and no server may grant one for itself.
+_OUTCOME_CONDITIONS = frozenset({
+    "crashed_when", "failed_when", "measured_when",
+    "crashed_when_present", "failed_when_present", "measured_when_present",
+})
+
+
+def _norm_conditions(src: dict[str, Any], dest: dict[str, Any]) -> None:
+    """Copy the normalised outcome conditions of *src* into *dest*."""
+    for key in ("crashed_when", "failed_when", "measured_when"):
+        conds = src.get(key)
+        if isinstance(conds, dict) and conds:
+            dest[key] = {
+                str(field): list(values) if isinstance(values, (list, tuple)) else [values]
+                for field, values in conds.items()
+            }
+    for key in ("crashed_when_present", "failed_when_present", "measured_when_present"):
+        fields = src.get(key)
+        if isinstance(fields, (list, tuple)) and fields:
+            dest[key] = [str(f) for f in fields]
+
+
 def build_descriptor(
     *,
     caps: Iterable[str] | None = None,
@@ -130,6 +156,7 @@ def build_descriptor(
     preview: dict[str, Any] | None = None,
     timeout_secs: int | None = None,
     readonly_when: dict[str, Any] | None = None,
+    run_outcome: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build the ``meta["mimir"]`` descriptor dict (pure / stdlib-only).
 
@@ -218,6 +245,29 @@ def build_descriptor(
         if norm_prev.get("kind"):
             descriptor["preview"] = norm_prev
 
+    # What the *server* saw of a run it performed, so the client's run ledger has a
+    # floor under the model's stated verdict. `id` names the payload field carrying the
+    # run identifier; `crashed_when`/`failed_when` map a payload field to the values
+    # that mean the machine judged the run red. Read-only in that direction: this can
+    # withhold credit, never grant it, which is why there is no `passed_when`.
+    # `rows` declares the same shape nested inside a list field, for a tool that
+    # reports several runs in one response.
+    if run_outcome:
+        norm_out: dict[str, Any] = {}
+        if run_outcome.get("id"):
+            norm_out["id"] = str(run_outcome["id"])
+        _norm_conditions(run_outcome, norm_out)
+        rows = run_outcome.get("rows")
+        if isinstance(rows, dict) and rows.get("field"):
+            norm_rows: dict[str, Any] = {"field": str(rows["field"])}
+            if rows.get("id"):
+                norm_rows["id"] = str(rows["id"])
+            _norm_conditions(rows, norm_rows)
+            norm_out["rows"] = norm_rows
+        # An identifier with nothing to judge on says nothing; drop it.
+        if norm_out.get("id") and (norm_out.keys() & _OUTCOME_CONDITIONS or norm_out.get("rows")):
+            descriptor["run_outcome"] = norm_out
+
     return descriptor
 
 
@@ -235,6 +285,7 @@ def tool_caps(
     preview: dict[str, Any] | None = None,
     timeout_secs: int | None = None,
     readonly_when: dict[str, Any] | None = None,
+    run_outcome: dict[str, Any] | None = None,
     read_only: bool | None = None,
     destructive: bool | None = None,
 ) -> dict[str, Any]:
@@ -262,6 +313,7 @@ def tool_caps(
         preview=preview,
         timeout_secs=timeout_secs,
         readonly_when=readonly_when,
+        run_outcome=run_outcome,
     )
     kwargs: dict[str, Any] = {"meta": {"mimir": descriptor}}
 

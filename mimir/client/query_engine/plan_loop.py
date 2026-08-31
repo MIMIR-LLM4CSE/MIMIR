@@ -53,6 +53,9 @@ _PLAN_REWORK = "Rework"
 # After this many further tool-calling turns its calls are dropped.
 _PLAN_POST_RECORD_TOOL_TURNS = 2
 
+# Turns a phase nudge waits before repeating itself after a turn that acted.
+_PLAN_NUDGE_EVERY = 5
+
 
 def _plan_title_arg(name: str, agent: Any) -> str:
     """Name of the argument that titles a plan document, for the tool *name*."""
@@ -223,8 +226,25 @@ async def _run_plan_mode(
     explore_turns = 0
     plan_tools = _plan_tools(exploring=exploring)
 
-    def _nudge_toward_plan(step: int) -> None:
-        """Push toward whatever the current phase owes: evidence, then the document."""
+    last_nudged: dict[str, int] = {}
+
+    def _nudge_toward_plan(step: int, *, forced: bool) -> None:
+        """Push toward whatever the current phase owes: evidence, then the document.
+
+        Throttled after a turn that acted: fired from every tool turn, the identical
+        text landed nine times in one observed run — and a user turn arriving between
+        every single tool result is itself what teaches one-call-per-turn, which is
+        how the same run ignored the fan-out instruction inside the nudge four times
+        running. *forced* is the turn that only talked: that prose is discarded, so
+        the reminder is the sole thing telling the model why, and skipping it would
+        loop the same refusal until the step budget ran out.
+        """
+        category = "plan_explore" if exploring else "plan_todo"
+        if not forced:
+            previous = last_nudged.get(category)
+            if previous is not None and step - previous < _PLAN_NUDGE_EVERY:
+                return
+        last_nudged[category] = step
         if exploring:
             text = PLAN_EXPLORE_FIRST
             if names_with_cap(DELEGATE, agent.tool_caps):
@@ -345,7 +365,7 @@ async def _run_plan_mode(
             if not plan_recorded:
                 if hold:
                     hold.discard()
-                _nudge_toward_plan(plan_nudges)
+                _nudge_toward_plan(plan_nudges, forced=True)
                 continue
 
             # The plan is recorded and has been presented to the user. Ask them to
@@ -430,7 +450,7 @@ async def _run_plan_mode(
             plan_recorded = True
 
         if not plan_recorded:
-            _nudge_toward_plan(plan_nudges)
+            _nudge_toward_plan(plan_nudges, forced=False)
         else:
             # Repeating the same deliver nudge verbatim is what the model echoes back;
             # escalate to the firm one once it has been ignored.

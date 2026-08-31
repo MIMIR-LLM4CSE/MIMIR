@@ -126,7 +126,7 @@ QUERY_DISCOVERY_SIGNALS: tuple[str, ...] = tuple(
 
 # ---------------------------------------------------------------------------
 # Domain tool groups — query-gated pruning of heavy, specialized tool families whose
-# JSON schemas dominate per-step prompt cost (HPC, platform, benchmarking, finetune,
+# JSON schemas dominate per-step prompt cost (HPC, platform, finetune,
 # proxy). Each entry maps a tuple of tool-name *prefixes* to the query keywords that
 # activate the group; a group whose keywords are all absent is pruned from the tool
 # list (see query_engine.toollist.inactive_domain_prefixes).
@@ -153,16 +153,6 @@ DOMAIN_TOOL_GROUPS: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] = (
             "target", "isa", "numa", "optimize", "optimise", "optimization",
             "optimisation", "performance", "perf", "speedup", "speed up",
             "faster", "accelerate",
-        ),
-    ),
-    # Benchmarking.
-    (
-        ("benchmark_",),
-        (
-            "benchmark", "performance", "perf", "speedup", "speed up",
-            "optimize", "optimise", "optimization", "optimisation", "faster",
-            "accelerate", "profile", "profiling", "flops", "throughput",
-            "latency", "measure", "timing",
         ),
     ),
     # Fine-tuning.
@@ -195,12 +185,11 @@ DOMAIN_TOOL_GROUPS: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] = (
 
 
 # What counts as source: an edit to one of these is recorded as produced work and owes
-# a check. Deliberately wider than the set of languages this environment can check —
-# whether a checker exists is a separate question, answered per file at write time
-# (guardrails.observations._language_checker_missing) so a language nothing here can
-# check is *reported* unchecked instead of dropping out of the ledger unnoticed. Every
-# spelling of a language belongs here: `.f03` was missing while the checker table
-# already knew it, so a Fortran 2003 file was never even recorded as modified.
+# a check. Every source language belongs here whatever this machine has installed: the
+# check itself is performed in-process (guardrails.builtin_check), so what a file owes
+# no longer depends on a binary being on PATH. Every spelling of a language belongs
+# here too — `.f03` was once missing, and a Fortran 2003 file was then never even
+# recorded as modified.
 SOURCE_FILE_EXTENSIONS: tuple[str, ...] = (
     # Python
     ".py", ".pyi", ".pyx", ".pxd",
@@ -222,6 +211,14 @@ SOURCE_FILE_EXTENSIONS: tuple[str, ...] = (
     ".jl", ".r", ".m",
     # Hardware description
     ".v", ".sv", ".vhd", ".vhdl",
+    # Structured data and configuration. Not code, but a broken `pyproject.toml` or a
+    # malformed manifest breaks a project exactly as a broken module does, and these
+    # are the extensions the built-in floor holds a *real parser* for — the check costs
+    # nothing and cannot be wrong. Formats with no stdlib parser (YAML above all) are
+    # deliberately absent: recording them would only add files the floor can say
+    # nothing precise about.
+    ".json", ".toml", ".ini", ".cfg",
+    ".xml", ".xsd", ".xsl", ".xslt", ".plist",
 )
 
 

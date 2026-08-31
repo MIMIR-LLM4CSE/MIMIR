@@ -25,9 +25,11 @@ class ExecutionContext(TypedDict):
     # ── Edit: planned and in-flight mutations ──────────────────────────────────
     dirty_written_files: set[str]                   # code files successfully written this query and not yet re-validated
     validated_files: set[str]                       # dirty files that have since passed a checker (syntax/imports/lint) — never an execution
-    validation_tier_by_file: dict[str, str]         # per-file strength of that validation: syntax|static|compiled (completion ledger)
+    validation_tier_by_file: dict[str, str]         # per-file strength of that validation: structural|syntax|static|compiled (completion ledger)
     validation_fail_count_by_file: dict[str, int]   # per-file count of failed checks (retry-budget exhaustion)
-    unverifiable_files: set[str]                    # dirty files whose language has no checker in this environment: reported, never demanded
+    unverifiable_files: set[str]                    # dirty files the built-in floor cannot read at all (binary, undecodable): reported, never demanded
+    builtin_check_stamp: dict[str, tuple[int, int]] # path -> (mtime_ns, size) at its last built-in check: what makes the conclusion sweep check each revision once
+    builtin_check_findings: dict[str, str]          # path -> the built-in floor's diagnostic for a file it rejected (drives the validation nudge)
     runs: dict[str, dict[str, Any]]                 # command -> {call_id, completed: bool, effect: run|build, verdict: ''|pass|fail|unknown, reason, failures: int, attempts: [str]}: everything about an execution, which is judged on its own and credits no file
     exercise_advice_closed: bool                    # True once the model answered the run/verdict advice; the shared exercise budget never re-arms after that
     exercise_blocked_reason: str                    # why running the change was out of reach (no exec tool, unresolved imports, needs a build): reported in the ledger instead of silently dropping the advice
@@ -238,6 +240,8 @@ _FIELD_SPECS: tuple[_FieldSpec, ...] = (
     ("validation_tier_by_file", dict, (dict,), _NO_TRAITS),
     ("validation_fail_count_by_file", dict, (dict,), _NO_TRAITS),
     ("unverifiable_files", set, (set,), frozenset({FILE_PATH})),
+    ("builtin_check_stamp", dict, (dict,), _NO_TRAITS),
+    ("builtin_check_findings", dict, (dict,), _NO_TRAITS),
     ("runs", dict, (dict,), _NO_TRAITS),
     ("exercise_advice_closed", lambda: False, (bool,), _NO_TRAITS),
     ("exercise_blocked_reason", lambda: "", (str,), _NO_TRAITS),
@@ -581,11 +585,23 @@ def declared_edit_set_complete(execution_context: dict[str, Any]) -> bool:
 # tier — it is read by the completion ledger so the *answer* can say what was
 # actually established.
 #
-# ``compiled`` sits at the top and is the one tier nothing ever *demands*: producing
-# an object or a binary needs a toolchain the environment may not have, so a build is
+# ``structural`` sits at the bottom: the built-in floor established that the file parses
+# (or, for a language with no stdlib parser, that it is not truncated) without any tool
+# being installed. It is the tier every checked file starts at, and any external checker
+# the model happens to run raises it from there.
+#
+# ``compiled`` needs a toolchain the environment may not have, so a build is
 # recommended when it is available, never required. It still credits the file, a
 # fortiori — a translation unit that linked also parsed.
-VALIDATION_TIERS: tuple[str, ...] = ("syntax", "static", "compiled")
+#
+# ``measured`` sits at the top and is reached by exactly one route: a server that ran
+# the file itself and knows which file it ran. Attribution is what normally keeps a run
+# off this axis — ``python main.py`` exercises ``mesh.py`` without naming it — and an
+# optimisation session is the one place where it is not a guess, because the session
+# config names a single source. It is demanded nowhere either: a cluster, a queue or a
+# dataset may be missing. It says the file was exercised and measured, never that the
+# measurement was good; that claim is a verdict on the *run*.
+VALIDATION_TIERS: tuple[str, ...] = ("structural", "syntax", "static", "compiled", "measured")
 _TIER_RANK = {name: i for i, name in enumerate(VALIDATION_TIERS)}
 
 

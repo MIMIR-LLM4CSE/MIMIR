@@ -127,7 +127,7 @@ _LAUNCH_ONLY_PROFILE_KEYS: frozenset[str] = frozenset({
     "tool_call_parser", "reasoning_parser", "async-scheduling",
     # Client-only knobs consumed by the agent loop / config, never valid as vLLM
     # request sampling params — must be stripped from extra_body.
-    "pin_role", "max_tools",
+    "pin_role", "max_tools", "thinking_directive",
 })
 
 
@@ -171,6 +171,55 @@ def _model_extra_body(model: str) -> dict:
     import copy
     profile = copy.deepcopy(profiles[best_key])
     return {k: v for k, v in profile.items() if k not in _LAUNCH_ONLY_PROFILE_KEYS}
+
+
+def _thinking_directives(model: str) -> dict:
+    """Return *model*'s ``thinking_directive`` mapping (``{"on": ..., "off": ...}``), or {}.
+
+    Most thinking-capable templates take an ``enable_thinking`` kwarg (see
+    ``supports_thinking``). A few take nothing at all and are steered purely by a
+    literal string in the system message — Llama-3.1-Nemotron-Ultra was trained on
+    ``detailed thinking on`` / ``detailed thinking off``. Such models need this knob
+    instead, and must NOT set ``supports_thinking``, whose kwarg they would ignore.
+    """
+    try:
+        from ...config.models import profile_for_model
+    except ImportError:
+        return {}
+    directives = profile_for_model(model).get("thinking_directive")
+    return directives if isinstance(directives, dict) else {}
+
+
+def _apply_thinking_directive(
+    messages: list[dict], directives: dict, thinking: bool
+) -> list[dict]:
+    """Put the on/off directive at the head of the system message.
+
+    Nemotron-Ultra's template only falls back to its ``detailed thinking on`` default
+    when there is *no* system message; ours always replaces it, which silently turns
+    reasoning off. So the directive has to be injected into the system message we send,
+    as its first line — the position the model was trained on.
+
+    Any directive left over from an earlier turn is stripped first, so toggling
+    thinking on and off across a conversation cannot stack contradictory lines.
+    """
+    wanted = str(directives.get("on" if thinking else "off") or "")
+    if not wanted:
+        return messages
+
+    variants = [str(v) for v in directives.values() if v]
+    out = list(messages)
+    for i, msg in enumerate(out):
+        if msg.get("role") != "system":
+            continue
+        content = str(msg.get("content") or "")
+        for variant in variants:
+            if content.startswith(variant):
+                content = content[len(variant):].lstrip("\n")
+                break
+        out[i] = {**msg, "content": f"{wanted}\n\n{content}" if content else wanted}
+        return out
+    return [{"role": "system", "content": wanted}, *out]
 
 
 def _normalize_tool_calls(raw_tool_calls: list) -> list[dict]:
@@ -427,6 +476,10 @@ class VllmBackend(LLMBackend):
             extra_body["top_k"] = top_k
 
         prepared_messages = _prepare_messages_for_openai(messages)
+        # Models steered by a system-prompt directive rather than a template kwarg.
+        prepared_messages = _apply_thinking_directive(
+            prepared_messages, _thinking_directives(model), thinking
+        )
 
         # vLLM raises 400 if add_generation_prompt=True (the default) when the
         # last message is from the assistant.  Signal that we want to continue

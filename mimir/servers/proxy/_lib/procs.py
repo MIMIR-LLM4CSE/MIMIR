@@ -195,6 +195,14 @@ def _write_run_config(run_dir: str, config: dict) -> None:
         json.dump(config, fh, indent=2)
 
 
+def _update_run_config(run_dir: str, updates: dict) -> None:
+    """Merge *updates* into an existing run config, preserving every other key."""
+    from _lib.store import _read_json
+    cfg = _read_json(os.path.join(run_dir, "config.json"), {}) or {}
+    cfg.update(updates)
+    _write_run_config(run_dir, cfg)
+
+
 def _launch_detached(argv: list[str], run_dir: str, log_file: str | None = None) -> int:
     """Spawn *argv* in a new session; record pid + pid_starttime; return the pid.
 

@@ -26,7 +26,7 @@ import types
 import unittest
 from unittest import mock
 
-from mimir.client.config.constants import EXERCISE_BUDGET, NUDGE_VALIDATION_IDLE_STEPS
+from mimir.client.config.constants import EXERCISE_BUDGET
 from mimir.client.context.capabilities import CODE_EXEC, JUDGE, ToolCaps
 from mimir.client.context.execution_context import (
     build_execution_context,
@@ -385,9 +385,9 @@ class WorkflowNudgeSequenceTests(unittest.TestCase):
 
     def test_each_step_of_the_workflow_has_exactly_one_nudge(self) -> None:
         unchecked = _written({"solver.py"}, validated=False)
-        # `validation` waits for editing to pause (NUDGE_VALIDATION_IDLE_STEPS); the
-        # other two ask the moment the model stops, so only this one needs the wait.
-        unchecked["steps_since_last_edit"] = NUDGE_VALIDATION_IDLE_STEPS
+        # `validation` now carries a finding rather than a request, so it fires on the
+        # built-in check having rejected the file, not on editing having paused.
+        unchecked["builtin_check_findings"] = {"solver.py": "line 3: '{' is never closed"}
         cases = [
             ("written, never checked", unchecked, "validation"),
             ("checked, never run", _written({"solver.py"}, tier="static"), "unexercised"),
@@ -467,7 +467,7 @@ class CompletionIssueTests(_ChecklistFixture):
         # the work as verified.
         _, completed = _collect_completion_issues(_written({"a.py"}, tier="static"))
         self.assertIn(
-            "All modified files checked (static) — parses/lints, says nothing about the result",
+            "All modified files checked (static) — parses, says nothing about the result",
             completed,
         )
 

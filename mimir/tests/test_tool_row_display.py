@@ -88,11 +88,11 @@ class SearchRowCountTests(unittest.TestCase):
 
 class DedupRowDetailTests(unittest.TestCase):
     def test_basename_in_path_label_dropped(self) -> None:
-        label = "Reading file: /shared/data1/x/ratchet_demo/wave2d_proxy.py"
+        label = "Reading file: /work/proj/ratchet_demo/wave2d_proxy.py"
         self.assertEqual(dedup_row_detail(label, "wave2d_proxy.py"), "")
 
     def test_relpath_detail_in_absolute_label_dropped(self) -> None:
-        label = "Reading file: /shared/data1/x/ratchet_demo/wave2d_proxy.py"
+        label = "Reading file: /work/proj/ratchet_demo/wave2d_proxy.py"
         self.assertEqual(
             dedup_row_detail(label, "ratchet_demo/wave2d_proxy.py"), "")
 
@@ -221,12 +221,12 @@ class RowPathsAreShortenedTests(unittest.TestCase):
 
     Tools carry absolute paths now (see ``server_files._require_abs``), which is
     right for the model and unreadable for a person — a row reading
-    "Reading file: /shared/data1/Projects/.../observations.py" buries the one token
+    "Reading file: /long/absolute/path/.../observations.py" buries the one token
     the user is scanning for. The shortening is capability-driven off the declared
     ``path`` arg-role, so it needs no tool-name list.
     """
 
-    ABS = "/shared/data1/Projects/LLM4CSE/julien/codes/mimir/client/guardrails/observations.py"
+    ABS = "/work/proj/codes/mimir/client/guardrails/observations.py"
 
     def _reg(self, label=None):
         return {"t": ToolCaps(name="t", arg_roles={"path": ("path",)}, label=label)}

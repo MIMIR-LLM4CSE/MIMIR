@@ -16,6 +16,7 @@ Inputs are validated and shell-free (argv lists, no shell=True), and destructive
 operations are restricted to things that actually look like Python environments.
 """
 
+import json
 import os
 import shutil
 import subprocess
@@ -26,6 +27,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'
 from mcp.server.fastmcp import FastMCP
 from capabilities import tool_caps, PLAN_BLOCKED, ENV_MUTATE, REMOVE, RECOVERABLE
 from responses import err, ok
+from state_paths import state_dir
 
 mcp = FastMCP(
     "EnvServer",
@@ -36,11 +38,10 @@ mcp = FastMCP(
 # pip / env creation reach the network and can be slow; give them real headroom.
 _TIMEOUT = int(os.environ.get("MCP_ENV_TIMEOUT", "900"))
 
-# Where `env_create(kind="venv")` puts new virtualenvs when no explicit path is
-# given: a managed directory under the workspace so created envs are easy to find
-# (and to clean up). Mirrors MCP_FILES_ROOT used elsewhere.
-_WORKSPACE_ROOT = os.environ.get("MCP_FILES_ROOT", os.getcwd())
-_ENV_HOME = os.path.join(_WORKSPACE_ROOT, ".mimir_envs")
+# Where `env_create(kind="venv")` puts new virtualenvs: under the agent's own state
+# dir, not in the workspace — a venv is agent state, and one dropped in the repo shows
+# up in the user's `git status`.
+_ENV_HOME = os.path.join(state_dir(), "envs")
 
 # Reject obvious shell-injection / traversal in user-supplied tokens. Tokens reach
 # subprocess as argv (never a shell), so this is defense-in-depth, not the only gate.
@@ -116,6 +117,26 @@ def _resolve_python(python_executable: str) -> tuple[str, dict | None]:
     if resolved is None:
         return "", err(f"Interpreter not found on PATH: {exe}")
     return resolved, None
+
+
+def _conda_env_python(name: str) -> str:
+    """Absolute interpreter path of conda env *name*, asked of conda itself.
+
+    Guessing ``~/.conda/envs/<name>`` is wrong wherever ``envs_dirs`` is configured
+    elsewhere — the common case on a cluster, where envs live on shared storage.
+    Returns "" if the env cannot be located.
+    """
+    listed = _run(["conda", "env", "list", "--json"], timeout=30)
+    if listed["ok"]:
+        try:
+            for path in json.loads(listed["stdout"]).get("envs", []):
+                if os.path.basename(path) == name:
+                    py = os.path.join(path, "bin", "python")
+                    if os.path.isfile(py):
+                        return py
+        except (ValueError, TypeError):
+            pass
+    return ""
 
 
 def _looks_like_venv(path: str) -> bool:
@@ -261,11 +282,11 @@ def env_create(name: str, kind: str = "venv", packages=None, python_executable: 
         created = _run(cmd)
         if not created["ok"]:
             return err(created["stderr"].strip() or "conda env creation failed", returncode=created["returncode"])
-        new_py = os.path.join(os.path.expanduser("~"), ".conda", "envs", name, "bin", "python")
+        new_py = _conda_env_python(name)
         return ok({
             "kind": "conda",
             "name": name,
-            "python": new_py if os.path.isfile(new_py) else "",
+            "python": new_py,
             "installed": pkgs,
             "stdout": created["stdout"][-2000:],
             "cleanup_hint": "Offer to env_delete this conda env (by name) when the task concludes.",

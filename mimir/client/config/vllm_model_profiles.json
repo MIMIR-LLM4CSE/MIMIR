@@ -7,23 +7,28 @@
   "magistral":     { "tool_call_parser": "mistral", "pin_role": "append_user" },
   "pixtral":       { "tool_call_parser": "mistral", "pin_role": "append_user" },
 
-  "qwen3-coder":   { "tool_call_parser": "qwen3_coder", "supports_thinking": true, "reasoning_parser": "deepseek_r1" },
-  "qwen3":         { "tool_call_parser": "hermes",      "supports_thinking": true, "reasoning_parser": "deepseek_r1" },
+  "qwen3.8":       { "tool_call_parser": "qwen3_xml",   "supports_thinking": true, "reasoning_parser": "qwen3" },
+  "qwen3-coder":   { "tool_call_parser": "qwen3_coder" },
+  "qwen3":         { "tool_call_parser": "hermes",      "supports_thinking": true, "reasoning_parser": "qwen3" },
   "qwen2.5-coder": { "tool_call_parser": "hermes" },
   "qwen2.5":       { "tool_call_parser": "hermes" },
   "qwen2":         { "tool_call_parser": "hermes" },
-  "qwq":           { "tool_call_parser": "hermes",      "supports_thinking": true, "reasoning_parser": "deepseek_r1" },
+  "qwq":           { "tool_call_parser": "hermes",      "supports_thinking": true, "reasoning_parser": "qwen3" },
 
   "llama-4":       { "tool_call_parser": "llama4_json" },
   "llama4":        { "tool_call_parser": "llama4_json" },
+  "llama-3_1-nemotron": { "tool_call_parser": "llama3_json",
+                          "thinking_directive": { "on": "detailed thinking on", "off": "detailed thinking off" } },
   "llama-3":       { "tool_call_parser": "llama3_json" },
   "llama3":        { "tool_call_parser": "llama3_json" },
   "llama":         { "tool_call_parser": "llama3_json" },
   "meta-llama":    { "tool_call_parser": "llama3_json" },
 
-  "nemotron":      { "tool_call_parser": "qwen3_coder", "supports_thinking": true, "reasoning_parser": "deepseek_r1" },
+  "nemotron-3":    { "tool_call_parser": "qwen3_coder", "supports_thinking": true, "reasoning_parser": "nemotron_v3" },
+  "nemotron":      { "tool_call_parser": "qwen3_coder", "supports_thinking": true, "reasoning_parser": "nemotron_v3" },
   "minitron":      { "tool_call_parser": "hermes" },
 
+  "gemma4":        { "tool_call_parser": "gemma4", "supports_thinking": true, "reasoning_parser": "gemma4" },
   "gemma":         { "tool_call_parser": "pythonic" },
 
   "deepseek-r1":    { "tool_call_parser": "deepseek_v31", "supports_thinking": true, "reasoning_parser": "deepseek_r1" },
@@ -55,6 +60,6 @@
 
   "grok":          { "tool_call_parser": "hermes" },
 
-  "gpt":           { "tool_call_parser": "openai", "async-scheduling": true },
-  "openai":        { "tool_call_parser": "openai", "async-scheduling": true }
+  "gpt":           { "tool_call_parser": "openai", "reasoning_parser": "openai_gptoss" },
+  "openai":        { "tool_call_parser": "openai", "reasoning_parser": "openai_gptoss" }
 }

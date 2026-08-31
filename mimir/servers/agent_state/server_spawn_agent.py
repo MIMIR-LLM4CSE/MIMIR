@@ -297,6 +297,18 @@ async def spawn_agent(
             files_read=result.get("files_read", []),
             files_written=result.get("files_written", []),
         )
+    if not str(result.get("answer") or "").strip():
+        # The answer IS the payload — a blank one carries nothing back, whatever the
+        # child did. Reported "ok"/completed, it read as a sub-agent that ran and found
+        # nothing to say, and the parent dropped delegation for the rest of the run.
+        return err(
+            "sub-agent returned no answer: nothing was delegated back. Re-issue the "
+            "call with a narrower, self-contained question, or do the work yourself.",
+            answer="",
+            completed=False,
+            files_read=result.get("files_read", []),
+            files_written=result.get("files_written", []),
+        )
     return ok({
         "answer": result["answer"],
         "completed": result["completed"],
@@ -437,7 +449,8 @@ async def _drive_sub_agent(
     from mimir.client.guardrails.workflow import is_incomplete_answer
 
     completed = error is None and not (
-        is_incomplete_answer(answer)
+        not answer.strip()
+        or is_incomplete_answer(answer)
         or answer.startswith("Reached the maximum number of steps")
     )
     return {

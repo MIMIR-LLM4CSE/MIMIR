@@ -36,6 +36,7 @@ import { ContextBar } from "./components/ContextBar";
 import type { ContextUsage } from "./components/ContextBar";
 import { BatchReviewBar } from "./components/BatchReviewBar";
 import { MimirIntro } from "./components/MimirIntro";
+import { pruneForStorage } from "./components/transcriptUtils";
 import { MentionAutocomplete } from "./components/MentionAutocomplete";
 import { SlashAutocomplete } from "./components/SlashAutocomplete";
 import {
@@ -303,6 +304,8 @@ export const App: React.FC = () => {
           total_tokens: msg.total_tokens,
           reserved_tokens: msg.reserved_tokens,
           overhead_tokens: msg.overhead_tokens,
+          history_messages: msg.history_messages,
+          history_messages_full: msg.history_messages_full,
         });
         return;
 
@@ -439,6 +442,28 @@ export const App: React.FC = () => {
     send({ type: "list_resources" });
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [readyCount, send]);
+
+  // Hand the rendered chat to the server so a reload can show it again.
+  //
+  // The server only ever recorded the text bubbles: tool rows, reasoning panels and
+  // diff cards are assembled by the reducer and live nowhere else, which is why a
+  // reconnect used to come back stripped to prose. Sending happens when a turn ends —
+  // `busy` going false — and never mid-stream, so a turn costs one frame rather than
+  // one per token. The delay lets the last few events (a trailing verdict, the batch
+  // status) land in the transcript before it is sent.
+  const wasBusyRef = useRef(false);
+  useEffect(() => {
+    const wasBusy = wasBusyRef.current;
+    wasBusyRef.current = chatState.busy;
+    if (chatState.busy || !wasBusy) return;
+    const timer = setTimeout(() => {
+      const sessionId = activeSessionIdRef.current;
+      const messages = chatStateRef.current.messages;
+      if (!sessionId || messages.length === 0) return;
+      send({ type: "transcript", session_id: sessionId, messages: pruneForStorage(messages) });
+    }, 1000);
+    return () => clearTimeout(timer);
+  }, [chatState.busy, send]);
 
   // ── User actions ──────────────────────────────────────────────────────────
 

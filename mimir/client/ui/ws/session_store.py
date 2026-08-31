@@ -13,7 +13,8 @@ Session JSON schema:
   "summary_msgs": 0,          # display-message count the summary was generated from
   "summary_version": 0,       # session_summary.SUMMARY_VERSION that produced it
   "title_custom": false,      # true once the user renamed the session by hand
-  "llm_history": [{"role": "...", "content": "..."}],      # for LLM context
+  "llm_history": [{"role": "...", "content": "..."}],      # working window sent to the LLM
+  "llm_history_full": [...],  # same, never trimmed — the context a resume starts from
   "display_messages": [...],  # serialised UI ChatMessage objects
   "carry_context": {...},     # MimirAgent._carry_context
   "todos": [{"text": "...", "done": false}]
@@ -25,6 +26,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import shutil
 import uuid
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
@@ -75,6 +77,9 @@ class FullSession:
     summary_version: int = 0   # session_summary.SUMMARY_VERSION that produced it
     title_custom: bool = False # True once the user renamed the session by hand
     llm_history: list[dict] = field(default_factory=list)
+    # The working window, as trimmed by the context budget, and the untrimmed record it
+    # was cut from. Only the second survives a long session, so a resume starts there.
+    llm_history_full: list[dict] = field(default_factory=list)
     display_messages: list[dict] = field(default_factory=list)
     carry_context: dict = field(default_factory=dict)
     todos: list[dict] = field(default_factory=list)
@@ -108,6 +113,7 @@ class FullSession:
             summary_version=data.get("summary_version", 0),
             title_custom=bool(data.get("title_custom", False)),
             llm_history=data.get("llm_history", []),
+            llm_history_full=data.get("llm_history_full", []),
             display_messages=data.get("display_messages", []),
             carry_context=data.get("carry_context", {}),
             todos=data.get("todos", []),
@@ -183,6 +189,12 @@ class SessionStore:
         path = self._path(session_id)
         if os.path.exists(path):
             os.remove(path)
+        # Drop the sidecar directory too (todo_list.md, todo_deps.json,
+        # transcript.jsonl) — otherwise a deleted session leaves its log behind and a
+        # recycled id would append to a stranger's transcript.
+        sidecar = os.path.join(_sessions_dir(), os.path.basename(session_id))
+        if os.path.isdir(sidecar):
+            shutil.rmtree(sidecar, ignore_errors=True)
 
     def session_exists(self, session_id: str) -> bool:
         return os.path.exists(self._path(session_id))

@@ -18,6 +18,7 @@ from ._ws_runtime import (
     context_budget_for,
     get_backend,
 )
+from .transcript_log import TranscriptLog
 from .ws_worker import _AgentWorker
 from ...config import THINKING_DEPTH_LABELS, thinking_depth_from_label
 
@@ -41,13 +42,32 @@ _WS = Any
 _CANCEL_SETTLE_TICKS = 200
 
 
+def _reconcile(messages: list[dict]) -> list[dict]:
+    """Repair assistant/tool pairing in a restored history.
+
+    A resumed transcript can start on an orphaned ``role:"tool"`` (its assistant turn was
+    trimmed away before the save) or end on a call whose result never landed, and strict
+    tokenizers reject both. Best-effort: an unusable history is worse than an unrepaired
+    one, so a failure here returns the messages untouched.
+    """
+    try:
+        from ...query_engine.history import reconcile_tool_pairs
+        return reconcile_tool_pairs(messages)
+    except Exception:
+        return messages
+
+
 class _Session:
     """One WebSocket connection — owns a chat history and talks to the worker."""
 
     def __init__(self, ws: "_WS", worker: _AgentWorker) -> None:
         self.ws = ws
         self.worker = worker
-        self.history: list[dict] = []  # LLM history
+        self.history: list[dict] = []  # LLM history — the working window, trimmed to fit
+        # The same conversation, never trimmed. `history` is cut down whenever the
+        # budget demands it, and it is `history` that used to be all we saved; this is
+        # what a resume reloads so a session continues with everything it ever said.
+        self.history_full: list[dict] = []
 
         try:
             from .session_store import SessionStore
@@ -64,6 +84,11 @@ class _Session:
         # Last `used_tokens` pushed to the client, so the periodic mid-turn refresh
         # only sends a frame when the number actually moved.
         self._last_context_usage: int | None = None
+        # Append-only JSONL record of the session, for resume and offline profiling.
+        self.transcript = TranscriptLog()
+        # Length of `history` at the moment the running turn was submitted, so the
+        # answer can tell the turn's own messages from the prefix it inherited.
+        self._submitted_len = 0
 
     async def run(self) -> None:
         # Send ready immediately so the webview transitions out of "connecting".
@@ -155,7 +180,10 @@ class _Session:
         self.worker.active_session_id = session.id
         _write_active_session(session.id)
         self.history = []
+        self.history_full = []
+        self._submitted_len = 0
         self._display_messages = []
+        self.transcript.bind(session.id)
         self.worker.load_agent_state({})
         self.worker.reset_session_guards()  # fresh session → drop grants + repeat guard
         try:
@@ -190,8 +218,15 @@ class _Session:
         if switching:  # different session → drop prior grants + repeat guard
             self.worker.reset_session_guards()
         _write_active_session(session.id)
-        self.history = list(session.llm_history)
+        # Resume from the untrimmed record: the model picks the conversation back up
+        # where it left it, and the pre-query front-trim cuts it to the window again on
+        # the next turn if it no longer fits. Sessions saved before this field existed
+        # only have the trimmed window — that is still the best they have.
+        self.history_full = list(session.llm_history_full or session.llm_history)
+        self.history = _reconcile(list(self.history_full))
+        self._submitted_len = len(self.history)
         self._display_messages = list(session.display_messages)
+        self.transcript.bind(session.id)
         self.worker.load_agent_state({"carry_context": session.carry_context})
 
         # If session had todos, restore them to disk so agent picks them up.
@@ -294,6 +329,7 @@ class _Session:
             session.preview = session.title[:80]
             agent_state = self.worker.export_agent_state()
             session.llm_history = list(self.history)
+            session.llm_history_full = list(self.history_full)
             session.display_messages = list(display_messages)
             session.carry_context = agent_state.get("carry_context", {})
             session.todos = self.worker._load_todos()
@@ -351,13 +387,17 @@ class _Session:
             messages = list(session.display_messages)
             if not messages:
                 return
+            # The description is built from prose only, so its freshness has to be
+            # measured in prose too: counting every message would re-summarize on each
+            # block of tool rows, which changes nothing the summary can see.
+            text_msgs = self._text_count(messages)
             # Refresh unless the stored description already covers exactly this
             # transcript and came from the current generator. A provisional one
             # (the query fallback) never counts as fresh, so it keeps retrying.
             fresh_enough = (
                 session.summary
                 and session.summary_version == SUMMARY_VERSION
-                and session.summary_msgs >= len(messages)
+                and session.summary_msgs >= text_msgs
             )
             if fresh_enough:
                 return
@@ -369,7 +409,7 @@ class _Session:
             # Reload before writing: the turn may have saved again meanwhile.
             fresh = self.store.load_session(session_id)
             fresh.summary = summary
-            fresh.summary_msgs = len(messages)
+            fresh.summary_msgs = text_msgs
             fresh.summary_version = SUMMARY_VERSION if generated else PROVISIONAL_VERSION
             self.store.save_session(fresh)
             await self._send_sessions_list()
@@ -418,6 +458,10 @@ class _Session:
                 "total_tokens": total,
                 "reserved_tokens": reserved,
                 "overhead_tokens": overhead,
+                # What the model actually has this turn, against the untrimmed record a
+                # resume would start from — so a trimmed window is visible, not silent.
+                "history_messages": len(self.history),
+                "history_messages_full": len(self.history_full),
             }))
         except Exception:
             pass
@@ -473,6 +517,9 @@ class _Session:
                                 ev = inner
                         except json.JSONDecodeError:
                             pass
+                # Logged before the send: an event the client never received still
+                # happened, and the log is the record of the run, not of the socket.
+                self.transcript.append(ev)
                 try:
                     await self.ws.send(json.dumps(ev, default=str))
                 except Exception:
@@ -512,9 +559,20 @@ class _Session:
                     full = self.worker.full_history()
                     context_mode = getattr(self.worker._agent, "context_mode", "full")
                     if full is not None and context_mode == "full":
+                        # Keep only what the turn itself produced. The loop may have
+                        # trimmed or compacted the prefix it inherited from us, and that
+                        # prefix is exactly what the untrimmed record exists to hold —
+                        # so it must not be overwritten by the shortened copy. A turn
+                        # whose own messages were compacted away still has its answer,
+                        # which is the part worth keeping.
+                        added = (full[self._submitted_len:]
+                                 if len(full) > self._submitted_len else full[-1:])
+                        self.history_full.extend(added)
                         self.history = full
                     else:
-                        self.history.append({"role": "assistant", "content": ev.get("text", "")})
+                        answer_msg = {"role": "assistant", "content": ev.get("text", "")}
+                        self.history.append(answer_msg)
+                        self.history_full.append(dict(answer_msg))
                     self._display_messages.append({
                         "role": "agent",
                         "kind": "text",
@@ -543,6 +601,7 @@ class _Session:
     # Replaces the former 13-branch ``if mtype == …`` chain in _handle.
     _MSG_HANDLERS: dict[str, str] = {
         "query": "_handle_query",
+        "transcript": "_handle_transcript",
         "steer": "_handle_steer",
         "approval_response": "_handle_approval_response",
         "continue_response": "_handle_continue_response",
@@ -620,7 +679,10 @@ class _Session:
             "text": f"🔔 {wake}",
         })
         self.history.append({"role": "user", "content": wake})
+        self.history_full.append({"role": "user", "content": wake})
+        self.transcript.append({"type": "job_wake", "text": wake, "job": ev.get("job_key")})
         self._autosave_session(list(self._display_messages))
+        self._submitted_len = len(self.history)
         self.worker.submit_query(wake, list(self.history))
 
     async def _handle_query(self, msg: dict) -> None:
@@ -645,6 +707,7 @@ class _Session:
             await self.ws.send(json.dumps({"type": "output",
                 "text": "  ⚡ Context budget reached — trimming oldest history…\n"}))
             # Per-message counts computed once; decrement as we pop the front.
+            dropped_before = len(self.history)
             total_tokens = used_tokens
             idx = 0
             while total_tokens > usable_tokens and len(self.history) > 1 and idx < len(counts):
@@ -656,6 +719,14 @@ class _Session:
             # tool messages until history starts on a valid turn boundary.
             while self.history and self.history[0].get("role") == "tool":
                 self.history.pop(0)
+            # `history_full` is deliberately untouched above — this records what the
+            # window lost, so the log stays the one complete account of the session.
+            self.transcript.append({
+                "type": "context_trim",
+                "dropped": dropped_before - len(self.history),
+                "kept": len(self.history),
+                "archived": len(self.history_full),
+            })
             await self._emit_context_usage()
 
         # Resolve @<uri> mentions on the worker's loop (where the MCP sessions live),
@@ -676,12 +747,46 @@ class _Session:
             }))
 
         self.history.append({"role": "user", "content": text})
+        self.history_full.append({"role": "user", "content": text})
         self._display_messages.append({"role": "user", "kind": "text", "text": text})
+        self.transcript.append({"type": "query", "text": text})
         # Save on arrival so a reconnect mid-turn (e.g. while waiting for an edit
         # approval) reloads from disk instead of minting a blank session ID, which
         # would wipe the chat on the frontend.
         self._autosave_session(list(self._display_messages))
+        self._submitted_len = len(self.history)
         self.worker.submit_query(effective_text, list(self.history[:-1]) + [{"role": "user", "content": effective_text}])
+
+    @staticmethod
+    def _text_count(messages: list) -> int:
+        """Number of plain-text bubbles — the part of a transcript both sides share."""
+        return sum(1 for m in messages
+                   if isinstance(m, dict) and m.get("kind", "text") == "text")
+
+    async def _handle_transcript(self, msg: dict) -> None:
+        """Store the client's rendered transcript as this session's display messages.
+
+        The rich transcript — tool rows, reasoning panels, diff cards — is assembled by
+        the webview's reducer and exists nowhere else; the server only ever appended the
+        text bubbles, which is why a reload used to come back stripped to prose. Rather
+        than rebuild that assembly here, we take the client's copy of it.
+
+        Two things make that safe to trust: the transcript must name the session it
+        belongs to (one arriving after a switch would otherwise overwrite the session the
+        user just moved to), and it must not have fewer text bubbles than what we hold —
+        a webview that just opened on an empty view must never blank a stored history.
+        """
+        if self._active_session_id is None:
+            return
+        if msg.get("session_id") != self._active_session_id:
+            return
+        messages = msg.get("messages")
+        if not isinstance(messages, list):
+            return
+        if self._text_count(messages) < self._text_count(self._display_messages):
+            return
+        self._display_messages = messages
+        self._autosave_session(list(self._display_messages))
 
     async def _handle_steer(self, msg: dict) -> None:
         """A message typed while the agent is busy — inject it into the running run.
@@ -698,7 +803,10 @@ class _Session:
             await self._handle_query(msg)
             return
         self.history.append({"role": "user", "content": text})
+        # Not added to `history_full` here: the steer comes back inside the turn's own
+        # messages when the answer lands, and recording it twice would double it.
         self._display_messages.append({"role": "user", "kind": "text", "text": text})
+        self.transcript.append({"type": "steer", "text": text})
         self._autosave_session(list(self._display_messages))
         self.worker.submit_steer(text)
 

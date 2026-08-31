@@ -5,17 +5,17 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import time
 from datetime import datetime, timezone
 
-from _ops import err, ok
+from _ops import _check_name, _with_next, err, ok
 from _lib.execute import _REF_RUN_TIMEOUT, _run_benchmark_case, _seal_reference
 from _lib.store import (
     refs_dir, suites_dir,
     _load_registry_or_err,
     _suite_path, _load_suite, _save_suite,
     _suite_results_dir, _latest_suite_results,
+    _read_json,
 )
 
 
@@ -23,7 +23,8 @@ from _lib.store import (
 
 def list_suites() -> dict:
     if not os.path.isdir(suites_dir()):
-        return ok({"suites": [], "count": 0})
+        return ok(_with_next({"suites": [], "count": 0},
+                             "proxy_manage(op='suite_define', ...) to define one."))
     suites = []
     for name in sorted(os.listdir(suites_dir())):
         suite = _load_suite(name)
@@ -35,7 +36,26 @@ def list_suites() -> dict:
             "case_count":  len(suite.get("cases", [])),
             "created_at":  suite.get("created_at"),
         })
-    return ok({"suites": suites, "count": len(suites)})
+    return ok(_with_next(
+        {"suites": suites, "count": len(suites)},
+        "proxy_get(op='suite', name=...) to inspect one before running it."))
+
+
+_SUITE_RUN_TIMEOUT = 7200         # seconds; the dispatch tool's default too
+
+
+def _case_issues(case: dict, reg: dict) -> list[str]:
+    """Why this case cannot run: unregistered proxy, missing reference, or both."""
+    existing_refs = set(os.listdir(refs_dir())) if os.path.isdir(refs_dir()) else set()
+    issues: list[str] = []
+    if case.get("proxy_name") not in reg:
+        issues.append(f"proxy '{case.get('proxy_name')}' not registered — "
+                      "call proxy_manage(op='register', ...) first")
+    ref = case.get("reference_name") or ""
+    if ref and ref not in existing_refs:
+        issues.append(f"reference '{ref}' not found — "
+                      "create with proxy_exec(op='reference', ...) first")
+    return issues
 
 
 def inspect_suite(name: str) -> dict:
@@ -49,31 +69,21 @@ def inspect_suite(name: str) -> dict:
     if _reg_err:
         return err(_reg_err)
 
-    existing_refs = set(os.listdir(refs_dir())) if os.path.isdir(refs_dir()) else set()
-    validation: list[dict] = []
-    for case in suite.get("cases", []):
-        issues = []
-        if case.get("proxy_name") not in (reg or {}):
-            issues.append(f"proxy '{case.get('proxy_name')}' not in registry")
-        if case.get("reference_name") and case["reference_name"] not in existing_refs:
-            issues.append(f"reference '{case.get('reference_name')}' not found — "
-                          "create with proxy_exec(op='reference', ...) first")
-        validation.append({
-            "case_id": case.get("case_id"),
-            "ok":      len(issues) == 0,
-            "issues":  issues,
-        })
+    validation = [
+        {"case_id": case.get("case_id"),
+         "ok":      not (issues := _case_issues(case, reg or {})),
+         "issues":  issues}
+        for case in suite.get("cases", [])
+    ]
 
     results_dir = _suite_results_dir(name)
     result_runs = []
     if os.path.isdir(results_dir):
         result_runs = sorted(os.listdir(results_dir), reverse=True)
 
-    return ok({
-        "suite":       suite,
-        "validation":  validation,
-        "result_runs": result_runs,
-    })
+    return ok(_with_next(
+        {"suite": suite, "validation": validation, "result_runs": result_runs},
+        f"proxy_exec(op='suite', suite_name='{name}', confirm=True) to run it."))
 
 
 def report(suite_name: str, run_timestamp: str = "") -> dict:
@@ -91,13 +101,14 @@ def report(suite_name: str, run_timestamp: str = "") -> dict:
         return err("summary.json not found in results directory.",
                    hint=f"Check: {results_dir}")
 
-    try:
-        with open(summary_path) as fh:
-            summary = json.load(fh)
-    except (json.JSONDecodeError, OSError) as exc:
-        return err(f"Could not read summary.json: {exc}")
+    summary = _read_json(summary_path)
+    if summary is None:
+        return err(f"Could not read summary.json under {results_dir}.")
 
-    return ok({"suite": suite_name, "results_dir": results_dir, "summary": summary})
+    return ok(_with_next(
+        {"suite": suite_name, "results_dir": results_dir, "summary": summary},
+        f"proxy_exec(op='suite', suite_name='{suite_name}', confirm=True) "
+        "to re-run after a change."))
 
 
 # ── suite definition helpers ──────────────────────────────────────────────────
@@ -126,8 +137,8 @@ def _validate_cases(cases: list[dict], reg: dict, *, require_proxy: bool) -> str
 # ── mutations (confirm already checked by the dispatch tool) ──────────────────
 
 def define(name: str, cases: list[dict], description: str = "") -> dict:
-    if not name or not re.match(r"^[A-Za-z0-9_\-]+$", name):
-        return err("name must be non-empty and contain only [A-Za-z0-9_-].")
+    if bad := _check_name("name", name):
+        return bad
     if not cases:
         return err("cases must be a non-empty list.")
 
@@ -145,8 +156,9 @@ def define(name: str, cases: list[dict], description: str = "") -> dict:
         "cases":       cases,
     }
     _save_suite(name, suite)
-    return ok({"registered": suite,
-               "next_step": f"proxy_exec(op='suite', suite_name='{name}', confirm=True) to run it."})
+    return ok(_with_next(
+        {"registered": suite},
+        f"proxy_exec(op='suite', suite_name='{name}', confirm=True) to run it."))
 
 
 def update(name: str, cases: list[dict] | None = None, description: str = "") -> dict:
@@ -168,7 +180,9 @@ def update(name: str, cases: list[dict] | None = None, description: str = "") ->
         suite["cases"] = cases
     suite["updated_at"] = datetime.now(timezone.utc).isoformat()
     _save_suite(name, suite)
-    return ok({"updated": suite})
+    return ok(_with_next(
+        {"updated": suite},
+        f"proxy_get(op='suite', name='{name}') to re-validate the cases."))
 
 
 def delete(name: str) -> dict:
@@ -176,30 +190,26 @@ def delete(name: str) -> dict:
     if not os.path.isfile(p):
         return err(f"Suite '{name}' not found.")
     os.remove(p)
-    return ok({"unregistered": name,
-               "note": "Suite definition removed. Run history under suites/"
-                       + name + "/results/ is preserved."})
+    return ok(_with_next(
+        {"unregistered": name,
+         "note": "Suite definition removed. Run history under suites/"
+                 + name + "/results/ is preserved."},
+        "proxy_get(op='suites') to see what remains defined."))
 
 
 def _prevalidate_suite(suite: dict, reg: dict) -> dict | None:
     """Check every case's proxy and reference exist before starting any run."""
-    existing_refs = set(os.listdir(refs_dir())) if os.path.isdir(refs_dir()) else set()
     for case in suite.get("cases", []):
-        sname = case.get("proxy_name", "")
-        if sname not in reg:
-            return err(f"Proxy '{sname}' not registered (case '{case.get('case_id')}').",
-                       hint="Call proxy_manage(op='register', ...) first.")
-        ref = case.get("reference_name", "")
-        if ref and ref not in existing_refs:
-            return err(f"Reference '{ref}' not found (case '{case.get('case_id')}').",
-                       hint="Call proxy_exec(op='reference', ...) first.")
+        if issues := _case_issues(case, reg):
+            return err(f"Case '{case.get('case_id')}': {issues[0]}",
+                       hint="proxy_get(op='suite', name=...) lists every case's issues.")
     return None
 
 
 def run_suite(
     suite_name: str,
     extra_metrics: list[str] | None = None,
-    timeout_s: int = 7200,
+    timeout_s: int = _SUITE_RUN_TIMEOUT,
     per_case_timeout_s: int = 0,
 ) -> dict:
     """Run all cases in a suite locally (blocking); write and return the summary."""
@@ -270,7 +280,10 @@ def run_suite(
     with open(os.path.join(results_dir, "summary.json"), "w") as fh:
         json.dump(summary, fh, indent=2)
 
-    return ok(summary)
+    return ok(_with_next(
+        summary,
+        f"proxy_get(op='report', name='{suite_name}') to re-read this summary, "
+        "or proxy_runs(op='aggregate', ...) to rank the runs."))
 
 
 def benchmark_create(
@@ -283,8 +296,8 @@ def benchmark_create(
     timeout_s: int = _REF_RUN_TIMEOUT,
 ) -> dict:
     """Create a reference and register a one-case suite in a single blocking call."""
-    if not benchmark_name or not re.match(r"^[A-Za-z0-9_\-]+$", benchmark_name):
-        return err("benchmark_name must be non-empty and contain only [A-Za-z0-9_-].")
+    if bad := _check_name("benchmark_name", benchmark_name):
+        return bad
 
     reg, _reg_err = _load_registry_or_err()
     if _reg_err:
@@ -328,15 +341,12 @@ def benchmark_create(
     }
     _save_suite(benchmark_name, suite)
 
-    return ok({
+    return ok(_with_next({
         "benchmark_name":    benchmark_name,
         "reference_name":    ref_name,
         "reference_dir":     rd,
         "reference_metrics": ref_metrics,
         "output_stored":     output_stored,
         "suite":             suite,
-        "next_step": (
-            f"proxy_exec(op='suite', suite_name='{benchmark_name}', confirm=True) "
-            "to run the benchmark."
-        ),
-    })
+    }, f"proxy_exec(op='suite', suite_name='{benchmark_name}', confirm=True) "
+       "to run the benchmark."))

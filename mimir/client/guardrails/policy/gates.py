@@ -370,31 +370,48 @@ def _executed_programs(command: str) -> set[str]:
     return progs
 
 
+def active_proxy_source() -> str:
+    """The source file of the currently active proxy optimization session, or "".
+
+    Reads the proxy server's own store (single source of truth); an absent or
+    unreadable session yields "" so every caller abstains. Best-effort by design —
+    this informs guards and evidence, never correctness.
+    """
+    try:
+        from ....servers.proxy._lib import store
+
+        name = store._resolve_proxy_name("")
+        if not name:
+            return ""
+        cfg = store._read_json(store._opt_config_file(name))
+        src = cfg.get("proxy_source_path") if isinstance(cfg, dict) else None
+        return src if isinstance(src, str) else ""
+    except Exception:
+        return ""
+
+
 def _proxy_exec_targets() -> set[str]:
     """Abspaths + basenames that count as "executing the proxy under optimization".
 
-    Reads the proxy server's own store (single source of truth) for the currently
-    active optimization session; returns an empty set when none is initialized so
-    the guard abstains. Best-effort — any failure yields the empty set.
+    Reads the proxy server's own store for the currently active optimization session;
+    returns an empty set when none is initialized so the guard abstains. Best-effort —
+    any failure yields the empty set.
     """
     from ....servers.proxy._lib import store
 
     name = store._resolve_proxy_name("")
     if not name:
         return set()
-    cfg = store._read_json(store._opt_config_file(name))
-    if not isinstance(cfg, dict):
-        return set()
 
     paths: set[str] = set()
-    src = cfg.get("proxy_source_path")
-    if isinstance(src, str) and src:
+    src = active_proxy_source()
+    if src:
         paths.add(src)
     reg = store._read_json(store.registry_path())
     if isinstance(reg, dict):
         entry = reg.get(name)
         if isinstance(entry, dict):
-            exe = entry.get("executable")
+            exe = entry.get("executable_path")
             if isinstance(exe, str) and exe:
                 paths.add(exe)
 
@@ -486,8 +503,13 @@ _PLAN_PRESCRIBED_HEADINGS: frozenset[str] = frozenset({
     "overview", "approach", "decisions", "decisions & risks", "decisions and risks",
     "risks", "validation", "context", "key files", "files",
 })
+# Only TOP-LEVEL items are axes. The indentation is the whole distinction: an
+# indented list item is a sub-step *inside* an axis, and reading those refused
+# "Add a conditional block that: 1. Check the flag" — a change, described by its
+# steps. The model then cleared the gate by deleting the steps, so the guard bought
+# a vaguer plan than the one it turned down.
 _PLAN_AXIS_RE = re.compile(
-    r"^\s*(?:#{3,6}\s*|[-*]\s+|\d+[.)]\s+)(?:\*\*)?\s*([^\n]{1,120}?)\s*(?:\*\*)?\s*$",
+    r"^(?:#{3,6}\s*|[-*]\s+|\d+[.)]\s+)(?:\*\*)?\s*([^\n]{1,120}?)\s*(?:\*\*)?\s*$",
     re.MULTILINE,
 )
 _PLAN_APPROACH_RE = re.compile(r"^(#{1,3})[ \t]*approach\b.*$", re.IGNORECASE | re.MULTILINE)

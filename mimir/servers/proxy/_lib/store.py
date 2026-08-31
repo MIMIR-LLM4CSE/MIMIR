@@ -97,6 +97,31 @@ def _atomic_symlink(link: str, target: str) -> None:
     os.replace(tmp, link)
 
 
+def _run_dir_names(parent: str) -> list[str]:
+    """Run-dir names under *parent*, newest first; the 'active' symlink excluded."""
+    if not os.path.isdir(parent):
+        return []
+    return sorted(
+        [d for d in os.listdir(parent)
+         if d != "active" and os.path.isdir(os.path.join(parent, d))],
+        reverse=True,
+    )
+
+
+# ── locking ───────────────────────────────────────────────────────────────────
+
+@contextlib.contextmanager
+def _file_lock(lock_path: str):
+    """Exclusive flock on *lock_path*, creating its directory if needed."""
+    os.makedirs(os.path.dirname(os.path.abspath(lock_path)), exist_ok=True)
+    with open(lock_path, "w") as fd:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+
+
 # ── registry ──────────────────────────────────────────────────────────────────
 
 _REGISTRY_LOCK_LOCAL = threading.local()
@@ -104,18 +129,11 @@ _REGISTRY_LOCK_LOCAL = threading.local()
 
 @contextlib.contextmanager
 def _registry_lock():
-    """Exclusive, re-entrant file lock around registry read-modify-write operations.
+    """Exclusive, re-entrant flock around registry read-modify-write operations.
 
-    Prevents last-write-wins races when multiple server processes modify the
-    registry concurrently.  Re-entrancy matters because mutation paths hold the
-    lock while calling ``_load_registry`` (which locks for its own read): a
-    second ``flock`` on a fresh fd for the same file would block against our
-    own lock and deadlock the process.
-
-    The re-entrancy depth is thread-local: each thread that enters gets its own
-    fd and its own ``flock`` (flock locks on distinct fds exclude each other
-    even within one process), so concurrent tool dispatch on worker threads
-    still serializes correctly instead of racing a shared counter.
+    Re-entrant because mutation paths hold the lock while calling
+    ``_load_registry``, which locks for its own read; the depth is thread-local
+    so concurrent tool dispatch on worker threads still serializes.
     """
     depth = getattr(_REGISTRY_LOCK_LOCAL, "depth", 0)
     if depth > 0:

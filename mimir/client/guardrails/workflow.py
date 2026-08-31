@@ -6,6 +6,7 @@ from ..context.signals import SOURCE_FILE_EXTENSIONS
 from ..context.execution_context import (
 	failed_runs,
 	unwritten_declared_files,
+	validation_tier,
 	weakest_validation_tier,
 )
 # Re-exported here for backward compatibility; the canonical definition lives in
@@ -17,12 +18,12 @@ WORKFLOW_STATES: tuple[str, ...] = ("discover", "edit", "validate", "conclude")
 
 
 def pending_validation_paths(execution_context: dict) -> list[str]:
-	"""Dirty files that still owe a check, minus the ones nothing here can check.
+	"""Dirty files that still owe a check, minus the ones nothing here can read.
 
-	The mandatory axis is the cheap one — parse, resolve imports, lint — and it is only
-	mandatory where it is possible: a Fortran source on a box with no compiler has no
-	checker to run, and demanding one turns a completion gate into a dead end. Those
-	files leave this list and enter the ledger instead, named as unchecked.
+	The mandatory axis is the cheap one — does this parse, is it whole — and since it is
+	performed in-process (``guardrails.builtin_check``) it is possible everywhere, for
+	every language. What leaves this list for the ledger is now only a file the floor
+	cannot read as text at all: a binary, or bytes that are not UTF-8.
 	"""
 	dirty_files = set(execution_context.get("dirty_written_files", set()))
 	validated_files = set(execution_context.get("validated_files", set()))
@@ -248,10 +249,10 @@ def _collect_completion_issues(
 	else:
 		# Name what a check actually proves. "All modified files validated" is what a
 		# model reads back as licence to report the work as verified, when all it means
-		# is that the files parse and lint — the answer's correctness lives on the runs.
+		# is that the files parse and are whole — the answer's correctness lives on the runs.
 		tier = weakest_validation_tier(execution_context, dirty) if dirty else None
 		if tier:
-			completed.append(f"All modified files checked ({tier}) — parses/lints, says nothing about the result")
+			completed.append(f"All modified files checked ({tier}) — parses, says nothing about the result")
 		else:
 			completed.append("All modified files checked")
 
@@ -344,6 +345,27 @@ def unjudged_run_lines(execution_context: dict) -> list[str]:
 	return lines[:5]
 
 
+def unmeasured_proxy_source_lines(execution_context: dict) -> list[str]:
+	"""One line when an optimisation session's source was edited and never measured.
+
+	In an optimisation session the objective *is* a number, so a check that proves the
+	file parses establishes nothing about the change — and `ruff` on the proxy source is
+	otherwise enough to clear the check axis. This says so.
+
+	Reported, never counted, for the reason POLICY gives for every run: a cluster, a
+	queue or a dataset may simply not be there, and a gate that cannot be satisfied is
+	an impasse rather than a guarantee. What an unmeasured change owes is a statement.
+	"""
+	from .policy.gates import active_proxy_source
+
+	source = active_proxy_source()
+	if not source or source not in execution_context.get("dirty_written_files", set()):
+		return []
+	if validation_tier(execution_context, source) == "measured":
+		return []
+	return [f"{source} — edited under an optimisation session, never measured by a run"]
+
+
 def blocked_run_lines(execution_context: dict) -> list[str]:
 	"""One line per run that hit a wall this environment put there, for the report.
 
@@ -428,6 +450,9 @@ def finalize_incomplete_answer(
 	unjudged = unjudged_run_lines(execution_context)
 	if unjudged:
 		summary += "\n\nRan, with no verdict on record:\n- " + "\n- ".join(unjudged)
+	unmeasured = unmeasured_proxy_source_lines(execution_context)
+	if unmeasured:
+		summary += "\n\nChecked but never measured:\n- " + "\n- ".join(unmeasured)
 	if issues:
 		summary += "\n\nRemaining issues:\n- " + "\n- ".join(issues)
 	if refused and not handback:
@@ -452,9 +477,12 @@ def finalize_incomplete_answer(
 	# Runs merely unjudged are deliberately NOT charged here: a verdict is a
 	# recommendation, and charging its absence is the trade POLICY already refused.
 	_failed_runs = failed_runs(execution_context)
+	# An optimisation source that was checked but never measured is a named gap, not a
+	# defect: medium, never "low", on the same footing as a declared-but-unwritten file.
 	risk_level = (
 		"high" if _pending_code or handback
-		else ("medium" if pending or _unwritten or denied_calls or _failed_runs else "low")
+		else ("medium" if pending or _unwritten or denied_calls or _failed_runs or unmeasured
+		      else "low")
 	)
 	summary += f"\n\nResidual risk: {risk_level}."
 	if answer.strip():

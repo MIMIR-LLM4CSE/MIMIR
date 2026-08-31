@@ -5,6 +5,11 @@ export interface ContextUsage {
   total_tokens: number;
   reserved_tokens: number;
   overhead_tokens?: number;
+  /** Messages in the window the model sees this turn. */
+  history_messages?: number;
+  /** Messages in the untrimmed record kept on disk — larger once the budget has
+   *  trimmed the window. */
+  history_messages_full?: number;
 }
 
 interface Props {
@@ -13,7 +18,10 @@ interface Props {
 }
 
 export const ContextBar: React.FC<Props> = ({ usage, contextMode }) => {
-  const { used_tokens, total_tokens, reserved_tokens, overhead_tokens } = usage;
+  const {
+    used_tokens, total_tokens, reserved_tokens, overhead_tokens,
+    history_messages, history_messages_full,
+  } = usage;
   const usable = Math.max(1, total_tokens - reserved_tokens);
   const overBy = used_tokens - usable;
   const over = overBy > 0;
@@ -41,10 +49,21 @@ export const ContextBar: React.FC<Props> = ({ usage, contextMode }) => {
   const overheadNote = overhead_tokens
     ? ` · incl. ${(overhead_tokens / 1000).toFixed(1)}K system prompt + tools`
     : "";
+  // Trimming is silent otherwise: the bar would sit comfortably under the limit while
+  // the earliest turns had already dropped out of what the model can see. The record
+  // on disk still holds them, and a resume starts from there.
+  const trimmed =
+    history_messages !== undefined && history_messages_full !== undefined
+      && history_messages_full > history_messages;
+  const trimNote = trimmed
+    ? ` · ${history_messages_full! - history_messages!} earlier message(s) trimmed from `
+      + `the window (kept on disk, restored on resume)`
+    : "";
   const title = over
     ? `Context OVERFLOW: ~${usedK}K used vs ${(usable / 1000).toFixed(0)}K usable `
-      + `(+${overK}K over) · ${resK}K reserved for answer${overheadNote}`
-    : `Context: ~${usedK}K / ${totalK}K tokens used · ${resK}K reserved for answer${overheadNote}`;
+      + `(+${overK}K over) · ${resK}K reserved for answer${overheadNote}${trimNote}`
+    : `Context: ~${usedK}K / ${totalK}K tokens used · ${resK}K reserved for answer`
+      + `${overheadNote}${trimNote}`;
 
   return (
     <div className={`ctx-bar${over ? " ctx-bar--over" : ""}`} title={title}>
@@ -64,6 +83,7 @@ export const ContextBar: React.FC<Props> = ({ usage, contextMode }) => {
         {contextMode === "full" ? `${totalK}K` : "ctx"}&nbsp;
         <span style={{ color: colour }}>{over ? `+${overK}K over` : `${pct}%`}</span>
         <span className="ctx-bar__detail">&nbsp;{usedK}K/{totalK}K</span>
+        {trimmed && <span className="ctx-bar__detail">&nbsp;✂</span>}
       </span>
     </div>
   );

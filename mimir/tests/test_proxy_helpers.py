@@ -3,8 +3,8 @@
 Locks in the behavior of the consolidated helpers (_seal_reference,
 _diff_run_dirs), the correctness fixes (_select_best_case, the _fallback_scan
 leak, per-case timeout plumbing), the integrity guards (reserved metrics,
-time_s plausibility, returncode gate), and the two frozen contracts: the
-``_shared_proxy`` legacy facade and the ``MIMIR_PROXY_BENCH_DIR`` root override.
+time_s plausibility, returncode gate), and the frozen
+``MIMIR_PROXY_BENCH_DIR`` root override.
 
 Run:
     python -m unittest tests.test_proxy_helpers -v
@@ -25,6 +25,12 @@ for _p in (SERVERS_DIR / "_shared", SERVERS_DIR / "proxy"):
         sys.path.insert(0, _ps)
 
 from _lib import execute, metrics, procs, ratchet, report, store  # noqa: E402
+
+try:
+    import numpy as _np_top
+    _HAVE_NUMPY_TOP = True
+except ImportError:
+    _HAVE_NUMPY_TOP = False
 
 
 class CoerceTests(unittest.TestCase):
@@ -202,6 +208,78 @@ class SealReferenceTests(unittest.TestCase):
         self.assertIsNotNone(error)
         self.assertEqual(error.get("status"), "error")
         self.assertIn("error", error)
+
+
+@unittest.skipUnless(_HAVE_NUMPY_TOP, "numpy required")
+class PostRunFinalizeTests(unittest.TestCase):
+    """A detached run must settle with the same metrics a synchronous one gets.
+
+    The invariants (`finite`, lifted error norms, `conservation_residual`) are
+    computed server-side precisely so the proxy cannot forge them — a detached
+    path that skips them hands the ratchet an unguarded metrics.json.
+    """
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = self._tmp.name
+        self._saved_root = store._CACHE_DIR
+        store._CACHE_DIR = self.root
+
+        # Sealed reference: a field plus a conserved quantity to compare against.
+        import numpy as np
+        rd = store._ref_dir("ref1")
+        os.makedirs(rd, exist_ok=True)
+        np.savez(os.path.join(rd, "output.npz"), field=np.arange(16, dtype=np.float64))
+        store._write_json_atomic(os.path.join(rd, "metrics.json"),
+                                 {"mass": 120.0, "time_s": 1.0})
+        store._write_json_atomic(store.registry_path(), {"tiny": {
+            "name": "tiny", "executable_path": "/bin/true",
+            "run_cmd_template": "true", "output_format": "npz",
+            "conserved_metric": "mass",
+        }})
+
+    def tearDown(self) -> None:
+        store._CACHE_DIR = self._saved_root
+        self._tmp.cleanup()
+
+    def _run_dir(self, mass: float = 120.0) -> str:
+        import numpy as np
+        d = procs._new_run_dir(store._proxy_runs_dir("tiny"))
+        np.savez(os.path.join(d, "output.npz"), field=np.arange(16, dtype=np.float64))
+        with open(procs._log_path(d), "w") as fh:
+            fh.write("PROXY_METRICS_BEGIN\n"
+                     "time_s=0.5\n"
+                     f"mass={mass}\n"
+                     "PROXY_METRICS_END\n")
+        return d
+
+    def test_detached_run_carries_the_invariants(self) -> None:
+        d = self._run_dir()
+        execute._post_run_finalize(d, "tiny", "ref1", "npz", wall_s=0.6, returncode=0)
+        m = store._read_json(os.path.join(d, "metrics.json"))
+
+        self.assertEqual(m["comparison_to_reference"]["reference"], "ref1")
+        # Error norms lifted to top level so requirements can gate on them.
+        self.assertIn("l2_rel", m)
+        self.assertEqual(m["l2_rel"], m["comparison_to_reference"]["l2_rel"])
+        self.assertEqual(m["finite"], 1)
+        self.assertEqual(m["conservation_residual"], 0.0)
+        # And the shared settling still applies.
+        self.assertEqual(m["wall_time_s"], 0.6)
+        self.assertEqual(m["returncode"], 0)
+
+    def test_conservation_drift_surfaces_as_a_metric(self) -> None:
+        d = self._run_dir(mass=126.0)
+        execute._post_run_finalize(d, "tiny", "ref1", "npz", wall_s=0.6, returncode=0)
+        m = store._read_json(os.path.join(d, "metrics.json"))
+        self.assertAlmostEqual(m["conservation_residual"], 0.05, places=6)
+
+    def test_unknown_proxy_still_settles(self) -> None:
+        d = self._run_dir()
+        execute._post_run_finalize(d, "ghost", "ref1", "npz", wall_s=0.6, returncode=0)
+        m = store._read_json(os.path.join(d, "metrics.json"))
+        self.assertEqual(m["finite"], 1)          # entry-independent invariant
+        self.assertNotIn("conservation_residual", m)   # needs conserved_metric
 
 
 class ValidateSlurmArgsTests(unittest.TestCase):
@@ -433,7 +511,7 @@ class RatchetVerdictTests(unittest.TestCase):
 
 
 class RatchetStoreTests(unittest.TestCase):
-    """best.json / ledger.jsonl persistence and _select_best_run scanning."""
+    """best.json / ledger.jsonl persistence."""
 
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
@@ -443,13 +521,6 @@ class RatchetStoreTests(unittest.TestCase):
     def tearDown(self) -> None:
         store._CACHE_DIR = self._saved_root
         self._tmp.cleanup()
-
-    def _write_run(self, proxy: str, run_id: str, all_passed: bool, time_s: float) -> None:
-        d = os.path.join(store._opt_session_runs_dir(proxy), run_id)
-        os.makedirs(d, exist_ok=True)
-        with open(os.path.join(d, "metrics.json"), "w") as fh:
-            json.dump({"all_passed": all_passed, "best_time_s": time_s,
-                       "results": [{"metrics": {"time_s": time_s}}]}, fh)
 
     def test_save_and_load_best_with_snapshot(self) -> None:
         src = os.path.join(self._tmp.name, "proxy.py")
@@ -468,14 +539,6 @@ class RatchetStoreTests(unittest.TestCase):
         with open(store._opt_ledger_file("p")) as fh:
             lines = [json.loads(x) for x in fh if x.strip()]
         self.assertEqual([e["verdict"] for e in lines], ["accept", "reject"])
-
-    def test_select_best_run_ignores_infeasible(self) -> None:
-        self._write_run("p", "20240101T000000Z", all_passed=True, time_s=5.0)
-        self._write_run("p", "20240101T000100Z", all_passed=False, time_s=1.0)  # fast but wrong
-        self._write_run("p", "20240101T000200Z", all_passed=True, time_s=3.0)
-        run_id, val = ratchet._select_best_run("p", "time_s", "min")
-        self.assertEqual(run_id, "20240101T000200Z")
-        self.assertEqual(val, 3.0)
 
 
 class ReservedMetricsTests(unittest.TestCase):
@@ -682,12 +745,8 @@ class RegistryLockThreadingTests(unittest.TestCase):
 
 
 class StorageContractTests(unittest.TestCase):
-    """Frozen external contracts, checked in a fresh interpreter.
-
-    1. Legacy facade: ``postrun.py`` scripts generated into old run dirs
-       (possibly still queued on Slurm) import ``_post_run_finalize`` from
-       ``_shared_proxy`` by name.
-    2. The storage root honors ``MIMIR_PROXY_BENCH_DIR`` (read at import).
+    """Frozen external contract, checked in a fresh interpreter: the storage
+    root honors ``MIMIR_PROXY_BENCH_DIR``, which is read at import time.
     """
 
     _PATH_SETUP = (f"import sys; sys.path[:0] = ["
@@ -700,11 +759,6 @@ class StorageContractTests(unittest.TestCase):
                              capture_output=True, text=True, timeout=60, env=env)
         self.assertEqual(res.returncode, 0, msg=res.stderr)
         return res.stdout.strip()
-
-    def test_legacy_postrun_import_contract(self) -> None:
-        out = self._run("from _shared_proxy import _post_run_finalize; "
-                        "print(callable(_post_run_finalize))")
-        self.assertEqual(out, "True")
 
     def test_cache_root_env_override(self) -> None:
         out = self._run("from _lib import store; print(store.cache_dir())",

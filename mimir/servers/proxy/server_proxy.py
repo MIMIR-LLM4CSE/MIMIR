@@ -91,10 +91,8 @@ mcp = FastMCP(
 
 def _unknown_op(op: str, valid_ops: tuple[str, ...]) -> dict:
     hint = f"Use one of: {', '.join(valid_ops)}."
-    # Op-confusion redirect: the 7 op-dispatched proxy tools share op vocabularies
-    # (a 24B model routinely calls e.g. proxy_eval(op='register') — 'register' lives
-    # on proxy_manage). If this op is valid on ANOTHER proxy tool, name it so the
-    # model self-corrects instead of spinning on "Unknown op".
+    # The 7 tools share op vocabularies, so a misrouted op is common. When it is
+    # valid on another proxy tool, name that tool instead of just "Unknown op".
     owners = _OP_OWNERS.get(op, ())
     this_tool = _TOOL_BY_OPS.get(valid_ops)
     others = [t for t in owners if t != this_tool]
@@ -203,10 +201,24 @@ def proxy_runs(
     return _unknown_op(op, _RUNS_OPS)
 
 
+# What this server itself saw of a run, for the client's run ledger. `state` comes from
+# the run dir (crashed = the process died), `feasible` from evaluating the session's
+# requirements against measured metrics. Deliberately no "passed" condition: a floor
+# only ever withholds credit, and a ratchet `reject` — measured fine, just no better
+# than the incumbent — is the ordinary outcome of an experiment, not a failure.
+_RUN_OUTCOME = {
+    "id":            "run_dir",
+    "crashed_when":  {"state": ["crashed"]},
+    "failed_when":   {"feasible": [False]},
+    # A finished run measured the source the session names — the one place in MIMIR
+    # where which file a run exercised is recorded rather than guessed.
+    "measured_when": {"state": ["done"]},
+}
+
 _EVAL_STATUS_OPS = ("status", "results", "log", "runs", "diff", "config")
 
 
-@mcp.tool(**tool_caps(label="Proxy eval status: {op}"))
+@mcp.tool(**tool_caps(label="Proxy eval status: {op}", run_outcome=_RUN_OUTCOME))
 def proxy_eval_status(
     op: str = "status",
     proxy_name: str = "",
@@ -367,7 +379,10 @@ _EXEC_OPS = ("run", "reference", "suite", "benchmark_create", "cancel")
 
 
 @mcp.tool(**tool_caps(caps=[PLAN_BLOCKED, CODE_EXEC], reversibility=RECOVERABLE, non_batch=True,
-                      label="Proxy exec: {op}"))
+                      label="Proxy exec: {op}",
+                      run_outcome={**_RUN_OUTCOME,
+                                   "rows": {"field": "rows", "id": "run_dir",
+                                            "failed_when_present": ["error"]}}))
 def proxy_exec(
     op: str,
     proxy_name: str = "",
@@ -423,8 +438,9 @@ def proxy_exec(
         extra_metrics: Extra scalar metric keys to track ('suite'/'benchmark_create').
         description: Free-text benchmark description ('benchmark_create').
         max_output_mb: For 'reference': max field output size to store (default 512).
-        timeout_s: Wall-clock budget in seconds (default 3600 for
-            'reference'/'benchmark_create', 7200 for 'suite').
+        timeout_s: Wall-clock budget in seconds. For 'reference'/
+            'benchmark_create' it is a *ceiling*: 3600 by default and clamped
+            to it, so a larger value has no effect. 7200 for 'suite'.
         per_case_timeout_s: For 'suite': per-case cap in seconds (0 = no cap
             beyond the remaining budget).
         run_id: For 'cancel': run ID or absolute path.
@@ -447,7 +463,8 @@ def proxy_exec(
     if op == "suite":
         return (_missing_args(op, suite_name=suite_name)
                 or suites.run_suite(suite_name, extra_metrics,
-                                    timeout_s or 7200, per_case_timeout_s))
+                                    timeout_s or suites._SUITE_RUN_TIMEOUT,
+                                    per_case_timeout_s))
     if op == "benchmark_create":
         return (_missing_args(op, proxy_name=proxy_name, benchmark_name=benchmark_name)
                 or suites.benchmark_create(proxy_name, benchmark_name, param_sweeps,
@@ -461,7 +478,7 @@ _EVAL_OPS = ("init", "configure", "run", "stop", "reset", "reset_to_best", "end"
 
 
 @mcp.tool(**tool_caps(caps=[PLAN_BLOCKED, CODE_EXEC, BACKGROUNDABLE], reversibility=RECOVERABLE, non_batch=True,
-                      label="Proxy eval: {op}"))
+                      label="Proxy eval: {op}", run_outcome=_RUN_OUTCOME))
 def proxy_eval(
     op: str,
     proxy_name: str = "",
@@ -581,10 +598,15 @@ _TOOL_BY_OPS: dict[tuple[str, ...], str] = {
     _EVAL_OPS: "proxy_eval",
     _SLURM_OPS: "proxy_slurm",
 }
-_OP_OWNERS: dict[str, list[str]] = {}
-for _ops, _tool in _TOOL_BY_OPS.items():
-    for _op in _ops:
-        _OP_OWNERS.setdefault(_op, []).append(_tool)
+def _build_op_owners() -> dict[str, list[str]]:
+    owners: dict[str, list[str]] = {}
+    for ops, tool in _TOOL_BY_OPS.items():
+        for op_name in ops:
+            owners.setdefault(op_name, []).append(tool)
+    return owners
+
+
+_OP_OWNERS: dict[str, list[str]] = _build_op_owners()
 
 
 @mcp.tool(**tool_caps(caps=[PLAN_BLOCKED, CLUSTER_SUBMIT, BACKGROUNDABLE], reversibility=IRREVERSIBLE, non_batch=True,
@@ -637,6 +659,8 @@ def proxy_slurm(
         wall_time: Wall-clock limit HH:MM:SS or D-HH:MM:SS (default '04:00:00').
         account: Slurm account to charge (optional).
         job_name: Slurm job name (optional; a sensible default is derived).
+        background: For 'eval': detach the job — end your turn instead of
+            polling; you are auto-resumed when the job finishes.
         confirm: Must be True to submit.
     """
     if op not in _SLURM_OPS:

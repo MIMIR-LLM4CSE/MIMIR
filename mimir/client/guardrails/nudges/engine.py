@@ -11,7 +11,6 @@ from ..workflow import (
     handback_required,
     has_blocking_denials,
     has_pending_validation,
-    pending_validation_paths,
     unchecked_checklist_items,
 )
 from .messages import (
@@ -39,6 +38,7 @@ from ...context.execution_context import (
     nudge_count,
 )
 from ....servers._shared.shell_paths import any_command_on_path as _any_command_on_path
+from ..builtin_check import builtin_check_failures
 from ...config.models import resolve_enforcement
 from ...context.capabilities import CODE_EXEC, names_with_cap
 from ...event_sink import emit
@@ -60,7 +60,6 @@ from ...config.constants import (
     NUDGE_MAX_UNFINISHED_PLAN,
     NUDGE_MAX_VALIDATION,
     NUDGE_STATE_IDLE_STEPS,
-    NUDGE_VALIDATION_IDLE_STEPS,
     TODO_NUDGE_MULTIFILE_THRESHOLD,
     TODO_NUDGE_OP_THRESHOLD,
 )
@@ -565,25 +564,28 @@ def _first_failing_edit_path(execution_context: dict[str, Any]) -> str | None:
 def _should_nudge_validation(
     execution_context: dict[str, Any], *, level: str, active_mode: str,
 ) -> bool:
-    """Pending validation, budget left, editing paused, declared edit set complete.
+    """The built-in check rejected a file, and there is budget left to repair it.
 
-    Verification-layer, at every enforcement level: parsing, resolving imports and
-    linting a file one just modified is not a reasoning shim a strong model can be
-    trusted out of — it is the one obligation of the working order, the cheapest
-    evidence there is, and the only axis ``needs_incomplete_finalization`` blocks on.
-    What is *not* required is anything past it: a build needs a toolchain, a run needs
-    an environment, and neither is asked for here.
+    Verification-layer, at every enforcement level: whether a file one just modified
+    parses and is whole is not a reasoning shim a strong model can be trusted out of —
+    it is the one obligation of the working order, and the only axis
+    ``needs_incomplete_finalization`` blocks on. What is *not* required is anything past
+    it: a build needs a toolchain, a run needs an environment, neither is asked here.
 
-    Agent-only in practice without a mode test: plan mode is read-only, so there are
-    no dirty files and ``pending_validation_paths`` is empty.
+    The trigger is a *finding*, not a pending file: the check is performed by the loop
+    (``guardrails.builtin_check``) where it asks whether it may conclude, so a file
+    still pending has simply not been reached yet and there is nothing to say about it.
+    That is also why the idle-step and declared-set conditions are gone — they paced a
+    request the model no longer has to carry out.
+
+    Agent-only in practice without a mode test: plan mode is read-only, so nothing is
+    dirty and nothing is ever rejected.
     """
     return (
-        bool(pending_validation_paths(execution_context))
+        bool(builtin_check_failures(execution_context))
         and nudge_count(execution_context, "validation") < NUDGE_MAX_VALIDATION
         and _retryable_pending_validation_exists(execution_context)
         and not _all_pending_budget_exhausted(execution_context)
-        and idle_steps(execution_context) >= NUDGE_VALIDATION_IDLE_STEPS
-        and declared_edit_set_complete(execution_context)
     )
 
 

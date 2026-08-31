@@ -10,13 +10,12 @@ class DomainPruningTest(unittest.TestCase):
     def test_pure_prose_prunes_all_domains(self):
         # A non-technical query activates no specialized domain; every prefix is pruned.
         pruned = inactive_domain_prefixes("write a poem about the sea")
-        for prefix in ("slurm_", "salloc_", "platform_", "benchmark_", "ft_", "proxy_", "symbolic"):
+        for prefix in ("slurm_", "salloc_", "platform_", "ft_", "proxy_", "symbolic"):
             self.assertIn(prefix, pruned)
 
-    def test_hpc_query_keeps_platform_and_benchmark(self):
+    def test_hpc_query_keeps_platform(self):
         pruned = inactive_domain_prefixes("optimize the kernel for performance")
         self.assertNotIn("platform_", pruned)
-        self.assertNotIn("benchmark_", pruned)
 
     def test_slurm_query_keeps_cluster_tools(self):
         pruned = inactive_domain_prefixes("submit an sbatch job to the cluster")
@@ -53,7 +52,6 @@ class DomainPruningTest(unittest.TestCase):
         # query with only "encore" does not activate the platform domain via "core".
         pruned = inactive_domain_prefixes("sing an encore tonight")
         self.assertIn("platform_", pruned)
-        self.assertIn("benchmark_", pruned)
 
     def test_empty_query_prunes_all(self):
         pruned = inactive_domain_prefixes("")

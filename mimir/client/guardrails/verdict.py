@@ -11,8 +11,8 @@ assistant's prose: a structured channel keeps the bookkeeping out of what the us
 reads, and leaves nothing to a grammar the model has to remember.
 
 A verdict is about a **run**, and about nothing else. It credits no file: whether
-``solver.py`` parses, imports and lints is a separate question a checker answers on its
-own, and mixing the two is what let "the tests exited 0" be read back as "the answer is
+``solver.py`` parses and is whole is a separate question the built-in check answers on
+its own, and mixing the two is what let "the tests exited 0" be read back as "the answer is
 right". So there is no attribution to guess here — the run is the subject.
 
 What is recorded is a *claim*, never an observation, and the ledger renders it under its

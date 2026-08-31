@@ -12,39 +12,12 @@ from _lib import store
 def _resolve_roofline(entry: dict) -> tuple[float, float]:
     """Return (peak_gflops_per_s, peak_bandwidth_gbytes_per_s).
 
-    Priority: value set on the registration entry > latest benchmark_summary()
-    result stored in the platform profile > 0.0 (unavailable).
+    Peaks come from the registration entry only; 0.0 means unavailable, and
+    `_compute_roofline` then reports nothing rather than a ceiling nobody vouched for.
     """
     peak_gf = float(entry.get("peak_gflops_per_s", 0) or 0)
     peak_bw = float(entry.get("peak_bandwidth_gbytes_per_s", 0) or 0)
-    if peak_gf > 0 and peak_bw > 0:
-        return peak_gf, peak_bw
-    try:
-        from platform_profile_store import load_profile
-        profile = load_profile()
-        latest = profile.get("benchmarks", {}).get("latest", {})
-        if peak_gf == 0:
-            peak_gf = float(latest.get("numpy_matmul", {}).get("gflops", 0) or 0)
-        if peak_bw == 0:
-            peak_bw = float(latest.get("memory_copy", {}).get("throughput_gbps", 0) or 0)
-    except Exception:
-        pass
     return peak_gf, peak_bw
-
-
-def _arch_label(entry: dict) -> str:
-    """Best human-readable arch label for a registry entry."""
-    if entry.get("arch"):
-        return entry["arch"]
-    try:
-        from platform_profile_store import load_profile
-        profile = load_profile()
-        gpus = profile.get("gpu", {}).get("devices", [])
-        if gpus:
-            return gpus[0].get("name", "")
-        return profile.get("cpu", {}).get("model", "")
-    except Exception:
-        return ""
 
 
 def _compute_roofline(metrics: dict, peak_gf: float, peak_bw: float) -> dict:
@@ -104,6 +77,21 @@ def _row_with_extra(
 
 
 # ── run diffs ─────────────────────────────────────────────────────────────────
+
+def _diff_run_pair(all_runs: list[str], run_a: str, run_b: str, resolve):
+    """Diff two runs picked from a newest-first list; returns (payload, error).
+
+    ``resolve(run_id, default_idx)`` maps a caller-supplied id (possibly empty)
+    to an absolute run dir; the defaults are the two most recent runs.
+    """
+    if len(all_runs) < 2:
+        return None, "Need at least 2 runs to compare."
+    dir_a, dir_b = resolve(run_a, 1), resolve(run_b, 0)
+    for d, label in ((dir_a, "run_a"), (dir_b, "run_b")):
+        if not os.path.isdir(d):
+            return None, f"{label} not found: {d}"
+    return {"run_a": dir_a, "run_b": dir_b, **_diff_run_dirs(dir_a, dir_b)}, None
+
 
 def _diff_run_dirs(dir_a: str, dir_b: str) -> dict:
     """Return ``{config_diff, metrics_diff}`` comparing two run directories.

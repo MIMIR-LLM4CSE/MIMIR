@@ -60,7 +60,7 @@ class HumanizeToolNameTest(unittest.TestCase):
             tool_status_message("delete_file", {}), "Deleting file"
         )
         self.assertEqual(
-            tool_status_message("salloc_submit", {"command": "x"}),
+            tool_status_message("salloc_submit", {"partition": "compute"}),
             "Submitting salloc",
         )
 

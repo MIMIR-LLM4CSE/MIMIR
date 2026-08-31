@@ -31,10 +31,8 @@ for _p in [
 # Mapping from logical module name to (subdirectory, filename).
 _MODULE_PATHS: dict[str, tuple[str, str]] = {
     "responses":              ("_shared",      "responses.py"),
-    "platform_profile_store": ("_shared",      "platform_profile_store.py"),
     "text_tools":             ("_shared",      "text_tools.py"),
     "server_bash":            ("workspace",    "server_bash.py"),
-    "server_benchmark":       ("hpc",          "server_benchmark.py"),
     "server_datetime":        ("utilities",    "server_datetime.py"),
     "server_files":           ("workspace",    "server_files.py"),
     "server_math":            ("utilities",    "server_math.py"),
@@ -63,10 +61,8 @@ def _load_server_module(module_name: str):
     return module
 
 
-profile_store = _load_server_module("platform_profile_store")
 shared_responses = _load_server_module("responses")
 server_bash = _load_server_module("server_bash")
-server_benchmark = _load_server_module("server_benchmark")
 server_datetime = _load_server_module("server_datetime")
 server_files = _load_server_module("server_files")
 server_math = _load_server_module("server_math")
@@ -140,28 +136,6 @@ class SharedTextToolsTests(unittest.TestCase):
         exact = shared_text_tools.score_filename_hint("mimir/servers/workspace/server_search.py", "server_search.py")
         partial = shared_text_tools.score_filename_hint("mimir/servers/workspace/server_search.py", "search")
         self.assertGreater(exact, partial)
-
-
-class PlatformProfileStoreTests(unittest.TestCase):
-    def test_persist_benchmark_report_creates_history(self) -> None:
-        previous = profile_store.PROFILE_FILE
-        with tempfile.TemporaryDirectory() as tmpdir:
-            profile_store.PROFILE_FILE = str(Path(tmpdir) / "platform_profile.json")
-            result = profile_store.persist_benchmark_report(
-                {
-                    "timestamp": "2026-03-24T00:00:00Z",
-                    "python_compute": {"throughput_mops": 10.5},
-                    "memory_copy": {"throughput_gbps": 22.3},
-                    "numpy_matmul": {"gflops": 44.8},
-                }
-            )
-            loaded = profile_store.load_profile()
-
-        profile_store.PROFILE_FILE = previous
-        self.assertTrue(result["persisted"])
-        self.assertIn("benchmarks", loaded)
-        self.assertEqual(len(loaded["benchmarks"]["history"]), 1)
-        self.assertEqual(loaded["benchmarks"]["latest"]["numpy_matmul"]["gflops"], 44.8)
 
 
 class RepresentativeServerContractTests(unittest.TestCase):
@@ -247,18 +221,62 @@ class RepresentativeServerContractTests(unittest.TestCase):
             finally:
                 server_search.SEARCH_ROOT = old_root
 
-    def test_benchmark_python_compute_has_structured_success(self) -> None:
-        payload = server_benchmark.benchmark_python_compute(n=10000, repeats=1)
-        self.assertEqual(payload["status"], "ok")
-        self.assertIn("throughput_mops", payload)
 
-    def test_platform_infer_code_traits_detects_expected_markers(self) -> None:
-        traits = server_platform._infer_code_traits(
-            "#pragma omp parallel for\nfor (int i = 0; i < n; ++i) { y[i] = x[i]; }",
-            "cpp",
-        )
-        self.assertIn("iterative-kernel", traits)
-        self.assertIn("openmp", traits)
+class PlatformPortabilityTests(unittest.TestCase):
+    """The probe must describe the host it is on, not assume an x86 one.
+
+    MIMIR is meant to run on whatever cluster it is dropped into, and clusters mix
+    architectures. Asking an aarch64 host whether it has AVX-512 always answers no,
+    which a reader takes as "no vector unit" rather than "a different one".
+    """
+
+    def _probe_cpu(self, arch: str, lscpu: str) -> dict:
+        server_platform._collect_cpu.cache_clear()
+        orig_run, orig_exists, orig_machine = (
+            server_platform._run, server_platform._cmd_exists, server_platform.platform.machine)
+        server_platform._run = lambda cmd, timeout=8: {
+            "ok": True, "returncode": 0, "stdout": lscpu, "stderr": ""}
+        server_platform._cmd_exists = lambda name: True
+        server_platform.platform.machine = lambda: arch
+        try:
+            return server_platform._collect_cpu()
+        finally:
+            (server_platform._run, server_platform._cmd_exists,
+             server_platform.platform.machine) = orig_run, orig_exists, orig_machine
+            server_platform._collect_cpu.cache_clear()
+
+    def test_aarch64_reports_its_own_vector_extensions(self) -> None:
+        # aarch64 lscpu prints the extension list under "Features", not "Flags".
+        cpu = self._probe_cpu("aarch64", "Architecture: aarch64\nFeatures: fp asimd sve sve2 bf16\n")
+        self.assertEqual(cpu["simd"], {"asimd": True, "sve": True, "sve2": True,
+                                       "bf16": True, "i8mm": False})
+        self.assertNotIn("avx512f", cpu["simd"])
+
+    def test_x86_reports_avx(self) -> None:
+        cpu = self._probe_cpu("x86_64", "Architecture: x86_64\nFlags: fma avx2 avx512f\n")
+        self.assertTrue(cpu["simd"]["avx2"])
+        self.assertTrue(cpu["simd"]["avx512f"])
+        self.assertFalse(cpu["simd"]["amx_tile"])
+
+    def test_unknown_architecture_says_so_instead_of_guessing(self) -> None:
+        cpu = self._probe_cpu("riscv64", "Architecture: riscv64\nFlags: rv64imafdc\n")
+        self.assertEqual(cpu["simd"], {})
+        self.assertIn("riscv64", cpu["simd_note"])
+
+    def test_non_nvidia_accelerator_is_not_reported_as_no_gpu(self) -> None:
+        """Claiming "no GPU" on a host whose accelerator this probe cannot read is
+        worse than saying the probe does not cover it."""
+        server_platform._collect_gpu.cache_clear()
+        orig = server_platform._cmd_exists
+        server_platform._cmd_exists = lambda name: name == "rocm-smi"
+        try:
+            gpu = server_platform._collect_gpu()
+        finally:
+            server_platform._cmd_exists = orig
+            server_platform._collect_gpu.cache_clear()
+        self.assertTrue(gpu["available"])
+        self.assertEqual(gpu["vendors"], ["amd"])
+        self.assertIn("not enumerated", gpu["note"])
 
 
 class MathServerTests(unittest.TestCase):

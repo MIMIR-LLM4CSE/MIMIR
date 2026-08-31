@@ -11,7 +11,7 @@ from _ops import _PROXY_DIR, _with_next, err, ok
 from _lib.command import _build_sbatch, _sbatch_header
 from _lib.procs import (
     _log_path,
-    _new_run_dir, _write_run_config, _submit_sbatch,
+    _new_run_dir, _write_run_config, _update_run_config, _submit_sbatch,
     _update_active_link, _update_opt_active_link,
 )
 from _lib.store import (
@@ -205,16 +205,9 @@ def submit_eval(
     log_file   = _log_path(run_dir)
     python_exe = cfg.get("python_executable") or sys.executable
 
-    # Slurm runs carry the partition in config.json for the runs-diff view.
-    _write_run_config(run_dir, {
-        "proxy_name":        name,
-        "benchmark_name":    cfg["benchmark_name"],
-        "requirements":      cfg.get("requirements", []),
-        "python_executable": cfg.get("python_executable", ""),
-        "partition":         partition,
-        "deadline_s":        (cfg.get("max_hours") or 24.0) * 3600,
-        "started_at":        datetime.now(timezone.utc).isoformat(),
-    })
+    # _prepare_run already wrote the full config (convergence included); only the
+    # partition is Slurm-specific, so merge it in rather than rewriting the file.
+    _update_run_config(run_dir, {"partition": partition})
 
     script_lines = _sbatch_header(
         job_name=job_name, partition=partition, cpus_per_task=cpus_per_task,

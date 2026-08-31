@@ -14,10 +14,15 @@ All output goes to stdout (captured as stdout.log by the server).
 config.json schema
 ------------------
 {
-  "proxy_name":       str,          # registered proxy to run
-  "benchmark_name":   str,          # defined benchmark suite name
-  "requirements":     list[dict],   # [{metric, operator, threshold}, ...]
-  "python_executable": str          # (optional) python used to rebuild cmd
+  "proxy_name":         str,          # registered proxy to run
+  "benchmark_name":     str,          # defined benchmark suite name
+  "requirements":       list[dict],   # [{metric, operator, threshold}, ...]
+  "python_executable":  str,          # (optional) python used to rebuild cmd
+  "deadline_s":         float,        # (optional) total budget, default 24 h
+  "per_case_timeout_s": float,        # (optional) per-case cap, 0/absent = none
+  "convergence":        dict,         # (optional) {h_param, error_metric} for
+                                      #   the order-of-accuracy fit
+  "partition":          str           # (optional) set by proxy_slurm(op='eval')
 }
 
 Structured log lines emitted for agent observation
@@ -36,7 +41,7 @@ The agent can therefore:
   4. Modify the proxy source with the file-edit tools
   5. proxy_eval(op='run') again to measure the effect
   6. Repeat until requirements are satisfied
-  7. proxy_eval(op='reset') if a change makes things worse
+  7. proxy_eval(op='reset_to_best') if a change makes things worse
 """
 
 from __future__ import annotations
@@ -91,7 +96,7 @@ def main() -> None:
         from _lib.execute import _run_benchmark_case
         from _lib.metrics import _evaluate_requirements, _convergence_order
         from _lib.ratchet import _select_best_case
-        from _lib.store import _load_registry, _load_suite
+        from _lib.store import _load_registry, _load_suite, _read_json
     except ImportError as exc:
         _log(f"[proxy_runner] ERROR: cannot import _lib: {exc}")
         sys.exit(1)
@@ -133,10 +138,8 @@ def main() -> None:
     conv_err_key  = conv_cfg.get("error_metric", "l2_rel")
     conv_pairs: list[tuple[float, float]] = []
 
-    # convergence_order is fitted across the whole sweep, so it can never
-    # appear in a single case's metrics — evaluating it per case would fail
-    # every case whenever it is required. Keep it out of the per-case set;
-    # it is folded into all_passed at run level below.
+    # convergence_order is fitted across the whole sweep, so it never appears in
+    # one case's metrics; it is folded into all_passed at run level below.
     case_requirements = [
         r for r in requirements if r.get("metric") != "convergence_order"]
 
@@ -182,11 +185,7 @@ def main() -> None:
             case_metrics = {}
             metrics_path = os.path.join(run_case_dir, "metrics.json")
             if os.path.isfile(metrics_path):
-                try:
-                    with open(metrics_path) as fh:
-                        case_metrics = json.load(fh)
-                except (json.JSONDecodeError, OSError):
-                    pass
+                case_metrics = _read_json(metrics_path, case_metrics) or case_metrics
 
             req_result = _evaluate_requirements(case_metrics, case_requirements)
             passed     = req_result["passed"]

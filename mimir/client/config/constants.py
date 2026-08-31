@@ -19,7 +19,7 @@ WORKSPACE_ROOT = os.path.abspath(os.environ.get("MCP_FILES_ROOT") or os.getcwd()
 # Per-workspace *extensions* directory (<workspace>/.mimir). Holds ONLY the user
 # extensions that belong with the repo: plugins/, skills/, servers/, and the
 # system_prompt.md template. The agent's own STATE (memory, sessions, todos,
-# plans, platform_profile.json, preferences.json, active_session) no longer lives
+# plans, preferences.json, active_session) no longer lives
 # here — see STATE_DIR below. Resolved the same way the UI front-ends and servers
 # resolve it, so the extension path stays in agreement.
 MIMIR_DIR = os.path.join(WORKSPACE_ROOT, ".mimir")
@@ -258,9 +258,9 @@ DENIAL_QUERY_HANDBACK_TOTAL: int = 4  # total refusals in a query that force the
 # still nudged normally; only stalled prose-only re-affirmations are cut off.
 NUDGE_MAX_CONSECUTIVE_NOOP: int = 1
 
-# Idle-step gates: how many steps the agent must have paused editing before the
-# nudge fires, so an in-progress refactor is not interrupted.
-NUDGE_VALIDATION_IDLE_STEPS: int = 2
+# Idle-step gate: how many steps the agent must have paused editing before the
+# nudge fires, so an in-progress refactor is not interrupted. Validation has no such
+# gate — its nudge carries a finding the loop already made, not a request to pace.
 NUDGE_STATE_IDLE_STEPS: int = 3
 
 # Multi-file thresholds: at least this many touched/planned files before the
@@ -404,7 +404,6 @@ SERVERS: dict[str, str] = {
     "hpc": SERVER_BASE + "hpc/server_hpc.py",
     "platform": SERVER_BASE + "hpc/server_platform.py",
     "env": SERVER_BASE + "hpc/server_env.py",
-    "benchmark": SERVER_BASE + "hpc/server_benchmark.py",
     "system": SERVER_BASE + "external/server_system.py",
     "code_intel": SERVER_BASE + "workspace/server_code_intel.py",
     "bash": SERVER_BASE + "workspace/server_bash.py",
@@ -430,7 +429,6 @@ SERVER_DESCRIPTIONS: dict[str, str] = {
     "hpc": "HPC helpers for Slurm scheduling and batch job submission.",
     "platform": "Builds a hardware/software platform profile on demand.",
     "env": "Install packages and create/delete Python environments (approval-gated).",
-    "benchmark": "Lightweight micro-benchmarks for architecture calibration.",
     "system": "Read-only OS metrics and environment inspection.",
     "code_intel": "Code navigation: definitions, references, symbol outline (LSP/ctags).",
     "bash": "Shell command execution: search, compile, run, validate, test.",

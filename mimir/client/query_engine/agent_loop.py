@@ -24,6 +24,7 @@ from ..config.constants import (
 )
 from ..config.models import resolve_pin_role, READONLY_MODES, VALID_MODES
 from ..context import validate_execution_context
+from ..guardrails.builtin_check import sweep_builtin_checks
 from ..guardrails.workflow import (
     evidence_handback_message,
     finalize_incomplete_answer,
@@ -317,6 +318,7 @@ def _turn_may_be_rejected(
     answer: a pending nudge (subject to the same no-op streak cap) and the
     once-per-query evidence handback.
     """
+    sweep_builtin_checks(execution_context)
     prospective_noop = execution_context.get("consecutive_noop_turns", 0) + 1
     if prospective_noop <= NUDGE_MAX_CONSECUTIVE_NOOP and nudge_pending(
         agent=agent,
@@ -528,6 +530,11 @@ async def _run_agent_loop(
             # summary until the caps drain.
             noop_turns = execution_context.get("consecutive_noop_turns", 0) + 1
             execution_context["consecutive_noop_turns"] = noop_turns
+            # The mandatory check happens here rather than after each write: the model
+            # has stopped editing, so every dirty file is at the revision it will ship
+            # at, and a file it went back and forth over is read once instead of once
+            # per edit. The stamp inside makes the several gate sites cost one pass.
+            sweep_builtin_checks(execution_context)
             if noop_turns <= NUDGE_MAX_CONSECUTIVE_NOOP and maybe_append_nudge(
                 agent=agent,
                 query=query,
@@ -620,6 +627,7 @@ async def _run_agent_loop(
         if termination == TERMINATION_USER_STOPPED
         else "Reached the maximum number of steps without a final answer."
     )
+    sweep_builtin_checks(execution_context)
     if needs_incomplete_finalization(execution_context):
         # A run that ran out of steps is unfinished whatever else the ledger says —
         # in particular it must never borrow the "complete except for what you

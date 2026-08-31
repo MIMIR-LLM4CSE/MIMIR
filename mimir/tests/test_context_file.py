@@ -282,7 +282,7 @@ class CoreNudgeCoverageTests(unittest.TestCase):
     _EXPECTED = {
         "denial": "A refused approval is an instruction, not an error",
         "error_recovery": "Copy anchor text verbatim from your most recent read",
-        "validation": "REQUIRED for every file you modified",
+        "validation": "Every file you modify is checked before this run may conclude",
         "regression": "the project already has tests covering what you touched",
         "unexercised": "judging presupposes running",
         "unfinished_plan": "closed by saying so in your answer, not by ticking it",

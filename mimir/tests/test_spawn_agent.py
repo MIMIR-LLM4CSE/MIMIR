@@ -147,6 +147,22 @@ class PayloadTests(unittest.TestCase):
         _, result = _run_child(spawn.ROLE_EXPLORE, answer="X is defined in a.py:12.")
         self.assertTrue(result["completed"])
 
+    def test_an_empty_answer_is_not_a_completed_run(self):
+        # The answer IS the payload: a blank one delegates nothing back, whatever the
+        # child touched. Observed in the wild reported as ok/completed, which reads as
+        # "ran, found nothing to say" — the parent then dropped delegation for the rest
+        # of the run and did the whole sweep serially.
+        _, result = _run_child(spawn.ROLE_EXPLORE, answer="   ")
+        self.assertFalse(result["completed"])
+
+    def test_an_empty_answer_reaches_the_caller_as_an_error(self):
+        with _patched_agent(_FakeAgent(answer="")):
+            out = asyncio.run(spawn.spawn_agent("find X", role=spawn.ROLE_EXPLORE))
+        self.assertEqual(out["status"], "error")
+        self.assertFalse(out["completed"])
+        # The files it did read still come back — that is where it got to.
+        self.assertEqual(out["files_read"], ["/w/a.py", "/w/b.py"])
+
 
 class ChildVisibilityTests(unittest.TestCase):
     """What the child is doing has to leave this process, and only one way out works.

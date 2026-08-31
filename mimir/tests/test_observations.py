@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import tempfile
 import types
 import unittest
 from contextlib import ExitStack
@@ -44,6 +45,7 @@ EXPECTED_ORDER = [
     "_observe_command",
     "_observe_action_op",
     "_observe_tool_run",
+    "_observe_run_outcome",
     "_observe_verdict_tool",
 ]
 
@@ -911,59 +913,77 @@ class ValidationTierTests(unittest.TestCase):
 
 
 class UncheckableFileTests(unittest.TestCase):
-    """The check is required where it is possible, and reported where it is not.
+    """The check is possible everywhere now, so almost nothing is uncheckable.
 
-    A `.cu` edited on a node with no CUDA toolkit has no checker to run. Demanding one
-    anyway turns the conclude gate into a dead end, which a model escapes by inventing
-    a check — the one outcome worse than an unchecked file.
+    It used to depend on a binary: a `.cu` edited on a node with no CUDA toolkit had
+    no checker to run, and every language outside the table (`.rs`, `.go`, `.sh`) was
+    in the same position. The floor moved in-process, so the only file that still
+    escapes it is one that is not text at all.
     """
 
     _ctx = BashValidationObservationTests._ctx
 
-    def _edit(self, path, *, available):
+    def _sweep(self, name, content):
         from mimir.client.guardrails import observations
+        from mimir.client.guardrails.builtin_check import sweep_builtin_checks
+        directory = tempfile.mkdtemp()
+        path = os.path.join(directory, name)
+        mode = "wb" if isinstance(content, bytes) else "w"
+        with open(path, mode) as handle:
+            handle.write(content)
         ec = self._ctx(set())
-        with patch.object(
-            observations, "_any_command_on_path", lambda cmds: available
-        ):
-            observations._record_code_edit(ec, path)
-        return ec
+        observations._record_code_edit(ec, name)
+        sweep_builtin_checks(ec, lambda p: os.path.join(directory, p))
+        return ec, path
 
-    def test_a_file_with_no_checker_here_does_not_block_the_conclusion(self):
+    def test_a_language_with_no_external_checker_is_checked_all_the_same(self):
         from mimir.client.guardrails.workflow import pending_validation_paths
-        ec = self._edit("kernel.cu", available=False)
-        self.assertIn("kernel.cu", ec["unverifiable_files"])
+        ec, _ = self._sweep("engine.rs", "fn main() { println!(\"hi\"); }\n")
+        self.assertEqual(ec["unverifiable_files"], set())
+        self.assertEqual(pending_validation_paths(ec), [])
+        self.assertEqual(ec["validation_tier_by_file"]["engine.rs"], "structural")
+
+    def test_a_truncated_file_is_rejected_with_its_line(self):
+        from mimir.client.guardrails.workflow import pending_validation_paths
+        ec, _ = self._sweep("kernel.cu", "__global__ void k() {\n")
+        self.assertEqual(pending_validation_paths(ec), ["kernel.cu"])
+        self.assertIn("kernel.cu", ec["builtin_check_findings"])
+        self.assertIn("line 1", ec["builtin_check_findings"]["kernel.cu"])
+
+    def test_only_a_file_that_is_not_text_stays_unverifiable(self):
+        from mimir.client.guardrails.workflow import pending_validation_paths
+        ec, _ = self._sweep("blob.py", b"\x00\x01\x02")
+        self.assertIn("blob.py", ec["unverifiable_files"])
         self.assertEqual(pending_validation_paths(ec), [])
 
-    def test_the_same_file_owes_a_check_where_the_toolchain_exists(self):
-        from mimir.client.guardrails.workflow import pending_validation_paths
-        ec = self._edit("kernel.cu", available=True)
-        self.assertEqual(ec["unverifiable_files"], set())
-        self.assertEqual(pending_validation_paths(ec), ["kernel.cu"])
+    def test_re_editing_retracts_the_previous_answer(self):
+        from mimir.client.guardrails import observations
+        ec, _ = self._sweep("kernel.cu", "__global__ void k() {\n")
+        observations._record_code_edit(ec, "kernel.cu")
+        self.assertEqual(ec["builtin_check_findings"], {})
+        self.assertEqual(ec["builtin_check_stamp"], {})
 
-    def test_a_language_with_no_declared_checker_is_unverifiable_too(self):
-        # The default used to be the opposite ("the model may know a checker we do
-        # not"), and it wedged every language outside the table: a `.rs` edit stayed
-        # pending for a check no runnable command could ever credit, so the run could
-        # not conclude. Nothing here can check it — same situation, same ending.
-        ec = self._edit("engine.rs", available=True)
-        self.assertIn("engine.rs", ec["unverifiable_files"])
-
-    def test_every_declared_checker_extension_is_recognised_as_source(self):
-        # The Fortran gap in one line: `.f03` was in the checker table and missing
-        # from SOURCE_FILE_EXTENSIONS, so the edit was never recorded at all and no
-        # check was ever asked for.
-        from mimir.client.guardrails.observations import _CHECKER_COMMANDS_BY_EXTENSION
-        from mimir.client.context.signals import SOURCE_FILE_EXTENSIONS
-        self.assertEqual(
-            set(_CHECKER_COMMANDS_BY_EXTENSION) - set(SOURCE_FILE_EXTENSIONS), set(),
-        )
+    def test_the_sweep_reads_each_revision_once(self):
+        from mimir.client.guardrails.builtin_check import sweep_builtin_checks
+        from mimir.client.guardrails import builtin_check
+        ec, path = self._sweep("solver.py", "x = (\n")
+        calls = []
+        original = builtin_check.check_file
+        with patch.object(
+            builtin_check, "check_file",
+            lambda p: (calls.append(p), original(p))[1],
+        ):
+            sweep_builtin_checks(ec, lambda _: path)
+            self.assertEqual(calls, [])
+            os.utime(path, (0, 0))
+            sweep_builtin_checks(ec, lambda _: path)
+            self.assertEqual(len(calls), 1)
 
     def test_the_ledger_says_why_it_was_not_checked(self):
         from mimir.client.query_engine.verification import build_ledger
-        ec = self._edit("kernel.cu", available=False)
+        ec, _ = self._sweep("blob.py", b"\x00\x01\x02")
         rows = "\n".join(build_ledger(ec)["rows"])
-        self.assertIn("no checker here", rows)
+        self.assertIn("not readable as text", rows)
 
 
 class MissingCommandImputationTests(unittest.TestCase):

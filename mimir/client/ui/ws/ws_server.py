@@ -34,11 +34,18 @@ Protocol — all messages are JSON objects, one per send/recv:
                                "created_at": "...", "updated_at": "...", "preview": "..."}]}
     {"type": "session_loaded", "session_id": "...", "title": "...",
                                "display_messages": [...], "todos": [...]}
+    {"type": "context_usage",  "used_tokens": 0, "total_tokens": 0, "reserved_tokens": 0,
+                               "overhead_tokens": 0,
+                               "history_messages": 0,        # in the window the model sees
+                               "history_messages_full": 0}   # in the untrimmed record
     {"type": "resources",      "resources": [{"uri": "...", "name": "...",
                                "description": "...", "mimeType": "..."}]}  # attachable resources
 
   Client → Server
     {"type": "query",             "text": "..."}   # @<uri> mentions are read & injected
+    {"type": "transcript",        "session_id": "...", "messages": [...]}
+                                  # the client's rendered chat, stored verbatim as the
+                                  # session's display messages (see _handle_transcript)
     {"type": "list_resources"}                     # request the attachable-resource list
     {"type": "approval_response", "id": "...", "choice": "y"|"n"|"a"}
     {"type": "continue_response", "id": "...", "choice": "y"|"n"}
@@ -79,6 +86,11 @@ except ImportError as exc:
 
 
 __all__ = ["serve", "main", "_AgentWorker", "_Session"]
+
+
+# Ceiling on an inbound frame. Sized for the client transcript, the only message that
+# can get large: a long session's tool rows, diffs and clipped command output.
+_MAX_FRAME_BYTES = 32 * 1024 * 1024
 
 
 async def serve(
@@ -134,7 +146,10 @@ async def serve(
         session = _Session(ws, worker)
         await session.run()
 
-    async with websockets.serve(_handler, host, port):
+    # The default 1 MiB frame cap is below what a client transcript weighs once it
+    # carries diffs and command output, and an oversized frame closes the connection
+    # rather than failing the one message.
+    async with websockets.serve(_handler, host, port, max_size=_MAX_FRAME_BYTES):
         print(f"Listening on ws://{host}:{port}", file=_ORIGINAL_STDOUT)
         # Print SLURM_NODE only after the socket is bound and ready to accept connections
         print(f"SLURM_NODE:{socket.gethostname()}", file=_ORIGINAL_STDOUT, flush=True)

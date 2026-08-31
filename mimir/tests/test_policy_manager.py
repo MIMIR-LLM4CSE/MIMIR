@@ -191,7 +191,7 @@ class PolicyManagerTests(unittest.TestCase):
         """
         agent = _FakeAgent()
         agent.tool_owner["salloc_submit"] = "hpc"
-        args = {"command": "sbatch job.sh", "confirm": True}
+        args = {"partition": "compute", "confirm": True}
         # Something was edited and never checked: the state the hold is about.
         ctx: dict = {"dirty_written_files": {"job.py"}}
 
@@ -227,7 +227,7 @@ class PolicyManagerTests(unittest.TestCase):
         result = policy_manager_module.evaluate_tool_preconditions(
             agent=agent,
             tool_name="salloc_submit",
-            arguments={"command": "sbatch existing_job.sh", "confirm": True},
+            arguments={"partition": "compute", "confirm": True},
             execution_context={},
         )
         self.assertIsNone(result.violation)
@@ -571,6 +571,7 @@ class ValidationNudgeTests(unittest.TestCase):
             "workflow_state": "validate",
             "steps_since_last_edit": 2,
             "validation_fail_count_by_file": {"src/foo.py": 3},
+            "builtin_check_findings": {"src/foo.py": "line 7: invalid syntax"},
             "last_replace_file": "src/foo.py",
             "last_replace_old_text": "def foo():",
         }
@@ -588,12 +589,13 @@ class ValidationNudgeTests(unittest.TestCase):
             "workflow_state": "validate",
             "steps_since_last_edit": 2,
             "validation_fail_count_by_file": {"src/bar.py": 4},
+            "builtin_check_findings": {"src/bar.py": "line 7: invalid syntax"},
             "last_replace_file": "",
             "last_replace_old_text": "",
         }
         with patch.object(state_machine, "_validation_nudge_message", return_value=""):
             nudge = state_machine.validation_nudge_message(agent, context)
-        self.assertIn("Prefer a smaller, localized repair and re-run validation", nudge)
+        self.assertIn("Prefer a smaller, localized repair", nudge)
 
 
 if __name__ == "__main__":
@@ -642,6 +644,21 @@ class PlanShapeGateTests(unittest.TestCase):
             "# Approach\n1. Auditing the mesh module\n2. Rewrite the dispatch table\n")
         self.assertIsNotNone(violation)
         self.assertIn("Auditing the mesh module", violation)
+
+    def test_a_sub_step_of_an_axis_is_not_an_axis(self) -> None:
+        # Observed in the wild: a plan refused three times over the numbered steps
+        # *inside* its axes ("Add a conditional block that: 1. Check the flag"), which
+        # are how a change is spelled out. The model cleared the gate by deleting them,
+        # so the guard bought a vaguer plan than the one it turned down. Only top-level
+        # items are axes; the indentation is the distinction.
+        self.assertIsNone(self._check(
+            "## Approach\n"
+            "### Extend the operator with the forward skip\n"
+            "- **What**: add a conditional block that:\n"
+            "  1. Check the new flag\n"
+            "  2. Compute the seabed depth\n"
+            "- **Where**: `operator_tw_init_time`\n"
+            "## Validation\n- pytest\n"))
 
     def test_the_prescribed_validation_section_never_fires(self) -> None:
         # "## Validation" is structure the tool's own docstring asks for, and the axes

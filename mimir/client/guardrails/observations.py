@@ -55,6 +55,7 @@ from ..context.capabilities import (
     has_cap,
     names_with_cap,
     path_args,
+    run_outcome_spec,
     scope_spec,
 )
 from ..tool_execution.validation import (
@@ -148,58 +149,6 @@ def _clear_edit_fail_streak(execution_context: dict[str, Any], path: str) -> Non
             counts["error_recovery"] = 0
 
 
-# What performs the mandatory check for a language, by extension: the cheap one, the
-# one that parses and resolves without producing an artifact. Any of the listed
-# commands will do, and only commands the controlled shell will actually run are
-# listed — a checker bash refuses is a check nobody can perform, which is the same
-# dead end as a checker that is not installed.
-#
-# An extension ABSENT from this table has no checker here at all: the file is recorded
-# unverifiable and reported as such. That default used to be the opposite ("the model
-# may well know a checker this file does not"), which wedged every language outside
-# the table — a `.js` or `.rs` edit stayed pending for a check no runnable command
-# could ever credit, and the run could not conclude.
-_CHECKER_COMMANDS_BY_EXTENSION: dict[str, tuple[str, ...]] = {
-    ".py": ("python3", "python"),
-    ".pyi": ("python3", "python"),
-    ".c": ("gcc",),
-    ".h": ("gcc",),
-    ".cc": ("g++",),
-    ".cpp": ("g++",),
-    ".cxx": ("g++",),
-    ".c++": ("g++",),
-    ".hh": ("g++",),
-    ".hpp": ("g++",),
-    ".hxx": ("g++",),
-    ".h++": ("g++",),
-    ".f": ("gfortran",),
-    ".for": ("gfortran",),
-    ".ftn": ("gfortran",),
-    ".f77": ("gfortran",),
-    ".f90": ("gfortran",),
-    ".f95": ("gfortran",),
-    ".f03": ("gfortran",),
-    ".f08": ("gfortran",),
-    ".f18": ("gfortran",),
-    ".cu": ("nvcc",),
-    ".cuh": ("nvcc",),
-    ".java": ("javac",),
-}
-
-
-def _language_checker_missing(path: str) -> bool:
-    """True when this environment has nothing that could check *path* at all.
-
-    The mandatory axis is mandatory only where it is possible. A ``.cu`` edited on a
-    login node with no CUDA toolkit owes no check nobody can run: the file is recorded
-    as unverifiable and the answer says so, which is the honest ending — as opposed to
-    a completion gate that never opens, or a model inventing a check to satisfy it.
-    A language with no entry in the table is the same situation for the same reason.
-    """
-    commands = _CHECKER_COMMANDS_BY_EXTENSION.get(os.path.splitext(path)[1].lower())
-    return not commands or not _any_command_on_path(commands)
-
-
 def _record_code_edit(execution_context: dict[str, Any], edited_path: str) -> None:
     """Mark one successfully-written code file dirty (the per-path edit slice).
 
@@ -221,8 +170,12 @@ def _record_code_edit(execution_context: dict[str, Any], edited_path: str) -> No
     execution_context["planned_edit_targets"].add(edited_path)
     execution_context["dirty_written_files"].add(edited_path)
     execution_context["validated_files"].discard(edited_path)
-    if _language_checker_missing(edited_path):
-        execution_context["unverifiable_files"].add(edited_path)
+    # Evidence is about a revision, and so is its absence: a file rewritten after the
+    # floor rejected it — or after the floor could not read it — is owed a fresh answer,
+    # not the previous one.
+    execution_context["unverifiable_files"].discard(edited_path)
+    execution_context.get("builtin_check_findings", {}).pop(edited_path, None)
+    execution_context.get("builtin_check_stamp", {}).pop(edited_path, None)
     # Evidence is about a specific revision: rewriting the file retracts it. Runs are
     # not retracted — a run is a past event, and its verdict is a statement about what
     # that event showed, which re-editing does not undo.
@@ -693,9 +646,42 @@ def _carries_shell_command(agent: Any, tool_name: str) -> tuple[str, ...] | None
     return tuple(spec.get("args") or ("command",))
 
 
+def _run_key(tool_name: str, payload: dict, spec: dict[str, Any] | None) -> str:
+    """The ledger key for a run this tool performed.
+
+    A non-shell execution tool has no command line to name its runs, so every call
+    used to collapse onto the tool name — twenty optimisation iterations became one
+    entry, the last overwriting the rest. When the tool declares which payload field
+    identifies the run, that identifier *is* the key.
+
+    Deliberately not prefixed with the tool name: the tool that launches a run and the
+    tool that later reports how it went are different ones, and a per-tool key gave them
+    separate entries — the machine outcome landed on a second row while the row from the
+    launch stayed green and settleable by a ``pass``. The subject is the run.
+    """
+    field = (spec or {}).get("id")
+    raw = payload.get(field) if field else None
+    if not isinstance(raw, str) or not raw.strip():
+        return tool_name
+    return raw.rstrip(os.sep)
+
+
+def _matches(payload: dict, spec: dict[str, Any], kind: str) -> bool:
+    """Whether *payload* meets the ``<kind>_when`` conditions declared in *spec*.
+
+    Two forms: a field/values map, and a ``_present`` list of fields whose mere
+    presence and truthiness is the signal — a per-case error string has no
+    enumerable value set to match against.
+    """
+    for field, values in (spec.get(f"{kind}_when") or {}).items():
+        if field in payload and payload[field] in values:
+            return True
+    return any(payload.get(field) for field in (spec.get(f"{kind}_when_present") or ()))
+
+
 def _observe_tool_run(
     agent: Any, tool_name: str, arguments: dict, status: Any,
-    execution_context: dict[str, Any], call_id: str = "",
+    execution_context: dict[str, Any], call_id: str = "", payload: dict | None = None,
 ) -> None:
     """A non-shell execution tool ran: its output owes a verdict too.
 
@@ -707,15 +693,108 @@ def _observe_tool_run(
     exclusive, which is what keeps a bash run from being registered twice and spares a
     third shlex parse per call.
 
-    Recorded against the tool name, like any other run. It validates no file: an
-    execution's exit code says the program reached its end, and which file it exercised
-    is not a question anyone here can answer.
+    Recorded against the tool name, plus the run identifier the tool declares in its
+    ``run_outcome`` spec so repeated calls do not collapse onto one entry. It validates
+    no file: an execution's exit code says the program reached its end, and which file
+    it exercised is not a question anyone here can answer.
     """
     if status != "ok" or _carries_shell_command(agent, tool_name) is not None:
         return
     if not has_cap(tool_name, CODE_EXEC, agent.tool_caps):
         return
-    _record_run_outcome(execution_context, tool_name, True, call_id)
+    spec = run_outcome_spec(tool_name, getattr(agent, "tool_caps", None))
+    _record_run_outcome(
+        execution_context, _run_key(tool_name, payload or {}, spec), True, call_id)
+
+
+def _observe_run_outcome(
+    agent: Any, tool_name: str, payload: dict,
+    execution_context: dict[str, Any], call_id: str = "",
+) -> None:
+    """Record what the *server* saw of a run it performed itself.
+
+    The counterpart of ``observed_failure_verdict`` for a non-shell execution tool.
+    A shell run is floored by its exit code; a tool like ``proxy_eval`` answers ``ok``
+    for the *call* even when the run it launched came back red, so without this the
+    ledger held no machine reading at all and a stated ``pass`` was uncontradicted.
+
+    One-way, like every other floor here: it can move a run to crashed or failing,
+    never settle one as passing. That asymmetry is what makes it safe to trust — and
+    it needs no enforcement of its own, since ``unsettled_runs`` already excludes a run
+    that is not ``completed`` or already carries a verdict, putting both beyond the
+    reach of a model's ``pass``.
+
+    Takes no call status by design: a read that reports a crashed run says the same
+    thing whether or not the call carrying it succeeded.
+    """
+    spec = run_outcome_spec(tool_name, getattr(agent, "tool_caps", None))
+    if not spec or not isinstance(payload, dict):
+        return
+    _settle_from_machine(execution_context, tool_name, payload, spec, call_id)
+    _credit_measured_source(execution_context, payload, spec)
+    rows_spec = spec.get("rows")
+    if not isinstance(rows_spec, dict):
+        return
+    rows = payload.get(rows_spec.get("field", ""))
+    for row in rows if isinstance(rows, list) else []:
+        if isinstance(row, dict):
+            _settle_from_machine(execution_context, tool_name, row, rows_spec, call_id)
+
+
+def _credit_measured_source(
+    execution_context: dict[str, Any], payload: dict, spec: dict[str, Any],
+) -> None:
+    """Raise the optimisation session's source file to the ``measured`` tier.
+
+    The exception to "running the code validates no file": that rule exists because
+    attribution is a guess (``python main.py`` exercises ``mesh.py`` without naming it),
+    and here it is not one — the session config names exactly one source and the run is
+    by construction a run of it. Nothing else may take this route.
+
+    Credits evidence, not correctness: it records that the file was exercised and
+    measured. Whether the measurement was any good is a verdict on the run, settled
+    elsewhere and never by the server itself.
+    """
+    if _matches(payload, spec, "failed") or _matches(payload, spec, "crashed"):
+        return
+    if not _matches(payload, spec, "measured"):
+        return
+    from .policy.gates import active_proxy_source
+
+    source = active_proxy_source()
+    if source and source in execution_context.get("dirty_written_files", set()):
+        _mark_file_validated(execution_context, source, "measured")
+
+
+def _settle_from_machine(
+    execution_context: dict[str, Any], tool_name: str, payload: dict,
+    spec: dict[str, Any], call_id: str,
+) -> None:
+    """Apply one declared run outcome to the ledger.
+
+    A crash did not complete and drives the repair ladder. A failing result *did*
+    complete — the program ran, its answer is unsatisfactory — so it is recorded as a
+    machine ``fail`` verdict, the same shape a model's own ``fail`` takes.
+
+    Anything else is left exactly as it was: notably, an optimisation run that measured
+    correctly without improving on the incumbent is the ordinary outcome of an
+    experiment, and charging it would punish most of them.
+    """
+    crashed = _matches(payload, spec, "crashed")
+    failed = _matches(payload, spec, "failed")
+    if not crashed and not failed:
+        return
+    key = _run_key(tool_name, payload, spec)
+    if crashed:
+        _record_run_outcome(
+            execution_context, key, False, call_id, _MACHINE_SAW_CRASH)
+        return
+    _record_run_outcome(execution_context, key, True, call_id)
+    run = (execution_context.get("runs") or {}).get(key)
+    if run is not None:
+        run["verdict"] = "fail"
+        run["reason"] = _MACHINE_SAW_FAILURE
+        _register_run_failure(execution_context, key, _MACHINE_SAW_FAILURE)
 
 
 # Checkers that cover a whole tree in one call. A *successful* run of one naming no
@@ -755,6 +834,10 @@ _SYNTAX_ONLY_FLAGS = ("-fsyntax-only", "--fsyntax-only")
 # judge output that already carries its own verdict.
 _SELF_DECLARED_FAILURE = "the run's own output declared check=fail"
 _BUILD_EXIT_IS_THE_VERDICT = "the build exited 0; a build reports diagnostics, not results"
+# A server that ran the code itself reported the run red. Its own judgement, not a
+# reading of what the program printed — the floor a stated verdict cannot rise above.
+_MACHINE_SAW_CRASH = "the run server reported this run did not complete"
+_MACHINE_SAW_FAILURE = "the run server judged this run's result failing"
 
 
 def _outside_workspace(path: str) -> bool:
@@ -1147,5 +1230,6 @@ def record_tool_observation(
     _observe_bash_validation(agent, tool_name, arguments, status, payload, execution_context, call_id)
     _observe_command(agent, tool_name, arguments, status, payload, execution_context)
     _observe_action_op(agent, tool_name, status, execution_context)
-    _observe_tool_run(agent, tool_name, arguments, status, execution_context, call_id)
+    _observe_tool_run(agent, tool_name, arguments, status, execution_context, call_id, payload)
+    _observe_run_outcome(agent, tool_name, payload, execution_context, call_id)
     _observe_verdict_tool(agent, tool_name, arguments, status, execution_context)

@@ -3,7 +3,7 @@
 The client computes the central per-workspace state dir (``~/.mimir/<ws-id>/``)
 and hands it to the server subprocesses via the ``MIMIR_STATE_DIR`` env var (see
 client/integration/server_manager.py). Servers should resolve every persistent
-state path (memory/, todos, plans/, platform_profile.json, …) off ``state_dir()``
+state path (memory/, todos, plans/, …) off ``state_dir()``
 so the whole stack agrees on one location.
 
 When ``MIMIR_STATE_DIR`` is unset — standalone runs and the hermetic test suite,

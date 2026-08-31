@@ -59,7 +59,7 @@ What the base install covers:
 | Core client + MCP | `mcp`, `httpx` | agent loop, all server transports |
 | LLM backends | `ollama`, `openai` | Ollama backend, vLLM (OpenAI-compatible) backend |
 | WebSocket frontend | `websockets` | `ws_server.py` (VS Code extension) |
-| Scientific / utility servers | `numpy`, `sympy`, `psutil` | `math`, `symbolic_math`, `platform`, `benchmark`, `system` servers |
+| Scientific / utility servers | `numpy`, `sympy`, `psutil` | `math`, `symbolic_math`, `platform`, `system` servers |
 
 Optional extras (declared in `pyproject.toml`):
 
@@ -74,11 +74,13 @@ Optional extras (declared in `pyproject.toml`):
   works without this extra).
 - **Code-intelligence & validation binaries.** The `code_intel` server uses external
   language servers / tools when present (`pyright`/`pylsp`, `clangd`, `ctags`) and
-  degrades to a text scan when absent. Code validation runs through the `bash` server:
-  install whichever validators you want on PATH — Python (`ruff`, `mypy`, `pyflakes`,
+  degrades to a text scan when absent. The mandatory check needs nothing installed —
+  it runs in-process. What the model *additionally* runs goes through the `bash`
+  server, so install whichever validators you want on PATH — Python (`ruff`, `mypy`, `pyflakes`,
   `black`, `pytest`), the compilers (`gcc`/`g++`/`gfortran`/`nvcc`/`javac`), and CMake
   (`cmake`/`ctest`) for C/C++/CUDA projects. These are system/CLI tools, not Python
-  packages — the agent states a check as unrun when its tool is absent.
+  packages, and all of them are optional: the agent names an optional check as unrun when
+  its tool is absent, and the required one never depends on them.
 
 > **Legacy path.** `pip install -r mimir/requirements.txt` still works and installs
 > the same core dependencies, but it does **not** register the `mimir` /

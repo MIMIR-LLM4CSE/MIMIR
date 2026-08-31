@@ -795,14 +795,42 @@ class RunPlanModeTests(unittest.TestCase):
         self.assertEqual(result, "Here is the plan.")
         # The list is built once per phase, never per turn: one cache break, no more.
         self.assertEqual(seen_exploring, [True, False])
+        # Once per throttle window, not once per turn: every acting turn used to carry
+        # the same text back, and a user turn between every tool result is itself what
+        # teaches one-call-per-turn — including ignoring the fan-out this text asks for.
+        every = plan_loop_module._PLAN_NUDGE_EVERY
         self.assertEqual(
             sum(1 for m in messages if m.get("content") == plan_loop_module.PLAN_EXPLORE_FIRST),
-            PLAN_EXPLORE_MAX_TURNS,
+            -(-PLAN_EXPLORE_MAX_TURNS // every),
         )
         self.assertTrue(any(
             m["role"] == "user" and m["content"] == plan_loop_module.PLAN_EXPLORE_BUDGET_SPENT
             for m in messages
         ))
+
+    def test_a_turn_that_only_talks_is_always_told_why(self) -> None:
+        # The throttle covers turns that acted. A turn that only produced prose has that
+        # prose discarded, so the reminder is the only thing saying why — throttled, the
+        # model would re-emit the same refused draft until the step budget ran out.
+        script = [{"content": "here is my plan in prose"}] * 3
+        script.append({"content": "planning", "tool_calls": [_tool_call("todo_set_plan")]})
+        script.append({"content": "Here is the plan."})
+        # enforcement "off" skips the explore phase, so the nudge owed here is the
+        # record-the-document one and no read has to be faked to reach it.
+        agent = types.SimpleNamespace(
+            model="m", tools=[], tool_caps=dict(_CHECKLIST_CAPS), enforcement="off")
+        query = "add a flag to the solver module"
+        messages = [{"role": "system", "content": "S"}, {"role": "user", "content": query}]
+
+        result, _ = self._explore_phase_run(
+            backend=ScriptedBackend(script), query=query, agent=agent, messages=messages,
+        )
+
+        self.assertEqual(result, "Here is the plan.")
+        self.assertEqual(
+            sum(1 for m in messages if m.get("content") == plan_loop_module.PLAN_TODO_NUDGE_EARLY),
+            3,
+        )
 
     def test_explore_phase_skipped_when_enforcement_off(self) -> None:
         # At enforcement "off" the phase gate is disabled outright: the document tool

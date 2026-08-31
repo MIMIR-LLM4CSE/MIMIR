@@ -286,6 +286,18 @@ class EvalLoopTests(_TmpStorageTest):
         with open(self.source) as fh:
             self.assertEqual(fh.read(), "VERSION = 1\n")
 
+    def test_end_clears_the_active_session(self) -> None:
+        self._init_session()
+        self.assertEqual(store._resolve_proxy_name(""), "tiny")
+        res = server_proxy.proxy_eval(op="end", confirm=True)
+        self.assertEqual(res.get("status"), "ok")
+        self.assertEqual(res["ended"], "tiny")
+        self.assertIn("proxy_eval(op='init'", res["next_step"])
+        self.assertFalse(store._resolve_proxy_name(""))
+        # History survives; only the pointer is gone.
+        self.assertTrue(os.path.isdir(store._opt_session_runs_dir("tiny")))
+        self.assertEqual(server_proxy.proxy_eval_status()["state"], "no_session")
+
 
 class ReadOnlyOpsTests(_TmpStorageTest):
     def test_empty_listings(self) -> None:
@@ -315,6 +327,145 @@ class ScaffoldTests(_TmpStorageTest):
         # Suggested follow-ups use the live op syntax, not dead tool names.
         self.assertIn("proxy_manage(", res["suggested_ref_register"])
         self.assertIn("op='register'", res["suggested_ref_register"])
+        self.assertTrue(res.get("next_step"))
+
+class NextStepContractTests(_TmpStorageTest):
+    """Every read-only op answers with a non-empty next_step, populated or not.
+
+    The loop is driven by that hint, so an op that omits it is a dead end for
+    the model even when the payload is correct.
+    """
+
+    def _read_only_calls(self) -> list[tuple[str, dict]]:
+        return [
+            ("proxy_get/proxies",       {"op": "proxies"}),
+            ("proxy_get/proxy",         {"op": "proxy", "name": "tiny"}),
+            ("proxy_get/references",    {"op": "references"}),
+            ("proxy_get/suites",        {"op": "suites"}),
+            ("proxy_get/suite",         {"op": "suite", "name": "bench"}),
+        ]
+
+    def test_read_only_ops_carry_next_step(self) -> None:
+        for label, kwargs in self._read_only_calls():
+            for populated in (False, True):
+                if populated:
+                    self._register()
+                    server_proxy.proxy_manage(
+                        op="suite_define", name="bench",
+                        cases=[{"case_id": "a", "proxy_name": "tiny"}], confirm=True,
+                    )
+                with self.subTest(op=label, populated=populated):
+                    res = server_proxy.proxy_get(**kwargs)
+                    if res.get("status") != "ok":
+                        continue          # unpopulated lookups legitimately error
+                    self.assertTrue(res.get("next_step"), f"{label} has no next_step")
+
+    def test_every_ok_response_carries_next_step(self) -> None:
+        """SERVERS_DETAILED states the contract without exception; hold it that way."""
+        self._register()
+        server_proxy.proxy_manage(
+            op="suite_define", name="bench",
+            cases=[{"case_id": "a", "proxy_name": "tiny"}], confirm=True,
+        )
+        calls = [
+            (server_proxy.proxy_get, {"op": "proxies"}),
+            (server_proxy.proxy_get, {"op": "proxy", "name": "tiny"}),
+            (server_proxy.proxy_get, {"op": "references"}),
+            (server_proxy.proxy_get, {"op": "suites"}),
+            (server_proxy.proxy_get, {"op": "suite", "name": "bench"}),
+            (server_proxy.proxy_runs, {"op": "list"}),
+            (server_proxy.proxy_eval_status, {"op": "runs"}),
+            (server_proxy.proxy_eval_status, {"op": "config"}),
+            (server_proxy.proxy_manage, {"op": "update", "name": "tiny",
+                                         "metadata": {"arch": "x86"}, "confirm": True}),
+            (server_proxy.proxy_manage, {"op": "suite_update", "name": "bench",
+                                         "description": "d", "confirm": True}),
+        ]
+        for tool, kwargs in calls:
+            with self.subTest(tool=tool.__name__, op=kwargs["op"]):
+                res = tool(**kwargs)
+                self.assertEqual(res.get("status"), "ok", msg=res)
+                self.assertTrue(res.get("next_step"), f"{kwargs['op']} has no next_step")
+
+    def test_runs_and_eval_status_listings_carry_next_step(self) -> None:
+        for res in (server_proxy.proxy_runs(op="list"),
+                    server_proxy.proxy_eval_status(op="runs"),
+                    server_proxy.proxy_eval_status(op="config")):
+            self.assertEqual(res.get("status"), "ok")
+            self.assertTrue(res.get("next_step"))
+
+
+class ScaffoldHarnessTypeTests(_TmpStorageTest):
+    """The suggested registration must match the harness it describes."""
+
+    def _scaffold(self, harness_type: str) -> dict:
+        src = os.path.join(self.root, f"src_{harness_type}.py")
+        with open(src, "w") as fh:
+            fh.write("def solve(n):\n    return n\n")
+        res = server_proxy.proxy_manage(
+            op="scaffold", proxy_path=src, component_hint="solve",
+            harness_type=harness_type, confirm=True,
+        )
+        self.assertEqual(res.get("status"), "ok")
+        return res
+
+    def test_kernel_suggests_cli_flags(self) -> None:
+        res = self._scaffold("kernel")
+        for key in ("suggested_ref_register", "suggested_test_register"):
+            self.assertIn("--n {n} --output {output_file}", res[key])
+            self.assertNotIn("param_file_template", res[key])
+
+    def test_subsystem_suggests_a_param_file(self) -> None:
+        res = self._scaffold("subsystem")
+        for key in ("suggested_ref_register", "suggested_test_register"):
+            self.assertIn("{executable} {param_file}", res[key])
+            self.assertIn("param_file_template=", res[key])
+            self.assertNotIn("--n {n}", res[key])
+        # The generated harness really does read a param file.
+        with open(res["ref_harness_path"]) as fh:
+            self.assertIn("_read_params(sys.argv[1])", fh.read())
+
+
+class SlurmSubmitEvalTests(_TmpStorageTest):
+    """proxy_slurm(op='eval') must not lose what _prepare_run wrote."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.bin_dir = os.path.join(self.root, "bin")
+        os.makedirs(self.bin_dir)
+        self._saved_path = os.environ["PATH"]
+        fake = os.path.join(self.bin_dir, "sbatch")
+        with open(fake, "w") as fh:
+            fh.write("#!/bin/sh\necho 'Submitted batch job 7001'\n")
+        os.chmod(fake, 0o755)
+        os.environ["PATH"] = self.bin_dir
+
+    def tearDown(self) -> None:
+        os.environ["PATH"] = self._saved_path
+        super().tearDown()
+
+    def test_submitted_run_keeps_the_convergence_config(self) -> None:
+        self._register()
+        server_proxy.proxy_manage(
+            op="suite_define", name="bench",
+            cases=[{"case_id": "a", "proxy_name": "tiny"}], confirm=True,
+        )
+        src = self._make_exe("source.py")
+        server_proxy.proxy_eval(
+            op="init", proxy_name="tiny", benchmark_name="bench",
+            requirements=[{"metric": "time_s", "operator": "lt", "threshold": 2.0}],
+            proxy_source_path=src, max_hours=3.0,
+            convergence={"h_param": "n", "error_metric": "l2_rel"}, confirm=True,
+        )
+        res = server_proxy.proxy_slurm(op="eval", partition="debug", confirm=True)
+        self.assertEqual(res.get("status"), "ok", msg=res)
+
+        cfg = store._read_json(os.path.join(res["run_dir"], "config.json"))
+        # The Slurm-specific key is merged in, not written over the rest.
+        self.assertEqual(cfg["partition"], "debug")
+        self.assertEqual(cfg["convergence"], {"h_param": "n", "error_metric": "l2_rel"})
+        self.assertEqual(cfg["benchmark_name"], "bench")
+        self.assertEqual(cfg["deadline_s"], 3.0 * 3600)
 
 
 if __name__ == "__main__":

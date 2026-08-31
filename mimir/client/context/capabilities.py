@@ -157,6 +157,11 @@ class ToolCaps:
     # invocations that are the read-only ones. None -> the guard falls back to
     # classifying the shell command it carries.
     readonly_when: dict[str, Any] | None = None
+    # What the server itself saw of a run it performed: {"id": field, "crashed_when":
+    # {...}, "failed_when": {...}, "rows": {...}}. The floor under the model's stated
+    # verdict for a non-shell execution tool; withholds credit only, never grants it.
+    # None -> the client has no machine reading of this tool's runs.
+    run_outcome: dict[str, Any] | None = None
 
     def has(self, cap: str) -> bool:
         return cap in self.capabilities
@@ -250,6 +255,8 @@ def _caps_from_meta(name: str, desc: dict) -> ToolCaps:
     scope = dict(scope) if isinstance(scope, dict) else None
     preview = desc.get("preview")
     preview = dict(preview) if isinstance(preview, dict) else None
+    outcome = desc.get("run_outcome")
+    outcome = dict(outcome) if isinstance(outcome, dict) else None
     return ToolCaps(
         name=name,
         capabilities=frozenset(caps),
@@ -262,6 +269,7 @@ def _caps_from_meta(name: str, desc: dict) -> ToolCaps:
         reversibility=reversibility,
         timeout_secs=_declared_timeout(desc.get("timeout_secs")),
         readonly_when=_readonly_when(desc.get("readonly_when")),
+        run_outcome=outcome,
     )
 
 
@@ -458,6 +466,18 @@ def label_for(name: str, args: dict | None = None, registry: dict[str, ToolCaps]
         return c.label.format(**(args or {}))
     except (KeyError, IndexError):
         return None
+
+
+def run_outcome_spec(
+    name: str, registry: dict[str, ToolCaps] | None = None,
+) -> dict[str, Any] | None:
+    """The machine run-outcome spec declared for ``name``, or ``None``.
+
+    Lets a server that performs runs itself tell the client what it saw of them,
+    so the run ledger has a floor under the model's stated verdict.
+    """
+    c = _registry(registry).get(name)
+    return c.run_outcome if c else None
 
 
 def scope_spec(name: str, registry: dict[str, ToolCaps] | None = None) -> dict[str, Any] | None:
