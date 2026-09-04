@@ -353,7 +353,7 @@ body {
   background: var(--vscode-button-secondaryHoverBackground, var(--vscode-toolbar-hoverBackground));
 }
 
-/* ── Connect form (cascading dropdowns) ────────────────────────────────────── */
+/* ── Connect form (backend · address · model) ─────────────────────────────── */
 .connect-form {
   display: flex;
   flex-direction: column;
@@ -385,6 +385,9 @@ body {
 .connect-field-hint code {
   font-family: var(--mono);
 }
+.connect-field-error {
+  color: var(--vscode-testing-iconFailed);
+}
 .connect-select {
   padding: 5px 8px;
   background: var(--vscode-dropdown-background);
@@ -394,31 +397,38 @@ body {
   font-size: 12px;
   width: 100%;
 }
-.connect-preview {
+.connect-select:disabled {
+  opacity: 0.6;
+}
+/* Address input + its refresh button share one line. */
+.connect-row {
+  display: flex;
+  gap: 4px;
+}
+.connect-input {
+  flex: 1;
+  min-width: 0;
+  padding: 5px 8px;
+  background: var(--vscode-input-background);
+  color: var(--vscode-input-foreground);
+  border: 1px solid var(--vscode-input-border, var(--border));
+  border-radius: 4px;
+  font-size: 12px;
+  font-family: var(--mono);
+}
+.connect-refresh {
+  flex: 0 0 auto;
+  padding: 0 8px;
   background: var(--bg-input);
+  color: var(--fg-dim);
   border: 1px solid var(--border);
   border-radius: 4px;
-  padding: 6px 8px;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
+  font-size: 13px;
+  cursor: pointer;
 }
-.connect-preview-label {
-  font-size: 9px;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.07em;
-  color: var(--fg-dim);
-}
-.connect-preview-args {
-  font-family: var(--mono);
-  font-size: 10px;
-  word-break: break-all;
+.connect-refresh:hover {
   color: var(--fg);
-}
-.connect-preview-node {
-  font-size: 10px;
-  color: var(--accent);
+  border-color: var(--accent);
 }
 
 /* ── Message bubbles ─────────────────────────────────────────────────────────── */
@@ -2390,6 +2400,12 @@ body {
   opacity: 0.75;
 }
 
+/* Why this model's depth ladder is shorter than the full one. */
+.settings-depth-note {
+  margin-top: 4px;
+  font-style: italic;
+  opacity: 0.85;
+}
 .settings-divider {
   border: none;
   border-top: 1px solid var(--border);

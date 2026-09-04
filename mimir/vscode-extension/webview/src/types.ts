@@ -1,10 +1,26 @@
 // ── Message types (server → client) ──────────────────────────────────────────
 
+/** How the served model is switched between reasoning and not. Mirrors
+ *  `thinking_profile()` in client/config/models.py. */
+export type ThinkingMechanism = "kwarg" | "directive" | "effort";
+
+/** What the depth control is allowed to offer for the served model.
+ *  `levels` are the family's OWN effort rungs, weakest first — they are not a fixed
+ *  scale (low/high/max for some families, low/medium/high for others) — and
+ *  `can_disable` is false for a family that always reasons, whose "off" rung would
+ *  be a control that does nothing. */
+export interface ThinkingProfile {
+  mechanism: ThinkingMechanism;
+  levels: string[];
+  can_disable: boolean;
+}
+
 export interface ReadyMessage {
   type: "ready";
   model: string;
   context_mode?: "compact" | "full";
   enforcement?: "strict" | "light" | "off";
+  thinking?: ThinkingProfile;
 }
 
 export interface OutputMessage {
@@ -66,38 +82,18 @@ export interface ErrorMessage {
 
 export interface ConfigMessage {
   type: "config";
-  models: string[];
-  vllmModels?: string[];
-  anthropicModels?: string[];
-  modelSizes?: Record<string, number>;
-  slurmEnabled: boolean;
-  clusterConfig: ClusterConfig[];
   backend?: string;
   vllmBaseUrl?: string;
-  vllmMode?: "launch" | "connect";
+  ollamaBaseUrl?: string;
+  anthropicModels?: string[];
 }
 
-export interface GpuSpec {
-  type: string;
-  memGB: number;
-  maxCount: number;
-}
-
-export interface NodeType {
-  label: string;
-  partition: string;
-  cpusPerNode: number;
-  gpu: GpuSpec | null;
-  memOptionsGB: number[];
-}
-
-export interface ClusterConfig {
-  name: string;
-  loginNode?: string;
-  account?: string;
-  nodeTypes: NodeType[];
-  ollamaPath?: string;
-  vllmPath?: string;
+/** Models the extension host read from the endpoint the user pointed us at. */
+export interface ModelsMessage {
+  type: "models";
+  backend: string;
+  models: string[];
+  error?: string;
 }
 
 export interface ThinkingMessage {
@@ -383,6 +379,7 @@ export type ServerMessage =
   | SubAgentEventMessage
   | ErrorMessage
   | ConfigMessage
+  | ModelsMessage
   | DiffMessage
   | SteerInjectedMessage
   | NudgeInjectedMessage

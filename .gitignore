@@ -1,4 +1,4 @@
-# Local / machine-specific VS Code settings (contains cluster topology & paths)
+# Local / machine-specific VS Code settings
 .vscode/settings.json
 
 # Python

@@ -13,12 +13,12 @@ import type {
   ServerMessage,
   SessionMeta,
   TodoItem,
-  ClusterConfig,
   DiffEntry,
   QuestionSpec,
   ToggleItem,
   ResourceItem,
   AgentMode,
+  ThinkingProfile,
 } from "./types";
 import { createChatReducer, initialChatState } from "./state/chatReducer";
 import { useWebSocket, vscodePostMessage } from "./hooks/useWebSocket";
@@ -88,15 +88,14 @@ export const App: React.FC = () => {
   const [todos, setTodos] = useState<TodoItem[]>([]);
   const [connection, setConnection] = useState<ConnectionState>("disconnected");
   const [model, setModel] = useState("");
-  const [availableModels, setAvailableModels] = useState<string[]>([]);
-  const [vllmModels, setVllmModels] = useState<string[]>([]);
   const [anthropicModels, setAnthropicModels] = useState<string[]>([]);
-  const [modelSizes, setModelSizes] = useState<Record<string, number>>({});
-  const [selectedModel, setSelectedModel] = useState("");
-  const [clusterConfig, setClusterConfig] = useState<ClusterConfig[]>([]);
   const [backend, setBackend] = useState("vllm");
   const [vllmBaseUrl, setVllmBaseUrl] = useState("http://127.0.0.1:8000");
-  const [vllmMode, setVllmMode] = useState<"launch" | "connect">("launch");
+  const [ollamaBaseUrl, setOllamaBaseUrl] = useState("http://127.0.0.1:11434");
+  // Models the endpoint reports it serves — the connect form's dropdown.
+  const [endpointModels, setEndpointModels] = useState<string[]>([]);
+  const [modelsLoading, setModelsLoading] = useState(false);
+  const [modelsError, setModelsError] = useState<string | null>(null);
   const [input, setInput] = useState("");
   // ── @-mention autocomplete (attach MCP resources) ─────────────────────────
   const [resources, setResources] = useState<ResourceItem[]>([]);
@@ -116,6 +115,9 @@ export const App: React.FC = () => {
   const [activeEditor, setActiveEditor] = useState<{ file: string; selection: string | null } | null>(null);
   const [agentMode, setAgentMode] = useState<AgentMode>("agent");
   const [thinkingLevel, setThinkingLevel] = useState<number>(1); // 0=off,1=auto,2=quick,3=medium,4=deep,5=max
+  // Which rungs of that ladder the served model can honour — reported by the server
+  // in "ready". Undefined until it arrives, which the control reads as the full ladder.
+  const [thinkingProfile, setThinkingProfile] = useState<ThinkingProfile | undefined>(undefined);
   const thinking = thinkingLevel > 0;
   const [streaming, setStreaming] = useState(true);
 
@@ -221,6 +223,7 @@ export const App: React.FC = () => {
         setConnection("connected");
         if (msg.context_mode) setContextMode(msg.context_mode);
         if (msg.enforcement) setEnforcement(msg.enforcement);
+        if (msg.thinking) setThinkingProfile(msg.thinking);
         handleReady();
         return;
 
@@ -233,15 +236,16 @@ export const App: React.FC = () => {
         return;
 
       case "config":
-        setAvailableModels(msg.models);
-        setVllmModels(msg.vllmModels ?? []);
         setAnthropicModels(msg.anthropicModels ?? []);
-        setModelSizes(msg.modelSizes ?? {});
-        setSelectedModel((prev) => prev || msg.models[0] || "");
-        setClusterConfig(msg.clusterConfig ?? []);
         if (msg.backend) setBackend(msg.backend);
         if (msg.vllmBaseUrl) setVllmBaseUrl(msg.vllmBaseUrl);
-        if (msg.vllmMode) setVllmMode(msg.vllmMode);
+        if (msg.ollamaBaseUrl) setOllamaBaseUrl(msg.ollamaBaseUrl);
+        return;
+
+      case "models":
+        setEndpointModels(msg.models);
+        setModelsError(msg.error ?? null);
+        setModelsLoading(false);
         return;
 
       case "todo":
@@ -393,7 +397,7 @@ export const App: React.FC = () => {
     setConnection("disconnected");
   };
 
-  const { send, getConfig, connect, disconnect, createSession, switchSession, deleteSession, renameSession } = useWebSocket({
+  const { send, getConfig, connect, fetchModels, disconnect, createSession, switchSession, deleteSession, renameSession } = useWebSocket({
     url: getWsUrl(),
     onMessage: handleServerMessage,
     onClose: () => {
@@ -500,26 +504,31 @@ export const App: React.FC = () => {
   }, [busy, send, scrollQueryToTop]);
 
   // Remembers the exact args of the last successful connect so the disconnected
-  // panel can offer a one-click Reconnect (replaying model/cluster/backend).
+  // panel can offer a one-click Reconnect (replaying model/backend/address).
   const lastConnectArgsRef = useRef<Parameters<typeof connect> | null>(null);
   const handleConnect = useCallback(
-    (
-      mdl: string,
-      loginNode: string | undefined,
-      slurmArgs: string,
-      be: string,
-      vllmUrl: string,
-      vllmPath?: string,
-      ollamaPath?: string,
-      vMode?: "launch" | "connect",
-      anthropicApiKey?: string,
-    ) => {
-      lastConnectArgsRef.current = [mdl, loginNode, slurmArgs, be, vllmUrl, vllmPath, ollamaPath, vMode, anthropicApiKey];
-      setSelectedModel(mdl);
+    (mdl: string, be: string, baseUrl: string, anthropicApiKey?: string) => {
+      lastConnectArgsRef.current = [mdl, be, baseUrl, anthropicApiKey];
       setConnection("connecting");
-      connect(mdl, loginNode, slurmArgs, be, vllmUrl, vllmPath, ollamaPath, vMode, anthropicApiKey);
+      connect(mdl, be, baseUrl, anthropicApiKey);
     },
     [connect],
+  );
+
+  // Ask the extension host what the endpoint at *baseUrl* serves. Anthropic has
+  // no key-free listing, so its models stay the static list from settings.
+  const handleFetchModels = useCallback(
+    (be: string, baseUrl: string) => {
+      if (be === "anthropic") {
+        setEndpointModels([]);
+        setModelsError(null);
+        return;
+      }
+      setModelsLoading(true);
+      setModelsError(null);
+      fetchModels(be, baseUrl);
+    },
+    [fetchModels],
   );
   const handleReconnect = useCallback(() => {
     const args = lastConnectArgsRef.current;
@@ -528,8 +537,8 @@ export const App: React.FC = () => {
     connect(...args);
   }, [connect]);
 
-  // Abort an in-progress connection: tell the host to tear down any server it
-  // is spinning up (SLURM alloc / vLLM launch) and drop straight back to idle.
+  // Abort an in-progress connection: tell the host to tear down the server it
+  // is starting and drop straight back to idle.
   const handleCancelConnect = useCallback(() => {
     disconnect();
     setConnection("disconnected");
@@ -852,14 +861,14 @@ export const App: React.FC = () => {
                 <MimirIntro />
                 <div className="empty-text">MIMIR</div>
                 <ConnectForm
-                  clusters={clusterConfig}
-                  availableModels={availableModels}
-                  vllmModels={vllmModels}
-                  anthropicModels={anthropicModels}
-                  modelSizes={modelSizes}
                   backend={backend}
                   vllmBaseUrl={vllmBaseUrl}
-                  vllmMode={vllmMode}
+                  ollamaBaseUrl={ollamaBaseUrl}
+                  anthropicModels={anthropicModels}
+                  models={endpointModels}
+                  modelsLoading={modelsLoading}
+                  modelsError={modelsError}
+                  onFetchModels={handleFetchModels}
                   onConnect={handleConnect}
                 />
               </div>
@@ -890,14 +899,14 @@ export const App: React.FC = () => {
               </button>
             )}
             <ConnectForm
-              clusters={clusterConfig}
-              availableModels={availableModels}
-              vllmModels={vllmModels}
-              anthropicModels={anthropicModels}
-              modelSizes={modelSizes}
               backend={backend}
               vllmBaseUrl={vllmBaseUrl}
-              vllmMode={vllmMode}
+              ollamaBaseUrl={ollamaBaseUrl}
+              anthropicModels={anthropicModels}
+              models={endpointModels}
+              modelsLoading={modelsLoading}
+              modelsError={modelsError}
+              onFetchModels={handleFetchModels}
               onConnect={handleConnect}
             />
           </div>
@@ -981,6 +990,7 @@ export const App: React.FC = () => {
               {settingsOpen && (
                 <AgentSettings
                   thinkingLevel={thinkingLevel}
+                  thinkingProfile={thinkingProfile}
                   streaming={streaming}
                   contextMode={contextMode}
                   enforcement={enforcement}

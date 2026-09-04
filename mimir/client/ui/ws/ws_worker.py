@@ -824,6 +824,27 @@ class _AgentWorker:
             return getattr(self._agent, "enforcement", "strict")
         return "strict"
 
+    def get_thinking_profile(self) -> dict:
+        """What the panel needs to draw a depth control this model can honour.
+
+        The rung labels are the family's own (`low`/`high`/`max` for some, OpenAI's
+        `low`/`medium`/`high` for others), and `can_disable` says whether an "off"
+        rung would do anything — so the control never offers a setting the request
+        builder cannot express.
+        """
+        backend = os.environ.get("LLM_BACKEND", "vllm").lower()
+        if backend != "vllm":
+            # Ollama takes a `think` flag and Anthropic a thinking block; both are
+            # plain on/off with a budget, i.e. the full ladder applies.
+            return {"mechanism": "kwarg", "levels": [], "can_disable": True}
+        from ...config.models import thinking_profile, thinking_can_disable
+        profile = thinking_profile(self.model)
+        return {
+            "mechanism": profile["mechanism"],
+            "levels": profile["levels"] if profile["mechanism"] == "effort" else [],
+            "can_disable": thinking_can_disable(self.model),
+        }
+
     def toggles_state(self) -> dict:
         if self._agent is not None:
             return self._agent.toggles_state()

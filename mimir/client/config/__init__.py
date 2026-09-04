@@ -28,7 +28,7 @@ from .constants import (
     clamp_thinking_depth,
     thinking_depth_from_label,
 )
-from .models import DEFAULT_MODEL, VALID_MODES, READONLY_MODES, LLM_BACKEND, VLLM_BASE_URL, VLLM_API_KEY, VLLM_MODEL_PROFILES
+from .models import DEFAULT_MODEL, VALID_MODES, READONLY_MODES, LLM_BACKEND, VLLM_BASE_URL, VLLM_API_KEY, VLLM_MODEL_PROFILES, thinking_mechanism
 # NOTE: user-extension discovery (.mimir/ servers / skills / plugins) moved to
 # ``mimir.client.extensions``; import from there, not from ``config``.
 
@@ -68,4 +68,5 @@ __all__ = [
     "VLLM_API_KEY",
     "VLLM_BASE_URL",
     "VLLM_MODEL_PROFILES",
+    "thinking_mechanism",
 ]

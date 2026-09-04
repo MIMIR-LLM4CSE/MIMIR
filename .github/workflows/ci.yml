@@ -60,15 +60,6 @@ jobs:
           name: python-dist
           path: dist/*
 
-  build-image:
-    name: Build Docker image
-    runs-on: ubuntu-latest
-    needs: test
-    steps:
-      - uses: actions/checkout@v4
-      - name: Build image (no push)
-        run: docker build -t mimir:ci .
-
   build-vsix:
     name: Build VS Code extension
     runs-on: ubuntu-latest

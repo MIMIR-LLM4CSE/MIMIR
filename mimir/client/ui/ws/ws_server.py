@@ -16,7 +16,9 @@ across sibling modules:
 Protocol — all messages are JSON objects, one per send/recv:
 
   Server → Client
-    {"type": "ready",          "model": "...", "context_mode": "...", "enforcement": "..."}
+    {"type": "ready",          "model": "...", "context_mode": "...", "enforcement": "...",
+                               "thinking": {"mechanism": "kwarg|directive|effort",
+                                            "levels": [...], "can_disable": bool}}
     {"type": "output",         "text": "..."}          # stdout (tool status + LLM tokens)
     {"type": "enforcement",    "mode": "strict"|"light"|"off"}  # active guidance-nudge level
     {"type": "mode",           "mode": "agent"|"plan"|"ask"}    # server-driven mode switch
@@ -73,7 +75,6 @@ from .ws_session import _Session
 
 import asyncio
 import os
-import socket
 import sys
 from typing import Any
 
@@ -150,9 +151,7 @@ async def serve(
     # carries diffs and command output, and an oversized frame closes the connection
     # rather than failing the one message.
     async with websockets.serve(_handler, host, port, max_size=_MAX_FRAME_BYTES):
-        print(f"Listening on ws://{host}:{port}", file=_ORIGINAL_STDOUT)
-        # Print SLURM_NODE only after the socket is bound and ready to accept connections
-        print(f"SLURM_NODE:{socket.gethostname()}", file=_ORIGINAL_STDOUT, flush=True)
+        print(f"Listening on ws://{host}:{port}", file=_ORIGINAL_STDOUT, flush=True)
         await asyncio.Future()  # run forever
 
 
@@ -172,6 +171,9 @@ def main() -> None:
                         help="Base URL of the vLLM OpenAI-compatible API (overrides VLLM_BASE_URL env var)")
     parser.add_argument("--vllm-api-key", default=None,
                         help="API key for vLLM (default: EMPTY)")
+    parser.add_argument("--ollama-base-url", default=None,
+                        help="Base URL of the running Ollama server "
+                             "(overrides OLLAMA_BASE_URL / OLLAMA_HOST)")
     args = parser.parse_args()
 
     if args.cwd:
@@ -183,6 +185,13 @@ def main() -> None:
         os.environ["VLLM_BASE_URL"] = args.vllm_base_url
     if args.vllm_api_key:
         os.environ["VLLM_API_KEY"] = args.vllm_api_key
+    if args.ollama_base_url:
+        # Two names, one address: OLLAMA_BASE_URL is what the health check and the
+        # model pre-warm read, OLLAMA_HOST is what the `ollama` package resolves
+        # its client from. Setting only one leaves half the process pointing at
+        # the default localhost.
+        os.environ["OLLAMA_BASE_URL"] = args.ollama_base_url
+        os.environ["OLLAMA_HOST"] = args.ollama_base_url
 
     asyncio.run(serve(host=args.host, port=args.port, model=args.model))
 

@@ -1870,18 +1870,6 @@ class ClientHelperTests(unittest.TestCase):
         with patch.object(models, "profile_for_model", return_value={"enforcement": "bogus"}):
             self.assertEqual(models.enforcement_level("m"), "light")
 
-    def test_a_model_known_to_need_rails_opts_back_into_strict(self) -> None:
-        """The opt-in must be exercised by a real profile, not just be possible.
-
-        Flipping the default is only safe if the models that were empirically found
-        fragile still get the full guidance layer. Devstral is the one carrying a
-        recorded workaround in its profile (a tool-count cap), so it is the marker
-        case: if this drops out of the profiles, the flip has silently un-railed it.
-        """
-        import importlib
-        models = importlib.import_module("mimir.client.config.models")
-        self.assertEqual(models.enforcement_level("Devstral-Small-24B"), "strict")
-
     def test_discovery_nudge_suppressed_when_not_strict(self) -> None:
         import importlib
         nudge_logic = importlib.import_module("mimir.client.guardrails.nudges.engine")

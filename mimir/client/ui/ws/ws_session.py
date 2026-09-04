@@ -98,6 +98,7 @@ class _Session:
                 "model": self.worker.model,
                 "context_mode": self.worker.get_context_mode(),
                 "enforcement": self.worker.get_enforcement(),
+                "thinking": self.worker.get_thinking_profile(),
             }))
         except Exception:
             return

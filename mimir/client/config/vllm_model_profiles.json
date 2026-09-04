@@ -1,65 +1,73 @@
 {
-  "mistral":       { "tool_call_parser": "mistral" },
-  "devstral":      { "tool_call_parser": "mistral", "max_tools": 40, "enforcement": "strict" },
-  "mixtral":       { "tool_call_parser": "mistral" },
-  "codestral":     { "tool_call_parser": "mistral" },
-  "mathstral":     { "tool_call_parser": "mistral" },
-  "magistral":     { "tool_call_parser": "mistral" },
-  "pixtral":       { "tool_call_parser": "mistral" },
+  "_comment": [
+    "How each model family is told to reason.",
+    "",
+    "Nothing here describes how to *start* vLLM: --tool-call-parser and",
+    "--reasoning-parser are flags on your own `vllm serve` command line, and MIMIR",
+    "never sends them.",
+    "",
+    "THE DEFAULT COVERS MOST MODELS. MIMIR sends chat_template_kwargs.enable_thinking,",
+    "which thinking-capable chat templates read and other templates harmlessly ignore.",
+    "Qwen3 and its derivatives work this way and need no entry. The served name is",
+    "whatever --served-model-name says, so an unlisted name is the normal case, not an",
+    "error: it still gets its reasoning.",
+    "",
+    "AN ENTRY IS A DOCUMENTED EXCEPTION. Add one only for a family whose published",
+    "behaviour differs, and say in `note` where that was verified -- the default",
+    "already works, so an entry added on a hunch can only make things worse.",
+    "",
+    "  thinking: 'directive'  the family reads a trained-on line from the system",
+    "                         message and has no thinking kwarg. Give both strings in",
+    "                         thinking_directive.",
+    "  thinking: 'effort'     the family names a rung in a request param instead.",
+    "      effort_param       param carrying the rung (default 'reasoning_effort').",
+    "      effort_levels      the family's OWN ladder, weakest first. Ladders are not",
+    "                         universal -- low/medium/high is OpenAI's, while DeepSeek",
+    "                         and GLM use low/high/max -- and an unknown value lands",
+    "                         on the template's fallback, silently ignoring the pick.",
+    "      toggle_param       param that switches reasoning off, where the family has",
+    "      toggle_values      one, with its {on, off} values. Without it the family",
+    "                         always reasons and the panel drops its 'off' rung.",
+    "",
+    "MATCHING is the longest key that prefixes the model name, its last path segment,",
+    "or any segment -- so 'gpt' matches 'openai/gpt-oss-120b'. '_' and '.' are the same",
+    "separator, so one family key covers 'Llama-3_1-...' and 'Llama-3.1-...' alike.",
+    "",
+    "Two optional per-model knobs are also read from here and unset by default:",
+    "max_tools (cap on tools exposed per query) and enforcement ('strict'|'light'|'off')."
+  ],
 
-  "qwen3.8":       { "tool_call_parser": "qwen3_xml",   "supports_thinking": true, "reasoning_parser": "qwen3" },
-  "qwen3-coder":   { "tool_call_parser": "qwen3_coder" },
-  "qwen3":         { "tool_call_parser": "hermes",      "supports_thinking": true, "reasoning_parser": "qwen3" },
-  "qwen2.5-coder": { "tool_call_parser": "hermes" },
-  "qwen2.5":       { "tool_call_parser": "hermes" },
-  "qwen2":         { "tool_call_parser": "hermes" },
-  "qwq":           { "tool_call_parser": "hermes",      "supports_thinking": true, "reasoning_parser": "qwen3" },
+  "deepseek-v4": {
+    "thinking": "effort",
+    "effort_levels": ["low", "high", "max"],
+    "toggle_param": "thinking_mode",
+    "toggle_values": { "on": "thinking", "off": "chat" },
+    "note": "Verified in the model card and encoding/README.md of DeepSeek-V4-Pro-0813: the release ships no Jinja chat template, reasoning_effort takes low/high/max (realised as a prompt prefix), and thinking_mode='chat' closes the think block so no reasoning is produced. It does not read enable_thinking. Earlier DeepSeek lines are not covered by this key and fall back to the default."
+  },
 
-  "llama-4":       { "tool_call_parser": "llama4_json" },
-  "llama4":        { "tool_call_parser": "llama4_json" },
-  "llama-3_1-nemotron": { "tool_call_parser": "llama3_json",
-                          "thinking_directive": { "on": "detailed thinking on", "off": "detailed thinking off" } },
-  "llama-3":       { "tool_call_parser": "llama3_json" },
-  "llama3":        { "tool_call_parser": "llama3_json" },
-  "llama":         { "tool_call_parser": "llama3_json" },
-  "meta-llama":    { "tool_call_parser": "llama3_json" },
+  "glm-5.3": {
+    "thinking": "effort",
+    "effort_levels": ["low", "high"],
+    "note": "Verified in GLM-5.3-Flash's chat_template.jinja: `reasoning_effort if ... in ['low','high'] else 'max'`. Only low and high are selectable -- anything else, including OpenAI's 'medium', silently becomes 'max'. The template always emits a Reasoning Effort line, so reasoning cannot be switched off. Earlier GLM lines are not covered by this key."
+  },
 
-  "nemotron-3":    { "tool_call_parser": "qwen3_coder", "supports_thinking": true, "reasoning_parser": "nemotron_v3" },
-  "nemotron":      { "tool_call_parser": "qwen3_coder", "supports_thinking": true, "reasoning_parser": "nemotron_v3" },
-  "minitron":      { "tool_call_parser": "hermes" },
+  "gpt": {
+    "thinking": "effort",
+    "note": "gpt-oss reasons over harmony channels. Its template takes reasoning_effort on the OpenAI low/medium/high ladder and ignores enable_thinking; there is no way to switch reasoning off."
+  },
+  "openai": {
+    "thinking": "effort",
+    "note": "Same family under its publisher prefix, e.g. openai/gpt-oss-120b."
+  },
 
-  "gemma4":        { "tool_call_parser": "gemma4", "supports_thinking": true, "reasoning_parser": "gemma4" },
-  "gemma":         { "tool_call_parser": "pythonic" },
-
-  "deepseek-r1":    { "tool_call_parser": "deepseek_v31", "supports_thinking": true, "reasoning_parser": "deepseek_r1" },
-  "deepseek-v3":    { "tool_call_parser": "deepseek_v3" },
-  "deepseek-v4":    { "tool_call_parser": "deepseek_v4", "supports_thinking": true, "reasoning_parser": "deepseek_v4" },
-  "deepseek-coder": { "tool_call_parser": "hermes" },
-  "deepseek":       { "tool_call_parser": "hermes" },
-
-  "granite-20b":   { "tool_call_parser": "granite-20b-fc" },
-  "granite":       { "tool_call_parser": "granite" },
-
-  "phi-4":         { "tool_call_parser": "hermes" },
-  "phi-3":         { "tool_call_parser": "hermes" },
-  "phi":           { "tool_call_parser": "hermes" },
-
-  "command-a":     { "tool_call_parser": "cohere_command3" },
-  "command-r":     { "tool_call_parser": "cohere_command3" },
-  "command":       { "tool_call_parser": "cohere_command3" },
-  "aya":           { "tool_call_parser": "hermes" },
-
-  "hunyuan":       { "tool_call_parser": "hunyuan_a13b" },
-
-  "kimi":          { "tool_call_parser": "kimi_k2" },
-
-  "internlm":      { "tool_call_parser": "internlm" },
-  "internvl":      { "tool_call_parser": "hermes" },
-
-  "xlam":          { "tool_call_parser": "xlam" },
-
-  "grok":          { "tool_call_parser": "hermes" },
-
-  "gpt":           { "tool_call_parser": "openai", "reasoning_parser": "openai_gptoss" },
-  "openai":        { "tool_call_parser": "openai", "reasoning_parser": "openai_gptoss" }
+  "llama-3.1-nemotron": {
+    "thinking": "directive",
+    "thinking_directive": { "on": "detailed thinking on", "off": "detailed thinking off" },
+    "note": "NVIDIA's Llama-Nemotron series (Nano 8B, Super 49B, Ultra 253B) is trained to switch on these exact system-message lines. Verified on the published tokenizer_config: its chat template reads NO thinking variable at all and passes the system message through, so the line is the only switch. This is NVIDIA's post-training convention, not a Llama one -- stock Meta Llama 3.x does not reason and must not get the directive."
+  },
+  "llama-3.3-nemotron": {
+    "thinking": "directive",
+    "thinking_directive": { "on": "detailed thinking on", "off": "detailed thinking off" },
+    "note": "Same family, 3.3 generation (Super 49B)."
+  }
 }

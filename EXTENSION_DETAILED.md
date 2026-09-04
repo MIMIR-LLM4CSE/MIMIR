@@ -14,17 +14,19 @@ The VS Code extension lives in `mimir/vscode-extension/`. It has two independent
 
 | Layer | Path | Language | Role |
 |-------|------|----------|------|
-| Extension host | `src/extension.ts` | TypeScript (Node.js) | Spawns the Python WS server, opens SSH/SLURM tunnels, bridges WebSocket ↔ webview postMessage |
+| Extension host | `src/extension.ts` | TypeScript (Node.js) | Spawns the Python WS server, reads the endpoint's model list (`src/modelList.ts`), bridges WebSocket ↔ webview postMessage |
 | Webview (React) | `webview/src/` | TypeScript + React | Chat UI, approval cards, diff bars, session panel |
 
 After changing any file under `webview/src/` run:
 ```bash
 cd mimir/vscode-extension
-npm run build        # production bundle
+npm run deploy       # production bundle + install/update in VS Code
 # or
-npm run watch        # incremental rebuild on every save
+npm run dev          # incremental rebuild on every save
 ```
 The bundle is written to `dist/webview.js` which the extension host injects into the webview HTML.
+`npm run deploy` then copies it over the installed extension; reload the VS Code window to
+pick it up.
 
 ---
 
@@ -51,6 +53,29 @@ webview handleServerMessage() → React state update → render
 ```
 
 Every Python→frontend message is a JSON object with a `type` field. The full set is defined in `webview/src/types.ts` as the `ServerMessage` discriminated union.
+
+Five message types never reach Python — the extension host answers them itself, before
+any server exists:
+
+| Message | Direction | Meaning |
+|---|---|---|
+| `get_config` | webview → host | Send the connect form its starting values |
+| `config` | host → webview | Those values: `backend`, `vllmBaseUrl`, `ollamaBaseUrl`, `anthropicModels` |
+| `fetch_models` | webview → host | `{backend, baseUrl}` — read the model list from that endpoint |
+| `models` | host → webview | `{backend, models, error?}` — the result, or why it failed |
+| `connect` | webview → host | `{model, backend, baseUrl, anthropicApiKey?}` — start the WS server and attach |
+
+`fetch_models` runs in the host rather than in React because the webview's CSP allows
+only `connect-src ws://localhost:*`; the fetch itself lives in `src/modelList.ts`
+(`modelsUrl` / `parseModels` are pure and unit-tested in `src/modelList.test.ts`).
+
+The Python `ready` message then carries a `thinking` descriptor —
+`{mechanism, levels, can_disable}` from `thinking_profile()` in
+`client/config/models.py` — and `AgentSettings.buildScale()` turns it into the depth
+control's rungs. The rungs are the served family's own (a token ladder for
+`enable_thinking` models, the family's named effort levels otherwise), and the value
+sent back is always a `THINKING_DEPTH` index, so the rest of the protocol is
+unchanged.
 
 There are two emission paths into the WS layer. Messages originated by `ws_server.py` itself (session lifecycle, errors, todos, context-usage) are sent directly via `await self.ws.send(...)` or placed on `out_q`. Structured events originated by the **engine** (`status` / `tool_call` / `tool_result` / `diff` / `file_access`, plus streamed `token` / `thinking`) flow through callbacks instead of stdout: `_run_query()` binds an `event_callback` (and the token callbacks) that put the event dict straight onto `out_q`, which the drain loop forwards to the WebSocket. The engine calls `emit()` (`event_sink.py`); when no callback is bound — e.g. the CLI front-end — `emit()` prints the event as a JSON line, preserving the original behaviour. The legacy `sys.stdout` router is retained only as a defensive catch-all for stray prints.
 
@@ -81,7 +106,7 @@ webview/src/
     │                            each row shows a model-generated one-sentence description of the session
     │                            (a hand-picked rename wins over it), and selecting a row opens it and
     │                            closes the panel
-    ├── ConnectForm.tsx        ← Connection form (local / SLURM)
+    ├── ConnectForm.tsx        ← Connection form (backend · address · model)
     ├── ModeSwitcher.tsx       ← Standalone mode button + picker (agent/plan/ask, each with a
     │                            description); the active mode colours the chat — blue agent,
     │                            red plan, green ask (`data-mode` on `.app` → `--mode-accent`)
@@ -130,6 +155,8 @@ vitest (`mentionUtils.test.ts`, `slashUtils.test.ts`).
 | `todos` | `TodoItem[]` | Current todo/plan items |
 | `sessions` | `SessionMeta[]` | Session list from the server |
 | `activeSessionId` | `string \| null` | Currently active session |
+| `endpointModels` | `string[]` | Models the endpoint reports it serves; fills the connect dropdown (with `modelsLoading` / `modelsError`) |
+| `thinkingProfile` | `ThinkingProfile \| undefined` | How the served model switches reasoning, from `ready`; decides which rungs the depth control offers |
 
 ---
 
@@ -334,5 +361,5 @@ In any component that receives `send` as a prop:
 
 ```bash
 cd mimir/vscode-extension
-npm run build          # one-shot production build
+npm run deploy         # one-shot production build + install/update in VS Code
 ```

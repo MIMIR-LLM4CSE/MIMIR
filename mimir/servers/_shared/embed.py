@@ -59,25 +59,6 @@ def _timeout() -> float:
         return 10.0
 
 
-def _resolve_host(base_url: str) -> str:
-    """Replace 127.0.0.1/localhost with the node's real hostname so HPC
-    reverse-proxies that intercept loopback addresses are bypassed.
-
-    Single source of truth — the vLLM chat backend re-exports this.
-    """
-    import socket
-    from urllib.parse import urlparse, urlunparse
-    parsed = urlparse(base_url)
-    if parsed.hostname in ("127.0.0.1", "localhost"):
-        node_host = socket.getfqdn()
-        if node_host in ("localhost", "localhost.localdomain"):
-            node_host = socket.gethostname()
-        netloc = f"{node_host}:{parsed.port}" if parsed.port else node_host
-        parsed = parsed._replace(netloc=netloc)
-        base_url = urlunparse(parsed)
-    return base_url
-
-
 def verify_ssl() -> bool:
     """Whether to verify TLS certs when talking to the vLLM endpoint.
 
@@ -105,7 +86,6 @@ def _embed_vllm(texts: list[str], model: str) -> list[list[float]]:
         "VLLM_BASE_URL", "http://127.0.0.1:8000"
     )
     api_key = os.environ.get("VLLM_API_KEY", "EMPTY")
-    base = _resolve_host(base)
     if not base.rstrip("/").endswith("/v1"):
         base = base.rstrip("/") + "/v1"
     url = base.rstrip("/") + "/embeddings"

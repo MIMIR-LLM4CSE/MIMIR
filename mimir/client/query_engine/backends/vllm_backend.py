@@ -17,8 +17,8 @@ from ..history import reconcile_tool_pairs
 
 
 # Single source of truth in _shared so the embedding helper (which runs in the
-# separate MCP server processes too) shares the exact same HPC host-resolution.
-from ....servers._shared.embed import _resolve_host, verify_ssl
+# separate MCP server processes too) applies the exact same TLS policy.
+from ....servers._shared.embed import verify_ssl
 
 
 def _get_vllm_config() -> tuple[str, str]:
@@ -31,8 +31,6 @@ def _get_vllm_config() -> tuple[str, str]:
     except ImportError:
         base_url = os.environ.get("VLLM_BASE_URL", "http://127.0.0.1:8000")
         api_key = os.environ.get("VLLM_API_KEY", "EMPTY")
-    # Replace loopback with the real node hostname to bypass HPC proxies.
-    base_url = _resolve_host(base_url)
     # The openai client appends /chat/completions to base_url, so it must
     # end with /v1 (e.g. http://<node>:8000/v1).
     if not base_url.rstrip("/").endswith("/v1"):
@@ -121,74 +119,133 @@ def _answer_max_tokens(mml: int, prompt_tokens: int) -> int:
     return min(remaining, int(mml * CTX_RESERVED_RATIO))
 
 
-# Profile keys that configure how vLLM is *launched* (`vllm serve` flags), read
-# straight from vllm_model_profiles.json by the VS Code extension. They must NOT be
-# forwarded in a chat request's extra_body, where vLLM has no such parameters.
-_LAUNCH_ONLY_PROFILE_KEYS: frozenset[str] = frozenset({
-    "tool_call_parser", "reasoning_parser", "async-scheduling",
-    # Client-only knobs consumed by the agent loop / config, never valid as vLLM
-    # request sampling params — must be stripped from extra_body.
-    "max_tools", "thinking_directive",
-})
+# Models whose chat template rejected `chat_template_kwargs` outright, so we stop
+# sending them. Keyed by model name; populated by `_create` on the one 400 it takes
+# to find out. Most templates ignore a kwarg they don't know, so this stays empty.
+_NO_TEMPLATE_KWARGS: set[str] = set()
 
 
-def _model_extra_body(model: str) -> dict:
-    """Return the request-time ``extra_body`` settings for *model*.
+# The thinking kwargs, as opposed to the structural ones (continue_final_message /
+# add_generation_prompt) that a request may genuinely need to be accepted at all.
+_THINKING_TEMPLATE_KWARGS = ("enable_thinking", "thinking_budget")
 
-    Derived from the matching ``VLLM_MODEL_PROFILES`` entry (longest case-insensitive
-    prefix, so e.g. ``mistral-medium-3.5:128b`` matches ``mistral``). Launch-only
-    flags (see ``_LAUNCH_ONLY_PROFILE_KEYS``) are stripped: they belong to the server
-    start-up command, not to per-request bodies. Request-relevant keys such as
-    ``supports_thinking`` are kept for the caller to consume.
+
+def _drop_thinking_kwargs(create_kwargs: dict) -> bool:
+    """Remove the thinking kwargs from the request. True if anything was removed."""
+    ctk = create_kwargs.get("extra_body", {}).get("chat_template_kwargs")
+    if not ctk:
+        return False
+    dropped = [ctk.pop(k) for k in _THINKING_TEMPLATE_KWARGS if k in ctk]
+    if not ctk:
+        create_kwargs["extra_body"].pop("chat_template_kwargs", None)
+        if not create_kwargs["extra_body"]:
+            create_kwargs.pop("extra_body")
+    return bool(dropped)
+
+
+def _create(client, create_kwargs: dict):
+    """POST the chat request, retrying once without the thinking template kwargs.
+
+    Sending `enable_thinking` to every model is what makes reasoning work on a model
+    we have no profile for, and a template that doesn't know the kwarg ignores it.
+    A rare template errors instead — so absorb that one 400, remember the model, and
+    never pay it again. Structural kwargs (`continue_final_message`) are kept: they
+    are what makes the request valid in the first place. Any other failure
+    propagates untouched.
     """
+    model = create_kwargs.get("model", "")
+    if model in _NO_TEMPLATE_KWARGS:
+        _drop_thinking_kwargs(create_kwargs)
     try:
-        from ...config.models import VLLM_MODEL_PROFILES
-        profiles = VLLM_MODEL_PROFILES
-    except ImportError:
+        return client.chat.completions.create(**create_kwargs)
+    except Exception as exc:
+        if getattr(exc, "status_code", None) != 400:
+            raise
+        msg = str(exc).lower()
+        if "template" not in msg and "kwarg" not in msg:
+            raise
+        if not _drop_thinking_kwargs(create_kwargs):
+            raise
+        _NO_TEMPLATE_KWARGS.add(model)
+        return client.chat.completions.create(**create_kwargs)
+
+
+def _effort_level(levels: list[str], budget: int | None) -> str:
+    """Pick a rung from *levels* (weakest first) for a thinking-depth budget.
+
+    The depth ladder is expressed in tokens and an effort ladder is not, so the map
+    is by position: the cheapest rung for a small budget, the dearest for a large one,
+    the middle for "model-chosen"/unlimited (-1), which is the only reading an effort
+    scale can give a budget it cannot express.
+    """
+    if not levels:
+        return ""
+    if budget is None or budget < 0:
+        return levels[len(levels) // 2]
+    if budget <= 512:
+        return levels[0]
+    if budget <= 4096:
+        return levels[len(levels) // 2]
+    return levels[-1]
+
+
+def _thinking_extra_body(model: str, thinking: bool, options: dict) -> dict:
+    """Build the request fields that switch *model*'s reasoning on or off.
+
+    Nothing is forwarded blindly from the profile: profile entries are descriptors
+    and client-side knobs, and would 400 or mislead if they reached vLLM as request
+    params. Only the fields the family actually declares are ever sent.
+    """
+    from ...config.models import thinking_profile
+
+    profile = thinking_profile(model)
+    mechanism = profile["mechanism"]
+    # -1 and 0 are our own sentinels for "model-chosen"/"unlimited", not token counts:
+    # forwarding them would ask the template for a budget of minus one token.
+    budget = options.get("thinking_budget")
+    if budget is not None and budget <= 0:
+        budget = None
+
+    if mechanism == "effort":
+        body: dict = {}
+        toggle = profile["toggle_param"]
+        if toggle:
+            body[toggle] = profile["toggle_values"]["on" if thinking else "off"]
+        # The rung is meaningless while reasoning is off, and a family without a
+        # toggle cannot be switched off at all — it still gets its weakest rung.
+        if thinking or not toggle:
+            level = _effort_level(profile["levels"], budget if thinking else 0)
+            if level:
+                body[profile["effort_param"]] = level
+        return body
+
+    if mechanism == "directive":
+        # Steered by a line in the system message (see _apply_thinking_directive);
+        # its template has no kwarg to set.
         return {}
 
-    model_lower = model.lower().replace("\\", "/").strip()
-    parts = [p for p in model_lower.split("/") if p]
-    candidates: list[str] = [model_lower]
-    if parts:
-        candidates.append(parts[-1])
-        candidates.extend(parts)
-
-    # Pick the longest matching prefix across all candidates.
-    best_key = max(
-        (
-            k
-            for k in profiles
-            if any(c.startswith(k.lower()) for c in candidates)
-        ),
-        key=len,
-        default=None,
-    )
-    if best_key is None:
-        # No profile match — the parser is a launch-only concern, so there is
-        # nothing request-relevant to send.
-        return {}
-    # Deep-copy so callers can mutate safely, then drop launch-only flags.
-    import copy
-    profile = copy.deepcopy(profiles[best_key])
-    return {k: v for k, v in profile.items() if k not in _LAUNCH_ONLY_PROFILE_KEYS}
+    # "kwarg" — the default. Send enable_thinking EXPLICITLY so "off" truly disables
+    # reasoning: most thinking-capable templates default it to True when omitted.
+    ctk: dict = {"enable_thinking": bool(thinking)}
+    if thinking and budget is not None:
+        ctk["thinking_budget"] = budget
+    return {"chat_template_kwargs": ctk}
 
 
 def _thinking_directives(model: str) -> dict:
-    """Return *model*'s ``thinking_directive`` mapping (``{"on": ..., "off": ...}``), or {}.
+    """Return *model*'s ``thinking_directive`` mapping (``{"on": ..., "off": ...}``).
 
-    Most thinking-capable templates take an ``enable_thinking`` kwarg (see
-    ``supports_thinking``). A few take nothing at all and are steered purely by a
-    literal string in the system message — Llama-3.1-Nemotron-Ultra was trained on
-    ``detailed thinking on`` / ``detailed thinking off``. Such models need this knob
-    instead, and must NOT set ``supports_thinking``, whose kwarg they would ignore.
+    Most thinking-capable templates take an ``enable_thinking`` kwarg (the default
+    ``"kwarg"`` mechanism). A few take nothing at all and are steered purely by a
+    literal string in the system message; those declare ``"thinking": "directive"``
+    plus the pair of strings, so the kwarg they would ignore is not sent instead.
+    Empty when the model uses another mechanism, in which case no message is touched.
     """
     try:
-        from ...config.models import profile_for_model
+        from ...config.models import thinking_profile
     except ImportError:
         return {}
-    directives = profile_for_model(model).get("thinking_directive")
-    return directives if isinstance(directives, dict) else {}
+    return thinking_profile(model)["directive"]
 
 
 def _apply_thinking_directive(
@@ -196,13 +253,15 @@ def _apply_thinking_directive(
 ) -> list[dict]:
     """Put the on/off directive at the head of the system message.
 
-    Nemotron-Ultra's template only falls back to its ``detailed thinking on`` default
-    when there is *no* system message; ours always replaces it, which silently turns
-    reasoning off. So the directive has to be injected into the system message we send,
-    as its first line — the position the model was trained on.
+    For the ``directive`` mechanism: a chat template that takes no thinking kwarg and
+    reads a trained-on line from the system message instead. Such templates typically
+    apply their own default only when there is *no* system message at all — and MIMIR
+    always sends one — so the line has to go inside the message we send, first, which
+    is the position it was trained on.
 
-    Any directive left over from an earlier turn is stripped first, so toggling
-    thinking on and off across a conversation cannot stack contradictory lines.
+    Both strings come from the model's profile; this function names no model and has
+    no default. Any directive left from an earlier turn is stripped first, so toggling
+    thinking across a conversation cannot stack contradictory lines.
     """
     wanted = str(directives.get("on" if thinking else "off") or "")
     if not wanted:
@@ -467,24 +526,9 @@ class VllmBackend(LLMBackend):
         tool_calls_parts: list[dict] = []
         final_msg: dict = {}
 
-        # Start from the model's profile (tool-call style, etc.) then overlay
-        # any call-specific overrides (e.g. thinking_budget).
-        extra_body: dict = _model_extra_body(model)
-        if extra_body.pop("supports_thinking", False):
-            # Send enable_thinking EXPLICITLY so "off" truly disables reasoning: it is
-            # the de-facto standard kwarg across thinking-capable vLLM templates (Qwen3,
-            # DeepSeek-R1, GLM, Nemotron), and most default it to True when omitted.
-            ctk = extra_body.setdefault("chat_template_kwargs", {})
-            ctk["enable_thinking"] = bool(thinking)
-            if thinking:
-                thinking_budget = options.get("thinking_budget")
-                if thinking_budget is not None and thinking_budget != 0:
-                    ctk["thinking_budget"] = thinking_budget
-        else:
-            thinking_budget = options.get("thinking_budget")
-            if thinking and thinking_budget is not None and thinking_budget != 0:
-                ctk = extra_body.setdefault("chat_template_kwargs", {})
-                ctk["thinking_budget"] = thinking_budget
+        # How this model is told to reason (enable_thinking / reasoning_effort /
+        # a system-message directive applied further down).
+        extra_body: dict = _thinking_extra_body(model, thinking, options)
 
         # top_k is not an OpenAI-standard sampling param; vLLM accepts it via
         # extra_body. Forward it when callers (e.g. plan mode) request it so the
@@ -544,7 +588,7 @@ class VllmBackend(LLMBackend):
             create_kwargs["max_tokens"] = max(1, int(max_tokens))
 
         if streaming:
-            response = client.chat.completions.create(**create_kwargs)
+            response = _create(client, create_kwargs)
             for chunk in response:
                 if cancel_flag is not None and cancel_flag.is_set():
                     raise asyncio.CancelledError("Cancelled by user")
@@ -612,7 +656,7 @@ class VllmBackend(LLMBackend):
                 think_end_callback()
 
         else:
-            response = client.chat.completions.create(**create_kwargs)
+            response = _create(client, create_kwargs)
             choice = response.choices[0] if response.choices else None
             if choice:
                 msg = choice.message

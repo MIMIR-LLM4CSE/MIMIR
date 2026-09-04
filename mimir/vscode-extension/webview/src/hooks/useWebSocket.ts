@@ -23,7 +23,8 @@ export interface UseWebSocketOptions {
 export interface UseWebSocketResult {
   send: (msg: ClientMessage) => void;
   close: () => void;
-  connect: (model: string, loginNode: string | undefined, slurmArgs: string, backend?: string, vllmBaseUrl?: string, vllmPath?: string, ollamaPath?: string, vllmMode?: "launch" | "connect", anthropicApiKey?: string) => void;
+  connect: (model: string, backend: string, baseUrl: string, anthropicApiKey?: string) => void;
+  fetchModels: (backend: string, baseUrl: string) => void;
   disconnect: () => void;
   getConfig: () => void;
   createSession: () => void;
@@ -86,8 +87,12 @@ export function useWebSocket({
     _vscode?.postMessage({ type: "disconnect" });
   }, []);
 
-  const connect = useCallback((model: string, loginNode: string | undefined, slurmArgs: string, backend?: string, vllmBaseUrl?: string, vllmPath?: string, ollamaPath?: string, vllmMode?: "launch" | "connect", anthropicApiKey?: string) => {
-    _vscode?.postMessage({ type: "connect", model, profile: { loginNode, slurmArgs }, backend, vllmBaseUrl, vllmPath, ollamaPath, vllmMode, anthropicApiKey });
+  const connect = useCallback((model: string, backend: string, baseUrl: string, anthropicApiKey?: string) => {
+    _vscode?.postMessage({ type: "connect", model, backend, baseUrl, anthropicApiKey });
+  }, []);
+
+  const fetchModels = useCallback((backend: string, baseUrl: string) => {
+    _vscode?.postMessage({ type: "fetch_models", backend, baseUrl });
   }, []);
 
   const getConfig = useCallback(() => {
@@ -110,6 +115,6 @@ export function useWebSocket({
     _vscode?.postMessage({ type: "ws_send", payload: JSON.stringify({ type: "rename_session", session_id: sessionId, title }) });
   }, []);
 
-  return { send, close, connect, disconnect, getConfig, createSession, switchSession, deleteSession, renameSession };
+  return { send, close, connect, fetchModels, disconnect, getConfig, createSession, switchSession, deleteSession, renameSession };
 }
 

@@ -13,8 +13,7 @@ Step-by-step instructions to go from a fresh clone to a running agent.
 | Python ≥ 3.10 | Any CPython distribution |
 | Git | For cloning and the GitHub MCP server |
 | Node.js ≥ 18 + npm | Only for the VS Code extension |
-| Docker | Optional — only for the container image (§2c) |
-| An LLM backend | Ollama **or** a running vLLM endpoint (see §3) |
+| An LLM server | A running vLLM or Ollama endpoint you can reach over HTTP, or an Anthropic API key (see §3) |
 
 ---
 
@@ -26,21 +25,26 @@ MIMIR is a normal Python package. Installing it pulls in everything the agent
 
 ### 2a. Quick install (recommended)
 
-The convenience script creates a virtualenv, installs the package with the `vllm`
-extra, and runs a smoke test:
+One script: it creates a virtualenv, installs the package with the `vllm` extra,
+runs a smoke test, and — when `npm` is available — builds and installs the VS Code
+extension too.
 
 ```bash
 git clone https://github.com/MIMIR-LLM4CSE/MIMIR.git
 cd MIMIR
-./install.sh                 # -> .venv, `mimir` + `mimir-server` commands
+./install.sh                 # -> .venv, `mimir` + `mimir-server`, VS Code extension
 source .venv/bin/activate
 ```
 
-Override the target venv or extras if needed:
+Override the target venv, the extras, or skip the extension:
 
 ```bash
 MIMIR_VENV=~/envs/mimir MIMIR_EXTRAS="vllm,dev" ./install.sh
+MIMIR_SKIP_EXTENSION=1 ./install.sh          # Python only
 ```
+
+A failing extension step never fails the install — the Python side is complete on
+its own, and the script prints the command to retry.
 
 ### 2b. Manual pip install
 
@@ -69,9 +73,16 @@ Optional extras (declared in `pyproject.toml`):
   ```bash
   pip install ".[finetune]"
   ```
-- **`dev`** — `pytest` for running the test suite (`pytest` from the repo root; the
-  tests are plain `unittest` cases, so `python -m unittest discover mimir/tests` also
-  works without this extra).
+- **`dev`** — `pytest` and `ruff`, the two checks CI runs:
+  ```bash
+  pip install -e ".[dev]"
+  pytest                       # test suite (from the repo root)
+  ruff check .                 # lint; `--fix` applies the safe fixes
+  ```
+  The tests are plain `unittest` cases, so `python -m unittest discover mimir/tests`
+  also works without this extra; `ruff` has no stdlib equivalent. The rule set is
+  narrow on purpose (`[tool.ruff.lint]` in `pyproject.toml`): the families that catch
+  a defect, not the ones that impose a house style.
 - **Code-intelligence & validation binaries.** The `code_intel` server uses external
   language servers / tools when present (`pyright`/`pylsp`, `clangd`, `ctags`) and
   degrades to a text scan when absent. The mandatory check needs nothing installed —
@@ -86,81 +97,30 @@ Optional extras (declared in `pyproject.toml`):
 > the same core dependencies, but it does **not** register the `mimir` /
 > `mimir-server` commands — prefer `pip install .`.
 
-### 2c. Docker (reproducible, no local Python setup)
-
-```bash
-docker build -t mimir:latest .
-
-# Interactive CLI (mount the project you want to work on as the sandbox):
-docker run --rm -it -v "$PWD":/workspace \
-    -e LLM_BACKEND=vllm -e VLLM_BASE_URL=http://<node>:8000 \
-    mimir:latest mimir
-
-# WebSocket server for the VS Code extension:
-docker compose up mimir            # or: docker run ... -p 8765:8765 mimir:latest
-```
-
-The container supports the vLLM **connect** mode (attach to an already-running
-endpoint) and Ollama over the network. The SLURM **launch** mode is *not* available
-inside a container — it needs SSH access to a login node, so run that on a frontal
-node with the CLI / extension instead. See `docker-compose.yml` for the available
-environment variables.
-
 ---
 
-## 3. Choose and Configure an LLM Backend
+## 3. Point MIMIR at Your LLM Server
 
-Pick **one** backend: vLLM (OpenAI-compatible, GPU-served — best for HPC/SLURM, and the
-default) or Ollama (local, simplest for interactive use — set `LLM_BACKEND=ollama`).
+MIMIR does not start or schedule an LLM server — it talks to one that is already
+running. You supply its HTTP address, and nothing else.
+
+| Backend | What you provide | Default address |
+|---|---|---|
+| vLLM (default) | Address of the OpenAI-compatible endpoint | `http://127.0.0.1:8000` |
+| Ollama | Address of the Ollama API | `http://127.0.0.1:11434` |
+| Anthropic (Claude) | An API key — no address | — |
+
+In the VS Code extension (§6) you type the address into the Connect panel and the
+model dropdown fills itself from the endpoint. For the CLI and for headless runs,
+the same information comes from flags or environment variables (§4).
 
 ### vLLM (OpenAI-compatible endpoint)
 
-vLLM can be used in **two ways**, selectable in the Connect panel via **vLLM mode**
-(`mimir.vllmMode`):
-
-#### Option A — Launch on compute node (mode `launch`)
-
-The extension allocates a SLURM node and runs `vllm serve` there for you — use this
-when no vLLM is running yet. The agent process runs inside the SLURM job, so the GPU is
-fully available to the model.
-
-This path is **driven from the VS Code extension** (see §6). You provide, in
-`settings.json`:
-
-```jsonc
-{
-  "mimir.backend": "vllm",
-  "mimir.vllmMode": "launch",
-  "mimir.slurmEnabled": true,
-  "mimir.loginNode": "your-login-node",
-  "mimir.vllmPath": "vllm",                       // vllm binary on the compute node
-  "mimir.vllmSetupScript": "/path/to/vllm/setup.sh",  // sourced before launch (CUDA modules / venv)
-  "mimir.vllmModelsDir": "/path/to/models",       // root for relative model paths
-  "mimir.vllmAvailableModels": [
-    "mistralai/devstral-small-2-24b",
-    "meta/llama3-70b"
-  ],
-  "mimir.vllmExtraArgs": "--tensor-parallel-size 1",  // appended to the generated serve command
-  "mimir.clusterConfig": [ /* node-type form — see §6c */ ]
-}
-```
-
-Then pick the model in the Connect panel and launch — the extension SSHes to the login
-node, runs `salloc`, sources `vllmSetupScript`, starts `vllm serve <model>` (with the
-right tool-call / reasoning parser from `vllm_model_profiles.json`), and connects the
-WebSocket server once vLLM is ready. Use `mimir.vllmServeCommand` to fully override
-the generated command if you need to.
-
-#### Option B — Connect to running server (mode `connect`)
-
-vLLM is already running somewhere reachable; the agent just points at its address. No
-SLURM allocation is made — the WebSocket server runs on the frontal.
-
-First start (or reuse) vLLM on the serving node, binding to all interfaces so the
-frontal can reach it:
+Start vLLM wherever your GPUs are, binding to all interfaces so other machines can
+reach it:
 
 ```bash
-source /path/to/vllm/setup.sh   # load CUDA modules / venv
+source /path/to/vllm/setup.sh   # load CUDA modules / venv, if you need one
 vllm serve /path/to/model \
     --host 0.0.0.0 \
     --port 8000 \
@@ -170,36 +130,83 @@ vllm serve /path/to/model \
     # add --reasoning-parser deepseek_r1 for thinking-capable models
 ```
 
-Then point the agent at it. In the webview, pick vLLM → **Connect to running server**
-and enter the address — no model selection needed; the agent uses whatever the endpoint
-serves (resolved from `/v1/models`). Headless / CLI equivalent (run on the frontal):
+Check it from the machine that will run MIMIR — this is exactly what the extension
+asks for when it fills the model dropdown:
+
+```bash
+curl http://<host>:8000/v1/models
+```
+
+Then point the agent at it:
 
 ```bash
 mimir-server \
     --backend vllm \
-    --vllm-base-url http://<node-hostname>:8000
+    --vllm-base-url http://<host>:8000
     # `python -m mimir.client.ui.ws.ws_server ...` also works if not pip-installed
-    # --model is optional here; omit it to auto-select the served model
+    # --model is optional; omit it to use whatever the endpoint serves
 ```
 
 …or via environment variables:
 
 ```bash
 export LLM_BACKEND=vllm
-export VLLM_BASE_URL=http://<node-hostname>:8000   # use the node hostname, NOT 127.0.0.1
+export VLLM_BASE_URL=http://<host>:8000
 export VLLM_API_KEY=EMPTY      # leave as EMPTY unless your endpoint requires auth
 ```
 
-> Pass the explicit node hostname rather than `127.0.0.1`/`localhost`: the client only
-> rewrites loopback addresses to the local hostname (an HPC-proxy workaround), so a real
-> hostname is forwarded untouched. Verify reachability first with
-> `curl http://<node-hostname>:8000/v1/models`.
+The address is used exactly as given. If the endpoint is on the same machine,
+`http://127.0.0.1:8000` is fine.
 
-Per-model tool-call parser and chat-template overrides live in
-`mimir/client/config/vllm_model_profiles.json` — add a new entry there if you
-need to override the inferred parser or set `chat_template_kwargs` (e.g. `enable_thinking`).
+> **HTTPS behind a private CA.** Internal routes often carry a certificate the
+> system trust store doesn't know. Certificate verification is off by default
+> (`VLLM_VERIFY_SSL=0`); set `VLLM_VERIFY_SSL=1` when your endpoint has a publicly
+> trusted certificate. The extension exposes this as `mimir.vllmVerifySsl`.
 
-### Ollama (local, simplest for interactive use)
+`--tool-call-parser` and `--reasoning-parser` are yours to choose here: MIMIR never
+sends them, it only reads what your server produces. Consult vLLM's own docs for the
+parser your model needs.
+
+**Reasoning.** You choose nothing here — MIMIR works it out from the model the
+endpoint reports:
+
+1. it connects to the address you gave;
+2. it reads the served model name from `/v1/models`;
+3. it looks that name up in
+   [`vllm_model_profiles.json`](mimir/client/config/vllm_model_profiles.json) and
+   applies the reasoning mechanism of its **family**;
+4. it tells the panel which mechanism won, and the thinking-depth control adapts its
+   rungs — no token budget where the family has none, no "off" where the family
+   always reasons.
+
+The default is `chat_template_kwargs.enable_thinking`, which thinking-capable vLLM
+templates read and other templates ignore, so a model matching no family still gets
+its reasoning. Family keys match on a prefix and treat `_` and `.` as the same
+separator, so one entry covers every size and both spellings of a series.
+
+Families verified against their published chat template or model card:
+
+| Family | Mechanism | Rungs | Can turn reasoning off |
+|---|---|---|---|
+| Qwen3 and most others | `enable_thinking` kwarg | token budget | yes |
+| DeepSeek-V4 | `reasoning_effort` + `thinking_mode` | `low` `high` `max` | yes |
+| GLM-5.3 | `reasoning_effort` | `low` `high` | no — always reasons |
+| gpt-oss | `reasoning_effort` | `low` `medium` `high` | no — always reasons |
+| Llama-Nemotron 3.1 / 3.3 | `detailed thinking on`/`off` in the system message | on/off | yes |
+
+The rungs are per family on purpose: `low/medium/high` is OpenAI's ladder, not a
+standard. Sending `medium` to DeepSeek or GLM lands on their template's fallback and
+silently ignores what the user picked.
+
+Add an entry only for a family whose published behaviour differs, and record in its
+`note` where you verified it — the default already works, so an entry added on a hunch
+can only make things worse. That file also carries the optional per-model `max_tools`
+and `enforcement` knobs, unset by default.
+
+To see reasoning rendered as a thinking block rather than inline text, start vLLM with
+the matching `--reasoning-parser`.
+
+### Ollama
 
 1. Install Ollama: https://ollama.com/
 2. Pull a model that fits your VRAM:
@@ -211,29 +218,50 @@ need to override the inferred parser or set `chat_template_kwargs` (e.g. `enable
    ollama pull nemotron-3-super:120b            # ~86 GB — best results
    ```
 
-3. Confirm Ollama is running:
+3. Confirm it is serving:
 
    ```bash
-   ollama list        # should show pulled models
-   curl http://127.0.0.1:11434/api/tags    # API health check
+   ollama list                              # pulled models
+   curl http://127.0.0.1:11434/api/tags     # what MIMIR reads for its dropdown
    ```
 
-`OLLAMA_BASE_URL` can point at a remote host (or a SLURM-launched Ollama via the
-extension's `mimir.ollamaSetupScript`); it defaults to `http://127.0.0.1:11434`.
+4. Point the agent at it:
+
+   ```bash
+   mimir-server --backend ollama --ollama-base-url http://<host>:11434
+   # or: export LLM_BACKEND=ollama OLLAMA_BASE_URL=http://<host>:11434
+   ```
+
+An Ollama server on another host needs `OLLAMA_HOST=0.0.0.0` in *its own*
+environment to accept remote connections.
+
+### Anthropic (hosted Claude API)
+
+No server to run. Export a key, or paste one into the Connect panel (it is passed to
+the server process in-memory and never written to disk):
+
+```bash
+export ANTHROPIC_API_KEY=sk-ant-...
+mimir-server --backend anthropic --model claude-sonnet-5
+```
 
 ---
 
 ## 4. Environment Variables
 
-Set these in your shell profile (`.bashrc`, `.zshrc`) or in the SLURM job script.
+Set these in your shell profile (`.bashrc`, `.zshrc`) or in the job script. The
+VS Code extension sets the backend and address ones itself from the Connect form.
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `LLM_BACKEND` | `vllm` | `vllm` or `ollama` |
+| `LLM_BACKEND` | `vllm` | `vllm`, `ollama`, or `anthropic` |
 | `MIMIR_DEFAULT_MODEL` | *(empty)* | Model selected at startup; overridden by `--model` flag or the UI |
-| `OLLAMA_BASE_URL` | `http://127.0.0.1:11434` | Ollama API endpoint |
+| `OLLAMA_BASE_URL` | `http://127.0.0.1:11434` | Ollama API endpoint (`--ollama-base-url` sets this and `OLLAMA_HOST` together) |
 | `VLLM_BASE_URL` | `http://127.0.0.1:8000` | vLLM API base URL |
 | `VLLM_API_KEY` | `EMPTY` | API key for vLLM calls |
+| `VLLM_VERIFY_SSL` | `0` | Verify the vLLM endpoint's TLS certificate. Off by default so an internal HTTPS route behind a private CA works out of the box |
+| `ANTHROPIC_API_KEY` | *(none)* | Key for the `anthropic` backend |
+| `MIMIR_PYTHON` | *(none)* | Interpreter the VS Code extension starts the WS server with, when `~/.mimir/python` is absent or wrong |
 | `MIMIR_EMBED_MODEL` | *(empty; `nomic-embed-text` on Ollama)* | Embedding model for semantic memory search & tool ranking. **Required for vLLM** (the served model name, e.g. `BAAI/bge-m3`). Empty + vLLM ⇒ semantic path disabled, lexical fallback used. |
 | `MIMIR_EMBED_BASE_URL` | *(falls back to `VLLM_BASE_URL`)* | Serve embeddings from a separate endpoint than the chat model (vLLM only) |
 | `MIMIR_EMBED_TIMEOUT` | `10` | HTTP timeout (seconds) for the vLLM embeddings call |
@@ -295,114 +323,88 @@ Type `/help` at the prompt for the in-session commands (`/mode`, `/think`,
 
 ## 6. VS Code Extension (Recommended)
 
-The extension provides a chat panel with model/cluster selection, streaming output,
+The extension provides a chat panel with model selection, streaming output,
 approval dialogs, and tool-status indicators.
 
-### 6a. Build the Extension
+### 6a. Install It
 
 ```bash
 cd mimir/vscode-extension
 npm install
-npm run build          # compiles TypeScript + bundles the webview
+npm run deploy
 ```
 
-### 6b. Install into VS Code
+`npm run deploy` builds the bundle and then either installs the extension (first
+run: it packages a `.vsix` and installs it with the `code` CLI) or copies the new
+build over the installed one (every run after that). Either way, reload the VS Code
+window afterwards: `Ctrl+Shift+P` → *Developer: Reload Window*.
 
-**Option 1 — Dev mode (no packaging needed):**
+`./install.sh` (§2a) already does this — run it by hand when you have rebuilt the
+extension and want the change live.
 
-Open `mimir/vscode-extension` in VS Code and press `F5` (Run Extension).
+Other scripts: `npm run dev` rebuilds on save, `npm test` runs the unit tests, and
+`npm run package` produces a `.vsix` without installing it (for `code
+--install-extension mimir-*.vsix` on another machine). For extension development,
+opening `mimir/vscode-extension` in VS Code and pressing `F5` launches a second
+window running it from source.
 
-**Option 2 — Package and install:**
+### 6b. Connect
 
-```bash
-npm run package                    # produces mimir-<version>.vsix (uses @vscode/vsce)
-code --install-extension mimir-*.vsix
-```
+Open the MIMIR panel, and in the Connect form:
 
-### 6c. Configure in `.vscode/settings.json`
+1. **Backend** — vLLM, Ollama, or Anthropic (Claude).
+2. **Address** — where that server is running, e.g. `http://10.0.0.4:8000`. The
+   model dropdown fills itself from it; the ⟳ button re-reads it.
+3. **Model** — one of the models the endpoint reports. For Anthropic, an API key
+   field replaces the address.
+4. **Connect** — the extension starts the WS server locally and attaches to it.
 
-These settings are user/platform-specific and must be added to the workspace
-`.vscode/settings.json` (or VS Code User settings). They are **not** committed
-with the extension source.
+That is the whole configuration: a working setup needs **no `.vscode/settings.json`**.
 
-```jsonc
-{
-  // ── Paths (adjust to your environment) ──────────────────────────────────
-  "mimir.mimirPath": "/path/to/codes",
-  "mimir.pythonPath":   "/path/to/conda/envs/myenv/bin/python",
+### 6c. Optional Settings
 
-  // ── LLM backend ──────────────────────────────────────────────────────────
-  // "mimir.backend": "vllm",             // "vllm" (default) or "ollama"
-  // "mimir.vllmBaseUrl": "http://127.0.0.1:8000",
-  // "mimir.vllmMode":   "launch",        // "launch" (start vllm serve on a SLURM node)
-  //                                         //   or "connect" (attach to vllmBaseUrl, no SLURM)
+Everything below has a usable default; set one only to change the value the panel
+starts on, or when the WS server needs a specific interpreter.
 
-  // ── Model lists (shown in the Connect dropdown) ─────────────────────────
-  "mimir.availableModels": [
-    "qwen3:8b",
-    "qwen2.5-coder:32b",
-    "devstral-small-2:24b-instruct-2512-fp16"
-  ],
-  // vllmModelsDir is REQUIRED when using relative model paths.
-  // Relative entries in vllmAvailableModels are prefixed with this path.
-  // Must be set here in settings.json — VS Code cannot read shell env vars.
-  // Absolute paths in vllmAvailableModels are always used as-is.
-  "mimir.vllmModelsDir": "/path/to/models",
-  "mimir.vllmAvailableModels": [
-    "mistralai/devstral-small-2-24b",
-    "meta/llama3-70b"
-  ],
+| Setting | Default | Purpose |
+|---|---|---|
+| `mimir.backend` | `vllm` | Backend the Connect form opens on |
+| `mimir.vllmBaseUrl` | `http://127.0.0.1:8000` | Address the form opens on for vLLM |
+| `mimir.ollamaUrl` | `http://127.0.0.1:11434` | Address the form opens on for Ollama |
+| `mimir.vllmVerifySsl` | `true` | Uncheck for an HTTPS endpoint behind a private CA |
+| `mimir.pythonPath` | *(empty → auto)* | Interpreter used to start the WS server. Leave empty — see below |
+| `mimir.wsUrl` | `ws://localhost:8765` | Only if you run `mimir-server` yourself on another host/port |
+| `mimir.anthropicAvailableModels` | *(list of Claude ids)* | Models offered for the Anthropic backend |
+| `mimir.notifications.enabled` | `true` | Native notification when a task finishes off-screen |
 
-  // ── VRAM hints (shown next to each model in the dropdown) ───────────────
-  "mimir.modelSizes": {
-    "qwen3:8b": 5,
-    "qwen2.5-coder:32b": 19,
-    "devstral-small-2:24b-instruct-2512-fp16": 48,
-    "devstral-small-2-24b": 48
-  },
+**Which Python runs the server.** The extension starts it with `bash -c`, which is
+neither a login nor an interactive shell: it sources no `.bashrc`, no `.bash_profile`,
+and no setup script. The child process inherits the VS Code server's environment and
+nothing else — so `python3` on that PATH is usually the system one, not your venv.
+The interpreter is therefore resolved in this order:
 
-  // ── SLURM / cluster (omit if running locally without SLURM) ─────────────
-  "mimir.slurmEnabled": true,
-  "mimir.loginNode": "your-login-node",
-  "mimir.ollamaSetupScript": "/path/to/setup_ollama.sh",
-  "mimir.vllmSetupScript":   "/path/to/vllm/setup.sh",
+1. `mimir.pythonPath`, if you set it;
+2. the `MIMIR_PYTHON` environment variable;
+3. `~/.mimir/python` — **written by `install.sh`**, which is why a plain
+   `./install.sh` needs no configuration at all;
+4. `python3` from `PATH`.
 
-  "mimir.clusterConfig": [
-    {
-      "name": "my-cluster",
-      "loginNode": "login-1",
-      "account": "my-account",
-      "nodeTypes": [
-        {
-          "label": "GPU node · 1 day",
-          "partition": "gpu",
-          "cpusPerNode": 32,
-          "gpu": { "type": "a100", "memGB": 80, "maxCount": 1 },
-          "memOptionsGB": [64, 128, 256]
-        }
-      ]
-    }
-  ]
-}
-```
-
-> **Tip:** `clusterConfig` is required for SLURM-managed Ollama/vLLM launches.
-> Without it the Connect panel shows a simplified model + URL form (local mode).
+A consequence of (2): a variable you export in `.bashrc` only reaches MIMIR if it was
+already set when the VS Code server started. After editing your profile, close the
+remote window and reconnect — reloading the window is not enough.
 
 ---
 
-## 7. SLURM / HPC Workflow
+## 7. HPC / SLURM
 
-When `slurmEnabled` is `true` and `clusterConfig` is set, the extension:
+MIMIR runs where you run it and talks to an LLM endpoint over HTTP; it does not
+allocate nodes to connect. On a cluster, start your vLLM or Ollama server in a job
+as usual, then give MIMIR the address of the node serving it (§3).
 
-1. SSH-es to the `loginNode`.
-2. Runs `salloc` with the SLURM args assembled from the node-type form.
-3. Sources `ollamaSetupScript` (or `vllmSetupScript`) on the allocated node.
-4. Starts Ollama / vLLM and connects the WebSocket server.
-5. Opens the chat panel once the backend is ready.
-
-The agent process itself runs inside the SLURM job, so GPU resources are fully
-available to the model.
+Scheduling is instead something the **agent** can do on your behalf: the `hpc` MCP
+server exposes `salloc_submit`, `sbatch_submit`, and job-inspection tools, so you can
+ask MIMIR to submit and monitor *your* jobs. See
+[SERVERS_DETAILED.md](SERVERS_DETAILED.md) for that tool catalog.
 
 ---
 

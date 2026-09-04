@@ -56,7 +56,7 @@ The README is an overview; the authoritative detail lives in dedicated docs:
 
 | Doc | Covers |
 |-----|--------|
-| [`SETUP.md`](SETUP.md) | Full setup, backends, SLURM, and VS Code settings |
+| [`SETUP.md`](SETUP.md) | Full setup: install, LLM backends, environment, VS Code extension |
 | [`ARCHITECTURE.md`](ARCHITECTURE.md) | The client's internal dependency graph, layer by layer |
 | [`POLICY.md`](POLICY.md) | Policy behaviour, completion gating, enforcement levels |
 | [`CLIENT_DETAILED.md`](CLIENT_DETAILED.md) | Client architecture and execution flow |
@@ -70,48 +70,39 @@ centralized in [`client/config/constants.py`](mimir/client/config/constants.py).
 
 ## Quick start
 
-Pick the path that fits you. All three need an LLM backend (a vLLM endpoint by default, or
-Ollama) — see [Installation](#installation) and [`SETUP.md`](SETUP.md).
-
-**A. pip** (installs the `mimir` / `mimir-server` commands)
+Two commands. MIMIR talks to an LLM server you already run — a vLLM or Ollama
+endpoint reachable over HTTP, or the Anthropic API.
 
 ```bash
 git clone https://github.com/MIMIR-LLM4CSE/MIMIR.git && cd MIMIR
-./install.sh                       # creates .venv and installs the package
+./install.sh
+```
+
+`install.sh` creates `.venv`, installs the package with a smoke test, and — when
+`npm` is available — builds and installs the VS Code extension.
+
+**In VS Code:** reload the window, open the MIMIR panel, pick a backend, and type
+the address of your server (`http://<host>:8000` for vLLM,
+`http://<host>:11434` for Ollama). The model list fills itself from that address.
+Nothing goes in `.vscode/settings.json`.
+
+**On the command line:**
+
+```bash
 source .venv/bin/activate
-cd /path/to/your/project           # becomes the sandbox root
-mimir                              # interactive CLI
+export VLLM_BASE_URL=http://<host>:8000    # vLLM is the default backend
+cd /path/to/your/project                   # becomes the sandbox root
+mimir                                      # interactive CLI
 ```
 
-`pip install .` (or `pip install ".[vllm]"`) works too; `install.sh` just wraps it in a
-virtualenv with a smoke test.
-
-**B. Docker** (reproducible, no local Python setup)
-
-```bash
-docker build -t mimir:latest .
-docker run --rm -it -v "$PWD":/workspace \
-    -e LLM_BACKEND=vllm -e VLLM_BASE_URL=http://<node>:8000 \
-    mimir:latest mimir
-```
-
-Or start the WebSocket server for the VS Code extension with `docker compose up mimir`.
-SLURM "launch" mode is not available in a container — use vLLM **connect** mode.
-
-**C. VS Code extension**
-
-```bash
-cd mimir/vscode-extension
-npm install && npm run build && npm run package   # builds mimir-<version>.vsix
-code --install-extension mimir-*.vsix
-```
-
-Then configure `mimir.*` settings in `.vscode/settings.json` (see [`SETUP.md`](SETUP.md) §6).
+See [`SETUP.md`](SETUP.md) for backends, environment variables, and the extension.
 
 ## Installation
 
-**Prerequisites:** Python ≥ 3.10 and one LLM backend — a vLLM OpenAI-compatible endpoint
-(the default, e.g. `http://127.0.0.1:8000/v1`), or [Ollama](https://ollama.com/) running locally.
+**Prerequisites:** Python ≥ 3.10 and one LLM server you can reach over HTTP — a vLLM
+OpenAI-compatible endpoint (the default, e.g. `http://127.0.0.1:8000`), an
+[Ollama](https://ollama.com/) server, or an Anthropic API key. MIMIR connects to it;
+it never starts or schedules it.
 
 ```bash
 pip install ".[vllm]"                          # installs the `mimir` command
@@ -134,9 +125,10 @@ peft / datasets / trl); `sudo apt-get install gfortran` for Fortran compilation;
 
 | Environment variable | Default | Purpose |
 |----------------------|---------|---------|
-| `LLM_BACKEND` | `vllm` | Backend selector: `vllm` or `ollama` |
+| `LLM_BACKEND` | `vllm` | Backend selector: `vllm`, `ollama`, or `anthropic` |
 | `MIMIR_DEFAULT_MODEL` | *(empty)* | Model selected at startup; overridden by `--model` or the UI |
 | `OLLAMA_BASE_URL` | `http://127.0.0.1:11434` | Ollama API endpoint |
+| `ANTHROPIC_API_KEY` | *(none)* | Key for the `anthropic` backend |
 | `VLLM_BASE_URL` | `http://127.0.0.1:8000` | vLLM API base URL (client appends `/v1` if needed) |
 | `VLLM_API_KEY` | `EMPTY` | API key for vLLM OpenAI-compatible calls |
 | `MIMIR_EMBED_MODEL` | *(empty; `nomic-embed-text` on Ollama)* | Embedding model for semantic memory search & tool ranking (required for vLLM; else lexical fallback) |
@@ -145,10 +137,12 @@ peft / datasets / trl); `sudo apt-get install gfortran` for Fortran compilation;
 | `MIMIR_OLLAMA_NUM_CTX` | *(model's context length)* | Overrides the Ollama context window (`num_ctx`) |
 
 The context-window budget is sized automatically from the backend (vLLM `max_model_len` or
-Ollama's model context length), falling back to 200K/32K if it can't be determined. Per-model
-vLLM behaviour (tool-call parser, reasoning parser) is configured in
-[`vllm_model_profiles.json`](mimir/client/config/vllm_model_profiles.json); unlisted models
-get a parser inferred from their name. Full backend, connect/launch, and thinking-model setup
+Ollama's model context length), falling back to 200K/32K if it can't be determined.
+Reasoning is requested with `chat_template_kwargs.enable_thinking`, which thinking-capable
+vLLM templates read and others ignore, so an unlisted model still gets its thinking;
+[`vllm_model_profiles.json`](mimir/client/config/vllm_model_profiles.json) declares only the
+models steered another way (gpt-oss's `reasoning_effort`, Nemotron-Ultra's system-prompt
+directive) plus per-model `max_tools` / `enforcement`. Full backend and thinking-model setup
 is documented in [`SETUP.md`](SETUP.md).
 
 ## Architecture
@@ -446,35 +440,43 @@ The agent runs in a background thread with its own asyncio loop, so blocking app
 never freeze the WebSocket.
 
 ```bash
-# 1. Start the WebSocket server (needs: pip install websockets)
-python3 -m mimir.client.ui.ws.ws_server --port 8765
-#    options: --host --port --model --backend {ollama,vllm} --vllm-base-url --vllm-api-key
-
-# 2. Build & install the extension (needs Node.js ≥ 16)
+# 1. Build and install the extension (needs Node.js >= 18)
 cd mimir/vscode-extension
-npm install && npm run build && npm run package
-code --install-extension mimir-*.vsix
+npm install && npm run deploy      # installs it, or updates it in place
+#    then reload the VS Code window (Ctrl+Shift+P -> Developer: Reload Window)
 
-# 3. In VS Code: run "MimirAgent: Open Chat" (F1), type a query, press Enter
+# 2. Open the MIMIR panel, pick a backend, enter the address of your LLM server,
+#    and press Connect. The extension starts the WebSocket server for you.
 ```
 
-Configure `mimir.*` settings in `.vscode/settings.json` — `mimir.wsUrl`, `mimir.serverScript`,
-`mimir.pythonPath`, backend/SLURM/model settings. Model and cluster lists
-(`mimir.availableModels`, `mimir.vllmAvailableModels`, `mimir.modelSizes`,
-`mimir.clusterConfig`) are personal/platform-specific and have empty defaults. The full
-settings reference is in [`SETUP.md`](SETUP.md); the WebSocket message protocol and frontend
+To run the WebSocket server yourself instead (headless, or on another host):
+
+```bash
+python3 -m mimir.client.ui.ws.ws_server --port 8765 \
+    --backend vllm --vllm-base-url http://<host>:8000
+#   options: --host --port --model --cwd
+#            --backend {ollama,vllm,anthropic} --vllm-base-url --vllm-api-key --ollama-base-url
+```
+
+The panel is the only place you configure a connection — a working setup needs no
+`.vscode/settings.json`. The interpreter is found on its own (`install.sh` records the
+venv's Python in `~/.mimir/python`; `MIMIR_PYTHON` overrides it), and the remaining
+`mimir.*` settings just hold the defaults the form opens on. The full reference is in
+[`SETUP.md`](SETUP.md) §6; the WebSocket message protocol and frontend
 internals are in [`EXTENSION_DETAILED.md`](EXTENSION_DETAILED.md).
 
 ## Testing & benchmarks
 
 ```bash
 pytest                                   # needs the `dev` extra: pip install -e ".[dev]"
+ruff check .                             # lint, same extra; `--fix` applies safe fixes
 python3 -m unittest discover mimir/tests  # same tests, no extra needed
 ```
 
 The tests are plain `unittest` cases (no `conftest.py`, no pytest-only constructs), so
 either runner works; `pytest` is what `pyproject.toml` configures and what
-[`CONTRIBUTING.md`](CONTRIBUTING.md) asks for before a PR. The suite covers approval,
+[`CONTRIBUTING.md`](CONTRIBUTING.md) asks for before a PR, alongside `ruff check .`
+— both run in CI. The suite covers approval,
 policy rules, client-helper contracts, server response contracts, and the agent loop.
 
 [`mimir/runner/`](mimir/runner/) is the agent's **batch mode**: a library that drives the

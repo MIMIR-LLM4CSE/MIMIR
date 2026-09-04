@@ -25,11 +25,11 @@ else:
 
 
 async def main() -> None:
-    model = os.environ.get("MCP_OLLAMA_MODEL", DEFAULT_MODEL)
+    model = DEFAULT_MODEL
     if len(sys.argv) >= 3 and sys.argv[1] == "--model":
         model = sys.argv[2]
 
-    print(f"Using Ollama model: {model}")
+    print(f"Using model: {model} ({os.environ.get('LLM_BACKEND', 'vllm')})")
     agent = MimirAgent(model=model)
 
     # Interactive CLI: let a long run ask the user whether to keep going past

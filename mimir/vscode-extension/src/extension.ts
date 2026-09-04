@@ -1,58 +1,46 @@
 import * as vscode from "vscode";
 import * as cp from "child_process";
 import * as fs from "fs";
+import * as os from "os";
 import * as path from "path";
 import WebSocket = require("ws");
+import { fetchModels, type DiscoverableBackend } from "./modelList";
 
 let serverProcess: cp.ChildProcess | undefined;
-// Tracks how the current serverProcess was started, so a connect request can
-// reuse an already-running server only when it matches the requested mode and
-// otherwise tear down a stale one (e.g. switching SLURM → vLLM-connect).
-
-// ── vLLM tool-call parser auto-detection ──────────────────────────────────────
-// Fallback map used if shared JSON profile loading fails. Keep these aligned
-// with mimir/client/config/vllm_model_profiles.json — they are only a safety net
-// for when that file can't be read, never the source of truth.
-const _VLLM_TOOL_CALL_PARSERS_FALLBACK: Record<string, string> = {
-  "mistral":      "mistral",
-  "devstral":     "mistral",
-  "mixtral":      "mistral",
-  "nemotron":     "qwen3_coder",
-  "qwen3.8":      "qwen3_xml",
-  "qwen3-coder":  "qwen3_coder",
-  "qwen3":        "hermes",
-  "qwen2.5-coder": "hermes",
-  "qwen2.5":      "hermes",
-  "gemma":        "pythonic",
-  "llama":        "llama3_json",
-  "gpt":          "openai",
-};
 
 /**
- * Resolve the path to the shared vLLM model-profile JSON.
+ * Interpreter that runs the WS server.
  *
- * The package lives at `<mimirPath>/mimir/...` (mimirPath is the import root put
- * on PYTHONPATH), so the profile is `<mimirPath>/mimir/client/config/...`. The
- * `mimir.mimirPath` setting is the source of truth for where the package is —
- * the open workspace folder is often a *different* project (e.g. a benchmark
- * repo) that doesn't contain the package, so deriving the path from it silently
- * misses the file and falls back to stale defaults. Prefer mimirPath, then try
- * the workspace folder (both flat and nested layouts) as a last resort.
+ * `bash -c` is neither a login nor an interactive shell, so it sources no profile:
+ * the child gets this extension host's environment and nothing else. `python3` from
+ * that PATH is therefore whatever the machine's default is — frequently older than
+ * MIMIR's 3.10 minimum, and almost never the venv the package was installed into.
+ *
+ * Rather than making every user write a setting, resolve it in order:
+ *   1. `mimir.pythonPath` — an explicit override still wins.
+ *   2. `MIMIR_PYTHON` — for people who would rather export it than click.
+ *   3. `<state home>/python` — written by install.sh, so a plain `./install.sh`
+ *      needs no configuration at all.
+ *   4. `python3` from PATH.
  */
-function _sharedProfilePath(): string | undefined {
-  const rel = path.join("mimir", "client", "config", "vllm_model_profiles.json");
-  const candidates: string[] = [];
-  const mimirPath = vscode.workspace.getConfiguration("mimir").get<string>("mimirPath");
-  if (mimirPath) {
-    candidates.push(path.join(mimirPath, rel));
+function resolvePython(): string {
+  const configured = vscode.workspace.getConfiguration("mimir").get<string>("pythonPath");
+  if (configured) {
+    return configured;
   }
-  const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
-  if (root) {
-    candidates.push(path.join(root, rel));
-    // Workspace opened directly on the package repo (flat layout, no nested mimir/).
-    candidates.push(path.join(root, "client", "config", "vllm_model_profiles.json"));
+  if (process.env.MIMIR_PYTHON) {
+    return process.env.MIMIR_PYTHON;
   }
-  return candidates.find((p) => fs.existsSync(p));
+  const stateHome = process.env.MIMIR_STATE_HOME || path.join(os.homedir(), ".mimir");
+  try {
+    const interpreter = fs.readFileSync(path.join(stateHome, "python"), "utf8").trim();
+    if (interpreter && fs.existsSync(interpreter)) {
+      return interpreter;
+    }
+  } catch {
+    // Not installed via install.sh, or the file was removed — fall through.
+  }
+  return "python3";
 }
 
 /**
@@ -73,92 +61,6 @@ function noProxyFor(baseUrl: string): Record<string, string> {
   }
   const merge = (v: string | undefined) => (v ? `${v},${host}` : host);
   return { no_proxy: merge(process.env.no_proxy), NO_PROXY: merge(process.env.NO_PROXY) };
-}
-
-function _loadVllmToolCallParsers(): Record<string, string> {
-  const sharedPath = _sharedProfilePath();
-  if (sharedPath) {
-    try {
-      const raw = fs.readFileSync(sharedPath, "utf8");
-      const parsed = JSON.parse(raw) as Record<string, { tool_call_parser?: string }>;
-      const out: Record<string, string> = {};
-      for (const [prefix, profile] of Object.entries(parsed)) {
-        if (profile && typeof profile.tool_call_parser === "string" && profile.tool_call_parser.trim()) {
-          out[prefix.toLowerCase()] = profile.tool_call_parser.trim();
-        }
-      }
-      if (Object.keys(out).length > 0) {
-        return out;
-      }
-    } catch {
-      // Fall back to built-in defaults when profile file is absent/invalid.
-    }
-  }
-  return { ..._VLLM_TOOL_CALL_PARSERS_FALLBACK };
-}
-
-function _modelMatchCandidates(model: string): string[] {
-  const normalized = model.toLowerCase().replace(/\\/g, "/").trim();
-  if (!normalized) return [];
-  const out: string[] = [normalized];
-  const parts = normalized.split("/").filter(Boolean);
-  if (parts.length > 0) {
-    out.push(parts[parts.length - 1]);
-    for (const p of parts) out.push(p);
-  }
-  return [...new Set(out)];
-}
-
-/**
- * Returns `--enable-auto-tool-choice --tool-call-parser <parser>` for the
- * given model, or an empty string if no profile is found.
- * Matching is longest-prefix, case-insensitive.
- */
-function _vllmToolCallFlags(model: string): string {
-  const parsers = _loadVllmToolCallParsers();
-  const keys = Object.keys(parsers);
-  const candidates = _modelMatchCandidates(model);
-  const match = keys
-    .filter((k) => candidates.some((c) => c.startsWith(k)))
-    .sort((a, b) => b.length - a.length)[0];
-  if (!match) { return ""; }
-  return `--enable-auto-tool-choice --tool-call-parser ${parsers[match]}`;
-}
-
-/** Loads the `reasoning_parser` field per model prefix from the shared profile. */
-function _loadVllmReasoningParsers(): Record<string, string> {
-  const sharedPath = _sharedProfilePath();
-  if (!sharedPath) { return {}; }
-  try {
-    const raw = fs.readFileSync(sharedPath, "utf8");
-    const parsed = JSON.parse(raw) as Record<string, { reasoning_parser?: string }>;
-    const out: Record<string, string> = {};
-    for (const [prefix, profile] of Object.entries(parsed)) {
-      if (profile && typeof profile.reasoning_parser === "string" && profile.reasoning_parser.trim()) {
-        out[prefix.toLowerCase()] = profile.reasoning_parser.trim();
-      }
-    }
-    return out;
-  } catch {
-    return {};
-  }
-}
-
-/**
- * Returns `--reasoning-parser <parser>` for the given model when its profile
- * declares one, so vLLM splits thinking into a separate `reasoning_content`
- * field (which the backend renders as a thinking block). Empty string if none.
- * Matching is longest-prefix, case-insensitive.
- */
-function _vllmReasoningFlags(model: string): string {
-  const parsers = _loadVllmReasoningParsers();
-  const keys = Object.keys(parsers);
-  const candidates = _modelMatchCandidates(model);
-  const match = keys
-    .filter((k) => candidates.some((c) => c.startsWith(k)))
-    .sort((a, b) => b.length - a.length)[0];
-  if (!match) { return ""; }
-  return `--reasoning-parser ${parsers[match]}`;
 }
 
 // ── Virtual document provider for proposed file content (diff editor) ─────────
@@ -380,10 +282,6 @@ export function deactivate(): void {
   _stopPreviewWatch();
   serverProcess?.kill();
   serverProcess = undefined;
-  // Also tear down any SSH tunnel; otherwise it survives the reload still
-  // listening on localhost:8765 and intercepts the next session's connection.
-  sshTunnelProcess?.kill();
-  sshTunnelProcess = undefined;
 }
 
 // ── Sidebar WebviewViewProvider ───────────────────────────────────────────────
@@ -446,31 +344,22 @@ class MimirAgentViewProvider implements vscode.WebviewViewProvider {
     this._view?.webview.postMessage({ type: "active_editor", file, selection });
   }
 
+  /**
+   * Seed the connect form with the defaults from settings.
+   *
+   * Only the starting values: the user edits the address in the form, and the
+   * model list comes from the endpoint itself (see `_sendModels`), so a working
+   * setup needs no `.vscode/settings.json` at all.
+   */
   private _sendConfig(): void {
     const cfg = vscode.workspace.getConfiguration("mimir");
 
-    // Expand relative vLLM model entries using VLLM_MODELS_DIR env var or the
-    // mimir.vllmModelsDir setting.  Absolute paths (starting with /) are
-    // kept as-is so existing full-path entries still work.
-    const vllmModelsDir = (
-      cfg.get<string>("vllmModelsDir") ?? ""
-    ).replace(/\/+$/, "");
-    const rawVllmModels = cfg.get<string[]>("vllmAvailableModels") ?? [];
-    const vllmModels = rawVllmModels.map(m =>
-      m.startsWith("/") || !vllmModelsDir ? m : `${vllmModelsDir}/${m}`
-    );
-
     this._view?.webview.postMessage({
       type: "config",
-      models: cfg.get<string[]>("availableModels") ?? [],
-      vllmModels,
-      anthropicModels: cfg.get<string[]>("anthropicAvailableModels") ?? [],
-      modelSizes: cfg.get<Record<string, number>>("modelSizes") ?? {},
-      slurmEnabled: cfg.get<boolean>("slurmEnabled") ?? false,
-      clusterConfig: cfg.get<unknown[]>("clusterConfig") ?? [],
       backend: cfg.get<string>("backend") ?? "vllm",
       vllmBaseUrl: cfg.get<string>("vllmBaseUrl") ?? "http://127.0.0.1:8000",
-      vllmMode: cfg.get<string>("vllmMode") ?? "launch",
+      ollamaBaseUrl: cfg.get<string>("ollamaUrl") ?? "http://127.0.0.1:11434",
+      anthropicModels: cfg.get<string[]>("anthropicAvailableModels") ?? [],
     });
   }
 
@@ -499,11 +388,9 @@ class MimirAgentViewProvider implements vscode.WebviewViewProvider {
     });
 
     ws.on("close", () => {
-      const stillRunning =
-        (serverProcess && !serverProcess.killed) ||
-        (sshTunnelProcess && !sshTunnelProcess.killed);
+      const stillRunning = serverProcess && !serverProcess.killed;
       if (retryCount < maxRetries && stillRunning) {
-        // Server or tunnel still alive — retry after 2 seconds
+        // Server still starting up — retry after 2 seconds
         setTimeout(() => this._connectToServer(retryCount + 1), 2000);
       } else {
         // Notify webview — no auto-reconnect (user must click Connect again)
@@ -606,58 +493,61 @@ class MimirAgentViewProvider implements vscode.WebviewViewProvider {
     });
   }
 
-  // Kill every locally-tracked piece of connection state (the ws_server process
-  // and any SSH tunnel) so a fresh connect always starts from a clean local
-  // slate. The actual port 8765 is freed by `fuser -k` in each spawn command;
-  // this just clears the processes this extension owns. Called at the top of both
-  // connect paths so local↔SLURM switches never leak a server or tunnel that
-  // keeps intercepting localhost:8765.
-  private _teardownLocalState(): void {
+  // Kill the ws_server this extension owns so a fresh connect always starts
+  // from a clean slate. The port itself is freed by `fuser -k` in the spawn
+  // command; this just clears the process we track, so switching backends never
+  // leaves an old server intercepting localhost:8765.
+  private _teardownServer(): void {
     if (serverProcess && !serverProcess.killed) {
       serverProcess.kill();
     }
     serverProcess = undefined;
-    if (sshTunnelProcess && !sshTunnelProcess.killed) {
-      sshTunnelProcess.kill();
-    }
-    sshTunnelProcess = undefined;
   }
 
-  private _startLocalAndConnect(model: string, backend = "vllm", vllmBaseUrl = "http://127.0.0.1:8000", anthropicApiKey = ""): void {
-    // Always start from a clean local slate (kills any prior server/tunnel,
-    // including one left over from a SLURM session) before binding port 8765.
-    this._teardownLocalState();
+  /**
+   * Start the WS server here and connect to it.
+   *
+   * The server always runs on the machine VS Code runs on; *baseUrl* points it at
+   * an LLM endpoint that is already serving (vLLM or Ollama), wherever that is.
+   * Anthropic needs no URL at all — the hosted API is reached over the network
+   * with the key from the form or the environment.
+   */
+  private _startServerAndConnect(
+    model: string,
+    backend = "vllm",
+    baseUrl = "http://127.0.0.1:8000",
+    anthropicApiKey = "",
+  ): void {
+    // Clean slate before binding port 8765, so a server left over from a previous
+    // connect (possibly on another backend) can't intercept this one.
+    this._teardownServer();
 
     const cfg = vscode.workspace.getConfiguration("mimir");
-    // This path runs ws_server on the local host (the frontal), which may be a
-    // different CPU arch than the SLURM compute nodes. Prefer localPythonPath so
-    // the frontal can use its own (e.g. x86) interpreter; fall back to pythonPath.
-    const pythonPath = cfg.get<string>("localPythonPath") || cfg.get<string>("pythonPath") || "python3";
+    const pythonPath = resolvePython();
     const cwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
 
     const outputChannel = vscode.window.createOutputChannel("MIMIR Server");
     outputChannel.show();
 
-    // In vLLM "connect" mode the server runs here on the frontal and points at an
-    // already-running vLLM (no SLURM allocation, no `vllm serve`).
-    // Free port 8765 first (mirroring the SLURM path) so a stale tunnel or a
-    // previous server process cannot intercept connections meant for this one.
+    // Free port 8765 first so a previous server process cannot intercept
+    // connections meant for this one.
     const backendArgs =
-      backend === "vllm" ? ` --backend vllm --vllm-base-url ${vllmBaseUrl}`
+      backend === "vllm" ? ` --backend vllm --vllm-base-url ${baseUrl}`
+      : backend === "ollama" ? ` --backend ollama --ollama-base-url ${baseUrl}`
       : backend === "anthropic" ? " --backend anthropic"
       : "";
     const spawnCmd = `fuser -k 8765/tcp 2>/dev/null || true && ${pythonPath} -m mimir.client.ui.ws.ws_server --port 8765${model ? ` --model ${model}` : ""}${backendArgs}`;
     // Log the command only — the Claude API key is injected via env below and is
     // deliberately kept out of this string so it never lands in the output channel.
-    outputChannel.appendLine(`[Local] Starting server: ${spawnCmd}`);
+    outputChannel.appendLine(`Starting server: ${spawnCmd}`);
 
     // Internal HTTPS vLLM routes are often served behind a private
     // CA; when the user disables cert verification, propagate VLLM_VERIFY_SSL so
     // /v1/models model-resolution and chat requests don't hit CERTIFICATE_VERIFY_FAILED.
     const verifyEnv = cfg.get<boolean>("vllmVerifySsl", true) ? {} : { VLLM_VERIFY_SSL: "0" };
-    // An HTTP proxy silently swallows requests to an on-prem vLLM host,
-    // so ws_server would hang on /v1/models before ever binding port 8765.
-    const noProxyEnv = backend === "vllm" ? noProxyFor(vllmBaseUrl) : {};
+    // An HTTP proxy silently swallows requests to an on-prem endpoint, so
+    // ws_server would hang on model resolution before ever binding port 8765.
+    const noProxyEnv = backend === "anthropic" ? {} : noProxyFor(baseUrl);
     // Only override ANTHROPIC_API_KEY when the webview actually supplied one;
     // otherwise inherit whatever is already exported (so users who set the key in
     // their shell don't have to retype it in the form).
@@ -683,156 +573,29 @@ class MimirAgentViewProvider implements vscode.WebviewViewProvider {
     setTimeout(() => this._connectToServer(), 1000);
   }
 
-  private _startSlurmAndConnect(model: string, profile?: { loginNode?: string; slurmArgs?: string }, backend = "vllm", vllmBaseUrl = "http://127.0.0.1:8000", clusterVllmPath?: string, clusterOllamaPath?: string, vllmMode: "launch" | "connect" = "launch"): void {
-    // Same clean-slate guarantee as the local path: drop any prior server/tunnel
-    // (e.g. a leftover local server still bound to 8765) before allocating.
-    this._teardownLocalState();
-    const cfg = vscode.workspace.getConfiguration("mimir");
-    const pythonPath = cfg.get<string>("pythonPath") || "python3";
-    const slurmArgs  = profile?.slurmArgs ?? cfg.get<string>("slurmArgs") ?? "";
-    const loginNode  = profile?.loginNode ?? cfg.get<string>("loginNode") ?? "";
-    const ollamaSetup = cfg.get<string>("ollamaSetupScript") ?? "";
-    // Cluster-level path takes priority over global setting
-    const ollamaPath = clusterOllamaPath ?? cfg.get<string>("ollamaPath") ?? "ollama";
-    const ollamaUrl  = cfg.get<string>("ollamaUrl") ?? "http://127.0.0.1:11434";
-    const mimirPath = cfg.get<string>("mimirPath") ?? "";
-
-    if (!slurmArgs) {
-      vscode.window.showErrorMessage("MIMIR: set mimir.slurmArgs before connecting via SLURM (e.g. '-p my-partition --gres=gpu:1 --account my-account --mem 64G').");
+  /**
+   * Ask the endpoint what models it serves and hand the list to the webview.
+   *
+   * Runs here rather than in React because the webview's CSP forbids HTTP.
+   * A failure is reported as text under the address field, never as a modal: the
+   * user can still connect (the server resolves the served model itself).
+   */
+  private async _sendModels(backend: string, baseUrl: string): Promise<void> {
+    if (backend !== "vllm" && backend !== "ollama") {
       return;
     }
-    const cwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
-
-    const outputChannel = vscode.window.createOutputChannel("MIMIR Server");
-    outputChannel.show();
-    outputChannel.appendLine(`[SLURM] Allocating node: salloc ${slurmArgs}`);
-
-    // srun runs on the compute node: cd to the user's workspace, add mimirPath to PYTHONPATH
-    // so the package is importable without changing the working directory.
-    // Note: ollama is backgrounded with & so the next command must use ; not &&
-    // OLLAMA_ORIGINS=* is required to avoid 403 "incorrect service" rejections.
-    const ollamaSetupCmd = ollamaSetup ? `source ${ollamaSetup} && ` : "";
-    // Env prefix applied DIRECTLY to the foreground ws_server python. The vLLM/
-    // ollama daemon and its preceding `cd`/`export` run in a backgrounded AND-list
-    // (`… &`), so they do NOT reach this process. MCP_FILES_ROOT must be set here
-    // so the agent's per-workspace state dir (.mimir) anchors to the workspace
-    // instead of falling back to the compute node's $HOME (the srun default cwd).
-    const mimirArg   = `MCP_FILES_ROOT=${cwd} ${mimirPath ? `PYTHONPATH=${mimirPath}:$PYTHONPATH ` : ""}`;
-
-    let remoteCmd: string;
-    if (backend === "vllm") {
-      const vllmSetupScript = cfg.get<string>("vllmSetupScript") ?? "";
-      // Cluster-level path takes priority over global setting
-      const vllmPath       = clusterVllmPath ?? cfg.get<string>("vllmPath") ?? "vllm";
-      const vllmExtraArgs  = cfg.get<string>("vllmExtraArgs") ?? "";
-      const vllmServeOverride = cfg.get<string>("vllmServeCommand") ?? "";
-      // Auto-generate serve command from selected model when no override is set
-      const vllmPort = (() => { try { return new URL(vllmBaseUrl).port || "8000"; } catch { return "8000"; } })();
-      // Auto-inject tool-call + reasoning parser flags unless the user supplied an override command.
-      const autoToolFlags = model ? _vllmToolCallFlags(model) : "";
-      const autoReasoningFlags = model ? _vllmReasoningFlags(model) : "";
-      const autoFlags = [autoToolFlags, autoReasoningFlags].filter(Boolean).join(" ");
-      const vllmServeCommand = vllmServeOverride ||
-        (model ? `${vllmPath} serve ${model} --port ${vllmPort}${autoFlags ? " " + autoFlags : ""}${vllmExtraArgs ? " " + vllmExtraArgs : ""}` : "");
-      const vllmSetupCmd = vllmSetupScript ? `source ${vllmSetupScript} && ` : "";
-      const wsBackendArgs = `--backend vllm --vllm-base-url ${vllmBaseUrl}`;
-      // Skip TLS verification for internal HTTPS routes behind a private CA so
-      // /v1/models resolution and chat requests don't hit CERTIFICATE_VERIFY_FAILED.
-      const verifyPrefix = cfg.get<boolean>("vllmVerifySsl", true) ? "" : "VLLM_VERIFY_SSL=0 ";
-      // "launch" mode requires a serve command; never silently fall through to
-      // pre-running (that path is handled by _startLocalAndConnect in connect mode).
-      if (vllmMode === "launch" && !vllmServeCommand) {
-        vscode.window.showErrorMessage("MIMIR: vLLM launch mode needs a model (or set mimir.vllmServeCommand). To attach to a running server, choose 'Connect to running server'.");
-        return;
-      }
-      if (vllmServeCommand) {
-        // Self-hosted: start vLLM daemon then wait for readiness before launching ws_server
-        remoteCmd =
-          `cd ${cwd} && ` +
-          vllmSetupCmd +
-          `fuser -k 8765/tcp 2>/dev/null || true && ` +
-          `${vllmServeCommand} > vllm.log 2>&1 & ` +
-          `timeout 1800 bash -c "until http_proxy= https_proxy= HTTP_PROXY= HTTPS_PROXY= curl -sf ${vllmBaseUrl}/v1/models >/dev/null 2>&1; do sleep 2; done"; ` +
-          `${mimirArg}${verifyPrefix}${pythonPath} -m mimir.client.ui.ws.ws_server --host 0.0.0.0 --port 8765 --cwd ${cwd}${model ? ` --model ${model}` : ""} ${wsBackendArgs}`;
-      } else {
-        // Pre-running vLLM: skip daemon, just pass backend args to ws_server
-        remoteCmd =
-          `cd ${cwd} && ` +
-          `fuser -k 8765/tcp 2>/dev/null || true && ` +
-          `${mimirArg}${verifyPrefix}${pythonPath} -m mimir.client.ui.ws.ws_server --host 0.0.0.0 --port 8765 --cwd ${cwd}${model ? ` --model ${model}` : ""} ${wsBackendArgs}`;
-      }
-    } else {
-      // Ollama (default)
-      remoteCmd =
-        `cd ${cwd} && ` +
-        ollamaSetupCmd +
-        `fuser -k 8765/tcp 2>/dev/null || true && ` +
-        `OLLAMA_ORIGINS="*" ${ollamaPath} serve > ollama.log 2>&1 & ` +
-        `timeout 300 bash -c "until curl -sf ${ollamaUrl}/api/tags >/dev/null 2>&1; do sleep 1; done"; ` +
-        `no_proxy=127.0.0.1,localhost NO_PROXY=127.0.0.1,localhost OLLAMA_BASE_URL=${ollamaUrl} ${mimirArg}${pythonPath} -m mimir.client.ui.ws.ws_server --host 0.0.0.0 --port 8765 --cwd ${cwd}${model ? ` --model ${model}` : ""}`;
+    const verifySsl = vscode.workspace.getConfiguration("mimir").get<boolean>("vllmVerifySsl", true);
+    try {
+      const models = await fetchModels(backend as DiscoverableBackend, baseUrl, verifySsl);
+      this._view?.webview.postMessage({ type: "models", backend, models });
+    } catch (err) {
+      this._view?.webview.postMessage({
+        type: "models",
+        backend,
+        models: [],
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
-
-    // When tunnelling via a login node the remoteCmd is embedded inside a
-    // double-quoted SSH argument.  Any literal " in remoteCmd (e.g. the
-    // inner `bash -c "until … do … done"`) would break that outer double-
-    // quoted string, so we escape them as \" before interpolation.
-    const slurmProc = cp.spawn(
-      "bash", ["-c", loginNode
-        ? `ssh -tt ${loginNode} "salloc ${slurmArgs} srun --ntasks=1 bash -c '${remoteCmd.replace(/"/g, '\\"')}'"`
-        : `salloc ${slurmArgs} srun --ntasks=1 bash -c '${remoteCmd}'`],
-      { cwd, stdio: ["ignore", "pipe", "pipe"] }
-    );
-
-    serverProcess = slurmProc;
-    let tunnelCreated = false;  // guard: only create the tunnel once
-
-    slurmProc.stdout?.on("data", (d: Buffer) => {
-      const text = d.toString();
-      outputChannel.append(text);
-      // Parse compute node hostname emitted by ws_server.py (only act on first match)
-      const match = !tunnelCreated && text.match(/SLURM_NODE:(\S+)/);
-      if (match) {
-        tunnelCreated = true;
-        const node = match[1];
-        outputChannel.appendLine(`[SLURM] Compute node: ${node} — creating SSH tunnel...`);
-
-        // Free local port 8765 first, then spawn tunnel once fuser completes
-        cp.exec("fuser -k 8765/tcp 2>/dev/null; sleep 1", () => {
-          const commonOpts = [
-            "-N",
-            "-o", "StrictHostKeyChecking=no",
-            "-o", "ExitOnForwardFailure=yes",
-            "-o", "ServerAliveInterval=10",
-            "-o", "ServerAliveCountMax=3",
-            "-o", "IPQoS=lowdelay throughput",
-            "-o", "TCPKeepAlive=yes",
-            "-o", "Compression=no",
-            "-L", `8765:localhost:8765`,
-          ];
-          const tunnelArgs = loginNode
-            ? [...commonOpts, "-J", loginNode, node]
-            : [...commonOpts, node];
-          outputChannel.appendLine(`[SLURM] ssh ${tunnelArgs.join(" ")}`);
-          sshTunnelProcess = cp.spawn("ssh", tunnelArgs, { stdio: ["ignore", "pipe", "pipe"] });
-          sshTunnelProcess.stdout?.on("data", (d: Buffer) => outputChannel.append(d.toString()));
-          sshTunnelProcess.stderr?.on("data", (d: Buffer) => outputChannel.append(d.toString()));
-          sshTunnelProcess.on("exit", (code) => {
-            outputChannel.appendLine(`[SLURM] SSH tunnel exited (code ${code})`);
-          });
-          // Give the tunnel a moment to establish, then connect
-          setTimeout(() => this._connectToServer(), 3000);
-        });
-      }
-    });
-
-    slurmProc.stderr?.on("data", (d: Buffer) => outputChannel.append(d.toString()));
-    slurmProc.on("exit", (code) => {
-      outputChannel.appendLine(`\n[SLURM] Process exited (code ${code})`);
-      sshTunnelProcess?.kill();
-      sshTunnelProcess = undefined;
-      serverProcess = undefined;
-      this._view?.webview.postMessage({ type: "ws_closed" });
-    });
   }
 
   private _handleFromWebview(msg: unknown): void {
@@ -973,8 +736,6 @@ class MimirAgentViewProvider implements vscode.WebviewViewProvider {
         serverProcess.kill();
         serverProcess = undefined;
       }
-      sshTunnelProcess?.kill();
-      sshTunnelProcess = undefined;
       this._view?.webview.postMessage({ type: "ws_closed" });
       return;
     }
@@ -984,48 +745,31 @@ class MimirAgentViewProvider implements vscode.WebviewViewProvider {
       return;
     }
 
+    if (m.type === "fetch_models") {
+      void this._sendModels(
+        (m.backend as string | undefined) ?? "vllm",
+        (m.baseUrl as string | undefined) ?? "",
+      );
+      return;
+    }
+
     if (m.type === "connect") {
       const model = (m.model as string | undefined) ?? "";
-      const profile = m.profile as { loginNode?: string; slurmArgs?: string } | undefined;
       const backend = (m.backend as string | undefined) ?? "vllm";
-      const vllmBaseUrl = (m.vllmBaseUrl as string | undefined) ?? "http://127.0.0.1:8000";
-      const vllmMode = (m.vllmMode as "launch" | "connect" | undefined) ?? "launch";
-      const clusterVllmPath = (m.vllmPath as string | undefined);
-      const clusterOllamaPath = (m.ollamaPath as string | undefined);
+      const baseUrl = (m.baseUrl as string | undefined) ?? "http://127.0.0.1:8000";
       // Claude API key from the webview. Kept in-process only: passed to the
       // ws_server via the ANTHROPIC_API_KEY env var (never a CLI arg or setting),
       // so it never reaches the process list, the output channel, or disk.
       const anthropicApiKey = (m.anthropicApiKey as string | undefined) ?? "";
-      const cfg = vscode.workspace.getConfiguration("mimir");
-      const vllmConnect = backend === "vllm" && vllmMode === "connect";
-      // The hosted Claude API runs no local daemon and needs no GPU/SLURM — it
-      // runs the ws_server on the frontal and talks to api.anthropic.com, exactly
-      // like vLLM connect mode.
-      const anthropic = backend === "anthropic";
 
-      // In vLLM connect mode the model is whatever the endpoint serves, so an
-      // empty model is fine (ws_server resolves it from /v1/models). Every other
-      // backend — including Anthropic — needs an explicit model.
-      if (!model && !vllmConnect) {
+      // vLLM and Ollama resolve the served model themselves when none is picked,
+      // so only the hosted Claude API needs an explicit one.
+      if (!model && backend === "anthropic") {
         vscode.window.showErrorMessage("MIMIR: select a model before connecting.");
         return;
       }
 
-      if (anthropic) {
-        this._startLocalAndConnect(model, "anthropic", vllmBaseUrl, anthropicApiKey);
-      } else if (vllmConnect) {
-        // Connect to an already-running vLLM at vllmBaseUrl. No SLURM allocation
-        // and no `vllm serve` — the ws_server runs locally on the frontal and
-        // talks to the remote endpoint (regardless of slurmEnabled).
-        this._startLocalAndConnect(model, "vllm", vllmBaseUrl);
-      } else if (cfg.get<boolean>("slurmEnabled")) {
-        this._startSlurmAndConnect(model, profile, backend, vllmBaseUrl, clusterVllmPath, clusterOllamaPath, vllmMode);
-      } else {
-        // Non-slurm: just connect to the configured wsUrl.
-        // The user is responsible for starting the ws_server manually
-        // (e.g. on a remote ARM login node where spawning locally is not possible).
-        this._connectToServer();
-      }
+      this._startServerAndConnect(model, backend, baseUrl, anthropicApiKey);
       return;
     }
 
@@ -1043,13 +787,8 @@ class MimirAgentViewProvider implements vscode.WebviewViewProvider {
 
 // ── Optional server lifecycle ─────────────────────────────────────────────────
 
-let sshTunnelProcess: cp.ChildProcess | undefined;
-
 function startServer(context: vscode.ExtensionContext): void {
-  const cfg = vscode.workspace.getConfiguration("mimir");
-  const pythonPath = cfg.get<string>("pythonPath") ?? "python3";
-  const slurmEnabled = cfg.get<boolean>("slurmEnabled") ?? false;
-  const slurmArgs = cfg.get<string>("slurmArgs") ?? "";
+  const pythonPath = resolvePython();
 
   if (serverProcess && !serverProcess.killed) {
     vscode.window.showInformationMessage("MIMIR WS server is already running.");
@@ -1061,14 +800,8 @@ function startServer(context: vscode.ExtensionContext): void {
 
   const cwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
 
-  let spawnCmd: string;
-  if (slurmEnabled) {
-    spawnCmd = `salloc ${slurmArgs} srun ${pythonPath} -m mimir.client.ui.ws.ws_server --host 0.0.0.0 --port 8765`;
-    outputChannel.appendLine(`[SLURM] Allocating node: salloc ${slurmArgs}`);
-  } else {
-    // Free port 8765 first so a stale tunnel/server can't intercept connections.
-    spawnCmd = `fuser -k 8765/tcp 2>/dev/null || true && ${pythonPath} -m mimir.client.ui.ws.ws_server --port 8765`;
-  }
+  // Free port 8765 first so a stale server can't intercept connections.
+  const spawnCmd = `fuser -k 8765/tcp 2>/dev/null || true && ${pythonPath} -m mimir.client.ui.ws.ws_server --port 8765`;
 
   serverProcess = cp.spawn("bash", ["-c", spawnCmd], {
     cwd,
@@ -1078,45 +811,17 @@ function startServer(context: vscode.ExtensionContext): void {
     stdio: ["ignore", "pipe", "pipe"],
   });
 
-  serverProcess.stdout?.on("data", (d: Buffer) => {
-    const text = d.toString();
-    outputChannel.append(text);
-
-    // When SLURM mode is on, parse the compute node hostname and set up SSH tunnel
-    if (slurmEnabled) {
-      const match = text.match(/SLURM_NODE:(\S+)/);
-      if (match) {
-        const node = match[1];
-        outputChannel.appendLine(`[SLURM] Compute node: ${node} — creating SSH tunnel...`);
-        sshTunnelProcess?.kill();
-        sshTunnelProcess = cp.spawn("ssh", ["-N", "-L", `8765:localhost:8765`, node], {
-          stdio: "ignore",
-        });
-        sshTunnelProcess.on("exit", (code) => {
-          outputChannel.appendLine(`[SLURM] SSH tunnel exited (code ${code})`);
-        });
-        outputChannel.appendLine(`[SLURM] SSH tunnel established → localhost:8765 → ${node}:8765`);
-      }
-    }
-  });
-
-  serverProcess.stderr?.on("data", (d: Buffer) =>
-    outputChannel.append(d.toString())
-  );
+  serverProcess.stdout?.on("data", (d: Buffer) => outputChannel.append(d.toString()));
+  serverProcess.stderr?.on("data", (d: Buffer) => outputChannel.append(d.toString()));
   serverProcess.on("exit", (code) => {
     outputChannel.appendLine(`\nServer exited (code ${code})`);
-    sshTunnelProcess?.kill();
-    sshTunnelProcess = undefined;
     serverProcess = undefined;
   });
 
-  vscode.window.showInformationMessage(
-    slurmEnabled ? "MIMIR WS server starting via SLURM…" : "MIMIR WS server started."
-  );
+  vscode.window.showInformationMessage("MIMIR WS server started.");
   context.subscriptions.push({
     dispose: () => {
       serverProcess?.kill();
-      sshTunnelProcess?.kill();
     },
   });
 }

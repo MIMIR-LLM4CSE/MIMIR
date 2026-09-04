@@ -1,8 +1,10 @@
 import React, { useEffect, useRef } from "react";
+import type { ThinkingProfile } from "../types";
 
 // Mode lives in its own toolbar control (ModeSwitcher), not in this popover.
 interface Props {
   thinkingLevel: number;
+  thinkingProfile?: ThinkingProfile;
   streaming: boolean;
   contextMode: "compact" | "full";
   enforcement: "strict" | "light" | "off";
@@ -25,6 +27,73 @@ const DEPTH_HINTS = [
   "Unbudgeted reasoning on every turn",
 ] as const;
 
+/* ── Which rungs this model can actually honour ──────────────────────────────
+ * The ladder above assumes the model takes a token budget. Some families take a
+ * named effort rung instead, on their own scale — low/high/max for one, OpenAI's
+ * low/medium/high for another — and some cannot stop reasoning at all. Offering the
+ * full slider there would be six settings with two effects, so the scale is built
+ * from what the server reported. The value handed back is always a real
+ * THINKING_DEPTH index, so nothing downstream has to know about any of this.     */
+interface DepthScale {
+  depths: number[];
+  labels: string[];
+  budgets: string[];
+  hints: string[];
+  note?: string;
+}
+
+// Depths an effort ladder maps onto, cheapest first: quick / medium / deep / max.
+const EFFORT_DEPTHS = [2, 3, 4, 5];
+
+function buildScale(profile: ThinkingProfile | undefined): DepthScale {
+  const mechanism = profile?.mechanism ?? "kwarg";
+  const canDisable = profile?.can_disable ?? true;
+
+  if (mechanism === "effort") {
+    const levels = profile?.levels?.length ? profile.levels : ["low", "medium", "high"];
+    const scale: DepthScale = {
+      depths: levels.map((_, i) => EFFORT_DEPTHS[Math.min(i, EFFORT_DEPTHS.length - 1)]),
+      labels: [...levels],
+      budgets: levels.map((l) => `${l} effort`),
+      hints: levels.map((l, i) =>
+        i === 0 ? `Least reasoning this model will do (${l})`
+        : i === levels.length - 1 ? `Most reasoning effort (${l})`
+        : `Reasoning effort: ${l}`),
+      note: canDisable
+        ? "This model names its reasoning effort rather than budgeting it in tokens."
+        : "This model always reasons — its effort scale has no \"off\".",
+    };
+    if (canDisable) {
+      scale.depths.unshift(0);
+      scale.labels.unshift("off");
+      scale.budgets.unshift("disabled");
+      scale.hints.unshift("No reasoning block at all");
+    }
+    return scale;
+  }
+
+  if (mechanism === "directive") {
+    return {
+      depths: [0, 1],
+      labels: ["off", "on"],
+      budgets: ["disabled", "model-chosen"],
+      hints: [
+        "No reasoning block at all",
+        "Reasoning on, at whatever depth the model chooses",
+      ],
+      note: "This model is steered by a system-prompt directive, so it takes no token budget.",
+    };
+  }
+
+  // enable_thinking + thinking_budget: the full ladder.
+  return {
+    depths: [0, 1, 2, 3, 4, 5],
+    labels: [...DEPTH_LABELS],
+    budgets: [...DEPTH_BUDGETS],
+    hints: [...DEPTH_HINTS],
+  };
+}
+
 const ENFORCEMENT_OPTIONS = [
   { value: "strict", label: "🛡 strict", title: "All guidance nudges on (discovery, doc, state, etc.) — best for smaller models" },
   { value: "light", label: "⚖ light", title: "Drop the chatty discovery nudge, keep the rest of the guidance layer" },
@@ -39,6 +108,7 @@ const ENFORCEMENT_HINTS: Record<"strict" | "light" | "off", string> = {
 
 export const AgentSettings: React.FC<Props> = ({
   thinkingLevel,
+  thinkingProfile,
   streaming,
   contextMode,
   enforcement,
@@ -48,6 +118,18 @@ export const AgentSettings: React.FC<Props> = ({
   onEnforcementChange,
   onClose,
 }) => {
+  // The depths this model can express, and where the current level sits on them.
+  // An unavailable depth (e.g. "off" on a model that always reasons) falls back to
+  // the nearest rung rather than showing an empty selection.
+  const scale = buildScale(thinkingProfile);
+  const exact = scale.depths.indexOf(thinkingLevel);
+  const rung = exact >= 0
+    ? exact
+    : scale.depths.reduce(
+        (best, d, i) => (Math.abs(d - thinkingLevel) < Math.abs(scale.depths[best] - thinkingLevel) ? i : best),
+        0,
+      );
+
   const ref = useRef<HTMLDivElement>(null);
 
   // Close on click outside
@@ -107,38 +189,39 @@ export const AgentSettings: React.FC<Props> = ({
 
       <div className="settings-divider" />
 
-      {/* Thinking depth slider */}
+      {/* Thinking depth slider — rungs come from the model's mechanism */}
       <div className="settings-section-label">Thinking depth</div>
       <div className="settings-depth-wrap">
         <div className="settings-depth-header">
-          <span className={`settings-depth-badge ${thinkingLevel === 0 ? "off" : "on"}`}>
-            💭 {DEPTH_LABELS[thinkingLevel]}
+          <span className={`settings-depth-badge ${scale.depths[rung] === 0 ? "off" : "on"}`}>
+            💭 {scale.labels[rung]}
           </span>
-          <span className="settings-depth-budget">{DEPTH_BUDGETS[thinkingLevel]}</span>
+          <span className="settings-depth-budget">{scale.budgets[rung]}</span>
         </div>
         <input
           type="range"
           min={0}
-          max={DEPTH_LABELS.length - 1}
+          max={scale.depths.length - 1}
           step={1}
-          value={thinkingLevel}
+          value={rung}
           className="settings-depth-slider"
-          style={{ "--pct": `${(thinkingLevel * 100) / (DEPTH_LABELS.length - 1)}%` } as React.CSSProperties}
-          onChange={(e) => onThinkingLevelChange(Number(e.target.value))}
+          style={{ "--pct": `${(rung * 100) / Math.max(1, scale.depths.length - 1)}%` } as React.CSSProperties}
+          onChange={(e) => onThinkingLevelChange(scale.depths[Number(e.target.value)])}
         />
         <div className="settings-depth-ticks">
-          {DEPTH_LABELS.map((label, i) => (
+          {scale.labels.map((label, i) => (
             <span
               key={i}
-              className={`settings-depth-tick ${i === thinkingLevel ? "active" : ""}`}
-              title={DEPTH_HINTS[i]}
-              onClick={() => onThinkingLevelChange(i)}
+              className={`settings-depth-tick ${i === rung ? "active" : ""}`}
+              title={scale.hints[i]}
+              onClick={() => onThinkingLevelChange(scale.depths[i])}
             >
               {label}
             </span>
           ))}
         </div>
-        <div className="settings-context-hint">{DEPTH_HINTS[thinkingLevel]}</div>
+        <div className="settings-context-hint">{scale.hints[rung]}</div>
+        {scale.note && <div className="settings-context-hint settings-depth-note">{scale.note}</div>}
       </div>
 
       <div className="settings-divider" />
