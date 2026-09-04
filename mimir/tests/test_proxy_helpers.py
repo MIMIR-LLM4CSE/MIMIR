@@ -27,7 +27,7 @@ for _p in (SERVERS_DIR / "_shared", SERVERS_DIR / "proxy"):
 from _lib import execute, metrics, procs, ratchet, report, store  # noqa: E402
 
 try:
-    import numpy as _np_top
+    import numpy as _np_top  # noqa: F401  (availability probe)
     _HAVE_NUMPY_TOP = True
 except ImportError:
     _HAVE_NUMPY_TOP = False

@@ -91,7 +91,8 @@ class MaybeCompactIntraQueryTests(unittest.TestCase):
         original_head = messages[:2]
         original_tail = messages[-4:]
 
-        compacted = lambda middle: [{"role": "assistant", "content": "SUMMARY"}]
+        def compacted(middle):
+            return [{"role": "assistant", "content": "SUMMARY"}]
         with patch.object(history_module, "_INTRA_QUERY_COMPACT_TOKENS", 1):
             history_module._maybe_compact_intra_query(
                 messages, "S", {}, compacted, token_counter=len,

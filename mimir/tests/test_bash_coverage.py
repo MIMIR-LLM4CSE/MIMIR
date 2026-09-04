@@ -228,6 +228,33 @@ class CorpusCreditTests(unittest.TestCase):
         self.assertNotIn("tests/test_solver.py", ec["validated_files"])
         self.assertEqual(ec["validation_fail_count_by_file"].get("tests/test_solver.py"), 1)
 
+    def test_reformatting_is_not_checking(self) -> None:
+        """A formatter rewrites the file and exits 0 regardless, so it credits nothing.
+
+        The head alone used to decide this, and `ruff format .` reads as `ruff`: it
+        matched the whole-project shortcut and cleared every pending file at tier
+        `static`, on the strength of a run that had only moved whitespace — in the very
+        files it was crediting. `--check`/`--diff` report instead of writing, which is
+        what a checker does, so those forms stay credited.
+        """
+        for command in ("ruff format solver.py", "python -m ruff format solver.py",
+                        "black solver.py"):
+            with self.subTest(command=command):
+                ec = _run(command, dirty=("solver.py",))
+                self.assertNotIn("solver.py", ec["validated_files"],
+                                 f"{command!r}: a reformat was credited as a check")
+
+        ec = _run("ruff format .", dirty=("pending.py",))
+        self.assertNotIn("pending.py", ec["validated_files"],
+                         "a project-wide reformat cleared the pending files")
+
+        for command in ("ruff format --check solver.py", "ruff check solver.py",
+                        "black --check solver.py"):
+            with self.subTest(command=command):
+                ec = _run(command, dirty=("solver.py",))
+                self.assertIn("solver.py", ec["validated_files"],
+                              f"{command!r}: a real check lost its credit")
+
     def test_a_failed_run_is_charged_to_the_run(self) -> None:
         ec = _run("pytest tests/test_solver.py", status="error",
                   dirty=("tests/test_solver.py",))

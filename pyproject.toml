@@ -52,6 +52,7 @@ finetune = [
 # Development / test tooling.
 dev = [
     "pytest>=8.0.0",
+    "ruff>=0.6.0",
 ]
 
 [project.urls]
@@ -90,3 +91,26 @@ mimir = [
 
 [tool.pytest.ini_options]
 testpaths = ["mimir/tests"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+# Generated/vendored trees the linter has no say over.
+extend-exclude = ["mimir/vscode-extension", "build", "slides"]
+
+[tool.ruff.lint]
+# Deliberately narrow: the rules that catch a defect, not the ones that impose a
+# house style. E9/F are the ones that would have failed the file at import (a real
+# `F821 undefined-name` sat in server_proxy's run aggregation until this was turned
+# on); E4/E7 cover imports and the statement-level traps. Style-only families
+# (import sorting, quoting, line breaks) are left off on purpose — enabling them
+# would rewrite 200 files and bury the findings that matter under the churn.
+select = ["E4", "E7", "E9", "F"]
+
+[tool.ruff.lint.per-file-ignores]
+# The servers and their tests reach _shared/ and _lib/ by inserting onto sys.path,
+# so their imports cannot sit at the top of the file (E402). Tests also line up
+# short assertions with semicolons and group scaffolding imports (E702/E401), which
+# reads better in a table of cases than one statement per line.
+"mimir/tests/*" = ["E402", "E702", "E401"]
+"mimir/client/ui/ws/_ws_runtime.py" = ["E402"]

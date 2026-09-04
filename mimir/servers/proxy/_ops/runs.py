@@ -168,7 +168,7 @@ def aggregate(
 
         row: dict = {
             "run_id":      run_id,
-            "proxy":       proxy_name,
+            "proxy":       cfg.get("proxy_name", ""),
             "arch":        entry.get("arch", ""),
             "backend":     entry.get("backend", ""),
             "parallelism": entry.get("parallelism", ""),

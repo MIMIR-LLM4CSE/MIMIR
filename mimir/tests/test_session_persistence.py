@@ -8,7 +8,6 @@ halves of the fix: a client transcript is stored verbatim (with the guards that 
 overwriting the wrong session or a longer history), and the untrimmed record is kept
 beside the window and is what a load restores.
 """
-import os
 import tempfile
 import unittest
 from unittest import mock

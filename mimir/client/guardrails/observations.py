@@ -825,6 +825,30 @@ _VALIDATOR_TIER = {
     "gcc": "compiled", "g++": "compiled", "gfortran": "compiled", "nvcc": "compiled",
     "javac": "compiled",
 }
+# Reformatting is not checking. `ruff format` and a bare `black` rewrite the file and
+# exit 0 whether or not the code is correct — so crediting them was a pass awarded for
+# moving whitespace, and awarded in the very files being moved: `ruff format .` matched
+# the project-wide shortcut above and cleared every pending file at tier `static`.
+# `--check`/`--diff` are the exception in both tools: they report instead of writing,
+# which is what a checker does.
+_REPORT_ONLY_FLAGS = ("--check", "--diff")
+
+
+def _rewrites_instead_of_checking(head: str, argv: tuple[str, ...]) -> bool:
+    """True when this validator invocation formats the file rather than judging it."""
+    if head not in ("ruff", "black"):
+        return False
+    if any(flag in argv for flag in _REPORT_ONLY_FLAGS):
+        return False
+    if head == "black":
+        return True
+    # ruff formats only under its `format` sub-command; bare `ruff` and `ruff check`
+    # are checks. The head is not argv[0] for `python -m ruff`, so read the sub-command
+    # after the head rather than at a fixed index.
+    rest = argv[argv.index(head) + 1:] if head in argv else argv
+    return next((a for a in rest if not a.startswith("-")), "") == "format"
+
+
 # What turns a compiler invocation back into the cheap, always-affordable check: it
 # parses and type-checks the translation unit without emitting an object, so it is the
 # mandatory floor for a compiled language the way ``py_compile`` is for Python.
@@ -929,6 +953,8 @@ def _bash_validation_scan(
             continue  # env setup: preparation, not evidence
         seg_tier = _VALIDATOR_TIER.get(seg.head)
         if seg_tier is None:
+            continue
+        if _rewrites_instead_of_checking(seg.head, seg.argv):
             continue
         if seg_tier == "compiled" and any(f in seg.argv for f in _SYNTAX_ONLY_FLAGS):
             seg_tier = "syntax"

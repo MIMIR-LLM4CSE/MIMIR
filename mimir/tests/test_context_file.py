@@ -213,7 +213,16 @@ class DefaultBaseShapeTests(unittest.TestCase):
         # non-negotiables naming the allocation and optimization-session gates, whose
         # rules previously existed only in a violation payload the model read after
         # being blocked. Base sat at 13004 against the old ceiling.
-        self.assertLess(len(cb._DEFAULT_BASE_SYSTEM_CONTENT), 13500)
+        # Raised 13500 -> 14500 for four rules that survived the pin's removal. The
+        # discovery pin used to restate the session's paths at every step; deleting it
+        # moved the burden onto the prompt, which now has to say once what the pin was
+        # repeating badly: calibrate effort to the task (discovery ends when the files
+        # are named), issue independent calls in one response, never assume domain
+        # semantics -- units, sign and time conventions, indexing -- and stop
+        # deliberating when the next action is already settled. The domain-semantics
+        # line is the one worth the tokens on its own: an assumed convention runs,
+        # passes every check in ## Validation, and is still wrong. Base sat at 14052.
+        self.assertLess(len(cb._DEFAULT_BASE_SYSTEM_CONTENT), 14500)
 
     def test_env_resolution_cascade_lives_in_the_nudges_not_the_prompt(self) -> None:
         # The 5-step cascade is covered by env_resolution/env_cleanup nudges, which
@@ -327,7 +336,9 @@ class CoreNudgeCoverageTests(unittest.TestCase):
         # blocks finalization on the checklist it describes, so leaving it in the
         # overridable half let an application prompt delete a rule the loop still
         # enforces. The move costs core ~700 chars and the base nothing.
-        self.assertLess(len(cb._CORE_SYSTEM_CONTENT), 10500)
+        # Raised 10500 -> 11000 for the share of the post-pin rules that landed in core
+        # (see the base budget above for why they were written). Core sat at 10707.
+        self.assertLess(len(cb._CORE_SYSTEM_CONTENT), 11000)
 
 
 class SubAgentSectionGateTests(unittest.TestCase):

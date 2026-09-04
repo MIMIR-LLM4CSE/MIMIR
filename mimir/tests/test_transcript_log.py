@@ -92,7 +92,7 @@ class AppendTests(unittest.TestCase):
 
 class ReadTests(unittest.TestCase):
     def test_a_torn_line_does_not_lose_the_rest_of_the_file(self):
-        with _TmpState() as state:
+        with _TmpState():
             path = transcript_log.transcript_path("s1")
             os.makedirs(os.path.dirname(path), exist_ok=True)
             with open(path, "w", encoding="utf-8") as f:

@@ -246,7 +246,7 @@ def _run_tool(agent: _FakeAgent, ctx):
 class ProgressForwardingTests(unittest.TestCase):
     def test_the_child_s_tool_calls_reach_the_caller_in_order(self):
         ctx = _RecordingCtx()
-        out = _run_tool(_EmittingAgent("X is in a.py:12."), ctx)
+        _run_tool(_EmittingAgent("X is in a.py:12."), ctx)
         kinds = [json.loads(m)["t"] for _, m in ctx.reports]
         self.assertEqual(kinds, ["tc", "tr"])
         self.assertEqual(json.loads(ctx.reports[0][1])["n"], "grep")

@@ -22,7 +22,7 @@ for _p in (SERVERS_DIR / "_shared", SERVERS_DIR / "proxy"):
         sys.path.insert(0, _ps)
 
 import server_proxy  # noqa: E402
-from _lib import procs, ratchet, store  # noqa: E402  (procs/ratchet re-exported for test_proxy_opt_loop)
+from _lib import procs, ratchet, store  # noqa: E402,F401  (procs/ratchet re-exported for test_proxy_opt_loop)
 from _ops import eval_session, references, registry, runs, scaffold, slurm, suites  # noqa: E402,F401  (re-exported for sibling test modules)
 
 

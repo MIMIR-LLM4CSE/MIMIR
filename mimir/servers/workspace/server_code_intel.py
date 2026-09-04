@@ -441,7 +441,7 @@ def find_references(name: str, context_lines: int = 0) -> dict:
             col = _symbol_column(abs_path, int(def_entry["line"]), name)
             locs = client.references(abs_path, int(def_entry["line"]) - 1, col)
             if locs:
-                refs = [e for e in (_lsp_location_to_entry(l) for l in locs) if e][:_MAX_RESULTS]
+                refs = [e for e in (_lsp_location_to_entry(x) for x in locs) if e][:_MAX_RESULTS]
                 if refs:
                     return ok({"name": name, "backend": "lsp",
                                "references": _attach_context(refs, context_lines)})

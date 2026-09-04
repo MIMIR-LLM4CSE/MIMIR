@@ -13,6 +13,10 @@ numpy>=1.24.0
 sympy>=1.12
 psutil>=5.9.0
 
+# Optional: dev tooling — the two checks CI runs (`pip install -e ".[dev]"`)
+# pytest>=8.0.0
+# ruff>=0.6.0
+
 # Optional: fine-tuning stack (only needed for the ml/ servers)
 # torch>=2.0.0
 # transformers>=4.40.0
