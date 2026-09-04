@@ -1,11 +1,13 @@
-"""Tests for the discovery pin's size bound and its recency ranking (no network).
+"""Tests for the per-step pin and the recency-preserving sets (no network).
 
-The pin is re-sent on every step, so what it costs and which slice it shows are both
-load-bearing. Two properties are pinned here: every section is capped (three of them
-used to print in full, and they were the ones that grow on a long refactor), and the
-slice is the most recently touched entries rather than the alphabetically last.
+The pin is re-sent on every step, so what it carries is load-bearing. It carries the
+live task checklist and nothing else: it used to also repeat the paths read, written
+and planned this session, which the model copied instead of used (a DeepSeek run
+looped on the file list until the step budget ran out).
 """
 
+import os
+import tempfile
 import unittest
 
 from mimir.client.context.execution_context import (
@@ -14,16 +16,7 @@ from mimir.client.context.execution_context import (
     recent_first,
     validate_execution_context,
 )
-from mimir.client.prompt.system_prompt import build_discovery_pin_block
-
-
-def _pin_paths(pin: str) -> list[str]:
-    """Basenames of the path lines of *pin*, in the order they are rendered."""
-    return [
-        line.strip().rsplit("/", 1)[-1]
-        for line in pin.splitlines()
-        if line.startswith("  /")
-    ]
+from mimir.client.prompt.system_prompt import build_checklist_pin_block
 
 
 class RecencySetTests(unittest.TestCase):
@@ -76,67 +69,50 @@ class RecencySetTests(unittest.TestCase):
         validate_execution_context(ctx)  # must not raise
 
 
-class PinCapTests(unittest.TestCase):
-    def _saturated(self):
+class ChecklistPinTests(unittest.TestCase):
+    def _ctx_with_todo(self, body: str) -> dict:
+        tmp = tempfile.mkdtemp()
+        path = os.path.join(tmp, "todo_list.md")
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(body)
+        self.addCleanup(os.rmdir, tmp)
+        self.addCleanup(os.remove, path)
         ctx = execution_context_template()
-        for i in range(200):
-            ctx["read_files"].add(f"src/module_{i:03d}.py")
-            ctx["existing_paths"].add(f"src/e_{i:03d}.py")
-        for i in range(40):
-            ctx["dirty_written_files"].add(f"src/w_{i:03d}.py")
-        for i in range(20):
-            ctx["planned_edit_targets"].add(f"src/p_{i:03d}.py")
-        ctx["prev_query_written_files"] = {f"src/q_{i:03d}.py" for i in range(20)}
+        ctx["todo_file_path"] = path
         return ctx
 
-    def test_every_section_is_capped(self) -> None:
-        pin = build_discovery_pin_block(self._saturated(), max_files=10)
-        shown = _pin_paths(pin)
-        for stem, cap in (("module_", 10), ("e_", 10), ("w_", 10), ("p_", 10), ("q_", 10)):
-            # Match the basename's own prefix: a plain substring test would count
-            # "module_190.py" as an "e_" entry.
-            got = [b for b in shown if b.startswith(stem)]
-            self.assertLessEqual(len(got), cap, f"{stem}* is not capped: {len(got)} shown")
-        patterns = [ln for ln in pin.splitlines() if ln.strip().startswith("'pattern_")]
-        self.assertLessEqual(len(patterns), 5)
+    def test_it_renders_the_checklist_with_the_pending_count(self) -> None:
+        pin = build_checklist_pin_block(
+            self._ctx_with_todo("- [x] read the solver\n- [ ] add the binding\n")
+        )
+        self.assertIn("Task checklist (1 pending):", pin)
+        self.assertIn("  [x] read the solver", pin)
+        self.assertIn("  [ ] add the binding", pin)
 
-    def test_write_side_sections_report_what_they_hide(self) -> None:
-        # These three printed in full before; a truncated list must say so.
-        pin = build_discovery_pin_block(self._saturated(), max_files=10)
-        self.assertIn("... and 30 more", pin)  # 40 written
-        self.assertIn("... and 10 more", pin)  # 20 planned / 20 previous-query
+    def test_discovery_evidence_is_not_pinned(self) -> None:
+        # The paths are already in the transcript; repeating them at the tail of every
+        # prompt is a pattern the model copies rather than uses.
+        ctx = self._ctx_with_todo("- [ ] add the binding\n")
+        for i in range(20):
+            ctx["read_files"].add(f"src/module_{i:03d}.py")
+            ctx["existing_paths"].add(f"src/e_{i:03d}.py")
+            ctx["dirty_written_files"].add(f"src/w_{i:03d}.py")
+            ctx["planned_edit_targets"].add(f"src/p_{i:03d}.py")
+        pin = build_checklist_pin_block(ctx)
+        self.assertNotIn("module_", pin)
+        self.assertNotIn("Files read", pin)
+        self.assertNotIn("Known existing paths", pin)
+        self.assertNotIn("Planned edit targets", pin)
+        self.assertNotIn("Files written", pin)
 
-    def test_saturated_pin_stays_bounded(self) -> None:
-        pin = build_discovery_pin_block(self._saturated(), max_files=10)
-        # 6 sections x (10 entries + header + "more") — comfortably under the ~6.5k
-        # chars the uncapped version produced for the same state.
-        self.assertLess(len(pin), 4000)
-
-    def test_empty_context_produces_no_pin(self) -> None:
-        self.assertEqual(build_discovery_pin_block(execution_context_template()), "")
-
-
-class PinRecencyTests(unittest.TestCase):
-    def test_the_most_recent_read_is_shown(self) -> None:
-        ctx = execution_context_template()
-        for i in range(12):
-            ctx["read_files"].add(f"src/zpad_{i:02d}.py")
-        ctx["read_files"].add("src/a_solver.py")  # last read, first alphabetically
-        shown = _pin_paths(build_discovery_pin_block(ctx, max_files=10))
-        self.assertEqual(shown[0], "a_solver.py")
-
-    def test_ordering_is_recency_not_alphabetical(self) -> None:
-        ctx = execution_context_template()
-        for name in ["src/c.py", "src/a.py", "src/b.py"]:
-            ctx["read_files"].add(name)
-        self.assertEqual(_pin_paths(build_discovery_pin_block(ctx)), ["b.py", "a.py", "c.py"])
+    def test_no_checklist_produces_no_pin(self) -> None:
+        self.assertEqual(build_checklist_pin_block(execution_context_template()), "")
+        self.assertEqual(build_checklist_pin_block(self._ctx_with_todo("no items\n")), "")
 
     def test_rendering_is_stable_across_calls(self) -> None:
-        ctx = execution_context_template()
-        for i in range(30):
-            ctx["read_files"].add(f"src/f_{i:03d}.py")
-        first = build_discovery_pin_block(ctx)
-        self.assertEqual(build_discovery_pin_block(ctx), first)
+        ctx = self._ctx_with_todo("- [ ] a\n- [ ] b\n")
+        first = build_checklist_pin_block(ctx)
+        self.assertEqual(build_checklist_pin_block(ctx), first)
 
 
 if __name__ == "__main__":

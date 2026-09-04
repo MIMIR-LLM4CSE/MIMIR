@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import type { ExecResult, ToolActivity } from "../types";
+import { subAgentTail } from "./subAgentUtils";
 import { useElapsed, formatDuration } from "../hooks/useElapsed";
 
 /** Terminal-style in/out panel for an exec-shaped tool result (shell, code
@@ -127,16 +128,19 @@ const ToolLabel: React.FC<{ label: string }> = ({ label }) => {
 
 interface RowProps {
   tool: ToolActivity;
+  /** Rows a delegating call produced — rendered as its collapsible content. */
+  childRows?: ToolActivity[];
 }
 
-const ToolRow: React.FC<RowProps> = ({ tool }) => {
+const ToolRow: React.FC<RowProps> = ({ tool, childRows = [] }) => {
   const isError = tool.status === "error";
   const hasExec = tool.exec !== undefined;
   const hasError = isError && !!tool.error;
-  // Anything the row can reveal — exec panel or error text — makes the head a
-  // working toggle. A failed row without exec used to be inert, leaving its only
-  // explanation cropped in the tail.
-  const canExpand = hasExec || hasError;
+  const hasChildren = childRows.length > 0;
+  // Anything the row can reveal — exec panel, error text or a sub-agent's steps —
+  // makes the head a working toggle. A failed row without exec used to be inert,
+  // leaving its only explanation cropped in the tail.
+  const canExpand = hasExec || hasError || hasChildren;
   // The tail is a narrow, single-line slot: an error there renders as a fragment
   // cropped mid-sentence. Failed rows keep it clear — the ✕ carries the status and
   // the full command/error is one click away.
@@ -211,6 +215,17 @@ const ToolRow: React.FC<RowProps> = ({ tool }) => {
           <span className="tool-detail">{tool.detail}</span>
         )}
         <span className="tool-row-tail">
+          {tool.waiting && tool.status === "running" && (
+            <span
+              className="tool-summary"
+              title="The sub-agent is in a model turn — no step to show yet"
+            >
+              {tool.waiting}
+            </span>
+          )}
+          {hasChildren && (
+            <span className="tool-summary">{subAgentTail([tool, ...childRows], tool.id)}</span>
+          )}
           {tool.childrenDropped ? (
             <span
               className="tool-summary"
@@ -233,6 +248,13 @@ const ToolRow: React.FC<RowProps> = ({ tool }) => {
       {expanded && hasError && (
         <ErrorOutput error={tool.error!} onCollapse={() => setExpanded(false)} />
       )}
+      {expanded && hasChildren && (
+        <div className="tool-children">
+          {childRows.map((c) => (
+            <ToolRow key={c.id} tool={c} />
+          ))}
+        </div>
+      )}
     </div>
   );
 };
@@ -241,14 +263,28 @@ interface Props {
   tools: ToolActivity[];
 }
 
-/** Renders a list of tool invocations (live or frozen) as a compact card. */
+/** Renders a list of tool invocations (live or frozen) as a compact card.
+ *
+ *  A sub-agent's steps are its parent's content, not siblings of the agent's own
+ *  work: a delegated run can be dozens of rows, and flat they buried the turn. They
+ *  are grouped under the delegating row and folded away until asked for. A child
+ *  whose parent is gone from this list still gets rendered, flat, rather than lost. */
 export const ToolActivityList: React.FC<Props> = ({ tools }) => {
   if (tools.length === 0) return null;
+  const ids = new Set(tools.map((t) => t.id));
+  const childrenOf = new Map<string, ToolActivity[]>();
+  for (const t of tools) {
+    if (t.parentId && ids.has(t.parentId)) {
+      childrenOf.set(t.parentId, [...(childrenOf.get(t.parentId) ?? []), t]);
+    }
+  }
   return (
     <div className="tool-card">
-      {tools.map((t) => (
-        <ToolRow key={t.id} tool={t} />
-      ))}
+      {tools
+        .filter((t) => !(t.parentId && ids.has(t.parentId)))
+        .map((t) => (
+          <ToolRow key={t.id} tool={t} childRows={childrenOf.get(t.id)} />
+        ))}
     </div>
   );
 };

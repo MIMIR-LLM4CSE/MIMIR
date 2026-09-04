@@ -23,7 +23,7 @@ classifiers = [
 
 # Core runtime — enough to start every server registered by default.
 dependencies = [
-    "mcp>=1.0.0",
+    "mcp>=1.0.0,<2",
     "ollama>=0.3.0",
     "openai>=1.0.0",
     "httpx>=0.27.0",

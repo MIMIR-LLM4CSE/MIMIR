@@ -169,13 +169,6 @@ class MimirAgent:
         self.thinking = self.thinking_depth > 0
         self.thinking_budget: int = THINKING_DEPTH_BUDGETS[self.thinking_depth]  # -1 = unlimited; >0 = token budget hint
         self.streaming = True
-        # How the per-step discovery pin is attached to the prompt (see
-        # agent_loop._inject_pin): "system" (default, a transient tail system
-        # message — matches the existing skill-context message), "user", or
-        # "append_user" for strict templates (Mistral/Devstral). Overridable per
-        # model via the vLLM profile's "pin_role" or MIMIR_PIN_ROLE. Empty means
-        # "auto": resolve_pin_role() then derives it from the model profile.
-        self.pin_role: str = os.environ.get("MIMIR_PIN_ROLE", "")
         # Reasoning-babysitting (guidance) enforcement level: "strict" | "light" |
         # "off". Resolved once here from the model's vLLM profile — the model is
         # immutable for the agent's lifetime, so there is nothing to re-resolve per
@@ -524,11 +517,6 @@ class MimirAgent:
                 execution_context[field].update(sorted(prior))
         if self._carry_context.get("searched"):
             execution_context["searched"] = True
-        # Forward previous-query write set into execution context so the
-        # discovery pin can warn the model to re-read those files.
-        prev_written = self._carry_context.get("last_query_written_files", set())
-        if prev_written:
-            execution_context["prev_query_written_files"] = set(prev_written)
 
     def _update_carry_context(self, execution_context: dict) -> None:
         """Persist the fields worth remembering into the session carry dict."""
@@ -539,8 +527,8 @@ class MimirAgent:
                 self._carry_context[field] = prior | current
         if execution_context.get("searched"):
             self._carry_context["searched"] = True
-        # Record which files were written this query so the next query's
-        # discovery pin can warn the model to re-read them before editing.
+        # Record which files were written this query so a sub-agent's hand-back can
+        # report them (see server_spawn_agent).
         self._carry_context["last_query_written_files"] = set(
             execution_context.get("dirty_written_files", set())
         )

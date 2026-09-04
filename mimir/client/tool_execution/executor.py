@@ -394,6 +394,13 @@ def _make_subagent_progress_cb(call_id: str):
                 "type": "subagent_event", "kind": "end", "parent_id": call_id,
                 "dropped": payload.get("dropped", 0),
             })
+        elif kind == "hb":
+            # The child is in a model turn: nothing to show as a row, but the row that
+            # spawned it would otherwise be indistinguishable from a hung call.
+            emit_event({
+                "type": "subagent_event", "kind": "heartbeat", "parent_id": call_id,
+                "waiting_secs": payload.get("s", 0),
+            })
 
     return _on_progress
 

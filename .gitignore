@@ -21,3 +21,6 @@ node_modules/
 # Logs & runtime
 *.log
 slides/
+
+# Local environment bootstrap (site-specific)
+setup.sh

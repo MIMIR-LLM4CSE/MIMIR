@@ -17,22 +17,24 @@ from ..config.constants import (
     AGENT_STEP_SOFT_BUDGET,
     AGENT_STEP_EXTENSION,
     AGENT_STEP_HARD_CEILING,
+    AGENT_EMPTY_TURN_RETRIES,
     DOMAIN_REARM_MAX_PER_QUERY,
     NUDGE_MAX_CONSECUTIVE_NOOP,
     THINKING_DEPTH_AUTO,
     max_tools_for,
 )
-from ..config.models import resolve_pin_role, READONLY_MODES, VALID_MODES
+from ..config.models import READONLY_MODES, VALID_MODES
 from ..context import validate_execution_context
 from ..guardrails.builtin_check import sweep_builtin_checks
 from ..guardrails.workflow import (
     evidence_handback_message,
     finalize_incomplete_answer,
+    EMPTY_TURN_RETRY,
     STEP_LIMIT_NUDGE,
     TERMINATION_STEP_LIMIT,
     TERMINATION_USER_STOPPED,
 )
-from ..prompt.system_prompt import build_discovery_pin_block, _PIN_MARKER
+from ..prompt.system_prompt import build_checklist_pin_block, _PIN_MARKER
 from ..guardrails.nudges import (
     inject_reminder,
     maybe_append_nudge,
@@ -167,8 +169,8 @@ def _advertised_tools(agent: Any) -> list[dict]:
 # Kept small so structured events don't bloat the WebSocket stream.
 
 
-def _inject_pin(messages: list[dict], execution_context: dict, pin_role: str = "system"):
-    """Append the discovery pin as a TRANSIENT tail message before a model call.
+def _inject_pin(messages: list[dict], execution_context: dict):
+    """Append the checklist pin as a TRANSIENT tail user turn before a model call.
 
     Keeping the pin at the very end — instead of rewriting the static system
     message (messages[0]) every step — leaves the whole conversation prefix
@@ -177,42 +179,31 @@ def _inject_pin(messages: list[dict], execution_context: dict, pin_role: str = "
     to strip the pin immediately after the call, so it never enters persisted
     history (``_last_full_messages``) or the next step's prefix.
 
-    ``pin_role`` controls attachment (role-sensitivity matters for chat templates):
-
-    * ``"system"`` (default) — a transient system message at the tail. This mirrors
-      the existing mid-conversation skill-context system message, so any backend
-      that tolerates that tolerates this.
-    * ``"user"`` — a transient user message at the tail.
-    * ``"append_user"`` — folded onto the end of the last user message's content,
-      for strict templates (e.g. Mistral/Devstral) that reject mid-conversation or
-      consecutive roles. Falls back to a tail message when there is no user message.
+    A ``user`` turn is the only placement that is safe across chat templates. A tail
+    ``system`` message is not: a template is free to fold it into the preceding turn,
+    and the DeepSeek one drops the generation prompt along with it — the model is then
+    asked to *continue the pin's own text* rather than answer, which it does, looping
+    on the checklist until the step budget runs out. A tail user turn always renders
+    with the assistant marker after it, and the strict-alternation templates that
+    reject two user turns in a row are served by the backend's existing
+    consecutive-user merge (``_merge_consecutive_user_messages``), which folds the pin
+    into the preceding turn exactly as the old per-model "append_user" role did.
 
     Returns an opaque token (or ``None`` when the pin is empty).
     """
-    pin = build_discovery_pin_block(execution_context)
+    pin = build_checklist_pin_block(execution_context)
     if not pin or not pin.strip():
         return None
-    if pin_role == "append_user":
-        for i in range(len(messages) - 1, -1, -1):
-            if messages[i].get("role") == "user":
-                original = messages[i].get("content", "")
-                messages[i]["content"] = (original or "") + "\n" + pin
-                return ("append", i, original)
-    role = "user" if pin_role == "user" else "system"
-    messages.append({"role": role, "content": pin})
-    return ("tail", len(messages) - 1, None)
+    messages.append({"role": "user", "content": pin})
+    return len(messages) - 1
 
 
 def _remove_pin(messages: list[dict], token) -> None:
     """Undo :func:`_inject_pin` so the transient pin never persists into history."""
     if token is None:
         return
-    kind, idx, original = token
-    if kind == "tail":
-        if messages and str(messages[-1].get("content", "")).startswith(_PIN_MARKER):
-            messages.pop()
-    elif kind == "append" and 0 <= idx < len(messages):
-        messages[idx]["content"] = original
+    if messages and str(messages[-1].get("content", "")).startswith(_PIN_MARKER):
+        messages.pop()
 
 
 
@@ -230,7 +221,7 @@ def _drain_steer(agent: Any, messages: list[dict]) -> None:
 
     Optional by design: callers that never set ``_poll_steer`` (CLI, sub-agents, tests)
     are unaffected, mirroring the ``getattr(agent, "_cancel_flag", None)`` pattern. The
-    injected messages persist in history (unlike the transient discovery pin). Adjacent
+    injected messages persist in history (unlike the transient checklist pin). Adjacent
     user turns (e.g. following a post-dispatch nudge) are reconciled downstream by the
     backend's consecutive-user-message merge, so no folding is needed here.
     """
@@ -380,6 +371,12 @@ async def _run_agent_loop(
         budget = max_steps
         hard = max_steps
     options = {'temperature': 0.3}
+    # A sub-agent caps its own answer: left to the backend default it gets the whole
+    # answer reserve (tens of thousands of tokens), and a step that runs away is
+    # invisible from outside — one mute row for as long as it takes to generate.
+    _answer_cap = int(getattr(agent, "max_answer_tokens", 0) or 0)
+    if _answer_cap > 0:
+        options['max_tokens'] = _answer_cap
     # Whether the system message currently carries the "auto" calibration directive.
     # Tracked so a mid-run rung change can rewrite it (see _sync_thinking_directive).
     auto_active = getattr(agent, "thinking_depth", None) == THINKING_DEPTH_AUTO
@@ -388,7 +385,6 @@ async def _run_agent_loop(
     _tok = lambda text: _streaming.get_backend().count_text_tokens(agent.model, text)  # noqa: E731
     compact_fn = getattr(agent, "compact_messages", None)
     context_mode = getattr(agent, "context_mode", "full")
-    pin_role = resolve_pin_role(agent.model, getattr(agent, "pin_role", ""))
     # Compute the per-query tool list ONCE and reuse it every step. The list is
     # query-stable (pruning + relevance cap depend only on the query, not on the
     # evolving execution_context), so recomputing per step only churned the prompt
@@ -399,6 +395,9 @@ async def _run_agent_loop(
     # stripped up front — before the context filter, which only prunes by relevance.
     readonly = active_mode in READONLY_MODES
     query_tools = _mode_tools(agent, query, execution_context, active_mode)
+    # Consecutive turns that returned neither prose nor a tool call (see the guard
+    # in the loop body).
+    empty_turns = 0
     # Only the two exits below reach the post-loop report; a final answer returns
     # from inside the loop.
     termination = TERMINATION_STEP_LIMIT
@@ -455,7 +454,7 @@ async def _run_agent_loop(
         # dispatch) so the first iteration — and any call whose history grew via
         # injected nudges — can never overflow the model window. Accounts for the
         # (stable) tools schema sent alongside `messages`. Runs while the transient
-        # discovery pin is NOT in `messages`, so trimming sees the real history.
+        # checklist pin is NOT in `messages`, so trimming sees the real history.
         _enforce_context_budget(
             messages, system_content, query_tools, execution_context,
             agent.model, context_mode, compact_fn, _tok,
@@ -488,10 +487,10 @@ async def _run_agent_loop(
         )
         step_cb = {**cb, "token_callback": hold.capture} if hold else cb
 
-        # Inject the discovery pin as a transient tail message for THIS call only,
+        # Inject the checklist pin as a transient tail message for THIS call only,
         # then strip it immediately (even on cancellation) so it never persists
         # into history or the next step's cacheable prefix.
-        pin_token = _inject_pin(messages, execution_context, pin_role)
+        pin_token = _inject_pin(messages, execution_context)
         try:
             msg = _stream_chat(
                 agent.model,
@@ -522,6 +521,29 @@ async def _run_agent_loop(
         if not tool_calls:
             # No tool call -> the model has produced a final answer.
             answer = msg.get("content", "")
+            # Unless it produced nothing at all. A turn with neither prose nor a call
+            # is a generation failure, not a conclusion — accepting it ends the run on
+            # an empty answer, which is what a hand-off (plan approval → agent mode)
+            # looks like when the model returns a single stray token. Drop the empty
+            # turn from history so the retry does not build on it.
+            if not (answer or "").strip():
+                empty_turns += 1
+                if empty_turns <= AGENT_EMPTY_TURN_RETRIES:
+                    if hold:
+                        hold.discard()
+                    if messages and messages[-1].get("role") == "assistant":
+                        messages.pop()
+                    emit({"type": "status", "text": (
+                        f"  ↻ Empty turn from the model — retrying "
+                        f"({empty_turns}/{AGENT_EMPTY_TURN_RETRIES})."
+                    )})
+                    inject_reminder(messages, EMPTY_TURN_RETRY, category="empty_turn", tagged=False)
+                    step += 1
+                    continue
+                answer = (
+                    "The model returned empty turns repeatedly and the run was stopped. "
+                    "Nothing was concluded — retry the query."
+                )
             # A nudge is only worth sending while the model still *acts* on our
             # reminders. Count consecutive bare "done" turns (any tool dispatch
             # below resets it): the first earns the useful reminder, but once the
@@ -578,6 +600,7 @@ async def _run_agent_loop(
         # The model acted this turn — reset the no-op streak so it keeps earning
         # reminders as long as it keeps making progress between them.
         execution_context["consecutive_noop_turns"] = 0
+        empty_turns = 0
         # Defence in depth for the read-only modes: the write/exec tools were never
         # advertised, but a model can still hallucinate a call to one, and the
         # dual-use exec tool is deliberately still visible for discovery.
@@ -734,10 +757,9 @@ async def run_agent_query(
                 ),
             })
 
-    # The discovery pin (carry-context knowledge: existing paths, prior reads) is
-    # injected as a transient tail message on every step including the first (see
-    # _inject_pin), so the static system message at messages[0] stays byte-stable
-    # across the whole query for prefix caching.
+    # The live task checklist is injected as a transient tail message on every step
+    # including the first (see _inject_pin), so the static system message at
+    # messages[0] stays byte-stable across the whole query for prefix caching.
 
     # Streaming callbacks bundled once and forwarded to _stream_chat by the loops.
     cb = {

@@ -55,6 +55,26 @@ function _sharedProfilePath(): string | undefined {
   return candidates.find((p) => fs.existsSync(p));
 }
 
+/**
+ * Append the host of *baseUrl* to the inherited no_proxy/NO_PROXY lists.
+ *
+ * On-prem vLLM hosts are reachable directly but an HTTP proxy will
+ * black-hole them, which turns model resolution into an indefinite hang.
+ */
+function noProxyFor(baseUrl: string): Record<string, string> {
+  let host: string;
+  try {
+    host = new URL(baseUrl).hostname;
+  } catch {
+    return {};
+  }
+  if (!host) {
+    return {};
+  }
+  const merge = (v: string | undefined) => (v ? `${v},${host}` : host);
+  return { no_proxy: merge(process.env.no_proxy), NO_PROXY: merge(process.env.NO_PROXY) };
+}
+
 function _loadVllmToolCallParsers(): Record<string, string> {
   const sharedPath = _sharedProfilePath();
   if (sharedPath) {
@@ -631,10 +651,13 @@ class MimirAgentViewProvider implements vscode.WebviewViewProvider {
     // deliberately kept out of this string so it never lands in the output channel.
     outputChannel.appendLine(`[Local] Starting server: ${spawnCmd}`);
 
-    // Internal HTTPS vLLM routes (e.g. *.corp.local) are served behind a private
+    // Internal HTTPS vLLM routes are often served behind a private
     // CA; when the user disables cert verification, propagate VLLM_VERIFY_SSL so
     // /v1/models model-resolution and chat requests don't hit CERTIFICATE_VERIFY_FAILED.
     const verifyEnv = cfg.get<boolean>("vllmVerifySsl", true) ? {} : { VLLM_VERIFY_SSL: "0" };
+    // An HTTP proxy silently swallows requests to an on-prem vLLM host,
+    // so ws_server would hang on /v1/models before ever binding port 8765.
+    const noProxyEnv = backend === "vllm" ? noProxyFor(vllmBaseUrl) : {};
     // Only override ANTHROPIC_API_KEY when the webview actually supplied one;
     // otherwise inherit whatever is already exported (so users who set the key in
     // their shell don't have to retype it in the form).
@@ -644,7 +667,7 @@ class MimirAgentViewProvider implements vscode.WebviewViewProvider {
       cwd,
       // Anchor the agent's per-workspace state dir (.mimir) and the file-server
       // root to the opened workspace, regardless of the process cwd.
-      env: { ...process.env, MCP_FILES_ROOT: cwd, ...verifyEnv, ...anthropicEnv },
+      env: { ...process.env, MCP_FILES_ROOT: cwd, ...noProxyEnv, ...verifyEnv, ...anthropicEnv },
       stdio: ["ignore", "pipe", "pipe"],
     });
 

@@ -39,6 +39,7 @@ from mcp.server.fastmcp import FastMCP
 from capabilities import TASK_PLANNING, tool_caps, RECOVERABLE
 from responses import err, ok
 from state_paths import state_dir
+from text_tools import yaml_scalar, yaml_unquote
 
 # Central per-workspace state dir (MIMIR_STATE_DIR, set by server_manager; legacy
 # <workspace>/.mimir fallback for standalone/tests). Todos and plans are per-session
@@ -116,7 +117,7 @@ def _parse_plan(content: str) -> dict:
         key, _, val = line.partition(":")
         key = key.strip()
         if key in ("title", "date"):
-            fields[key] = val.strip()
+            fields[key] = yaml_unquote(val)
     fields["text"] = body.strip()
     return fields
 
@@ -297,7 +298,10 @@ def todo_set_plan(text: str, title: str) -> dict:
     pdir = _plans_dir()
     os.makedirs(pdir, exist_ok=True)
     body = text.strip()
-    content = f"---\ntitle: {title.strip()}\ndate: {_now_display()}\n---\n\n{body}\n"
+    content = (
+        f"---\ntitle: {yaml_scalar(title)}\ndate: {yaml_scalar(_now_display())}\n"
+        f"---\n\n{body}\n"
+    )
     plan_path = os.path.abspath(os.path.join(pdir, f"{name}.md"))
     with open(plan_path, "w", encoding="utf-8") as f:
         f.write(content)

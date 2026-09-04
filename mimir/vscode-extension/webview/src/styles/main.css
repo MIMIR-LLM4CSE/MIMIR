@@ -934,6 +934,17 @@ body {
   opacity: 0.82;
 }
 
+/* The delegated run's steps, folded under the call that spawned them. The rule
+   keeps the group tied to its parent while the list scrolls past. */
+.tool-children {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin: 2px 0 4px 10px;
+  padding-left: 6px;
+  border-left: 1px solid var(--border);
+}
+
 .tool-origin {
   font-family: var(--mono);
   font-size: 0.72em;

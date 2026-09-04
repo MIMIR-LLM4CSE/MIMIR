@@ -9,7 +9,6 @@ from typing import Any, Awaitable, Callable
 # the other user-extension resolvers (servers/skills/plugins); building lives here.
 from ..extensions.system_prompt import resolve_system_prompt_file
 from ..config.constants import THINKING_DEPTH_AUTO
-from ..context.execution_context import recent_first
 
 logger = logging.getLogger(__name__)
 
@@ -103,7 +102,9 @@ _SECTION_LATITUDE = (
 _SECTION_TOOL_RESULTS = (
     "## Tool results\n"
     "- After every tool call, read all returned fields: stdout, stderr, status, error, hint.\n"
-    "- If the same error occurs twice, stop and report it."
+    "- If the same error occurs twice, stop and report it.\n"
+    "- Independent calls go out in the SAME response — issued together they run in parallel, "
+    "one per turn they do not. Never serialise reads or searches that do not depend on each other."
 )
 
 _SECTION_STYLE = (
@@ -122,6 +123,11 @@ _SECTION_WORKFLOW = (
     "## Workflow\n"
     "Four modes, as the task warrants: discover (gather evidence), edit (produce the artifact), "
     "validate (verify), conclude. Trivial tasks collapse to a single step.\n"
+    "- Calibrate the effort to the task, and let it differ sharply between tasks. Discovery earns "
+    "its cost only where something is genuinely unknown: once you can name the files and symbols "
+    "the change touches, you are done discovering — reading one more file is delay, not diligence. "
+    "A small, located change is one targeted read and the edit; no survey, no plan, no todo list, "
+    "no standalone summary of what you found.\n"
     "- Modes you move between, not a pipeline traversed once: going back to discovery "
     "mid-edit, editing again after a check, or holding several files at different stages "
     "is the normal shape of the work, not a regression.\n"
@@ -152,7 +158,12 @@ _SECTION_DISCOVERY = (
     "to what you need instead of paging through the file.\n"
     "- A task that builds something new outside the repository has nothing to discover in it: skip "
     "the survey and start from the requirements.\n"
-    "- Identify exact files, symbols, and boundaries yourself before editing."
+    "- Identify exact files, symbols, and boundaries yourself before editing.\n"
+    "- NEVER assume the domain semantics of the code you touch — what a symbol denotes, its units, "
+    "sign and time conventions, its indexing and memory layout, which formulation of the model is "
+    "implemented. Read the definition, the documentation, or the caller that fixes it, and if "
+    "nothing does, ask. This is the one shortcut that survives every check in Validation: an "
+    "assumed convention runs, passes, and is wrong."
 )
 
 _SECTION_EDITING = (
@@ -275,6 +286,8 @@ _SECTION_REASONING = (
     "- Keep it brief and decisive: identify the key unknowns, pick the most direct approach, stop. "
     "Restating the problem, or re-deriving known facts adds nothing. "
     "Stating exact implementation details is a waste of tokens. "
+    "- Reasoning is not the work: when the next action is already settled by what you just read, "
+    "take it — deliberating over a file you could simply open costs more than opening it."
 )
 
 # Conditional — injected by build_system_content only at the "auto" rung of the
@@ -779,98 +792,30 @@ def build_system_content(
     return system_content
 
 
-_PIN_MARKER = "\n[Discovery pin — auto-updated]\n"
+_PIN_MARKER = "\n[Task checklist — auto-updated]\n"
 
 
-def _pin_path(path: str) -> str:
-    """Render a stored workspace-relative path as an absolute one, for display.
+def build_checklist_pin_block(execution_context: dict[str, Any]) -> str:
+    """Build the live task checklist, re-read from disk, for the per-step pin.
 
-    The pin tells the model to use these paths *directly*, and file tools require
-    absolute paths — so showing the stored relative form would hand it a path its
-    next call rejects, and force it to reconstruct the root. That reconstruction is
-    exactly the inference the absolute-path rule removed (see
-    ``server_files._require_abs``); leaving it in the pin would reintroduce it at
-    the point the model is most likely to copy blindly.
+    Re-read rather than snapshotted so the block always reflects the latest state,
+    even after the model has marked a step complete mid-session: the copy in
+    ``messages[0]`` is a build-time snapshot, so this is the only live channel for
+    the checklist. Returns an empty string when there is no checklist.
 
-    Display only. ``execution_context`` keeps storing workspace-relative paths, so
-    every gate, nudge and set-membership check is untouched.
+    This pin used to also carry discovery evidence — the paths read, written, and
+    planned this session. That was removed: the paths are already in the transcript
+    the model is reading, and repeating a bare list of them at the tail of every
+    prompt is a pattern the model copies rather than uses.
     """
-    if not path:
-        return path
-    from ..config.constants import WORKSPACE_ROOT
-    return path if os.path.isabs(path) else os.path.join(WORKSPACE_ROOT, path)
-
-
-def build_discovery_pin_block(
-    execution_context: dict[str, Any],
-    *,
-    max_files: int = 10,
-) -> str:
-    """Build a compact pinned summary of in-session discovery evidence.
-
-    Appended to the system message after every tool dispatch so key file
-    paths and search patterns survive tool-history trimming.  Returns an
-    empty string when the context holds no evidence worth pinning.
-    """
-    lines: list[str] = []
-
-    def _pin_section(header: str, field: str, cap: int, render=_pin_path) -> None:
-        """Append a capped, recency-ranked section.
-
-        Every section is capped: the three write-side (planned targets, files
-        written, files written last query).
-
-        Ordering is recency-first (see ``recent_first``): the slice has to be the paths
-        the model just touched.
-        """
-        values = recent_first(execution_context.get(field) or ())
-        if not values:
-            return
-        lines.append(header)
-        lines.extend(f"  {render(v)}" for v in values[:cap])
-        if len(values) > cap:
-            lines.append(f"  ... and {len(values) - cap} more")
-
-    # Paths confirmed to exist on disk (carried across queries).  Showing
-    # these prevents the model from trying to re-create files that already
-    # exist (e.g. __init__.py, directories) from a previous query.
-    _pin_section(
-        "Known existing paths (already on disk — do not re-create):",
-        "existing_paths", max_files,
-    )
-    _pin_section(
-        "Files read this session (use these paths directly):",
-        "read_files", max_files,
-    )
-    _pin_section("Planned edit targets:", "planned_edit_targets", max_files)
-    _pin_section(
-        "Files written this session (validate before claiming done):",
-        "dirty_written_files", max_files,
-    )
-    _pin_section(
-        "Files written in the previous query — their content has changed since:",
-        "prev_query_written_files", max_files,
-    )
-
-    # Live todo checklist — re-read from disk so the pin always reflects the latest
-    # state, even after the model has marked a step complete mid-session. Built
-    # BEFORE the emptiness test: the checklist is pin-worthy on its own. (It used to
-    # be appended after an early `if not lines: return ""`, so a run whose only live
-    # state was the checklist — no reads, no writes, no searches yet — silently lost
-    # it; the copy in messages[0] is a build-time snapshot, so that left no live
-    # channel at all.)
-    todo_lines: list[str] = []
     todo_fp = execution_context.get("todo_file_path", "")
-    if todo_fp:
-        todo_items = _load_todo_items(todo_fp)
-        if todo_items:
-            pending = sum(1 for it in todo_items if not it.get("done"))
-            todo_lines.append(f"\nTask checklist ({pending} pending):")
-            todo_lines.extend(
-                f"  [{'x' if it['done'] else ' '}] {it['text']}" for it in todo_items
-            )
-
-    if not lines and not todo_lines:
+    if not todo_fp:
+        return ""
+    todo_items = _load_todo_items(todo_fp)
+    if not todo_items:
         return ""
 
-    return _PIN_MARKER + "\n".join(lines + todo_lines) + "\n"
+    pending = sum(1 for it in todo_items if not it.get("done"))
+    lines = [f"Task checklist ({pending} pending):"]
+    lines.extend(f"  [{'x' if it['done'] else ' '}] {it['text']}" for it in todo_items)
+    return _PIN_MARKER + "\n".join(lines) + "\n"

@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 import sys
+import threading
 from typing import Any, Callable
 
 from .base import LLMBackend
@@ -127,7 +128,7 @@ _LAUNCH_ONLY_PROFILE_KEYS: frozenset[str] = frozenset({
     "tool_call_parser", "reasoning_parser", "async-scheduling",
     # Client-only knobs consumed by the agent loop / config, never valid as vLLM
     # request sampling params — must be stripped from extra_body.
-    "pin_role", "max_tools", "thinking_directive",
+    "max_tools", "thinking_directive",
 })
 
 
@@ -364,6 +365,33 @@ def _merge_consecutive_user_messages(prepared: list[dict]) -> list[dict]:
 
 
 class VllmBackend(LLMBackend):
+    def __init__(self) -> None:
+        super().__init__()
+        # One OpenAI client (hence one httpx connection pool) per endpoint, reused
+        # across calls. Built per call, each one left its socket for the GC to close:
+        # a sub-agent process running dozens of turns piled up CLOSE-WAIT connections
+        # to the server. Guarded because sub-agents call chat() from their own threads.
+        self._clients: dict[tuple[str, str], Any] = {}
+        self._clients_lock = threading.Lock()
+
+    def _client_for(self, base_url: str, api_key: str) -> Any:
+        key = (base_url, api_key)
+        with self._clients_lock:
+            client = self._clients.get(key)
+            if client is None:
+                from openai import OpenAI
+                import httpx
+
+                # trust_env=False so an HTTP proxy (HTTP_PROXY/HTTPS_PROXY)
+                # is bypassed — vLLM is on the local cluster network, no proxy needed.
+                client = OpenAI(
+                    base_url=base_url,
+                    api_key=api_key,
+                    http_client=httpx.Client(trust_env=False, verify=verify_ssl()),
+                )
+                self._clients[key] = client
+            return client
+
     def _fetch_context_window(self, model: str) -> int | None:
         """vLLM context window = the server's reported max_model_len.
 
@@ -424,17 +452,7 @@ class VllmBackend(LLMBackend):
         think_start_callback: Callable[[], None] | None = None,
         think_end_callback: Callable[[], None] | None = None,
     ) -> dict:
-        from openai import OpenAI
-        import httpx
-
-        base_url, api_key = _get_vllm_config()
-        # Use trust_env=False so the corporate Squid proxy (HTTP_PROXY/HTTPS_PROXY)
-        # is bypassed — vLLM is on the local cluster network, no proxy needed.
-        client = OpenAI(
-            base_url=base_url,
-            api_key=api_key,
-            http_client=httpx.Client(trust_env=False, verify=verify_ssl()),
-        )
+        client = self._client_for(*_get_vllm_config())
 
         parser = ThinkTagParser(
             token_callback=token_callback,

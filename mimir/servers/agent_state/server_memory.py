@@ -30,6 +30,7 @@ from mcp.server.fastmcp import FastMCP
 from capabilities import tool_caps, PLAN_BLOCKED, RECOVERABLE
 from responses import err, ok
 from state_paths import state_dir
+from text_tools import yaml_scalar, yaml_unquote
 import embed as _embed
 
 # Memory lives at the root of the central per-workspace state dir (MIMIR_STATE_DIR,
@@ -110,21 +111,21 @@ def _parse_frontmatter(content: str) -> dict:
         key, val = key.strip(), val.strip()
         if key == "tags":
             val = val.strip("[]")
-            fields["tags"] = [t.strip() for t in val.split(",") if t.strip()]
+            fields["tags"] = [yaml_unquote(t) for t in val.split(",") if t.strip()]
         else:
-            fields[key] = val
+            fields[key] = yaml_unquote(val)
     fields["text"] = body.strip()
     return fields
 
 
 def _serialize(entry: dict) -> str:
     tags = entry.get("tags", [])
-    tags_line = "[" + ", ".join(tags) + "]"
+    tags_line = "[" + ", ".join(yaml_scalar(t) for t in tags) + "]"
     return (
         "---\n"
-        f"name: {entry['name']}\n"
-        f"description: {entry.get('description', '')}\n"
-        f"date: {entry.get('date', _now_display())}\n"
+        f"name: {yaml_scalar(entry['name'])}\n"
+        f"description: {yaml_scalar(entry.get('description', ''))}\n"
+        f"date: {yaml_scalar(entry.get('date', _now_display()))}\n"
         f"tags: {tags_line}\n"
         "---\n\n"
         f"{entry.get('text', '').strip()}\n"

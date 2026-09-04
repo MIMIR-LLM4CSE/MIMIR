@@ -121,6 +121,10 @@ AGENT_STEP_SOFT_BUDGET: int = 50
 AGENT_STEP_EXTENSION: int = 50
 AGENT_STEP_HARD_CEILING: int = 200
 
+# Consecutive turns that come back with neither prose nor a tool call before the
+# loop gives up retrying and ends the run (see agent_loop's empty-turn guard).
+AGENT_EMPTY_TURN_RETRIES: int = 3
+
 # Maximum consecutive validation failures per file before edits are blocked and
 # the session auto-escapes to conclude (incomplete).
 VALIDATION_RETRY_BUDGET: int = 5

@@ -79,11 +79,10 @@ class CarryJsonRoundTripTests(unittest.TestCase):
 
         reloaded = _bare_agent()
         reloaded.load_state(json.loads(blob))
-        ctx = execution_context_template()
-        with patch("mimir.client.agent_core.absolute_workspace_path", side_effect=lambda p: p):
-            reloaded._apply_carry_context(ctx)
 
-        self.assertEqual(ctx["prev_query_written_files"], {"solver.py", "util.py"})
+        self.assertEqual(
+            reloaded._carry_context["last_query_written_files"], {"solver.py", "util.py"}
+        )
 
     def test_undeclared_set_is_still_converted(self) -> None:
         # Backstop: a key nobody declared must not corrupt the session file.

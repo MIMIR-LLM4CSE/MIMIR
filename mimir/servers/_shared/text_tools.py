@@ -4,6 +4,37 @@ import os
 import re
 
 
+_YAML_RESERVED_WORDS = {
+    "true", "false", "null", "yes", "no", "on", "off", "~",
+}
+
+
+def yaml_scalar(value: str) -> str:
+    """Render a string as a YAML scalar, quoting it when plain style is unsafe."""
+    text = str(value or "").replace("\n", " ").replace("\r", " ").strip()
+    if not text:
+        return '""'
+    needs_quote = (
+        text[0] in "-?:,[]{}#&*!|>'\"%@`"
+        or ": " in text
+        or text.endswith(":")
+        or " #" in text
+        or text.lower() in _YAML_RESERVED_WORDS
+    )
+    if needs_quote:
+        return "'" + text.replace("'", "''") + "'"
+    return text
+
+
+def yaml_unquote(value: str) -> str:
+    """Inverse of :func:`yaml_scalar` for the simple scalars we emit."""
+    text = (value or "").strip()
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in ("'", '"'):
+        inner = text[1:-1]
+        return inner.replace("''", "'") if text[0] == "'" else inner
+    return text
+
+
 def tokenize(text: str, min_len: int = 2) -> set[str]:
     """Split text into lowercase alphanumeric tokens with a minimum length."""
     return {

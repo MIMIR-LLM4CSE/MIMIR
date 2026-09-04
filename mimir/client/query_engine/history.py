@@ -274,7 +274,7 @@ def _maybe_compact_intra_query(
     Keeps: system message, first user message, last 4 messages (2 exchanges).
     Replaces everything in between with a single assistant summary produced by
     *compact_fn* (same signature as chat_session.compact_history).
-    The discovery pin is a transient tail message (see _inject_pin), not part of
+    The checklist pin is a transient tail message (see _inject_pin), not part of
     messages[0], so compaction never disturbs it.
 
     Total size is measured in tokens via *token_counter* against the token
@@ -307,7 +307,7 @@ def _maybe_compact_intra_query(
         return  # compaction failed — silently continue without it
 
     messages[2:-4] = summary_messages
-    # The discovery pin is a transient tail message (see _inject_pin), not part of
+    # The checklist pin is a transient tail message (see _inject_pin), not part of
     # messages[0], so compaction of the middle never disturbs it — nothing to refresh.
 
 

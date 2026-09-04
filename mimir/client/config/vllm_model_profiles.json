@@ -1,11 +1,11 @@
 {
-  "mistral":       { "tool_call_parser": "mistral", "pin_role": "append_user" },
-  "devstral":      { "tool_call_parser": "mistral", "pin_role": "append_user", "max_tools": 40, "enforcement": "strict" },
-  "mixtral":       { "tool_call_parser": "mistral", "pin_role": "append_user" },
-  "codestral":     { "tool_call_parser": "mistral", "pin_role": "append_user" },
-  "mathstral":     { "tool_call_parser": "mistral", "pin_role": "append_user" },
-  "magistral":     { "tool_call_parser": "mistral", "pin_role": "append_user" },
-  "pixtral":       { "tool_call_parser": "mistral", "pin_role": "append_user" },
+  "mistral":       { "tool_call_parser": "mistral" },
+  "devstral":      { "tool_call_parser": "mistral", "max_tools": 40, "enforcement": "strict" },
+  "mixtral":       { "tool_call_parser": "mistral" },
+  "codestral":     { "tool_call_parser": "mistral" },
+  "mathstral":     { "tool_call_parser": "mistral" },
+  "magistral":     { "tool_call_parser": "mistral" },
+  "pixtral":       { "tool_call_parser": "mistral" },
 
   "qwen3.8":       { "tool_call_parser": "qwen3_xml",   "supports_thinking": true, "reasoning_parser": "qwen3" },
   "qwen3-coder":   { "tool_call_parser": "qwen3_coder" },

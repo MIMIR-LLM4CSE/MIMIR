@@ -60,7 +60,6 @@ class ExecutionContext(TypedDict):
     todo_file_path: str                             # absolute path to the active todo_list.md (set at query start)
     last_edit_success_path: str                     # path of last successful code edit (cleared after injection)
     # ── Cross-query and loop bookkeeping ───────────────────────────────────────
-    prev_query_written_files: set[str]               # files written by the PREVIOUS query, forwarded from carry_context so the pin can warn to re-read them
     tool_msg_files: dict[str, list[str]]             # tool_call_id -> files that tool message concerns; lets history trimming match messages to files structurally
     consecutive_noop_turns: int                      # consecutive bare final-answer turns with no tool call (nudge cutoff)
     history_truncated: bool                          # the context backstop dropped older content this query; a cached read may no longer be "above in your context"
@@ -99,11 +98,11 @@ def loop_control(execution_context: dict[str, Any]) -> LoopControlState:
 
 # ── Recency-preserving sets ────────────────────────────────────────────────────
 #
-# Several fields are rendered into the discovery pin, which can only show a bounded
-# slice of them. A plain ``set`` carries no order, so the only deterministic slice is
-# an alphabetical one — and the alphabetically-last ten paths are not the ten that
-# matter. ``RecencySet`` keeps insertion order alongside the set so the pin can show
-# what the model just touched.
+# Several path fields can only ever be shown as a bounded slice — a summary, a nudge,
+# a hand-back. A plain ``set`` carries no order, so the only deterministic slice is an
+# alphabetical one, and the alphabetically-last ten paths are not the ten that matter.
+# ``RecencySet`` keeps insertion order alongside the set so a slice can be the paths
+# the model just touched.
 #
 # It IS a ``set``: every existing membership test, ``|``, ``-`` and ``isinstance``
 # check keeps working unchanged. Operators that build a new set return a plain one and
@@ -205,8 +204,8 @@ _FIELD_SPECS: tuple[_FieldSpec, ...] = (
     ("searched", lambda: False, (bool,), frozenset({DISCOVERY})),
     ("inspected_dirs", set, (set,), frozenset({CARRY, DISCOVERY})),
     ("checked_paths", set, (set,), frozenset({CARRY, FILE_PATH, KNOWN_FILE, DISCOVERY})),
-    # RecencySet: rendered into the pin, which shows a bounded slice — recency is what
-    # makes that slice useful (see recent_first).
+    # RecencySet: shown as a bounded slice, where recency is what makes the slice
+    # useful (see recent_first).
     ("read_files", RecencySet, (set,), frozenset({CARRY, FILE_PATH, KNOWN_FILE, DISCOVERY})),
     # Not DISCOVERY: a path's existence can be established as a side effect of the
     # loop's own bookkeeping rather than by the model's own exploration, which is
@@ -269,13 +268,9 @@ _FIELD_SPECS: tuple[_FieldSpec, ...] = (
     # ── Tool visibility ────────────────────────────────────────────────────────
     ("rearmed_domains", set, (set,), _NO_TRAITS),
     # ── Cross-query and loop bookkeeping ───────────────────────────────────────
-    # These three were live without being declared: written by the loop, the dispatcher
-    # or the carry merge, and read by the pin and the history budget — but invisible to
-    # the template, to validate_execution_context and to the trait derivations. That is
-    # why a deleted file kept appearing in the pin's "written last query" list: the
-    # delete observer purges fields_with(FILE_PATH), and an undeclared field has no
-    # traits to be found by.
-    ("prev_query_written_files", set, (set,), frozenset({FILE_PATH})),
+    # These were live without being declared: written by the loop, the dispatcher or
+    # the carry merge, and read by the history budget — but invisible to the template,
+    # to validate_execution_context and to the trait derivations.
     ("tool_msg_files", dict, (dict,), _NO_TRAITS),
     ("consecutive_noop_turns", lambda: 0, (int,), _NO_TRAITS),
     ("history_truncated", lambda: False, (bool,), _NO_TRAITS),
@@ -299,7 +294,7 @@ _CarryExtraSpec = tuple[str, Callable[[], Any], str, bool]
 
 _CARRY_EXTRA_SPECS: tuple[_CarryExtraSpec, ...] = (
     ("searched", lambda: False, "scalar", False),
-    # Forwarded into the next query's execution_context as prev_query_written_files.
+    # Reported by a sub-agent's hand-back (see server_spawn_agent).
     ("last_query_written_files", set, "set", True),
     # path -> mtime at the time of the read; used to evict reads a later edit staled.
     ("_read_mtimes", dict, "dict", False),

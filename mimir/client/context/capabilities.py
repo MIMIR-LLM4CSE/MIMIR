@@ -116,9 +116,10 @@ BACKGROUNDABLE = "backgroundable"      # launches a long detached run; result ma
 # read-only guarantee: `files` carries the write tools too. What makes the child
 # read-only is the read-only mode it runs in, where the capability-driven tool filter
 # and the dual-use call gate both apply. Consumed by server_spawn_agent.py.
+# Kept to what reading a repository actually needs: every entry costs the child a
+# subprocess to start before its first step, and a fan-out pays that per child.
 _EXPLORER_SERVERS: frozenset[str] = frozenset({
-    "files", "search", "code_intel", "bash", "web", "math", "strings",
-    "datetime", "memory", "system", "platform",
+    "files", "search", "code_intel", "bash",
 })
 
 

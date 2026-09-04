@@ -46,7 +46,7 @@ def profile_for_model(model: str) -> dict:
 
     Matches the resolution used for request ``extra_body`` (e.g. ``mistral-medium:128b``
     → ``mistral``), but returns the FULL profile (no key stripping) so client-only
-    settings such as ``pin_role`` / ``max_tools`` can be read. Returns ``{}`` on no match.
+    settings such as ``max_tools`` / ``enforcement`` can be read. Returns ``{}`` on no match.
     """
     model_lower = (model or "").lower().replace("\\", "/").strip()
     parts = [p for p in model_lower.split("/") if p]
@@ -60,15 +60,6 @@ def profile_for_model(model: str) -> dict:
         default=None,
     )
     return dict(VLLM_MODEL_PROFILES.get(best_key, {})) if best_key else {}
-
-
-def resolve_pin_role(model: str, override: str = "") -> str:
-    """Discovery-pin attachment role: explicit *override* wins, else the model's
-    profile ``pin_role``, else ``"system"`` (see agent_loop._inject_pin)."""
-    if override:
-        return override
-    role = profile_for_model(model).get("pin_role")
-    return role if role in ("system", "user", "append_user") else "system"
 
 
 def enforcement_level(model: str) -> str:

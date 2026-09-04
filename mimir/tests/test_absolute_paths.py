@@ -219,37 +219,7 @@ class PathRoundTripTests(unittest.TestCase):
     paths while file tools require absolute ones, the model has to join the root
     itself — which is precisely the inference the rule removed, reintroduced at the
     moment it is most likely to copy without thinking.
-
-    Regression guard: the discovery pin literally says "use these paths directly",
-    and for a while it said that above paths the next call would reject.
     """
-
-    def test_pin_renders_absolute_paths(self):
-        from mimir.client.config.constants import WORKSPACE_ROOT
-        from mimir.client.prompt.system_prompt import build_discovery_pin_block
-        pin = build_discovery_pin_block({
-            "read_files": {"pkg/mod.py"},
-            "dirty_written_files": {"out/solver.py"},
-            "existing_paths": {"README.md"},
-            "planned_edit_targets": {"pkg/next.py"},
-            "prev_query_written_files": {"pkg/old.py"},
-        })
-        for rel in ("pkg/mod.py", "out/solver.py", "README.md",
-                    "pkg/next.py", "pkg/old.py"):
-            self.assertIn(os.path.join(WORKSPACE_ROOT, rel), pin, rel)
-        # No bare relative form left for the model to copy.
-        for line in pin.splitlines():
-            stripped = line.strip()
-            if stripped.endswith(".py") or stripped.endswith(".md"):
-                self.assertTrue(os.path.isabs(stripped), line)
-
-    def test_pin_display_does_not_change_stored_form(self):
-        # Display-only: the gates compare workspace-relative paths and must not shift.
-        from mimir.client.prompt.system_prompt import build_discovery_pin_block
-        ec = {"read_files": {"pkg/mod.py"}, "dirty_written_files": {"out/solver.py"}}
-        build_discovery_pin_block(ec)
-        self.assertEqual(ec["read_files"], {"pkg/mod.py"})
-        self.assertEqual(ec["dirty_written_files"], {"out/solver.py"})
 
     def test_search_returns_absolute_paths(self):
         import server_search as ss

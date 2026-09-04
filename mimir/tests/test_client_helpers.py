@@ -126,12 +126,6 @@ class ClientHelperTests(unittest.TestCase):
         Written as literals rather than recomputed so the test states what the
         behaviour *was*: a refactor meant to preserve semantics has to be checkable
         against the semantics it claims to preserve.
-
-        One deliberate addition since: ``prev_query_written_files`` now declares
-        FILE_PATH. It was previously written into the execution context without being
-        declared at all, so the delete observer — which purges ``fields_with(FILE_PATH)``
-        — could not see it, and a deleted file kept being announced in the pin as
-        "written last query, re-read before editing".
         """
         m = execution_context_module
         self.assertEqual(set(m.fields_with(m.CARRY)), {
@@ -139,8 +133,7 @@ class ClientHelperTests(unittest.TestCase):
             "checked_paths"})
         self.assertEqual(set(m.fields_with(m.FILE_PATH)), {
             "existing_paths", "read_files", "delegated_read_files", "checked_paths",
-            "dirty_written_files", "validated_files", "unverifiable_files",
-            "prev_query_written_files"})
+            "dirty_written_files", "validated_files", "unverifiable_files"})
         self.assertEqual(set(m.fields_with(m.KNOWN_FILE)), {
             "existing_paths", "read_files", "delegated_read_files", "checked_paths"})
         # `delegated_read_files` is a discovery signal in its own right: a sub-agent's

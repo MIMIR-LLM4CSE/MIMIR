@@ -545,7 +545,12 @@ export function createChatReducer(makeId: () => string) {
                 startedAt: Date.now(),
                 parentId,
               };
-              return relabelOrigins(insertAfterFamily(tools, parentId, child));
+              // A step of its own supersedes the heartbeat: the row now says what
+              // the child is actually doing.
+              const cleared = tools.map((t) =>
+                t.id === parentId ? { ...t, waiting: undefined } : t
+              );
+              return relabelOrigins(insertAfterFamily(cleared, parentId, child));
             }) ?? state
           );
         }
@@ -562,6 +567,18 @@ export function createChatReducer(makeId: () => string) {
                       durationMs: action.duration_ms,
                     }
                   : t
+              )
+            ) ?? state
+          );
+        }
+        if (action.kind === "heartbeat") {
+          // No row of its own: the child is thinking, and the only thing worth saying
+          // is that its parent has not stalled. Cleared by the next child step.
+          const secs = action.waiting_secs ?? 0;
+          return (
+            patchToolById(state, parentId, (tools) =>
+              tools.map((t) =>
+                t.id === parentId ? { ...t, waiting: `working — ${secs}s` } : t
               )
             ) ?? state
           );

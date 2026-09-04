@@ -152,7 +152,7 @@ export interface SubAgentEventMessage {
   type: "subagent_event";
   /** The tool_call id of the delegating call these belong to. */
   parent_id: string;
-  kind: "tool_call" | "tool_result" | "end";
+  kind: "tool_call" | "tool_result" | "end" | "heartbeat";
   /** Child row id, already namespaced under parent_id (siblings reuse "c1"). */
   id?: string;
   name?: string;
@@ -163,6 +163,8 @@ export interface SubAgentEventMessage {
   duration_ms?: number;
   /** On "end": how many of the child's events were shed rather than forwarded. */
   dropped?: number;
+  /** On "heartbeat": seconds the child has been running with nothing to report. */
+  waiting_secs?: number;
 }
 
 /** What the model said a run's output showed. Exit 0 says a program ended, so the run
@@ -564,6 +566,8 @@ export interface ToolActivity {
   origin?: string;
   /** On a delegating row: child events shed rather than shown (queue or run ceiling). */
   childrenDropped?: number;
+  /** On a delegating row: the child is mid-model-turn, with nothing to show yet. */
+  waiting?: string;
 }
 
 export interface DiffEntry {

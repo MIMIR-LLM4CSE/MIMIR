@@ -277,9 +277,8 @@ The rule above is only coherent if the model can **copy** paths rather than cons
 
 - `server_search` — `read_file_lines`, `list_directory` (including a `path` per entry, not just `name`) and `tree_summary` echo the *resolved* path, not the argument they were given.
 - `server_code_intel` — `_out_path` (formerly `_rel`) returns absolute for every navigation result; the ctags `by_file` index is keyed the same way, so lookups stay consistent.
-- the client's discovery pin renders absolute (`system_prompt._pin_path`) — display only, `execution_context` still stores workspace-relative.
 
-What matters just as much is the output side: hand back a relative path and the model must join the root itself, which is the inference the rule removed, reintroduced exactly where it is most likely to copy without thinking. The discovery pin makes this vivid — it says "use these paths directly", and for a while it said that above paths the next call would reject.
+What matters just as much is the output side: hand back a relative path and the model must join the root itself, which is the inference the rule removed, reintroduced exactly where it is most likely to copy without thinking.
 
 `tree_summary`'s root line is absolute for the same reason the system prompt states the workspace root absolutely: a bare basename root reads as a subdirectory of itself.
 

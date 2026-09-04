@@ -28,7 +28,7 @@ import mimir.client.event_sink as event_sink_module
 from mimir.client.context.capabilities import (
     PLAN_BLOCKED, PLAN_READONLY, TASK_PLANNING, ToolCaps,
 )
-from mimir.client.config.constants import PLAN_EXPLORE_MAX_TURNS
+from mimir.client.config.constants import PLAN_EXPLORE_MAX_TURNS, AGENT_EMPTY_TURN_RETRIES
 from mimir.client.context.execution_context import build_execution_context, loop_control
 from mimir.client.guardrails.observations import _observe_todo_flags
 from mimir.client.query_engine.streaming import _to_dict
@@ -1427,6 +1427,46 @@ class MidQueryModeSwitchTests(RunAgentQueryNonInteractiveTests):
         # Ran as ask (write tools stripped) without ever reporting a switch.
         self.assertNotIn("write_file", self._names(backend.calls[0]))
         self.assertEqual([e for e in emitted if e["type"] == "mode"], [])
+
+
+class EmptyTurnTests(unittest.TestCase):
+    """A turn with neither prose nor a tool call is a failure, not an answer."""
+
+    def _run(self, script):
+        # Same non-interactive stub the step-budget tests drive the loop with.
+        agent = RunAgentQueryNonInteractiveTests._query_agent(self, {"n": 0})
+        backend = ScriptedBackend(script)
+        emitted: list[dict] = []
+
+        async def _noop_async(*a, **k):
+            return None
+
+        m = agent_loop_module
+        with patch.object(streaming_module, "get_backend", lambda: backend), \
+             patch.object(finalize_module, "auto_store_memory", new=_noop_async), \
+             patch.object(m, "_inject_pin", lambda *a, **k: None), \
+             patch.object(m, "tools_for_context", lambda **k: k["tools"]), \
+             patch.object(m, "emit", lambda ev: emitted.append(ev)), \
+             patch.object(m, "needs_incomplete_finalization", lambda ec: False):
+            result = asyncio.run(m.run_agent_query(agent=agent, query="q", max_steps=8))
+        return result, backend, emitted
+
+    def test_empty_turn_is_retried_not_taken_as_the_answer(self) -> None:
+        result, backend, emitted = self._run([{"content": ""}, {"content": "the answer"}])
+        self.assertEqual(result, "the answer")
+        self.assertEqual(len(backend.calls), 2)
+        # The empty turn is gone from history and the retry is announced.
+        retry = backend.calls[1]["messages"]
+        self.assertTrue(all(m.get("content") != "" for m in retry if m["role"] == "assistant"))
+        self.assertEqual(retry[-1]["content"], agent_loop_module.EMPTY_TURN_RETRY)
+        self.assertTrue(any(
+            e["type"] == "status" and "Empty turn" in e.get("text", "") for e in emitted
+        ))
+
+    def test_retries_are_bounded(self) -> None:
+        result, backend, _ = self._run([{"content": ""}] * 10)
+        self.assertEqual(len(backend.calls), AGENT_EMPTY_TURN_RETRIES + 1)
+        self.assertIn("empty turns", result)
 
 
 class PlanLoopModeSwitchTests(unittest.TestCase):

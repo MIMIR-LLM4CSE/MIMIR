@@ -628,6 +628,12 @@ STEP_LIMIT_NUDGE = (
 	"(2) what still needs doing, and (3) the next step the user should request."
 )
 
+EMPTY_TURN_RETRY = (
+	"Your last turn came back empty — no text and no tool call — so nothing was done and "
+	"nothing was said. Pick the work back up where it stood: call the tool the task needs "
+	"next, or write the answer."
+)
+
 
 def repeat_corrective_message(tool_name: str, fails: int) -> str:
 	"""One-time mid-loop reminder when a non-write call keeps failing identically."""

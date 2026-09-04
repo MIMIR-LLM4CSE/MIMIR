@@ -24,6 +24,7 @@ import os
 import queue
 import sys
 import threading
+import time
 from concurrent.futures import Future
 from typing import Any, Callable
 
@@ -50,6 +51,10 @@ _READONLY_CHILD_MODE = "ask"
 # instead of the parent killing the call with nothing to show.
 SUBAGENT_HARD_CAP_SECS = 600
 
+# Ceiling on what one step of a child may generate. The backend otherwise grants the
+# model's whole answer reserve, and a run that spends it is a single silent step.
+SUBAGENT_ANSWER_TOKENS = 8192
+
 # What an explorer owes back. Its own mode prompt already asks for cited prose; this
 # says the part that is about the *parent*: a conclusion costs the caller a paragraph
 # of context, the file contents it read would cost the window they were meant to save.
@@ -72,6 +77,9 @@ _CHILD_QUEUE_MAX = 256      # child events buffered between two forwarding ticks
 _MAX_EVENTS_PER_TICK = 8    # forwarded per tick, so a tool storm cannot hog the loop
 _MAX_EVENTS_PER_RUN = 500   # ceiling per child run; past it only the trailer is sent
 _POLL_SECS = 0.05
+# A child in a model turn emits nothing at all, and the caller's row has no way to
+# tell that from a hung run. Past this silence, say it is still there.
+_HEARTBEAT_SECS = 20.0
 
 _stdout_silenced = False
 
@@ -167,7 +175,23 @@ async def _forward_pending(ctx: Context | None, q: queue.Queue, state: dict) -> 
         if state.get("sent", 0) >= _MAX_EVENTS_PER_RUN:
             state["dropped"] = state.get("dropped", 0) + 1
             continue
+        state["last_activity"] = time.monotonic()
         await _report(ctx, state, ev)
+
+
+async def _maybe_heartbeat(ctx: Context | None, state: dict, started: float) -> None:
+    """Say the child is alive when it has been silent long enough to look hung.
+
+    Silence is the normal shape of a model turn — no tool call, nothing to forward —
+    and a delegated turn can be minutes of it. Heartbeats are exempt from the per-run
+    event ceiling: the one moment the caller most needs a sign of life is the run that
+    already spent its budget on child steps.
+    """
+    now = time.monotonic()
+    if now - state.get("last_activity", started) < _HEARTBEAT_SECS:
+        return
+    state["last_activity"] = now
+    await _report(ctx, state, {"v": 1, "t": "hb", "s": int(now - started)})
 
 
 # ── Tool ──────────────────────────────────────────────────────────────────────
@@ -263,9 +287,12 @@ async def spawn_agent(
     t.start()
 
     loop = asyncio.get_running_loop()
+    started = time.monotonic()
+    state["last_activity"] = started
     deadline = loop.time() + SUBAGENT_HARD_CAP_SECS
     while not future.done() and loop.time() < deadline:
         await _forward_pending(ctx, events, state)
+        await _maybe_heartbeat(ctx, state, started)
         await asyncio.sleep(_POLL_SECS)
     # One last drain, before the timeout branch too: the child's final tool result
     # is what tells the caller where a run that ran out of time actually stopped.
@@ -383,6 +410,10 @@ async def _drive_sub_agent(
     # the loop re-reads the agent's depth every step (the user steering the parent's
     # thinking must not leak into a child run).
     agent.set_thinking_depth(0)
+    # A conclusion is a paragraph, and a tool-call step is shorter still. Uncapped,
+    # one step may claim the whole answer reserve — measured at ~40k tokens, i.e.
+    # several minutes of generation during which the child emits nothing at all.
+    agent.max_answer_tokens = SUBAGENT_ANSWER_TOKENS
     # An explorer is read-only because of the MODE it runs in, not because of which
     # servers it connected: the mode strips every plan-blocked tool and gates the
     # dual-use shell at call time. Set on the agent as well as passed to run(), so the

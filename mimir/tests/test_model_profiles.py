@@ -1,8 +1,8 @@
-"""Model-profile-driven knobs: pin_role and the B300-ready tool-count cap.
+"""Model-profile-driven knobs: the B300-ready tool-count cap and parser resolution.
 
-The weak-model accommodations (the ~40-tool cap, the strict-template pin role)
-are per-model settings, not hard globals, so the same codebase scales from
-Devstral-24B to a 400B-class model on the B300s.
+The weak-model accommodations (the ~40-tool cap) are per-model settings, not hard
+globals, so the same codebase scales from Devstral-24B to a 400B-class model on the
+B300s.
 """
 import os
 import unittest
@@ -14,18 +14,12 @@ from mimir.client.query_engine.backends import vllm_backend
 class ModelKnobsTest(unittest.TestCase):
     def setUp(self):
         os.environ.pop("MIMIR_MAX_TOOLS", None)
-        os.environ.pop("MIMIR_PIN_ROLE", None)
         self._added: list[str] = []
 
     def tearDown(self):
         for k in self._added:
             models.VLLM_MODEL_PROFILES.pop(k, None)
         os.environ.pop("MIMIR_MAX_TOOLS", None)
-
-    def test_pin_role_resolution(self):
-        self.assertEqual(models.resolve_pin_role("Devstral-Small-2507"), "append_user")
-        self.assertEqual(models.resolve_pin_role("qwen3:8b"), "system")
-        self.assertEqual(models.resolve_pin_role("qwen3:8b", "user"), "user")  # override wins
 
     def test_max_tools_uncapped_via_profile(self):
         models.VLLM_MODEL_PROFILES["bigmodel-x"] = {"max_tools": 0}
