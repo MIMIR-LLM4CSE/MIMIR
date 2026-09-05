@@ -34,7 +34,7 @@ from unittest.mock import patch
 
 from mimir.client.context import SOURCE_FILE_EXTENSIONS
 from mimir.client.context.capabilities import ToolCaps
-from mimir.client.context.execution_context import build_execution_context
+from mimir.client.context.execution_context import build_execution_context, unsettled_runs
 from mimir.client.guardrails import observations as _observations
 from mimir.client.guardrails.observations import record_tool_observation
 from mimir.client.guardrails.policy.bash_classify import classify_bash_command
@@ -107,10 +107,14 @@ def _head_installed(present: bool):
 #   inspect   -> paths that must land in inspected_dirs
 #   write     -> paths that must land in dirty_written_files
 #   validate  -> paths that must land in validated_files (implies they were dirty)
-#   judge     -> paths a run left awaiting the model's verdict. Exit 0 from something
-#                that *executes* proves the program ended, not that its answer is
-#                right, so those commands park here instead of crediting validation;
+#   judge     -> the command records a run that still owes the model a reading of what
+#                it showed, and credits no file. Exit 0 from something that *executes*
+#                proves the program ended, not that its answer is right, so those
+#                commands park on their own verdict instead of crediting validation;
 #                a checker (py_compile/ruff/mypy/a compiler) still credits directly.
+#                A boolean, not a path list: since "Verdicts settle runs, not files"
+#                a run is the subject of its own verdict and attributes to nothing,
+#                so naming a file here could only assert something untrue.
 #   project   -> a green whole-project validator: clears every pending file
 #   tests_run -> paths that must land in tests_run (feeds the regression nudge)
 #   env       -> an environment mutation must be recorded
@@ -134,9 +138,9 @@ _CREDITING_CORPUS: list[tuple[str, dict]] = [
     # ── validation, per file, across languages ───────────────────────────────
     ("python -m py_compile solver.py", {"validate": ["solver.py"]}),
     ("python -m pytest -q tests/test_solver.py",
-     {"judge": ["tests/test_solver.py"], "tests_run": ["tests/test_solver.py"]}),
+     {"judge": True, "tests_run": ["tests/test_solver.py"]}),
     ("pytest tests/test_solver.py",
-     {"judge": ["tests/test_solver.py"], "tests_run": ["tests/test_solver.py"]}),
+     {"judge": True, "tests_run": ["tests/test_solver.py"]}),
     ("ruff check solver.py", {"validate": ["solver.py"]}),
     ("mypy solver.py", {"validate": ["solver.py"]}),
     ("gcc -O2 -c src/mesh.c -o mesh.o", {"validate": ["src/mesh.c"]}),
@@ -144,24 +148,24 @@ _CREDITING_CORPUS: list[tuple[str, dict]] = [
     ("nvcc -arch=sm_80 kernel.cu -o kernel", {"validate": ["kernel.cu"]}),
     # `node` runs a program as readily as it checks one, and the classifier keys on the
     # command head, so the pessimistic reading applies: ask for a verdict.
-    ("node --check app.js", {"judge": ["app.js"]}),
-    ("cd build && ctest", {"judge": ["pending.py"]}),
+    ("node --check app.js", {"judge": True}),
+    ("cd build && ctest", {"judge": True}),
     # Running a program names the file it ran, but exit 0 says only that it ended.
-    ("python solver.py", {"judge": ["solver.py"]}),
+    ("python solver.py", {"judge": True}),
 
     # ── validation, whole project ────────────────────────────────────────────
-    ("pytest", {"judge": ["pending.py"]}),
-    ("pytest -q", {"judge": ["pending.py"]}),
+    ("pytest", {"judge": True}),
+    ("pytest -q", {"judge": True}),
     ("ruff check .", {"project": True}),
     ("mypy src/", {"project": True}),
 
     # ── chains the model actually writes ─────────────────────────────────────
     ("cd tests && pytest test_solver.py",
-     {"judge": ["tests/test_solver.py"], "tests_run": ["tests/test_solver.py"]}),
+     {"judge": True, "tests_run": ["tests/test_solver.py"]}),
     # The idiom the base prompt asks for — a one-off check inline rather than a file.
     # Parentheses alone make it unclassifiable, so it credits no file; but it plainly
     # ran, and what it printed is the whole point of running it.
-    ('python -c "import solver; print(solver.residual())"', {"ran": True}),
+    ('python -c "import solver; print(solver.residual())"', {"judge": True}),
     ("python -m py_compile solver.py && ruff check solver.py", {"validate": ["solver.py"]}),
 
     # ── environment ──────────────────────────────────────────────────────────
@@ -198,8 +202,12 @@ class CorpusCreditTests(unittest.TestCase):
     """Every corpus command must teach the blackboard what it claims to."""
 
     def _assert_credits(self, command: str, expect: dict) -> None:
+        # A pending file is seeded for the run cases too: "this credited no file" is
+        # only an assertion when there was a file available to be wrongly credited —
+        # which is the exact shape of the fallback that once credited `solver.py` for
+        # a `python -c "print(2+2)"`.
         dirty = tuple(expect.get("validate", ())) or (
-            ("pending.py",) if expect.get("project") or expect.get("ran") else ()
+            ("pending.py",) if expect.get("project") or expect.get("judge") else ()
         )
         ec = _run(command, dirty=dirty)
 
@@ -213,8 +221,10 @@ class CorpusCreditTests(unittest.TestCase):
             self.assertIn(path, ec["dirty_written_files"], f"{command!r}: write not credited")
         for path in expect.get("validate", ()):
             self.assertIn(path, ec["validated_files"], f"{command!r}: check not credited")
-        if expect.get("ran"):
+        if expect.get("judge"):
             self.assertTrue(ec["runs"], f"{command!r}: run not recorded")
+            self.assertTrue(unsettled_runs(ec),
+                            f"{command!r}: run settled itself instead of owing a verdict")
             self.assertFalse(ec["validated_files"],
                              f"{command!r}: an execution must not validate a file")
         if expect.get("project"):
