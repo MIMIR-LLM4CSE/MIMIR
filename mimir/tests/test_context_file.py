@@ -291,6 +291,7 @@ class CoreNudgeCoverageTests(unittest.TestCase):
     _EXPECTED = {
         "denial": "A refused approval is an instruction, not an error",
         "error_recovery": "Copy anchor text verbatim from your most recent read",
+        "stuck_repair": "not necessarily where you are correcting it",
         "validation": "Every file you modify is checked before this run may conclude",
         "regression": "the project already has tests covering what you touched",
         "unexercised": "judging presupposes running",
@@ -377,6 +378,68 @@ class SubAgentSectionGateTests(unittest.TestCase):
 
     def test_section_is_not_baked_into_the_default_base(self) -> None:
         self.assertNotIn("## Sub-agents", cb._DEFAULT_BASE_SYSTEM_CONTENT)
+
+
+class ClarifySectionGateTests(unittest.TestCase):
+    """The "ask the user" contract is injected only where it can actually be acted on.
+
+    Same gating shape as the sub-agent section, keyed on the tool name rather than on a
+    capability: the question channel has a single consumer, so a declared capability
+    would buy nothing the name does not already give.
+
+    This section is the only carrier of the behaviour — there is deliberately no
+    matching nudge, because nothing in the execution context can establish that a fork
+    exists (loop length is not evidence of ambiguity). That makes these tests the whole
+    of the mechanical guarantee.
+    """
+
+    _HEADING = "## Clarifying with the user"
+
+    def _build(self, connected: bool, mode: str = "agent") -> str:
+        return cb.build_system_content(
+            active_mode=mode,
+            tool_owner={"ask_user_question": "interaction"} if connected else {},
+            sensitive_tools=set(),
+        )
+
+    def test_section_absent_without_the_tool(self) -> None:
+        # A section naming a channel the model does not have is one it tries to use.
+        self.assertNotIn(self._HEADING, self._build(False))
+
+    def test_section_present_in_the_acting_modes(self) -> None:
+        for mode in ("agent", "plan"):
+            with self.subTest(mode=mode):
+                self.assertIn(self._HEADING, self._build(True, mode))
+
+    def test_section_absent_in_ask_mode(self) -> None:
+        """ASK answers and changes nothing, so a fork has no work to divide."""
+        self.assertNotIn(self._HEADING, self._build(True, "ask"))
+
+    def test_section_carries_the_threshold_both_ways(self) -> None:
+        out = self._build(True)
+        # When to ask: a fork nothing in the code settles.
+        self.assertIn("nothing in the repository, the conversation, or an established", out)
+        # And when not to — without this half the section reads as "ask more", which
+        # trades silent wrong guesses for a stream of avoidable questions.
+        self.assertIn("Do NOT ask what you can settle", out)
+
+    def test_section_does_not_name_the_tool(self) -> None:
+        # How to call it is the tool's own description, in context whenever the tool
+        # is; and the Non-negotiables forbid surfacing internal tool names at all.
+        self.assertNotIn("ask_user_question", self._build(True))
+
+    def test_section_is_not_baked_into_the_default_base(self) -> None:
+        self.assertNotIn(self._HEADING, cb._DEFAULT_BASE_SYSTEM_CONTENT)
+
+    def test_workflow_no_longer_calls_every_ambiguity_a_blocker(self) -> None:
+        """The Workflow line used to prescribe stopping on any ambiguity.
+
+        Left as it was, it contradicted this section inside the same prompt: the model
+        was told to stop on exactly the case the channel exists to carry.
+        """
+        base = cb._DEFAULT_BASE_SYSTEM_CONTENT
+        self.assertNotIn("If a task is ambiguous, unsafe, impossible, or out of scope", base)
+        self.assertIn("is not a blocker: put it to the user", base)
 
 
 if __name__ == "__main__":

@@ -209,6 +209,19 @@ class ApprovalManager:
         # the "always" grants that skip re-prompting. Reset on session change.
         self._allowed_paths: set[str] = set()
 
+        # How much of the approval flow the user still answers by hand. Session
+        # state, never persisted: a mode that suppresses every prompt must be
+        # chosen deliberately for the session it applies to, not inherited silently
+        # from a previous one. Enforced in the policy engine (the single seam every
+        # front-end shares), so an auto mode emits nothing at all — the card is never
+        # built, so nothing reaches the socket or the terminal.
+        #   manual   — ask for sensitive tools and for out-of-workspace paths
+        #   auto     — sensitive tools pass; leaving the workspace still asks
+        #   auto_all — nothing asks
+        # It removes the *question*, never the policy: the bash denylist, the servers'
+        # path/redirection validation and the verification-tier gates all still refuse.
+        self.approval_mode: str = "manual"
+
         # Batch-approval state
         self.batch_mode: bool = True
         self._pending_review: list[dict] = []
@@ -218,6 +231,16 @@ class ApprovalManager:
     # ------------------------------------------------------------------
     # Basic metadata helpers
     # ------------------------------------------------------------------
+
+    APPROVAL_MODES: tuple[str, ...] = ("manual", "auto", "auto_all")
+
+    def auto_tools(self) -> bool:
+        """True when a sensitive tool no longer raises a card."""
+        return self.approval_mode in ("auto", "auto_all")
+
+    def auto_paths(self) -> bool:
+        """True when reaching outside the workspace no longer raises a card."""
+        return self.approval_mode == "auto_all"
 
     def is_sensitive(self, tool_name: str, arguments: dict) -> bool:
         # Confirm-gated tools (a `confirm_gate` arg-role) are dry-run/preview when the

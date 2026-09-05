@@ -23,7 +23,7 @@ export interface UseWebSocketOptions {
 export interface UseWebSocketResult {
   send: (msg: ClientMessage) => void;
   close: () => void;
-  connect: (model: string, backend: string, baseUrl: string, anthropicApiKey?: string) => void;
+  connect: (model: string, backend: string, baseUrl: string, anthropicApiKey?: string, remember?: boolean) => void;
   fetchModels: (backend: string, baseUrl: string) => void;
   disconnect: () => void;
   getConfig: () => void;
@@ -66,7 +66,7 @@ export function useWebSocket({
         onCloseRef.current?.();
       } else if (data.type === "ws_error") {
         onErrorRef.current?.(event as unknown as Event);
-      } else if (data.type === "config" || data.type === "active_editor") {
+      } else if (data.type === "config" || data.type === "active_editor" || data.type === "auto_connect") {
         // Messages emitted directly by the extension host (not the Python server) —
         // forward as ServerMessages for the App reducer/handler.
         onMessageRef.current(data as unknown as ServerMessage);
@@ -87,9 +87,12 @@ export function useWebSocket({
     _vscode?.postMessage({ type: "disconnect" });
   }, []);
 
-  const connect = useCallback((model: string, backend: string, baseUrl: string, anthropicApiKey?: string) => {
-    _vscode?.postMessage({ type: "connect", model, backend, baseUrl, anthropicApiKey });
-  }, []);
+  const connect = useCallback(
+    (model: string, backend: string, baseUrl: string, anthropicApiKey?: string, remember?: boolean) => {
+      _vscode?.postMessage({ type: "connect", model, backend, baseUrl, anthropicApiKey, remember });
+    },
+    [],
+  );
 
   const fetchModels = useCallback((backend: string, baseUrl: string) => {
     _vscode?.postMessage({ type: "fetch_models", backend, baseUrl });

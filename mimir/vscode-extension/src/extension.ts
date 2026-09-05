@@ -8,6 +8,16 @@ import { fetchModels, type DiscoverableBackend } from "./modelList";
 
 let serverProcess: cp.ChildProcess | undefined;
 
+/** Global-state key holding the endpoint the user asked us to remember. */
+const REMEMBERED_KEY = "mimir.rememberedEndpoint";
+
+/** Endpoint we can reconnect to unattended — no secret is ever part of it. */
+interface RememberedEndpoint {
+  backend: string;
+  baseUrl: string;
+  model: string;
+}
+
 /**
  * Interpreter that runs the WS server.
  *
@@ -245,12 +255,17 @@ export function activate(context: vscode.ExtensionContext): void {
     _planChanged
   );
 
-  const provider = new MimirAgentViewProvider(context.extensionUri);
+  const provider = new MimirAgentViewProvider(context.extensionUri, context.globalState);
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider("mimir.chatView", provider, {
       webviewOptions: { retainContextWhenHidden: true },
     })
   );
+
+  // `onStartupFinished` activates us with the chat panel possibly still closed,
+  // so the remembered endpoint is probed here rather than on the first view
+  // resolve: MIMIR is already connected by the time the user opens the panel.
+  void provider.maybeAutoConnect();
 
   // Active-editor context: tell the webview which file (and selected line range)
   // is focused, so the user can attach it to a message with one click (opt-in chip).
@@ -290,8 +305,26 @@ class MimirAgentViewProvider implements vscode.WebviewViewProvider {
   private _ws: WebSocket | undefined;
   private _view: vscode.WebviewView | undefined;
   private _pendingMessages: string[] = [];
+  /** Auto-connect is a startup courtesy: once per window, never on a view reload. */
+  private _autoConnectTried = false;
+  /**
+   * Endpoint we auto-connected to before any webview existed. The socket is live
+   * but the React app has never seen the server's greeting, so the first view to
+   * resolve re-attaches (see `resolveWebviewView`) to be told `ready`.
+   */
+  private _headlessConnect: RememberedEndpoint | undefined;
+  /**
+   * Address of the server this window talks to, learned from the server's own
+   * "Listening on ws://…" line (it binds an OS-assigned port, so each VS Code
+   * window gets its own) or copied from the `mimir.wsUrl` override. Every
+   * reconnect goes through this — there is no fixed address to fall back on.
+   */
+  private _wsUrl: string | undefined;
 
-  constructor(private readonly extensionUri: vscode.Uri) {}
+  constructor(
+    private readonly extensionUri: vscode.Uri,
+    private readonly memento: vscode.Memento,
+  ) {}
 
   resolveWebviewView(view: vscode.WebviewView): void {
     this._view = view;
@@ -309,13 +342,88 @@ class MimirAgentViewProvider implements vscode.WebviewViewProvider {
       this._handleFromWebview(msg);
     });
 
-    // Do NOT auto-connect — user must click Connect in the UI.
-    // This avoids spawning connections on HPC front nodes.
+    // No blind auto-connect: nothing is started unless the user ticked "Remember
+    // this address" and that address answers (see _maybeAutoConnect). This keeps
+    // us from spawning connections on HPC front nodes.
 
     // Send config immediately so the webview can populate the model list.
     this._sendConfig();
     // Seed the active-file chip on (re)load.
     this.pushActiveEditor();
+
+    if (this._headlessConnect) {
+      // We connected at startup, before this webview existed. Its `ready` frame
+      // was sent to nobody, so re-attach: the Python server greets every new
+      // client, which is what moves the UI from "connecting" to "connected".
+      const saved = this._headlessConnect;
+      this._headlessConnect = undefined;
+      view.webview.postMessage({ type: "auto_connect", ...saved });
+      const stale = this._ws;
+      if (stale && this._wsUrl) {
+        this._ws = undefined;
+        stale.close();
+        this._connectToServer(this._wsUrl);
+      }
+      // No socket yet — the connect already in flight will attach on its own,
+      // and this webview is here to receive the `ready` it brings back. Opening
+      // a second one here would leave the server with two clients.
+    } else {
+      // …otherwise reconnect on our own to the address the user asked us to
+      // remember (no-op when activation already did it, or nothing is stored).
+      void this._maybeAutoConnect();
+    }
+  }
+
+  /**
+   * Reconnect to the remembered address, if it answers.
+   *
+   * The user opts in with the "Remember this address" checkbox in the connect
+   * form; we store backend/address/model (never a key) in global state. Once per
+   * window — at activation, so an unopened chat panel still comes up connected —
+   * we probe the endpoint's model list, the same request the form makes, and
+   * only start the server when it replies. An unreachable address (laptop off
+   * the VPN, compute node released) is not an error here: the connect form
+   * simply comes up as usual, pre-filled.
+   */
+  async maybeAutoConnect(): Promise<void> {
+    return this._maybeAutoConnect();
+  }
+
+  private async _maybeAutoConnect(): Promise<void> {
+    if (this._autoConnectTried) return;
+    this._autoConnectTried = true;
+
+    const saved = this._remembered();
+    if (!saved) return;
+
+    const verifySsl = vscode.workspace.getConfiguration("mimir").get<boolean>("vllmVerifySsl", true);
+    try {
+      await fetchModels(saved.backend as DiscoverableBackend, saved.baseUrl, verifySsl, 3000);
+    } catch {
+      return; // endpoint not up — leave the user on the connect form
+    }
+    // The user can have been impatient and connected by hand while we probed
+    // (the server spawns before the socket exists, so check both).
+    if (this._ws || (serverProcess && !serverProcess.killed)) return;
+
+    if (this._view) {
+      this._view.webview.postMessage({ type: "auto_connect", ...saved });
+    } else {
+      // No webview yet — remember to greet the first one that resolves.
+      this._headlessConnect = saved;
+    }
+    // Startup connect: don't pop the server log over whatever the user opened.
+    this._startServerAndConnect(saved.model, saved.backend, saved.baseUrl, "", { silent: true });
+  }
+
+  /** The remembered endpoint, or undefined when nothing valid is stored. */
+  private _remembered(): RememberedEndpoint | undefined {
+    const saved = this.memento.get<RememberedEndpoint>(REMEMBERED_KEY);
+    if (!saved || !saved.baseUrl) return undefined;
+    // Only endpoints the user gives an address for; Anthropic needs a key we
+    // deliberately never persist, so it can't be auto-connected.
+    if (saved.backend !== "vllm" && saved.backend !== "ollama") return undefined;
+    return saved;
   }
 
   /**
@@ -360,12 +468,11 @@ class MimirAgentViewProvider implements vscode.WebviewViewProvider {
       vllmBaseUrl: cfg.get<string>("vllmBaseUrl") ?? "http://127.0.0.1:8000",
       ollamaBaseUrl: cfg.get<string>("ollamaUrl") ?? "http://127.0.0.1:11434",
       anthropicModels: cfg.get<string[]>("anthropicAvailableModels") ?? [],
+      remembered: this._remembered() ?? null,
     });
   }
 
-  private _connectToServer(retryCount = 0): void {
-    const cfg = vscode.workspace.getConfiguration("mimir");
-    const wsUrl = cfg.get<string>("wsUrl") ?? "ws://localhost:8765";
+  private _connectToServer(wsUrl: string, retryCount = 0): void {
     const maxRetries = 40; // retry for up to ~40 seconds while server starts
 
     const ws = new WebSocket(wsUrl);
@@ -388,10 +495,13 @@ class MimirAgentViewProvider implements vscode.WebviewViewProvider {
     });
 
     ws.on("close", () => {
+      // A socket we replaced ourselves (headless re-attach) must not drive the
+      // retry/teardown of the one that took its place.
+      if (this._ws !== ws) return;
       const stillRunning = serverProcess && !serverProcess.killed;
       if (retryCount < maxRetries && stillRunning) {
         // Server still starting up — retry after 2 seconds
-        setTimeout(() => this._connectToServer(retryCount + 1), 2000);
+        setTimeout(() => this._connectToServer(wsUrl, retryCount + 1), 2000);
       } else {
         // Notify webview — no auto-reconnect (user must click Connect again)
         this._view?.webview.postMessage({ type: "ws_closed" });
@@ -493,10 +603,11 @@ class MimirAgentViewProvider implements vscode.WebviewViewProvider {
     });
   }
 
-  // Kill the ws_server this extension owns so a fresh connect always starts
-  // from a clean slate. The port itself is freed by `fuser -k` in the spawn
-  // command; this just clears the process we track, so switching backends never
-  // leaves an old server intercepting localhost:8765.
+  // Kill the ws_server this window owns so a fresh connect always starts from a
+  // clean slate. The spawn command `exec`s python, so the process we track is the
+  // server itself and killing it frees its port — no other window is touched.
+  // A server we only attached to (the `mimir.wsUrl` override) is not ours to kill,
+  // and `serverProcess` is undefined in that case.
   private _teardownServer(): void {
     if (serverProcess && !serverProcess.killed) {
       serverProcess.kill();
@@ -517,26 +628,43 @@ class MimirAgentViewProvider implements vscode.WebviewViewProvider {
     backend = "vllm",
     baseUrl = "http://127.0.0.1:8000",
     anthropicApiKey = "",
+    { silent = false }: { silent?: boolean } = {},
   ): void {
-    // Clean slate before binding port 8765, so a server left over from a previous
-    // connect (possibly on another backend) can't intercept this one.
+    const cfg = vscode.workspace.getConfiguration("mimir");
+
+    // Attach mode: an explicit `mimir.wsUrl` means the user runs the server
+    // themselves (by hand, or on another host), so we connect and start nothing.
+    // That server is not ours, so it is never torn down either.
+    const override = (cfg.get<string>("wsUrl") ?? "").trim();
+    if (override) {
+      this._teardownServer();
+      this._wsUrl = override;
+      this._connectToServer(override);
+      return;
+    }
+
+    // Clean slate: a server left over from a previous connect (possibly on another
+    // backend) is ours, and nothing else should be left holding a port.
     this._teardownServer();
 
-    const cfg = vscode.workspace.getConfiguration("mimir");
     const pythonPath = resolvePython();
     const cwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
 
     const outputChannel = vscode.window.createOutputChannel("MIMIR Server");
-    outputChannel.show();
+    // A connect the user clicked shows its log; one we started at VS Code launch
+    // stays out of the way (the channel is still there to open by hand).
+    if (!silent) outputChannel.show();
 
-    // Free port 8765 first so a previous server process cannot intercept
-    // connections meant for this one.
     const backendArgs =
       backend === "vllm" ? ` --backend vllm --vllm-base-url ${baseUrl}`
       : backend === "ollama" ? ` --backend ollama --ollama-base-url ${baseUrl}`
       : backend === "anthropic" ? " --backend anthropic"
       : "";
-    const spawnCmd = `fuser -k 8765/tcp 2>/dev/null || true && ${pythonPath} -m mimir.client.ui.ws.ws_server --port 8765${model ? ` --model ${model}` : ""}${backendArgs}`;
+    // `--port 0`: the OS picks a free port, so two VS Code windows never contend for
+    // one — the server prints the port it actually bound and we connect to that.
+    // `exec` replaces the shell with python, so `serverProcess.kill()` reaches the
+    // server itself rather than orphaning it on its port.
+    const spawnCmd = `exec ${pythonPath} -m mimir.client.ui.ws.ws_server --port 0${model ? ` --model ${model}` : ""}${backendArgs}`;
     // Log the command only — the Claude API key is injected via env below and is
     // deliberately kept out of this string so it never lands in the output channel.
     outputChannel.appendLine(`Starting server: ${spawnCmd}`);
@@ -546,7 +674,7 @@ class MimirAgentViewProvider implements vscode.WebviewViewProvider {
     // /v1/models model-resolution and chat requests don't hit CERTIFICATE_VERIFY_FAILED.
     const verifyEnv = cfg.get<boolean>("vllmVerifySsl", true) ? {} : { VLLM_VERIFY_SSL: "0" };
     // An HTTP proxy silently swallows requests to an on-prem endpoint, so
-    // ws_server would hang on model resolution before ever binding port 8765.
+    // ws_server would hang on model resolution before ever binding its port.
     const noProxyEnv = backend === "anthropic" ? {} : noProxyFor(baseUrl);
     // Only override ANTHROPIC_API_KEY when the webview actually supplied one;
     // otherwise inherit whatever is already exported (so users who set the key in
@@ -561,16 +689,39 @@ class MimirAgentViewProvider implements vscode.WebviewViewProvider {
       stdio: ["ignore", "pipe", "pipe"],
     });
 
-    serverProcess.stdout?.on("data", (d: Buffer) => outputChannel.append(d.toString()));
+    // The address is not knowable in advance (the OS assigns the port), so the
+    // server's own startup line is what triggers the connect. Everything before
+    // that — MCP handshakes, model resolution — can take a while on a cold start.
+    const spawned = serverProcess;
+    let listening = false;
+    const startupTimer = setTimeout(() => {
+      if (listening || serverProcess !== spawned) return;
+      outputChannel.appendLine(
+        "\nServer did not report a listening address within 120s — giving up. " +
+        "Check the endpoint above is reachable, then connect again."
+      );
+      this._view?.webview.postMessage({ type: "ws_closed" });
+    }, 120_000);
+
+    serverProcess.stdout?.on("data", (d: Buffer) => {
+      const text = d.toString();
+      outputChannel.append(text);
+      if (listening) return;
+      const m = /Listening on (ws:\/\/\S+)/.exec(text);
+      if (m) {
+        listening = true;
+        clearTimeout(startupTimer);
+        this._wsUrl = m[1];
+        this._connectToServer(m[1]);
+      }
+    });
     serverProcess.stderr?.on("data", (d: Buffer) => outputChannel.append(d.toString()));
     serverProcess.on("exit", (code) => {
+      clearTimeout(startupTimer);
       outputChannel.appendLine(`\nServer exited (code ${code})`);
       serverProcess = undefined;
       this._view?.webview.postMessage({ type: "ws_closed" });
     });
-
-    // Give the server a moment to start, then begin connecting with retries
-    setTimeout(() => this._connectToServer(), 1000);
   }
 
   /**
@@ -761,12 +912,21 @@ class MimirAgentViewProvider implements vscode.WebviewViewProvider {
       // ws_server via the ANTHROPIC_API_KEY env var (never a CLI arg or setting),
       // so it never reaches the process list, the output channel, or disk.
       const anthropicApiKey = (m.anthropicApiKey as string | undefined) ?? "";
+      const remember = m.remember === true;
 
       // vLLM and Ollama resolve the served model themselves when none is picked,
       // so only the hosted Claude API needs an explicit one.
       if (!model && backend === "anthropic") {
         vscode.window.showErrorMessage("MIMIR: select a model before connecting.");
         return;
+      }
+
+      // "Remember this address" — store the endpoint (never the key) so the next
+      // window can reconnect on its own; unchecking it forgets the stored one.
+      if (remember && (backend === "vllm" || backend === "ollama")) {
+        void this.memento.update(REMEMBERED_KEY, { backend, baseUrl, model });
+      } else {
+        void this.memento.update(REMEMBERED_KEY, undefined);
       }
 
       this._startServerAndConnect(model, backend, baseUrl, anthropicApiKey);
@@ -800,8 +960,11 @@ function startServer(context: vscode.ExtensionContext): void {
 
   const cwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
 
-  // Free port 8765 first so a stale server can't intercept connections.
-  const spawnCmd = `fuser -k 8765/tcp 2>/dev/null || true && ${pythonPath} -m mimir.client.ui.ws.ws_server --port 8765`;
+  // A fixed port here on purpose: this command exists to run a server you then
+  // point `mimir.wsUrl` at, and an OS-assigned port could not be written down in a
+  // setting. If 8765 is taken, the bind error shows up in the output channel.
+  // `exec` so the process we track — and later kill — is the server, not the shell.
+  const spawnCmd = `exec ${pythonPath} -m mimir.client.ui.ws.ws_server --port 8765`;
 
   serverProcess = cp.spawn("bash", ["-c", spawnCmd], {
     cwd,

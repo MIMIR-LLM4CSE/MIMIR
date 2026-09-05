@@ -357,7 +357,14 @@ Open the MIMIR panel, and in the Connect form:
    model dropdown fills itself from it; the ⟳ button re-reads it.
 3. **Model** — one of the models the endpoint reports. For Anthropic, an API key
    field replaces the address.
-4. **Connect** — the extension starts the WS server locally and attaches to it.
+4. **Remember this address** (optional) — tick it and the next VS Code window
+   reconnects to this endpoint by itself, at startup, whether or not the MIMIR
+   panel is open: the extension probes the address first and only connects when
+   it answers, so an endpoint that is down just leaves you on this form,
+   pre-filled. Untick and connect again to forget it.
+   The address and model are stored; an Anthropic key never is, which is why the
+   box only appears for vLLM and Ollama.
+5. **Connect** — the extension starts the WS server locally and attaches to it.
 
 That is the whole configuration: a working setup needs **no `.vscode/settings.json`**.
 
@@ -373,7 +380,7 @@ starts on, or when the WS server needs a specific interpreter.
 | `mimir.ollamaUrl` | `http://127.0.0.1:11434` | Address the form opens on for Ollama |
 | `mimir.vllmVerifySsl` | `true` | Uncheck for an HTTPS endpoint behind a private CA |
 | `mimir.pythonPath` | *(empty → auto)* | Interpreter used to start the WS server. Leave empty — see below |
-| `mimir.wsUrl` | `ws://localhost:8765` | Only if you run `mimir-server` yourself on another host/port |
+| `mimir.wsUrl` | *(empty → auto)* | Leave empty: each window starts its own server on a free port. Set it only to attach to a server you run yourself |
 | `mimir.anthropicAvailableModels` | *(list of Claude ids)* | Models offered for the Anthropic backend |
 | `mimir.notifications.enabled` | `true` | Native notification when a task finishes off-screen |
 

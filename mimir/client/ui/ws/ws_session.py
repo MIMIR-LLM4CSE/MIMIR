@@ -98,6 +98,7 @@ class _Session:
                 "model": self.worker.model,
                 "context_mode": self.worker.get_context_mode(),
                 "enforcement": self.worker.get_enforcement(),
+                "approval_mode": self.worker.get_approval_mode(),
                 "thinking": self.worker.get_thinking_profile(),
             }))
         except Exception:
@@ -1025,6 +1026,16 @@ class _Session:
                 await self.ws.send(json.dumps({"type": "output", "text": f"  ✓ Context mode set to {mode}\n"}))
             else:
                 await self.ws.send(json.dumps({"type": "error", "text": f"Unknown context mode: {mode}. Use compact or full."}))
+        elif text.startswith("/approvals "):
+            # "all" is the spoken form of auto_all — nobody types an underscore.
+            raw = text[11:].strip().lower()
+            mode = {"all": "auto_all", "auto-all": "auto_all"}.get(raw, raw)
+            if mode in ("manual", "auto", "auto_all"):
+                self.worker.set_approval_mode(mode)
+                await self.ws.send(json.dumps({"type": "approval_mode", "mode": mode}))
+                await self.ws.send(json.dumps({"type": "output", "text": f"  ✓ Approvals set to {mode}\n"}))
+            else:
+                await self.ws.send(json.dumps({"type": "error", "text": f"Unknown approval mode: {raw}. Use manual, auto, or all."}))
         elif text.startswith("/enforcement "):
             level = text[13:].strip().lower()
             if level in ("strict", "light", "off"):

@@ -106,6 +106,9 @@ const ENFORCEMENT_HINTS: Record<"strict" | "light" | "off", string> = {
   off: "Guidance off — verification & safety always on",
 };
 
+// Approvals live in their own toolbar control (ApprovalSwitcher), not in this
+// popover: the mode answers cards on the user's behalf and is switched mid-run, so
+// its state has to be readable without opening anything.
 export const AgentSettings: React.FC<Props> = ({
   thinkingLevel,
   thinkingProfile,

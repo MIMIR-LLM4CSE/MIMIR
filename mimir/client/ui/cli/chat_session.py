@@ -119,7 +119,8 @@ async def run_chat_session(agent: Any) -> None:
     print("\n✅ MIMIR ready. Type 'quit' to exit.")
     print(
         "   Commands: /mode [agent|plan], "
-        "/status, /think on|off, /stream on|off, /batch on|off, /help\n"
+        "/status, /think on|off, /stream on|off, /batch on|off, "
+        "/approvals manual|auto|all, /help\n"
     )
 
     history: list[dict[str, str]] = []
@@ -185,6 +186,7 @@ async def run_chat_session(agent: Any) -> None:
             batch_mode=agent.approvals.batch_mode,
             context_mode=agent.context_mode,
             enforcement=agent.enforcement,
+            approval_mode=agent.approvals.approval_mode,
             set_mode=agent.set_mode,
             set_thinking=agent.set_thinking,
             thinking_depth=agent.thinking_depth,
@@ -193,6 +195,7 @@ async def run_chat_session(agent: Any) -> None:
             set_batch_mode=agent.set_batch_mode,
             set_context_mode=agent.set_context_mode,
             set_enforcement=agent.set_enforcement,
+            set_approval_mode=agent.set_approval_mode,
             trust_tool=agent.approvals.trust_tool,
             untrust_tool=agent.approvals.untrust_tool,
             trusted_tools=agent.approvals.trusted_tools_view(),

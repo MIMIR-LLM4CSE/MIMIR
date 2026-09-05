@@ -141,8 +141,10 @@ _SECTION_WORKFLOW = (
     "- A pure-theory or literature task may conclude straight from discovery, with no artifact and no "
     "validation — say so explicitly when that is the case.\n"
     "- Update documentation when a change affects behavior, usage, or guarantees.\n"
-    "- If a task is ambiguous, unsafe, impossible, or out of scope, stop and report the blocker, "
-    "asking only for the minimum missing information.\n"
+    "- Separate the two things ambiguity can mean. A choice between directions you could "
+    "name is not a blocker: put it to the user and carry on from the answer. Unsafe, "
+    "impossible, or out of scope is a blocker: stop and report it, asking only for the "
+    "minimum missing information.\n"
     "- Conclude when the objectives are met, stating completion or failure clearly with a brief "
     "summary of the steps taken, what was verified, and what was not and why."
 )
@@ -247,7 +249,10 @@ _SECTION_VALIDATION = (
     "wrong answer is a regression.\n"
     "\n"
     "Validate the artifact as it stands. When validation fails, analyse the error and revise the "
-    "patch rather than repeating the same edit."
+    "patch rather than repeating the same edit. When the same thing keeps failing, the fault is "
+    "not necessarily where you are correcting it: past a few attempts, stop editing that target "
+    "and check the layer it depends on — the operator, the helper, the boundary case it calls — "
+    "against a value you know in advance."
 )
 
 _SECTION_RUNNING = (
@@ -322,6 +327,38 @@ _SECTION_SUBAGENTS = (
     "- Before delegating, check whether the result already exists — prefer reuse over "
     "recomputation."
 )
+
+# Conditional — injected by build_system_content only when the question channel is
+# actually connected, and only in the modes that can act on the answer. Same reason as
+# the sub-agent section above: an instruction naming a capability the model does not
+# have is one it tries to act on anyway.
+#
+# This section is the ONLY carrier of the behaviour. There is deliberately no matching
+# nudge: the guardrails layer can observe that a loop is going nowhere, but nothing in
+# the execution context establishes that a *fork* exists, and a nudge fired on loop
+# length as a proxy for ambiguity would fire on every merely long task. A nudge earns
+# its place only where what it guards is decidable from recorded fact.
+_SECTION_CLARIFY = (
+    "## Clarifying with the user\n"
+    "You can put a choice to the user and wait for the answer. Its tool description states "
+    "how to call it; what follows is when to.\n"
+    "- When two or more directions are defensible, would lead to materially different work, "
+    "and nothing in the repository, the conversation, or an established convention settles "
+    "it — ask. Do not deliberate instead: no amount of reasoning produces information you "
+    "do not have, and choosing silently spends the user's work on a coin flip.\n"
+    "- Ask at the point the fork appears, before building on either branch. The same "
+    "question asked after the work is done is a rewrite.\n"
+    "- Give the real options: each labelled, each described by what it costs and what it "
+    "buys. Recommend one and say which. A free-text field is always shown, so never add an "
+    "\"Other\"/\"Something else\"/\"Request changes\" option — those are stripped.\n"
+    "- Bundle related questions into one call: they are asked in sequence and come back "
+    "together, for the cost of a single turn.\n"
+    "- Do NOT ask what you can settle: a convention visible in the code, a default the task "
+    "implies, a detail whose answers converge on the same work. Decide, say so in one "
+    "clause, and continue. Asking about what you could have read is its own failure.\n"
+    "- No answer means proceed on your best judgment — then state which branch you took."
+)
+
 
 # One sentence, shared by the read-only modes (plan and ask), where a sweep is the whole
 # of the work. Empty when nothing can be delegated: a phantom instruction is one the
@@ -655,6 +692,13 @@ def build_system_content(
         # Leading blank line: _section only prepends one newline, which would glue
         # the "## Sub-agents" heading to the previous section's last bullet.
         system_content += _section("\n" + _SECTION_SUBAGENTS)
+
+    # Same gating shape, on the tool rather than on a capability: the question channel
+    # has exactly one consumer, so a declared capability would buy nothing the name does
+    # not already give (memory_context_file is keyed off tool_owner the same way).
+    # ASK is excluded: it answers and changes nothing, so a fork has no work to divide.
+    if "ask_user_question" in (tool_owner or {}) and active_mode in ("agent", "plan"):
+        system_content += _section("\n" + _SECTION_CLARIFY)
 
     # Two absolute paths, and nothing else foundational: the workspace root (which the
     # model needs to BUILD an in-workspace path, since the file tools reject relative

@@ -147,10 +147,13 @@ async def ask_user_question(
 ) -> dict:
     """Ask the user one or more clarifying questions and wait for their answers.
 
-    Use this when you genuinely cannot proceed well without the user's input —
-    ambiguous requirements, an architectural fork (e.g. "Postgres or SQLite?"), or
-    an irreversible/destructive choice. Do NOT use it for things you can infer from
-    the code, the conversation, or sensible defaults; prefer acting over asking.
+    Use this when two or more directions are defensible, would lead to materially
+    different work, and nothing in the code, the conversation, or an established
+    convention settles it — an architectural fork ("Postgres or SQLite?"), an
+    ambiguous requirement, an irreversible choice. Deliberating cannot produce the
+    missing information; asking can. Ask at the point the fork appears, before
+    building on either branch. Do NOT use it for what you can settle yourself from
+    the code, the conversation, or a sensible default: decide and say which.
 
     Bundle several related questions in one call: the frontend shows them one at a
     time and advances to the next when the user submits an answer, then returns all

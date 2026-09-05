@@ -192,16 +192,30 @@ def _out_of_workspace_targets(agent: Any, tool_name: str, arguments: dict) -> li
     return [t for t in out if not any(_is_under(other, t) for other in out if other != t)]
 
 
+def _name_paths(paths: list[str], limit: int = 4) -> str:
+    """The refused paths, quoted — capped so a wide command doesn't flood the error."""
+    shown = ", ".join(f"'{p}'" for p in paths[:limit])
+    rest = len(paths) - limit
+    return f"{shown} and {rest} more" if rest > 0 else shown
+
+
 def _check_out_of_workspace_access(
     agent: Any, tool_name: str, arguments: dict, execution_context: dict[str, Any] | None,
     targets: list[str] | None = None,
 ) -> str | None:
-    """Prompt the user before a tool touches a path outside the workspace.
+    """Prompt the user before a tool touches paths outside the workspace.
 
-    Reuses the existing approval UI (allow / deny / always-for-this-file, via the
+    Reuses the existing approval UI (allow / deny / always-for-these-paths, via the
     agent's ``_request_path_approval`` hook). Runs before the sensitive/preview gate
     so a previewable write cannot bypass it. Fail-closed: with no hook wired,
     out-of-workspace access is denied. Returns a violation payload or ``None``.
+
+    **All the call's paths are asked about once.** This used to prompt per path, and
+    one ordinary command names several: ``cd /data && python /opt/x.py > /var/log/y.log``
+    put three cards in front of the user, one after another, for a single decision they
+    had already made when they read the command. The command is the unit the user
+    actually judges — they allow *this call*, not each of its operands — so the hook
+    takes the whole list and returns one answer, and ``always`` covers every path in it.
 
     *targets* lets the caller pass the list it already computed with
     :func:`_out_of_workspace_targets` — the engine needs to know whether this call
@@ -211,18 +225,24 @@ def _check_out_of_workspace_access(
         targets = _out_of_workspace_targets(agent, tool_name, arguments)
     if not targets:
         return None
+    # ``auto_all``: grant without asking. The servers still validate and confine every
+    # accepted call, so this suppresses the question, not the sandbox.
+    if agent.approvals.auto_paths():
+        for abspath in targets:
+            agent.approvals.grant_path(abspath, always=False)
+        return None
     prompt = getattr(agent, "_request_path_approval", None)
+    # The call's own arguments travel with the paths so the prompt can show the
+    # usual tool description ("Running: …") instead of bare paths.
+    approved, always = prompt(targets, tool_name, arguments) if prompt else (False, False)
+    if not approved:
+        return agent._json_error_payload(
+            f"Access outside the workspace was not approved: {_name_paths(targets)}.",
+            hint=("These paths are outside the workspace root. Ask the user to approve "
+                  "them (allow / always), or operate within the workspace."),
+            tool=tool_name,
+        )
     for abspath in targets:
-        # The call's own arguments travel with the path so the prompt can show the
-        # usual tool description ("Running: …") instead of a bare path.
-        approved, always = prompt(abspath, tool_name, arguments) if prompt else (False, False)
-        if not approved:
-            return agent._json_error_payload(
-                f"Access to '{abspath}' outside the workspace was not approved.",
-                hint=("This path is outside the workspace root. Ask the user to approve "
-                      "it (allow / always), or operate within the workspace."),
-                tool=tool_name,
-            )
         agent.approvals.grant_path(abspath, always=always)
     return None
 

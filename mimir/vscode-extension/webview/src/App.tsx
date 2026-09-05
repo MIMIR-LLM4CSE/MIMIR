@@ -18,13 +18,16 @@ import type {
   ToggleItem,
   ResourceItem,
   AgentMode,
+  ApprovalMode,
   ThinkingProfile,
+  RememberedEndpoint,
 } from "./types";
 import { createChatReducer, initialChatState } from "./state/chatReducer";
 import { useWebSocket, vscodePostMessage } from "./hooks/useWebSocket";
 import { ChatThread } from "./components/ChatThread";
 import { PlanBar } from "./components/PlanBar";
 import { AgentSettings } from "./components/AgentSettings";
+import { ApprovalSwitcher } from "./components/ApprovalSwitcher";
 import { ModeSwitcher } from "./components/ModeSwitcher";
 import { TogglesPanel } from "./components/TogglesPanel";
 import { ConnectForm } from "./components/ConnectForm";
@@ -92,9 +95,20 @@ export const App: React.FC = () => {
   const [backend, setBackend] = useState("vllm");
   const [vllmBaseUrl, setVllmBaseUrl] = useState("http://127.0.0.1:8000");
   const [ollamaBaseUrl, setOllamaBaseUrl] = useState("http://127.0.0.1:11434");
+  // Endpoint the extension host remembers (checkbox in the connect form). It
+  // seeds the form and is what the host reconnects to on its own at startup.
+  const [remembered, setRemembered] = useState<RememberedEndpoint | null>(null);
+  // Remembers the exact args of the last connect (ours or the host's auto-connect)
+  // so the disconnected panel can offer a one-click Reconnect that replays them.
+  const lastConnectArgsRef = useRef<
+    [string, string, string, string | undefined, boolean | undefined] | null
+  >(null);
+  // The form reads its address/model/checkbox once, at mount; config and the
+  // remembered endpoint arrive after it. Remounting on those is how it picks
+  // them up without fighting the user's edits afterwards.
+  const connectFormKey = `${backend}|${vllmBaseUrl}|${ollamaBaseUrl}|${remembered?.baseUrl ?? ""}`;
   // Models the endpoint reports it serves — the connect form's dropdown.
   const [endpointModels, setEndpointModels] = useState<string[]>([]);
-  const [modelsLoading, setModelsLoading] = useState(false);
   const [modelsError, setModelsError] = useState<string | null>(null);
   const [input, setInput] = useState("");
   // ── @-mention autocomplete (attach MCP resources) ─────────────────────────
@@ -123,6 +137,7 @@ export const App: React.FC = () => {
 
   const [contextMode, setContextMode] = useState<"compact" | "full">("full");
   const [enforcement, setEnforcement] = useState<"strict" | "light" | "off">("strict");
+  const [approvalMode, setApprovalMode] = useState<ApprovalMode>("manual");
   const [contextUsage, setContextUsage] = useState<ContextUsage | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [togglesOpen, setTogglesOpen] = useState(false);
@@ -223,6 +238,7 @@ export const App: React.FC = () => {
         setConnection("connected");
         if (msg.context_mode) setContextMode(msg.context_mode);
         if (msg.enforcement) setEnforcement(msg.enforcement);
+        if (msg.approval_mode) setApprovalMode(msg.approval_mode);
         if (msg.thinking) setThinkingProfile(msg.thinking);
         handleReady();
         return;
@@ -235,17 +251,33 @@ export const App: React.FC = () => {
         if (msg.path) vscodePostMessage({ type: "open_preview", file: msg.path });
         return;
 
-      case "config":
+      case "config": {
         setAnthropicModels(msg.anthropicModels ?? []);
         if (msg.backend) setBackend(msg.backend);
         if (msg.vllmBaseUrl) setVllmBaseUrl(msg.vllmBaseUrl);
         if (msg.ollamaBaseUrl) setOllamaBaseUrl(msg.ollamaBaseUrl);
+        // A remembered endpoint outranks the settings default: it is the address
+        // the user last connected to and asked us to keep.
+        const saved = msg.remembered ?? null;
+        setRemembered(saved);
+        if (saved) {
+          setBackend(saved.backend);
+          if (saved.backend === "ollama") setOllamaBaseUrl(saved.baseUrl);
+          else setVllmBaseUrl(saved.baseUrl);
+        }
+        return;
+      }
+
+      case "auto_connect":
+        // The host is reconnecting to the remembered endpoint by itself — show
+        // the connecting state, and let Reconnect replay the same arguments.
+        lastConnectArgsRef.current = [msg.model, msg.backend, msg.baseUrl, undefined, true];
+        setConnection("connecting");
         return;
 
       case "models":
         setEndpointModels(msg.models);
         setModelsError(msg.error ?? null);
-        setModelsLoading(false);
         return;
 
       case "todo":
@@ -285,6 +317,10 @@ export const App: React.FC = () => {
 
       case "enforcement":
         setEnforcement(msg.mode);
+        return;
+
+      case "approval_mode":
+        setApprovalMode(msg.mode);
         return;
 
       case "mode":
@@ -503,14 +539,12 @@ export const App: React.FC = () => {
     scrollQueryToTop();
   }, [busy, send, scrollQueryToTop]);
 
-  // Remembers the exact args of the last successful connect so the disconnected
-  // panel can offer a one-click Reconnect (replaying model/backend/address).
-  const lastConnectArgsRef = useRef<Parameters<typeof connect> | null>(null);
   const handleConnect = useCallback(
-    (mdl: string, be: string, baseUrl: string, anthropicApiKey?: string) => {
-      lastConnectArgsRef.current = [mdl, be, baseUrl, anthropicApiKey];
+    (mdl: string, be: string, baseUrl: string, anthropicApiKey?: string, remember?: boolean) => {
+      lastConnectArgsRef.current = [mdl, be, baseUrl, anthropicApiKey, remember];
+      setRemembered(remember ? { backend: be, baseUrl, model: mdl } : null);
       setConnection("connecting");
-      connect(mdl, be, baseUrl, anthropicApiKey);
+      connect(mdl, be, baseUrl, anthropicApiKey, remember);
     },
     [connect],
   );
@@ -524,7 +558,6 @@ export const App: React.FC = () => {
         setModelsError(null);
         return;
       }
-      setModelsLoading(true);
       setModelsError(null);
       fetchModels(be, baseUrl);
     },
@@ -743,6 +776,26 @@ export const App: React.FC = () => {
     send({ type: "command", text: `/enforcement ${val}` });
   }, [send]);
 
+  const handleApprovalModeChange = useCallback((val: ApprovalMode) => {
+    setApprovalMode(val);
+    // "all" is the spoken form of auto_all, the one the server's command parses.
+    send({ type: "command", text: `/approvals ${val === "auto_all" ? "all" : val}` });
+    // The switch has to work mid-run, and mid-run is exactly when a card is already
+    // on screen with the agent parked on it. The new mode covers that call, so
+    // answering it here is what the user just asked for — leaving it standing would
+    // make "auto" mean "auto, starting after you clear this one".
+    const msgs = chatStateRef.current.messages;
+    let card: ChatMessage | undefined;
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      if (msgs[i].kind === "approval" && msgs[i].approval !== undefined) { card = msgs[i]; break; }
+    }
+    if (!card?.approval) return;
+    const leavesWorkspace =
+      (card.approval.oow_paths?.length ?? 0) > 0 || Boolean(card.approval.oow_path);
+    const covered = val === "auto_all" || (val === "auto" && !leavesWorkspace);
+    if (covered) handleApprovalResponse(card.approval.id, "y");
+  }, [send, handleApprovalResponse]);
+
   const connectionColor =
     connection === "connected"
       ? "var(--vscode-testing-iconPassed)"
@@ -861,13 +914,14 @@ export const App: React.FC = () => {
                 <MimirIntro />
                 <div className="empty-text">MIMIR</div>
                 <ConnectForm
+                  key={connectFormKey}
                   backend={backend}
                   vllmBaseUrl={vllmBaseUrl}
                   ollamaBaseUrl={ollamaBaseUrl}
                   anthropicModels={anthropicModels}
                   models={endpointModels}
-                  modelsLoading={modelsLoading}
                   modelsError={modelsError}
+                  remembered={remembered}
                   onFetchModels={handleFetchModels}
                   onConnect={handleConnect}
                 />
@@ -899,13 +953,14 @@ export const App: React.FC = () => {
               </button>
             )}
             <ConnectForm
+              key={connectFormKey}
               backend={backend}
               vllmBaseUrl={vllmBaseUrl}
               ollamaBaseUrl={ollamaBaseUrl}
               anthropicModels={anthropicModels}
               models={endpointModels}
-              modelsLoading={modelsLoading}
               modelsError={modelsError}
+              remembered={remembered}
               onFetchModels={handleFetchModels}
               onConnect={handleConnect}
             />
@@ -1089,38 +1144,44 @@ export const App: React.FC = () => {
             }}
             onKeyDown={handleKeyDown}
           />
-          {busy ? (
-            <>
-              {input.trim() && (
+          {/* Right-hand column: who answers the approval cards, directly above the
+              button that sends the work off — the mode is switched mid-run, so it
+              belongs where the user already is rather than behind a settings gear. */}
+          <div className="input-actions">
+            <ApprovalSwitcher mode={approvalMode} onModeChange={handleApprovalModeChange} />
+            {busy ? (
+              <>
+                {input.trim() && (
+                  <button
+                    className="send-btn"
+                    onClick={submitQuery}
+                    title="Send steer (Enter) — queued for the agent's next step"
+                    aria-label="Send steer message"
+                  >
+                    ↑
+                  </button>
+                )}
                 <button
-                  className="send-btn"
-                  onClick={submitQuery}
-                  title="Send steer (Enter) — queued for the agent's next step"
-                  aria-label="Send steer message"
+                  className="stop-btn"
+                  onClick={() => send({ type: "command", text: "/cancel" })}
+                  title="Stop (cancel current query)"
+                  aria-label="Stop current query"
                 >
-                  ↑
+                  ⏹
                 </button>
-              )}
+              </>
+            ) : (
               <button
-                className="stop-btn"
-                onClick={() => send({ type: "command", text: "/cancel" })}
-                title="Stop (cancel current query)"
-                aria-label="Stop current query"
+                className="send-btn"
+                onClick={submitQuery}
+                disabled={!input.trim() || connection !== "connected"}
+                title="Send (Enter)"
+                aria-label="Send message"
               >
-                ⏹
+                ↑
               </button>
-            </>
-          ) : (
-            <button
-              className="send-btn"
-              onClick={submitQuery}
-              disabled={!input.trim() || connection !== "connected"}
-              title="Send (Enter)"
-              aria-label="Send message"
-            >
-              ↑
-            </button>
-          )}
+            )}
+          </div>
           </div>
         </div>
         {/* Context usage bar — shown below the input box */}

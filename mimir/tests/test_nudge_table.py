@@ -31,8 +31,8 @@ class CoreNudgeTableTest(unittest.TestCase):
     def test_verification_categories(self):
         verif = {n.name for n in _CORE_NUDGES if n.layer == "verification"}
         self.assertEqual(
-            verif, {"denial", "error_recovery", "validation", "regression",
-                    "unexercised", "unfinished_plan"}
+            verif, {"denial", "error_recovery", "stuck_repair", "validation",
+                    "regression", "unexercised", "unfinished_plan"}
         )
 
     def test_no_row_asks_for_a_verdict(self):

@@ -98,7 +98,8 @@ class _FakeAgent:
         self.tool_caps = {"read_file_lines": ToolCaps(name="read_file_lines",
                                                        capabilities=frozenset({cap}))}
         self._script = script          # (approved, always) returned by the prompt
-        self.prompts: list[str] = []
+        self.prompts: list[str] = []          # every path asked about, flattened
+        self.prompt_calls: int = 0            # how many cards the user actually saw
         self.prompt_args: list[dict | None] = []
 
     def get_tool_file_targets(self, tool_name, arguments):
@@ -112,10 +113,12 @@ class _FakeAgent:
         import json
         return json.dumps({"status": "error", "error": msg, "hint": hint})
 
-    def _request_path_approval(self, abspath, tool_name, arguments=None):
-        # The call's own arguments travel with the path so the prompt can describe
-        # what the tool is doing, not just which path it touches.
-        self.prompts.append(abspath)
+    def _request_path_approval(self, paths, tool_name, arguments=None):
+        # Every outside path of the call arrives in one prompt; the call's own
+        # arguments travel with them so the card can describe what the tool is
+        # doing, not just which paths it touches.
+        self.prompt_calls += 1
+        self.prompts.extend(paths)
         self.prompt_args.append(arguments)
         return self._script
 
@@ -498,6 +501,121 @@ class SingleApprovalPerCallTests(_TmpStateDir):
         out = self._evaluate(agent, "mkdir /tmp/outside/build")
         self.assertIsNotNone(out.violation)
         self.assertIn("outside the workspace", out.violation)
+        self.assertEqual(agent.tool_approvals, [])
+
+
+class OneCardPerCallTests(_TmpStateDir):
+    """A command naming several outside paths raises exactly ONE approval.
+
+    It used to raise one per path: ``cd /data && python /opt/x.py > /var/log/y.log``
+    put three cards in front of the user, in sequence, for a decision they had already
+    taken when they read the command.
+    """
+
+    COMMAND = "cd /tmp/one && python /opt/one/x.py > /var/tmp/one/y.log"
+
+    def _agent(self, script=(True, False)):
+        return _FakeExecAgent(approval_mod.ApprovalManager(sensitive_tools=set()),
+                              script=script)
+
+    def _expected(self) -> set[str]:
+        return {os.path.realpath(p) for p in
+                ("/tmp/one", "/opt/one/x.py", "/var/tmp/one/y.log")}
+
+    def test_every_path_arrives_in_a_single_prompt(self) -> None:
+        agent = self._agent()
+        out = engine._check_out_of_workspace_access(
+            agent, "run_shell", {"command": self.COMMAND}, {})
+        self.assertIsNone(out)
+        self.assertEqual(agent.prompt_calls, 1)
+        self.assertEqual(set(agent.prompts), self._expected())
+
+    def test_one_allow_grants_all_of_them(self) -> None:
+        agent = self._agent()
+        engine._check_out_of_workspace_access(
+            agent, "run_shell", {"command": self.COMMAND}, {})
+        # allow-once records the sidecar grant the servers read (not an "always" scope)
+        for path in self._expected():
+            self.assertIn(path, agent.approvals._allowed_paths)
+
+    def test_one_deny_blocks_and_grants_nothing(self) -> None:
+        agent = self._agent(script=(False, False))
+        out = engine._check_out_of_workspace_access(
+            agent, "run_shell", {"command": self.COMMAND}, {})
+        self.assertIsNotNone(out)
+        self.assertEqual(agent.prompt_calls, 1)
+        # The refusal names the paths it refused, not just the first one it saw.
+        for path in self._expected():
+            self.assertIn(path, out)
+            self.assertNotIn(path, agent.approvals._allowed_paths)
+
+
+class ApprovalModeTests(_TmpStateDir):
+    """manual / auto / auto_all — what each cran stops asking about."""
+
+    def _agent(self, mode):
+        agent = _FakeEngineAgent(
+            approval_mod.ApprovalManager(sensitive_tools={"run_shell"}),
+            script=(True, False))
+        agent.approvals.approval_mode = mode
+        return agent
+
+    def _evaluate(self, agent, command):
+        return engine.evaluate_tool_preconditions(
+            agent=agent, tool_name="run_shell", arguments={"command": command},
+            execution_context={"searched": True},
+        )
+
+    def test_manual_asks_for_both(self) -> None:
+        inside = self._agent("manual")
+        self._evaluate(inside, "mkdir build")
+        self.assertEqual(inside.tool_approvals, ["run_shell"])
+        outside = self._agent("manual")
+        self._evaluate(outside, "mkdir /tmp/outside/manual")
+        self.assertEqual(outside.prompt_calls, 1)
+
+    def test_auto_passes_tools_but_still_asks_to_leave_the_workspace(self) -> None:
+        inside = self._agent("auto")
+        out = self._evaluate(inside, "mkdir build")
+        self.assertIsNone(out.violation)
+        self.assertEqual(inside.tool_approvals, [])     # no card built
+        outside = self._agent("auto")
+        self._evaluate(outside, "mkdir /tmp/outside/auto")
+        self.assertEqual(outside.prompt_calls, 1)       # the boundary still asks
+
+    def test_auto_all_asks_nothing_and_still_grants_the_paths(self) -> None:
+        agent = self._agent("auto_all")
+        out = self._evaluate(agent, "mkdir /tmp/outside/autoall")
+        self.assertIsNone(out.violation)
+        self.assertEqual(agent.prompt_calls, 0)
+        self.assertEqual(agent.tool_approvals, [])
+        self.assertIn(os.path.realpath("/tmp/outside/autoall"),
+                      agent.approvals._allowed_paths)
+
+    def test_the_mode_is_read_afresh_at_every_call(self) -> None:
+        # The switch has to work in the middle of a run: the engine reads the manager
+        # at each call, so flipping it between two calls changes the second one.
+        agent = self._agent("manual")
+        self._evaluate(agent, "mkdir build")
+        self.assertEqual(agent.tool_approvals, ["run_shell"])
+        agent.approvals.approval_mode = "auto"
+        self._evaluate(agent, "mkdir build2")
+        self.assertEqual(agent.tool_approvals, ["run_shell"])   # no second card
+        agent.approvals.approval_mode = "manual"
+        self._evaluate(agent, "mkdir build3")
+        self.assertEqual(agent.tool_approvals, ["run_shell", "run_shell"])
+
+    def test_auto_does_not_revive_a_settled_refusal(self) -> None:
+        # A scope already refused twice stays refused: auto mode decides what is
+        # *asked*, it does not overturn an answer the user has already given.
+        agent = self._agent("auto")
+        ctx = {"searched": True,
+               "denial_history": [{"scope": "fake:run_shell", "kind": "denied"}] * 2}
+        out = engine.evaluate_tool_preconditions(
+            agent=agent, tool_name="run_shell", arguments={"command": "mkdir build"},
+            execution_context=ctx,
+        )
+        self.assertIsNotNone(out.violation)
         self.assertEqual(agent.tool_approvals, [])
 
 

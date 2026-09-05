@@ -283,6 +283,19 @@ class MimirAgent:
     def set_batch_mode(self, enabled: bool) -> None:
         self.approvals.batch_mode = enabled
 
+    def set_approval_mode(self, mode: str) -> None:
+        """Set how much of the approval flow the user still answers by hand.
+
+        ``manual`` (default) / ``auto`` (sensitive tools pass, leaving the workspace
+        still asks) / ``auto_all`` (nothing asks). Session state — see
+        ``ApprovalManager.approval_mode`` for what an auto mode does and does not lift.
+        """
+        normalized = (mode or "").strip().lower()
+        if normalized not in self.approvals.APPROVAL_MODES:
+            raise ValueError(
+                "Invalid approval mode. Use 'manual', 'auto' or 'auto_all'.")
+        self.approvals.approval_mode = normalized
+
     def set_context_mode(self, mode: str) -> None:
         normalized = (mode or "").strip().lower()
         if normalized not in ("compact", "full"):
@@ -585,29 +598,32 @@ class MimirAgent:
         )
 
     def _request_path_approval(
-        self, abspath: str, tool_name: str, arguments: dict | None = None
+        self, paths: list[str], tool_name: str, arguments: dict | None = None
     ) -> tuple[bool, bool]:
-        """Approve out-of-workspace access to *abspath*. Returns (approved, always).
+        """Approve out-of-workspace access to *paths*. Returns (approved, always).
 
-        Default terminal prompt (allow once / always / deny). *arguments* are the
-        call's own arguments, shown as the usual tool description so the user sees
-        what the tool is doing, not just which path it touches. Front-ends override:
-        the WebSocket worker routes this through the approval UI; the headless runner
-        auto-approves. Non-interactive stdin (EOF) fails closed (denied).
+        One prompt for the whole call: a single command routinely names several
+        outside paths, and asking about each in turn is the same decision put to the
+        user three times. Default terminal prompt (allow once / always / deny).
+        *arguments* are the call's own arguments, shown as the usual tool description
+        so the user sees what the tool is doing, not just which paths it touches.
+        Front-ends override: the WebSocket worker routes this through the approval UI;
+        the headless runner auto-approves. Non-interactive stdin (EOF) fails closed.
         """
         from . import human_pause
         from .context.capabilities import label_for
 
-        # The header names the action with a short file name; the absolute path is
-        # printed on its own line below, because *where* is the decision the user is
+        # The header names the action with a short file name; the absolute paths are
+        # printed on their own lines below, because *where* is the decision the user is
         # being asked to make. Shortening only the header keeps the prompt readable
-        # without ever hiding the location being authorised.
+        # without ever hiding the locations being authorised.
         from .tool_execution.tool_status_messages import shorten_display_args
 
         short_args = shorten_display_args(tool_name, arguments or {}, self.tool_caps)
         what = label_for(tool_name, short_args, self.tool_caps) or tool_name
+        listed = "\n".join(f"  {p}" for p in paths)
         try:
-            print(f"\n⚠ {what}\n  needs access outside the workspace:\n  {abspath}",
+            print(f"\n⚠ {what}\n  needs access outside the workspace:\n{listed}",
                   flush=True)
             # Waiting on the user, not on the tool (see human_pause).
             with human_pause.human_pause():

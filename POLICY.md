@@ -636,6 +636,7 @@ Target extraction (`_out_of_workspace_targets`) reuses the existing file/edit-ta
 - the **scratchpad** (see below), which is granted by the system rather than the user.
 
 Behavior:
+- **one card per call, whatever it names.** Every out-of-workspace path of a call travels in a single prompt (`_request_path_approval(paths, tool, args)`) and one answer settles all of them. The gate used to loop and prompt per path: `cd /data && python /opt/x.py > /var/log/y.log` put three cards in front of the user, in sequence, for a decision they had already made when they read the command — and each one parked the agent on the same queue. The parent/child collapse in `_out_of_workspace_targets` stays (a granted directory already covers its children), but it never applied to siblings, which is where the repetition came from. The WS card carries `oow_paths` (plus `oow_path`, the first, for an older client) and the webview renders one row per path; `always` covers the whole list;
 - with no approval hook wired the gate **fails closed** — out-of-workspace access is denied;
 - a granted path is recorded via `ApprovalManager.grant_path`, which mirrors the full allow set to `<state_dir>/approved_paths.json`. The sandboxed servers read that sidecar **per call** (their env is frozen at spawn, so the file is the only live client→server channel) and pass the entries as `extra_roots` to `resolve_path_in_root`. `always` also records a `path:<abspath>` scope token that skips re-prompting for the session. Both the token check and the gate's target list work by **containment**, as the server does: `extra_roots` admits a granted path as a *root*, so once a directory is approved everything under it is already allowed there and a prompt for a child could no longer deny anything;
 - grants reset on session change (`reset_allowed_paths`, wired on the WS worker); a missing/corrupt sidecar yields `[]` (fail-closed — a broken allowlist can never widen the sandbox).
@@ -820,6 +821,14 @@ Clarification is suppressed in:
 - batch mode
 - non-interactive sessions
 - CI/headless execution
+
+Approval mode (`/approvals manual|auto|all`, or the approvals button just above the send button in the webview):
+- `manual` (default) — every sensitive tool and every step outside the workspace comes back to the user;
+- `auto` — sensitive tools run unasked; **leaving the workspace still asks**;
+- `auto_all` — nothing asks.
+- It removes the *question*, never the policy: the bash denylist, the servers' path/redirection validation and the verification-tier gates (cluster-submit, proxy-exec, plan-shape) all still refuse. Enforced in `evaluate_tool_preconditions` and `_check_out_of_workspace_access` — the one seam CLI, WebSocket and headless runs share — so in an auto mode the card is never built and nothing reaches the socket or the terminal.
+- **Session state, never persisted**: a mode that answers for the user must be chosen for the session it applies to, not inherited from the last one. `ApprovalManager.approval_mode`, read afresh at every call, so the switch takes effect **mid-run**, from the next tool call on. A card already on screen when the user switches is answered by the client (the side that knows one is standing), so "auto" does not mean "auto, starting after you clear this one".
+- A refusal the ladder has already settled (`approval_is_settled`) stays refused in every mode: auto decides what is *asked*, it does not overturn an answer already given.
 
 Batch mode:
 - when `batch_mode` is enabled (via `/batch on`), sensitive tool calls are auto-approved and queued during the turn

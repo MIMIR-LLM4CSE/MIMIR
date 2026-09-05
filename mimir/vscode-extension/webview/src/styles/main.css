@@ -385,6 +385,21 @@ body {
 .connect-field-hint code {
   font-family: var(--mono);
 }
+/* "Remember this address" — a checkbox row, so it reads as one clickable line. */
+.connect-remember {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  font-size: 11px;
+  line-height: 1.35;
+  color: var(--fg-dim);
+  cursor: pointer;
+}
+.connect-remember input {
+  margin: 1px 0 0;
+  accent-color: var(--vscode-button-background);
+  cursor: pointer;
+}
 .connect-field-error {
   color: var(--vscode-testing-iconFailed);
 }
@@ -782,6 +797,16 @@ body {
   border-radius: 3px;
   color: var(--vscode-editorWarning-foreground, #cca700);
   background: color-mix(in srgb, var(--vscode-editorWarning-foreground, #cca700) 14%, transparent);
+}
+/* One path per line, so a chain naming several stays readable and the list can
+   grow without pushing the Allow/Block buttons off the card. */
+.ap-reason-paths {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+  max-height: 96px;
+  overflow-y: auto;
 }
 .ap-reason-path {
   min-width: 0;
@@ -1301,6 +1326,15 @@ body {
 }
 
 /* ── Textarea + send/stop row ───────────────────────────────────────────────── */
+/* Send/stop plus the approval switcher, stacked at the right of the message box. */
+.input-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
 .input-row {
   display: flex;
   align-items: flex-end;
@@ -2317,6 +2351,64 @@ body {
 }
 
 .settings-cap-pill { font-size: 12px; }
+
+/* ── Approval switcher (its own toolbar control) ─────────────────────────────
+   Sits beside the mode switcher rather than inside the settings popover: an auto
+   mode answers the cards on the user's behalf, so it is a standing state that has
+   to be legible without opening anything — and it warms to the warning colour the
+   moment it stops asking. */
+.approval-wrapper { position: relative; align-self: stretch; }
+
+/* Square, send-button-width: the two share a column, so anything wider here is
+   width taken from the message box. */
+.approval-btn {
+  width: 34px;
+  height: 26px;
+  justify-content: center;
+  padding: 0;
+  background: transparent;
+  transition: color var(--motion-med), border-color var(--motion-med), background var(--motion-med);
+}
+.approval-btn--auto {
+  --approval-accent: var(--vscode-editorWarning-foreground, #cca700);
+  color: var(--approval-accent);
+  border-color: color-mix(in srgb, var(--approval-accent) 55%, transparent);
+}
+.approval-btn--auto:hover {
+  background: color-mix(in srgb, var(--approval-accent) 10%, transparent);
+  border-color: var(--approval-accent);
+}
+
+/* ⚡⚡ is two glyphs in the width of one ↑, so the icon shrinks to fit rather than
+   letting the widest mode set the column. */
+.approval-btn-icon {
+  display: inline-flex;
+  align-items: center;
+  font-size: 12px;
+  line-height: 1;
+  max-width: 100%;
+  overflow: hidden;
+}
+
+/* The picker hangs above the button and is pinned to the right edge: at the far
+   right of the input row a left-anchored popover would run off the panel. */
+.approval-popover { left: auto; right: 0; }
+
+/* Same learnable swatch as the mode picker: neutral while the user still answers,
+   warning-coloured for the two crans that answer for them. */
+.approval-popover .settings-mode-btn[data-approval="manual"] { --row-accent: var(--vscode-charts-blue, #4a9eff); }
+.approval-popover .settings-mode-btn[data-approval="auto"],
+.approval-popover .settings-mode-btn[data-approval="auto_all"] {
+  --row-accent: var(--vscode-editorWarning-foreground, #cca700);
+}
+.approval-popover .settings-mode-btn {
+  border-left: 3px solid var(--row-accent);
+}
+.approval-popover .settings-mode-btn.active {
+  background: color-mix(in srgb, var(--row-accent) 20%, transparent);
+  border-color: var(--row-accent);
+  color: var(--fg);
+}
 .settings-gear { font-size: 12px; }
 
 .settings-popover {

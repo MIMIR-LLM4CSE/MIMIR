@@ -5,6 +5,17 @@ from typing import Any, Awaitable, Callable, Iterable
 from ...config import THINKING_DEPTH_LABELS, thinking_depth_from_label
 
 
+# What the user types → the mode name. "all" is the spoken form of ``auto_all``:
+# nobody types an underscore at a prompt.
+_APPROVAL_VALUES: dict[str, str] = {
+    "manual": "manual", "auto": "auto",
+    "all": "auto_all", "auto_all": "auto_all", "auto-all": "auto_all",
+}
+_APPROVAL_LABELS: dict[str, str] = {
+    "manual": "manual", "auto": "auto (tools)", "auto_all": "auto (everything)",
+}
+
+
 async def handle_chat_command(
     *,
     query: str,
@@ -14,6 +25,7 @@ async def handle_chat_command(
     batch_mode: bool,
     context_mode: str = "compact",
     enforcement: str = "strict",
+    approval_mode: str = "manual",
     set_mode: Callable[[str], None],
     set_thinking: Callable[[bool], None],
     thinking_depth: int | None = None,
@@ -22,6 +34,7 @@ async def handle_chat_command(
     set_batch_mode: Callable[[bool], None],
     set_context_mode: Callable[[str], None] | None = None,
     set_enforcement: Callable[[str], None] | None = None,
+    set_approval_mode: Callable[[str], None] | None = None,
     trust_tool: Callable[[str], None] | None = None,
     untrust_tool: Callable[[str], None] | None = None,
     trusted_tools: Iterable[str] | None = None,
@@ -70,6 +83,9 @@ async def handle_chat_command(
             "                           model calibrate per turn, the rest impose a fixed budget\n"
             "  /stream on|off -> enable or disable streaming mode\n"
             "  /batch on|off -> batch all write approvals until end of turn\n"
+            "  /approvals manual|auto|all -> who answers the approval cards;\n"
+            "                           manual: you do; auto: sensitive tools pass, leaving the\n"
+            "                           workspace still asks; all: nothing asks (guardrails still apply)\n"
             "  /servers [on|off <name>] -> list/toggle MCP servers (hide their tools from the LLM)\n"
             "  /skills [on|off <name>]  -> list/toggle skills (eligible for auto-detection)\n"
             "  /nudges [on|off <name>]  -> list/toggle application nudges (extension packs)\n"
@@ -111,7 +127,9 @@ async def handle_chat_command(
             True,
             f"\nCurrent mode: {mode} | "
             f"thinking: {think_status} | streaming: {stream_status} | batch: {batch_status} | "
-            f"context: {context_mode} | enforcement: {enforcement} | trusted: {trusted_list}\n",
+            f"context: {context_mode} | enforcement: {enforcement} | "
+            f"approvals: {_APPROVAL_LABELS.get(approval_mode, approval_mode)} | "
+            f"trusted: {trusted_list}\n",
         )
 
     if cmd == "/mode":
@@ -152,6 +170,29 @@ async def handle_chat_command(
             return True, "\n❌ Usage: /batch on|off\n"
         set_batch_mode(val == "on")
         return True, f"\nBatch approval mode turned {val}.\n"
+
+    if cmd == "/approvals":
+        if len(parts) == 1:
+            return True, (
+                f"\nApprovals are currently: {_APPROVAL_LABELS.get(approval_mode, approval_mode)}  "
+                "(manual=you answer every card; auto=sensitive tools pass, leaving the "
+                "workspace still asks; all=nothing asks)\n"
+            )
+        val = _APPROVAL_VALUES.get(parts[1].lower())
+        if val is None:
+            return True, "\n❌ Usage: /approvals manual|auto|all\n"
+        if set_approval_mode is not None:
+            try:
+                set_approval_mode(val)
+            except ValueError as exc:
+                return True, f"\n❌ {exc}\n"
+        if val == "manual":
+            return True, "\nApprovals switched to: manual — every card comes back to you.\n"
+        return True, (
+            f"\n⚠ Approvals switched to: {_APPROVAL_LABELS[val]} — "
+            f"{'nothing' if val == 'auto_all' else 'no sensitive tool'} will ask you again "
+            "this session. Guardrails (denylist, sandbox) still apply.\n"
+        )
 
     if cmd == "/context":
         if len(parts) == 1:

@@ -137,7 +137,11 @@ async def serve(
     except Exception as _e:
         print(f"WARNING: context-window detection failed: {_e!r}", file=_ORIGINAL_STDOUT)
 
-    print(f"MIMIR WS server starting on ws://{host}:{port}  (model: {_model})", file=_ORIGINAL_STDOUT)
+    # The port is deliberately absent here: with --port 0 (what the VS Code extension
+    # passes, so each window gets its own server) it is the kernel that picks one, and
+    # it is not known until the socket is bound. The "Listening on" line below is the
+    # one that carries the real address.
+    print(f"MIMIR WS server starting on {host}  (model: {_model})", file=_ORIGINAL_STDOUT)
     print("Initialising agent connections…", file=_ORIGINAL_STDOUT)
 
     worker = _AgentWorker(_model)
@@ -150,8 +154,12 @@ async def serve(
     # The default 1 MiB frame cap is below what a client transcript weighs once it
     # carries diffs and command output, and an oversized frame closes the connection
     # rather than failing the one message.
-    async with websockets.serve(_handler, host, port, max_size=_MAX_FRAME_BYTES):
-        print(f"Listening on ws://{host}:{port}", file=_ORIGINAL_STDOUT, flush=True)
+    async with websockets.serve(_handler, host, port, max_size=_MAX_FRAME_BYTES) as server:
+        # Read the port back off the socket rather than echoing the argument: with
+        # --port 0 the argument is a placeholder, and this line is the contract the
+        # VS Code extension parses to learn where to connect.
+        bound = server.sockets[0].getsockname()[1]
+        print(f"Listening on ws://{host}:{bound}", file=_ORIGINAL_STDOUT, flush=True)
         await asyncio.Future()  # run forever
 
 
@@ -160,7 +168,9 @@ def main() -> None:
 
     parser = argparse.ArgumentParser(description="MIMIR WebSocket server")
     parser.add_argument("--host", default="localhost")
-    parser.add_argument("--port", type=int, default=8765)
+    parser.add_argument("--port", type=int, default=8765,
+                        help="Port to bind. 0 lets the OS pick a free one — the chosen "
+                             "port is then printed on the 'Listening on ws://…' line.")
     parser.add_argument("--model", default=None)
     parser.add_argument("--cwd", default=None, help="Set working directory before starting")
     parser.add_argument("--backend", choices=["ollama", "vllm", "anthropic"], default=None,

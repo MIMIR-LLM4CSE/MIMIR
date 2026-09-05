@@ -20,6 +20,7 @@ export interface ReadyMessage {
   model: string;
   context_mode?: "compact" | "full";
   enforcement?: "strict" | "light" | "off";
+  approval_mode?: ApprovalMode;
   thinking?: ThinkingProfile;
 }
 
@@ -49,8 +50,12 @@ export interface ApprovalMessage {
   scope: string;
   /** Canonical human label ("Proxy exec: run"); absent for tools with no template. */
   label?: string;
-  /** Set when the call is held because it touches this path outside the workspace.
-   *  The rest of the card describes the tool call itself, as usual. */
+  /** Set when the call is held because it touches paths outside the workspace.
+   *  Every outside path the call names travels in this one card — the user judges
+   *  the call, not each of its operands. The rest of the card describes the tool
+   *  call itself, as usual. */
+  oow_paths?: string[];
+  /** First of `oow_paths`, kept for a card built by an older server. */
   oow_path?: string;
 }
 
@@ -86,6 +91,23 @@ export interface ConfigMessage {
   vllmBaseUrl?: string;
   ollamaBaseUrl?: string;
   anthropicModels?: string[];
+  /** Endpoint the user asked the host to remember, if any. */
+  remembered?: RememberedEndpoint | null;
+}
+
+/** Address (never a key) the extension host reconnects to unattended. */
+export interface RememberedEndpoint {
+  backend: string;
+  baseUrl: string;
+  model: string;
+}
+
+/**
+ * The host started connecting on its own to the remembered endpoint — the
+ * webview only has to show the connecting state it didn't ask for.
+ */
+export interface AutoConnectMessage extends RememberedEndpoint {
+  type: "auto_connect";
 }
 
 /** Models the extension host read from the endpoint the user pointed us at. */
@@ -247,6 +269,17 @@ export interface EnforcementModeMessage {
   mode: "strict" | "light" | "off";
 }
 
+/** How much of the approval flow the user still answers by hand. Mirrors
+ *  ApprovalManager.APPROVAL_MODES in client/guardrails/policy/approval.py:
+ *  manual (every card), auto (sensitive tools pass, leaving the workspace still
+ *  asks), auto_all (nothing asks). Session state on the server — never persisted. */
+export type ApprovalMode = "manual" | "auto" | "auto_all";
+
+export interface ApprovalModeMessage {
+  type: "approval_mode";
+  mode: ApprovalMode;
+}
+
 /** The agent's operating mode. Mirrors VALID_MODES in client/config/models.py. */
 export type AgentMode = "agent" | "plan" | "ask";
 
@@ -379,6 +412,7 @@ export type ServerMessage =
   | SubAgentEventMessage
   | ErrorMessage
   | ConfigMessage
+  | AutoConnectMessage
   | ModelsMessage
   | DiffMessage
   | SteerInjectedMessage
@@ -389,6 +423,7 @@ export type ServerMessage =
   | SessionLoadedMessage
   | ContextModeMessage
   | EnforcementModeMessage
+  | ApprovalModeMessage
   | AgentModeMessage
   | ContextUsageMessage
   | ContinuePromptMessage

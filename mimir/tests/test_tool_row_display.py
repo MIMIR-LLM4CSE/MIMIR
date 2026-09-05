@@ -263,20 +263,21 @@ class RowPathsAreShortenedTests(unittest.TestCase):
     def test_out_of_workspace_card_keeps_the_absolute_path(self):
         """The location is the decision being approved — it is never shortened.
 
-        The card carries ``oow_path`` verbatim (rendered by the webview as an
-        explicit "outside workspace" line); only the header label is shortened.
+        The card carries ``oow_paths`` verbatim (rendered by the webview as an
+        explicit "outside workspace" line, one row per path); only the header label
+        is shortened.
         """
         import inspect
         from mimir.client.ui.ws import ws_worker
         src = inspect.getsource(ws_worker._AgentWorker._path_approval_shim)
-        self.assertIn('"oow_path": abspath', src)
-        self.assertNotIn('"oow_path": os.path.basename', src)
+        self.assertIn('"oow_paths": list(paths)', src)
+        self.assertNotIn("os.path.basename(paths[0])}\",", src)
 
     def test_cli_prompt_prints_the_absolute_path(self):
         import inspect
         from mimir.client.agent_core import MimirAgent
         src = inspect.getsource(MimirAgent._request_path_approval)
-        self.assertIn("{abspath}", src)
+        self.assertIn('f"  {p}" for p in paths', src)
 
 
 if __name__ == "__main__":

@@ -223,6 +223,8 @@ LLM_RETRY_MAX_DELAY_SECS: float = 20.0
 NUDGE_MAX_VALIDATION: int = 2
 NUDGE_MAX_DENIAL: int = 2
 NUDGE_MAX_ERROR_RECOVERY: int = 2
+# One fire per rung of the stuck-repair ladder (see the section below).
+NUDGE_MAX_STUCK_REPAIR: int = 2
 NUDGE_MAX_UNFINISHED_PLAN: int = 1
 # One shared budget for the whole advisory axis — "run the existing test"
 # (regression) and "nothing has been exercised" (unexercised) are two phrasings of one
@@ -241,6 +243,17 @@ NUDGE_MAX_BLAST_RADIUS: int = 1
 
 # Application-pack (extension) nudges: max fires per query per registered rule.
 CUSTOM_NUDGE_MAX_PER_QUERY: int = 3
+
+# ── Stuck-repair escalation ladder ─────────────────────────────────────────────
+# Counted per run command (``runs[cmd]["failures"]``, carried across re-runs by
+# ``record_run``), so repeated attempts at the same failing command escalate while an
+# unrelated command starts fresh. The rungs are advice, then a constraint; the third
+# rung already exists and is not repeated here — at VALIDATION_RETRY_BUDGET failures
+# ``_register_run_failure`` releases the workflow to ``conclude`` rather than looping.
+# The ordering ADVISE < CONSTRAIN < VALIDATION_RETRY_BUDGET is what keeps the two rungs
+# inside the window where repair is still being attempted.
+STUCK_REPAIR_ADVISE_AFTER: int = 2     # nth failure of one command that earns "look wider"
+STUCK_REPAIR_CONSTRAIN_AFTER: int = 4  # nth failure that forbids re-editing the same target
 
 # ── Denial escalation ladder ───────────────────────────────────────────────────
 # A refusal is read three ways, in priority order: the means is wrong (find another

@@ -23,6 +23,7 @@ from ...context import (
     bootstrap_state_context,
 )
 from ...context.capabilities import scope_spec
+from ...config.constants import STUCK_REPAIR_CONSTRAIN_AFTER
 
 
 def shell_tool_name(agent: Any) -> str:
@@ -167,6 +168,35 @@ def error_recovery_nudge_message(failing_path: str) -> str:
 		"A failed anchor returns the current text of the site in `anchor_excerpt` — "
 		"copy it from there rather than re-reading the file, then apply a smaller, "
 		"differently-anchored patch instead of repeating the same edit."
+	)
+
+
+def stuck_repair_nudge_message(streak: int) -> str:
+	"""The two rungs of the stuck-repair ladder, chosen by how deep the streak is.
+
+	One function, branching on state, rather than two table rows — the same shape
+	``denial_nudge_message`` uses. Neither rung names a cause or proposes a fix: what
+	is being corrected is not the model's hypothesis but its refusal to leave the one
+	it has, so the copy constrains the *class* of next action and leaves the content
+	to the model, which is the only party that knows the code.
+	"""
+	if streak >= STUCK_REPAIR_CONSTRAIN_AFTER:
+		return (
+			f"The same thing has now failed {streak} times, and each fix has been a "
+			"variation on the last one. Do not edit that target again this turn.\n\n"
+			"Produce one new observation first: take the primitive your fix depends on "
+			"— the operator, the helper, the boundary case it calls — and check it alone "
+			"against a value you know in advance. A layer you never questioned is where a "
+			"streak like this usually lives.\n\n"
+			"If you are confident the layer below is sound and you still cannot place the "
+			"fault, stop and say what you ruled out and what you would try next. That is an "
+			"ending too."
+		)
+	return (
+		f"That has failed {streak} times now. Before changing the same code again: the "
+		"fault is not necessarily where you are correcting it. Widen the frame — check "
+		"whether what you are editing is actually the thing that is wrong, or whether it "
+		"is downstream of something you have been assuming is correct."
 	)
 
 

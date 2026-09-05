@@ -489,44 +489,54 @@ class _AgentWorker:
         return False, "denied"
 
     def _path_approval_shim(
-        self, abspath: str, tool_name: str, arguments: dict | None = None
+        self, paths: list[str], tool_name: str, arguments: dict | None = None
     ) -> tuple[bool, bool]:
         """Out-of-workspace access prompt — reuses the approval UI (y/n/a).
 
         Carries the same descriptive payload as a normal approval (canonical label,
         the call's real arguments, the owning server) so the card reads like any
-        other tool card; ``oow_path`` is what makes it an out-of-workspace prompt and
-        names the offending path. Returns (approved, always). Blocks the worker thread
+        other tool card; ``oow_paths`` is what makes it an out-of-workspace prompt and
+        names the offending paths. Returns (approved, always). Blocks the worker thread
         on the approval queue like ``_approval_shim``; the engine's out-of-workspace
-        gate records the grant.
+        gate records the grants.
+
+        **One card for the whole call.** Every outside path the call names travels in a
+        single payload: the user judges the command, not each of its operands, and the
+        per-path loop this replaced parked the agent on one queue behind several
+        identical questions.
         """
         from ...context.capabilities import IRREVERSIBLE, label_for
         from ...tool_execution.tool_status_messages import shorten_display_args
 
         agent = self._agent
         arguments = arguments or {}
+        scope = (f"this path ({os.path.basename(paths[0])})" if len(paths) == 1
+                 else f"these {len(paths)} paths")
         req_id = str(uuid.uuid4())
         self.out_q.put({
             "type": "approval",
             "id": req_id,
             "tool": tool_name,
             "server": agent.tool_owner.get(tool_name, "filesystem"),
-            "args": arguments or {"path": abspath},
+            "args": arguments or {"path": paths[0]},
             "risk": agent.approvals.describe_risk(tool_name),
             # Reaching outside the workspace is irreversible by situation, not by tool:
             # whatever the tool's own level, nothing here can undo a write landing
             # outside the sandbox, so the card must not soften it to the tool's rating.
             "reversibility": IRREVERSIBLE,
-            "scope": f"this path ({os.path.basename(abspath)})",
-            # Short label in the header; the card renders `oow_path` beneath it as an
-            # explicit "outside workspace" line. The absolute path is the decision
-            # being made, so it is never the thing that gets shortened.
+            "scope": scope,
+            # Short label in the header; the card renders `oow_paths` beneath it as an
+            # explicit "outside workspace" line. The absolute paths are the decision
+            # being made, so they are never the thing that gets shortened.
             "label": label_for(
                 tool_name,
                 shorten_display_args(tool_name, arguments or {}, agent.tool_caps),
                 agent.tool_caps,
             ),
-            "oow_path": abspath,
+            "oow_paths": list(paths),
+            # Kept alongside the list so a client built against the single-path payload
+            # still renders a path rather than nothing.
+            "oow_path": paths[0],
         })
         # No timeout: keep the agent parked until answered (Stop cancels).
         response = self._await_response(self._approval_q)
@@ -814,6 +824,21 @@ class _AgentWorker:
             except ValueError:
                 pass
 
+    def set_approval_mode(self, mode: str) -> None:
+        """Switch who answers the approval cards — valid mid-run.
+
+        Called from the WS event loop while the worker thread may be running a query,
+        or parked on a card. It only rebinds an attribute the policy engine reads
+        afresh at each tool call, so the new mode applies from the next call on with
+        no queue involved. A card *already* on screen is answered by the client, which
+        is the side that knows one is standing.
+        """
+        if self._agent is not None:
+            try:
+                self._agent.set_approval_mode(mode)
+            except ValueError:
+                pass
+
     def get_context_mode(self) -> str:
         if self._agent is not None:
             return getattr(self._agent, "context_mode", "compact")
@@ -823,6 +848,11 @@ class _AgentWorker:
         if self._agent is not None:
             return getattr(self._agent, "enforcement", "strict")
         return "strict"
+
+    def get_approval_mode(self) -> str:
+        if self._agent is not None:
+            return getattr(self._agent.approvals, "approval_mode", "manual")
+        return "manual"
 
     def get_thinking_profile(self) -> dict:
         """What the panel needs to draw a depth control this model can honour.

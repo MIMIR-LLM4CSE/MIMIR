@@ -22,6 +22,7 @@ from .messages import (
     env_cleanup_nudge_message,
     env_resolution_nudge_message,
     error_recovery_nudge_message,
+    stuck_repair_nudge_message,
     regression_nudge_message,
     unexercised_code_nudge_message,
     state_nudge_message,
@@ -32,6 +33,7 @@ from .messages import (
 from ...context.execution_context import (
     backfill_execution_context,
     declared_edit_set_complete,
+    failed_runs,
     has_discovery_evidence,
     idle_steps,
     known_existing_files,
@@ -56,10 +58,13 @@ from ...config.constants import (
     NUDGE_MAX_ERROR_RECOVERY,
     NUDGE_MAX_EXERCISE,
     NUDGE_MAX_STATE,
+    NUDGE_MAX_STUCK_REPAIR,
     NUDGE_MAX_TODO,
     NUDGE_MAX_UNFINISHED_PLAN,
     NUDGE_MAX_VALIDATION,
     NUDGE_STATE_IDLE_STEPS,
+    STUCK_REPAIR_ADVISE_AFTER,
+    STUCK_REPAIR_CONSTRAIN_AFTER,
     TODO_NUDGE_MULTIFILE_THRESHOLD,
     TODO_NUDGE_OP_THRESHOLD,
 )
@@ -624,6 +629,44 @@ def _should_nudge_error_recovery(execution_context: dict[str, Any]) -> bool:
     )
 
 
+def _worst_run_failure_streak(execution_context: dict[str, Any]) -> int:
+    """How many times the most-retried failing command has failed.
+
+    Derived, never stored: ``record_run`` already carries ``failures`` across a re-run,
+    so the streak is a read of state that exists. Keeping it a pure function is what
+    lets ``nudge_pending`` and ``maybe_append_nudge`` agree — the pre-call probe walks
+    the same predicates and must not move any counter.
+
+    Per command rather than summed: two unrelated commands failing once each is not a
+    model that is stuck, and adding them would fire on the ordinary red of early work.
+    """
+    return max(
+        (int(r.get("failures", 0)) for r in failed_runs(execution_context).values()),
+        default=0,
+    )
+
+
+def _should_nudge_stuck_repair(execution_context: dict[str, Any]) -> bool:
+    """One fire per rung, in order — the ladder in `stuck_repair_nudge_message`.
+
+    Gated on the fire count as a rung *index* rather than on `< NUDGE_MAX_STUCK_REPAIR`:
+    a plain cap would let a streak walking 2 → 3 speak the first rung twice, which is the
+    repetition this row exists to break. Rung two is therefore never reached without rung
+    one having been spoken, whatever the streak jumps to.
+
+    Nothing here resets the count: a `pass` settles the run out of ``failed_runs``, which
+    drops the streak to whatever else is still failing, and a query starts with fresh
+    counters anyway.
+    """
+    fired = nudge_count(execution_context, "stuck_repair")
+    streak = _worst_run_failure_streak(execution_context)
+    if fired == 0:
+        return streak >= STUCK_REPAIR_ADVISE_AFTER
+    if fired == 1:
+        return streak >= STUCK_REPAIR_CONSTRAIN_AFTER
+    return False
+
+
 # ── The advisory axis: build it, run it ───────────────────────────────────
 # `regression` and `unexercised` are two phrasings of one question — "does anything
 # actually show this works?" — so they ration ONE budget rather than two, and asking it
@@ -1017,6 +1060,16 @@ _CORE_NUDGES: tuple[_CoreNudge, ...] = (
     # Ahead of the three advisory rows below, because it is the only one of the four
     # that is required: a file the model modified and never checked is the one gap
     # ``needs_incomplete_finalization`` refuses to conclude over.
+    # Before `validation`, and deliberately: while the model is going round the same
+    # failure, telling it to finish checking is answering a question it is not stuck on.
+    # Only one row speaks per turn, so this suppresses `validation` for as long as the
+    # ladder is talking — which costs nothing, because pending validation still blocks
+    # the conclusion through `needs_incomplete_finalization` either way.
+    _CoreNudge(
+        "stuck_repair", "verification",
+        lambda agent, query, mode, ec, level: _should_nudge_stuck_repair(ec),
+        lambda agent, ec: stuck_repair_nudge_message(_worst_run_failure_streak(ec)),
+    ),
     _CoreNudge(
         "validation", "verification",
         lambda agent, query, mode, ec, level: _should_nudge_validation(ec, level=level, active_mode=mode),

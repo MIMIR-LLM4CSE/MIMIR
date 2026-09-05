@@ -11,7 +11,7 @@
   "engines": { "vscode": "^1.85.0" },
   "categories": ["Other"],
   "icon": "images/mimir-logo-dark.png",
-  "activationEvents": [],
+  "activationEvents": ["onStartupFinished"],
   "main": "./dist/extension.js",  "contributes": {
     "viewsContainers": {
       "secondarySidebar": [
@@ -56,8 +56,8 @@
       "properties": {
         "mimir.wsUrl": {
           "type": "string",
-          "default": "ws://localhost:8765",
-          "description": "WebSocket URL the extension connects to. Leave as-is unless you start the MIMIR WS server yourself on another host or port."
+          "default": "",
+          "description": "Leave empty: each VS Code window starts its own MIMIR server on a free port, so several windows run side by side. Set a URL only to attach to a server you started yourself (here or on another host) \u2014 the extension then starts none."
         },
         "mimir.pythonPath": {
           "type": "string",

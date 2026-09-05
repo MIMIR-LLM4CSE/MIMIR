@@ -14,11 +14,20 @@ from mimir.tests._golden_caps import build_declared_registry
 _DECLARED_REGISTRY = build_declared_registry()
 
 
+def _fake_approvals(is_sensitive, *, mode: str = "manual") -> SimpleNamespace:
+    """The slice of ApprovalManager the engine reads: sensitivity + the approval mode."""
+    return SimpleNamespace(
+        is_sensitive=is_sensitive,
+        auto_tools=lambda: mode in ("auto", "auto_all"),
+        auto_paths=lambda: mode == "auto_all",
+    )
+
+
 class _FakeAgent:
     def __init__(self) -> None:
         self.tool_owner = {"read_file_lines": "search", "replace_in_file": "search"}
         self.tool_caps = dict(_DECLARED_REGISTRY)
-        self.approvals = SimpleNamespace(is_sensitive=lambda tool, args: False)
+        self.approvals = _fake_approvals(lambda tool, args: False)
         self.denied_calls: list[tuple[str, dict, dict | None]] = []
 
     @staticmethod
@@ -335,7 +344,7 @@ class PolicyManagerTests(unittest.TestCase):
 
     def test_approval_denial_records_call_and_returns_denied_result(self) -> None:
         agent = _FakeAgent()
-        agent.approvals = SimpleNamespace(is_sensitive=lambda tool, args: True)
+        agent.approvals = _fake_approvals(lambda tool, args: True)
 
         with patch.object(policy_manager_module, "ensure_execution_context", return_value={"ctx": True}), \
              patch.object(policy_manager_module, "check_state_machine_guard", return_value=None), \
@@ -356,7 +365,7 @@ class PolicyManagerTests(unittest.TestCase):
     def test_write_policy_violation_short_circuits_approval(self) -> None:
         agent = _FakeAgent()
         approval_probe = {"called": False}
-        agent.approvals = SimpleNamespace(is_sensitive=lambda tool, args: approval_probe.__setitem__("called", True))
+        agent.approvals = _fake_approvals(lambda tool, args: approval_probe.__setitem__("called", True))
 
         with patch.object(policy_manager_module, "ensure_execution_context", return_value={"ctx": True}), \
              patch.object(policy_manager_module, "check_state_machine_guard", return_value=None), \
@@ -373,7 +382,7 @@ class PolicyManagerTests(unittest.TestCase):
 
     def test_sensitive_tool_approved_returns_no_violation(self) -> None:
         agent = _FakeAgent()
-        agent.approvals = SimpleNamespace(is_sensitive=lambda tool, args: True)
+        agent.approvals = _fake_approvals(lambda tool, args: True)
         agent._request_tool_approval = lambda tool_name, arguments: (True, "approved")
 
         with patch.object(policy_manager_module, "ensure_execution_context", return_value={"ctx": True}), \
@@ -393,7 +402,7 @@ class PolicyManagerTests(unittest.TestCase):
         # Being shown the same card a fourth time after saying no three times is the
         # friction the ladder exists to remove: the gate refuses on the user's behalf.
         agent = _FakeAgent()
-        agent.approvals = SimpleNamespace(is_sensitive=lambda tool, args: True)
+        agent.approvals = _fake_approvals(lambda tool, args: True)
         asked = {"count": 0}
 
         def _never_called(tool_name, arguments):
@@ -423,7 +432,7 @@ class PolicyManagerTests(unittest.TestCase):
     def test_an_unrelated_scope_is_still_put_to_the_user(self) -> None:
         # The ladder escalates a goal, not the session: a different action starts fresh.
         agent = _FakeAgent()
-        agent.approvals = SimpleNamespace(is_sensitive=lambda tool, args: True)
+        agent.approvals = _fake_approvals(lambda tool, args: True)
         agent._request_tool_approval = lambda tool_name, arguments: (True, "approved once")
         context = {"denial_history": [
             {"tool": "replace_in_file", "scope": "fake:replace_in_file",

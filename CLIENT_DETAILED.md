@@ -156,8 +156,6 @@ The webview mirrors this with an `@` autocomplete dropdown (see [EXTENSION_DETAI
 
 System-prompt construction. (The package is `mimir/client/prompt/`; there is no `discovery/` package — the deterministic pre-plan discovery pipeline that gave it that name was removed.)
 
-It used to hold two more modules, `repo_baseline.py` (an `os.walk` snapshot of the workspace) and `platform_probe.py` (a client-side hardware probe), whose output was injected into every system prompt as "orientation". Both are **gone**, and the reason is worth keeping. The snapshot seeded `inspected_dirs` in the execution context, so a discovery-evidence field was non-empty before the model had done anything — any gate reading it raw was satisfied for free, and the discount written to compensate was a special case only some consumers applied. Neither block answered the question the model actually has (*what does this task touch?* — that is what its own searches are for), while both were paid for on every query. Hardware facts are now on demand from the platform server; the repository is discovered with the search and read tools.
-
 #### `system_prompt.py`
 
 Builds the system prompt and the dynamic blocks appended to it (paths, memory, todo, plan, mode).
@@ -251,7 +249,7 @@ The model's reading of what a run's output showed — the only place a model-aut
 
 #### `policy/approval.py`
 
-- `ApprovalManager` — `is_sensitive()`, `request()`, `flush_pending_review()`, `record_snapshot()`, `render_prompt()`; supports `batch_mode` (auto-approve + defer to end-of-turn review).
+- `ApprovalManager` — `is_sensitive()`, `request()`, `flush_pending_review()`, `record_snapshot()`, `render_prompt()`; supports `batch_mode` (auto-approve + defer to end-of-turn review) and `approval_mode` / `auto_tools()` / `auto_paths()` (`manual` | `auto` | `auto_all`, session-scoped — see POLICY.md "Approval mode").
 
 #### `policy/plugins.py`
 
@@ -358,7 +356,7 @@ Everything around a single tool call — argument normalization, the execution p
 
   Why: tools carry absolute paths now, which is right for the model and unreadable for a person — a row reading `Reading file: /shared/data1/Projects/.../guardrails/observations.py` buries the one token the user is scanning for. It becomes `Reading file: observations.py`.
 
-  **Never applied where the path is the decision.** An out-of-workspace approval asks the user to authorise a *location*, so the card carries `oow_path` verbatim (the webview renders it as an explicit "outside workspace" line) and the CLI prompt prints the absolute path on its own line under the shortened header. Readability wins in the activity log; precision wins in a consent prompt. `test_tool_row_display.py` pins both halves.
+  **Never applied where the path is the decision.** An out-of-workspace approval asks the user to authorise *locations*, so the card carries `oow_paths` verbatim (the webview renders one "outside workspace" row per path) and the CLI prompt prints each absolute path on its own line under the shortened header. Readability wins in the activity log; precision wins in a consent prompt. `test_tool_row_display.py` pins both halves.
 
 ### client root (`agent_core.py`, `human_pause.py`, `event_sink.py`)
 

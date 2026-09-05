@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from "react";
+import type { RememberedEndpoint } from "../types";
 
 interface Props {
   /** Backend selected in settings — the value the form starts on. */
@@ -10,10 +11,17 @@ interface Props {
   anthropicModels?: string[];
   /** Models the endpoint reports it serves, fetched by the extension host. */
   models?: string[];
-  modelsLoading?: boolean;
   modelsError?: string | null;
+  /** Endpoint the host remembers — seeds the address, model and the checkbox. */
+  remembered?: RememberedEndpoint | null;
   onFetchModels: (backend: string, baseUrl: string) => void;
-  onConnect: (model: string, backend: string, baseUrl: string, anthropicApiKey?: string) => void;
+  onConnect: (
+    model: string,
+    backend: string,
+    baseUrl: string,
+    anthropicApiKey?: string,
+    remember?: boolean,
+  ) => void;
 }
 
 /** Address the form starts on for a given backend. */
@@ -27,8 +35,8 @@ export const ConnectForm: React.FC<Props> = ({
   ollamaBaseUrl = "http://127.0.0.1:11434",
   anthropicModels = [],
   models = [],
-  modelsLoading = false,
   modelsError = null,
+  remembered = null,
   onFetchModels,
   onConnect,
 }) => {
@@ -38,6 +46,10 @@ export const ConnectForm: React.FC<Props> = ({
   // persisted. Left blank means "use whatever ANTHROPIC_API_KEY the host exports".
   const [apiKey, setApiKey] = useState("");
   const [model, setModel] = useState("");
+  // Ticked means: store this address so the next VS Code window reconnects to it
+  // by itself. Starts ticked when we are already showing a remembered endpoint,
+  // so unticking and connecting is how the user forgets it.
+  const [remember, setRemember] = useState(remembered !== null);
 
   const anthropic = backend === "anthropic";
   const options = anthropic ? anthropicModels : models;
@@ -59,8 +71,16 @@ export const ConnectForm: React.FC<Props> = ({
   }, [backend, url, anthropic, onFetchModels]);
 
   // Keep the selection valid as the list changes (backend switch, refresh).
+  // The remembered model wins over the first entry, so a reconnect lands on the
+  // same model the user picked last time.
   useEffect(() => {
-    if (options.length > 0 && !options.includes(model)) setModel(options[0]);
+    if (options.length > 0 && !options.includes(model)) {
+      const preferred =
+        remembered && remembered.backend === backend && options.includes(remembered.model)
+          ? remembered.model
+          : options[0];
+      setModel(preferred);
+    }
     if (options.length === 0 && model) setModel("");
   }, [options]);
 
@@ -129,16 +149,29 @@ export const ConnectForm: React.FC<Props> = ({
           onChange={e => setModel(e.target.value)}
         >
           {options.length === 0 ? (
-            <option value="">{modelsLoading ? "Loading…" : "—"}</option>
+            <option value="">—</option>
           ) : (
             options.map(m => <option key={m} value={m}>{m}</option>)
           )}
         </select>
       </div>
 
+      {!anthropic && (
+        <label className="connect-remember">
+          <input
+            type="checkbox"
+            checked={remember}
+            onChange={e => setRemember(e.target.checked)}
+          />
+          <span>Remember this address and reconnect on startup</span>
+        </label>
+      )}
+
       <button
         className="connect-btn connect-btn-primary"
-        onClick={() => onConnect(model, backend, url, anthropic ? apiKey : undefined)}
+        onClick={() =>
+          onConnect(model, backend, url, anthropic ? apiKey : undefined, !anthropic && remember)
+        }
       >
         Connect
       </button>

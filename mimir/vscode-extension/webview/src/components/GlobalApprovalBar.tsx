@@ -77,6 +77,8 @@ export const GlobalApprovalBar: React.FC<Props> = ({ approval, onRespond }) => {
   // Don't repeat the subject when the header already ends with it.
   const showSubject = subject && !header.endsWith(subject);
   const icon = iconForTool(approval.tool);
+  // `oow_paths` is the list; `oow_path` is the single-path payload of an older server.
+  const oowPaths = approval.oow_paths ?? (approval.oow_path ? [approval.oow_path] : []);
 
   return (
     <div className={`ap-row${isHigh ? " ap-row--high" : isMed ? " ap-row--med" : ""}`}>
@@ -90,10 +92,19 @@ export const GlobalApprovalBar: React.FC<Props> = ({ approval, onRespond }) => {
       {showSubject && <code className="ap-cmd ap-cmd--main">{subject}</code>}
       {/* Why the call is being held, when it's the workspace boundary rather than
           the tool itself: the card above already says what the tool is doing. */}
-      {approval.oow_path && (
+      {oowPaths.length > 0 && (
         <div className="ap-reason">
-          <span className="ap-reason-tag">outside workspace</span>
-          <code className="ap-reason-path">{approval.oow_path}</code>
+          <span className="ap-reason-tag">
+            outside workspace{oowPaths.length > 1 ? ` (${oowPaths.length})` : ""}
+          </span>
+          {/* One row per path: a command names several, and they are approved
+              together — hiding all but the first would ask for consent to a
+              location the user never saw. */}
+          <div className="ap-reason-paths">
+            {oowPaths.map((p) => (
+              <code className="ap-reason-path" key={p}>{p}</code>
+            ))}
+          </div>
         </div>
       )}
       <div className="ap-actions">

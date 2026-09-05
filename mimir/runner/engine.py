@@ -61,7 +61,7 @@ def _install_auto_approve(agent: MimirAgent) -> None:
     agent._request_tool_approval = (
         lambda name, arguments, max_attempts=3: (True, "benchmark-auto-approve")
     )
-    agent._request_path_approval = lambda abspath, tool_name, arguments=None: (True, False)
+    agent._request_path_approval = lambda paths, tool_name, arguments=None: (True, False)
 
 
 async def run_one(

@@ -54,16 +54,40 @@ webview handleServerMessage() → React state update → render
 
 Every Python→frontend message is a JSON object with a `type` field. The full set is defined in `webview/src/types.ts` as the `ServerMessage` discriminated union.
 
-Five message types never reach Python — the extension host answers them itself, before
+Six message types never reach Python — the extension host answers them itself, before
 any server exists:
 
 | Message | Direction | Meaning |
 |---|---|---|
 | `get_config` | webview → host | Send the connect form its starting values |
-| `config` | host → webview | Those values: `backend`, `vllmBaseUrl`, `ollamaBaseUrl`, `anthropicModels` |
+| `config` | host → webview | Those values: `backend`, `vllmBaseUrl`, `ollamaBaseUrl`, `anthropicModels`, `remembered` |
 | `fetch_models` | webview → host | `{backend, baseUrl}` — read the model list from that endpoint |
 | `models` | host → webview | `{backend, models, error?}` — the result, or why it failed |
-| `connect` | webview → host | `{model, backend, baseUrl, anthropicApiKey?}` — start the WS server and attach |
+| `connect` | webview → host | `{model, backend, baseUrl, anthropicApiKey?, remember?}` — start the WS server and attach |
+| `auto_connect` | host → webview | `{backend, baseUrl, model}` — the host reconnected on its own; show "connecting" |
+
+### Remembering an address
+
+The connect form's **Remember this address** checkbox is what makes MIMIR come back on
+its own. Ticked, `connect` carries `remember: true` and the host stores
+`{backend, baseUrl, model}` under `mimir.rememberedEndpoint` in `globalState` — an
+address and a model name, never the Claude API key, which is why the checkbox is hidden
+for the Anthropic backend. Unticking it and connecting forgets the stored one.
+
+The extension activates on `onStartupFinished` and probes that entry there, once per
+window, with the same `/v1/models` (or `/api/tags`) request the form makes, on a 3 s
+timeout. Only a reply starts the server; an address that doesn't answer — laptop off the
+VPN, compute node released — leaves the user on the connect form, pre-filled with the
+remembered values and nothing spawned. This is the one path that connects without a
+click, and it stays deliberate: no probe, no server.
+
+Probing at activation rather than at the first `resolveWebviewView` is what makes the
+panel already connected when the user first opens it. It also means the socket can open
+before any webview exists, and the `ready` frame the Python server sends on connect goes
+to nobody. So the first view to resolve re-attaches — close the socket, connect again —
+and is greeted with a fresh `ready`; `_connectToServer`'s close handler ignores a socket
+that is no longer `this._ws`, so the replaced one drives no retry. A startup connect also
+keeps the "MIMIR Server" output channel closed instead of popping it over the editor.
 
 `fetch_models` runs in the host rather than in React because the webview's CSP allows
 only `connect-src ws://localhost:*`; the fetch itself lives in `src/modelList.ts`
@@ -101,7 +125,7 @@ webview/src/
     ├── TodoSidebar.tsx        ← Todo / plan items panel
     ├── PlanBar.tsx            ← Plan-mode progress bar shown above the input
     ├── ApprovalPrompt.tsx     ← Simple yes/no approval card (non-diff tools)
-    ├── GlobalApprovalBar.tsx  ← Approval banner (allow / always / deny) — sensitive-tool and out-of-workspace path prompts
+    ├── GlobalApprovalBar.tsx  ← Approval banner (allow / always / deny) — sensitive-tool and out-of-workspace path prompts (one card per call, listing every outside path it names)
     ├── SessionsPanel.tsx      ← Session list (switch / rename / delete — the ＋ lives in the status bar);
     │                            each row shows a model-generated one-sentence description of the session
     │                            (a hand-picked rename wins over it), and selecting a row opens it and
@@ -110,6 +134,11 @@ webview/src/
     ├── ModeSwitcher.tsx       ← Standalone mode button + picker (agent/plan/ask, each with a
     │                            description); the active mode colours the chat — blue agent,
     │                            red plan, green ask (`data-mode` on `.app` → `--mode-accent`)
+    ├── ApprovalSwitcher.tsx   ← Approval-mode button + picker (manual / auto / all), stacked
+    │                            directly above the send button rather than inside the settings
+    │                            popover, since an auto mode answers cards for the user and is
+    │                            switched mid-run — icon-only to keep the column narrow, and it
+    │                            warms to the warning colour when it stops asking
     ├── AgentSettings.tsx      ← Context memory, enforcement, thinking depth, streaming
     ├── ContextBar.tsx         ← Context-window usage indicator
     ├── ResumePlanPrompt.tsx   ← "Resume previous plan?" dialog

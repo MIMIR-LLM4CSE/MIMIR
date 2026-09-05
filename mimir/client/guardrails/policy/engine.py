@@ -535,6 +535,11 @@ def evaluate_tool_preconditions(
         if approval_is_settled(normalized_context or {}, scope):
             note = "already refused; not asked again"
             approved = False
+        elif agent.approvals.auto_tools():
+            # Auto mode: the user has taken the decision for the session, so the card is
+            # never built and nothing is sent. Deliberately *after* the settled check —
+            # a refusal already given stands until the user revisits it themselves.
+            approved, note = True, "auto-approved (auto mode)"
         else:
             approved, note = agent._request_tool_approval(normalized_tool_name, rewritten_arguments)
         if not approved:
