@@ -30,10 +30,12 @@ import json
 import os
 import types
 import unittest
+from unittest.mock import patch
 
 from mimir.client.context import SOURCE_FILE_EXTENSIONS
 from mimir.client.context.capabilities import ToolCaps
 from mimir.client.context.execution_context import build_execution_context
+from mimir.client.guardrails import observations as _observations
 from mimir.client.guardrails.observations import record_tool_observation
 from mimir.client.guardrails.policy.bash_classify import classify_bash_command
 
@@ -77,6 +79,20 @@ def _run(command: str, *, status: str = "ok", stdout: str = "out",
     payload = json.dumps({"status": status, "stdout": stdout})
     record_tool_observation(_stub_agent(), BASH_TOOL, {"command": command}, payload, ec)
     return ec
+
+
+def _head_installed(present: bool):
+    """Pin the host's PATH out of the pipeline for one assertion.
+
+    ``_record_run_outcome`` treats a run whose command is not installed as *blocked*
+    and charges it nothing — deliberately, since a missing binary said nothing about
+    the patch. That makes every run-failure assertion depend on what happens to be
+    installed on the machine running the suite: this file's own ``pytest`` examples
+    are charged on a machine with the console script on PATH and blocked on one that
+    runs the suite as ``python -m pytest``. Stating which of the two is meant is what
+    keeps the answer the same everywhere.
+    """
+    return patch.object(_observations, "_any_command_on_path", lambda heads: present)
 
 
 # ── What a credited command must have taught the blackboard ───────────────────
@@ -256,10 +272,32 @@ class CorpusCreditTests(unittest.TestCase):
                               f"{command!r}: a real check lost its credit")
 
     def test_a_failed_run_is_charged_to_the_run(self) -> None:
-        ec = _run("pytest tests/test_solver.py", status="error",
-                  dirty=("tests/test_solver.py",))
+        """A red run owes no file its failure; it charges the repair ladder instead.
+
+        Asserted against an installed head. Left to the host's PATH this passed or
+        failed depending on whether ``pytest`` was exported as a console script — a
+        run of a *missing* command is blocked rather than charged (below), and read
+        without that in mind the green-here/red-there result looks like a product
+        defect rather than a test reaching outside itself.
+        """
+        with _head_installed(True):
+            ec = _run("pytest tests/test_solver.py", status="error",
+                      dirty=("tests/test_solver.py",))
         self.assertEqual(ec["validation_fail_count_by_file"], {})
         self.assertEqual(ec["runs"]["pytest tests/test_solver.py"]["failures"], 1)
+
+    def test_a_run_whose_command_is_missing_is_blocked_not_charged(self) -> None:
+        """The other half of the same branch, so neither can move unnoticed.
+
+        A command that is not installed here reported nothing about the code: charging
+        it would send the model round the repair ladder over the environment.
+        """
+        with _head_installed(False):
+            ec = _run("pytest tests/test_solver.py", status="error",
+                      dirty=("tests/test_solver.py",))
+        run = ec["runs"]["pytest tests/test_solver.py"]
+        self.assertEqual(run["failures"], 0)
+        self.assertIn("not installed", run.get("blocked", ""))
 
 
 class BlindSurfaceTests(unittest.TestCase):
