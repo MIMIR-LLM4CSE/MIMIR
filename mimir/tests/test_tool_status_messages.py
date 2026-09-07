@@ -46,6 +46,9 @@ class HumanizeToolNameTest(unittest.TestCase):
         self.assertEqual(
             _humanize_tool_name("platform_get_profile"), "Getting platform profile"
         )
+        self.assertEqual(
+            _humanize_tool_name("platform_search"), "Searching platform"
+        )
         self.assertEqual(_humanize_tool_name("ft_config_set"), "Setting ft config")
 
     def test_no_verb_plain_humanize(self):

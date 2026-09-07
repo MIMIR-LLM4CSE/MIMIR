@@ -390,7 +390,7 @@ The **frontends** that drive `MimirAgent` — two independent subpackages, `ui/c
 
 #### `ui/cli/chat_commands.py`
 
-- `handle_chat_command()` — the slash-command table: `/help`, `/status` (shows session-trusted tools), `/mode`, `/think <depth>`, `/batch`, `/stream`, `/context compact|full`, `/compact`, `/enforcement strict|light|off`, `/nudges`, `/servers`, `/skills`, `/resources`, `/ledger` (expand the last answer's verification ledger), `/undo`, `/trust <tool>` (`approvals.trust_tool()` — session-wide trust), `/untrust <tool>` (`approvals.untrust_tool()` — revoke). (`/plan-depth` was removed with the deterministic plan-discovery pipeline.)
+- `handle_chat_command()` — the slash-command table: `/help`, `/status` (shows session-trusted tools), `/mode`, `/think <depth>`, `/batch`, `/stream`, `/context compact|full`, `/compact`, `/enforcement strict|light|off`, `/nudges`, `/servers`, `/skills`, `/resources`, `/modules` (module-catalogue status, `refresh` to rebuild, or a term to search it directly — status never triggers a build), `/ledger` (expand the last answer's verification ledger), `/undo`, `/trust <tool>` (`approvals.trust_tool()` — session-wide trust), `/untrust <tool>` (`approvals.untrust_tool()` — revoke). (`/plan-depth` was removed with the deterministic plan-discovery pipeline.)
 
 #### `ui/ws/`
 

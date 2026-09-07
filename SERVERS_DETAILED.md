@@ -10,7 +10,7 @@ Servers are organized into domain-based subdirectories:
 
 | Directory | Purpose | Servers |
 |---|---|---|
-| `_shared/` | Cross-group utilities | `responses.py`, `capabilities.py`, `root_paths.py`, `approved_roots.py`, `trusted_read_roots.py`, `text_tools.py`, `module_env.py`, `embed.py`, `lsp_client.py`, `shell_paths.py`, `state_paths.py`, `numerics.py` |
+| `_shared/` | Cross-group utilities | `responses.py`, `capabilities.py`, `root_paths.py`, `approved_roots.py`, `trusted_read_roots.py`, `text_tools.py`, `module_env.py`, `embed.py`, `vector_cache.py`, `slurm_nodes.py`, `lsp_client.py`, `shell_paths.py`, `state_paths.py`, `numerics.py` |
 | `workspace/` | File & code interaction | `server_bash`, `server_files`, `server_search`, `server_code_intel` |
 | `utilities/` | Stateless data helpers | `server_math`, `server_strings`, `server_datetime`, `server_symbolic_math` |
 | `agent_state/` | Agent memory, planning & delegation | `server_memory`, `server_todo`, `server_spawn_agent` |
@@ -42,7 +42,11 @@ or Ollama (`ollama.embed`). Config via `MIMIR_EMBED_MODEL` / `MIMIR_EMBED_BASE_U
 lexical scoring and the hermetic test suite stays green. Also exposes `embed_one`,
 `is_available` (memoized probe), `cosine_rank`, `lexical_rank`, and `embed_model_id`. The
 HPC host-resolution `_resolve_host` lives here and is re-exported by the vLLM chat backend
-(single source). Note: the server loads it flat via `sys.path` (`import embed`) while the
+(single source). `_shared/vector_cache.py` sits on top of it with the *persistence* half of
+the pattern — a `{key: {model, vec}}` JSON cache beside a corpus, vectors backfilled when
+missing or embedded under a different model, `semantic_rank()` returning `None` to signal
+the caller's fallback. The module catalogue uses it; `server_memory` still carries its own
+copy and is the next caller to migrate. Note: the server loads it flat via `sys.path` (`import embed`) while the
 client imports `mimir.servers._shared.embed` — two module identities, so patch the correct
 one in tests.
 
@@ -199,7 +203,7 @@ Notes:
 
 ### State directory
 
-Every `agent_state` server (and other persistent state: platform profile, sessions)
+Every `agent_state` server (and other persistent state: the module catalogue, sessions)
 resolves paths off a single per-workspace **state dir**. The client computes
 `~/.mimir/<workspace-id>/` and passes it to server subprocesses via the `MIMIR_STATE_DIR`
 env var (`client/integration/server_manager.py`); servers read it through
@@ -358,13 +362,14 @@ Tools:
 
 ## hpc/server_hpc.py
 
-Purpose: Slurm inspection and job-submission helpers. (Environment Modules /
-Lmod are handled directly via the bash server's `module` command —
-discovery + load — not here.)
+Purpose: Slurm inspection and job-submission helpers. (Environment Modules / Lmod are
+not here either: *discovery* is `platform_search` on `server_platform`, which searches an
+index of the site's whole module tree, and *loading* is the bash server's `module` command,
+because a load mutates one subprocess's environment.)
 
 Tools:
 - `slurm_partitions`
-- `slurm_nodes(partition="", states="", node="", detail=False)` — **compute-node inventory**: architecture, CPU topology, memory, GPU type/count, node features, and live occupancy (allocated/free CPUs, free memory, load), read from `scontrol show node` — Slurm's own database, which is what actually governs placement. Read-only and instant: it allocates nothing, so it can be consulted *before* choosing where to submit, unlike running a probe on the node (that needs `srun`, i.e. a queued allocation billed against your hours). Aggregates nodes onto their hardware signature by default with a count per state, since a per-node listing of a large cluster is mostly noise; `detail=True` or `node="<name>"` gives individual nodes. Falls back to `sinfo -N` where `scontrol` is restricted, flagging in `degraded` that architecture and CPU occupancy are then unknown.
+- `slurm_nodes(partition="", states="", node="", detail=False)` — **compute-node inventory**: architecture, CPU topology, memory, GPU type/count, node features, and live occupancy (allocated/free CPUs, free memory, load), read from `scontrol show node` — Slurm's own database, which is what actually governs placement. Read-only and instant: it allocates nothing, so it can be consulted *before* choosing where to submit, unlike running a probe on the node (that needs `srun`, i.e. a queued allocation billed against your hours). Aggregates nodes onto their hardware signature by default with a count per state, since a per-node listing of a large cluster is mostly noise; `detail=True` or `node="<name>"` gives individual nodes. Falls back to `sinfo -N` where `scontrol` is restricted, flagging in `degraded` that architecture and CPU occupancy are then unknown. The `scontrol` parsing and the signature aggregation live in `_shared/slurm_nodes.py`: `server_platform`'s digest needs the same view of the cluster's hardware, and two copies of a `scontrol` parser would drift.
   > **Architecture is the field that earns the tool.** Where a cluster mixes architectures, a binary built where the agent runs will not run on a node of a different one — and nothing else in the toolkit reports that. What it cannot report is on-node software (SIMD flags, modules, toolchains); that needs execution there, and the standard answer is to compile inside the job.
 - `slurm_queue`
 - `salloc_submit` — synchronous **interactive** allocation. Takes the resources as arguments (partition, nodes, ntasks, cpus, mem, time, gres, constraint, account/qos) and builds the `salloc` command itself, so the validated command is the one that runs; launched as argv, never through a shell. `confirm=False` returns the exact command as a preview instead of executing — the old two-step `salloc_build_command` + free-form `salloc_submit(command=...)` is gone, because the validation lived entirely in the step nothing forced you to call
@@ -375,12 +380,23 @@ Tools:
 
 ## hpc/server_platform.py
 
-Purpose: report what this host actually is — hardware, scheduler, toolchains, Python environments.
+Purpose: report what this host actually is — hardware, scheduler, toolchains, Python environments — and search the site's environment-module catalogue.
 
 Tools:
-- `platform_probe` — collect and return a full platform profile (CPU, GPU, memory, Slurm, modules, toolchains, Python environments). **Stateless** — built on demand and returned; nothing is persisted
+- `platform_probe` — collect and return a full platform profile (CPU, GPU, memory, Slurm, loaded modules, toolchains, Python environments). Every fact is built on demand, so none of it can be stale; it reports the module catalogue's summary but never builds it
   > **Nothing here assumes an architecture or a vendor.** The reported ISA extensions come from a per-architecture table (`_ISA_EXTENSIONS`: AVX/FMA/AMX on x86_64, ASIMD/SVE/BF16 on aarch64, VSX on ppc64le) read from whichever key that host's `lscpu` uses — `Flags:` on x86, `Features:` on aarch64 — and an architecture with no entry says so rather than reporting a vector unit it never looked for. The accelerator probe detects NVIDIA, AMD and Intel tooling and only *enumerates* NVIDIA, reporting the others as present-but-unenumerated: answering "no GPU" on a host whose accelerator it cannot read would be a lie. The toolchain scan covers GNU, LLVM, Intel oneAPI, the NVIDIA HPC SDK, ROCm and Cray wrappers; whatever is absent simply does not appear.
-- `platform_get_profile` — build and return a fresh profile for the current host plus a live `sinfo` partition/node table so the agent knows what Slurm resources are available without a separate command. **Stateless** — always built fresh for the current host (so it can never serve another node's hardware), no cache, no `refresh_if_missing` arg. The collectors whose answer cannot change while the process lives (CPU, GPU, Slurm, modules, toolchains) are memoized, so a second probe costs a fraction of the first. These two tools are the **only** source of platform facts: the client used to carry a duplicate probe whose output was injected into every system prompt, which paid for a full hardware summary on every query to answer a question most of them never asked.
+- `platform_get_profile` — build and return a fresh profile for the current host plus a live `sinfo` partition/node table so the agent knows what Slurm resources are available without a separate command. Always built fresh for the current host (so it can never serve another node's hardware), no cache, no `refresh_if_missing` arg. The collectors whose answer cannot change while the process lives (CPU, GPU, Slurm, modules, toolchains) are memoized, so a second probe costs a fraction of the first. The probe tools are the **only** source of live platform facts: the client used to carry a duplicate probe whose output was injected into every system prompt, which paid for a full hardware summary on every query to answer a question most of them never asked.
+
+- `platform_search(query, limit=10, refresh=False)` — search the host's **environment-module catalogue** by name (`"cuda"`) or by capability (`"parallel hdf5"`). Each hit carries `load`, the exact string to pass to `module load`.
+- `platform_catalogue_status()` — what the index currently holds, without building or refreshing it. Backs the CLI's `/modules`.
+
+> **Why the catalogue is the one thing this server persists.** `_collect_modules` used to run `module -t avail | head -n 120` and return 80 names under a key called `sample`. An alphabetical slice of a module tree is worse than no list: a model that reads `abaqus … cmake` with no `cuda` in sight concludes CUDA is unavailable. A site's tree runs to thousands of entries and cannot be put in a context window, so it is indexed once under `<STATE_DIR>/platform/modules/` and *searched*. What `platform_probe` still reports about modules is only the volatile part — the ones loaded right now.
+>
+> **Freshness is a signal, never a clock.** The catalogue is rebuilt when a fingerprint changes: hostname, the *effective* `MODULEPATH` (after the site's init scripts), a depth-2 stat-hash of the modulefile trees, and the mtime of Lmod's own spider cache — which a site regenerates exactly when modules change. No TTL is consulted. The file is named per hostname, because `STATE_DIR` is per-workspace while a module tree belongs to a machine.
+>
+> **Nobody waits for the expensive tier.** Only the name-level pass (`module -t avail`, under two seconds) runs on the request path. Descriptions are filled in behind the user: Lmod's `spider` where it exists — it is Lmod-only, and Tcl Environment Modules is never asked for it — otherwise a single-process bulk `whatis`. While that runs, results carry `catalogue.enriching: true`, so an empty description reads as *not yet known* rather than absent. A background pass whose signal moved while it worked discards its own result.
+>
+> **The digest.** Riding in the same file is the small set of stable, high-impact facts that *do* fit in a context window: host architecture and ISA, the cluster's compute-node *types* (architecture, CPU topology, memory, GPUs — from `scontrol`, aggregated by hardware signature), its partitions, and the toolchains present. This is what lets the agent know, without spending a tool call, that the compute nodes are a different architecture from the login node it is running on. Occupancy is deliberately excluded: it is volatile, `slurm_nodes` owns it, and including it would make the fingerprint churn every few seconds.
 
 ## hpc/server_env.py
 
@@ -679,7 +695,9 @@ auto-approves everything.
   the approval prompt covers. Since `module` is a shell *function*, the server sources Lmod init
   in the wrapper around the validated command, so `module load cuda && nvcc ...` works
   within one call; module args are gated by a strict regex and a curated `MODULE*`/`LMOD_*`
-  env is passed through.
+  env is passed through — that allowlist is `MODULE_ENV_PASSTHROUGH` in
+  `_shared/module_env.py`, shared with the platform server's catalogue build so the two
+  cannot resolve different module trees.
 - **The environment managers (`pip`, `conda`, `mamba`) are available**, scoped in the same
   spirit as `module`: query (`list`, `show`, `freeze`, `info`, …) and add (`install`,
   `create`, `env create`), never remove (no `uninstall`/`remove`/`clean` — the write with

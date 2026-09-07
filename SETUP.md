@@ -265,6 +265,7 @@ VS Code extension sets the backend and address ones itself from the Connect form
 | `MIMIR_EMBED_MODEL` | *(empty; `nomic-embed-text` on Ollama)* | Embedding model for semantic memory search & tool ranking. **Required for vLLM** (the served model name, e.g. `BAAI/bge-m3`). Empty + vLLM ⇒ semantic path disabled, lexical fallback used. |
 | `MIMIR_EMBED_BASE_URL` | *(falls back to `VLLM_BASE_URL`)* | Serve embeddings from a separate endpoint than the chat model (vLLM only) |
 | `MIMIR_EMBED_TIMEOUT` | `10` | HTTP timeout (seconds) for the vLLM embeddings call |
+| `MIMIR_MODULE_INDEX_BUDGET` | `600` | Wall-clock budget (seconds) for the background enrichment of the environment-module catalogue — Lmod's `spider`, then bulk `whatis`. Only the name-level pass runs on the request path, so raising or lowering this never changes how long a `platform_search` takes to answer; it changes how much of a very large module tree ends up with descriptions. |
 | `MCP_FILES_ROOT` | current working directory | Workspace root. Paths a tool *names* are confined to it, and reaching outside prompts for approval — but a program the agent runs (`python`/`make`/`gcc`) is not itself constrained, so this is a guardrail on intent, not a sandbox ([scope](SERVERS_DETAILED.md#scope-of-the-sandbox-read-this-before-trusting-confined)) |
 | `GITHUB_TOKEN` | *(none)* | Raises GitHub API rate limit from 60 to 5 000 req/h |
 | `MIMIR_SYSTEM_PROMPT_FILE` | *(none)* | Path to a `.md` file that replaces the doctrine half of the agent's general context (base system prompt). See below. |

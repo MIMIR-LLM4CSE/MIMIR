@@ -143,6 +143,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'
 from mcp.server.fastmcp import FastMCP
 from capabilities import tool_caps, PLAN_READONLY, CODE_EXEC, JUDGE, RECOVERABLE
 from responses import err, ok
+from module_env import MODULE_ENV_PASSTHROUGH as _MODULE_ENV_PASSTHROUGH
 from shell_paths import (
     CLUSTER_SUBMIT_COMMANDS,
     DESTRUCTIVE_COMMANDS,
@@ -212,15 +213,6 @@ def _validate_env_manager_args(argv: list[str]) -> dict | None:
 # metacharacters; this is a second, narrower gate on what reaches Lmod.
 _MODULE_ARG_RE = re.compile(
     r"^(?:-{1,2}[A-Za-z][A-Za-z-]*|[A-Za-z0-9][A-Za-z0-9._/+-]*)$"
-)
-
-# Env vars Lmod's init/bash needs to locate and evaluate modulefiles. Passed
-# through (when present) on top of the otherwise-minimal subprocess env so that
-# 'module avail'/'module load' actually resolve the site's module tree.
-_MODULE_ENV_PASSTHROUGH = (
-    "MODULESHOME", "MODULEPATH", "MODULEPATH_ROOT",
-    "LMOD_CMD", "LMOD_DIR", "LMOD_PKG", "LMOD_ROOT",
-    "LMOD_SYSTEM_DEFAULT_MODULES", "LMOD_sys", "LMOD_arch", "LMOD_SYSHOST",
 )
 
 # Why a command could not be segmented → what the agent should do about it. The

@@ -90,6 +90,8 @@ CHECK_EXISTENCE_TOOLS = set()
 CACHEABLE_TOOLS = {
     "read_file_lines",
     "tree_summary", "list_directory",
+    # The module catalogue and its status: read-only, and identical within a query.
+    "platform_search", "platform_catalogue_status",
 }
 SEARCH_WITH_PATH_TOOLS = set()
 # Every tool that opens a socket to a host. The two HTTP tools take an arbitrary

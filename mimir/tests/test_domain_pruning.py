@@ -23,6 +23,29 @@ class DomainPruningTest(unittest.TestCase):
         self.assertNotIn("salloc_", pruned)
         self.assertNotIn("module_", pruned)
 
+    def test_module_query_keeps_platform_tools(self):
+        """platform_search answers module questions, so a module question must not
+        prune it away — the failure mode this keyword overlap exists to prevent."""
+        for query in ("is there a cuda module available?",
+                      "which lmod modules provide hdf5?",
+                      "list the available modules",
+                      "what toolchain is installed here?"):
+            with self.subTest(query=query):
+                self.assertNotIn("platform_", inactive_domain_prefixes(query))
+
+    def test_module_query_still_keeps_the_cluster_group(self):
+        """The module words are shared with the Slurm group, not moved out of it."""
+        pruned = inactive_domain_prefixes("module load openmpi before sbatch")
+        self.assertNotIn("slurm_", pruned)
+        self.assertNotIn("platform_", pruned)
+
+    def test_platform_group_is_not_over_armed(self):
+        """The keyword additions must not un-prune the group on ordinary prose."""
+        for query in ("rename this variable", "write the changelog entry",
+                      "fix the failing unit test"):
+            with self.subTest(query=query):
+                self.assertIn("platform_", inactive_domain_prefixes(query))
+
     def test_finetune_query_keeps_ft_tools(self):
         pruned = inactive_domain_prefixes("fine-tune the model with a lora adapter")
         self.assertNotIn("ft_", pruned)

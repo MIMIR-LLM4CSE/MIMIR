@@ -144,7 +144,14 @@ DOMAIN_TOOL_GROUPS: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] = (
             "compute node", "login node", "supercomputer",
         ),
     ),
-    # Hardware / platform advisory.
+    # Hardware / platform, and the module catalogue platform_search indexes. The
+    # module words are deliberately duplicated from the Slurm group above rather than
+    # moved: "module load openmpi" is a cluster operation *and* a catalogue question,
+    # and this table's own contract is that keyword lists overlap. Without them here,
+    # "is there a cuda module?" would prune away the very tool that answers it.
+    # Left out on purpose: "available", "installed", "library" — common enough in
+    # ordinary prose to un-prune the group on most queries, which would defeat the
+    # prompt-cost saving this mechanism exists for.
     (
         ("platform_",),
         (
@@ -153,6 +160,8 @@ DOMAIN_TOOL_GROUPS: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] = (
             "target", "isa", "numa", "optimize", "optimise", "optimization",
             "optimisation", "performance", "perf", "speedup", "speed up",
             "faster", "accelerate",
+            "module", "modules", "lmod", "modulefile", "toolchain",
+            "cuda", "mpi", "openmp", "software",
         ),
     ),
     # Fine-tuning.

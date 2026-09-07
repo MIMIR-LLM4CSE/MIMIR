@@ -444,7 +444,8 @@ SERVER_DESCRIPTIONS: dict[str, str] = {
     "web": "Safe HTTP GET/POST and JSON utilities (SSRF-guarded).",
     "github": "Read-only GitHub access via the public REST API.",
     "hpc": "HPC helpers for Slurm scheduling and batch job submission.",
-    "platform": "Builds a hardware/software platform profile on demand.",
+    "platform": "Probes this host on demand, and searches the site's "
+                "environment-module catalogue.",
     "env": "Install packages and create/delete Python environments (approval-gated).",
     "system": "Read-only OS metrics and environment inspection.",
     "code_intel": "Code navigation: definitions, references, symbol outline (LSP/ctags).",

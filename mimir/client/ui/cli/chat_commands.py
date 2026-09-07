@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from typing import Any, Awaitable, Callable, Iterable
 
 from ...config import THINKING_DEPTH_LABELS, thinking_depth_from_label
@@ -95,6 +97,8 @@ async def handle_chat_command(
             "  /compact threshold <N> -> set auto-compaction threshold (default 10)\n"
             "  /ledger       -> expand the verification ledger of the last answer\n"
             "  /undo         -> revert all file changes made in the last agent turn\n"
+            "  /modules [refresh|<term>] -> environment-module catalogue: index status,\n"
+            "                           force a rebuild, or search it directly\n"
             "  /resources    -> list attachable MCP resources (use @<uri> to attach one to a query)\n"
             "  @<path>[:a-b] -> attach a workspace file (or lines a-b) to a query, e.g. @src/foo.py:10-20\n"
             "  quit          -> exit\n",
@@ -306,4 +310,102 @@ async def handle_chat_command(
         await compact_history()
         return True, ""
 
+    if cmd == "/modules":
+        return True, await _modules_command(agent, parts[1:])
+
     return True, "\n❌ Unknown command. Type /help.\n"
+
+
+async def _call_platform_tool(agent: Any, tool: str, arguments: dict) -> dict | None:
+    """Call one read-only platform tool directly, bypassing the guardrail pipeline.
+
+    Legitimate here because the user invoked it themselves and the tool cannot write:
+    the approval/observation machinery exists to judge what the *model* asked for.
+    Returns the decoded payload, or None when the tool is not connected.
+    """
+    tool_owner = getattr(agent, "tool_owner", None) or {} if agent is not None else {}
+    if tool not in tool_owner:
+        return None
+    session = agent.sessions[tool_owner[tool]]
+    result = await session.call_tool(tool, arguments)
+    try:
+        return json.loads(agent._normalize_tool_content(result))
+    except (TypeError, ValueError):
+        return None
+
+
+def _format_module_hits(payload: dict) -> str:
+    modules = payload.get("modules") or []
+    if not modules:
+        return "\nNo module matched.\n"
+    lines = [f"\n{len(modules)} of {payload.get('total_indexed', '?')} indexed modules:"]
+    for entry in modules:
+        mark = " (default)" if entry.get("default") else ""
+        line = f"  {entry.get('load', '')}{mark}"
+        description = (entry.get("description") or "").strip()
+        if description:
+            line += f"  — {description}"
+        lines.append(line)
+    catalogue = payload.get("catalogue") or {}
+    if catalogue.get("enriching"):
+        lines.append("\n  (descriptions are still being indexed in the background)")
+    lines.append("\nLoad one with: module load <name>")
+    return "\n".join(lines) + "\n"
+
+
+def _format_catalogue_status(payload: dict) -> str:
+    if not payload.get("indexed"):
+        return (f"\nModule catalogue: not indexed.\n  module system: "
+                f"{payload.get('module_system', '?')}\n  {payload.get('note', '')}\n")
+    digest = payload.get("digest") or {}
+    lines = [
+        "\nModule catalogue:",
+        f"  host          : {payload.get('hostname', '?')}",
+        f"  module system : {payload.get('module_system', '?')}",
+        f"  entries       : {payload.get('count', 0)}",
+        f"  detail level  : {payload.get('tier', '?')}"
+        + (" (partial)" if payload.get("partial") else ""),
+        f"  built         : {payload.get('built_at', '?')}",
+        f"  up to date    : {'yes' if payload.get('signal_fresh') else 'no — rebuilds on next search'}",
+    ]
+    if payload.get("enriching"):
+        lines.append("  enriching     : in progress")
+    node_types = digest.get("node_types") or []
+    if node_types:
+        lines.append(f"  node types    : {len(node_types)} distinct hardware signatures")
+    lines.append("\n/modules refresh to rebuild, /modules <term> to search.")
+    return "\n".join(lines) + "\n"
+
+
+async def _modules_command(agent: Any, args: list[str]) -> str:
+    """/modules — status, /modules refresh — rebuild, /modules <term> — search."""
+    if agent is None:
+        return "\n❌ /modules needs a connected agent.\n"
+
+    if not args:
+        payload = await _call_platform_tool(agent, "platform_catalogue_status", {})
+        if payload is None:
+            return ("\n❌ The platform server is not connected, so there is no module "
+                    "catalogue. Enable it with: /servers on platform\n")
+        return _format_catalogue_status(payload)
+
+    if args[0].lower() == "refresh":
+        payload = await _call_platform_tool(
+            agent, "platform_search", {"query": "*", "limit": 1, "refresh": True})
+        if payload is None:
+            return ("\n❌ The platform server is not connected, so there is no module "
+                    "catalogue. Enable it with: /servers on platform\n")
+        catalogue = payload.get("catalogue") or {}
+        return (f"\nRebuilt: {payload.get('total_indexed', 0)} modules indexed "
+                f"(detail level: {catalogue.get('tier', '?')})."
+                + ("\nDescriptions are being filled in in the background.\n"
+                   if catalogue.get("enriching") else "\n"))
+
+    term = " ".join(args)
+    payload = await _call_platform_tool(agent, "platform_search", {"query": term, "limit": 20})
+    if payload is None:
+        return ("\n❌ The platform server is not connected, so there is no module "
+                "catalogue. Enable it with: /servers on platform\n")
+    if payload.get("module_system") == "none":
+        return f"\n{payload.get('note', 'No module system on this host.')}\n"
+    return _format_module_hits(payload)

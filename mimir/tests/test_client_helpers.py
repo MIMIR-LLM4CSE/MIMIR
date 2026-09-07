@@ -2488,3 +2488,117 @@ class ClientHelperTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class ModulesCommandTests(unittest.TestCase):
+    """/modules — the user's own handle on the module catalogue.
+
+    Status must never trigger a build (that is why it goes through the status tool
+    rather than a search), and the command must degrade to a clear sentence when the
+    platform server is switched off rather than raising.
+    """
+
+    class _Session:
+        def __init__(self, payloads):
+            self.payloads = payloads
+            self.calls = []
+
+        async def call_tool(self, name, arguments, **_kwargs):
+            self.calls.append((name, arguments))
+            return self.payloads[name]
+
+    class _Agent:
+        def __init__(self, payloads, connected=True):
+            names = ("platform_catalogue_status", "platform_search")
+            self.tool_owner = {n: "platform" for n in names} if connected else {}
+            self.session = ModulesCommandTests._Session(payloads)
+            self.sessions = {"platform": self.session}
+
+        @staticmethod
+        def _normalize_tool_content(result):
+            return json.dumps(result)
+
+    def _run(self, query, agent):
+        from mimir.client.ui.cli.chat_commands import handle_chat_command
+
+        return asyncio.run(handle_chat_command(
+            query=query, mode="agent", thinking=False, streaming=False,
+            batch_mode=False, set_mode=lambda v: None, set_thinking=lambda v: None,
+            set_streaming=lambda v: None, set_batch_mode=lambda v: None,
+            agent=agent,
+        ))
+
+    def test_status_reports_the_index_without_searching(self):
+        agent = self._Agent({"platform_catalogue_status": {
+            "status": "ok", "indexed": True, "module_system": "lmod",
+            "hostname": "login01", "count": 1832, "tier": "spider", "partial": False,
+            "enriching": False, "built_at": "2026-09-07T10:00:00Z", "signal_fresh": True,
+            "digest": {"node_types": [{"arch": "x86_64"}, {"arch": "aarch64"}]},
+        }})
+        handled, message = self._run("/modules", agent)
+        self.assertTrue(handled)
+        self.assertIn("1832", message)
+        self.assertIn("spider", message)
+        self.assertIn("login01", message)
+        self.assertIn("2 distinct hardware signatures", message)
+        # Status must not go anywhere near a build.
+        self.assertEqual([c[0] for c in agent.session.calls], ["platform_catalogue_status"])
+
+    def test_status_when_not_yet_indexed(self):
+        agent = self._Agent({"platform_catalogue_status": {
+            "status": "ok", "indexed": False, "module_system": "lmod",
+            "note": "Not indexed yet; the first platform_search builds it.",
+        }})
+        _handled, message = self._run("/modules", agent)
+        self.assertIn("not indexed", message.lower())
+
+    def test_search_lists_hits_with_the_load_string(self):
+        agent = self._Agent({"platform_search": {
+            "status": "ok", "module_system": "lmod", "total_indexed": 1832,
+            "modules": [
+                {"load": "cuda/12.2", "default": True, "description": "NVIDIA CUDA"},
+                {"load": "cuda/11.8", "default": False, "description": ""},
+            ],
+            "catalogue": {"enriching": False},
+        }})
+        _handled, message = self._run("/modules cuda", agent)
+        self.assertIn("cuda/12.2", message)
+        self.assertIn("(default)", message)
+        self.assertIn("NVIDIA CUDA", message)
+        self.assertEqual(agent.session.calls[0][1]["query"], "cuda")
+        self.assertFalse(agent.session.calls[0][1].get("refresh"))
+
+    def test_search_says_so_when_nothing_matches(self):
+        agent = self._Agent({"platform_search": {
+            "status": "ok", "module_system": "lmod", "modules": [], "total_indexed": 12,
+            "catalogue": {"enriching": False},
+        }})
+        _handled, message = self._run("/modules nosuchthing", agent)
+        self.assertIn("No module matched", message)
+
+    def test_refresh_forces_a_rebuild(self):
+        agent = self._Agent({"platform_search": {
+            "status": "ok", "module_system": "lmod", "modules": [], "total_indexed": 1832,
+            "catalogue": {"tier": "name", "enriching": True},
+        }})
+        _handled, message = self._run("/modules refresh", agent)
+        self.assertTrue(agent.session.calls[0][1]["refresh"])
+        self.assertIn("1832", message)
+        self.assertIn("background", message)
+
+    def test_no_module_system_is_reported_plainly(self):
+        agent = self._Agent({"platform_search": {
+            "status": "ok", "module_system": "none", "modules": [],
+            "note": "No Lmod or Tcl Environment Modules on this host.",
+        }})
+        _handled, message = self._run("/modules cuda", agent)
+        self.assertIn("No Lmod", message)
+
+    def test_platform_server_disabled_is_a_sentence_not_a_crash(self):
+        agent = self._Agent({}, connected=False)
+        handled, message = self._run("/modules", agent)
+        self.assertTrue(handled)
+        self.assertIn("/servers on platform", message)
+
+    def test_modules_is_advertised_in_help(self):
+        _handled, message = self._run("/help", None)
+        self.assertIn("/modules", message)

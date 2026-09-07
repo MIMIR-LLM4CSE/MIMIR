@@ -31,6 +31,12 @@ from mcp.server.fastmcp import FastMCP
 from capabilities import tool_caps, PLAN_BLOCKED, CLUSTER_SUBMIT, BACKGROUNDABLE, IRREVERSIBLE
 from responses import err, ok
 from state_paths import state_dir
+from slurm_nodes import (
+    aggregate_node_types as _aggregate_node_types,
+    as_int as _as_int,
+    clean_gres as _clean_gres,
+    parse_scontrol_nodes as _parse_scontrol_nodes,
+)
 
 mcp = FastMCP(
     "HPCServer",
@@ -114,95 +120,6 @@ def slurm_partitions() -> dict:
         ["partition", "availability", "time_limit", "nodes", "state", "cpus_per_node", "mem_mb_per_node"],
     )
     return ok({"partitions": rows, "count": len(rows)})
-
-
-# Node facts we read out of `scontrol show node -o`. Values containing spaces (OS,
-# Reason) are deliberately not among them, so a simple `KEY=<non-space>` scan is enough.
-_NODE_FIELDS = (
-    "NodeName", "Arch", "CPUTot", "CPUAlloc", "CPULoad", "RealMemory", "AllocMem",
-    "FreeMem", "Sockets", "CoresPerSocket", "ThreadsPerCore", "Gres",
-    "AvailableFeatures", "State", "Partitions",
-)
-
-
-def _as_int(value: str) -> int | None:
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return None
-
-
-def _clean_gres(value: str) -> str:
-    """'gpu:a100:8(S:1,3,5,7)' -> 'gpu:a100:8'; '(null)' -> ''."""
-    if not value or value == "(null)":
-        return ""
-    return re.sub(r"\(S:[^)]*\)", "", value)
-
-
-def _parse_scontrol_nodes(stdout: str) -> list[dict]:
-    nodes = []
-    for line in stdout.splitlines():
-        if "NodeName=" not in line:
-            continue
-        raw = {k: v for k, v in re.findall(r"\b(\w+)=([^\s]+)", line)}
-        gres = _clean_gres(raw.get("Gres", ""))
-        cpu_tot, cpu_alloc = _as_int(raw.get("CPUTot", "")), _as_int(raw.get("CPUAlloc", ""))
-        features = raw.get("AvailableFeatures", "")
-        nodes.append({
-            "node":             raw.get("NodeName", ""),
-            "arch":             raw.get("Arch", ""),
-            "state":            raw.get("State", ""),
-            "partitions":       [p for p in raw.get("Partitions", "").split(",") if p],
-            "cpus":             cpu_tot,
-            "cpus_allocated":   cpu_alloc,
-            "cpus_free":        (cpu_tot - cpu_alloc) if None not in (cpu_tot, cpu_alloc) else None,
-            "cpu_load":         raw.get("CPULoad", ""),
-            "sockets":          _as_int(raw.get("Sockets", "")),
-            "cores_per_socket": _as_int(raw.get("CoresPerSocket", "")),
-            "threads_per_core": _as_int(raw.get("ThreadsPerCore", "")),
-            "mem_mb":           _as_int(raw.get("RealMemory", "")),
-            "mem_free_mb":      _as_int(raw.get("FreeMem", "")),
-            "gres":             gres,
-            "features":         "" if features == "(null)" else features,
-        })
-    return nodes
-
-
-def _aggregate_node_types(nodes: list[dict]) -> list[dict]:
-    """Collapse nodes onto their hardware signature.
-
-    A 124-node cluster listed one row per node buries the answer in noise; what the
-    caller is choosing between is the handful of *kinds* of machine, and how much of
-    each is free right now.
-    """
-    groups: dict[tuple, dict] = {}
-    for n in nodes:
-        key = (n["arch"], n["cpus"], n["mem_mb"], n["gres"],
-               n["sockets"], n["cores_per_socket"], n["threads_per_core"], n["features"])
-        g = groups.setdefault(key, {
-            "arch": n["arch"], "cpus": n["cpus"], "mem_mb": n["mem_mb"],
-            "mem_gb": round(n["mem_mb"] / 1024, 1) if n["mem_mb"] else None,
-            "gres": n["gres"], "sockets": n["sockets"],
-            "cores_per_socket": n["cores_per_socket"], "threads_per_core": n["threads_per_core"],
-            "features": n["features"], "partitions": set(), "nodes_total": 0,
-            "by_state": {}, "cpus_free_total": 0, "example_nodes": [],
-        })
-        g["partitions"].update(n["partitions"])
-        g["nodes_total"] += 1
-        state = (n["state"] or "UNKNOWN").split("+")[0].lower()
-        g["by_state"][state] = g["by_state"].get(state, 0) + 1
-        if n["cpus_free"]:
-            g["cpus_free_total"] += n["cpus_free"]
-        if len(g["example_nodes"]) < 3:
-            g["example_nodes"].append(n["node"])
-
-    out = []
-    for g in groups.values():
-        g["partitions"] = sorted(g["partitions"])
-        out.append(g)
-    # Most immediately usable first: idle nodes, then raw size.
-    out.sort(key=lambda g: (-g["by_state"].get("idle", 0), -(g["cpus"] or 0)))
-    return out
 
 
 def _sinfo_nodes() -> list[dict]:

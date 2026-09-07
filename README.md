@@ -132,6 +132,7 @@ peft / datasets / trl); `sudo apt-get install gfortran` for Fortran compilation;
 | `VLLM_BASE_URL` | `http://127.0.0.1:8000` | vLLM API base URL (client appends `/v1` if needed) |
 | `VLLM_API_KEY` | `EMPTY` | API key for vLLM OpenAI-compatible calls |
 | `MIMIR_EMBED_MODEL` | *(empty; `nomic-embed-text` on Ollama)* | Embedding model for semantic memory search & tool ranking (required for vLLM; else lexical fallback) |
+| `MIMIR_MODULE_INDEX_BUDGET` | `600` | Seconds the background module-catalogue enrichment may spend (the name-level pass the user waits on is not affected) |
 | `MCP_FILES_ROOT` | current working dir | Workspace root (guardrail on paths tools name — [not a sandbox](SERVERS_DETAILED.md#scope-of-the-sandbox-read-this-before-trusting-confined)) |
 | `GITHUB_TOKEN` | *(none)* | Raises GitHub API rate limits |
 | `MIMIR_OLLAMA_NUM_CTX` | *(model's context length)* | Overrides the Ollama context window (`num_ctx`) |
@@ -153,7 +154,8 @@ is documented in [`SETUP.md`](SETUP.md).
 │      backend.chat(model, messages, tools=[...]) (Ollama or vLLM)           │
 │                                                                             │
 │  servers/_shared/          shared response helpers, path sandboxing,         │
-│                            text tools, module env, platform profile store    │
+│                            text tools, module env, Slurm node parsing,       │
+│                            embedding cache                                   │
 │                                                                             │
 │  workspace/                utilities/              agent_state/              │
 │  ┌───────────────────┐     ┌───────────────────┐   ┌───────────────────┐     │
@@ -260,8 +262,8 @@ The client registers 21 servers by default; the authoritative registry lives in
 | `search` | File/pattern search, file reads, cached tree summaries, directory listing, ranking |
 | `web` | Safe HTTP GET/POST, JSON parsing and field extraction (SSRF-hardened) |
 | `github` | Read-only GitHub search, metadata, issues, branches, file fetch |
-| `hpc` | Slurm: partition/queue queries, compute-node inventory (arch, GPUs, live occupancy) for choosing where to submit, `salloc`/`sbatch` submission + async batch tracking (Environment Modules go through `bash`'s `module`) |
-| `platform` | Platform profiling: CPU/NUMA/memory/GPU/Slurm/toolchains/Python environments |
+| `hpc` | Slurm: partition/queue queries, compute-node inventory (arch, GPUs, live occupancy) for choosing where to submit, `salloc`/`sbatch` submission + async batch tracking (loading a module goes through `bash`'s `module`; finding one goes through `platform`) |
+| `platform` | Platform profiling: CPU/NUMA/memory/GPU/Slurm/toolchains/Python environments, plus a searchable index of the site's environment modules (`platform_search`) |
 | `env` | Mutating Python-environment management (pip install/uninstall, create/delete) |
 | `system` | Read-only OS/CPU/memory/disk/uptime inspection |
 | `code_intel` | Symbol navigation (ctags + LSP): definition, references, outline, hover |
@@ -389,7 +391,7 @@ core edit, no registration call:
 | Base prompt | `.mimir/system_prompt.md` | `MIMIR_SYSTEM_PROMPT_FILE` | user **replaces the doctrine half** of the built-in default |
 
 Agent **state** lives elsewhere, in a central per-workspace dir (`~/.mimir/<workspace-id>/`,
-override `MIMIR_STATE_DIR`): memory, sessions, plans, todos. The agent's **scratchpad** sits
+override `MIMIR_STATE_DIR`): memory, sessions, plans, todos, and the module catalogue. The agent's **scratchpad** sits
 under the temp dir instead — `<TMPDIR or /tmp>/mimir-<uid>-<workspace-id>/<session-id>/`,
 override `MIMIR_SCRATCH_DIR`. It is writable without approval and is where throwaway scripts,
 probes, intermediate data and diagnostic plots belong; nothing written there is reported as
