@@ -38,6 +38,7 @@ from mimir.client.guardrails.nudges.engine import (
 )
 from mimir.client.guardrails.nudges.messages import stuck_repair_nudge_message
 from mimir.client.guardrails.observations import _register_run_failure
+from mimir.client.context.execution_context import run_ledger_key
 
 
 def _ctx(command="pytest -q solver.py", failures=0, fired=0):
@@ -50,9 +51,11 @@ def _ctx(command="pytest -q solver.py", failures=0, fired=0):
         if failures:
             _register_run_failure(ec, command, "still wrong")
     if not failures:
-        ec["runs"][command]["failures"] = 0
-        ec["runs"][command]["completed"] = True
-        ec["runs"][command]["verdict"] = "pass"
+        # Runs are keyed by identity, not by the text typed (run_ledger_key).
+        key = run_ledger_key(command)
+        ec["runs"][key]["failures"] = 0
+        ec["runs"][key]["completed"] = True
+        ec["runs"][key]["verdict"] = "pass"
     ec["nudge_counts"]["stuck_repair"] = fired
     return ec
 
@@ -80,8 +83,8 @@ class StreakTests(unittest.TestCase):
     def test_a_settled_run_leaves_the_streak(self) -> None:
         # A pass drops the run out of failed_runs, so the ladder disarms on its own.
         ec = _ctx(failures=4)
-        ec["runs"]["pytest -q solver.py"]["completed"] = True
-        ec["runs"]["pytest -q solver.py"]["verdict"] = "pass"
+        ec["runs"]["pytest solver.py"]["completed"] = True
+        ec["runs"]["pytest solver.py"]["verdict"] = "pass"
         self.assertEqual(_worst_run_failure_streak(ec), 0)
         self.assertFalse(_should_nudge_stuck_repair(ec))
 
@@ -89,7 +92,7 @@ class StreakTests(unittest.TestCase):
         # The environment putting up a wall is not the model repeating itself, and
         # failed_runs already excludes it.
         ec = _ctx(failures=4)
-        ec["runs"]["pytest -q solver.py"]["blocked"] = "pytest not installed"
+        ec["runs"]["pytest solver.py"]["blocked"] = "pytest not installed"
         self.assertEqual(_worst_run_failure_streak(ec), 0)
 
 

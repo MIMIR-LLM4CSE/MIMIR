@@ -19,11 +19,12 @@ from typing import Any
 from ..config.constants import (
     AUTO_VALIDATION_TIMEOUT_SECS as _AUTO_VALIDATION_TIMEOUT_SECS,
     IDENTICAL_REPEAT_THRESHOLD,
+    NUDGE_MAX_TODO_TICK,
 )
 from ..event_sink import emit
 from .. import human_pause
 from ..context.capabilities import EDIT, has_cap, label_for, timeout_for
-from ..context.execution_context import loop_control
+from ..context.execution_context import loop_control, nudge_count
 from ..tool_execution.normalizer import _make_hashable
 from ..tool_execution.executor import run_post_tool_annotations
 from ..tool_execution.exec_preview import extract_exec_preview
@@ -39,6 +40,7 @@ from ..guardrails.workflow import (
     handback_corrective_message,
     handback_required,
     handback_scopes,
+    moving_test_corrective_message,
     repeat_corrective_message,
 )
 from ..guardrails.nudges import inject_reminder, maybe_inject_env_resolution
@@ -196,9 +198,23 @@ async def _dispatch_tool_calls(
 
         try:
             # ── PRE-EXECUTION SNAPSHOTS (GENERIC & SAFE) ──
+            # Two baselines, deliberately: `record_snapshot` keeps the FIRST content seen
+            # per path so the approval card can show the whole batch as one diff, while
+            # the event emitted below is per call and needs the content as it was just
+            # before THIS call. Reading the batch baseline for both is what made every
+            # edit re-diff against the state at the start of the batch — for a file
+            # created in-session that baseline is None forever, so all 151 diff events
+            # across four recorded sessions arrived as `is_new` with the entire file as
+            # additions.
             targets = agent.get_tool_file_targets(name, args)
+            before_by_path: dict[str, str | None] = {}
             for path in targets:
                 agent.approvals.record_snapshot(path)
+                try:
+                    with open(path, "r", encoding="utf-8", errors="replace") as fh:
+                        before_by_path[path] = fh.read()
+                except OSError:
+                    before_by_path[path] = None
 
             # ── ACTUAL TOOL EXECUTION ──
             # The timeout guards the WRITE only. Post-write auto-validation is run
@@ -236,7 +252,7 @@ async def _dispatch_tool_calls(
             # ── POST-EXECUTION DIFF EMIT ──
             if ok and targets:
                 for path in targets:
-                    before = agent.approvals._file_snapshots.get(path)
+                    before = before_by_path.get(path)
                     try:
                         with open(path, "r", encoding="utf-8", errors="replace") as fh:
                             after = fh.read()
@@ -247,18 +263,24 @@ async def _dispatch_tool_calls(
                     before_lines = (before or "").splitlines(keepends=True)
                     after_lines  = (after  or "").splitlines(keepends=True)
                     rel = os.path.relpath(path)
+                    # `keepends=True` lines already carry their newline, so the default
+                    # lineterm plus `"".join` is the pairing that yields one newline per
+                    # line. With `lineterm=""` and a `"\n".join` every line came out
+                    # doubled. Same pairing as the batch-status diff in ws_worker.
                     diff_lines = list(difflib.unified_diff(
                         before_lines, after_lines,
                         fromfile=f"a/{rel}", tofile=f"b/{rel}",
-                        lineterm="",
                     ))
                     if diff_lines:
                         entry: dict = {
                             "type": "diff",
                             "file": rel,
-                            "patch": "\n".join(diff_lines),
+                            "patch": "".join(diff_lines),
                         }
-                        if not before_lines:  # new file — before was empty
+                        # New for THIS call — the file did not exist when the call began.
+                        # Not "new to the batch": a second edit of a file created moments
+                        # ago is an edit, and showing it as a creation buries the change.
+                        if before is None:
                             entry["is_new"] = True
                         emit(entry)
 
@@ -410,14 +432,16 @@ async def _post_dispatch_inject(
 ) -> None:
     """After every tool dispatch step, inject post-dispatch reminders.
 
-    Four independent reminders: (1) mark a completed todo step done after a successful
+    Five independent reminders: (1) mark a completed todo step done after a successful
     edit, (2) a one-time corrective when a non-write call keeps failing identically
-    (staged as ``_repeat_alert`` during dispatch), (3) a one-time stop when refusals
-    have run the denial ladder to its end, and (4) the environment-resolution cascade
-    when a call just failed on a missing module. This is the mid-tool-loop channel the
-    regular nudges can't reach, since they only fire when the model stops calling tools
-    — and a model that has been told to hand back, or that is retrying against the
-    wrong interpreter, is by definition still calling tools.
+    (staged as ``_repeat_alert`` during dispatch), (3) a one-time corrective when a test
+    file's failing set keeps changing between runs (staged as ``_moving_test_alert`` by
+    the observation layer), (4) a one-time stop when refusals have run the denial ladder
+    to its end, and (5) the environment-resolution cascade when a call just failed on a
+    missing module. This is the mid-tool-loop channel the regular nudges can't reach,
+    since they only fire when the model stops calling tools — and a model that has been
+    told to hand back, that is retrying against the wrong interpreter, or that is
+    chasing a moving test, is by definition still calling tools.
     """
     # remind agent to mark completed step done in todo list
     success_path = execution_context.get("last_edit_success_path", "")
@@ -427,13 +451,26 @@ async def _post_dispatch_inject(
         and execution_context.get("todo_file_path")
     ):
         execution_context["last_edit_success_path"] = ""  # consume
-        inject_reminder(
-            messages,
-            f"You just wrote {os.path.basename(success_path)} successfully. "
-            "If a step in your task checklist is now fully complete, mark it done. "
-            "Do NOT mark it done if more work for that step remains.",
-            category="todo_tick",
-        )
+        counts = execution_context.setdefault("nudge_counts", {})
+        if (
+            # The per-category cap every nudge in the table honours, applied here too:
+            # this reminder reached the model on EVERY successful write, uncapped, which
+            # in a debugging stretch is most of the turn.
+            nudge_count(execution_context, "todo_tick") < NUDGE_MAX_TODO_TICK
+            # And never twice running about the same file: re-editing what we just spoke
+            # about is the middle of one change, not the end of a step.
+            and success_path != execution_context.get("_last_todo_tick_path")
+        ):
+            counts["todo_tick"] = counts.get("todo_tick", 0) + 1
+            execution_context["_last_todo_tick_path"] = success_path
+            inject_reminder(
+                messages,
+                f"You just wrote {os.path.basename(success_path)} successfully. "
+                "If a step in your task checklist is now fully complete, mark it done. "
+                "Do NOT mark it done if more work for that step remains.",
+                category="todo_tick",
+                execution_context=execution_context,
+            )
 
     # one-time corrective for a repeated identical failing call
     alert = execution_context.pop("_repeat_alert", None)
@@ -441,6 +478,15 @@ async def _post_dispatch_inject(
         name, fails = alert
         inject_reminder(
             messages, repeat_corrective_message(name, fails), category="repeat_call",
+            execution_context=execution_context,
+        )
+
+    # one-time corrective for a test file whose failing set keeps changing
+    moving_test = execution_context.pop("_moving_test_alert", None)
+    if moving_test:
+        inject_reminder(
+            messages, moving_test_corrective_message(moving_test),
+            category="moving_test", execution_context=execution_context,
         )
 
     # one-time stop once refusals reached the end of the denial ladder
@@ -450,6 +496,7 @@ async def _post_dispatch_inject(
             messages,
             handback_corrective_message(handback_scopes(execution_context)),
             category="handback",
+            execution_context=execution_context,
         )
 
     # the env cascade, at the failure rather than a step ceiling later

@@ -4,6 +4,9 @@ import unittest
 
 import logging
 import types
+from unittest.mock import patch
+
+import mimir.client.query_engine.backends.anthropic_backend as anthropic_backend
 
 from mimir.client.query_engine.backends.anthropic_backend import (
     AnthropicBackend,
@@ -160,3 +163,40 @@ class CacheUsageLogTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class StopReasonTests(unittest.TestCase):
+    """Both paths converge on the same ``final`` message, so one read covers both."""
+
+    @staticmethod
+    def _final(stop_reason, text="hi"):
+        return types.SimpleNamespace(
+            stop_reason=stop_reason,
+            content=[types.SimpleNamespace(type="text", text=text)],
+            usage=None,
+        )
+
+    def _run(self, final, streaming=False):
+        backend = anthropic_backend.AnthropicBackend()
+        created = types.SimpleNamespace(
+            messages=types.SimpleNamespace(create=lambda **kw: final))
+        backend._get_client = lambda: created
+        backend._build_kwargs = lambda *a, **k: {}
+        backend._cache_blocks = lambda raw: None
+        with patch.object(anthropic_backend, "_log_cache_usage", lambda f: None):
+            return backend.chat("m", [{"role": "user", "content": "q"}], [], False,
+                                streaming, {}, token_callback=lambda t: None)
+
+    def test_max_tokens_becomes_length(self) -> None:
+        out = self._run(self._final("max_tokens", "cut off"))
+        self.assertEqual(out["finish_reason"], "length")
+        self.assertEqual(out["content"], "cut off")
+
+    def test_end_turn_becomes_stop(self) -> None:
+        self.assertEqual(self._run(self._final("end_turn"))["finish_reason"], "stop")
+
+    def test_tool_use_becomes_tool_calls(self) -> None:
+        self.assertEqual(self._run(self._final("tool_use"))["finish_reason"], "tool_calls")
+
+    def test_no_stop_reason_adds_no_key(self) -> None:
+        self.assertNotIn("finish_reason", self._run(self._final(None)))

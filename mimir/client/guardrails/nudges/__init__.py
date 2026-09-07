@@ -7,6 +7,7 @@ and the ``guardrails.workflow`` state model. ``plugins`` mirrors
 """
 
 from .engine import (
+    drop_transient_reminders,
     inject_reminder,
     maybe_append_nudge,
     maybe_inject_env_resolution,
@@ -22,6 +23,7 @@ from .plugins import (
 )
 
 __all__ = [
+    "drop_transient_reminders",
     "inject_reminder",
     "maybe_append_nudge",
     "maybe_inject_env_resolution",

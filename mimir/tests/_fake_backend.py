@@ -9,6 +9,8 @@ behaviour. The same backend powers a zero-cost CI mode for the eval harness.
 The response dicts use the canonical backend return shape (see
 ``LLMBackend.chat``): keys ``role``, ``content``, optional ``thinking`` and
 ``tool_calls`` (each ``{"id", "function": {"name", "arguments": <json-or-dict>}}``).
+A turn is returned verbatim, so any other contract key — ``finish_reason``, to
+script a turn the provider cut short at ``max_tokens`` — can be set on it too.
 """
 from __future__ import annotations
 

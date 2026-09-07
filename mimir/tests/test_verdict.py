@@ -48,7 +48,7 @@ class ApplyVerdictTests(unittest.TestCase):
     def test_an_unrecognised_word_records_nothing(self) -> None:
         ec = self._ctx()
         self.assertEqual(apply_verdict("probably", "fine", "", ec), [])
-        self.assertEqual(ec["runs"]["pytest -q foo.py"]["verdict"], "")
+        self.assertEqual(ec["runs"]["pytest foo.py"]["verdict"], "")
 
     def test_a_pass_validates_no_file(self) -> None:
         # The whole point of the split: reading an output right says nothing about
@@ -56,7 +56,7 @@ class ApplyVerdictTests(unittest.TestCase):
         ec = self._ctx()
         apply_verdict("pass", "l2_rel=3e-4 against the analytic solution", "", ec)
         self.assertEqual(ec["validated_files"], set())
-        self.assertEqual(ec["runs"]["pytest -q foo.py"]["verdict"], "pass")
+        self.assertEqual(ec["runs"]["pytest foo.py"]["verdict"], "pass")
 
     def test_a_settled_run_is_returned_with_its_command_and_row(self) -> None:
         # What the UI badge is drawn from: the verdict lands on the row the run was on.
@@ -71,14 +71,14 @@ class ApplyVerdictTests(unittest.TestCase):
         ec = self._two_runs()
         settled = apply_verdict("pass", "both are within tolerance", "", ec)
         self.assertEqual([s["command"] for s in settled], ["python bench.py"])
-        self.assertEqual(ec["runs"]["pytest -q foo.py"]["verdict"], "")
+        self.assertEqual(ec["runs"]["pytest foo.py"]["verdict"], "")
 
     def test_a_re_run_becomes_the_most_recent(self) -> None:
         # Re-registering in place would leave an unscoped `pass` crediting an older run.
         ec = self._two_runs()
         record_run(ec, "pytest -q foo.py", completed=True)
         apply_verdict("pass", "green and correct", "", ec)
-        self.assertEqual(ec["runs"]["pytest -q foo.py"]["verdict"], "pass")
+        self.assertEqual(ec["runs"]["pytest foo.py"]["verdict"], "pass")
         self.assertEqual(ec["runs"]["python bench.py"]["verdict"], "")
 
     def test_a_re_run_keeps_the_failure_history(self) -> None:
@@ -86,15 +86,15 @@ class ApplyVerdictTests(unittest.TestCase):
         ec = self._ctx()
         apply_verdict("fail", "off by a factor of two", "", ec)
         record_run(ec, "pytest -q foo.py", completed=True)
-        self.assertEqual(ec["runs"]["pytest -q foo.py"]["failures"], 1)
-        self.assertEqual(ec["runs"]["pytest -q foo.py"]["attempts"],
+        self.assertEqual(ec["runs"]["pytest foo.py"]["failures"], 1)
+        self.assertEqual(ec["runs"]["pytest foo.py"]["attempts"],
                          ["off by a factor of two"])
 
     def test_a_scoped_pass_settles_only_the_run_it_names(self) -> None:
         ec = self._two_runs()
         self.assertTrue(apply_verdict("pass", "matches the reference", "bench", ec))
         self.assertEqual(ec["runs"]["python bench.py"]["verdict"], "pass")
-        self.assertEqual(ec["runs"]["pytest -q foo.py"]["verdict"], "")
+        self.assertEqual(ec["runs"]["pytest foo.py"]["verdict"], "")
 
     def test_an_unreadable_scope_on_a_pass_still_credits_exactly_one_run(self) -> None:
         """A scope nobody can match is read as no scope, not as a reason to drop it.
@@ -107,7 +107,7 @@ class ApplyVerdictTests(unittest.TestCase):
         ec = self._two_runs()
         settled = apply_verdict("pass", "fine", "unrelated", ec)
         self.assertEqual([r["command"] for r in settled], ["python bench.py"])
-        self.assertEqual(ec["runs"]["pytest -q foo.py"]["verdict"], "")
+        self.assertEqual(ec["runs"]["pytest foo.py"]["verdict"], "")
 
     def test_an_unreadable_scope_on_a_fail_falls_back_to_every_run(self) -> None:
         ec = self._two_runs()
@@ -126,7 +126,7 @@ class ApplyVerdictTests(unittest.TestCase):
         ec = self._ctx()
         ec["workflow_state"] = "conclude"
         apply_verdict("fail", "energy grows from 1.56 to 4.02", "", ec)
-        run = ec["runs"]["pytest -q foo.py"]
+        run = ec["runs"]["pytest foo.py"]
         self.assertEqual(run["failures"], 1)
         self.assertEqual(run["attempts"], ["energy grows from 1.56 to 4.02"])
         self.assertEqual(ec["workflow_state"], "edit")
@@ -153,7 +153,7 @@ class ApplyVerdictTests(unittest.TestCase):
         ec = self._ctx()
         apply_verdict("unknown", "no reference for this regime", "", ec)
         apply_verdict("pass", "l2_rel=3e-4 against the analytic solution", "", ec)
-        self.assertEqual(ec["runs"]["pytest -q foo.py"]["verdict"], "pass")
+        self.assertEqual(ec["runs"]["pytest foo.py"]["verdict"], "pass")
 
     def test_a_run_that_never_completed_owes_no_verdict(self) -> None:
         # Its non-zero exit is the finding; asking the model to judge output that never

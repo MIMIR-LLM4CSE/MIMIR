@@ -13,6 +13,42 @@ from ...config.constants import chars_per_token_for
 _TOKEN_CACHE_CAP = 8192
 
 
+_FINISH_REASONS = {
+    # OpenAI / vLLM / Ray
+    "stop": "stop",
+    "length": "length",
+    "tool_calls": "tool_calls",
+    "function_call": "tool_calls",
+    "content_filter": "content_filter",
+    # Ollama (done_reason)
+    "load": "stop",
+    "unload": "stop",
+    # Anthropic (stop_reason)
+    "end_turn": "stop",
+    "stop_sequence": "stop",
+    "max_tokens": "length",
+    "tool_use": "tool_calls",
+    "pause_turn": "stop",
+    "refusal": "content_filter",
+    "model_context_window_exceeded": "length",
+}
+
+
+def normalize_finish_reason(raw: Any) -> str | None:
+    """Map a provider's stop signal onto one vocabulary, or None when absent.
+
+    Returns one of ``stop``, ``length``, ``tool_calls``, ``content_filter`` or
+    ``unknown``. ``None`` means the provider said nothing — distinct from
+    ``unknown``, which means it said something this table does not recognize.
+    """
+    if raw is None:
+        return None
+    key = str(raw).strip().lower()
+    if not key:
+        return None
+    return _FINISH_REASONS.get(key, "unknown")
+
+
 def _countable_text(message: dict) -> str:
     """Everything in *message* that is sent to the model, as one string.
 
@@ -95,8 +131,17 @@ class LLMBackend(ABC):
     ) -> dict:
         """Run a chat completion and return a message dict.
 
-        Return value keys: ``role``, ``content``, and optionally ``thinking``
-        and ``tool_calls``.
+        Return value keys: ``role``, ``content``, and optionally ``thinking``,
+        ``tool_calls`` and ``finish_reason``.
+
+        ``finish_reason`` is why the provider stopped generating, normalized by
+        :func:`normalize_finish_reason` — every provider spells it differently
+        (OpenAI/vLLM ``finish_reason``, Ollama ``done_reason``, Anthropic
+        ``stop_reason``) and all three used to drop it, which left a turn cut off
+        at ``max_tokens`` indistinguishable from a model that simply had nothing
+        to say. It describes the *call*, not the message: strip it before the
+        message is appended to history (``streaming._process_response`` does),
+        or it goes back to the provider on the next turn.
         """
 
     # ── Token counting ──────────────────────────────────────────────────────────

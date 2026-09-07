@@ -38,6 +38,26 @@ from mimir.client.agent_core import MimirAgent
 from mimir.tests._fake_backend import ScriptedBackend
 
 
+def _reminder_calls(backend, text: str) -> list[int]:
+    """Indices of the backend calls whose prompt carried the reminder *text*.
+
+    Reminders are transient: injected for one call, taken back out after it, so the
+    final ``messages`` list no longer holds them. What matters is what reached the
+    model, which is what ScriptedBackend records per call — and since a reminder
+    lives for exactly one call, the number of calls carrying it *is* the number of
+    times it was injected.
+    """
+    return [i for i, c in enumerate(backend.calls)
+            if any(m.get("content") == text for m in c["messages"])]
+
+
+def _reminder_calls_containing(backend, fragment: str) -> list[int]:
+    """Like :func:`_reminder_calls`, matching a substring of a user turn."""
+    return [i for i, c in enumerate(backend.calls)
+            if any(m.get("role") == "user" and fragment in str(m.get("content", ""))
+                   for m in c["messages"])]
+
+
 def _tool_call(name: str, args: str = "{}", call_id: str = "1") -> dict:
     return {"id": call_id, "function": {"name": name, "arguments": args}}
 
@@ -136,6 +156,54 @@ class MaybeCompactIntraQueryTests(unittest.TestCase):
         self.assertEqual(messages, snapshot)
 
 
+class CommitmentTests(unittest.TestCase):
+    """A turn that promised work and delivered none is not a discovery turn.
+
+    Replays the recorded refactor turn: a checklist written, eight files declared, a
+    directory created, and an answer ending "Creating the package files now:" with
+    nothing written. `code_mutation_started` was False throughout — no edit ever
+    succeeded — so every completeness guard exempted it.
+    """
+
+    ABANDONED = {
+        "todo_written": True,
+        "todo_file_path": "/tmp/todo.md",
+        "declared_edit_set": {"solver.py", "boundaries.py", "timestepping.py"},
+        "dirty_written_files": set(),
+        "code_mutation_started": False,      # nothing was ever written
+    }
+
+    def test_the_abandoned_plan_is_recognised_as_committed(self):
+        from mimir.client.guardrails.workflow import turn_made_commitments
+        self.assertTrue(turn_made_commitments(dict(self.ABANDONED)))
+
+    def test_a_discovery_turn_is_still_exempt(self):
+        from mimir.client.guardrails.workflow import turn_made_commitments
+        self.assertFalse(turn_made_commitments({
+            "code_mutation_started": False, "declared_edit_set": set(),
+            "todo_written": False,
+        }))
+
+    def test_declared_but_unwritten_files_are_unhonoured(self):
+        from mimir.client.guardrails.workflow import unhonoured_commitments
+        self.assertTrue(unhonoured_commitments(dict(self.ABANDONED)))
+
+    def test_nothing_promised_means_nothing_outstanding(self):
+        from mimir.client.guardrails.workflow import unhonoured_commitments
+        self.assertFalse(unhonoured_commitments({
+            "code_mutation_started": False, "declared_edit_set": set(),
+            "todo_written": False,
+        }))
+
+    def test_the_empty_turn_advice_stops_offering_the_exit(self):
+        from mimir.client.guardrails.workflow import empty_turn_retry_message
+        owed = empty_turn_retry_message(dict(self.ABANDONED))
+        self.assertNotIn("or write the answer", owed)
+        self.assertIn("do the next piece of the work", owed)
+        free = empty_turn_retry_message({})
+        self.assertIn("or write the answer", free)
+
+
 class PostDispatchInjectTests(unittest.TestCase):
     def test_injects_todo_reminder_after_successful_edit(self) -> None:
         messages: list[dict] = []
@@ -163,6 +231,37 @@ class PostDispatchInjectTests(unittest.TestCase):
         self.assertEqual(messages, [])
         # success_path is NOT consumed when no reminder fires
         self.assertEqual(ec["last_edit_success_path"], "src/kernel.cu")
+
+    def _tick(self, ec: dict, path: str) -> list[dict]:
+        """One post-dispatch pass after a successful write of *path*."""
+        messages: list[dict] = []
+        ec["last_edit_success_path"] = path
+        asyncio.run(dispatch_module._post_dispatch_inject(None, messages, ec))
+        return messages
+
+    def test_the_todo_reminder_is_silent_on_a_repeat_of_the_same_file(self) -> None:
+        # The observed pathology: five consecutive edits of one test file mid-debug, each
+        # answered with "is that step done now?" when it plainly is not.
+        ec = {"todo_written": True, "todo_file_path": "/tmp/todo.md"}
+        self.assertEqual(len(self._tick(ec, "tests/test_x.py")), 1)
+        self.assertEqual(self._tick(ec, "tests/test_x.py"), [])
+        self.assertEqual(self._tick(ec, "tests/test_x.py"), [])
+
+    def test_the_todo_reminder_honours_a_per_query_cap(self) -> None:
+        from mimir.client.config.constants import NUDGE_MAX_TODO_TICK
+        ec = {"todo_written": True, "todo_file_path": "/tmp/todo.md"}
+        fired = sum(bool(self._tick(ec, f"src/f{i}.py")) for i in range(NUDGE_MAX_TODO_TICK + 3))
+        self.assertEqual(fired, NUDGE_MAX_TODO_TICK)
+
+    def test_injects_moving_test_corrective_and_consumes_alert(self) -> None:
+        messages: list[dict] = []
+        ec = {"_moving_test_alert": "tests/test_wave2d.py"}
+        asyncio.run(dispatch_module._post_dispatch_inject(None, messages, ec))
+        self.assertNotIn("_moving_test_alert", ec)     # consumed
+        self.assertEqual(len(messages), 1)
+        self.assertEqual(messages[0]["role"], "user")
+        self.assertIn("tests/test_wave2d.py", messages[0]["content"])
+        self.assertIn("oracle", messages[0]["content"])
 
     def test_injects_repeat_corrective_and_consumes_alert(self) -> None:
         messages: list[dict] = []
@@ -285,10 +384,7 @@ class RunPlanModeTests(unittest.TestCase):
 
         self.assertEqual(result, "Here is the plan.")
         # After todo_write the loop appends the deliver-answer nudge.
-        self.assertTrue(any(
-            m["role"] == "user" and "final answer" in m["content"].lower()
-            for m in messages
-        ))
+        self.assertTrue(_reminder_calls_containing(backend, "final answer"))
         self.assertEqual(len(backend.calls), 2)
 
     def test_replaying_the_plan_forever_is_cut_short(self) -> None:
@@ -332,10 +428,7 @@ class RunPlanModeTests(unittest.TestCase):
         self.assertTrue(any(
             m["role"] == "tool" and "already recorded" in m["content"] for m in messages
         ))
-        self.assertTrue(any(
-            m["role"] == "user" and m["content"] == plan_loop_module.PLAN_DELIVER_ANSWER_FIRM
-            for m in messages
-        ))
+        self.assertTrue(_reminder_calls(backend, plan_loop_module.PLAN_DELIVER_ANSWER_FIRM))
 
     def test_checklist_call_is_blocked_in_plan_mode(self) -> None:
         # The ordered checklist belongs to the execution that follows approval, so a
@@ -494,10 +587,7 @@ class RunPlanModeTests(unittest.TestCase):
 
         # The prose turn was not accepted; the plan was recorded and delivered.
         self.assertEqual(result, "Here is the plan.")
-        self.assertTrue(any(
-            m["role"] == "user" and "not yet recorded a plan" in m["content"]
-            for m in messages
-        ))
+        self.assertTrue(_reminder_calls_containing(backend, "not yet recorded a plan"))
         self.assertEqual(len(backend.calls), 3)
 
     def test_accept_switches_to_agent_mode(self) -> None:
@@ -767,14 +857,10 @@ class RunPlanModeTests(unittest.TestCase):
         self.assertEqual(result, "Here is the plan.")
         # Turn 1 explores with the document withheld; the reads flip the phase for turn 2.
         self.assertEqual(seen_exploring, [True, False])
-        self.assertTrue(any(
-            m["role"] == "user" and m["content"] == plan_loop_module.PLAN_EXPLORE_FIRST
-            for m in messages
-        ))
-        # And the record nudge never fired while the tool did not exist.
-        explore_at = [i for i, m in enumerate(messages) if m.get("content") == plan_loop_module.PLAN_EXPLORE_FIRST]
-        record_at = [i for i, m in enumerate(messages) if m.get("content") == plan_loop_module.PLAN_TODO_NUDGE_EARLY]
+        explore_at = _reminder_calls(backend, plan_loop_module.PLAN_EXPLORE_FIRST)
+        record_at = _reminder_calls(backend, plan_loop_module.PLAN_TODO_NUDGE_EARLY)
         self.assertTrue(explore_at)
+        # And the record nudge never fired while the tool did not exist.
         self.assertTrue(all(r > explore_at[0] for r in record_at))
 
     def test_explore_budget_unlocks_the_plan_tool(self) -> None:
@@ -788,9 +874,10 @@ class RunPlanModeTests(unittest.TestCase):
         agent = types.SimpleNamespace(model="m", tools=[], tool_caps=dict(_CHECKLIST_CAPS))
         query = "refactor the solver in the repo"
         messages = [{"role": "system", "content": "S"}, {"role": "user", "content": query}]
+        backend = ScriptedBackend(script)
 
         result, seen_exploring = self._explore_phase_run(
-            backend=ScriptedBackend(script), query=query, agent=agent, messages=messages,
+            backend=backend, query=query, agent=agent, messages=messages,
         )
 
         self.assertEqual(result, "Here is the plan.")
@@ -801,13 +888,10 @@ class RunPlanModeTests(unittest.TestCase):
         # teaches one-call-per-turn — including ignoring the fan-out this text asks for.
         every = plan_loop_module._PLAN_NUDGE_EVERY
         self.assertEqual(
-            sum(1 for m in messages if m.get("content") == plan_loop_module.PLAN_EXPLORE_FIRST),
+            len(_reminder_calls(backend, plan_loop_module.PLAN_EXPLORE_FIRST)),
             -(-PLAN_EXPLORE_MAX_TURNS // every),
         )
-        self.assertTrue(any(
-            m["role"] == "user" and m["content"] == plan_loop_module.PLAN_EXPLORE_BUDGET_SPENT
-            for m in messages
-        ))
+        self.assertTrue(_reminder_calls(backend, plan_loop_module.PLAN_EXPLORE_BUDGET_SPENT))
 
     def test_a_turn_that_only_talks_is_always_told_why(self) -> None:
         # The throttle covers turns that acted. A turn that only produced prose has that
@@ -822,16 +906,15 @@ class RunPlanModeTests(unittest.TestCase):
             model="m", tools=[], tool_caps=dict(_CHECKLIST_CAPS), enforcement="off")
         query = "add a flag to the solver module"
         messages = [{"role": "system", "content": "S"}, {"role": "user", "content": query}]
+        backend = ScriptedBackend(script)
 
         result, _ = self._explore_phase_run(
-            backend=ScriptedBackend(script), query=query, agent=agent, messages=messages,
+            backend=backend, query=query, agent=agent, messages=messages,
         )
 
         self.assertEqual(result, "Here is the plan.")
         self.assertEqual(
-            sum(1 for m in messages if m.get("content") == plan_loop_module.PLAN_TODO_NUDGE_EARLY),
-            3,
-        )
+            len(_reminder_calls(backend, plan_loop_module.PLAN_TODO_NUDGE_EARLY)), 3)
 
     def test_explore_phase_skipped_when_enforcement_off(self) -> None:
         # At enforcement "off" the phase gate is disabled outright: the document tool
@@ -852,10 +935,7 @@ class RunPlanModeTests(unittest.TestCase):
 
         self.assertEqual(result, "Here is the plan.")
         self.assertFalse(any(seen_exploring))
-        self.assertFalse(any(
-            m["role"] == "user" and m["content"] == plan_loop_module.PLAN_EXPLORE_FIRST
-            for m in messages
-        ))
+        self.assertFalse(_reminder_calls(backend, plan_loop_module.PLAN_EXPLORE_FIRST))
         self.assertEqual(len(backend.calls), 2)
 
 
@@ -1459,7 +1539,7 @@ class EmptyTurnTests(unittest.TestCase):
         # The empty turn is gone from history and the retry is announced.
         retry = backend.calls[1]["messages"]
         self.assertTrue(all(m.get("content") != "" for m in retry if m["role"] == "assistant"))
-        self.assertEqual(retry[-1]["content"], agent_loop_module.EMPTY_TURN_RETRY)
+        self.assertIn(agent_loop_module.EMPTY_TURN_OPENING, retry[-1]["content"])
         self.assertTrue(any(
             e["type"] == "status" and "Empty turn" in e.get("text", "") for e in emitted
         ))

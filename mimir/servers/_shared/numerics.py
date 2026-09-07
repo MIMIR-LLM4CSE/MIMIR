@@ -6,16 +6,22 @@ never satisfy its own acceptance constraints. (Observed in the wild: an agent-ed
 proxy printing ``conservation_residual=<its own drift>`` to pass a requirement whose
 sealed reference was missing.)
 
-The **client** does not read them at all. It once treated a printed ``l2_rel=…`` as
-evidence and raised the validation tier for it; that rewarded a string, since the value
-can never be interpreted from outside the process — the very reason the proxy seals
-references server-side. What a run printed is the model's to read and report.
+The **client** does not read this module at all. It once treated a printed ``l2_rel=…``
+as evidence and raised the validation tier for it; that rewarded a string, since the
+value can never be interpreted from outside the process — the very reason the proxy
+seals references server-side. What a run printed is the model's to read and report.
 
-What the client still reads here is :func:`observed_failure_verdict`, which only ever
-withholds credit.
+It used to keep one client-only function here as well — the ``check=fail`` verdict
+grammar — which is why this module was imported across the client/server line at all.
+Two failures hid in that arrangement for as long as it lasted: the grammar was written
+to mirror the metrics parser's strictness rather than to match what harnesses actually
+print, and no test exercised it against a real one. It now lives beside the other ways
+a run reports on itself, in ``client.guardrails.runner_output``, which owns that
+question. What is left here is the proxy's reserved vocabulary, which is all this
+module was ever for.
 
-Lives in ``_shared`` because both a server and the client import it — flat via
-``sys.path`` from the servers, as ``servers._shared.numerics`` from the client.
+Lives in ``_shared`` for the flat ``sys.path`` import the servers use
+(``from numerics import RESERVED_METRICS``).
 """
 
 from __future__ import annotations
@@ -39,40 +45,3 @@ NUMERICAL_INVARIANT_METRICS = frozenset({
 # correctness one, hence absent from NUMERICAL_INVARIANT_METRICS: a run that reports
 # only a duration has proved nothing about the answer.
 RESERVED_METRICS = NUMERICAL_INVARIANT_METRICS | {"wall_time_s"}
-
-# ``key=value`` alone on a line, strict single-token RHS. Whole-line by construction
-# (``fullmatch``) so prose mentioning a key, verbose logs and compiler output do not
-# register. Mirrors the proxy metrics parser's strict fallback pattern.
-_KEY_VALUE_LINE_RE = re.compile(
-    r"(?P<key>[A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?P<value>\S+)"
-)
-
-# The verdict a run declares *about itself*, for a check that computes its own
-# pass/fail instead of letting an assertion raise. Client-side reading only (the
-# proxy has no use for it), but it shares the line grammar above so there is one
-# way to report a machine-readable result, not two.
-VERDICT_KEYS = frozenset({"check", "verdict"})
-_FAILING_VERDICTS = frozenset({"fail", "failed", "failure", "error", "red", "false", "no"})
-
-
-def observed_failure_verdict(text: str) -> bool:
-    """True when a run's own output declares that one of its checks did not pass.
-
-    The counterweight to an exit code: a script that evaluates its own criteria,
-    prints that they were not met and then returns 0 anyway is indistinguishable
-    from a clean run to everything downstream. Reading the verdict *only* in this
-    direction is deliberate — a ``check=fail`` line demotes a green exit, a
-    ``check=pass`` line never rescues a red one, so declaring a verdict can cost
-    credit but can never buy it.
-
-    Same strict whole-line ``key=value`` grammar the proxy uses for metrics, so prose
-    ("check failed to converge"), logs and compiler output do not register. Any one
-    failing verdict is enough, however many checks the run reported.
-    """
-    if not text:
-        return False
-    for line in text.splitlines():
-        m = _KEY_VALUE_LINE_RE.fullmatch(line.strip())
-        if m and m.group("key") in VERDICT_KEYS and m.group("value").lower() in _FAILING_VERDICTS:
-            return True
-    return False

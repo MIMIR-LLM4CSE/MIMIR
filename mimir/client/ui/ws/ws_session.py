@@ -226,7 +226,12 @@ class _Session:
         # the next turn if it no longer fits. Sessions saved before this field existed
         # only have the trimmed window — that is still the best they have.
         self.history_full = list(session.llm_history_full or session.llm_history)
-        self.history = _reconcile(list(self.history_full))
+        # Copy each message, not just the list: the budgeting pass mutates messages
+        # in place (force-fit rewrites `content`, and the argument digest rewrites
+        # `tool_calls`). Sharing the dicts made those writes reach straight into the
+        # untrimmed record this line exists to preserve — the list-level protection
+        # in the answer handler below cannot see through a shared reference.
+        self.history = _reconcile([dict(m) for m in self.history_full])
         self._submitted_len = len(self.history)
         self._display_messages = list(session.display_messages)
         self.transcript.bind(session.id)
@@ -570,7 +575,10 @@ class _Session:
                         # which is the part worth keeping.
                         added = (full[self._submitted_len:]
                                  if len(full) > self._submitted_len else full[-1:])
-                        self.history_full.extend(added)
+                        # Copied, for the same reason as the load path above: a later
+                        # turn's budgeting rewrites `content` / `tool_calls` in place,
+                        # and these dicts would otherwise be the archive's own.
+                        self.history_full.extend(dict(m) for m in added)
                         self.history = full
                     else:
                         answer_msg = {"role": "assistant", "content": ev.get("text", "")}

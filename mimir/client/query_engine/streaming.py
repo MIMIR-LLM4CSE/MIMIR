@@ -43,8 +43,30 @@ def _process_response(msg: dict, messages: list[dict], thinking: bool, streamed_
         clean_thinking = msg["thinking"].replace("<think>", "").replace("</think>", "").strip()
         if clean_thinking:
             emit({"type": "thinking", "text": clean_thinking})
-    msg_for_history = {k: v for k, v in msg.items() if k != "thinking"}
+    # `thinking` and `finish_reason` describe the call, not the message: sending
+    # either back to the provider on the next turn is at best noise and at worst a
+    # rejected request. This is the single choke point for all four backends.
+    msg_for_history = {k: v for k, v in msg.items()
+                       if k not in ("thinking", "finish_reason")}
     messages.append(msg_for_history)
+
+
+def _note_truncated_turn(msg: dict, step: int | None = None) -> None:
+    """Announce a turn the provider cut short because it hit its output cap.
+
+    Purely observational — the loop's behaviour is unchanged. Without it a turn
+    truncated at ``max_tokens`` is indistinguishable in the transcript from a
+    model that had nothing to say, and both surface as the same "empty turn"
+    retry; the status lands in ``transcript.jsonl``, so a session can be told
+    apart after the fact instead of guessed at.
+    """
+    if msg.get("finish_reason") != "length":
+        return
+    where = f" at step {step}" if step is not None else ""
+    emit({"type": "status", "text": (
+        f"  ⚠ Output cut short by the model's max_tokens "
+        f"(finish_reason=length){where} — this turn is incomplete."
+    )})
 
 
 def _partial_tag_at_end(text: str, tag: str) -> int:

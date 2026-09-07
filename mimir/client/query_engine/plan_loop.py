@@ -34,9 +34,9 @@ from ..guardrails.workflow import (
     PLAN_REJECTED_ANSWER,
     plan_revision_nudge,
 )
-from ..guardrails.nudges import inject_reminder
+from ..guardrails.nudges import drop_transient_reminders, inject_reminder
 from ..tool_execution.formatter import normalize_arguments
-from .streaming import _DraftHold, _stream_chat, _process_response, _to_dict
+from .streaming import _DraftHold, _note_truncated_turn, _stream_chat, _process_response, _to_dict
 from .dispatch import _dispatch_tool_calls
 from .finalize import _finalize_answer
 from .readonly_guard import filter_readonly_tool_calls
@@ -249,12 +249,14 @@ async def _run_plan_mode(
             text = PLAN_EXPLORE_FIRST
             if names_with_cap(DELEGATE, agent.tool_caps):
                 text += PLAN_EXPLORE_DELEGATE
-            inject_reminder(messages, text, category="plan_explore", tagged=False)
+            inject_reminder(messages, text, category="plan_explore", tagged=False,
+                            execution_context=execution_context, step=step)
             return
         inject_reminder(
             messages,
             PLAN_TODO_NUDGE_EARLY if step <= max_steps - 5 else PLAN_TODO_NUDGE_LATE,
             category="plan_todo", tagged=False,
+            execution_context=execution_context, step=step,
         )
 
     base_options = {'temperature': 0.2, 'top_k': 25}
@@ -293,7 +295,9 @@ async def _run_plan_mode(
             elif explore_turns >= PLAN_EXPLORE_MAX_TURNS:
                 exploring = False
                 emit({"type": "status", "text": "  ⚠ Exploration thin — unlocking the plan tool"})
-                inject_reminder(messages, PLAN_EXPLORE_BUDGET_SPENT, category="plan_explore", tagged=False)
+                inject_reminder(messages, PLAN_EXPLORE_BUDGET_SPENT, category="plan_explore",
+                                tagged=False, execution_context=execution_context,
+                                step=plan_nudges)
             if exploring:
                 explore_turns += 1
             else:
@@ -336,7 +340,12 @@ async def _run_plan_mode(
             if hold:
                 hold.flush()
             raise
+        finally:
+            # Same lifecycle as the agent loop: a reminder lives for the one call it
+            # was injected for and never reaches persisted history.
+            drop_transient_reminders(messages, execution_context)
         _process_response(msg, messages, thinking, streamed_thinking=(streaming and cb["think_token_callback"] is not None))
+        _note_truncated_turn(msg)
         tool_calls = msg.get("tool_calls") or []
         if hold and tool_calls:
             # The turn acted: its prose is narration above the tool cards, not a
@@ -458,6 +467,7 @@ async def _run_plan_mode(
                 messages,
                 PLAN_DELIVER_ANSWER if not deliver_nudged else PLAN_DELIVER_ANSWER_FIRM,
                 category="plan_deliver", tagged=False,
+                execution_context=execution_context, step=plan_nudges,
             )
             deliver_nudged = True
 

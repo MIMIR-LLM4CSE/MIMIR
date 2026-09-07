@@ -8,6 +8,7 @@ Extracted from ``agent_loop.py``.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 from typing import Any
 
@@ -203,7 +204,7 @@ def _trim_tool_history(
     _size = token_counter if token_counter is not None else len
     budget = token_budget if token_counter is not None else char_budget
     tool_indices = [i for i, m in enumerate(messages) if m.get("role") == "tool"]
-    total_size = sum(_size(messages[i].get("content", "")) for i in tool_indices)
+    total_size = sum(_message_tokens(messages[i], _size) for i in tool_indices)
     if total_size <= budget:
         return
 
@@ -247,11 +248,7 @@ def _trim_tool_history(
     # nothing older remained to drop. They are exempt here; the force-fit pass can
     # still shrink them, and its truncation keeps a head and a tail rather than
     # nothing at all.
-    last_call_turn = max(
-        (i for i, m in enumerate(messages)
-         if m.get("role") == "assistant" and m.get("tool_calls")),
-        default=-1,
-    )
+    last_call_turn = _last_call_turn(messages)
     newest_results = {i for i in tool_indices if i > last_call_turn} if last_call_turn >= 0 else set()
 
     to_remove: list[int] = []
@@ -319,7 +316,7 @@ def _maybe_compact_intra_query(
     # default arg) so tests patching _INTRA_QUERY_COMPACT_TOKENS still take effect.
     _token_budget = token_budget if token_budget is not None else _INTRA_QUERY_COMPACT_TOKENS
     budget = _token_budget if token_counter is not None else _INTRA_QUERY_COMPACT_CHARS
-    total_size = sum(_size(m.get("content", "")) for m in messages)
+    total_size = sum(_message_tokens(m, _size) for m in messages)
     if total_size <= budget:
         return
 
@@ -341,6 +338,42 @@ def _maybe_compact_intra_query(
     messages[2:-4] = summary_messages
     # The checklist pin is a transient tail message (see _inject_pin), not part of
     # messages[0], so compaction of the middle never disturbs it — nothing to refresh.
+
+
+def merge_consecutive_user_messages(prepared: list[dict]) -> list[dict]:
+    """Collapse adjacent plain ``user`` messages into one.
+
+    Lives here, beside :func:`reconcile_tool_pairs`, because every backend needs it
+    and only one used to have it: it was defined inside the vLLM backend, so the same
+    history produced a legal prompt there and two adjacent ``user`` entries on the
+    Anthropic path — which requires strict alternation — and no normalization at all
+    on Ollama.
+
+    The Mistral tokenizer (``--tokenizer-mode mistral``, e.g. Devstral) enforces
+    strict role alternation and degenerates into token salad when it sees two
+    consecutive ``user`` turns. Upstream can legitimately produce them (plan-mode
+    nudges, a caller that already appended the current turn). Joining their text
+    with a blank line preserves the content while keeping the sequence legal; only
+    string-content user messages with no tool fields are merged, so tool pairing is
+    untouched.
+    """
+    out: list[dict] = []
+    for m in prepared:
+        if (
+            out
+            and m.get("role") == "user"
+            and out[-1].get("role") == "user"
+            and isinstance(m.get("content"), str)
+            and isinstance(out[-1].get("content"), str)
+            and not m.get("tool_calls")
+            and not out[-1].get("tool_calls")
+        ):
+            if m["content"] != out[-1]["content"]:
+                out[-1] = {**out[-1], "content": out[-1]["content"] + "\n\n" + m["content"]}
+            # identical duplicate → drop entirely
+            continue
+        out.append(m)
+    return out
 
 
 def _truncate_text_to_tokens(text: str, max_tokens: int, token_counter: Any) -> str:
@@ -381,6 +414,157 @@ def _message_content_str(m: dict) -> str:
     return c if isinstance(c, str) else json.dumps(c)
 
 
+def _message_tokens(m: dict, token_counter: Any) -> int:
+    """Tokens for one message: its ``content`` PLUS its tool calls' arguments.
+
+    The single size measure every budgeting pass uses. Counting only ``content``
+    is what let a history whose weight lived in ``tool_calls[].function.arguments``
+    — file bodies handed to write_file — read as barely half its real size: the
+    trim and compaction triggers never fired, while the prompt the provider
+    actually received (it serializes the whole message, arguments included) was
+    nearly twice what they measured.
+
+    Content and arguments are joined into ONE string and counted in a single call:
+    ``count_text_tokens`` may make a blocking /tokenize round-trip (cached per
+    model/length/hash), so one call per message beats one per argument.
+    """
+    parts = [_message_content_str(m)]
+    for tc in m.get("tool_calls") or []:
+        args = (tc.get("function") or {}).get("arguments", "")
+        if args:
+            parts.append(args if isinstance(args, str) else json.dumps(args))
+    text = "\n".join(p for p in parts if p)
+    return token_counter(text) if text else 0
+
+
+def _last_call_turn(messages: list[dict]) -> int:
+    """Index of the last assistant turn that made tool calls, or -1."""
+    return max(
+        (i for i, m in enumerate(messages)
+         if m.get("role") == "assistant" and m.get("tool_calls")),
+        default=-1,
+    )
+
+
+_ARG_DIGEST_MAX_CHARS = 400
+
+
+def _elision_note(text: str) -> str:
+    """A short, factual stand-in for an elided argument value."""
+    digest = hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()[:12]
+    return (f"\u2026[elided: {len(text.splitlines())} lines, {len(text)} chars, "
+            f"sha256:{digest}]")
+
+
+def _digest_call_args(args: Any, max_chars: int = _ARG_DIGEST_MAX_CHARS) -> Any:
+    """Replace a tool call's bulky string arguments with a short digest.
+
+    Returns a NEW dict, never mutating *args*, so digesting cannot reach through
+    into the untrimmed record that shares these message objects. Returns *args*
+    itself — identity-comparable by the caller — when there was nothing to elide.
+
+    The result stays a dict: ``anthropic_backend._prepare`` substitutes ``{}`` for
+    arguments that are not one, and the vLLM path re-encodes dicts to a string on
+    the way out, so a dict is the shape both expect internally. Small scalar
+    arguments (path, overwrite, …) are kept verbatim so the call still reads as
+    what it was; only long string values are replaced.
+    """
+    if isinstance(args, str):
+        try:
+            parsed = json.loads(args)
+        except (ValueError, TypeError):
+            return {"_elided": _elision_note(args)} if len(args) > max_chars else args
+        args = parsed
+    if not isinstance(args, dict):
+        return args
+    out: dict = {}
+    elided = False
+    for k, v in args.items():
+        if isinstance(v, str) and len(v) > max_chars:
+            out[k] = _elision_note(v)
+            elided = True
+        else:
+            out[k] = v
+    return out if elided else args
+
+
+def _digest_tool_call_args(m: dict) -> bool:
+    """Digest every bulky argument of *m*'s tool calls. True when anything shrank.
+
+    Rebuilds the ``tool_calls`` list out of new dicts rather than writing into the
+    existing ones: the nested call/function dicts are shared with the untrimmed
+    record, which a nested in-place write would silently rewrite too.
+    """
+    rebuilt: list = []
+    elided = False
+    for tc in m.get("tool_calls") or []:
+        fn = tc.get("function") or {}
+        old = fn.get("arguments")
+        new = _digest_call_args(old)
+        if new is not old:
+            rebuilt.append({**tc, "function": {**fn, "arguments": new}})
+            elided = True
+        else:
+            rebuilt.append(tc)
+    if elided:
+        m["tool_calls"] = rebuilt
+    return elided
+
+
+def _tool_result_failed(m: dict) -> bool:
+    """True when a tool message carries the dispatcher's ``status: error`` payload."""
+    content = m.get("content")
+    if not isinstance(content, str) or "error" not in content:
+        return False
+    try:
+        payload = json.loads(content)
+    except (ValueError, TypeError):
+        return False
+    return isinstance(payload, dict) and payload.get("status") == "error"
+
+
+def _digest_failed_call_args(messages: list[dict]) -> int:
+    """Digest the arguments of tool calls whose result came back an error.
+
+    Lossless by construction: the call did not take effect — the write was
+    refused, the path already existed, the content did not parse — so its
+    arguments describe something that never happened, while the error message
+    saying why stays in history verbatim. One rejected ``write_file`` of a
+    250-line file costs ~2.7k tokens, and a single session carried three of them
+    at full weight from the moment they failed to the end of the run.
+
+    The most recent tool-call turn is exempt: a model repairing the syntax error
+    it was just told about needs to see what it wrote. Only older failures go.
+
+    Returns the number of calls digested.
+    """
+    results = {m.get("tool_call_id"): m
+               for m in messages if m.get("role") == "tool" and m.get("tool_call_id")}
+    if not results:
+        return 0
+    newest = _last_call_turn(messages)
+    digested = 0
+    for i, m in enumerate(messages):
+        if i >= newest or not m.get("tool_calls"):
+            continue
+        rebuilt: list = []
+        elided = False
+        for tc in m["tool_calls"]:
+            fn = tc.get("function") or {}
+            res = results.get(tc.get("id"))
+            old = fn.get("arguments")
+            new = _digest_call_args(old) if (res is not None and _tool_result_failed(res)) else old
+            if new is not old:
+                rebuilt.append({**tc, "function": {**fn, "arguments": new}})
+                elided = True
+                digested += 1
+            else:
+                rebuilt.append(tc)
+        if elided:
+            m["tool_calls"] = rebuilt
+    return digested
+
+
 def _force_fit_to_window(
     messages: list[dict],
     target_tokens: int,
@@ -403,12 +587,7 @@ def _force_fit_to_window(
     _content_str = _message_content_str
 
     def _mtok(m: dict) -> int:
-        t = token_counter(_content_str(m))
-        for tc in m.get("tool_calls") or []:
-            args = (tc.get("function") or {}).get("arguments", "")
-            if args:
-                t += token_counter(args if isinstance(args, str) else json.dumps(args))
-        return t
+        return _message_tokens(m, token_counter)
 
     cur = sum(_mtok(m) for m in messages)
     if cur <= target_tokens:
@@ -432,6 +611,7 @@ def _force_fit_to_window(
         content = _content_str(m)
         if not content:
             continue
+        before_msg = _mtok(m)
         before = token_counter(content)
         need = cur - target_tokens
         keep = max(0, before - need)
@@ -439,7 +619,30 @@ def _force_fit_to_window(
             content, keep, token_counter
         )
         m["content"] = new
-        cur -= before - token_counter(new)
+        # Per-message deltas rather than content-only ones: `cur` is measured with
+        # the unified metric, so subtracting a content-only difference would drift
+        # from it and could report a fit as a failure.
+        cur -= before_msg - _mtok(m)
+
+    # Second pass. A message whose weight is entirely in its tool-call arguments
+    # has no reducible content, so the loop above skipped it outright — the
+    # backstop counted those bytes and had no grip on them, which is how a prompt
+    # could stay stuck over the window with nothing left that this pass would
+    # touch. Digesting the arguments is the grip. The newest tool-call turn is
+    # exempt, as in _digest_failed_call_args: it is the turn being answered.
+    if cur > target_tokens:
+        newest = _last_call_turn(messages)
+        for i in order:
+            if cur <= target_tokens:
+                break
+            if i >= newest:
+                continue
+            m = messages[i]
+            if not m.get("tool_calls"):
+                continue
+            before_msg = _mtok(m)
+            if _digest_tool_call_args(m):
+                cur -= before_msg - _mtok(m)
 
     return cur <= target_tokens
 
@@ -478,6 +681,15 @@ def _enforce_context_budget(
     coherent for whatever the caller does with it.
     """
     overflow: ContextOverflowError | None = None
+    # First, and regardless of any budget: the arguments of calls that came back an
+    # error describe work that never happened. Dropping them is lossless, so it is
+    # not something to do only under pressure.
+    digested = _digest_failed_call_args(messages)
+    if digested:
+        emit({"type": "status", "text": (
+            f"  \u2702 Context: elided the arguments of {digested} failed tool "
+            f"call{'s' if digested != 1 else ''} (the calls did not take effect)."
+        )})
     total, reserved, trim_budget, compact_budget = context_budget_for(model, context_mode)
     overhead = token_counter(json.dumps(step_tools)) if step_tools else 0
     trim_budget = max(512, trim_budget - overhead)
@@ -492,9 +704,9 @@ def _enforce_context_budget(
     # content — that loss is otherwise silent.
     if total:
         usable = max(1, total - reserved - overhead)
-        before = sum(token_counter(_message_content_str(m)) for m in messages)
+        before = sum(_message_tokens(m, token_counter) for m in messages)
         fitted = _force_fit_to_window(messages, usable, token_counter)
-        after = sum(token_counter(_message_content_str(m)) for m in messages)
+        after = sum(_message_tokens(m, token_counter) for m in messages)
         if after < before:
             emit({"type": "status", "text": (
                 f"  ⚠ Context backstop: truncated ~{before - after} tokens of older "

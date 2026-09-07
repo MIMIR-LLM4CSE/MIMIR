@@ -123,7 +123,9 @@ def build_ledger(execution_context: dict) -> dict | None:
             rows.append(f"`{f}` — checked: {validation_tier(execution_context, f) or 'structural'}")
 
     for command, run in sorted(runs.items()):
-        rows.append(_run_row(command, run))
+        # The dict key is the run's identity (flags and pipelines dropped); the report
+        # must show what was actually typed.
+        rows.append(_run_row(run.get("command") or command, run))
 
     open_runs = [c for c, r in runs.items() if r.get("completed") and r.get("verdict") in ("", "unknown")]
     failed = [

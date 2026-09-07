@@ -173,6 +173,47 @@ def set_workflow_state(execution_context: dict, new_state: str) -> None:
 
 
 
+def turn_made_commitments(execution_context: dict) -> bool:
+	"""Did THIS turn commit to producing something?
+
+	The question the guards below actually want, asked directly. They used to ask
+	``code_mutation_started`` instead, which means "a code file was successfully edited
+	this query" — accurate to its name, and a proxy for this one. The two agree on the
+	common cases and diverge on exactly the case that matters: a turn that writes a
+	checklist, declares eight files, creates a directory and then ends without writing
+	any of them has ``code_mutation_started`` False, so every completeness guard read it
+	as a discovery turn and let it conclude. (Recorded: a refactor request answered in
+	33 seconds with "Creating the package files now:" and nothing else.)
+
+	Three signals, all per-query by declaration (``_NO_TRAITS`` in ``_FIELD_SPECS``), so
+	none of them can carry a previous turn's intent into this one: an edit happened, a
+	set of target files was declared, or a checklist was written. A genuine
+	discovery-only turn exhibits none and is still never nudged — that exemption now
+	falls out of the definition instead of being approximated.
+	"""
+	return bool(
+		execution_context.get("code_mutation_started")
+		or execution_context.get("declared_edit_set")
+		or execution_context.get("todo_written")
+	)
+
+
+def unhonoured_commitments(execution_context: dict) -> bool:
+	"""True when this turn promised work and some of it is still undone.
+
+	The two halves of "promised and then skipped" that the codebase already defines
+	separately — files named and never written, and required checklist steps left
+	unticked — behind the one question every caller was reconstructing by hand.
+	"""
+	if not turn_made_commitments(execution_context):
+		return False
+	if unwritten_declared_files(execution_context):
+		return True
+	return any(
+		not it.get("optional") for it in unchecked_checklist_items(execution_context)
+	)
+
+
 def unchecked_checklist_items(execution_context: dict) -> list[dict]:
 	"""Steps still unticked on the live checklist, or [] if there is no checklist.
 
@@ -297,7 +338,7 @@ def _collect_completion_issues(
 	for command, run in broken[:5]:
 		spent = int(run.get("failures", 0)) >= VALIDATION_RETRY_BUDGET
 		label = "budget exhausted" if spent else "unresolved"
-		issues.append(f"{_run_label(run)} failing, {label}: {command}")
+		issues.append(f"{_run_label(run)} failing, {label}: {run.get('command') or command}")
 		# Naming the run says a wall was hit; naming the attempts says what the wall was,
 		# which is the part the user needs to take it from here.
 		attempts = run.get("attempts") or []
@@ -307,7 +348,7 @@ def _collect_completion_issues(
 		completed.append(_plural_runs(len(runs)) + " judged pass by the model")
 
 	unchecked = [it for it in unchecked_checklist_items(execution_context) if not it.get("optional")]
-	if unchecked and execution_context.get("code_mutation_started"):
+	if unchecked and turn_made_commitments(execution_context):
 		issues.append(
 			f"Checklist incomplete: {len(unchecked)} step(s) unchecked — "
 			+ "; ".join(it["text"] for it in unchecked[:3])
@@ -334,12 +375,12 @@ def unjudged_run_lines(execution_context: dict) -> list[str]:
 	"""
 	runs = execution_context.get("runs") or {}
 	lines = [
-		f"{command} — ran; its output was never judged"
+		f"{run.get('command') or command} — ran; its output was never judged"
 		for command, run in sorted(runs.items())
 		if run.get("completed") and not run.get("verdict")
 	]
 	lines += [
-		f"{command} — judged inconclusive"
+		f"{run.get('command') or command} — judged inconclusive"
 		for command, run in sorted(runs.items()) if run.get("verdict") == "unknown"
 	]
 	return lines[:5]
@@ -375,7 +416,7 @@ def blocked_run_lines(execution_context: dict) -> list[str]:
 	"""
 	runs = execution_context.get("runs") or {}
 	return [
-		f"{_run_label(run)} not attempted — {run['blocked']}: {command}"
+		f"{_run_label(run)} not attempted — {run['blocked']}: {run.get('command') or command}"
 		for command, run in sorted(runs.items()) if run.get("blocked")
 	][:5]
 
@@ -628,11 +669,38 @@ STEP_LIMIT_NUDGE = (
 	"(2) what still needs doing, and (3) the next step the user should request."
 )
 
-EMPTY_TURN_RETRY = (
+# The half both wordings share: what happened. Public because it is the stable way
+# to recognise this reminder among others without pinning the advice half.
+EMPTY_TURN_OPENING = (
 	"Your last turn came back empty — no text and no tool call — so nothing was done and "
-	"nothing was said. Pick the work back up where it stood: call the tool the task needs "
-	"next, or write the answer."
+	"nothing was said. Pick the work back up where it stood: "
 )
+
+
+def empty_turn_retry_message(execution_context: dict | None = None) -> str:
+	"""What to say after a turn that produced nothing, given what the turn owes.
+
+	Offering "or write the answer" is right for a turn with nothing outstanding and wrong
+	for one that has just declared eight files and written none: it hands the model the
+	exit at the moment it must not take it, and in the one recorded instance that is
+	exactly the branch it took, ending the turn on "Creating the package files now:".
+
+	A constant could not know the difference. Every other corrective in this module is
+	already a function of the state it speaks about; this one was the exception.
+	"""
+	if execution_context is not None and unhonoured_commitments(execution_context):
+		return (
+			EMPTY_TURN_OPENING
+			+ "call the tool the next unfinished step needs. Your checklist still has "
+			"open steps and files you named are not written, so this is not a turn to "
+			"summarise — do the next piece of the work."
+		)
+	return EMPTY_TURN_OPENING + "call the tool the task needs next, or write the answer."
+
+
+# Retained as the no-context wording; callers with an execution_context should call
+# empty_turn_retry_message so the advice can see what the turn still owes.
+EMPTY_TURN_RETRY = empty_turn_retry_message()
 
 
 def repeat_corrective_message(tool_name: str, fails: int) -> str:
@@ -644,6 +712,32 @@ def repeat_corrective_message(tool_name: str, fails: int) -> str:
 		"arguments, a different tool, or fix the underlying precondition (e.g. resolve the "
 		"environment per the cascade) — or stop and conclude clearly that you cannot proceed, "
 		"naming what failed and why. Do not issue the same call again."
+	)
+
+
+def moving_test_corrective_message(test_path: str) -> str:
+	"""One-time mid-loop reminder when a test file's failing SET keeps changing.
+
+	A failure that repeats identically is spin, and the repeated-call guard already says
+	so. A failure that *moves* between runs is a different thing: it is the signature of a
+	test whose own oracle is wrong — the expected value, the indexing, the units, the
+	direction of a ratio — being corrected one symptom at a time while the code under it
+	is fine. That is the shape recorded across four sessions of the same task, where a
+	subsampling stride, a time-step rescaling, a missing wavelet precursor and finally an
+	inverted error ratio were fixed in four separate passes, each revealing the next.
+
+	The correction is not "try harder": it is to read the test as a whole once, and to
+	say which side is wrong before touching either.
+	"""
+	return (
+		"[automated workflow reminder — not from the user; advisory, apply judgment]\n\n"
+		f"The set of failing tests in {test_path} has changed between runs — you are fixing "
+		"a different failure each time rather than the same one. That usually means the "
+		"test's own oracle is wrong, not the code it exercises. Before editing this file "
+		"again, read it in full and check the oracle itself against the implementation: the "
+		"expected value and where it comes from, the indexing and strides, the units and "
+		"scaling, and the direction of any ratio or comparison. Then state which of the two "
+		"— the test or the code — is wrong, and change only that one."
 	)
 
 

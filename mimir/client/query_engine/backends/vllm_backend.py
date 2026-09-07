@@ -7,13 +7,13 @@ import sys
 import threading
 from typing import Any, Callable
 
-from .base import LLMBackend
+from .base import LLMBackend, normalize_finish_reason
 from .tag_parser import ThinkTagParser
 # The assistant↔tool pairing invariant belongs to the history, not to this provider:
 # history.py owns the single implementation and applies it before every model call.
 # Re-applied here because _prepare_messages_for_openai normalises ids first, which can
 # turn a positional match into an id match.
-from ..history import reconcile_tool_pairs
+from ..history import merge_consecutive_user_messages, reconcile_tool_pairs
 
 
 # Single source of truth in _shared so the embedding helper (which runs in the
@@ -399,37 +399,9 @@ def _prepare_messages_for_openai(messages: list[dict]) -> list[dict]:
 
         prepared.append(m)
 
-    return _merge_consecutive_user_messages(reconcile_tool_pairs(prepared))
+    return merge_consecutive_user_messages(reconcile_tool_pairs(prepared))
 
 
-def _merge_consecutive_user_messages(prepared: list[dict]) -> list[dict]:
-    """Collapse adjacent plain ``user`` messages into one.
-
-    The Mistral tokenizer (``--tokenizer-mode mistral``, e.g. Devstral) enforces
-    strict role alternation and degenerates into token salad when it sees two
-    consecutive ``user`` turns. Upstream can legitimately produce them (plan-mode
-    nudges, a caller that already appended the current turn). Joining their text
-    with a blank line preserves the content while keeping the sequence legal; only
-    string-content user messages with no tool fields are merged, so tool pairing is
-    untouched.
-    """
-    out: list[dict] = []
-    for m in prepared:
-        if (
-            out
-            and m.get("role") == "user"
-            and out[-1].get("role") == "user"
-            and isinstance(m.get("content"), str)
-            and isinstance(out[-1].get("content"), str)
-            and not m.get("tool_calls")
-            and not out[-1].get("tool_calls")
-        ):
-            if m["content"] != out[-1]["content"]:
-                out[-1] = {**out[-1], "content": out[-1]["content"] + "\n\n" + m["content"]}
-            # identical duplicate → drop entirely
-            continue
-        out.append(m)
-    return out
 
 
 class VllmBackend(LLMBackend):
@@ -547,6 +519,7 @@ class VllmBackend(LLMBackend):
         _streaming_tc_buf: dict[int, dict] = {}
         tool_calls_parts: list[dict] = []
         final_msg: dict = {}
+        finish_reason: str | None = None
 
         # How this model is told to reason (enable_thinking / reasoning_effort /
         # a system-message directive applied further down).
@@ -615,7 +588,14 @@ class VllmBackend(LLMBackend):
                 if cancel_flag is not None and cancel_flag.is_set():
                     raise asyncio.CancelledError("Cancelled by user")
 
-                delta = chunk.choices[0].delta if chunk.choices else None
+                choice = chunk.choices[0] if chunk.choices else None
+                # Why the server stopped. It rides on the choice, not the delta, and
+                # arrives on the last chunk (null on every earlier one) — so keep the
+                # last non-null rather than whatever the final chunk happened to hold.
+                raw_finish = getattr(choice, "finish_reason", None) if choice else None
+                if raw_finish:
+                    finish_reason = normalize_finish_reason(raw_finish)
+                delta = choice.delta if choice is not None else None
                 if delta is None:
                     continue
 
@@ -681,6 +661,8 @@ class VllmBackend(LLMBackend):
             response = _create(client, create_kwargs)
             choice = response.choices[0] if response.choices else None
             if choice:
+                finish_reason = normalize_finish_reason(
+                    getattr(choice, "finish_reason", None))
                 msg = choice.message
                 final_msg["role"] = getattr(msg, "role", "assistant")
 
@@ -710,5 +692,8 @@ class VllmBackend(LLMBackend):
 
         if tool_calls_parts:
             final_msg["tool_calls"] = tool_calls_parts
+
+        if finish_reason:
+            final_msg["finish_reason"] = finish_reason
 
         return final_msg

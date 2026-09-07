@@ -746,6 +746,9 @@ def _run(
     scope={"args": ["command"], "kind": "command_prefix"},
     risk_note="runs a shell command in the workspace",
     label="Running shell command",
+    # Above the tool's own _MAX_TIMEOUT so the inner cap fires first: the caller then
+    # gets the "raise the call's own 'timeout'" hint instead of a bare loop timeout.
+    timeout_secs=_MAX_TIMEOUT + 30,
 ))
 def bash_run(command: str, timeout: int = _DEFAULT_TIMEOUT) -> dict:
     """Run a controlled bash command inside the workspace root.

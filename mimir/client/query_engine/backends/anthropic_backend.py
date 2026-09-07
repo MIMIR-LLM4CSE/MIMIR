@@ -33,7 +33,7 @@ import os
 import sys
 from typing import Any, Callable
 
-from .base import LLMBackend
+from .base import LLMBackend, normalize_finish_reason
 
 logger = logging.getLogger(__name__)
 
@@ -243,8 +243,12 @@ class AnthropicBackend(LLMBackend):
         rather than a degraded prompt. The loop already reconciles before every call;
         this is the last-mile guard for any caller that doesn't.
         """
-        from ..history import reconcile_tool_pairs
-        messages = reconcile_tool_pairs(list(messages))
+        from ..history import merge_consecutive_user_messages, reconcile_tool_pairs
+        # The API requires strict user/assistant alternation, and nothing upstream
+        # guarantees it: a query followed by a reminder, or a reminder followed by the
+        # checklist pin, arrives as two adjacent user turns. The vLLM path has always
+        # merged them; this one had no equivalent.
+        messages = merge_consecutive_user_messages(reconcile_tool_pairs(list(messages)))
 
         system_parts: list[str] = []
         out: list[dict] = []
@@ -451,6 +455,12 @@ class AnthropicBackend(LLMBackend):
             result["thinking"] = "".join(thinking_parts)
         if tool_calls_parts:
             result["tool_calls"] = tool_calls_parts
+        # Both paths converge on `final`, so one read covers streaming and not.
+        # "max_tokens" is the one that matters: it is a turn cut off mid-sentence,
+        # which without this key looks exactly like a model that chose to stop.
+        finish_reason = normalize_finish_reason(getattr(final, "stop_reason", None))
+        if finish_reason:
+            result["finish_reason"] = finish_reason
         return result
 
     @staticmethod

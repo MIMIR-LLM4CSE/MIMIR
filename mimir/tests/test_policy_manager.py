@@ -92,15 +92,21 @@ class PolicyManagerTests(unittest.TestCase):
         )
         self.assertEqual(blocked, set())
 
-    def test_blocked_tools_for_context_blocks_create_like_tools_for_edit_intent(self) -> None:
+    def test_an_edit_flavoured_query_still_keeps_the_ability_to_create(self) -> None:
+        # "refactor" used to strip every CONTENT_WRITE tool, leaving `replace_in_file`
+        # alone — which cannot create a file. A model that had planned a package split
+        # then had no callable move and returned an empty turn at the write step
+        # (recorded twice, on "now refactor the code so that everything is tidy and
+        # modular"). What that block was protecting is enforced precisely and at call
+        # time by policy.write.check_write_policy instead.
         blocked = toollist.blocked_tools_for_context(
             "please refactor this function",
             {"searched": True},
             _DECLARED_REGISTRY,
         )
-        self.assertEqual(blocked, {"write_file", "append_file"})
+        self.assertEqual(blocked, set())
 
-    def test_tools_for_context_filters_ollama_tool_list(self) -> None:
+    def test_tools_for_context_keeps_the_write_tools_on_a_refactor(self) -> None:
         tools = [
             {"function": {"name": "write_file"}},
             {"function": {"name": "append_file"}},
@@ -117,8 +123,21 @@ class PolicyManagerTests(unittest.TestCase):
 
         self.assertEqual(
             [tool["function"]["name"] for tool in filtered],
-            ["replace_in_file", "read_file_lines"],
+            ["write_file", "append_file", "replace_in_file", "read_file_lines"],
         )
+
+    def test_the_recorded_refactor_query_can_create_files(self) -> None:
+        # The exact request, verbatim from two recorded sessions.
+        tools = [{"function": {"name": n}} for n in
+                 ("write_file", "append_file", "replace_in_file", "read_file_lines")]
+        filtered = toollist.tools_for_context(
+            query=("now refactor the code so that everything is tidy and modular for "
+                   "runiing with different boundary conditions or time schemes"),
+            execution_context={"searched": True},
+            tools=tools,
+            tool_caps=_DECLARED_REGISTRY,
+        )
+        self.assertIn("write_file", [t["function"]["name"] for t in filtered])
 
     def test_tools_for_context_keeps_all_tools_when_not_blocked(self) -> None:
         tools = [

@@ -54,6 +54,10 @@ def _runs_addressed(runs: dict[str, Any], scope: str) -> dict[str, Any]:
     named text, matched as a case-insensitive substring so the model can write the
     command or a recognisable fragment of it and be understood.
 
+    Matched against the ledger key AND the command as typed: the key drops flags and
+    pipelines (``run_ledger_key``), so a model scoping by a fragment it can see in its
+    own transcript — a flag, a redirect — would otherwise address nothing.
+
     A scope matching nothing outstanding returns nothing, and :func:`apply_verdict`
     decides what that means — the choice belongs there, where the verdict's direction
     is known.
@@ -61,7 +65,10 @@ def _runs_addressed(runs: dict[str, Any], scope: str) -> dict[str, Any]:
     if not scope:
         return dict(runs)
     needle = scope.lower()
-    return {command: run for command, run in runs.items() if needle in command.lower()}
+    return {
+        key: run for key, run in runs.items()
+        if needle in key.lower() or needle in str(run.get("command", "")).lower()
+    }
 
 
 def apply_verdict(
@@ -110,7 +117,7 @@ def apply_verdict(
         run["verdict"], run["reason"] = verdict, reason
         if verdict == "fail":
             _register_run_failure(execution_context, command, reason)
-        settled.append({**run, "command": command})
+        settled.append({**run, "command": run.get("command") or command})
     _close_exercise_advice(execution_context, verdict)
     return settled
 
@@ -136,7 +143,7 @@ def _apply_blocked(
     for command, run in addressed.items():
         run["verdict"], run["reason"], run["blocked"] = "blocked", reason, reason
         run["failures"] = 0
-        settled.append({**run, "command": command})
+        settled.append({**run, "command": run.get("command") or command})
     _close_exercise_advice(execution_context, "blocked")
     return settled
 

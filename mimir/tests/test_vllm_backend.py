@@ -1,6 +1,8 @@
-"""Tests for the vLLM backend's request-shaping helpers."""
+"""Tests for the vLLM backend's request-shaping helpers and stop signal."""
 
+import types
 import unittest
+from unittest.mock import patch
 
 from mimir.client.config.constants import CTX_RESERVED_RATIO
 from mimir.client.query_engine.backends.vllm_backend import _answer_max_tokens
@@ -40,3 +42,58 @@ class AnswerMaxTokensTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FinishReasonTests(unittest.TestCase):
+    """The stop signal rides on the *choice*, not the delta or the message.
+
+    Streaming sends it only on the last chunk (null on every earlier one), so the
+    reader has to keep the last non-null rather than whatever the final chunk held.
+    """
+
+    @staticmethod
+    def _backend():
+        from mimir.client.query_engine.backends.vllm_backend import VllmBackend
+        b = VllmBackend()
+        b._config = lambda: ("http://x/v1", "k")
+        b._client_for = lambda *a, **k: object()
+        return b
+
+    @staticmethod
+    def _chunk(finish=None, content=""):
+        delta = types.SimpleNamespace(role="assistant", content=content, tool_calls=None)
+        return types.SimpleNamespace(
+            choices=[types.SimpleNamespace(finish_reason=finish, delta=delta)])
+
+    def _run(self, streaming, response):
+        import mimir.client.query_engine.backends.vllm_backend as vb
+        with patch.object(vb, "_create", lambda client, kwargs: response), \
+             patch.object(vb, "served_model_len", lambda model, config=None: None):
+            return self._backend().chat(
+                "m", [{"role": "user", "content": "q"}], [], False, streaming, {},
+                token_callback=lambda t: None,
+            )
+
+    def test_non_streaming_reads_it_off_the_choice(self) -> None:
+        message = types.SimpleNamespace(role="assistant", content="cut off",
+                                        tool_calls=None)
+        response = types.SimpleNamespace(
+            choices=[types.SimpleNamespace(finish_reason="length", message=message)])
+        self.assertEqual(self._run(False, response)["finish_reason"], "length")
+
+    def test_streaming_keeps_the_last_non_null(self) -> None:
+        chunks = [self._chunk(None, "par"), self._chunk(None, "tial"),
+                  self._chunk("length", "")]
+        self.assertEqual(self._run(True, chunks)["finish_reason"], "length")
+
+    def test_tool_calls_finish_is_normalized_too(self) -> None:
+        message = types.SimpleNamespace(role="assistant", content="", tool_calls=None)
+        response = types.SimpleNamespace(
+            choices=[types.SimpleNamespace(finish_reason="tool_calls", message=message)])
+        self.assertEqual(self._run(False, response)["finish_reason"], "tool_calls")
+
+    def test_a_provider_that_says_nothing_adds_no_key(self) -> None:
+        message = types.SimpleNamespace(role="assistant", content="hi", tool_calls=None)
+        response = types.SimpleNamespace(
+            choices=[types.SimpleNamespace(finish_reason=None, message=message)])
+        self.assertNotIn("finish_reason", self._run(False, response))

@@ -24,8 +24,14 @@ from ..context import (
     fields_with,
     raise_validation_tier,
     record_run,
+    run_ledger_key,
 )
-from ...servers._shared.numerics import observed_failure_verdict
+from .runner_output import (
+    TEST_RUNNER_FAILURE,
+    exit_status_settles,
+    judge_run,
+    test_failure_signature,
+)
 from ..event_sink import emit
 from .workflow import (
     VALIDATION_RETRY_BUDGET,
@@ -854,9 +860,6 @@ def _rewrites_instead_of_checking(head: str, argv: tuple[str, ...]) -> bool:
 # mandatory floor for a compiled language the way ``py_compile`` is for Python.
 _SYNTAX_ONLY_FLAGS = ("-fsyntax-only", "--fsyntax-only")
 
-# Reason recorded when the run itself declared the failure, so the model is not asked to
-# judge output that already carries its own verdict.
-_SELF_DECLARED_FAILURE = "the run's own output declared check=fail"
 _BUILD_EXIT_IS_THE_VERDICT = "the build exited 0; a build reports diagnostics, not results"
 # A server that ran the code itself reported the run red. Its own judgement, not a
 # reading of what the program printed — the floor a stated verdict cannot rise above.
@@ -876,10 +879,11 @@ def _outside_workspace(path: str) -> bool:
 
 def _bash_validation_scan(
     agent: Any, command: str,
-) -> tuple[list[str], bool, str, str, str]:
+) -> tuple[list[str], bool, str, str, str, bool]:
     """Scan a bash command, telling checks from builds from executions.
 
-    Returns ``(explicit_targets, whole_project, tier, execution, missing_head)``:
+    Returns ``(explicit_targets, whole_project, tier, execution, missing_head,
+    exit_is_the_run_s)``:
     - ``explicit_targets`` — normalized workspace paths of the files named by EXEC
       segments, with a leading ``cd`` rebasing later relative operands (``cd sub &&
       ruff check t.py`` → ``sub/t.py``).
@@ -911,7 +915,9 @@ def _bash_validation_scan(
     """
     segments = classify_bash_command(command)
     if not segments:
-        return [], False, "", EFFECT_RUN if opaque_command_executes(command) else "", ""
+        # Opaque: something may have run, but which segment produced the status is
+        # exactly what could not be parsed, so the status is not attributable.
+        return [], False, "", EFFECT_RUN if opaque_command_executes(command) else "", "", False
     rel_base = ""
     targets: list[str] = []
     whole_project = False
@@ -962,13 +968,16 @@ def _bash_validation_scan(
         if seg.head in _PROJECT_VALIDATORS and not any(_FILE_EXT_RE.search(op) for op in seg.operands):
             whole_project = True
     tier = VALIDATION_TIERS[tier_rank] if tier_rank >= 0 else ""
-    return targets, whole_project, tier, execution, missing_head
+    # The shell hands back the last segment's status. It is the run's exactly when the
+    # last thing in the chain is the thing that did the work.
+    exit_is_the_run_s = segments[-1].effect in (EFFECT_RUN, EFFECT_BUILD, EFFECT_VALIDATE)
+    return targets, whole_project, tier, execution, missing_head, exit_is_the_run_s
 
 
 def _record_run_outcome(
     execution_context: dict[str, Any], command: str, completed: bool,
     call_id: str = "", reason: str = "", effect: str = EFFECT_RUN,
-    missing_head: str = "",
+    missing_head: str = "", exit_settles: bool = True,
 ) -> None:
     """Register an execution and, when it did not complete, charge the repair budget.
 
@@ -981,13 +990,19 @@ def _record_run_outcome(
     still recorded — a failed build is a wall the user must see — but settled by the
     machine, so it can never surface as "ran but never judged".
 
+    That shortcut rests on the exit status belonging to the build, and ``exit_settles``
+    is where the assumption is checked rather than assumed. ``make 2>&1 | tail -20``
+    reports the pager's status, and auto-passing on it credits a build nobody
+    established had succeeded; denied the shortcut, it falls back to owing a reading
+    like any other run.
+
     ``missing_head`` is the one wall the machine can name without being told: a command
     that is not installed said nothing about the patch, so it charges no repair budget and
     steers nothing. Every other wall needs the model to claim it (``guardrails/verdict.py``);
     unclaimed, a red exit drives the repair ladder exactly as it always did.
     """
     run = record_run(execution_context, command, completed=completed, call_id=call_id, effect=effect)
-    if completed and effect == EFFECT_BUILD:
+    if completed and effect == EFFECT_BUILD and exit_settles:
         run["verdict"] = "pass"
         run["reason"] = _BUILD_EXIT_IS_THE_VERDICT
     if not completed:
@@ -1009,7 +1024,7 @@ def _register_run_failure(
     ``conclude`` rather than wedged — the run is reported unresolved with what was
     tried, and the answer carries the residual risk instead of looping on it.
     """
-    run = (execution_context.get("runs") or {}).get(command)
+    run = (execution_context.get("runs") or {}).get(run_ledger_key(command))
     if run is None:
         return
     run["failures"] = int(run.get("failures", 0)) + 1
@@ -1023,6 +1038,59 @@ def _register_run_failure(
         for r in failed_runs(execution_context).values()
     ) and not has_pending_validation(execution_context):
         set_workflow_state(execution_context, "conclude")
+
+
+def _record_test_failure_signatures(
+    execution_context: dict[str, Any], out: str,
+) -> None:
+    """Record WHICH tests a red run reported, per test file.
+
+    The ledger the oracle nudge reads. A file whose failing SET keeps changing between
+    runs is one whose test is moving under the model's feet — a different situation from
+    the same failure repeating, which is already the repeated-call guard's business, and
+    the one that wants a different correction (re-read the test, not the code).
+
+    Keyed off the node ids in the runner's own report rather than off the command's file
+    operands, so a bare ``pytest`` is recorded exactly as ``pytest tests/x.py`` is. A
+    consecutive repeat of the same signature collapses into the existing entry, which is
+    what makes ``len(entries) >= 2`` mean "the failing set changed at least once" rather
+    than merely "it failed twice". A report clipped so hard that no node id survived
+    records nothing: unable to tell a moving failure from a stuck one, we do not guess.
+    """
+    signature = test_failure_signature(out)
+    if not signature:
+        return
+    by_file: dict[str, list[str]] = {}
+    for node in signature.split():
+        by_file.setdefault(node.split("::", 1)[0], []).append(node)
+    ledger = execution_context.setdefault("test_failure_signatures", {})
+    for path, nodes in by_file.items():
+        seen = ledger.setdefault(path, [])
+        sig = " ".join(nodes)
+        if not seen or seen[-1] != sig:
+            seen.append(sig)
+
+
+def _stage_moving_test_alert(execution_context: dict[str, Any]) -> None:
+    """Arm the one-time "read the test itself" corrective for a test that is moving.
+
+    Fires on a file whose failing SET has changed at least once — two entries in the
+    signature ledger, which collapses consecutive repeats. An unchanging failure is
+    deliberately excluded: that is the repeated-call guard's business, and it wants the
+    opposite advice (change something) from this one (stop changing things and read).
+
+    Staged rather than injected, exactly as ``_repeat_alert`` is, because this fires in
+    the middle of a tool loop that a nudge from the table can never reach — the model
+    debugging a red suite is by definition still calling tools. Once per file per query:
+    the point is made or it is not.
+    """
+    ledger = execution_context.get("test_failure_signatures") or {}
+    told = execution_context.setdefault("_moving_test_told", [])
+    for path, seen in sorted(ledger.items()):
+        if len(seen) >= 2 and path not in told:
+            told.append(path)
+            execution_context["_moving_test_alert"] = path
+            return
 
 
 def _observe_bash_validation(
@@ -1040,7 +1108,10 @@ def _observe_bash_validation(
     - an **execution** (``pytest``, ``python solver.py``, ``./solver``, ``python -c …``)
       validates no file at all. It is recorded as a *run*: a non-zero exit is a failure
       the machine already judged, and a green one owes the model a reading of what it
-      printed (``guardrails/verdict.py``). Which file it exercised is not asked — the
+      printed (``guardrails/verdict.py``). A green exit is demoted when the output itself
+      reports otherwise — a declared ``check=fail``, or a test runner's own summary of
+      red tests, which is the only signal left once ``| tail`` has eaten the exit status.
+      A red *test* settles the run without charging any file's validation budget. Which file it exercised is not asked — the
       run is the subject, and guessing an attribution is what used to let one green
       benchmark credit every file edited beforehand.
 
@@ -1052,44 +1123,45 @@ def _observe_bash_validation(
     if command_args is None:
         return
     command = str(arguments.get(command_args[0], "") or "")
-    explicit, whole_project, tier, execution, missing_head = _bash_validation_scan(
-        agent, command,
+    explicit, whole_project, tier, execution, missing_head, exit_is_the_run_s = (
+        _bash_validation_scan(agent, command)
     )
     # `execution` (not just a named target) is what catches `python -c …` and a bare
     # `./solver`: they validate nothing, but they produced output somebody must judge.
     if not explicit and not whole_project and not execution:
         return
-    stdout = str(payload.get("stdout") or "")
-    # A run that computes its own criteria, reports them unmet and still returns 0 is a
-    # green exit over a red result — the shape of the failure this guards: a self-written
-    # boundary test printed "significant reflection may be present", exited 0, and was
-    # recorded as validated. A declared verdict therefore outranks the exit code, one way
-    # only: `check=fail` demotes a pass, `check=pass` never rescues a failure.
-    declared_failure = status == "ok" and observed_failure_verdict(stdout)
-    if declared_failure:
-        status = "error"
+    # stdout and stderr together: every recorded invocation writes `2>&1`, which puts
+    # the run's report in whichever stream the caller merged into.
+    out = str(payload.get("stdout") or "") + "\n" + str(payload.get("stderr") or "")
+    # One question, asked once, in the module that owns it. This used to be an `or` chain
+    # of dialects assembled here, which is why each new way of reporting a failure
+    # arrived as a missed failure first and a clause second.
+    completed, reason = judge_run(exit_ok=(status == "ok"), output=out)
+    if reason == TEST_RUNNER_FAILURE:
+        _record_test_failure_signatures(execution_context, out)
+        _stage_moving_test_alert(execution_context)
     dirty = execution_context.get("dirty_written_files", set())
     for target in explicit:
         if is_python_test_filepath(target):
             execution_context["tests_run"].add(target)
         if not tier or target not in dirty:
             continue
-        if status != "ok":
+        if completed:
+            _mark_file_validated(execution_context, target, tier)
+        else:
             # A specific-file failure is attributable; a whole-project failure is not.
             _register_validation_failure(execution_context, target, tier)
-        else:
-            _mark_file_validated(execution_context, target, tier)
     # A green project-wide check covers every still-pending file. A failing one is not
     # attributable to a single file, so it leaves pending untouched (the model narrows
     # down or re-runs per file).
-    if tier and whole_project and status == "ok":
+    if tier and whole_project and completed:
         for target in list(pending_validation_paths(execution_context)):
             _mark_file_validated(execution_context, target, tier)
     if execution:
         _record_run_outcome(
-            execution_context, command, status == "ok", call_id,
-            _SELF_DECLARED_FAILURE if declared_failure else "",
+            execution_context, command, completed, call_id, reason,
             effect=execution, missing_head=missing_head,
+            exit_settles=exit_status_settles(exit_is_the_run_s),
         )
 
 

@@ -2391,8 +2391,10 @@ body {
 }
 
 /* The picker hangs above the button and is pinned to the right edge: at the far
-   right of the input row a left-anchored popover would run off the panel. */
-.approval-popover { left: auto; right: 0; }
+   right of the input row a left-anchored popover would run off the panel. The
+   selector carries both classes because .settings-popover's own `left: 0` is
+   declared later in this file and would otherwise win the cascade. */
+.settings-popover.approval-popover { left: auto; right: 0; }
 
 /* Same learnable swatch as the mode picker: neutral while the user still answers,
    warning-coloured for the two crans that answer for them. */
@@ -2420,8 +2422,10 @@ body {
   border: 1px solid var(--border);
   border-radius: 6px;
   padding: 10px 12px;
-  /* Wide enough that the per-mode description lines stay on one or two lines. */
-  min-width: 260px;
+  /* Wide enough that the per-mode description lines stay on one or two lines,
+     but never wider than the panel: the sidebar is often narrower than 260px. */
+  min-width: min(260px, calc(100vw - 24px));
+  max-width: calc(100vw - 24px);
   box-shadow: 0 4px 16px rgba(0,0,0,0.4);
 }
 

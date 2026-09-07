@@ -11,6 +11,7 @@ from ..workflow import (
     handback_required,
     has_blocking_denials,
     has_pending_validation,
+    turn_made_commitments,
     unchecked_checklist_items,
 )
 from .messages import (
@@ -104,7 +105,9 @@ def inject_reminder(
     *,
     category: str,
     tagged: bool = True,
-) -> None:
+    execution_context: dict[str, Any] | None = None,
+    step: int | None = None,
+) -> dict[str, Any]:
     """Append a machine-generated reminder as a user turn and announce the injection.
 
     EVERY injection point must go through here, not just the nudge table. The event is
@@ -118,9 +121,62 @@ def inject_reminder(
     *tagged* is False for the reminders that are protocol, not advice (the plan-mode
     control flow): prefixing those with an "advisory, apply judgment" banner invites
     the model to skip a step the loop actually requires.
+
+    A reminder is TRANSIENT when *execution_context* is given: it is recorded there and
+    :func:`drop_transient_reminders` takes it back out after the call it was meant to
+    influence, so it never reaches persisted history. Without that the same reminder
+    was appended again on every occasion and stayed forever — one session carried 21
+    copies of a single sentence and 17 duplicate workflow reminders, ~10% of its prompt.
+    The emitted event is what a reader diagnoses from, and it is unaffected: it records
+    the category and step whether or not the message itself is kept.
+
+    Returns the appended message dict.
     """
-    emit({"type": "nudge_injected", "category": category, "text": content})
-    messages.append({"role": "user", "content": (_NUDGE_TAG + content) if tagged else content})
+    event: dict[str, Any] = {"type": "nudge_injected", "category": category, "text": content}
+    if step is not None:
+        event["step"] = step
+    emit(event)
+    msg: dict[str, Any] = {
+        "role": "user",
+        "content": (_NUDGE_TAG + content) if tagged else content,
+    }
+    messages.append(msg)
+    if execution_context is not None:
+        execution_context.setdefault("_transient_reminders", []).append((category, msg))
+    return msg
+
+
+def drop_transient_reminders(
+    messages: list[dict[str, Any]],
+    execution_context: dict[str, Any] | None,
+) -> int:
+    """Take back the reminders injected for the call that has just been made.
+
+    Removal is by IDENTITY, not by position: budget enforcement may have trimmed,
+    compacted or reordered the list between the injection and the call, and the pin
+    sits after the reminders at call time. ``_remove_pin``'s tail-only pop cannot be
+    reused here for exactly that reason — it silently does nothing whenever anything
+    else was appended in the meantime. A reminder that compaction already summarised
+    away is simply not found, which is the correct outcome.
+
+    The categories removed are left in ``_last_call_reminders`` so a caller can still
+    say what the prompt carried after the fact — the empty-turn diagnostic reads it,
+    and it necessarily runs after this.
+
+    Returns how many were removed.
+    """
+    if execution_context is None:
+        return 0
+    pending = execution_context.get("_transient_reminders")
+    if not pending:
+        execution_context["_last_call_reminders"] = []
+        return 0
+    doomed = {id(m) for _cat, m in pending}
+    before = len(messages)
+    messages[:] = [m for m in messages if id(m) not in doomed]
+    execution_context["_last_call_reminders"] = [cat for cat, _m in pending]
+    execution_context["_transient_reminders"] = []
+    return before - len(messages)
 
 
 # Guidance nudges permitted per (enforcement, mode). This is the single source for
@@ -183,7 +239,8 @@ def _fire_nudge(
     key = budget_key or category
     counts[key] = counts.get(key, 0) + 1
     logger.debug("nudge fired: category=%s budget=%s count=%d", category, key, counts[key])
-    inject_reminder(messages, content, category=category)
+    inject_reminder(messages, content, category=category,
+                    execution_context=execution_context)
     return True
 
 
@@ -312,7 +369,11 @@ def needs_incomplete_finalization(execution_context: dict[str, Any]) -> bool:
     # never started — validating the two files it did write says nothing about the
     # three it did not, and unfinished steps are work still available to it even
     # when validation has dead-ended.
-    if execution_context.get("code_mutation_started") and _required_unchecked_steps(
+    # `turn_made_commitments`, not `code_mutation_started`: the gate is here to spare a
+    # discovery-only turn, and "an edit happened" only approximates that. A turn that
+    # declared files and wrote none of them is not discovery — it is the case this guard
+    # exists for, and the proxy was reading it as exempt.
+    if turn_made_commitments(execution_context) and _required_unchecked_steps(
         execution_context
     ):
         return True
@@ -797,7 +858,7 @@ def _required_unchecked_steps(execution_context: dict[str, Any]) -> list[dict]:
 
 
 def _should_nudge_unfinished_plan(execution_context: dict[str, Any]) -> bool:
-    """Budget left, code was written, and the model's own checklist has open steps.
+    """Budget left, the turn committed to something, and its checklist has open steps.
 
     A reality check, not a reasoning shim: the evidence is `- [ ]` lines in a file
     on disk that the model itself wrote. Verification-layer, so it runs at every
@@ -805,12 +866,14 @@ def _should_nudge_unfinished_plan(execution_context: dict[str, Any]) -> bool:
     stronger model makes less often, and nothing else in the loop reads the
     checklist at completion time.
 
-    Requires ``code_mutation_started`` so a discovery-only turn is never nudged,
-    and degrades to False when there is no checklist at all.
+    Requires a turn that committed to something, so a discovery-only turn is never
+    nudged, and degrades to False when there is no checklist at all. That condition used
+    to be ``code_mutation_started`` — "an edit happened" — which exempted the very turn
+    the nudge is for: one that wrote the plan and then executed none of it.
     """
     return (
         nudge_count(execution_context, "unfinished_plan") < NUDGE_MAX_UNFINISHED_PLAN
-        and bool(execution_context.get("code_mutation_started"))
+        and turn_made_commitments(execution_context)
         and bool(_required_unchecked_steps(execution_context))
     )
 

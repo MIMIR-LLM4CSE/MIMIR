@@ -275,6 +275,24 @@ class ResumeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(sess.history), 4)
         self.assertEqual(len(sess.history_full), 4)
 
+    async def test_the_window_does_not_share_message_objects_with_the_archive(self):
+        """The budgeting pass rewrites `content` and `tool_calls` in place.
+
+        Sharing the dicts let those writes reach straight into the untrimmed
+        record, which is the one thing a resume is supposed to be able to trust.
+        """
+        sess = _session()
+        sess.store.saved["s1"] = FullSession(
+            id="s1", title="t", created_at="x", updated_at="y",
+            llm_history_full=[{"role": "user", "content": f"turn {i}"} for i in range(4)],
+        )
+        sess.ws = mock.AsyncMock()
+        sess._emit_context_usage = mock.AsyncMock()
+        with mock.patch("mimir.client.ui.ws.ws_session._write_active_session"):
+            await sess._load_session("s1")
+        sess.history[0]["content"] = "…[truncated]…"
+        self.assertEqual(sess.history_full[0]["content"], "turn 0")
+
     async def test_an_older_session_falls_back_to_the_window_it_saved(self):
         sess = _session()
         sess.store.saved["s1"] = FullSession(

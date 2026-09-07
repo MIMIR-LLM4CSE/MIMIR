@@ -6,7 +6,7 @@ from typing import Any
 from . import streaming as _streaming
 from ..event_sink import emit
 from .toollist import domains_signaled_by_text, tools_for_context, tools_for_readonly_mode
-from .streaming import _DraftHold, _process_response, _stream_chat
+from .streaming import _DraftHold, _note_truncated_turn, _process_response, _stream_chat
 from .history import _enforce_context_budget, reconcile_tool_pairs
 from .finalize import _finalize_answer
 from .dispatch import _dispatch_tool_calls, _post_dispatch_inject
@@ -29,13 +29,15 @@ from ..guardrails.builtin_check import sweep_builtin_checks
 from ..guardrails.workflow import (
     evidence_handback_message,
     finalize_incomplete_answer,
-    EMPTY_TURN_RETRY,
+    EMPTY_TURN_OPENING,
+    empty_turn_retry_message,
     STEP_LIMIT_NUDGE,
     TERMINATION_STEP_LIMIT,
     TERMINATION_USER_STOPPED,
 )
 from ..prompt.system_prompt import build_checklist_pin_block, _PIN_MARKER
 from ..guardrails.nudges import (
+    drop_transient_reminders,
     inject_reminder,
     maybe_append_nudge,
     needs_incomplete_finalization,
@@ -167,6 +169,35 @@ def _advertised_tools(agent: Any) -> list[dict]:
 
 # Caps for the tool-result `output` surfaced in the UI (expandable tool rows).
 # Kept small so structured events don't bloat the WebSocket stream.
+
+
+def _note_empty_turn(msg: dict, messages: list[dict], execution_context: dict,
+                     step: int) -> None:
+    """Record the shape of the prompt that produced an empty turn.
+
+    An empty turn is the one failure the loop cannot explain from what it keeps: the
+    message itself is empty by definition, and the transient pin and reminders are
+    gone from history by the time anyone reads the session back. The first empty turn
+    of the session that prompted this arrived on a perfectly ordinary prompt, so the
+    trigger is not in the message list's shape alone — which is exactly why the shape
+    has to be recorded at the moment it happens rather than reconstructed later.
+
+    Names the reminder categories injected for THIS call: the transcript already says
+    a reminder fired and the loop already says a turn came back empty, but nothing
+    tied the two together, so "a reminder — or one category of reminder — is what
+    empties the turn" could not be tested against a real run.
+    """
+    tail = " → ".join(str(m.get("role")) for m in messages[-6:])
+    # Read after the fact: the reminders that were in this prompt have already been
+    # taken back out by the time the turn is judged empty.
+    cats = list(execution_context.get("_last_call_reminders") or [])
+    emit({"type": "status", "text": (
+        f"  ⓘ Empty turn diagnostics — step {step}, {len(messages)} messages, "
+        f"finish_reason={msg.get('finish_reason') or 'none'}, "
+        f"reminders in prompt={len(cats)}"
+        + (f" ({', '.join(sorted(set(cats)))})" if cats else "")
+        + f", tail: {tail}"
+    )})
 
 
 def _inject_pin(messages: list[dict], execution_context: dict):
@@ -434,7 +465,8 @@ async def _run_agent_loop(
         # summarise what's done and what remains so the handoff (user checkpoint
         # or final answer) is meaningful rather than a bare "reached limit".
         if budget - 3 <= step < budget - 1:
-            inject_reminder(messages, STEP_LIMIT_NUDGE, category="step_limit", tagged=False)
+            inject_reminder(messages, STEP_LIMIT_NUDGE, category="step_limit", tagged=False,
+                            execution_context=execution_context, step=step)
 
         # Track how many steps have elapsed since the last successful edit,
         # so nudge_logic can distinguish mid-refactor from a paused state.
@@ -510,7 +542,12 @@ async def _run_agent_loop(
             raise
         finally:
             _remove_pin(messages, pin_token)
+            # The reminders injected for THIS call have now been put to the model.
+            # Keeping them is what let one sentence reach 21 identical copies in a
+            # single session; the emitted nudge_injected events keep the diagnosis.
+            drop_transient_reminders(messages, execution_context)
         _process_response(msg, messages, thinking, streamed_thinking=(streaming and cb["think_token_callback"] is not None))
+        _note_truncated_turn(msg, step)
 
         tool_calls = msg.get("tool_calls") or []
         if hold and tool_calls:
@@ -528,21 +565,39 @@ async def _run_agent_loop(
             # turn from history so the retry does not build on it.
             if not (answer or "").strip():
                 empty_turns += 1
+                if hold:
+                    hold.discard()
+                # Unconditionally, before any branch below decides what happens next.
+                # This used to sit inside the retry arm only, so every turn that
+                # exhausted the retry budget — and every one the nudge and handback
+                # paths below sent round again — left its empty message behind. One
+                # session ended up carrying nine of them, showing the model, over and
+                # over, that an empty message is an acceptable answer to a reminder.
+                if messages and messages[-1].get("role") == "assistant":
+                    messages.pop()
+                _note_empty_turn(msg, messages, execution_context, step)
                 if empty_turns <= AGENT_EMPTY_TURN_RETRIES:
-                    if hold:
-                        hold.discard()
-                    if messages and messages[-1].get("role") == "assistant":
-                        messages.pop()
                     emit({"type": "status", "text": (
                         f"  ↻ Empty turn from the model — retrying "
                         f"({empty_turns}/{AGENT_EMPTY_TURN_RETRIES})."
                     )})
-                    inject_reminder(messages, EMPTY_TURN_RETRY, category="empty_turn", tagged=False)
+                    inject_reminder(messages,
+                                    empty_turn_retry_message(execution_context),
+                                    category="empty_turn",
+                                    tagged=False, execution_context=execution_context,
+                                    step=step)
                     step += 1
                     continue
-                answer = (
+                # Budget spent: end the turn here. Falling through ran the model again
+                # through the no-op nudge and the evidence handback below, each of
+                # which injects and `continue`s — so a model that had stopped
+                # producing anything was asked several more times, leaving one more
+                # empty turn behind each time.
+                return await _finalize_answer(
+                    agent, query,
                     "The model returned empty turns repeatedly and the run was stopped. "
-                    "Nothing was concluded — retry the query."
+                    "Nothing was concluded — retry the query.",
+                    execution_context, messages, logger,
                 )
             # A nudge is only worth sending while the model still *acts* on our
             # reminders. Count consecutive bare "done" turns (any tool dispatch
@@ -578,6 +633,8 @@ async def _run_agent_loop(
                         evidence_handback_message(execution_context),
                         category="evidence_handback",
                         tagged=False,
+                        execution_context=execution_context,
+                        step=step,
                     )
                     if hold:
                         hold.discard()
@@ -747,15 +804,22 @@ async def run_agent_query(
 
     if skill_name:
         skill = agent.skills[skill_name]
-        messages.append({
-                "role": "system",
-                "content": (
-                    "SKILL CONTEXT (SUBORDINATE). "
-                    "The base system instructions remain fully authoritative. "
-                    "Apply this methodology where relevant. "
-                    + skill["content"]
-                ),
-            })
+        # Folded into messages[0] rather than appended as a second `system` message.
+        # Appending made it accumulate: it is written back into session history, so the
+        # next query appended another copy — one session reached nine, ~4.3k tokens of
+        # the same text. It also meant the same history had two different meanings
+        # depending on the backend, since the Anthropic path hoists every `system`
+        # message into the top-level prompt while the vLLM path leaves it inline.
+        # messages[0] is already rewritten in place on a mode switch and on thinking
+        # sync, so the prefix-cache break this costs is one the query already takes.
+        system_content = (
+            system_content
+            + "\n\nSKILL CONTEXT (SUBORDINATE). "
+            "The base system instructions remain fully authoritative. "
+            "Apply this methodology where relevant. "
+            + skill["content"]
+        )
+        messages[0]["content"] = system_content
 
     # The live task checklist is injected as a transient tail message on every step
     # including the first (see _inject_pin), so the static system message at

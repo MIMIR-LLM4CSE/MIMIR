@@ -85,9 +85,12 @@ def resolve_extension_dir(env_var: str, dirname: str) -> str:
 TOOL_CALL_TIMEOUT_SECS: int = 120
 
 # A tool may declare its own wall (``timeout_secs`` in its descriptor) when the global
-# default, calibrated on a grep, cannot bound what it actually does — a sub-agent run
-# is the case in point. The client keeps the last word via this ceiling.
-TOOL_CALL_TIMEOUT_MAX_SECS: int = 900
+# default, calibrated on a grep, cannot bound what it actually does — a sub-agent run,
+# a package install, a build. The client keeps the last word via this ceiling, which is
+# set above the longest inner cap a first-party server enforces (the env server's 900s
+# pip budget) so that cap fires first and the caller gets the server's own diagnosis
+# rather than a bare "timed out".
+TOOL_CALL_TIMEOUT_MAX_SECS: int = 1200
 
 # Separate budget for the post-write auto-validation ladder (syntax/imports/lint/
 # typecheck/format + completeness + cross-file grep). It runs AFTER the write has
@@ -284,6 +287,11 @@ NUDGE_STATE_IDLE_STEPS: int = 3
 # todo-tracking nudge fires.
 NUDGE_MAX_CREATION: int = 1
 NUDGE_MAX_TODO: int = 1
+# The mid-loop "you just wrote X — tick the step off" reminder, which fires from
+# _post_dispatch_inject rather than from the nudge table. It was the one injection point
+# with no cap at all: one recorded session took 20+ copies of it in 61 tool calls, most
+# of them on consecutive edits of a single file mid-debug where the answer is plainly no.
+NUDGE_MAX_TODO_TICK: int = 2
 TODO_NUDGE_MULTIFILE_THRESHOLD: int = 3
 # Alternative trigger for the same nudge: at least this many successful substantive
 # actions (writes/exec/mutations — PLAN_BLOCKED tools) before it fires, so a task

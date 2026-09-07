@@ -38,16 +38,39 @@ def blocked_tools_for_context(
     if execution_context is None:
         return set()
 
-    blocked: set[str] = set()
-    if query_prefers_existing_file_edits(query):
-        # Appending is effectively creating new content, not a surgical edit.
-        blocked.update(names_with_cap(CONTENT_WRITE, tool_caps))
-
-    # Returns only *query-stable* blocks, so the tool list is byte-identical across the
-    # steps of one query and the prompt prefix stays cacheable (vLLM prefix caching).
-    # State-dependent guards (premature writes / external fetches) are NOT enforced by
-    # hiding tools here — they are rejected at call time in evaluate_tool_preconditions.
-    return blocked
+    # Nothing is blocked here any more, and the empty set is deliberate — see below.
+    #
+    # This used to drop every CONTENT_WRITE tool (`write_file`, `append_file`) whenever
+    # the query read as edit-flavoured, on the reasoning that "appending is effectively
+    # creating new content, not a surgical edit". Two things were wrong with it.
+    #
+    # It guessed intent from vocabulary, and the guess is not sound: "refactor" is an
+    # edit word, but the most ordinary refactor there is — splitting a module into a
+    # package — is pure file creation. The query cannot answer "will this need a new
+    # file?"; only the work can.
+    #
+    # And it enforced the guess by AMPUTATION. Hiding here is query-stable and therefore
+    # irreversible for the whole query, with no call-time path and no rearm path (unlike
+    # domain pruning, which stays callable and can be re-armed by
+    # `domains_signaled_by_text`). A model that had planned a package split was left with
+    # `replace_in_file` alone — which cannot create a file — and had no way to say so:
+    # it created the directory, read what it needed, and then returned an EMPTY TURN at
+    # the exact step where the write belonged, twice, in two recorded sessions on the
+    # same request. The visible symptom was an answer ending "Creating the package files
+    # now:" with nothing created.
+    #
+    # The concern behind it was real but already met, precisely and at call time:
+    # `policy.write.check_write_policy` refuses an OVERWRITE-capable tool aimed at a file
+    # that is known to exist and was never read. That gate tells rewriting a file from
+    # creating one by FACT rather than by keyword, which is the distinction that was
+    # wanted. `query_prefers_existing_file_edits` keeps its place in the nudge layer,
+    # where "prefer a surgical edit" is advice the model can weigh, rather than a
+    # capability taken away from it.
+    #
+    # Kept as a function, and still called, so the seam is here if a genuinely
+    # query-stable block is ever needed. Anything state-dependent belongs in
+    # evaluate_tool_preconditions instead.
+    return set()
 
 
 def inactive_domain_prefixes(

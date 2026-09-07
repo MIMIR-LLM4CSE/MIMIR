@@ -18,7 +18,19 @@ from contextlib import ExitStack
 from unittest.mock import patch
 
 import mimir.client.guardrails.observations as runtime
-from mimir.client.context.execution_context import build_execution_context, unsettled_runs
+import mimir.client.guardrails.runner_output as runner_output
+from mimir.client.guardrails.runner_output import (
+    judge_run,
+    observed_failure_verdict,
+)
+from mimir.client.config.constants import VALIDATION_RETRY_BUDGET
+from mimir.client.context.execution_context import (
+    build_execution_context,
+    record_run,
+    run_ledger_key,
+    unsettled_runs,
+)
+from mimir.client.guardrails.observations import _register_run_failure
 
 
 # The authoritative dispatch order, mirroring record_tool_observation's body.
@@ -431,14 +443,14 @@ class BashValidationObservationTests(unittest.TestCase):
         agent, ec = self._agent(), self._ctx({"pkg/mod.py"})
         self._run(agent, "pytest -q pkg/mod.py", ec)
         self.assertEqual(ec["validated_files"], set())
-        self.assertTrue(ec["runs"]["pytest -q pkg/mod.py"]["completed"])
+        self.assertTrue(ec["runs"]["pytest pkg/mod.py"]["completed"])
 
     def test_a_passing_verdict_validates_nothing_either(self):
         agent, ec = self._agent(), self._ctx({"pkg/mod.py"})
         self._run(agent, "pytest -q pkg/mod.py", ec)
         self._judge(ec)
         self.assertEqual(ec["validated_files"], set())
-        self.assertEqual(ec["runs"]["pytest -q pkg/mod.py"]["verdict"], "pass")
+        self.assertEqual(ec["runs"]["pytest pkg/mod.py"]["verdict"], "pass")
 
     def test_a_failing_verdict_charges_the_run_not_the_file(self):
         agent, ec = self._agent(), self._ctx({"foo.py"})
@@ -473,7 +485,7 @@ class BashValidationObservationTests(unittest.TestCase):
         self._run(agent, "python foo.py", ec, stdout="reflection is high\ncheck=fail")
         run = ec["runs"]["python foo.py"]
         self.assertFalse(run["completed"])
-        self.assertEqual(run["attempts"], [runtime._SELF_DECLARED_FAILURE])
+        self.assertEqual(run["attempts"], [runner_output.DECLARED_FAILURE])
 
     def test_a_bare_suite_validates_nothing(self):
         # `pytest` exercises the tree, but exercising is not checking: it tells us the
@@ -507,7 +519,7 @@ class BashValidationObservationTests(unittest.TestCase):
         # model to read — it must never surface as "ran but never judged".
         agent, ec = self._agent(), self._ctx({"solver.f90"})
         self._run(agent, "make -f makefile.cmake", ec)
-        self.assertEqual(ec["runs"]["make -f makefile.cmake"]["verdict"], "pass")
+        self.assertEqual(ec["runs"]["make makefile.cmake"]["verdict"], "pass")
         self.assertEqual(unsettled_runs(ec), {})
 
     def test_a_build_that_only_prepares_its_environment_first_still_counts(self):
@@ -661,7 +673,250 @@ class BashValidationObservationTests(unittest.TestCase):
         agent, ec = self._agent(), self._ctx({"a.py"})
         self._run(agent, "python -m py_compile a.py && python a.py", ec)
         self.assertIn("a.py", ec["validated_files"])
-        self.assertIn("python -m py_compile a.py && python a.py", ec["runs"])
+        # keyed by identity: `python -m X` reports as X, and flags drop out
+        self.assertIn("py_compile a.py && python a.py", ec["runs"])
+
+
+class RedTestRunObservationTests(unittest.TestCase):
+    """A test runner's own report of failure outranks the exit code it was handed.
+
+    Every recorded session wrote its runs as ``pytest … | tail -N`` or
+    ``python3 test_x.py; echo "EXIT=$?"``, both of which hand the observation layer the
+    status of the LAST command in the chain. All of them therefore arrived as ``ok``,
+    including the ones with four red tests, and each credited its test file as validated.
+    """
+
+    def setUp(self):
+        # Whether this host has `pytest` on PATH must not decide these cases; the
+        # missing-command imputation has its own class.
+        patcher = patch.object(runtime, "_any_command_on_path", lambda cmds: True)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _agent(self):
+        from mimir.client.context.capabilities import ToolCaps
+        reg = {"bash_run": ToolCaps(
+            name="bash_run", scope={"kind": "command_prefix", "args": ["command"]},
+        )}
+        return types.SimpleNamespace(
+            tool_caps=reg,
+            _parse_tool_payload=lambda result: json.loads(result),
+            _normalize_workspace_path=lambda p: os.path.normpath(p) if p else "",
+            _is_code_filepath=lambda p: str(p).endswith(".py"),
+        )
+
+    def _ctx(self, dirty=("tests/test_x.py",)):
+        ec = build_execution_context()
+        ec["dirty_written_files"] = set(dirty)
+        ec["code_mutation_started"] = True
+        return ec
+
+    def _run(self, agent, command, ec, status="ok", stdout="x"):
+        runtime.record_tool_observation(
+            agent, "bash_run", {"command": command},
+            json.dumps({"status": status, "stdout": stdout}), ec,
+        )
+
+    RED = (
+        "=========================== short test summary info ===========================\n"
+        "FAILED tests/test_x.py::test_convergence_order - AssertionError: order -2.08\n"
+        "1 failed, 5 passed in 0.96s\n"
+    )
+    GREEN = "6 passed in 2.45s\n"
+    PIPED = 'pytest tests/test_x.py -q 2>&1 | tail -15'
+
+    def test_a_red_suite_behind_a_pipe_is_not_a_pass(self):
+        agent, ec = self._agent(), self._ctx()
+        self._run(agent, self.PIPED, ec, status="ok", stdout=self.RED)
+        run = ec["runs"][run_ledger_key(self.PIPED)]
+        self.assertFalse(run["completed"])
+        self.assertNotIn("tests/test_x.py", ec["validated_files"])
+
+    def test_a_green_suite_behind_a_pipe_still_passes(self):
+        # The demotion reads one way only: a report cannot rescue a red exit, and the
+        # absence of a red report must not manufacture one.
+        agent, ec = self._agent(), self._ctx()
+        self._run(agent, self.PIPED, ec, status="ok", stdout=self.GREEN)
+        self.assertTrue(ec["runs"][run_ledger_key(self.PIPED)]["completed"])
+
+    def test_a_red_test_charges_no_per_file_budget(self):
+        # Debugging a red test is the work. Charging the file's retry budget here walks a
+        # model that is legitimately diagnosing its way to `conclude` mid-diagnosis.
+        agent, ec = self._agent(), self._ctx()
+        for _ in range(VALIDATION_RETRY_BUDGET + 1):
+            self._run(agent, self.PIPED, ec, status="ok", stdout=self.RED)
+        self.assertEqual(ec["validation_fail_count_by_file"], {})
+
+    def test_the_run_itself_still_carries_the_failure(self):
+        # Not charging a FILE is not the same as not recording the failure.
+        agent, ec = self._agent(), self._ctx()
+        self._run(agent, self.PIPED, ec, status="ok", stdout=self.RED)
+        self._run(agent, self.PIPED, ec, status="ok", stdout=self.RED)
+        self.assertEqual(ec["runs"][run_ledger_key(self.PIPED)]["failures"], 2)
+
+    def test_the_test_file_is_still_recorded_as_run(self):
+        agent, ec = self._agent(), self._ctx()
+        self._run(agent, self.PIPED, ec, status="ok", stdout=self.RED)
+        self.assertIn("tests/test_x.py", ec["tests_run"])
+
+    def test_prose_naming_a_failure_is_not_a_report(self):
+        agent, ec = self._agent(), self._ctx()
+        self._run(agent, self.PIPED, ec, status="ok",
+                  stdout="2 failed to converge before the boundary\n")
+        self.assertTrue(ec["runs"][run_ledger_key(self.PIPED)]["completed"])
+
+    # ── the moving-oracle alert ────────────────────────────────────────────
+
+    def _fail(self, agent, ec, *nodes):
+        body = "".join(f"FAILED {n} - AssertionError: x\n" for n in nodes)
+        self._run(agent, self.PIPED, ec, status="ok",
+                  stdout=body + f"{len(nodes)} failed, 1 passed in 1.0s\n")
+
+    def test_a_changing_failure_set_arms_the_alert(self):
+        agent, ec = self._agent(), self._ctx()
+        self._fail(agent, ec, "tests/test_x.py::test_a", "tests/test_x.py::test_b")
+        self.assertIsNone(ec.get("_moving_test_alert"))
+        self._fail(agent, ec, "tests/test_x.py::test_b")
+        self.assertEqual(ec["_moving_test_alert"], "tests/test_x.py")
+
+    def test_an_unchanging_failure_never_arms_it(self):
+        # That is the repeated-call guard's business, and it wants the opposite advice.
+        agent, ec = self._agent(), self._ctx()
+        for _ in range(4):
+            self._fail(agent, ec, "tests/test_x.py::test_b")
+        self.assertIsNone(ec.get("_moving_test_alert"))
+        self.assertEqual(ec["test_failure_signatures"]["tests/test_x.py"],
+                         ["tests/test_x.py::test_b"])
+
+    def test_it_arms_once_per_file(self):
+        agent, ec = self._agent(), self._ctx()
+        self._fail(agent, ec, "tests/test_x.py::test_a")
+        self._fail(agent, ec, "tests/test_x.py::test_b")
+        self.assertEqual(ec.pop("_moving_test_alert"), "tests/test_x.py")
+        self._fail(agent, ec, "tests/test_x.py::test_c")
+        self.assertIsNone(ec.get("_moving_test_alert"))
+
+    def test_a_report_with_no_node_ids_records_nothing(self):
+        # `| tail -3` can clip every FAILED row away. Unable to tell a moving failure
+        # from a stuck one, we do not guess.
+        agent, ec = self._agent(), self._ctx()
+        self._run(agent, self.PIPED, ec, status="ok", stdout="1 failed, 5 passed in 1s\n")
+        self.assertFalse(ec["runs"][run_ledger_key(self.PIPED)]["completed"])
+        self.assertEqual(ec["test_failure_signatures"], {})
+
+
+class VerdictGrammarTests(unittest.TestCase):
+    """What a run may say about itself, in the shapes harnesses actually print.
+
+    Every case here is taken verbatim from a recorded session. The grammar was
+    previously written to mirror the proxy's metrics parser, and none of these passed.
+    """
+
+    def test_a_declared_failure_survives_a_trailing_parenthetical(self):
+        self.assertTrue(observed_failure_verdict(
+            "check=fail (2 failed: convergence_order_4, absorption)"))
+
+    def test_a_namespaced_verdict_key_is_read(self):
+        self.assertTrue(observed_failure_verdict("abc_check=fail"))
+        self.assertFalse(observed_failure_verdict("dalembert_check=pass"))
+
+    def test_a_non_zero_failure_count_is_a_declared_failure(self):
+        self.assertTrue(observed_failure_verdict("checks_failed=3"))
+        self.assertFalse(observed_failure_verdict("checks_failed=0"))
+
+    def test_prose_still_does_not_register(self):
+        self.assertFalse(observed_failure_verdict("the check failed to converge early"))
+        self.assertFalse(observed_failure_verdict("l2_rel=3e-4"))
+
+    def test_a_green_report_never_rescues_a_red_exit(self):
+        self.assertEqual(judge_run(exit_ok=False, output="6 passed in 1s"), (False, ""))
+
+
+class ExitAttributionTests(unittest.TestCase):
+    """Whether the status handed back is the one the run produced."""
+
+    def _agent(self):
+        from mimir.client.context.capabilities import ToolCaps
+        return types.SimpleNamespace(
+            tool_caps={"bash_run": ToolCaps(
+                name="bash_run",
+                scope={"kind": "command_prefix", "args": ["command"]})},
+            _normalize_workspace_path=lambda p: os.path.normpath(p) if p else "",
+            _parse_tool_payload=lambda r: json.loads(r),
+            _is_code_filepath=lambda p: str(p).endswith(".py"),
+        )
+
+    def _attributable(self, command):
+        with patch.object(runtime, "_any_command_on_path", lambda cmds: True):
+            return runtime._bash_validation_scan(self._agent(), command)[-1]
+
+    def test_a_pipeline_tail_owns_the_status(self):
+        self.assertFalse(self._attributable("pytest tests/t.py -q 2>&1 | tail -15"))
+
+    def test_an_opaque_command_is_never_attributable(self):
+        self.assertFalse(self._attributable('timeout 280 python3 t.py; echo "EXIT=$?"'))
+
+    def test_a_plain_run_owns_its_own_status(self):
+        self.assertTrue(self._attributable("cd /w && pytest tests/t.py -q"))
+        self.assertTrue(self._attributable("make && ./solver"))
+        self.assertTrue(self._attributable("pytest t.py > log.txt"))
+
+    def test_a_piped_build_is_denied_the_auto_pass(self):
+        # `make` green auto-settles because a build's exit code IS the finding — but
+        # only when that exit code is the build's. Behind a pager it is not.
+        with patch.object(runtime, "_any_command_on_path", lambda cmds: True):
+            for cmd, settled in (("make", "pass"), ("make 2>&1 | tail -20", "")):
+                ec = build_execution_context()
+                runtime.record_tool_observation(
+                    self._agent(), "bash_run", {"command": cmd},
+                    json.dumps({"status": "ok", "stdout": "built\n"}), ec)
+                run = next(iter(ec["runs"].values()))
+                self.assertEqual(run["verdict"], settled, cmd)
+
+
+class RunLedgerKeyTests(unittest.TestCase):
+    """A run is remembered by what it ran, not by how it was typed."""
+
+    def test_pipeline_tails_and_flags_do_not_split_the_ledger(self):
+        keys = {
+            run_ledger_key(c) for c in (
+                "cd /w && python3 -m pytest tests/test_x.py -q 2>&1 | tail -15",
+                "cd /w && python3 -m pytest tests/test_x.py -q 2>&1 | tail -8",
+                "cd /w && python3 -m pytest tests/test_x.py -v 2>&1 | tail -12",
+                "pytest tests/test_x.py",
+            )
+        }
+        self.assertEqual(keys, {"pytest tests/test_x.py"})
+
+    def test_the_budget_now_accumulates_across_those(self):
+        ec = build_execution_context()
+        for tail in (15, 8, 12):
+            record_run(ec, f"pytest tests/test_x.py -q | tail -{tail}", completed=False)
+            _register_run_failure(ec, f"pytest tests/test_x.py -q | tail -{tail}", "red")
+        self.assertEqual(len(ec["runs"]), 1)
+        self.assertEqual(ec["runs"]["pytest tests/test_x.py"]["failures"], 3)
+
+    def test_distinct_inline_probes_stay_distinct(self):
+        # A segment naming no file keeps its argv: otherwise every `python -c` one-liner
+        # in a session would share one entry and read as repeated attempts at one thing.
+        self.assertNotEqual(
+            run_ledger_key('python3 -c "import numpy"'),
+            run_ledger_key('python3 -c "import scipy"'),
+        )
+
+    def test_an_unreadable_command_keys_on_its_own_text(self):
+        opaque = 'timeout 280 python3 test_x.py; echo "EXIT=$?"'
+        self.assertEqual(run_ledger_key(opaque), opaque)
+
+    def test_the_key_is_idempotent(self):
+        key = run_ledger_key("cd /w && pytest tests/test_x.py -q | tail -5")
+        self.assertEqual(run_ledger_key(key), key)
+
+    def test_the_report_shows_what_was_typed(self):
+        ec = build_execution_context()
+        typed = "cd /w && python3 -m pytest tests/test_x.py -q 2>&1 | tail -15"
+        record_run(ec, typed, completed=False)
+        self.assertEqual(ec["runs"]["pytest tests/test_x.py"]["command"], typed)
 
 
 class PluginValidatorObservationTests(unittest.TestCase):
@@ -848,12 +1103,12 @@ class ValidationTierTests(unittest.TestCase):
     def test_prose_about_a_failed_check_is_not_a_verdict(self):
         agent, ec = self._agent(), self._ctx({"foo.py"})
         self._run(agent, "pytest -q foo.py", ec, stdout="the check failed to converge early on")
-        self.assertTrue(ec["runs"]["pytest -q foo.py"]["completed"])
+        self.assertTrue(ec["runs"]["pytest foo.py"]["completed"])
 
     def test_passing_verdict_never_rescues_a_red_exit(self):
         agent, ec = self._agent(), self._ctx({"foo.py"})
         self._run(agent, "pytest -q foo.py", ec, status="error", stdout="check=pass")
-        self.assertFalse(ec["runs"]["pytest -q foo.py"]["completed"])
+        self.assertFalse(ec["runs"]["pytest foo.py"]["completed"])
 
     def test_tier_never_downgrades(self):
         agent, ec = self._agent(), self._ctx({"foo.py"})

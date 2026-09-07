@@ -1351,6 +1351,126 @@ class ClientHelperTests(unittest.TestCase):
                 )
         self.assertEqual(calls["n"], 0)
 
+    # ── _dispatch_tool_calls: the per-call diff event ───────────────────────────
+
+    def _diff_events(self, edits):
+        """Dispatch each (path, content) write in turn; return the emitted diff events.
+
+        The agent writes for real, so the diff block sees the file exactly as a write
+        tool leaves it.
+        """
+        import os
+        import tempfile
+
+        class _WriteAgent:
+            tool_caps = {}
+
+            @staticmethod
+            def _normalize_arguments(args):
+                return args
+
+            @staticmethod
+            def _is_write_tool(name):
+                return True
+
+            @staticmethod
+            def _rewrite_tool_for_context(name, args):
+                return name, args
+
+            @staticmethod
+            def get_tool_file_targets(name, args):
+                return [args["path"]]
+
+            async def _run_tool(self, name, args, execution_context=None,
+                                run_auto_validation=True, call_id=""):
+                # content None models a READ: the tool names a file target but leaves
+                # it untouched.
+                if args["content"] is not None:
+                    with open(args["path"], "w", encoding="utf-8") as fh:
+                        fh.write(args["content"])
+                return "{}"
+
+        agent = _WriteAgent()
+        snapshots: dict = {}
+        snapshotted: list = []
+
+        def _record(path):
+            snapshotted.append(path)
+            if path in snapshots:
+                return                      # first content per path only, as the real one does
+            try:
+                with open(path, encoding="utf-8") as fh:
+                    snapshots[path] = fh.read()
+            except OSError:
+                snapshots[path] = None
+
+        agent.approvals = types.SimpleNamespace(
+            record_snapshot=_record, _file_snapshots=snapshots,
+        )
+
+        events: list = []
+        cwd = os.getcwd()
+        with tempfile.TemporaryDirectory() as tmp:
+            os.chdir(tmp)
+            try:
+                with patch.object(dispatch_module, "summarize_tool_result",
+                                  return_value=(True, "")), \
+                     patch.object(dispatch_module, "emit", events.append):
+                    for i, (path, content) in enumerate(edits):
+                        asyncio.run(dispatch_module._dispatch_tool_calls(
+                            [{"id": f"c{i}", "function": {
+                                "name": "write_file",
+                                "arguments": {"path": path, "content": content}}}],
+                            agent, [], {},
+                        ))
+            finally:
+                os.chdir(cwd)
+        self.assertEqual(snapshotted, [p for p, _ in edits])   # batch baseline untouched
+        return [e for e in events if e.get("type") == "diff"]
+
+    def test_only_the_call_that_creates_a_file_reports_it_as_new(self) -> None:
+        # Every diff event in four recorded sessions arrived as `is_new` with the whole
+        # file as additions, because the per-call diff read the batch-approval baseline —
+        # which for a file created in-session stays None for the rest of the query.
+        diffs = self._diff_events([
+            ("solver.py", "a\nb\nc\n"),
+            ("solver.py", "a\nB\nc\n"),
+            ("solver.py", "a\nB\nC\n"),
+        ])
+        self.assertEqual(len(diffs), 3)
+        self.assertTrue(diffs[0].get("is_new"))
+        self.assertNotIn("is_new", diffs[1])
+        self.assertNotIn("is_new", diffs[2])
+
+    def test_an_edit_diffs_against_the_state_that_call_found(self) -> None:
+        diffs = self._diff_events([
+            ("solver.py", "a\nb\nc\n"),
+            ("solver.py", "a\nB\nc\n"),
+        ])
+        self.assertEqual(
+            diffs[1]["patch"],
+            "--- a/solver.py\n+++ b/solver.py\n@@ -1,3 +1,3 @@\n a\n-b\n+B\n c\n",
+        )
+
+    def test_a_read_that_names_a_file_emits_no_diff(self) -> None:
+        # Reads go through the same snapshot/diff block (they have file targets), and
+        # against the batch baseline every one of them re-emitted the whole file as a
+        # creation: 11 such phantom diffs across four recorded sessions, 96k characters
+        # of patch for calls that changed nothing.
+        diffs = self._diff_events([
+            ("solver.py", "a\nb\nc\n"),
+            ("solver.py", None),
+        ])
+        self.assertEqual(len(diffs), 1)
+        self.assertTrue(diffs[0].get("is_new"))
+
+    def test_the_patch_does_not_double_its_newlines(self) -> None:
+        # `keepends=True` lines already carry a newline; joining them with "\n" gave
+        # every line a blank one after it.
+        diffs = self._diff_events([("solver.py", "a\nb\nc\n")])
+        self.assertNotIn("\n\n", diffs[0]["patch"])
+        self.assertEqual(diffs[0]["patch"].count("\n"), 6)   # 2 headers + hunk + 3 adds
+
     # ── _dispatch_tool_calls: writes serialized, reads parallel ─────────────────
 
     def test_dispatch_serializes_writes_and_parallelizes_reads(self) -> None:

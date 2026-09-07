@@ -49,6 +49,7 @@ class ExecutionContext(TypedDict):
     steps_since_last_edit: int                      # agent-loop steps since the last successful edit (idle gating)
     declared_edit_set: set[str]                     # source files named in a task-checklist declaration (multi-file plan completeness)
     tests_run: set[str]                             # files passed to a tests-kind validator this query (regression guard)
+    test_failure_signatures: dict[str, list[str]]   # test file -> distinct failing-node-id sets seen this query (oracle nudge)
     # ── Environment: what the run needs and what it changed ────────────────────
     unresolved_modules: set[str]                     # imports a run failed to resolve (env-resolution nudge)
     env_probed: bool                                 # True once the model enumerated the available interpreters/envs
@@ -252,6 +253,7 @@ _FIELD_SPECS: tuple[_FieldSpec, ...] = (
     ("denied_tool_calls", list, (list,), _NO_TRAITS),
     ("denial_history", list, (list,), _NO_TRAITS),
     ("tests_run", set, (set,), _NO_TRAITS),
+    ("test_failure_signatures", dict, (dict,), _NO_TRAITS),
     # ── Environment ────────────────────────────────────────────────────────────
     # These three were live for a long time without being declared here at all: seeded
     # by a bootstrap helper, written by the observers, read by the nudges — and so
@@ -665,6 +667,59 @@ def files_below_tier(execution_context: dict[str, Any], tier: str) -> list[str]:
 VERDICTS: tuple[str, ...] = ("pass", "fail", "unknown", "blocked")
 
 
+def run_ledger_key(command: str) -> str:
+    """The identity a run is remembered by: WHAT it ran, not how it was typed.
+
+    The repair budget counts attempts at the same command, so what counts as "the same"
+    decides whether it ever accumulates. Keyed on the raw string it never did: a model
+    narrowing down a failure rewrites the tail of its command every time, and
+
+        pytest tests/test_x.py -q 2>&1 | tail -15
+        pytest tests/test_x.py -q 2>&1 | tail -8
+        pytest tests/test_x.py -v  2>&1 | tail -12
+
+    are three ledger entries of one failure apiece — never the three strikes that arm
+    the ladder. (Observed: eleven pytest invocations in one session, no two keys equal,
+    the budget never reached.)
+
+    The key is the executing segment's head plus the files it named, taken from the same
+    classifier the policy layer parses with, so ``timeout 280 python3 -m pytest a.py``
+    and ``pytest a.py`` agree. Flags are dropped — they change how a run reports, not
+    what it exercises — and so is everything downstream of a pipe. A command the
+    classifier cannot read keys on its raw text, which is the old behaviour and the
+    right one: nothing about it is known well enough to call two of them the same.
+
+    A segment that named no file keeps its whole argv instead of collapsing to its head.
+    Otherwise every ``python3 -c "…"`` probe in a session — the idiom the base prompt
+    actively steers one-off checks towards — would share one ledger entry, and three
+    unrelated one-liners would read as three attempts at a single failing thing.
+
+    Idempotent, so a caller holding a key may pass it back in place of a command.
+    """
+    # Imported lazily: the classifier lives under ``guardrails.policy``, which imports
+    # this module. Same shape as workflow.py's lazy ``policy.gates`` import.
+    try:
+        from ..guardrails.policy.bash_classify import Kind, classify_bash_command
+    except Exception:  # pragma: no cover - defensive
+        return command
+    try:
+        segments = classify_bash_command(command) or []
+    except Exception:  # pragma: no cover - the classifier owns its own refusals
+        segments = []
+    parts: list[str] = []
+    for seg in segments:
+        if seg.kind not in (Kind.EXEC, Kind.UNKNOWN):
+            continue
+        head = seg.head or (seg.argv[0] if seg.argv else "")
+        if not head:
+            continue
+        if seg.operands:
+            parts.append(" ".join([head, *sorted(seg.operands)]).strip())
+        else:
+            parts.append(" ".join(seg.argv).strip() or head)
+    return " && ".join(parts) if parts else command
+
+
 def record_run(
     execution_context: dict[str, Any], command: str, *, completed: bool, call_id: str = "",
     effect: str = "run",
@@ -676,13 +731,19 @@ def record_run(
     over — the repair budget counts attempts at the same command, and a re-run is the
     next attempt, not a fresh start.
 
+    Identity comes from :func:`run_ledger_key`, not from the command text; the text is
+    kept on the record as ``command`` because that is what a report must show. Readers
+    render ``run["command"]``, never the dict key.
+
     ``effect`` distinguishes a build from a run of the project's code, so the completion
     report can name what actually hit a wall.
     """
     runs = execution_context.setdefault("runs", {})
-    previous = runs.pop(command, None) or {}
+    key = run_ledger_key(command)
+    previous = runs.pop(key, None) or {}
     run = {
         "call_id": call_id,
+        "command": command,
         "completed": completed,
         "effect": effect,
         "verdict": "",
@@ -693,7 +754,7 @@ def record_run(
         # attempt at the wall, so re-running retracts the blocked standing by itself.
         "blocked": "",
     }
-    runs[command] = run
+    runs[key] = run
     return run
 
 

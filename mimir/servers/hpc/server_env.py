@@ -36,7 +36,11 @@ mcp = FastMCP(
 )
 
 # pip / env creation reach the network and can be slow; give them real headroom.
-_TIMEOUT = int(os.environ.get("MCP_ENV_TIMEOUT", "900"))
+# _TIMEOUT_CAP is also the wall these tools declare to the client, so the override may
+# only lower the budget: a value above the declared wall would be fiction, cut short by
+# the agent loop before this server's own timeout ever fired.
+_TIMEOUT_CAP = 900
+_TIMEOUT = min(int(os.environ.get("MCP_ENV_TIMEOUT", str(_TIMEOUT_CAP))), _TIMEOUT_CAP)
 
 # Where `env_create(kind="venv")` puts new virtualenvs: under the agent's own state
 # dir, not in the workspace — a venv is agent state, and one dropped in the repo shows
@@ -152,6 +156,9 @@ def _looks_like_venv(path: str) -> bool:
     caps=[PLAN_BLOCKED, ENV_MUTATE], reversibility=RECOVERABLE, non_batch=True,
     scope={"args": ["packages"], "kind": "packages"},
     risk_note="installs packages into a Python environment",
+    # A cold pip install compiling a wheel outlives the global per-call default several
+    # times over; declare the server's own budget so the loop waits for it.
+    timeout_secs=_TIMEOUT_CAP + 60,
 ))
 def env_pip_install(packages, python_executable: str = "python3") -> dict:
     """Install one or more packages into an existing Python environment (sensitive).
@@ -221,6 +228,8 @@ def env_pip_uninstall(packages, python_executable: str = "python3") -> dict:
     caps=[PLAN_BLOCKED, ENV_MUTATE], reversibility=RECOVERABLE, non_batch=True,
     scope={"args": ["name", "target"], "kind": "basename", "noun": "this environment"},
     risk_note="creates a new Python environment",
+    # Creation may install a package list on the way — same budget as env_pip_install.
+    timeout_secs=_TIMEOUT_CAP + 60,
 ))
 def env_create(name: str, kind: str = "venv", packages=None, python_executable: str = "python3") -> dict:
     """Create a new Python environment (sensitive).

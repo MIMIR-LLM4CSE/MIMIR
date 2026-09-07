@@ -8,7 +8,7 @@ from typing import Any, Callable
 
 import ollama
 
-from .base import LLMBackend
+from .base import LLMBackend, normalize_finish_reason
 from .tag_parser import ThinkTagParser
 
 
@@ -18,6 +18,13 @@ def _to_dict(obj: Any) -> dict:
     if hasattr(obj, "__dict__"):
         return obj.__dict__
     return {}
+
+
+def _done_reason(obj: Any) -> Any:
+    """Ollama's stop signal, read off the response envelope (never off ``message``)."""
+    if isinstance(obj, dict):
+        return obj.get("done_reason")
+    return getattr(obj, "done_reason", None)
 
 
 class OllamaBackend(LLMBackend):
@@ -65,6 +72,7 @@ class OllamaBackend(LLMBackend):
 
         tool_calls_parts: list[dict] = []
         final_msg: dict = {}
+        finish_reason: str | None = None
 
         # Ollama defaults num_ctx to a small window (~4K) and silently truncates
         # the prompt. Set it to the model's real context window so it matches the
@@ -73,6 +81,12 @@ class OllamaBackend(LLMBackend):
             win = self.context_window(model)
             if win:
                 options = {**options, "num_ctx": win}
+
+        # Same normalization the other two backends apply: this path sent `messages`
+        # through untouched, so adjacent user turns reached whatever template the
+        # served model uses without ever being merged.
+        from ..history import merge_consecutive_user_messages
+        messages = merge_consecutive_user_messages(list(messages))
 
         answer = ollama.chat(
             model=model,
@@ -87,6 +101,12 @@ class OllamaBackend(LLMBackend):
             for chunk in answer:
                 if cancel_flag is not None and cancel_flag.is_set():
                     raise asyncio.CancelledError("Cancelled by user")
+
+                # done_reason rides on the response envelope, not on `message`,
+                # and is only set on the terminal chunk.
+                raw_finish = _done_reason(chunk)
+                if raw_finish:
+                    finish_reason = normalize_finish_reason(raw_finish)
 
                 chunk_msg = _to_dict(chunk.get("message", {}))
 
@@ -107,6 +127,7 @@ class OllamaBackend(LLMBackend):
                 if "name" in chunk_msg:
                     final_msg["name"] = chunk_msg["name"]
         else:
+            finish_reason = normalize_finish_reason(_done_reason(answer))
             chunk_msg = _to_dict(answer.get("message", {}))
             raw_content = chunk_msg.get("content") or ""
             if raw_content:
@@ -145,5 +166,8 @@ class OllamaBackend(LLMBackend):
 
         if tool_calls_parts:
             final_msg["tool_calls"] = tool_calls_parts
+
+        if finish_reason:
+            final_msg["finish_reason"] = finish_reason
 
         return final_msg
