@@ -94,6 +94,7 @@ export const App: React.FC = () => {
   const [anthropicModels, setAnthropicModels] = useState<string[]>([]);
   const [backend, setBackend] = useState("vllm");
   const [vllmBaseUrl, setVllmBaseUrl] = useState("http://127.0.0.1:8000");
+  const [rayBaseUrl, setRayBaseUrl] = useState("http://127.0.0.1:8000");
   const [ollamaBaseUrl, setOllamaBaseUrl] = useState("http://127.0.0.1:11434");
   // Endpoint the extension host remembers (checkbox in the connect form). It
   // seeds the form and is what the host reconnects to on its own at startup.
@@ -106,7 +107,7 @@ export const App: React.FC = () => {
   // The form reads its address/model/checkbox once, at mount; config and the
   // remembered endpoint arrive after it. Remounting on those is how it picks
   // them up without fighting the user's edits afterwards.
-  const connectFormKey = `${backend}|${vllmBaseUrl}|${ollamaBaseUrl}|${remembered?.baseUrl ?? ""}`;
+  const connectFormKey = `${backend}|${vllmBaseUrl}|${rayBaseUrl}|${ollamaBaseUrl}|${remembered?.baseUrl ?? ""}`;
   // Models the endpoint reports it serves — the connect form's dropdown.
   const [endpointModels, setEndpointModels] = useState<string[]>([]);
   const [modelsError, setModelsError] = useState<string | null>(null);
@@ -255,6 +256,7 @@ export const App: React.FC = () => {
         setAnthropicModels(msg.anthropicModels ?? []);
         if (msg.backend) setBackend(msg.backend);
         if (msg.vllmBaseUrl) setVllmBaseUrl(msg.vllmBaseUrl);
+        if (msg.rayBaseUrl) setRayBaseUrl(msg.rayBaseUrl);
         if (msg.ollamaBaseUrl) setOllamaBaseUrl(msg.ollamaBaseUrl);
         // A remembered endpoint outranks the settings default: it is the address
         // the user last connected to and asked us to keep.
@@ -263,6 +265,7 @@ export const App: React.FC = () => {
         if (saved) {
           setBackend(saved.backend);
           if (saved.backend === "ollama") setOllamaBaseUrl(saved.baseUrl);
+          else if (saved.backend === "ray") setRayBaseUrl(saved.baseUrl);
           else setVllmBaseUrl(saved.baseUrl);
         }
         return;
@@ -917,6 +920,7 @@ export const App: React.FC = () => {
                   key={connectFormKey}
                   backend={backend}
                   vllmBaseUrl={vllmBaseUrl}
+                  rayBaseUrl={rayBaseUrl}
                   ollamaBaseUrl={ollamaBaseUrl}
                   anthropicModels={anthropicModels}
                   models={endpointModels}
@@ -956,6 +960,7 @@ export const App: React.FC = () => {
               key={connectFormKey}
               backend={backend}
               vllmBaseUrl={vllmBaseUrl}
+              rayBaseUrl={rayBaseUrl}
               ollamaBaseUrl={ollamaBaseUrl}
               anthropicModels={anthropicModels}
               models={endpointModels}

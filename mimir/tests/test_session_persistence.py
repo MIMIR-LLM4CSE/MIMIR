@@ -8,6 +8,7 @@ halves of the fix: a client transcript is stored verbatim (with the guards that 
 overwriting the wrong session or a longer history), and the untrimmed record is kept
 beside the window and is what a load restores.
 """
+import concurrent.futures
 import tempfile
 import unittest
 from unittest import mock
@@ -80,6 +81,73 @@ def _session(active="s1"):
     sess.history_full = []
     sess.transcript = mock.Mock()
     return sess
+
+
+class _FakeWS:
+    def __init__(self):
+        self.sent: list[str] = []
+
+    async def send(self, payload):
+        self.sent.append(payload)
+
+
+class PreQueryCompactionTests(unittest.IsolatedAsyncioTestCase):
+    """The window is summarized before it is amputated.
+
+    The CLI compacts before each query; the WS path only ever front-trimmed, because
+    summarizing means an LLM call and that call must not run on the event loop. It runs
+    on the worker thread now, and dropping turns is the fallback.
+    """
+
+    @staticmethod
+    def _sess_with_history(n_middle):
+        sess = _session()
+        sess.ws = _FakeWS()
+        sess.transcript = []
+        sess.history = [{"role": "user", "content": "opening question"}]
+        sess.history += [{"role": "assistant", "content": f"step {i}"} for i in range(n_middle)]
+        sess.history += [{"role": "user", "content": "last"},
+                         {"role": "assistant", "content": "answer"},
+                         {"role": "user", "content": "follow-up"},
+                         {"role": "assistant", "content": "ok"}]
+        return sess
+
+    async def test_the_middle_is_summarized_and_the_head_and_tail_survive(self):
+        sess = self._sess_with_history(5)
+        summary = [{"role": "assistant", "content": "[Context summary] what happened"}]
+        sess.worker.compact_middle = lambda middle: _done_future(summary)
+
+        self.assertTrue(await sess._compact_history())
+        self.assertEqual(sess.history[0]["content"], "opening question")
+        self.assertEqual(sess.history[1], summary[0])
+        self.assertEqual([m["content"] for m in sess.history[-4:]],
+                         ["last", "answer", "follow-up", "ok"])
+        self.assertEqual(sess.transcript[-1]["type"], "context_compact")
+
+    async def test_a_failed_summarization_leaves_the_history_untouched(self):
+        # compact_messages returns its input unchanged when the backend call fails —
+        # the caller must read that as "no compaction" and fall back to trimming.
+        sess = self._sess_with_history(5)
+        before = list(sess.history)
+        sess.worker.compact_middle = lambda middle: _done_future(middle)
+
+        self.assertFalse(await sess._compact_history())
+        self.assertEqual(sess.history, before)
+
+    async def test_too_short_a_middle_is_not_worth_an_llm_call(self):
+        sess = self._sess_with_history(1)
+        called = []
+        sess.worker.compact_middle = lambda middle: called.append(middle) or _done_future([])
+
+        self.assertFalse(await sess._compact_history())
+        self.assertEqual(called, [])
+        self.assertEqual(sess.ws.sent, [])  # not even an announcement
+
+
+def _done_future(value):
+    fut = concurrent.futures.Future()
+    fut.set_result(value)
+    return fut
 
 
 class RichTranscriptRoundTripTests(unittest.TestCase):

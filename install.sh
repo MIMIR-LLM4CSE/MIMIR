@@ -9,6 +9,7 @@
 #   ./install.sh                 # install into ./.venv
 #   MIMIR_VENV=~/envs/mimir ./install.sh
 #   MIMIR_EXTRAS="vllm,dev" ./install.sh   # adds pytest + ruff
+#   MIMIR_EXTRAS="ray" ./install.sh        # same deps, for a Ray Serve endpoint
 #   MIMIR_SKIP_EXTENSION=1 ./install.sh    # Python only
 set -euo pipefail
 
@@ -115,7 +116,7 @@ EOF
 if [ "$ext_installed" = "1" ]; then
   cat <<'EOF'
   # or, in VS Code: reload the window, open the MIMIR panel, and enter the
-  # address of your running vLLM or Ollama server (e.g. http://127.0.0.1:8000).
+  # address of your running vLLM, Ray Serve or Ollama server (e.g. http://127.0.0.1:8000).
 EOF
 else
   cat <<'EOF'
@@ -126,7 +127,8 @@ fi
 
 cat <<'EOF'
 
-MIMIR talks to an LLM server you already run (vLLM, Ollama, or the Claude API).
+MIMIR talks to an LLM server you already run (vLLM, Ray Serve, Ollama, or the
+Claude API).
 Its address is entered in the MIMIR panel — see SETUP.md.
 EOF
 

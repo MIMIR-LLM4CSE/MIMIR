@@ -10,7 +10,7 @@ The acronym traces the agent's pipeline — **M**ath → **M**odeling → **I**m
 
 A local AI agent that connects to multiple [MCP](https://modelcontextprotocol.io/) tool
 servers and reasons over them using a selectable LLM backend: [Ollama](https://ollama.com/)
-or vLLM (OpenAI-compatible API).
+vLLM, or Ray Serve (OpenAI-compatible API).
 
 The client in [`client/agent_core.py`](mimir/client/agent_core.py) runs a simple loop:
 start each MCP server as a stdio child process, discover every tool and its JSON schema,
@@ -70,8 +70,8 @@ centralized in [`client/config/constants.py`](mimir/client/config/constants.py).
 
 ## Quick start
 
-Two commands. MIMIR talks to an LLM server you already run — a vLLM or Ollama
-endpoint reachable over HTTP, or the Anthropic API.
+Two commands. MIMIR talks to an LLM server you already run — a vLLM, Ray Serve or
+Ollama endpoint reachable over HTTP, or the Anthropic API.
 
 ```bash
 git clone https://github.com/MIMIR-LLM4CSE/MIMIR.git && cd MIMIR
@@ -82,7 +82,7 @@ git clone https://github.com/MIMIR-LLM4CSE/MIMIR.git && cd MIMIR
 `npm` is available — builds and installs the VS Code extension.
 
 **In VS Code:** reload the window, open the MIMIR panel, pick a backend, and type
-the address of your server (`http://<host>:8000` for vLLM,
+the address of your server (`http://<host>:8000` for vLLM or Ray Serve,
 `http://<host>:11434` for Ollama). The model list fills itself from that address.
 Nothing goes in `.vscode/settings.json`.
 
@@ -100,14 +100,19 @@ See [`SETUP.md`](SETUP.md) for backends, environment variables, and the extensio
 ## Installation
 
 **Prerequisites:** Python ≥ 3.10 and one LLM server you can reach over HTTP — a vLLM
-OpenAI-compatible endpoint (the default, e.g. `http://127.0.0.1:8000`), an
-[Ollama](https://ollama.com/) server, or an Anthropic API key. MIMIR connects to it;
-it never starts or schedules it.
+OpenAI-compatible endpoint (the default, e.g. `http://127.0.0.1:8000`), a
+[Ray Serve LLM](https://docs.ray.io/en/latest/serve/llm/serving-llms.html) router,
+an [Ollama](https://ollama.com/) server, or an Anthropic API key. MIMIR connects to
+it; it never starts or schedules it.
 
 ```bash
 pip install ".[vllm]"                          # installs the `mimir` command
 export VLLM_BASE_URL=http://<node>:8000        # vLLM is the default backend
 cd /path/to/your/project && mimir
+
+# Ray Serve instead — the same OpenAI API, with the cluster placing and scaling the
+# vLLM engines behind it (replicas, autoscaling and GPU placement are Ray's side):
+#   pip install ".[ray]" && export LLM_BACKEND=ray RAY_BASE_URL=http://<head>:8000
 
 # Ollama instead:
 #   pip install . && export LLM_BACKEND=ollama && ollama pull qwen3:8b
@@ -125,20 +130,24 @@ peft / datasets / trl); `sudo apt-get install gfortran` for Fortran compilation;
 
 | Environment variable | Default | Purpose |
 |----------------------|---------|---------|
-| `LLM_BACKEND` | `vllm` | Backend selector: `vllm`, `ollama`, or `anthropic` |
+| `LLM_BACKEND` | `vllm` | Backend selector: `vllm`, `ray`, `ollama`, or `anthropic` |
 | `MIMIR_DEFAULT_MODEL` | *(empty)* | Model selected at startup; overridden by `--model` or the UI |
 | `OLLAMA_BASE_URL` | `http://127.0.0.1:11434` | Ollama API endpoint |
 | `ANTHROPIC_API_KEY` | *(none)* | Key for the `anthropic` backend |
 | `VLLM_BASE_URL` | `http://127.0.0.1:8000` | vLLM API base URL (client appends `/v1` if needed) |
 | `VLLM_API_KEY` | `EMPTY` | API key for vLLM OpenAI-compatible calls |
-| `MIMIR_EMBED_MODEL` | *(empty; `nomic-embed-text` on Ollama)* | Embedding model for semantic memory search & tool ranking (required for vLLM; else lexical fallback) |
+| `RAY_BASE_URL` | `http://127.0.0.1:8000` | Ray Serve LLM router URL, route prefix included (client appends `/v1`) |
+| `RAY_API_KEY` | `EMPTY` | API key for the Ray Serve router |
+| `MIMIR_RAY_MAX_MODEL_LEN` | *(unset)* | Pin the context window when the Ray router does not report `max_model_len` |
+| `MIMIR_EMBED_MODEL` | *(empty; `nomic-embed-text` on Ollama)* | Embedding model for semantic memory search & tool ranking (required for vLLM and Ray; else lexical fallback) |
 | `MIMIR_MODULE_INDEX_BUDGET` | `600` | Seconds the background module-catalogue enrichment may spend (the name-level pass the user waits on is not affected) |
 | `MCP_FILES_ROOT` | current working dir | Workspace root (guardrail on paths tools name — [not a sandbox](SERVERS_DETAILED.md#scope-of-the-sandbox-read-this-before-trusting-confined)) |
 | `GITHUB_TOKEN` | *(none)* | Raises GitHub API rate limits |
 | `MIMIR_OLLAMA_NUM_CTX` | *(model's context length)* | Overrides the Ollama context window (`num_ctx`) |
 
-The context-window budget is sized automatically from the backend (vLLM `max_model_len` or
-Ollama's model context length), falling back to 200K/32K if it can't be determined.
+The context-window budget is sized automatically from the backend (`max_model_len` for
+vLLM and Ray, or Ollama's model context length), falling back to 200K/32K if it can't
+be determined.
 Reasoning is requested with `chat_template_kwargs.enable_thinking`, which thinking-capable
 vLLM templates read and others ignore, so an unlisted model still gets its thinking;
 [`vllm_model_profiles.json`](mimir/client/config/vllm_model_profiles.json) declares only the
@@ -151,7 +160,7 @@ is documented in [`SETUP.md`](SETUP.md).
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                             MimirAgent (client)                               │
-│      backend.chat(model, messages, tools=[...]) (Ollama or vLLM)           │
+│      backend.chat(model, messages, tools=[...]) (Ollama, vLLM or Ray)      │
 │                                                                             │
 │  servers/_shared/          shared response helpers, path sandboxing,         │
 │                            text tools, module env, Slurm node parsing,       │
@@ -214,7 +223,7 @@ flowchart TD
     subgraph LOOP ["&nbsp;🔁 Work loop &nbsp;·&nbsp; repeats until done or the step limit&nbsp;"]
         direction TB
         STEER["📥 Pick up anything you typed mid-run<br/><small>+ warn when near the step limit</small>"] --> BUDGET["✂️ Keep the conversation within memory limits"]
-        BUDGET --> PIN["📌 Remind the model what's been found so far"] --> CALL["🛰️ Ask the AI model<br/><small>Ollama / vLLM</small>"]
+        BUDGET --> PIN["📌 Remind the model what's been found so far"] --> CALL["🛰️ Ask the AI model<br/><small>vLLM / Ray / Ollama</small>"]
         CALL --> RESP["🧠 Read the model's reply"]
         RESP --> TC{"Did it ask to<br/>use tools?"}
         TC -->|yes| DISP["🛠️ Run the requested tools<br/><small>reads at once · writes one by one<br/>skip duplicates · avoid loops · time-limited</small>"]
@@ -346,7 +355,9 @@ The authoritative definition of policy, completion gating, and workflow-state ru
 - **Approval & trust** — `/trust` / `/untrust` a tool for the session; `/batch on|off` batches
   write approvals into one diff review at turn end.
 - **Context management** — history is trimmed by token budget (not count), with intra-query
-  compaction of intermediate tool results when the window fills.
+  compaction of intermediate tool results when the window fills, and a summary of the older
+  turns before any of them are dropped. When even that cannot fit the prompt, the turn ends
+  on an explicit context-overflow message instead of a provider error.
 - **Skills** — methodology prompts auto-detected from the query and recent turns.
 
 See [`POLICY.md`](POLICY.md) and [`CLIENT_DETAILED.md`](CLIENT_DETAILED.md) for the full
@@ -457,7 +468,8 @@ To run the WebSocket server yourself instead (headless, or on another host):
 python3 -m mimir.client.ui.ws.ws_server --port 8765 \
     --backend vllm --vllm-base-url http://<host>:8000
 #   options: --host --port --model --cwd
-#            --backend {ollama,vllm,anthropic} --vllm-base-url --vllm-api-key --ollama-base-url
+#            --backend {ollama,vllm,ray,anthropic} --vllm-base-url --vllm-api-key
+#            --ray-base-url --ray-api-key --ollama-base-url
 ```
 
 The panel is the only place you configure a connection — a working setup needs no

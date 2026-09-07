@@ -10,6 +10,14 @@ describe("modelsUrl", () => {
     expect(modelsUrl("vllm", "https://gpu.internal/v1/")).toBe("https://gpu.internal/v1/models");
   });
 
+  it("builds the OpenAI models path for Ray Serve", () => {
+    expect(modelsUrl("ray", "http://head:8000")).toBe("http://head:8000/v1/models");
+  });
+
+  it("keeps a Ray app's route prefix ahead of /v1", () => {
+    expect(modelsUrl("ray", "http://head:8000/llm/")).toBe("http://head:8000/llm/v1/models");
+  });
+
   it("builds the tags path for Ollama", () => {
     expect(modelsUrl("ollama", "http://127.0.0.1:11434/")).toBe("http://127.0.0.1:11434/api/tags");
   });
@@ -19,6 +27,11 @@ describe("parseModels", () => {
   it("reads data[].id from a vLLM response", () => {
     const body = { object: "list", data: [{ id: "Qwen3-32B" }, { id: "/models/devstral" }] };
     expect(parseModels("vllm", body)).toEqual(["Qwen3-32B", "/models/devstral"]);
+  });
+
+  it("reads data[].id from a Ray Serve response", () => {
+    const body = { object: "list", data: [{ id: "Qwen3-32B" }] };
+    expect(parseModels("ray", body)).toEqual(["Qwen3-32B"]);
   });
 
   it("reads models[].name from an Ollama response", () => {

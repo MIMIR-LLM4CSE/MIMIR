@@ -21,6 +21,18 @@ from ..config.constants import (
 )
 
 
+class ContextOverflowError(RuntimeError):
+    """The prompt cannot be made to fit the model's window.
+
+    Raised by :func:`_enforce_context_budget` when eviction, compaction and the
+    force-fit backstop have all run and the irreducible core — the system message
+    plus the current query, neither of which may be reduced — still exceeds the
+    usable window. Without it the oversized prompt went to the backend anyway and
+    came back as an opaque provider 400 (vLLM: ``max_tokens must be at least 1,
+    got -N``), after a status line claiming the history had been trimmed to fit.
+    """
+
+
 _TOOL_OUTPUT_MAX_CHARS = 4000
 _TOOL_OUTPUT_MAX_LINES = 60
 
@@ -178,6 +190,10 @@ def _trim_tool_history(
     protection, read invalidation) is identical in both modes — only the size
     metric changes.
 
+    The tool results answering the most recent assistant tool-call turn are never
+    evicted: they are the current turn's payload, and stubbing them out costs more
+    than the space it frees. Only the force-fit backstop may shrink them.
+
     Tool messages whose content references a file currently being written
     (dirty_written_files or declared_edit_set) are protected from eviction.
     When a file has been read but then evicted from history, its path is also
@@ -224,9 +240,25 @@ def _trim_tool_history(
             return tool_msg_files[cid], True
         return [], False
 
+    # The newest results — those answering the last assistant turn that made calls —
+    # are this turn's payload: a sub-agent's entire answer comes back as one of them.
+    # Evicting oldest-first hit them anyway whenever they were the only tool messages
+    # in the window, replacing the freshest evidence with EVICTED_TOOL_RESULT while
+    # nothing older remained to drop. They are exempt here; the force-fit pass can
+    # still shrink them, and its truncation keeps a head and a tail rather than
+    # nothing at all.
+    last_call_turn = max(
+        (i for i, m in enumerate(messages)
+         if m.get("role") == "assistant" and m.get("tool_calls")),
+        default=-1,
+    )
+    newest_results = {i for i in tool_indices if i > last_call_turn} if last_call_turn >= 0 else set()
+
     to_remove: list[int] = []
     removed_size = 0
     for idx in tool_indices:
+        if idx in newest_results:
+            continue
         if total_size - removed_size <= budget:
             break
         msg = messages[idx]
@@ -439,7 +471,13 @@ def _enforce_context_budget(
     *guarantees* the prompt fits regardless of message types or whether
     compaction is wired up. (4) repairs the assistant↔tool pairing that steps 1
     and 2 legitimately break, so every backend receives a coherent history.
+
+    Raises :class:`ContextOverflowError` when step 3 cannot make the prompt fit —
+    the irreducible core (system message + current query) alone exceeds the usable
+    window. The repair in step 4 still runs first, so the history left behind is
+    coherent for whatever the caller does with it.
     """
+    overflow: ContextOverflowError | None = None
     total, reserved, trim_budget, compact_budget = context_budget_for(model, context_mode)
     overhead = token_counter(json.dumps(step_tools)) if step_tools else 0
     trim_budget = max(512, trim_budget - overhead)
@@ -455,13 +493,30 @@ def _enforce_context_budget(
     if total:
         usable = max(1, total - reserved - overhead)
         before = sum(token_counter(_message_content_str(m)) for m in messages)
-        _force_fit_to_window(messages, usable, token_counter)
+        fitted = _force_fit_to_window(messages, usable, token_counter)
         after = sum(token_counter(_message_content_str(m)) for m in messages)
         if after < before:
             emit({"type": "status", "text": (
                 f"  ⚠ Context backstop: truncated ~{before - after} tokens of older "
-                f"content to fit the model's window."
+                + ("content to fit the model's window."
+                   if fitted else "content — the prompt is STILL over the window.")
             )})
+        if not fitted:
+            # Everything reducible has been reduced and the prompt still does not
+            # fit. Sending it anyway is what produced the provider-level 400 the
+            # user saw; failing here names the actual cause and the numbers behind
+            # it. The turn ends either way — this only decides what it says.
+            # Raised only after the repair below, so the history the session keeps
+            # (and reloads on the next turn) is still a coherent one.
+            overflow = ContextOverflowError(
+                f"Context overflow: the prompt is ~{after + overhead:,} tokens but only "
+                f"~{usable:,} fit in this model's {total:,}-token window "
+                f"(answer reserve {reserved:,}, tools schema {overhead:,}). "
+                "The system message and the current query cannot be reduced further — "
+                "shorten the query, start a new session, or use a model with a larger window."
+            )
     # Last: eviction and compaction above can strand an assistant tool call or a tool
     # result. Repair in place so the next model call is coherent whatever the backend.
     messages[:] = reconcile_tool_pairs(messages)
+    if overflow is not None:
+        raise overflow

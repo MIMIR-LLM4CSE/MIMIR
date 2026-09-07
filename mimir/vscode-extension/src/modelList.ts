@@ -12,7 +12,7 @@ import * as http from "http";
 import * as https from "https";
 
 /** Endpoints that can enumerate their own models. Anthropic keeps a static list. */
-export type DiscoverableBackend = "vllm" | "ollama";
+export type DiscoverableBackend = "vllm" | "ollama" | "ray";
 
 /** Strip trailing slashes so URL joins never double up. */
 function trimSlash(url: string): string {
@@ -22,8 +22,9 @@ function trimSlash(url: string): string {
 /**
  * URL that lists the models served at *baseUrl*.
  *
- * vLLM speaks the OpenAI API, so the list is under `/v1/models` — tolerate a
- * base URL the user already suffixed with `/v1` rather than producing `/v1/v1`.
+ * vLLM and Ray Serve both speak the OpenAI API, so the list is under `/v1/models` —
+ * tolerate a base URL the user already suffixed with `/v1` (or, for Ray, ended with
+ * the app's route prefix) rather than producing `/v1/v1`.
  */
 export function modelsUrl(backend: DiscoverableBackend, baseUrl: string): string {
   const base = trimSlash(baseUrl);
@@ -58,8 +59,8 @@ export function parseModels(backend: DiscoverableBackend, body: unknown): string
  *
  * Uses Node's http/https directly: they ignore the proxy env vars, which is what
  * we want for an on-prem endpoint a corporate proxy would black-hole. `verifySsl`
- * mirrors the `mimir.vllmVerifySsl` setting for internal HTTPS routes served
- * behind a private CA.
+ * mirrors the `mimir.vllmVerifySsl` setting — one switch for both OpenAI-compatible
+ * endpoints — for internal HTTPS routes served behind a private CA.
  */
 export function fetchModels(
   backend: DiscoverableBackend,

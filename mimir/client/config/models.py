@@ -13,11 +13,17 @@ VALID_MODES: tuple[str, ...] = ("agent", "plan", "ask")
 # read-only commands. "plan" produces a checklist for approval; "ask" just answers.
 READONLY_MODES: frozenset[str] = frozenset({"plan", "ask"})
 
-# LLM backend selection — LLM_BACKEND=vllm (local vLLM, default), anthropic/claude
-# (hosted Claude API, for evaluation against local models), else Ollama.
+# LLM backend selection — LLM_BACKEND=vllm (local vLLM, default), ray (a Ray Serve
+# LLM router: the same OpenAI API, with the cluster placing and scaling the vLLM
+# engines behind it), anthropic/claude (hosted Claude API, for evaluation against
+# local models), else Ollama.
 LLM_BACKEND   = os.environ.get("LLM_BACKEND",   "vllm")
 VLLM_BASE_URL = os.environ.get("VLLM_BASE_URL",  "http://127.0.0.1:8000")
 VLLM_API_KEY  = os.environ.get("VLLM_API_KEY",   "EMPTY")
+# Ray Serve's own default HTTP port is also 8000; the address may carry the app's
+# route prefix (http://<head>:8000/<route>), which the backend suffixes with /v1.
+RAY_BASE_URL  = os.environ.get("RAY_BASE_URL",   "http://127.0.0.1:8000")
+RAY_API_KEY   = os.environ.get("RAY_API_KEY",    "EMPTY")
 
 def _load_vllm_model_profiles() -> dict[str, dict]:
     """Load shared vLLM model profiles from JSON.

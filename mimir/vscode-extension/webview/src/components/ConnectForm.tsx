@@ -6,6 +6,7 @@ interface Props {
   backend?: string;
   /** Default addresses from settings; the user can edit them here. */
   vllmBaseUrl?: string;
+  rayBaseUrl?: string;
   ollamaBaseUrl?: string;
   /** Claude model ids (static — the hosted API is not queried without a key). */
   anthropicModels?: string[];
@@ -25,13 +26,16 @@ interface Props {
 }
 
 /** Address the form starts on for a given backend. */
-function defaultUrl(backend: string, vllm: string, ollama: string): string {
-  return backend === "ollama" ? ollama : vllm;
+function defaultUrl(backend: string, vllm: string, ray: string, ollama: string): string {
+  if (backend === "ollama") return ollama;
+  if (backend === "ray") return ray;
+  return vllm;
 }
 
 export const ConnectForm: React.FC<Props> = ({
   backend: initBackend = "vllm",
   vllmBaseUrl = "http://127.0.0.1:8000",
+  rayBaseUrl = "http://127.0.0.1:8000",
   ollamaBaseUrl = "http://127.0.0.1:11434",
   anthropicModels = [],
   models = [],
@@ -41,7 +45,7 @@ export const ConnectForm: React.FC<Props> = ({
   onConnect,
 }) => {
   const [backend, setBackend] = useState(initBackend);
-  const [url, setUrl] = useState(defaultUrl(initBackend, vllmBaseUrl, ollamaBaseUrl));
+  const [url, setUrl] = useState(defaultUrl(initBackend, vllmBaseUrl, rayBaseUrl, ollamaBaseUrl));
   // Claude API key — kept in webview state only; forwarded on connect and never
   // persisted. Left blank means "use whatever ANTHROPIC_API_KEY the host exports".
   const [apiKey, setApiKey] = useState("");
@@ -57,7 +61,7 @@ export const ConnectForm: React.FC<Props> = ({
   const handleBackendChange = (next: string) => {
     setBackend(next);
     setModel("");
-    if (next !== "anthropic") setUrl(defaultUrl(next, vllmBaseUrl, ollamaBaseUrl));
+    if (next !== "anthropic") setUrl(defaultUrl(next, vllmBaseUrl, rayBaseUrl, ollamaBaseUrl));
   };
 
   // Ask the endpoint what it serves, debounced so typing an address doesn't fire
@@ -70,9 +74,9 @@ export const ConnectForm: React.FC<Props> = ({
     return () => clearTimeout(t);
   }, [backend, url, anthropic, onFetchModels]);
 
-  // Keep the selection valid as the list changes (backend switch, refresh).
-  // The remembered model wins over the first entry, so a reconnect lands on the
-  // same model the user picked last time.
+  // The model is not shown in the form: it is picked from what the endpoint
+  // serves. The remembered model wins over the first entry, so a reconnect lands
+  // on the same model as last time.
   useEffect(() => {
     if (options.length > 0 && !options.includes(model)) {
       const preferred =
@@ -94,6 +98,7 @@ export const ConnectForm: React.FC<Props> = ({
           onChange={e => handleBackendChange(e.target.value)}
         >
           <option value="vllm">vLLM</option>
+          <option value="ray">Ray Serve</option>
           <option value="ollama">Ollama</option>
           <option value="anthropic">Anthropic (Claude)</option>
         </select>
@@ -120,7 +125,7 @@ export const ConnectForm: React.FC<Props> = ({
               className="connect-input"
               type="text"
               spellCheck={false}
-              placeholder={defaultUrl(backend, vllmBaseUrl, ollamaBaseUrl)}
+              placeholder={defaultUrl(backend, vllmBaseUrl, rayBaseUrl, ollamaBaseUrl)}
               value={url}
               onChange={e => setUrl(e.target.value)}
             />
@@ -139,22 +144,6 @@ export const ConnectForm: React.FC<Props> = ({
           )}
         </div>
       )}
-
-      <div className="connect-field">
-        <label className="connect-label">Model</label>
-        <select
-          className="connect-select"
-          value={model}
-          disabled={options.length === 0}
-          onChange={e => setModel(e.target.value)}
-        >
-          {options.length === 0 ? (
-            <option value="">—</option>
-          ) : (
-            options.map(m => <option key={m} value={m}>{m}</option>)
-          )}
-        </select>
-      </div>
 
       {!anthropic && (
         <label className="connect-remember">

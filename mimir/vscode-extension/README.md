@@ -31,10 +31,11 @@ address of the LLM server you already have running:
 | Backend | Address |
 |---|---|
 | vLLM | `http://<host>:8000` |
+| Ray Serve | `http://<host>:8000` (plus the app's route prefix, if it has one) |
 | Ollama | `http://<host>:11434` |
 | Anthropic (Claude) | no address — paste an API key, or export `ANTHROPIC_API_KEY` |
 
-The model dropdown is filled from that address (`/v1/models` for vLLM,
+The model dropdown is filled from that address (`/v1/models` for vLLM and Ray Serve,
 `/api/tags` for Ollama), so there is no model list to maintain.
 
 The interpreter that runs the WS server is found on its own: `install.sh` records the
@@ -42,5 +43,6 @@ venv's Python in `~/.mimir/python`. Override it with the `MIMIR_PYTHON` environm
 variable or the `mimir.pythonPath` setting if you need to.
 
 The remaining `mimir.*` settings only hold the defaults the panel starts on
-(`mimir.backend`, `mimir.vllmBaseUrl`, `mimir.ollamaUrl`, `mimir.vllmVerifySsl`) — see
+(`mimir.backend`, `mimir.vllmBaseUrl`, `mimir.rayBaseUrl`, `mimir.ollamaUrl`,
+`mimir.vllmVerifySsl`) — see
 the [Setup Guide](https://github.com/MIMIR-LLM4CSE/MIMIR/blob/master/SETUP.md) §6.

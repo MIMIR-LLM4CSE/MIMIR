@@ -108,21 +108,23 @@ async def serve(
     _ensure_router_installed()
     # Model resolution: explicit arg > MIMIR_DEFAULT_MODEL env var > DEFAULT_MODEL config
     _model = model or os.environ.get("MIMIR_DEFAULT_MODEL", "").strip() or DEFAULT_MODEL
-    if not _model and os.environ.get("LLM_BACKEND", "").lower() == "vllm":
-        # "Connect to running server" mode: no model was picked, so use whatever
-        # the vLLM endpoint is already serving (first model from /v1/models).
-        from ...query_engine.backends.vllm_backend import list_served_models
-        served = list_served_models()
+    if not _model:
+        # "Connect to running server" mode: no model was picked, so use whatever the
+        # endpoint is already serving. Backends that cannot enumerate themselves
+        # (Ollama, Anthropic) answer with an empty list, so this needs no test on
+        # which backend is active.
+        served = get_backend().served_models()
         if served:
             _model = served[0]
-            print(f"Auto-selected served vLLM model: {_model}", file=_ORIGINAL_STDOUT)
+            print(f"Auto-selected served model: {_model}", file=_ORIGINAL_STDOUT)
     if not _model:
         raise ValueError(
             "No model specified. Pass --model <name> or set MIMIR_DEFAULT_MODEL."
         )
 
-    # Prime the context-window cache (vLLM /v1/models or Ollama /api/show) so the
-    # budget checks on the WS event loop hit the cache instead of blocking.
+    # Prime the context-window cache (/v1/models for vLLM and Ray, /api/show for
+    # Ollama) so the budget checks on the WS event loop hit the cache instead of
+    # blocking.
     try:
         win = get_backend().context_window(_model)
         if win:
@@ -173,14 +175,20 @@ def main() -> None:
                              "port is then printed on the 'Listening on ws://…' line.")
     parser.add_argument("--model", default=None)
     parser.add_argument("--cwd", default=None, help="Set working directory before starting")
-    parser.add_argument("--backend", choices=["ollama", "vllm", "anthropic"], default=None,
+    parser.add_argument("--backend", choices=["ollama", "vllm", "ray", "anthropic"], default=None,
                         help="LLM backend to use (default: from LLM_BACKEND env var or vllm). "
-                             "anthropic uses the hosted Claude API — the key comes from the "
-                             "ANTHROPIC_API_KEY env var, never a CLI arg.")
+                             "ray is a Ray Serve LLM router — the same OpenAI API as vLLM, at "
+                             "its own address. anthropic uses the hosted Claude API — the key "
+                             "comes from the ANTHROPIC_API_KEY env var, never a CLI arg.")
     parser.add_argument("--vllm-base-url", default=None,
                         help="Base URL of the vLLM OpenAI-compatible API (overrides VLLM_BASE_URL env var)")
     parser.add_argument("--vllm-api-key", default=None,
                         help="API key for vLLM (default: EMPTY)")
+    parser.add_argument("--ray-base-url", default=None,
+                        help="Base URL of the Ray Serve LLM router, including the app's route "
+                             "prefix if it has one (overrides RAY_BASE_URL env var)")
+    parser.add_argument("--ray-api-key", default=None,
+                        help="API key for the Ray Serve router (default: EMPTY)")
     parser.add_argument("--ollama-base-url", default=None,
                         help="Base URL of the running Ollama server "
                              "(overrides OLLAMA_BASE_URL / OLLAMA_HOST)")
@@ -195,6 +203,10 @@ def main() -> None:
         os.environ["VLLM_BASE_URL"] = args.vllm_base_url
     if args.vllm_api_key:
         os.environ["VLLM_API_KEY"] = args.vllm_api_key
+    if args.ray_base_url:
+        os.environ["RAY_BASE_URL"] = args.ray_base_url
+    if args.ray_api_key:
+        os.environ["RAY_API_KEY"] = args.ray_api_key
     if args.ollama_base_url:
         # Two names, one address: OLLAMA_BASE_URL is what the health check and the
         # model pre-warm read, OLLAMA_HOST is what the `ollama` package resolves

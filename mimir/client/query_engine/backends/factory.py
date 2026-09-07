@@ -14,6 +14,9 @@ def get_backend() -> LLMBackend:
         if backend_name == "vllm":
             from .vllm_backend import VllmBackend
             _singleton[backend_name] = VllmBackend()
+        elif backend_name == "ray":
+            from .ray_backend import RayBackend
+            _singleton[backend_name] = RayBackend()
         elif backend_name in ("anthropic", "claude"):
             from .anthropic_backend import AnthropicBackend
             _singleton[backend_name] = AnthropicBackend()

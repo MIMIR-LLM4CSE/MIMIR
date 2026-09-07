@@ -65,6 +65,9 @@ class ScriptedBackend(LLMBackend):
                 "options": dict(options or {}),
                 "thinking": thinking,
                 "streaming": streaming,
+                # Recorded so a test can assert an internal call supplied a token
+                # sink — without one the real backends echo to stdout.
+                "token_callback": token_callback,
             }
         )
 

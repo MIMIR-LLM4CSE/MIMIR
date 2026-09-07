@@ -56,6 +56,26 @@ class EmbedHelperTests(unittest.TestCase):
         os.environ.pop("MIMIR_EMBED_MODEL", None)
         self.assertIsNone(embed.embed_texts(["hello"]))
 
+    def test_ray_without_model_returns_none(self):
+        """Ray takes the OpenAI path, which cannot guess a served model name."""
+        os.environ["LLM_BACKEND"] = "ray"
+        os.environ.pop("MIMIR_EMBED_MODEL", None)
+        self.assertIsNone(embed.embed_texts(["hello"]))
+        self.assertIsNone(embed.embed_model_id())
+
+    def test_ray_embeds_over_the_openai_path(self):
+        os.environ["LLM_BACKEND"] = "ray"
+        os.environ["MIMIR_EMBED_MODEL"] = "BAAI/bge-m3"
+        seen = []
+        original = embed._embed_vllm
+        embed._embed_vllm = lambda texts, model: seen.append(model) or [[0.5]]
+        try:
+            self.assertEqual(embed.embed_texts(["hello"]), [[0.5]])
+        finally:
+            embed._embed_vllm = original
+        self.assertEqual(seen, ["BAAI/bge-m3"])
+        self.assertEqual(embed.embed_model_id(), "BAAI/bge-m3")
+
     def test_backend_exception_is_swallowed_to_none(self):
         os.environ["LLM_BACKEND"] = "ollama"
         original = embed._embed_ollama

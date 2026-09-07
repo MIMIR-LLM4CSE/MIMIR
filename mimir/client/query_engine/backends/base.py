@@ -69,6 +69,15 @@ class LLMBackend(ABC):
         """Backend-specific context-window lookup. Default: unknown."""
         return None
 
+    def served_models(self) -> list[str]:
+        """Model ids the endpoint reports it is serving, weakest-guarantee first.
+
+        Only endpoints that can enumerate themselves return anything; the default
+        empty list is what lets a caller resolve a model without first asking which
+        backend is active. Never raises — a failure reads as "nothing to offer".
+        """
+        return []
+
     @abstractmethod
     def chat(
         self,

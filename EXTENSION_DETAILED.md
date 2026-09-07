@@ -60,7 +60,7 @@ any server exists:
 | Message | Direction | Meaning |
 |---|---|---|
 | `get_config` | webview → host | Send the connect form its starting values |
-| `config` | host → webview | Those values: `backend`, `vllmBaseUrl`, `ollamaBaseUrl`, `anthropicModels`, `remembered` |
+| `config` | host → webview | Those values: `backend`, `vllmBaseUrl`, `rayBaseUrl`, `ollamaBaseUrl`, `anthropicModels`, `remembered` |
 | `fetch_models` | webview → host | `{backend, baseUrl}` — read the model list from that endpoint |
 | `models` | host → webview | `{backend, models, error?}` — the result, or why it failed |
 | `connect` | webview → host | `{model, backend, baseUrl, anthropicApiKey?, remember?}` — start the WS server and attach |

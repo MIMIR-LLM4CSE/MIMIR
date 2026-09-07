@@ -95,6 +95,7 @@ class _AgentWorker:
         Supports:
         - Ollama: GET {OLLAMA_BASE_URL}/api/tags  → 200
         - vLLM:   GET {VLLM_BASE_URL}/health      → 200
+        - Ray:    GET {RAY_BASE_URL}/v1/models    → 200
 
         Emits ``{"type": "output", "text": "..."}`` progress messages every
         10 s so the client can show a spinner during slow vLLM cold-starts.
@@ -106,14 +107,22 @@ class _AgentWorker:
         import urllib.error as _uerr
 
         try:
-            from ...config.models import LLM_BACKEND, VLLM_BASE_URL
+            from ...config.models import LLM_BACKEND, RAY_BASE_URL, VLLM_BASE_URL
         except ImportError:
             LLM_BACKEND = os.environ.get("LLM_BACKEND", "vllm")
             VLLM_BASE_URL = os.environ.get("VLLM_BASE_URL", "http://127.0.0.1:8000")
+            RAY_BASE_URL = os.environ.get("RAY_BASE_URL", "http://127.0.0.1:8000")
 
         if LLM_BACKEND == "vllm":
             base = os.environ.get("VLLM_BASE_URL", VLLM_BASE_URL).rstrip("/")
             health_url = f"{base}/health"
+        elif LLM_BACKEND == "ray":
+            # /health is the vLLM server's endpoint, not the Serve router's, and
+            # /-/healthz answers for the proxy rather than the app — behind an
+            # ingress route neither is reliably reachable. The model list is the
+            # request that proves the thing we actually need is up.
+            base = os.environ.get("RAY_BASE_URL", RAY_BASE_URL).rstrip("/")
+            health_url = base + ("/models" if base.endswith("/v1") else "/v1/models")
         else:
             base = os.environ.get("OLLAMA_BASE_URL", "http://127.0.0.1:11434").rstrip("/")
             health_url = f"{base}/api/tags"
@@ -206,6 +215,12 @@ class _AgentWorker:
         import urllib.request as _urllib_req
         import json as _json_pw
         import os as _os
+        # /api/generate with an empty prompt is Ollama's "load this into VRAM" call.
+        # It has no equivalent on the other backends, and firing it regardless meant
+        # every vLLM/Ray session opened with a request to a localhost Ollama that
+        # isn't there — a wasted connection, and a misleading one in a trace.
+        if _os.environ.get("LLM_BACKEND", "vllm").lower() != "ollama":
+            return
         _base = _os.environ.get("OLLAMA_BASE_URL", "http://127.0.0.1:11434").rstrip("/")
         _url = f"{_base}/api/generate"
         _body = _json_pw.dumps({
@@ -863,9 +878,11 @@ class _AgentWorker:
         builder cannot express.
         """
         backend = os.environ.get("LLM_BACKEND", "vllm").lower()
-        if backend != "vllm":
+        if backend not in ("vllm", "ray"):
             # Ollama takes a `think` flag and Anthropic a thinking block; both are
-            # plain on/off with a budget, i.e. the full ladder applies.
+            # plain on/off with a budget, i.e. the full ladder applies. Ray is not
+            # here: its router drives vLLM engines, so the same per-family profiles
+            # describe how those models are told to reason.
             return {"mechanism": "kwarg", "levels": [], "can_disable": True}
         from ...config.models import thinking_profile, thinking_can_disable
         profile = thinking_profile(self.model)
@@ -925,6 +942,31 @@ class _AgentWorker:
         return asyncio.run_coroutine_threadsafe(
             augment_query_with_resources(self._agent, text), self._loop
         )
+
+    def compact_middle(self, middle: list) -> Any:
+        """Summarize *middle* into one message, off the WS event loop.
+
+        The session's pre-query budget check used to front-trim only — the oldest
+        turns were dropped and what they established was simply forgotten — because
+        summarizing means an LLM call and that call must not run on the WebSocket
+        event loop. It runs here instead: scheduled on this worker's loop and handed
+        to an executor thread, since ``compact_messages`` blocks on the backend.
+
+        Returns a ``concurrent.futures.Future`` resolving to the summary messages,
+        or to *middle* unchanged when summarization failed (``compact_messages``
+        swallows its own errors) — the caller treats that as "no compaction".
+        """
+        if self._agent is None or self._loop is None:
+            fut: Any = concurrent.futures.Future()
+            fut.set_result(middle)
+            return fut
+
+        async def _run() -> list:
+            return await asyncio.get_running_loop().run_in_executor(
+                None, self._agent.compact_messages, middle
+            )
+
+        return asyncio.run_coroutine_threadsafe(_run(), self._loop)
 
     def _count_tokens(self, text: str) -> int:
         """Token count for *text* — exact when the backend has a tokenizer.

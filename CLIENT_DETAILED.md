@@ -43,7 +43,7 @@ The client code is organized by responsibility under `mimir/client/`.
 The client orchestrates the local MCP stack:
 1. starts MCP servers as child processes over stdio
 2. discovers tools and JSON schemas dynamically
-3. exposes tools to the selected LLM backend (Ollama or vLLM)
+3. exposes tools to the selected LLM backend (vLLM, Ray Serve, Ollama or Anthropic)
 4. routes each tool call to the right server
 5. enforces sensitive-tool approval
 6. enforces repository discovery and write safety policies
@@ -179,17 +179,18 @@ The bridge to the MCP servers — spawning them and discovering their tools.
 
 ### query_engine.backends
 
-The pluggable LLM backends (Ollama, vLLM) behind one common interface, plus token counting.
+The pluggable LLM backends (Ollama, vLLM, Ray Serve, Anthropic) behind one common interface, plus token counting.
 
 #### `base.py`
 
 Shared `LLMBackend` interface (`chat(...) -> dict`) used by the agent loop, plus token counting.
 
 - `count_text_tokens()`, `message_token_counts()`, `count_messages_tokens()` — per-content cache + an `allow_network` flag (so async loops can avoid blocking tokenize calls). The default `_tokenize_text()` is the chars-per-token heuristic (`chars_per_token_for()`), which subclasses may override with an exact tokenizer.
+- `served_models()` — model ids the endpoint reports, `[]` for backends that cannot enumerate themselves. It is what lets `ws_server` resolve an unspecified model without testing which backend is active.
 
 #### `factory.py`
 
-- `get_backend()` — backend selector singleton: reads `LLM_BACKEND` (`ollama`/`vllm`) and returns the adapter. Shared process-wide, so token counts cached in the worker thread are reused by front-end budget checks.
+- `get_backend()` — backend selector singleton: reads `LLM_BACKEND` (`vllm`/`ray`/`anthropic`/`ollama`) and returns the adapter. Note the `else` arm is Ollama, so an unrecognised name resolves there rather than raising. Shared process-wide, so token counts cached in the worker thread are reused by front-end budget checks.
 
 #### `ollama_backend.py`
 
@@ -198,6 +199,12 @@ Ollama adapter (`ollama.chat(...)`) with streaming text/thinking/tool-call colle
 #### `vllm_backend.py`
 
 vLLM OpenAI-compatible adapter: strict OpenAI message normalization for replayed tool-call history, per-model `extra_body` from `VLLM_MODEL_PROFILES` (including `top_k`), and streaming tool-call delta merge by index. Overrides `_tokenize_text()` with an exact count from vLLM's `/tokenize` endpoint (sibling of `/v1`), falling back to the heuristic on any error.
+
+The endpoint is read through one overridable seam, `_config() -> (base_url, api_key)`; the module helpers (`_fetch_models`, `list_served_models`, `served_model_len`) all take that pair as an argument, and `_MODEL_LEN_CACHE` is keyed by `(endpoint, model)` so two servers offering the same model name do not share a window.
+
+#### `ray_backend.py`
+
+Ray Serve LLM adapter — `RayBackend(VllmBackend)` pointed at `RAY_BASE_URL` / `RAY_API_KEY`. Ray Serve orchestrates the GPUs (placement, replicas, autoscaling, several models behind one router) and drives vLLM engines, so the request shaping, reasoning profiles and tool-call handling are inherited unchanged. What it overrides is what the *router* may not serve: `_fetch_context_window()` honours `MIMIR_RAY_MAX_MODEL_LEN` first (the plain OpenAI `/v1/models` shape has no `max_model_len`), and `_tokenize_text()` latches after the first failure so a router without `/tokenize` costs one round-trip rather than one per count. The `ray` package is not a client dependency — it runs on the cluster.
 
 ### guardrails
 
@@ -294,7 +301,7 @@ The per-query loop was split from one ~1750-line module into an orchestrator plu
 | `agent_loop.py` | orchestrator: `run_agent_query`, `_run_agent_loop`, `_advertised_tools`, `_drain_steer`, `_inject_pin`/`_remove_pin`, `_checkpoint_summary` |
 | `plan_loop.py` | `_run_plan_mode`, `_request_plan_decision`, `_PLAN_*` labels — tail-calls `_run_agent_loop` (lazy import; the only agent_loop↔plan_loop cycle point) |
 | `dispatch.py` | `_dispatch_tool_calls`, `_post_dispatch_inject`, the spin/dedup guards + thresholds; the per-call wall comes from `capabilities.timeout_for` (the tool's declared `timeout_secs`, else the global default) rather than one flat constant |
-| `history.py` | context-window budgeting (trim → compact → force-fit), `served_compaction_instruction` |
+| `history.py` | context-window budgeting (trim → compact → force-fit → repair), `served_compaction_instruction`, `ContextOverflowError` |
 | `streaming.py` | `_stream_chat` (retry/backoff), `_process_response`, `_to_dict`, and the single `get_backend` handle |
 | `background.py` | detached-job detect / register / await + `open_editor` |
 | `finalize.py` | `_finalize_answer` / `_persist_answer` / `_annotate_answer_with_changes` (the **verification ledger** — see below) |
@@ -320,6 +327,8 @@ Completion itself is `if not tool_calls:` — the model emitted no tool call. Th
 - **Mid-run mode switching** — the mode is a live setting, re-read at the top of every step by `_live_mode()` (in both loops), not a per-query constant. What triggers a switch is a *change* to `agent.mode` since the last observation (tracked in `execution_context['_observed_agent_mode']`, seeded in `run_agent_query`), so an explicit per-query `mode=` override — as passed by sub-agents and the runner — never reads as one. On a change, `_apply_mode_switch()` rebuilds `messages[0]` for the new mode and emits a `status` + `mode` event (the front-end toggle follows), and `_mode_tools()` rebuilds the tool list so a read-only mode's write/exec surface is revoked — or restored — from that step on. This costs the prefix cache for the rest of the query: a deliberate, user-triggered break, reported like the domain re-arm. Because plan mode is a different loop shape, switching **into** plan from the agent loop tail-calls `_run_plan_mode()` and switching **out of** plan tail-calls `_run_agent_loop()`, both carrying the conversation and the evidence gathered so far.
 - **Background jobs** — a result from a `BACKGROUNDABLE` tool that carries a `background_job` descriptor is detected by `_detect_background_job()`. On a front-end with a persistent worker (`agent._register_background_job` set by the WS worker), `_maybe_register_background_job()` hands the descriptor to a completion watcher that polls the run's `status_op` off the critical path, then notifies the user and auto-resumes the agent with the `summary_op` result — the model is told to end its turn instead of polling. The CLI, with no worker loop, instead awaits it in-turn via `_await_background_job()`. Both paths are best-effort and name no tool literally (the descriptor carries the read-only ops the watcher calls generically).
 - **After each dispatch** — `_trim_tool_history()` evicts the oldest tool results once over the **token** budget (`TOOL_HISTORY_TOKEN_BUDGET`, char fallback; never drops system/user/assistant; protects files in `dirty_written_files | declared_edit_set`; evicting a read invalidates its `read_files` entry so the policy forces a re-read); `_maybe_compact_intra_query()` summarises the middle over `INTRA_QUERY_COMPACT_TOKENS`. The checklist pin is a transient tail message (`_inject_pin` / `_remove_pin`), so `messages[0]` stays byte-stable across the whole query for prefix caching.
+- **The newest tool results are exempt from eviction** — those answering the *last* assistant turn that made calls. Eviction is oldest-first, which is right until they are the only tool messages in the window: a sub-agent's entire answer arrives as one tool result, and it was being replaced by the `EVICTED_TOOL_RESULT` stub at the very step that produced it, with nothing older left to drop instead. They can still be shrunk by the force-fit pass below, whose truncation keeps a head and a tail rather than nothing.
+- **When nothing fits, the loop says so** — `_force_fit_to_window()` returns whether it succeeded, and `_enforce_context_budget()` raises `ContextOverflowError` when it did not: the irreducible core (`messages[0]` + the current query, both protected from reduction) exceeds `total − reserved − tools-schema`. That verdict used to be discarded — the oversized prompt went to the backend anyway and came back as an opaque provider 400 (vLLM's `max_tokens must be at least 1, got -N`), after a status line claiming the history had been trimmed *to fit*. The raise carries the numbers behind it and reaches the user through each front-end's existing error path (CLI `except`, WS `{"type":"error"}` event, `[sub-agent error]` for a child run). `reconcile_tool_pairs` still runs first, so the history left behind is coherent.
 
 ### tool_execution
 
@@ -370,6 +379,7 @@ The `MimirAgent` central class: server lifecycle, mode/settings management, stat
 - `_is_write_tool()` / `get_tool_file_targets()` — consult the registry.
 - `_apply_carry_context()` / `_update_carry_context()` — merge prior-session discovery sets into each new `ExecutionContext` (evicting stale `read_files` via mtime) and save fields back after each query, recording per-file read mtimes (both iterate the shared `_CARRY_SET_FIELDS`).
 - `_discard_carry_path()` — removes a deleted path from all carry sets. `_tool_cache` holds per-query read-only results (reset at query start).
+- `compact_history()` / `compact_messages()` / `detect_skill_implicit()` — the model calls MIMIR makes on **its own behalf** rather than for the user. All three go through `get_backend()`; the first two used to call `ollama.chat` directly, which broke them under every other backend. Each passes `token_callback=_discard_token`, because `LLMBackend.chat` streams to stdout whenever no callback is given — that default belongs to the CLI answer path, and without a sink a compaction summary or the classifier's JSON is printed into the middle of the session. Each degrades quietly (`""` / input unchanged / `None`) when the endpoint is down, so an unreachable backend costs a summary, not the turn.
 
 #### `human_pause.py` (client root)
 
@@ -395,6 +405,8 @@ The **frontends** that drive `MimirAgent` — two independent subpackages, `ui/c
 #### `ui/ws/`
 
 The WebSocket / VS Code bridge — `ws_server.py`, `ws_worker.py`, `ws_session.py`, `_ws_runtime.py`, `session_store.py`, `session_summary.py`, `file_preview.py`. The message protocol and the React frontend it serves are documented in [`EXTENSION_DETAILED.md`](EXTENSION_DETAILED.md).
+
+**The pre-query window check** (`_Session._handle_query`) mirrors the CLI's, with one constraint the CLI does not have: summarizing is an LLM call and the WS event loop must never block on one. So `_Session._compact_history()` schedules it on the worker (`_AgentWorker.compact_middle` → `run_coroutine_threadsafe` → executor, since `compact_messages` blocks on the backend) and only awaits the future; it keeps the opening user message and the last two exchanges, replaces the middle with one summary, and re-runs `reconcile_tool_pairs` because that slice can strand a tool call. Front-trimming the oldest turns is the **fallback**, taken when the middle is too short to be worth a call, when summarization fails (`compact_messages` returns its input unchanged), or when the summary still does not fit — it used to be the only behaviour, so the window was amputated where it could have been summarized. `history_full` is untouched by either path: it stays the one complete account of the session, and the transcript records what the window lost (`context_compact` / `context_trim`). Counting here is `allow_network=False` (heuristic where the token cache misses), so an underestimate can still start a turn over budget — the loop's `ContextOverflowError` is what catches that case.
 
 ---
 
@@ -443,7 +455,8 @@ extra is not installed. Key modules:
 - `mimir/tests/test_absolute_paths.py` — the absolute-path precondition on file tools: every mutating tool rejects a relative path, the rejection **names the workspace-resolved candidate** so it is self-correcting, nothing is written on rejection, absolute paths still round-trip through every tool, the check does not weaken the sandbox (outside paths still refused, scratchpad still writable), and the internal `list_files` helper is unaffected.
 - `mimir/tests/test_scratchpad.py` — home resolution (`MIMIR_SCRATCH_DIR` wins, else under `TMPDIR` scoped by uid + workspace id, no directory creation from a sandbox check), the session subdirectory vs the fallback, the standing grant being the home (so a session switch cannot revoke a path), `ensure_scratch_home` on a world-writable `/tmp` (creates `0700`, tightens loose modes, idempotent, refuses a symlink / non-directory / foreign owner / uncreatable parent), the sandbox grant (scratch admitted, workspace admitted, arbitrary outside paths and `<scratch>_evil` siblings still refused, relative paths still workspace-relative), and that scratch writes stay out of `dirty_written_files` and out of the ledger.
 - Extended: `test_observations.py` (`ValidationTierTests` — per-validator tiers, red→green promotion, prose/placeholder rejection, monotonicity, retraction on re-edit and on failure, whole-project stamping; `RedGreenDiscriminationTests` — promotion on the whole-suite repair loop, no retry budget charged for an unattributable failure, no promotion when green on the first run or at the syntax tier, and the record surviving the very edit that earns it), `test_bash_coverage.py` (corpus-measured credit rate of the bash→blackboard pipeline plus the frozen blind surface), `test_bash_classify.py` (`NestedCommandParsingTests` — `find -exec` segmentation, terminator handling, the derived `READONLY_NESTED_COMMANDS`, and a **tokenization-invariance guard** over a corpus of `-exec`-free commands, since `parse_segments` is shared by the bash server, the classifier and the out-of-workspace gate), `test_server_contracts.py` (`-exec` policy: read-only nested commands allowed, writes/execs/`-ok`/`-delete`/`-fprint` still refused, nested operands still confined), `test_prefix_cache.py` (the checklist is pinnable alone and still nets to zero), `test_out_of_workspace.py` (scratch never prompts; the grant does not widen to its parent), `test_nudge_table.py` (verification set disjoint from `_ALL_GUIDANCE`), `test_env_resolution.py` (`MidLoopEnvResolutionTests` — the cascade fires at the failing call, spends the budget the end-of-turn row shares, and respects enforcement; `ResolvedEnvironmentRearmsExerciseTests` — a successful execution retracts `unresolved_modules`, so one transient `ModuleNotFoundError` no longer buries the run/verdict advice for the rest of the query).
-- Existing suites: `test_capabilities.py` / `test_phase_b_servers.py` (`_golden_caps`), `test_policy_manager.py`, `test_approval.py`, `test_client_helpers.py` (now sources `ScriptedBackend` for its token-counting tests), `test_server_contracts.py`, `test_proxy_helpers.py`.
+- `mimir/tests/test_internal_model_calls.py` — the two model calls MIMIR makes on its own behalf (history compaction, implicit skill classification): each goes through the *configured* backend rather than a hard-coded provider client, each supplies a token sink so its output never reaches the terminal, and each degrades to "no summary" / "no skill" when the endpoint is down.
+- Existing suites: `test_capabilities.py` / `test_phase_b_servers.py` (`_golden_caps`), `test_policy_manager.py`, `test_approval.py`, `test_client_helpers.py` (now sources `ScriptedBackend` for its token-counting tests; also covers the eviction exemption for the newest tool results and the `ContextOverflowError` raise), `test_session_persistence.py` (the window/record split, plus the WS pre-query compaction and its front-trim fallback), `test_server_contracts.py`, `test_proxy_helpers.py`.
 
 ---
 

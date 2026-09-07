@@ -13,7 +13,7 @@ Step-by-step instructions to go from a fresh clone to a running agent.
 | Python ≥ 3.10 | Any CPython distribution |
 | Git | For cloning and the GitHub MCP server |
 | Node.js ≥ 18 + npm | Only for the VS Code extension |
-| An LLM server | A running vLLM or Ollama endpoint you can reach over HTTP, or an Anthropic API key (see §3) |
+| An LLM server | A running vLLM, Ray Serve or Ollama endpoint you can reach over HTTP, or an Anthropic API key (see §3) |
 
 ---
 
@@ -51,7 +51,7 @@ its own, and the script prints the command to retry.
 ```bash
 cd /path/to/mimir            # repo root (contains pyproject.toml)
 python -m venv .venv && source .venv/bin/activate
-pip install .                # or:  pip install ".[vllm]"
+pip install .                # or:  pip install ".[vllm]"  /  ".[ray]"
 # editable dev install + test tooling:
 pip install -e ".[dev]"
 ```
@@ -61,7 +61,7 @@ What the base install covers:
 | Group | Packages | Used by |
 |-------|----------|---------|
 | Core client + MCP | `mcp`, `httpx` | agent loop, all server transports |
-| LLM backends | `ollama`, `openai` | Ollama backend, vLLM (OpenAI-compatible) backend |
+| LLM backends | `ollama`, `openai` | Ollama backend; vLLM and Ray Serve (OpenAI-compatible) backends |
 | WebSocket frontend | `websockets` | `ws_server.py` (VS Code extension) |
 | Scientific / utility servers | `numpy`, `sympy`, `psutil` | `math`, `symbolic_math`, `platform`, `system` servers |
 
@@ -107,6 +107,7 @@ running. You supply its HTTP address, and nothing else.
 | Backend | What you provide | Default address |
 |---|---|---|
 | vLLM (default) | Address of the OpenAI-compatible endpoint | `http://127.0.0.1:8000` |
+| Ray Serve | Address of the Ray Serve LLM router, route prefix included | `http://127.0.0.1:8000` |
 | Ollama | Address of the Ollama API | `http://127.0.0.1:11434` |
 | Anthropic (Claude) | An API key — no address | — |
 
@@ -206,6 +207,50 @@ and `enforcement` knobs, unset by default.
 To see reasoning rendered as a thinking block rather than inline text, start vLLM with
 the matching `--reasoning-parser`.
 
+### Ray Serve LLM
+
+Reach for this instead of a bare vLLM server when you want the cluster to own the
+GPUs: `ray.serve.llm` places replicas across nodes, autoscales them, and can front
+several models at once. The engines it drives *are* vLLM, and the router it exposes
+speaks the same OpenAI API — so from MIMIR's side the only difference is the address.
+
+Deploy your app on the cluster (`serve run`, or `serve deploy` on a running cluster);
+`build_openai_app` is what mounts `/v1/chat/completions` and `/v1/models`. Replica
+counts, `accelerator_type`, tensor-parallel size and autoscaling live in that
+config — none of it is MIMIR's business.
+
+Then point MIMIR at the router:
+
+```bash
+export LLM_BACKEND=ray
+export RAY_BASE_URL=http://<head-node>:8000    # add the app's route prefix if it has one
+mimir
+```
+
+or, for the WS server the extension starts:
+
+```bash
+python -m mimir.client.ui.ws.ws_server \
+    --backend ray \
+    --ray-base-url http://<head-node>:8000
+```
+
+With no `--model`, MIMIR asks `/v1/models` and takes the first one served — so a
+router hosting several models connects without you naming one.
+
+Two things the router does not inherit from a vLLM server:
+
+- **`/tokenize`** — token counts fall back to the chars-per-token heuristic. MIMIR
+  tries once, then stops asking. Budgets stay approximate; nothing breaks.
+- **`max_model_len` in `/v1/models`** — a router answering with the plain OpenAI
+  shape omits it, and MIMIR then falls back to its static budget, under-using a
+  large window. Set `MIMIR_RAY_MAX_MODEL_LEN=<tokens>` when the startup line says
+  it could not detect the context window.
+
+Reasoning works exactly as on vLLM: the per-family profiles in
+[`vllm_model_profiles.json`](mimir/client/config/vllm_model_profiles.json) describe
+the engine, not the server in front of it.
+
 ### Ollama
 
 1. Install Ollama: https://ollama.com/
@@ -254,17 +299,22 @@ VS Code extension sets the backend and address ones itself from the Connect form
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `LLM_BACKEND` | `vllm` | `vllm`, `ollama`, or `anthropic` |
+| `LLM_BACKEND` | `vllm` | `vllm`, `ray`, `ollama`, or `anthropic` |
 | `MIMIR_DEFAULT_MODEL` | *(empty)* | Model selected at startup; overridden by `--model` flag or the UI |
 | `OLLAMA_BASE_URL` | `http://127.0.0.1:11434` | Ollama API endpoint (`--ollama-base-url` sets this and `OLLAMA_HOST` together) |
+| `MIMIR_OLLAMA_NUM_CTX` | *(model's context length)* | Overrides the Ollama context window (`num_ctx`) |
 | `VLLM_BASE_URL` | `http://127.0.0.1:8000` | vLLM API base URL |
 | `VLLM_API_KEY` | `EMPTY` | API key for vLLM calls |
-| `VLLM_VERIFY_SSL` | `0` | Verify the vLLM endpoint's TLS certificate. Off by default so an internal HTTPS route behind a private CA works out of the box |
+| `MIMIR_VLLM_MAX_MODEL_LEN` | *(unset)* | Context window to use when `/v1/models` does not report `max_model_len` |
+| `VLLM_VERIFY_SSL` | `0` | Verify the TLS certificate of the vLLM **or Ray Serve** endpoint — one switch for both. Off by default so an internal HTTPS route behind a private CA works out of the box |
+| `RAY_BASE_URL` | `http://127.0.0.1:8000` | Ray Serve LLM router URL, including the app's route prefix |
+| `RAY_API_KEY` | `EMPTY` | API key for the Ray Serve router |
+| `MIMIR_RAY_MAX_MODEL_LEN` | *(unset)* | Context window to use when the Ray router does not report `max_model_len` |
 | `ANTHROPIC_API_KEY` | *(none)* | Key for the `anthropic` backend |
 | `MIMIR_PYTHON` | *(none)* | Interpreter the VS Code extension starts the WS server with, when `~/.mimir/python` is absent or wrong |
-| `MIMIR_EMBED_MODEL` | *(empty; `nomic-embed-text` on Ollama)* | Embedding model for semantic memory search & tool ranking. **Required for vLLM** (the served model name, e.g. `BAAI/bge-m3`). Empty + vLLM ⇒ semantic path disabled, lexical fallback used. |
-| `MIMIR_EMBED_BASE_URL` | *(falls back to `VLLM_BASE_URL`)* | Serve embeddings from a separate endpoint than the chat model (vLLM only) |
-| `MIMIR_EMBED_TIMEOUT` | `10` | HTTP timeout (seconds) for the vLLM embeddings call |
+| `MIMIR_EMBED_MODEL` | *(empty; `nomic-embed-text` on Ollama)* | Embedding model for semantic memory search & tool ranking. **Required for vLLM and Ray** (the served model name, e.g. `BAAI/bge-m3`). Empty on those ⇒ semantic path disabled, lexical fallback used. |
+| `MIMIR_EMBED_BASE_URL` | *(falls back to the active backend's address)* | Serve embeddings from a separate endpoint than the chat model (vLLM and Ray only) |
+| `MIMIR_EMBED_TIMEOUT` | `10` | HTTP timeout (seconds) for the OpenAI-path embeddings call |
 | `MIMIR_MODULE_INDEX_BUDGET` | `600` | Wall-clock budget (seconds) for the background enrichment of the environment-module catalogue — Lmod's `spider`, then bulk `whatis`. Only the name-level pass runs on the request path, so raising or lowering this never changes how long a `platform_search` takes to answer; it changes how much of a very large module tree ends up with descriptions. |
 | `MCP_FILES_ROOT` | current working directory | Workspace root. Paths a tool *names* are confined to it, and reaching outside prompts for approval — but a program the agent runs (`python`/`make`/`gcc`) is not itself constrained, so this is a guardrail on intent, not a sandbox ([scope](SERVERS_DETAILED.md#scope-of-the-sandbox-read-this-before-trusting-confined)) |
 | `GITHUB_TOKEN` | *(none)* | Raises GitHub API rate limit from 60 to 5 000 req/h |
@@ -353,7 +403,7 @@ window running it from source.
 
 Open the MIMIR panel, and in the Connect form:
 
-1. **Backend** — vLLM, Ollama, or Anthropic (Claude).
+1. **Backend** — vLLM, Ray Serve, Ollama, or Anthropic (Claude).
 2. **Address** — where that server is running, e.g. `http://10.0.0.4:8000`. The
    model dropdown fills itself from it; the ⟳ button re-reads it.
 3. **Model** — one of the models the endpoint reports. For Anthropic, an API key
@@ -364,7 +414,7 @@ Open the MIMIR panel, and in the Connect form:
    it answers, so an endpoint that is down just leaves you on this form,
    pre-filled. Untick and connect again to forget it.
    The address and model are stored; an Anthropic key never is, which is why the
-   box only appears for vLLM and Ollama.
+   box only appears for the backends you give an address for.
 5. **Connect** — the extension starts the WS server locally and attaches to it.
 
 That is the whole configuration: a working setup needs **no `.vscode/settings.json`**.
@@ -378,8 +428,9 @@ starts on, or when the WS server needs a specific interpreter.
 |---|---|---|
 | `mimir.backend` | `vllm` | Backend the Connect form opens on |
 | `mimir.vllmBaseUrl` | `http://127.0.0.1:8000` | Address the form opens on for vLLM |
+| `mimir.rayBaseUrl` | `http://127.0.0.1:8000` | Address the form opens on for Ray Serve |
 | `mimir.ollamaUrl` | `http://127.0.0.1:11434` | Address the form opens on for Ollama |
-| `mimir.vllmVerifySsl` | `true` | Uncheck for an HTTPS endpoint behind a private CA |
+| `mimir.vllmVerifySsl` | `true` | Uncheck for an HTTPS vLLM or Ray endpoint behind a private CA |
 | `mimir.pythonPath` | *(empty → auto)* | Interpreter used to start the WS server. Leave empty — see below |
 | `mimir.wsUrl` | *(empty → auto)* | Leave empty: each window starts its own server on a free port. Set it only to attach to a server you run yourself |
 | `mimir.anthropicAvailableModels` | *(list of Claude ids)* | Models offered for the Anthropic backend |
@@ -406,7 +457,7 @@ remote window and reconnect — reloading the window is not enough.
 ## 7. HPC / SLURM
 
 MIMIR runs where you run it and talks to an LLM endpoint over HTTP; it does not
-allocate nodes to connect. On a cluster, start your vLLM or Ollama server in a job
+allocate nodes to connect. On a cluster, start your vLLM, Ray Serve or Ollama server in a job
 as usual, then give MIMIR the address of the node serving it (§3).
 
 Scheduling is instead something the **agent** can do on your behalf: the `hpc` MCP

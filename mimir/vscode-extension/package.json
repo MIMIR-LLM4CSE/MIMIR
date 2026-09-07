@@ -71,9 +71,9 @@
         },
         "mimir.backend": {
           "type": "string",
-          "enum": ["ollama", "vllm", "anthropic"],
+          "enum": ["ollama", "vllm", "ray", "anthropic"],
           "default": "vllm",
-          "description": "LLM backend: vllm (default, OpenAI-compatible API), ollama, or anthropic (hosted Claude API)"
+          "description": "LLM backend: vllm (default, OpenAI-compatible API), ray (a Ray Serve LLM router \u2014 the same API, with the cluster placing and scaling the vLLM engines behind it), ollama, or anthropic (hosted Claude API)"
         },
         "mimir.anthropicAvailableModels": {
           "type": "array",
@@ -92,10 +92,15 @@
           "default": "http://127.0.0.1:8000",
           "description": "Default address of your running vLLM server, e.g. http://10.0.0.4:8000. Editable in the connect panel \u2014 this is only the value it starts with."
         },
+        "mimir.rayBaseUrl": {
+          "type": "string",
+          "default": "http://127.0.0.1:8000",
+          "description": "Default address of your running Ray Serve LLM router, including the app's route prefix if it has one, e.g. http://10.0.0.4:8000. Editable in the connect panel \u2014 this is only the value it starts with."
+        },
         "mimir.vllmVerifySsl": {
           "type": "boolean",
           "default": true,
-          "description": "Verify the vLLM endpoint's TLS certificate. Disable (uncheck) for internal HTTPS routes served behind a private/corporate CA that isn't in the system trust store (avoids CERTIFICATE_VERIFY_FAILED). Sets VLLM_VERIFY_SSL=0 for the server."
+          "description": "Verify the TLS certificate of the vLLM or Ray Serve endpoint (one switch for both). Disable (uncheck) for internal HTTPS routes served behind a private/corporate CA that isn't in the system trust store (avoids CERTIFICATE_VERIFY_FAILED). Sets VLLM_VERIFY_SSL=0 for the server."
         },
         "mimir.notifications.enabled": {
           "type": "boolean",

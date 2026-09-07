@@ -19,6 +19,7 @@ from ._ws_runtime import (
     get_backend,
 )
 from .transcript_log import TranscriptLog
+from ...query_engine.history import reconcile_tool_pairs
 from .ws_worker import _AgentWorker
 from ...config import THINKING_DEPTH_LABELS, thinking_depth_from_label
 
@@ -687,6 +688,42 @@ class _Session:
         self._submitted_len = len(self.history)
         self.worker.submit_query(wake, list(self.history))
 
+    async def _compact_history(self) -> bool:
+        """Summarize the middle of the session history. True when it actually shrank.
+
+        Keeps the opening user message and the last two exchanges and replaces what
+        lies between with a single summary — the same shape the agent loop's
+        intra-query compaction uses. The summarization is an LLM call, so it happens
+        on the worker thread (``_AgentWorker.compact_middle``); this coroutine only
+        awaits its future. ``history_full`` is deliberately untouched: it stays the
+        one complete account of the session, exactly as for a front-trim.
+
+        Never raises — the caller falls back to front-trimming on a False.
+        """
+        middle = self.history[1:-4]
+        if len(middle) < 3:
+            return False
+        await self.ws.send(json.dumps({"type": "output",
+            "text": "  ⚡ Context budget reached — compacting older history…\n"}))
+        try:
+            summary = await asyncio.wrap_future(self.worker.compact_middle(list(middle)))
+        except Exception:
+            return False
+        # compact_messages returns its input unchanged when summarization failed.
+        if not summary or len(summary) >= len(middle):
+            return False
+        self.history[1:-4] = summary
+        # Slicing across a turn boundary can strand an assistant tool call or its
+        # result; strict backends reject that outright.
+        self.history[:] = reconcile_tool_pairs(self.history)
+        self.transcript.append({
+            "type": "context_compact",
+            "dropped": len(middle),
+            "kept": len(self.history),
+            "archived": len(self.history_full),
+        })
+        return True
+
     async def _handle_query(self, msg: dict) -> None:
         text = (msg.get("text") or "").strip()
         if not text:
@@ -705,6 +742,16 @@ class _Session:
             self.worker.model, self.history, allow_network=False
         )
         used_tokens = sum(counts)
+        if used_tokens >= usable_tokens and len(self.history) > 1:
+            # Compaction first: it carries forward what the older turns established,
+            # where the front-trim below just forgets them. Only when it cannot run
+            # (too short a middle) or the summary still doesn't fit do we drop turns.
+            if await self._compact_history():
+                counts = backend.message_token_counts(
+                    self.worker.model, self.history, allow_network=False
+                )
+                used_tokens = sum(counts)
+                await self._emit_context_usage()
         if used_tokens >= usable_tokens and len(self.history) > 1:
             await self.ws.send(json.dumps({"type": "output",
                 "text": "  ⚡ Context budget reached — trimming oldest history…\n"}))
@@ -1050,11 +1097,11 @@ class _Session:
                 await self.ws.send(json.dumps({"type": "output", "text": "  (nothing to cancel)\n"}))
         elif text.startswith("/backend "):
             mode = text[9:].strip().lower()
-            if mode in ("ollama", "vllm"):
+            if mode in ("ollama", "vllm", "ray"):
                 self.worker._agent.set_backend(mode)
                 await self.ws.send(json.dumps({"type": "output", "text": f"  ✓ Backend set to {mode}\n"}))
             else:
-                await self.ws.send(json.dumps({"type": "error", "text": f"Unknown backend: {mode}. Use ollama or vllm."}))
+                await self.ws.send(json.dumps({"type": "error", "text": f"Unknown backend: {mode}. Use ollama, vllm or ray."}))
         else:
             await self.ws.send(json.dumps({"type": "error", "text": f"Unknown command: {text}"}))
 

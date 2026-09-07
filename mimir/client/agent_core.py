@@ -7,8 +7,6 @@ import json
 from contextlib import AsyncExitStack
 from typing import Any
 
-import ollama
-
 from mcp import ClientSession
 
 from .guardrails.policy.approval import ApprovalManager, denial_kind
@@ -113,12 +111,14 @@ def _parse_skill_markdown(text: str) -> dict:
         }
 
 
-def _normalize_msg(msg):
-    if isinstance(msg, dict):
-        return msg
-    if hasattr(msg, "model_dump"):
-        return msg.model_dump()
-    return vars(msg)
+def _discard_token(_text: str) -> None:
+    """Token sink for model calls whose output is not the user's answer.
+
+    ``LLMBackend.chat`` streams to stdout whenever no ``token_callback`` is given —
+    that default belongs to the CLI answer path. The calls below (compaction,
+    classification) consume their result in code, so without a sink the summary or
+    the classifier's JSON would be printed into the middle of the session.
+    """
 
 
 # Execution-context fields MIRRORED into carry_context and back — derived from the
@@ -912,9 +912,10 @@ class MimirAgent:
     async def compact_history(self, history: list[dict]) -> str:
         """Summarize accumulated conversation history into a single compact message.
 
-        Calls Ollama with a structured compaction prompt and no tools.  Returns
-        the summary string; the caller is responsible for mutating the history
-        list in-place.  Returns an empty string when history is empty.
+        Calls the *configured* backend with a structured compaction prompt and no
+        tools. Returns the summary string; the caller is responsible for mutating
+        the history list in-place. Returns an empty string when history is empty,
+        and on any backend failure — the caller keeps the history it has.
         """
         if not history:
             return ""
@@ -943,19 +944,16 @@ class MimirAgent:
                 ),
             },
         ]
-        response = ollama.chat(
-            model=self.model,
-            messages=messages,
-            tools=[],
-            think=False,
-            stream=False,
-        )
-        msg = response.get("message", {}) if isinstance(response, dict) else vars(response).get("message", {})
-        if hasattr(msg, "content"):
-            return msg.content or ""
-        if isinstance(msg, dict):
-            return msg.get("content") or ""
-        return ""
+        from .query_engine.backends.factory import get_backend
+
+        try:
+            msg = get_backend().chat(
+                self.model, messages, [], False, False, {"temperature": 0.2},
+                token_callback=_discard_token,
+            )
+        except Exception:
+            return ""
+        return (msg or {}).get("content") or "" if isinstance(msg, dict) else ""
 
     def compact_messages(self, middle: list[dict]) -> list[dict]:
         """Summarize a slice of conversation messages into a single summary message.
@@ -991,7 +989,8 @@ class MimirAgent:
             _force_fit_to_window(prompt, int(window * 0.75), tok)
         try:
             msg = backend.chat(
-                self.model, prompt, [], False, False, {"temperature": 0.2}
+                self.model, prompt, [], False, False, {"temperature": 0.2},
+                token_callback=_discard_token,
             )
         except Exception:
             return middle
@@ -1145,20 +1144,17 @@ class MimirAgent:
             },
         ]
 
+        from .query_engine.backends.factory import get_backend
+
         try:
-            resp = ollama.chat(
-                model=agent.model,
-                messages=classifier_messages,
-                stream=False,
+            msg = get_backend().chat(
+                agent.model, classifier_messages, [], False, False, {"temperature": 0.0},
+                token_callback=_discard_token,
             )
         except Exception:
             return None
 
-        resp_dict = _normalize_msg(resp)
-        msg = resp_dict.get("message", {})
-        if not isinstance(msg, dict):
-            msg = _normalize_msg(msg)
-        content = msg.get("content", "")
+        content = (msg or {}).get("content", "") if isinstance(msg, dict) else ""
 
         try:
             parsed = json.loads(content)

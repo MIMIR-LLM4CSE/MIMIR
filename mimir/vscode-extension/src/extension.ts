@@ -11,6 +11,13 @@ let serverProcess: cp.ChildProcess | undefined;
 /** Global-state key holding the endpoint the user asked us to remember. */
 const REMEMBERED_KEY = "mimir.rememberedEndpoint";
 
+/**
+ * Backends reached at an address the user types — so they can be remembered,
+ * reconnected to unattended, and asked for their model list. Anthropic is absent:
+ * it needs a key we deliberately never persist.
+ */
+const ADDRESSED_BACKENDS: string[] = ["vllm", "ray", "ollama"];
+
 /** Endpoint we can reconnect to unattended — no secret is ever part of it. */
 interface RememberedEndpoint {
   backend: string;
@@ -422,7 +429,7 @@ class MimirAgentViewProvider implements vscode.WebviewViewProvider {
     if (!saved || !saved.baseUrl) return undefined;
     // Only endpoints the user gives an address for; Anthropic needs a key we
     // deliberately never persist, so it can't be auto-connected.
-    if (saved.backend !== "vllm" && saved.backend !== "ollama") return undefined;
+    if (!ADDRESSED_BACKENDS.includes(saved.backend)) return undefined;
     return saved;
   }
 
@@ -466,6 +473,7 @@ class MimirAgentViewProvider implements vscode.WebviewViewProvider {
       type: "config",
       backend: cfg.get<string>("backend") ?? "vllm",
       vllmBaseUrl: cfg.get<string>("vllmBaseUrl") ?? "http://127.0.0.1:8000",
+      rayBaseUrl: cfg.get<string>("rayBaseUrl") ?? "http://127.0.0.1:8000",
       ollamaBaseUrl: cfg.get<string>("ollamaUrl") ?? "http://127.0.0.1:11434",
       anthropicModels: cfg.get<string[]>("anthropicAvailableModels") ?? [],
       remembered: this._remembered() ?? null,
@@ -619,7 +627,8 @@ class MimirAgentViewProvider implements vscode.WebviewViewProvider {
    * Start the WS server here and connect to it.
    *
    * The server always runs on the machine VS Code runs on; *baseUrl* points it at
-   * an LLM endpoint that is already serving (vLLM or Ollama), wherever that is.
+   * an LLM endpoint that is already serving (vLLM, Ray Serve or Ollama), wherever
+   * that is.
    * Anthropic needs no URL at all — the hosted API is reached over the network
    * with the key from the form or the environment.
    */
@@ -657,6 +666,7 @@ class MimirAgentViewProvider implements vscode.WebviewViewProvider {
 
     const backendArgs =
       backend === "vllm" ? ` --backend vllm --vllm-base-url ${baseUrl}`
+      : backend === "ray" ? ` --backend ray --ray-base-url ${baseUrl}`
       : backend === "ollama" ? ` --backend ollama --ollama-base-url ${baseUrl}`
       : backend === "anthropic" ? " --backend anthropic"
       : "";
@@ -669,7 +679,7 @@ class MimirAgentViewProvider implements vscode.WebviewViewProvider {
     // deliberately kept out of this string so it never lands in the output channel.
     outputChannel.appendLine(`Starting server: ${spawnCmd}`);
 
-    // Internal HTTPS vLLM routes are often served behind a private
+    // Internal HTTPS vLLM / Ray Serve routes are often served behind a private
     // CA; when the user disables cert verification, propagate VLLM_VERIFY_SSL so
     // /v1/models model-resolution and chat requests don't hit CERTIFICATE_VERIFY_FAILED.
     const verifyEnv = cfg.get<boolean>("vllmVerifySsl", true) ? {} : { VLLM_VERIFY_SSL: "0" };
@@ -732,7 +742,7 @@ class MimirAgentViewProvider implements vscode.WebviewViewProvider {
    * user can still connect (the server resolves the served model itself).
    */
   private async _sendModels(backend: string, baseUrl: string): Promise<void> {
-    if (backend !== "vllm" && backend !== "ollama") {
+    if (!ADDRESSED_BACKENDS.includes(backend)) {
       return;
     }
     const verifySsl = vscode.workspace.getConfiguration("mimir").get<boolean>("vllmVerifySsl", true);
@@ -914,8 +924,8 @@ class MimirAgentViewProvider implements vscode.WebviewViewProvider {
       const anthropicApiKey = (m.anthropicApiKey as string | undefined) ?? "";
       const remember = m.remember === true;
 
-      // vLLM and Ollama resolve the served model themselves when none is picked,
-      // so only the hosted Claude API needs an explicit one.
+      // The endpoints with an address resolve the served model themselves when none
+      // is picked, so only the hosted Claude API needs an explicit one.
       if (!model && backend === "anthropic") {
         vscode.window.showErrorMessage("MIMIR: select a model before connecting.");
         return;
@@ -923,7 +933,7 @@ class MimirAgentViewProvider implements vscode.WebviewViewProvider {
 
       // "Remember this address" — store the endpoint (never the key) so the next
       // window can reconnect on its own; unchecking it forgets the stored one.
-      if (remember && (backend === "vllm" || backend === "ollama")) {
+      if (remember && ADDRESSED_BACKENDS.includes(backend)) {
         void this.memento.update(REMEMBERED_KEY, { backend, baseUrl, model });
       } else {
         void this.memento.update(REMEMBERED_KEY, undefined);

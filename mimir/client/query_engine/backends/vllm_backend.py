@@ -38,11 +38,16 @@ def _get_vllm_config() -> tuple[str, str]:
     return base_url, api_key
 
 
-def _fetch_models() -> list[dict]:
-    """Return the raw model objects from GET <base_url>/v1/models, or [] on error."""
+def _fetch_models(config: tuple[str, str] | None = None) -> list[dict]:
+    """Return the raw model objects from GET <base_url>/v1/models, or [] on error.
+
+    *config* is the (base_url, api_key) pair to ask; ``None`` means the vLLM
+    endpoint. Ray Serve speaks the same OpenAI API on its own address, so the
+    subclass passes its own pair here instead of duplicating the request.
+    """
     import httpx
 
-    base_url, api_key = _get_vllm_config()
+    base_url, api_key = config or _get_vllm_config()
     url = base_url.rstrip("/") + "/models"  # base_url already ends with /v1
     headers = {}
     if api_key and api_key != "EMPTY":
@@ -57,38 +62,42 @@ def _fetch_models() -> list[dict]:
     return [m for m in data.get("data", []) if isinstance(m, dict)]
 
 
-def list_served_models() -> list[str]:
-    """Return the model IDs currently served by the vLLM endpoint.
+def list_served_models(config: tuple[str, str] | None = None) -> list[str]:
+    """Return the model IDs currently served by the endpoint in *config*.
 
     Used to auto-resolve the model when the agent connects to an already-running
     server and the user did not pick one. Returns [] on any failure.
     """
-    return [m["id"] for m in _fetch_models() if m.get("id")]
+    return [m["id"] for m in _fetch_models(config) if m.get("id")]
 
 
-# Cache of served context window (max_model_len) per model id — avoids re-hitting
-# /v1/models on every chat() call. The served window is fixed for a given vLLM
-# process, so a process-lifetime cache is safe.
-_MODEL_LEN_CACHE: dict[str, int] = {}
+# Cache of served context window (max_model_len) per (endpoint, model id) — avoids
+# re-hitting /v1/models on every chat() call. The served window is fixed for a given
+# vLLM process, so a process-lifetime cache is safe. Keyed by endpoint too: a vLLM
+# server and a Ray Serve router can serve the same model name with different windows,
+# and a cache keyed on the name alone would hand one endpoint's window to the other.
+_MODEL_LEN_CACHE: dict[tuple[str, str], int] = {}
 
 
-def served_model_len(model: str) -> int | None:
+def served_model_len(model: str, config: tuple[str, str] | None = None) -> int | None:
     """Return the served context window (max_model_len) for *model*, or None.
 
     vLLM reports max_model_len in each /v1/models entry. We use it to send an
     explicit, in-bounds max_tokens so vLLM never auto-computes a negative default
     (which surfaces as "max_tokens must be at least 1, got -N").
     """
-    if model in _MODEL_LEN_CACHE:
-        return _MODEL_LEN_CACHE[model]
+    cfg = config or _get_vllm_config()
+    endpoint = cfg[0]
+    if (endpoint, model) in _MODEL_LEN_CACHE:
+        return _MODEL_LEN_CACHE[(endpoint, model)]
     discovered: dict[str, Any] = {}
-    for m in _fetch_models():
+    for m in _fetch_models(cfg):
         mml = m.get("max_model_len")
         if m.get("id"):
             discovered[m["id"]] = mml
         if isinstance(mml, int) and m.get("id"):
-            _MODEL_LEN_CACHE[m["id"]] = mml
-    result = _MODEL_LEN_CACHE.get(model)
+            _MODEL_LEN_CACHE[(endpoint, m["id"])] = mml
+    result = _MODEL_LEN_CACHE.get((endpoint, model))
     if result is None:
         import sys
         print(
@@ -433,6 +442,18 @@ class VllmBackend(LLMBackend):
         self._clients: dict[tuple[str, str], Any] = {}
         self._clients_lock = threading.Lock()
 
+    def _config(self) -> tuple[str, str]:
+        """The (base_url, api_key) this backend talks to.
+
+        The single seam a subclass overrides to point the whole class at another
+        OpenAI-compatible endpoint — everything below asks for the pair rather than
+        reading VLLM_* itself.
+        """
+        return _get_vllm_config()
+
+    def served_models(self) -> list[str]:
+        return list_served_models(self._config())
+
     def _client_for(self, base_url: str, api_key: str) -> Any:
         key = (base_url, api_key)
         with self._clients_lock:
@@ -461,20 +482,20 @@ class VllmBackend(LLMBackend):
         env = os.environ.get("MIMIR_VLLM_MAX_MODEL_LEN", "").strip()
         if env.isdigit() and int(env) > 0:
             return int(env)
-        return served_model_len(model)
+        return served_model_len(model, self._config())
 
     def _tokenize_text(self, model: str, text: str) -> int:
         """Exact token count via vLLM's /tokenize endpoint.
 
         /tokenize is served at the API root (sibling of /v1), so we strip the
-        /v1 suffix that _get_vllm_config appends for the chat client. Any failure
+        /v1 suffix that _config appends for the chat client. Any failure
         propagates to LLMBackend.count_text_tokens, which falls back to the
         chars-per-token heuristic — so a missing endpoint or network blip never
         breaks a budget check.
         """
         import httpx
 
-        base_url, api_key = _get_vllm_config()
+        base_url, api_key = self._config()
         root = base_url.rstrip("/")
         if root.endswith("/v1"):
             root = root[: -len("/v1")]
@@ -511,7 +532,8 @@ class VllmBackend(LLMBackend):
         think_start_callback: Callable[[], None] | None = None,
         think_end_callback: Callable[[], None] | None = None,
     ) -> dict:
-        client = self._client_for(*_get_vllm_config())
+        config = self._config()
+        client = self._client_for(*config)
 
         parser = ThinkTagParser(
             token_callback=token_callback,
@@ -569,7 +591,7 @@ class VllmBackend(LLMBackend):
         # 400s anyway, so raise a clear error instead. Last-resort net; the agent loop's
         # context budgeting should prevent reaching here.
         max_tokens = options.get("max_tokens") or options.get("num_predict")
-        mml = served_model_len(model)
+        mml = served_model_len(model, config)
         if mml:
             import json as _json
             prompt_text = _json.dumps(prepared_messages)

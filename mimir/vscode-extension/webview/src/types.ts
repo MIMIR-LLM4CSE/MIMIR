@@ -89,6 +89,7 @@ export interface ConfigMessage {
   type: "config";
   backend?: string;
   vllmBaseUrl?: string;
+  rayBaseUrl?: string;
   ollamaBaseUrl?: string;
   anthropicModels?: string[];
   /** Endpoint the user asked the host to remember, if any. */

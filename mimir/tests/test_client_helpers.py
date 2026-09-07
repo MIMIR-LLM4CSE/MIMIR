@@ -1233,6 +1233,63 @@ class ClientHelperTests(unittest.TestCase):
         self.assertNotIn("src/old.py", execution_context["read_files"])
         self.assertIn("src/recent.py", execution_context["read_files"])
 
+    def test_trim_history_keeps_the_results_of_the_latest_tool_call_turn(self) -> None:
+        # A sub-agent's whole answer comes back as the newest tool result. Evicting
+        # oldest-first used to reach it anyway once nothing older was left, replacing
+        # the turn's payload with a stub; it is exempt now, and only the force-fit
+        # backstop may shrink it.
+        messages = [
+            {"role": "system", "content": "sys"},
+            {"role": "assistant", "content": "", "tool_calls": [{"id": "old"}]},
+            {"role": "tool", "tool_call_id": "old", "content": "x" * 400},
+            {"role": "assistant", "content": "", "tool_calls": [{"id": "sub"}]},
+            {"role": "tool", "tool_call_id": "sub", "content": "sub-agent answer " * 100},
+        ]
+        execution_context = {"read_files": set(), "tool_msg_files": {}}
+        history_module._trim_tool_history(
+            messages, execution_context=execution_context,
+            token_counter=len, token_budget=100,   # far below either result
+        )
+        kept = [m["tool_call_id"] for m in messages if m.get("role") == "tool"]
+        self.assertEqual(kept, ["sub"])
+
+    def test_enforce_context_budget_raises_when_the_prompt_cannot_be_made_to_fit(self) -> None:
+        # System message + current query are both protected; when they alone exceed
+        # the window the force-fit pass fails. It used to fail silently, print a
+        # status claiming the history had been trimmed to fit, and let the backend
+        # answer with an opaque 400.
+        messages = [
+            {"role": "system", "content": "S" * 40_000},
+            {"role": "assistant", "content": "", "tool_calls": [{"id": "c1"}]},
+            {"role": "tool", "tool_call_id": "c1", "content": "R" * 200_000},
+            {"role": "user", "content": "U" * 60_000},
+        ]
+        tok = lambda text: len(text) // 4  # noqa: E731
+        with patch.object(history_module, "context_budget_for",
+                          lambda model, mode: (16_000, 3_200, 10_000, 8_000)), \
+             self.assertRaises(history_module.ContextOverflowError) as caught:
+            history_module._enforce_context_budget(
+                messages, "S" * 40_000, None, {}, "m", "full", None, tok,
+            )
+        self.assertIn("16,000-token window", str(caught.exception))
+        # The repair still ran, so what the caller keeps is a coherent history.
+        self.assertEqual(
+            [m["role"] for m in messages],
+            ["system", "assistant", "tool", "user"],
+        )
+
+    def test_enforce_context_budget_returns_quietly_when_it_fits(self) -> None:
+        messages = [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "hi"},
+        ]
+        with patch.object(history_module, "context_budget_for",
+                          lambda model, mode: (16_000, 3_200, 10_000, 8_000)):
+            history_module._enforce_context_budget(
+                messages, "sys", None, {}, "m", "full", None, lambda t: len(t) // 4,
+            )
+        self.assertEqual(len(messages), 2)
+
     # ── _stream_chat retry/backoff (transient-failure resilience) ───────────────
 
     def test_stream_chat_retries_transient_failure_then_succeeds(self) -> None:

@@ -39,6 +39,11 @@ dependencies = [
 # stays a valid, documented command.
 vllm = ["openai>=1.0.0"]
 
+# Ray Serve LLM is reached the same way — its router speaks the OpenAI API, and the
+# `ray` package runs on the cluster, not here. Same contents as [vllm]; a separate
+# name so `pip install .[ray]` reads as the setup it belongs to.
+ray = ["openai>=1.0.0"]
+
 # Fine-tuning stack — only needed for the ml/ servers (server_finetune.py).
 finetune = [
     "torch>=2.0.0",
