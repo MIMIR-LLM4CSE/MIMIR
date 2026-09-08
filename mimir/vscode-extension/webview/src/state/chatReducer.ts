@@ -335,6 +335,21 @@ export function createChatReducer(makeId: () => string) {
         return { ...state, toolCallAfterToken: true };
       }
 
+      // The answer to a command the user typed. Unlike "output" — transient tool
+      // chatter this reducer deliberately drops — it is rendered, because dropping it
+      // made "/memory list" print nothing and "/memory clear" wipe the store in
+      // silence. Does not touch `busy`: a session command runs beside a turn, not
+      // as one.
+      case "command_output": {
+        const text = action.text.replace(/\s+$/, "");
+        if (!text.trim()) return state;
+        const s = commitDraft(state, makeId);
+        return {
+          ...s,
+          messages: [...s.messages, { id: makeId(), role: "agent", kind: "text", text }],
+        };
+      }
+
       case "token": {
         const delta = action.text;
         const isNewLLMStep = state.toolCallAfterToken;

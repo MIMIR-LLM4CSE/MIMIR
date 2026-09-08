@@ -100,6 +100,7 @@ async def handle_chat_command(
             "  /modules [refresh|<term>] -> environment-module catalogue: index status,\n"
             "                           force a rebuild, or search it directly\n"
             "  /memory list|clear|delete <name> -> inspect or wipe persistent memory\n"
+            "  /proxy list   -> name the registered proxies\n"
             "  /proxy clean <name> -> delete a proxy's runs, optimisation state and\n"
             "                           snapshots; reports what it left behind\n"
             "  /resources    -> list attachable MCP resources (use @<uri> to attach one to a query)\n"
@@ -322,9 +323,12 @@ async def handle_chat_command(
         return True, ("\n❌ Usage: /memory list | /memory clear | /memory delete <name>\n")
 
     if cmd == "/proxy":
+        if len(parts) >= 2 and parts[1] == "list":
+            return True, await _proxy_list_command(agent)
         if len(parts) >= 3 and parts[1] == "clean":
             return True, await _proxy_clean_command(agent, parts[2])
-        return True, ("\n❌ Usage: /proxy clean <name>  — removes that proxy's runs, "
+        return True, ("\n❌ Usage: /proxy list  — registered proxies\n"
+                      "          /proxy clean <name>  — removes that proxy's runs, "
                       "optimisation state and snapshots, and reports what it left.\n")
 
     return True, "\n❌ Unknown command. Type /help.\n"
@@ -371,6 +375,27 @@ async def _memory_command(agent: Any, sub: str, args: list[str]) -> str:
     if payload.get("status") != "ok":
         return f"\n❌ {payload.get('error', 'clear failed')}\n"
     return f"\n✓ Cleared {payload.get('cleared', 0)} memory item(s). This cannot be undone.\n"
+
+
+async def _proxy_list_command(agent: Any) -> str:
+    """Name the registered proxies.
+
+    ``clean`` takes a name, and the only way to learn one was to ask the model to
+    list them — an LLM round trip to read a registry file.
+    """
+    payload = await _call_platform_tool(agent, "proxy_get", {"op": "proxies"})
+    if payload is None:
+        return "\n❌ The proxy server is not connected.\n"
+    if payload.get("status") != "ok":
+        return f"\n❌ {payload.get('error', 'list failed')}\n"
+    entries = payload.get("proxies") or []
+    if not entries:
+        return "\nNo proxies registered.\n"
+    lines = [f"\n{len(entries)} registered proxy(ies):"]
+    for e in entries:
+        desc = (e.get("description") or "").strip()
+        lines.append(f"  {e.get('name', '?')}" + (f" — {desc}" if desc else ""))
+    return "\n".join(lines) + "\n"
 
 
 async def _proxy_clean_command(agent: Any, name: str) -> str:

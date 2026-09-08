@@ -37,7 +37,7 @@ export const SESSION_COMMANDS: ToggleItem[] = [
   { name: "enforcement", description: "strict | light | off — guidance nudges", enabled: true },
   { name: "batch", description: "on | off — batch review of file changes", enabled: true },
   { name: "memory", description: "list | clear | delete <name> — persistent memory", enabled: true },
-  { name: "proxy", description: "clean <name> — delete a proxy's runs and optimisation state", enabled: true },
+  { name: "proxy", description: "list | clean <name> — registered proxies; delete one's runs and optimisation state", enabled: true },
   { name: "cancel", description: "stop the run in flight", enabled: true },
 ];
 

@@ -34,6 +34,18 @@ export interface StatusMessage {
   text: string;
 }
 
+/**
+ * The answer to a session command the user typed ("/memory list", "/proxy clean x").
+ *
+ * Separate from OutputMessage because that one is transient tool-activity text the
+ * reducer drops — which silently swallowed every command answer, including the
+ * confirmation of an irreversible "/memory clear".
+ */
+export interface CommandOutputMessage {
+  type: "command_output";
+  text: string;
+}
+
 export interface ApprovalMessage {
   type: "approval";
   id: string;
@@ -399,6 +411,7 @@ export type ServerMessage =
   | ReadyMessage
   | OutputMessage
   | StatusMessage
+  | CommandOutputMessage
   | ApprovalMessage
   | AnswerMessage
   | TokenMessage

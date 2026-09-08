@@ -368,3 +368,55 @@ describe("chatReducer", () => {
     expect(state.liveToolCalls[0].childrenDropped).toBe(12);
   });
 });
+
+describe("session command replies", () => {
+  it("renders a command answer, unlike transient output", () => {
+    const state = run([
+      { type: "output", text: "  3 memory item(s): a, b, c\n" },
+      { type: "command_output", text: "  3 memory item(s): a, b, c\n" },
+    ]);
+
+    // The same text on the "output" channel is dropped; on its own channel it lands.
+    expect(state.messages).toHaveLength(1);
+    expect(state.messages[0].kind).toBe("text");
+    expect(state.messages[0].text).toContain("3 memory item(s)");
+  });
+
+  it("keeps the confirmation of an irreversible clear", () => {
+    // The reason this channel exists: "/memory clear" wiped the store and said
+    // nothing, so it read as a command that had not worked.
+    const state = run([
+      { type: "command_output", text: "  ✓ Cleared 4 memory item(s). This cannot be undone.\n" },
+    ]);
+
+    expect(state.messages).toHaveLength(1);
+    expect(state.messages[0].text).toContain("Cleared 4 memory item(s)");
+  });
+
+  it("commits streamed prose above the answer instead of losing it", () => {
+    const state = run([
+      { type: "token", text: "Working on it." },
+      { type: "command_output", text: "  ✓ Mode set to agent\n" },
+    ]);
+
+    expect(state.draft).toBe("");
+    expect(state.messages.map((m) => m.text)).toEqual([
+      "Working on it.",
+      "  ✓ Mode set to agent",
+    ]);
+  });
+
+  it("does not end the turn — a command runs beside a run, not as one", () => {
+    const state = run([
+      { type: "query", text: "hi" },
+      { type: "command_output", text: "  ✓ Batch mode on\n" },
+    ]);
+
+    expect(state.busy).toBe(true);
+  });
+
+  it("ignores an empty answer", () => {
+    const state = run([{ type: "command_output", text: "   \n" }]);
+    expect(state.messages).toHaveLength(0);
+  });
+});

@@ -1101,21 +1101,30 @@ class _Session:
         await self._handle_command((msg.get("text") or "").strip())
 
     async def _handle_command(self, text: str) -> None:
+        """Answer a session command the user typed (never seen by the model).
+
+        Replies go out as ``command_output``, not ``output``. ``output`` is the
+        transient tool-activity channel and the webview drops it on purpose — which
+        silently swallowed every answer here: ``/memory list`` printed nothing, and
+        ``/memory clear`` wiped the store while looking like it had done nothing at
+        all. An answer to something the user typed is not activity chatter, so it
+        travels on its own channel and is rendered.
+        """
         if text.startswith("/mode "):
             mode = text[6:].strip()
             error = self.worker.set_mode(mode)
             if error:
                 await self.ws.send(json.dumps({"type": "error", "text": f"  ✗ {error}\n"}))
             else:
-                await self.ws.send(json.dumps({"type": "output", "text": f"  ✓ Mode set to {mode}\n"}))
+                await self.ws.send(json.dumps({"type": "command_output", "text": f"  ✓ Mode set to {mode}\n"}))
         elif text.startswith("/batch "):
             flag = text[7:].strip().lower()
             self.worker.set_batch(flag in ("on", "true", "1", "yes"))
-            await self.ws.send(json.dumps({"type": "output", "text": f"  ✓ Batch mode {flag}\n"}))
+            await self.ws.send(json.dumps({"type": "command_output", "text": f"  ✓ Batch mode {flag}\n"}))
         elif text.startswith("/thinking "):
             flag = text[10:].strip().lower()
             self.worker.set_thinking(flag in ("on", "true", "1", "yes"))
-            await self.ws.send(json.dumps({"type": "output", "text": f"  ✓ Thinking {'on' if flag in ('on','true','1','yes') else 'off'}\n"}))
+            await self.ws.send(json.dumps({"type": "command_output", "text": f"  ✓ Thinking {'on' if flag in ('on','true','1','yes') else 'off'}\n"}))
         elif text.startswith("/thinking-depth "):
             arg = text[16:].strip()
             level = thinking_depth_from_label(arg) if not arg.lstrip("-").isdigit() else int(arg)
@@ -1124,17 +1133,17 @@ class _Session:
                 await self.ws.send(json.dumps({"type": "error", "text": usage}))
                 return
             self.worker.set_thinking_depth(level)
-            await self.ws.send(json.dumps({"type": "output", "text": f"  ✓ Thinking depth: {THINKING_DEPTH_LABELS[level]}\n"}))
+            await self.ws.send(json.dumps({"type": "command_output", "text": f"  ✓ Thinking depth: {THINKING_DEPTH_LABELS[level]}\n"}))
         elif text.startswith("/streaming "):
             flag = text[11:].strip().lower()
             self.worker.set_streaming(flag in ("on", "true", "1", "yes"))
-            await self.ws.send(json.dumps({"type": "output", "text": f"  ✓ Streaming {'on' if flag in ('on','true','1','yes') else 'off'}\n"}))
+            await self.ws.send(json.dumps({"type": "command_output", "text": f"  ✓ Streaming {'on' if flag in ('on','true','1','yes') else 'off'}\n"}))
         elif text.startswith("/context "):
             mode = text[9:].strip().lower()
             if mode in ("compact", "full"):
                 self.worker.set_context_mode(mode)
                 await self.ws.send(json.dumps({"type": "context_mode", "mode": mode}))
-                await self.ws.send(json.dumps({"type": "output", "text": f"  ✓ Context mode set to {mode}\n"}))
+                await self.ws.send(json.dumps({"type": "command_output", "text": f"  ✓ Context mode set to {mode}\n"}))
             else:
                 await self.ws.send(json.dumps({"type": "error", "text": f"Unknown context mode: {mode}. Use compact or full."}))
         elif text.startswith("/approvals "):
@@ -1144,7 +1153,7 @@ class _Session:
             if mode in ("manual", "auto", "auto_all"):
                 self.worker.set_approval_mode(mode)
                 await self.ws.send(json.dumps({"type": "approval_mode", "mode": mode}))
-                await self.ws.send(json.dumps({"type": "output", "text": f"  ✓ Approvals set to {mode}\n"}))
+                await self.ws.send(json.dumps({"type": "command_output", "text": f"  ✓ Approvals set to {mode}\n"}))
             else:
                 await self.ws.send(json.dumps({"type": "error", "text": f"Unknown approval mode: {raw}. Use manual, auto, or all."}))
         elif text.startswith("/enforcement "):
@@ -1152,7 +1161,7 @@ class _Session:
             if level in ("strict", "light", "off"):
                 self.worker.set_enforcement(level)
                 await self.ws.send(json.dumps({"type": "enforcement", "mode": level}))
-                await self.ws.send(json.dumps({"type": "output", "text": f"  ✓ Enforcement set to {level}\n"}))
+                await self.ws.send(json.dumps({"type": "command_output", "text": f"  ✓ Enforcement set to {level}\n"}))
             else:
                 await self.ws.send(json.dumps({"type": "error", "text": f"Unknown enforcement level: {level}. Use strict, light, or off."}))
         elif text.startswith("/proxy"):
@@ -1160,7 +1169,30 @@ class _Session:
             # model for it: a proxy's runs and optimisation state used to be removable
             # only by deleting a store directory whose path nobody has a reason to know.
             parts = text.split()
-            if len(parts) >= 3 and parts[1] == "clean":
+            if len(parts) >= 2 and parts[1] == "list":
+                # "clean <name>" needs a name, and the only way to learn one was to
+                # ask the model to list them — a round trip through an LLM to read a
+                # registry file.
+                payload = await asyncio.wrap_future(
+                    self.worker.call_session_tool("proxy_get", {"op": "proxies"}))
+                if payload.get("status") != "ok":
+                    await self.ws.send(json.dumps({
+                        "type": "error",
+                        "text": f"  ✗ {payload.get('error', 'list failed')}\n"}))
+                else:
+                    entries = payload.get("proxies") or []
+                    if not entries:
+                        body = "  No proxies registered.\n"
+                    else:
+                        rows = [f"  {len(entries)} registered proxy(ies):"]
+                        for e in entries:
+                            desc = (e.get("description") or "").strip()
+                            rows.append(f"    {e.get('name', '?')}"
+                                        + (f" — {desc}" if desc else ""))
+                        body = "\n".join(rows) + "\n"
+                    await self.ws.send(json.dumps({
+                        "type": "command_output", "text": body}))
+            elif len(parts) >= 3 and parts[1] == "clean":
                 name = parts[2]
                 payload = await asyncio.wrap_future(
                     self.worker.call_session_tool(
@@ -1178,11 +1210,12 @@ class _Session:
                     for k in (payload.get("kept") or []):
                         lines.append("    kept:    " + k)
                     await self.ws.send(json.dumps({
-                        "type": "output", "text": "\n".join(lines) + "\n"}))
+                        "type": "command_output", "text": "\n".join(lines) + "\n"}))
             else:
                 await self.ws.send(json.dumps({
                     "type": "error",
-                    "text": "Usage: /proxy clean <name>  — removes that proxy's runs, "
+                    "text": "Usage: /proxy list  — registered proxies\n"
+                            "       /proxy clean <name>  — removes that proxy's runs, "
                             "optimisation state and snapshots, and reports what it "
                             "left behind.\n"}))
         elif text.startswith("/memory"):
@@ -1203,13 +1236,13 @@ class _Session:
                         desc = (e.get("description") or "").strip()
                         rows.append(f"    {e.get('name', '?')}" + (f" — {desc}" if desc else ""))
                     body = "\n".join(rows) + "\n"
-                await self.ws.send(json.dumps({"type": "output", "text": body}))
+                await self.ws.send(json.dumps({"type": "command_output", "text": body}))
             elif sub == "delete" and len(parts) >= 3:
                 payload = await asyncio.wrap_future(
                     self.worker.call_session_tool("memory_delete", {"name": parts[2]}))
                 ok_ = payload.get("status") == "ok"
                 await self.ws.send(json.dumps({
-                    "type": "output" if ok_ else "error",
+                    "type": "command_output" if ok_ else "error",
                     "text": (f"  ✓ Deleted memory '{parts[2]}'\n" if ok_
                              else f"  ✗ {payload.get('error', 'delete failed')}\n")}))
             elif sub == "clear":
@@ -1219,7 +1252,7 @@ class _Session:
                     self.worker.call_session_tool("memory_clear", {}))
                 ok_ = payload.get("status") == "ok"
                 await self.ws.send(json.dumps({
-                    "type": "output" if ok_ else "error",
+                    "type": "command_output" if ok_ else "error",
                     "text": (f"  ✓ Cleared {payload.get('cleared', 0)} memory item(s). "
                              "This cannot be undone.\n" if ok_
                              else f"  ✗ {payload.get('error', 'clear failed')}\n")}))
@@ -1230,12 +1263,12 @@ class _Session:
         elif text == "/cancel":
             cancelled = self.worker.cancel()
             if not cancelled:
-                await self.ws.send(json.dumps({"type": "output", "text": "  (nothing to cancel)\n"}))
+                await self.ws.send(json.dumps({"type": "command_output", "text": "  (nothing to cancel)\n"}))
         elif text.startswith("/backend "):
             mode = text[9:].strip().lower()
             if mode in ("ollama", "vllm", "ray"):
                 self.worker._agent.set_backend(mode)
-                await self.ws.send(json.dumps({"type": "output", "text": f"  ✓ Backend set to {mode}\n"}))
+                await self.ws.send(json.dumps({"type": "command_output", "text": f"  ✓ Backend set to {mode}\n"}))
             else:
                 await self.ws.send(json.dumps({"type": "error", "text": f"Unknown backend: {mode}. Use ollama, vllm or ray."}))
         else:

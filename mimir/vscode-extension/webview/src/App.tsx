@@ -417,6 +417,7 @@ export const App: React.FC = () => {
       if ((msg.diffs ?? []).length > 0) scrollToApproval();
     } else if (
       msg.type === "output" || msg.type === "status" ||
+      msg.type === "command_output" ||
       msg.type === "token" || msg.type === "thinking" ||
       msg.type === "answer" || msg.type === "error" ||
       msg.type === "tool_call" || msg.type === "subagent_event"

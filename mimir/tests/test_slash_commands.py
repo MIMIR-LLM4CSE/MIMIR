@@ -86,5 +86,42 @@ class RoutingTests(unittest.TestCase):
         self.assertIn("SESSION_COMMANDS", src)
 
 
+class CommandAnswersAreRenderedTests(unittest.TestCase):
+    """A command answer must not travel on the transient `output` channel.
+
+    The webview reducer drops `output` on purpose — it is tool-activity chatter — so
+    every answer `_handle_command` sent was swallowed: `/memory list` printed nothing,
+    and `/memory clear` wiped the store while looking like it had done nothing at all.
+    Answers go out as `command_output`, which the reducer renders.
+    """
+
+    def _handler_body(self) -> str:
+        src = _ws_handled()
+        start = src.index("async def _handle_command(self")
+        end = src.index("async def _send_toggles", start)
+        return src[start:end]
+
+    def test_the_handler_body_is_found(self) -> None:
+        # A slice that silently matched nothing would make the assertions below vacuous.
+        body = self._handler_body()
+        self.assertIn("/memory", body)
+        self.assertIn("/proxy", body)
+
+    def test_no_answer_uses_the_dropped_output_channel(self) -> None:
+        self.assertNotIn('"type": "output"', self._handler_body())
+
+    def test_answers_use_the_rendered_channel(self) -> None:
+        self.assertIn('"type": "command_output"', self._handler_body())
+
+    def test_the_webview_renders_that_channel(self) -> None:
+        reducer = os.path.join(
+            _ROOT, "vscode-extension", "webview", "src", "state", "chatReducer.ts")
+        with open(reducer, encoding="utf-8") as fh:
+            src = fh.read()
+        self.assertIn('case "command_output"', src)
+        # And still drops the transient one, or the chatter comes back with it.
+        self.assertIn('case "output":', src)
+
+
 if __name__ == "__main__":
     unittest.main()

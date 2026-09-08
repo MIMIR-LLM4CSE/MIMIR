@@ -955,16 +955,34 @@ class _AgentWorker:
         over — or to drop a memory that has gone stale and keeps being recalled into
         every prompt — should not have to ask the model to do it. Before this the only
         recourse was deleting files under a store whose path they had no reason to know.
+
+        The call goes STRAIGHT to the owning MCP session, around the guardrail
+        pipeline — the same bypass the CLI surface makes in
+        ``chat_commands._call_platform_tool``, and for the same reason: approvals,
+        plan-shape gates and the write policy exist to judge what the *model* asked
+        for. Routed through ``_run_tool`` instead, a command the user typed was weighed
+        as if the model had proposed it — in plan or ask mode the plan gate answered
+        with a refusal string, so the command did nothing and said nothing — and every
+        one of them scattered tool cards through the transcript on its way.
         """
         if self._agent is None or self._loop is None:
             fut: Any = concurrent.futures.Future()
             fut.set_result({"status": "error", "error": "No agent session is running."})
             return fut
 
+        agent = self._agent
+        owner = (getattr(agent, "tool_owner", None) or {}).get(tool)
+        if owner is None:
+            fut = concurrent.futures.Future()
+            fut.set_result({"status": "error",
+                            "error": f"The server owning '{tool}' is not connected."})
+            return fut
+
         async def _run() -> dict:
             try:
-                raw = await self._agent._run_tool(tool, dict(args))
-                return json.loads(raw) if isinstance(raw, str) else (raw or {})
+                raw = await agent.sessions[owner].call_tool(tool, dict(args))
+                text = agent._normalize_tool_content(raw)
+                return json.loads(text) if isinstance(text, str) else (text or {})
             except Exception as exc:
                 return {"status": "error", "error": str(exc)}
 
