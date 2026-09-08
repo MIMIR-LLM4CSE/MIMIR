@@ -40,9 +40,7 @@
   "deepseek-v4": {
     "thinking": "effort",
     "effort_levels": ["low", "high", "max"],
-    "toggle_param": "thinking_mode",
-    "toggle_values": { "on": "thinking", "off": "chat" },
-    "note": "Verified in the model card and encoding/README.md of DeepSeek-V4-Pro-0813: the release ships no Jinja chat template, reasoning_effort takes low/high/max (realised as a prompt prefix), and thinking_mode='chat' closes the think block so no reasoning is produced. It does not read enable_thinking. Earlier DeepSeek lines are not covered by this key and fall back to the default."
+    "note": "reasoning_effort takes low/high/max (realised as a prompt prefix) and it works: measured at temperature 0 against DeepSeek-V4-Flash-0731 under vLLM, 'low' gave 373 characters of reasoning where the default gave 413. It does not read enable_thinking. NO toggle_param: 'thinking_mode' is documented for V4-Pro-0813 but is inert on Flash-0731 -- that build ships no chat template at all, and vLLM silently ignores unknown top-level request fields (verified: a nonsense parameter is accepted the same way), so thinking_mode='chat' returned reasoning byte-identical to sending nothing. Declaring it cost more than nothing: with a toggle present, thinking=False sent the ignored field and NO reasoning_effort, leaving the model at its default depth -- MORE reasoning than the weakest rung. Without it, the shared 'cannot be switched off' path applies and thinking=False sends the weakest rung, as for glm-5.3. Both builds answer to the served-model-name 'deepseek-v4', so MIMIR cannot tell them apart: serve them under distinct names if Pro-0813's toggle is ever wanted. Earlier DeepSeek lines are not covered by this key and fall back to the default."
   },
 
   "glm-5.3": {

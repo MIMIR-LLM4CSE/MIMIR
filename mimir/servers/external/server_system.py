@@ -10,6 +10,9 @@ import platform
 import shutil
 import sys
 import time
+from typing import Annotated
+
+from pydantic import Field
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '_shared'))
 
@@ -138,7 +141,13 @@ def _op_uptime() -> dict:
 
 
 @mcp.tool(**tool_caps(label="System {op}"))
-def system(op: str, path: str = "/", name: str = "") -> dict:
+def system(
+    op: Annotated[str, Field(
+        description="Which operation to perform. Required — it selects everything else, and the parameters each one needs.",
+        json_schema_extra={"enum": list(_SYSTEM_OPS)},
+    )],
+    path: str = "/", name: str = "",
+) -> dict:
     """Read-only OS metrics and environment info, selected by ``op``.
 
     Operations (set ``op`` to one of these):

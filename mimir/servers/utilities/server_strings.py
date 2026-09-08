@@ -1,5 +1,8 @@
 import os
 import sys
+from typing import Annotated
+
+from pydantic import Field
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '_shared'))
 
@@ -23,7 +26,10 @@ _STRING_OPS = (
 
 @mcp.tool(**tool_caps(label="String {op}"))
 def string_op(
-    op: str,
+    op: Annotated[str, Field(
+        description="Which operation to perform. Required — it selects everything else, and the parameters each one needs.",
+        json_schema_extra={"enum": list(_STRING_OPS)},
+    )],
     text: str,
     old: str = "",
     new: str = "",

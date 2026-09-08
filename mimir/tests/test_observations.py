@@ -20,6 +20,8 @@ from unittest.mock import patch
 import mimir.client.guardrails.observations as runtime
 import mimir.client.guardrails.runner_output as runner_output
 from mimir.client.guardrails.runner_output import (
+    DECLARED_FAILURE,
+    TEST_RUNNER_FAILURE,
     judge_run,
     observed_failure_verdict,
 )
@@ -831,6 +833,41 @@ class VerdictGrammarTests(unittest.TestCase):
     def test_a_green_report_never_rescues_a_red_exit(self):
         self.assertEqual(judge_run(exit_ok=False, output="6 passed in 1s"), (False, ""))
 
+    def test_a_colon_separated_runner_row_is_read(self):
+        # `FAILED: convergence_order` says exactly what `FAILED tests/x::y` says; the
+        # anchor used to require whitespace or `(` and read the colon form as silent.
+        completed, reason = judge_run(exit_ok=True, output="FAILED: convergence_order")
+        self.assertFalse(completed)
+        self.assertEqual(reason, TEST_RUNNER_FAILURE)
+
+    def test_the_pytest_and_unittest_rows_still_read(self):
+        for out in ("FAILED tests/test_x.py::test_a - AssertionError",
+                    "FAILED (failures=1, errors=2)",
+                    "ERROR tests/test_x.py::test_b"):
+            self.assertFalse(judge_run(exit_ok=True, output=out)[0], out)
+
+    def test_a_word_starting_with_failed_is_not_a_row(self):
+        self.assertTrue(judge_run(exit_ok=True, output="FAILED_COUNT is zero")[0])
+        self.assertTrue(judge_run(exit_ok=True, output="nothing failed here")[0])
+
+    def test_a_reported_exit_status_is_read_as_a_count(self):
+        # `exit` rides the existing non-zero-is-a-failure rule.
+        self.assertTrue(observed_failure_verdict("suite_exit=1"))
+        self.assertFalse(observed_failure_verdict("suite_exit=0"))
+
+    def test_the_echo_that_launders_the_exit_prints_the_evidence(self):
+        # `cmd; echo "suite_exit=$?"` makes the SHELL's returncode 0, so exit_ok is True
+        # and the one signal judge_run trusts has been laundered. The same echo prints
+        # the status, so the reader demotes and the idiom undoes itself.
+        completed, reason = judge_run(
+            exit_ok=True, output="ran 5 tests\nsuite_exit=1\n")
+        self.assertFalse(completed)
+        self.assertEqual(reason, DECLARED_FAILURE)
+
+    def test_a_green_reported_exit_is_still_green(self):
+        self.assertEqual(
+            judge_run(exit_ok=True, output="check=pass\nsuite_exit=0\n"), (True, ""))
+
 
 class ExitAttributionTests(unittest.TestCase):
     """Whether the status handed back is the one the run produced."""
@@ -904,9 +941,29 @@ class RunLedgerKeyTests(unittest.TestCase):
             run_ledger_key('python3 -c "import scipy"'),
         )
 
-    def test_an_unreadable_command_keys_on_its_own_text(self):
-        opaque = 'timeout 280 python3 test_x.py; echo "EXIT=$?"'
+    def test_a_status_line_does_not_split_the_ledger(self):
+        # This used to be the documented behaviour and it was the defect: `$` is
+        # refused by the classifier's security default, so appending `; echo "x=$?"`
+        # to a command under retry opened a fresh entry every time and the repair
+        # ladder never reached its first rung. run_ledger_key asks for an identity,
+        # not a verdict, so it parses with allow_expansion=True.
+        self.assertEqual(
+            run_ledger_key('timeout 280 python3 test_x.py; echo "EXIT=$?"'),
+            run_ledger_key("python3 test_x.py"),
+        )
+
+    def test_an_unreadable_command_still_keys_on_its_own_text(self):
+        # Command substitution runs code, so it stays opaque either way: nothing about
+        # it is known well enough to call two of them the same run.
+        opaque = 'python3 $(ls tests/test_*.py)'
         self.assertEqual(run_ledger_key(opaque), opaque)
+
+    def test_the_security_default_is_untouched(self):
+        # Only run_ledger_key opts in; the gate keeps refusing what it always refused.
+        from mimir.client.guardrails.policy.bash_classify import classify_bash_command
+        cmd = 'python3 t.py; echo "x=$?"'
+        self.assertIsNone(classify_bash_command(cmd))
+        self.assertIsNotNone(classify_bash_command(cmd, allow_expansion=True))
 
     def test_the_key_is_idempotent(self):
         key = run_ledger_key("cd /w && pytest tests/test_x.py -q | tail -5")

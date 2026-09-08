@@ -62,8 +62,11 @@ none.
 
 Storage layout
 --------------
-All state lives under ``~/.cache/proxy_bench/`` (registry.json, references/,
-runs/<proxy>/<timestamp>/, suites/<name>/, opt_runs/<proxy>/, scaffolds/).
+All state lives under ``<workspace>/proxy_bench/`` (registry.json, references/,
+runs/<proxy>/<timestamp>/, suites/<name>/, opt_runs/<proxy>/, scaffolds/, and the
+``opt.git`` snapshot repository). It sits with the project it belongs to, so deleting
+the project resets the experiment; it used to live in ``~/.cache`` and a deleted project
+came back with its registry, an "in progress" optimisation and a stale run command.
 Override the root with the ``MIMIR_PROXY_BENCH_DIR`` environment variable.
 """
 
@@ -71,6 +74,9 @@ from __future__ import annotations
 
 import os
 import sys
+from typing import Annotated
+
+from pydantic import Field
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '_shared'))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -117,7 +123,13 @@ _GET_OPS = ("proxies", "proxy", "references", "suites", "suite", "report")
 
 
 @mcp.tool(**tool_caps(label="Proxy info: {op}"))
-def proxy_get(op: str, name: str = "", run_timestamp: str = "") -> dict:
+def proxy_get(
+    op: Annotated[str, Field(
+        description="Which operation to perform. Required — it selects everything else, and the parameters each one needs.",
+        json_schema_extra={"enum": list(_GET_OPS)},
+    )],
+    name: str = "", run_timestamp: str = "",
+) -> dict:
     """Inspect registered proxies, references, benchmark suites, and reports.
 
     Operations (set ``op``):
@@ -154,7 +166,10 @@ _RUNS_OPS = ("list", "logs", "diff", "compare", "aggregate")
 
 @mcp.tool(**tool_caps(label="Proxy runs: {op}"))
 def proxy_runs(
-    op: str = "list",
+    op: Annotated[str, Field(
+        description="Which operation to perform. Required — it selects everything else, and the parameters each one needs.",
+        json_schema_extra={"enum": list(_RUNS_OPS)},
+    )] = 'list',
     proxy_name: str = "",
     run_id: str = "",
     run_a: str = "",
@@ -220,7 +235,10 @@ _EVAL_STATUS_OPS = ("status", "results", "log", "runs", "diff", "config")
 
 @mcp.tool(**tool_caps(label="Proxy eval status: {op}", run_outcome=_RUN_OUTCOME))
 def proxy_eval_status(
-    op: str = "status",
+    op: Annotated[str, Field(
+        description="Which operation to perform. Required — it selects everything else, and the parameters each one needs.",
+        json_schema_extra={"enum": list(_EVAL_STATUS_OPS)},
+    )] = 'status',
     proxy_name: str = "",
     tail: int = 50,
     run_a: str = "",
@@ -266,13 +284,16 @@ def proxy_eval_status(
 # ── sensitive tools (confirm=True required) ───────────────────────────────────
 
 _MANAGE_OPS = ("register", "update", "unregister",
-               "suite_define", "suite_update", "suite_delete", "scaffold")
+               "suite_define", "suite_update", "suite_delete", "scaffold", "clean")
 
 
 @mcp.tool(**tool_caps(caps=[PLAN_BLOCKED], reversibility=RECOVERABLE, non_batch=True,
                       label="Proxy manage: {op}"))
 def proxy_manage(
-    op: str,
+    op: Annotated[str, Field(
+        description="Which operation to perform. Required — it selects everything else, and the parameters each one needs.",
+        json_schema_extra={"enum": list(_MANAGE_OPS)},
+    )],
     name: str = "",
     executable_path: str = "",
     run_cmd_template: str = "",
@@ -301,6 +322,10 @@ def proxy_manage(
       suite_define -> define a benchmark suite (requires: name, cases)
       suite_update -> patch a suite definition (requires: name)
       suite_delete -> delete a suite definition; results are kept (requires: name)
+      clean        -> delete a proxy's runs, optimisation state and snapshots
+                      (requires: name). Leaves sealed references and suites, and
+                      names what it left in the response. `unregister` removes the
+                      registry entry; `clean` removes the state behind it.
       scaffold     -> generate reference + test harness files for a source
                       component (requires: proxy_path, component_hint)
 
@@ -363,6 +388,8 @@ def proxy_manage(
                     metadata=metadata))
     if op == "unregister":
         return _missing_args(op, name=name) or registry.unregister(name)
+    if op == "clean":
+        return _missing_args(op, name=name) or registry.clean(name)
     if op == "suite_define":
         return (_missing_args(op, name=name, cases=cases)
                 or suites.define(name, cases, description))
@@ -384,7 +411,10 @@ _EXEC_OPS = ("run", "reference", "suite", "benchmark_create", "cancel")
                                    "rows": {"field": "rows", "id": "run_dir",
                                             "failed_when_present": ["error"]}}))
 def proxy_exec(
-    op: str,
+    op: Annotated[str, Field(
+        description="Which operation to perform. Required — it selects everything else, and the parameters each one needs.",
+        json_schema_extra={"enum": list(_EXEC_OPS)},
+    )],
     proxy_name: str = "",
     reference_name: str = "",
     suite_name: str = "",
@@ -480,11 +510,15 @@ _EVAL_OPS = ("init", "configure", "run", "stop", "reset", "reset_to_best", "end"
 @mcp.tool(**tool_caps(caps=[PLAN_BLOCKED, CODE_EXEC, BACKGROUNDABLE], reversibility=RECOVERABLE, non_batch=True,
                       label="Proxy eval: {op}", run_outcome=_RUN_OUTCOME))
 def proxy_eval(
-    op: str,
+    op: Annotated[str, Field(
+        description="Which operation to perform. Required — it selects everything else, and the parameters each one needs.",
+        json_schema_extra={"enum": list(_EVAL_OPS)},
+    )],
     proxy_name: str = "",
     benchmark_name: str = "",
     requirements: list[dict] | None = None,
     proxy_source_path: str = "",
+    optimize_paths: list[str] | None = None,
     python_executable: str = "",
     max_hours: float = 0.0,
     primary_metric: str = "time_s",
@@ -510,9 +544,9 @@ def proxy_eval(
     reports ``converged``.
 
     Operations (set ``op``; all require confirm=True):
-      init          -> start a session; snapshots proxy_source_path as the
-                       canonical baseline, never overwritten later (requires:
-                       proxy_name, benchmark_name, requirements, proxy_source_path)
+      init          -> start a session; snapshots the optimize_paths TREE as the
+                       baseline (requires: proxy_name, benchmark_name,
+                       requirements, proxy_source_path, optimize_paths)
       configure     -> patch requirements/benchmark_name/python_executable/
                        max_hours without re-snapshotting
       run           -> launch a background eval run (non-blocking); errors if one
@@ -520,9 +554,11 @@ def proxy_eval(
                        detach it: end your turn instead of polling; you are
                        auto-resumed with the results when it completes.
       stop          -> stop the active run (SIGTERM local / scancel Slurm)
-      reset         -> restore the proxy source from the canonical baseline
-      reset_to_best -> restore the proxy source from the best *accepted* run (undo
-                       a regression without discarding progress)
+      reset         -> restore every optimize_paths file to the baseline tree
+      reset_to_best -> restore every optimize_paths file to the tree of the best
+                       *accepted* run (undo a regression without discarding
+                       progress). All of them or none: a per-file restore would
+                       assemble a combination that was never measured together.
       end           -> end the session: clear the active-session pointer (source,
                        snapshots and ledger are kept). Lifts the direct-execution
                        guard so the proxy can be run by hand again; re-init to
@@ -537,7 +573,15 @@ def proxy_eval(
             one of lt, gt, lte, gte, eq. Numerical invariants (l2_rel, linf_rel,
             finite, conservation_residual, convergence_order) are ordinary metrics
             here and can gate feasibility.
-        proxy_source_path: Absolute path to the proxy's own source file.
+        proxy_source_path: Absolute path to the HARNESS — the script the runner
+            executes, which exercises the code and prints metrics. It is not the
+            subject of the optimization and the ratchet never edits it.
+        optimize_paths: Absolute paths to the code the ratchet may edit — the real
+            modules the harness imports. Required, inside the workspace, and must
+            not contain proxy_source_path: a harness that is its own subject means
+            optimizing a copy, and the accuracy constraints then say nothing about
+            the code that ships. All the listed files are snapshotted and restored
+            as ONE state, so a restore can never mix files from different runs.
         python_executable: Python interpreter for the runner (default: server's).
         max_hours: Hard deadline per run in hours (0.0 = 24 h).
         primary_metric: Scalar objective the ratchet improves (default 'time_s').
@@ -562,11 +606,13 @@ def proxy_eval(
     if op == "init":
         missing = _missing_args(op, proxy_name=proxy_name, benchmark_name=benchmark_name,
                                 requirements=requirements,
-                                proxy_source_path=proxy_source_path)
+                                proxy_source_path=proxy_source_path,
+                                optimize_paths=optimize_paths)
         if missing:
             return missing
         return eval_session.init(proxy_name, benchmark_name, requirements,
-                                 proxy_source_path, python_executable, max_hours,
+                                 proxy_source_path, optimize_paths,
+                                 python_executable, max_hours,
                                  primary_metric, primary_goal, min_improvement,
                                  max_stall, convergence)
     if op == "configure":
@@ -613,7 +659,10 @@ _OP_OWNERS: dict[str, list[str]] = _build_op_owners()
                       label="Proxy Slurm: {op}",
                       risk_note="Submits Slurm batch jobs that consume cluster allocation hours."))
 def proxy_slurm(
-    op: str,
+    op: Annotated[str, Field(
+        description="Which operation to perform. Required — it selects everything else, and the parameters each one needs.",
+        json_schema_extra={"enum": list(_SLURM_OPS)},
+    )],
     partition: str,
     proxy_name: str = "",
     suite_name: str = "",

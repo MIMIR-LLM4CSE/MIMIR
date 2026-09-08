@@ -25,6 +25,7 @@ import time
 from datetime import datetime, timezone
 
 from responses import err
+import proc_run
 
 from _lib import command, metrics as metrics_mod, procs, report, store
 
@@ -153,7 +154,10 @@ def _run_benchmark_case(
     t0 = time.time()
     try:
         with open(log_file, "w") as log_fh:
-            proc = subprocess.run(
+            # proc_run: the solver is code MIMIR did not write and may fork MPI
+            # ranks or worker threads. Left running past a timeout they compete with
+            # the very next timing this ratchet takes.
+            proc = proc_run.run(
                 argv, stdout=log_fh, stderr=subprocess.STDOUT,
                 timeout=cap,
             )
@@ -248,8 +252,8 @@ def _seal_reference(
     t0 = time.time()
     try:
         with open(log_file, "w") as log_fh:
-            proc = subprocess.run(argv, stdout=log_fh, stderr=subprocess.STDOUT,
-                                  timeout=timeout_s)
+            proc = proc_run.run(argv, stdout=log_fh, stderr=subprocess.STDOUT,
+                                timeout=timeout_s)
     except subprocess.TimeoutExpired:
         return None, err(f"Solver timed out after {timeout_s}s.",
                          hint="Increase timeout_s or use a smaller problem size "

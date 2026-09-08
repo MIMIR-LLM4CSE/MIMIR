@@ -400,7 +400,9 @@ def shell_segments(
     return segments
 
 
-def classify_bash_command(command: str) -> list[Segment] | None:
+def classify_bash_command(
+    command: str, *, allow_expansion: bool = False,
+) -> list[Segment] | None:
     """Classify *command* into per-segment (kind, operands), or None if opaque.
 
     Opaque for everything :func:`shell_segments` rejects — a substitution, a subshell,
@@ -414,8 +416,14 @@ def classify_bash_command(command: str) -> list[Segment] | None:
     execution keeps its kind and operands — that command's operands are what the
     observation layer credits (a validator run must still credit the file it
     checked, not the log it was piped into).
+
+    *allow_expansion* is forwarded to :func:`shell_segments`: a bare ``$VAR`` stops
+    making the command opaque, while command *substitution* stays opaque either way.
+    The default is False, so the security path is unchanged — the one caller that
+    passes True is ``run_ledger_key``, which needs an identity rather than a verdict
+    and is not a gate (see its docstring).
     """
-    parsed = shell_segments(command)
+    parsed = shell_segments(command, allow_expansion=allow_expansion)
     if parsed is None:
         return None
 

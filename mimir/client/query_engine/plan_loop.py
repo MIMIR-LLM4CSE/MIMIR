@@ -17,7 +17,8 @@ from ..context.capabilities import DELEGATE, arg_role, names_with_cap
 from ..context.signals import query_requires_repo_discovery
 from ..config.models import resolve_enforcement
 from ..config.constants import (
-    PLAN_EXPLORE_MAX_TURNS, THINKING_DEPTH_AUTO, max_tools_for,
+    AGENT_EMPTY_TURN_RETRIES, PLAN_EXPLORE_MAX_TURNS, THINKING_DEPTH_AUTO,
+    max_tools_for,
 )
 from ..guardrails.workflow import (
     PLAN_TODO_NUDGE_EARLY,
@@ -32,6 +33,7 @@ from ..guardrails.workflow import (
     PLAN_REWORK_NUDGE,
     PLAN_REJECTED_STOP,
     PLAN_REJECTED_ANSWER,
+    empty_turn_retry_message,
     plan_revision_nudge,
 )
 from ..guardrails.nudges import drop_transient_reminders, inject_reminder
@@ -193,7 +195,8 @@ async def _run_plan_mode(
     from .agent_loop import (
         _advertised_tools, _drain_steer, _run_agent_loop,
         _live_thinking, _live_thinking_budget, _sync_thinking_directive,
-        _live_mode, _apply_mode_switch,
+        _live_mode, _apply_mode_switch, _note_empty_turn,
+        _rebuild_system_content,
     )
 
     def _plan_tools(*, exploring: bool) -> list:
@@ -204,6 +207,11 @@ async def _run_plan_mode(
 
     answer = ""
     plan_recorded = False
+    # Plan mode had no empty-turn handling at all: a turn with neither prose nor a call
+    # fell through to the "not recorded yet" branch below, was nudged toward the plan
+    # and looped — leaving its empty assistant message in history each time, which is
+    # the shape that teaches the model an empty message answers a reminder.
+    empty_turns = 0
     # Title of the plan document under review. Deliberately NOT reset by revise/rework:
     # it is what keeps every revision of this review cycle in the same document.
     plan_title = ""
@@ -271,7 +279,10 @@ async def _run_plan_mode(
         # and whatever evidence was already gathered with it.
         live_mode = _live_mode(agent, "plan", execution_context)
         if live_mode != "plan":
-            system_content = await _apply_mode_switch(agent, messages, new_mode=live_mode)
+            system_content = await _apply_mode_switch(
+                agent, messages, new_mode=live_mode,
+                execution_context=execution_context,
+            )
             return await _run_agent_loop(
                 agent=agent,
                 query=query,
@@ -309,7 +320,7 @@ async def _run_plan_mode(
         # Re-read the reasoning depth so a rung moved mid-plan lands on this call.
         thinking = _live_thinking(agent, thinking)
         auto_active, _ = await _sync_thinking_directive(
-            agent, messages, "plan", auto_active, "",
+            agent, messages, "plan", auto_active, "", execution_context,
         )
         options = dict(base_options)
         _tb = _live_thinking_budget(agent)
@@ -351,6 +362,35 @@ async def _run_plan_mode(
             # The turn acted: its prose is narration above the tool cards, not a
             # plan-shaped answer waiting to be refused.
             hold.flush()
+        if not tool_calls and not (msg.get("content") or "").strip():
+            # A generation failure, not a conclusion. Same shape as the agent loop:
+            # drop the empty turn so the retry does not build on it, then ask again
+            # with a different ask each round.
+            empty_turns += 1
+            if hold:
+                hold.discard()
+            if messages and messages[-1].get("role") == "assistant":
+                messages.pop()
+            _note_empty_turn(msg, messages, execution_context, plan_nudges)
+            if empty_turns > AGENT_EMPTY_TURN_RETRIES:
+                return await _finalize_answer(
+                    agent, query,
+                    "The model returned empty turns repeatedly and the plan was not "
+                    "written. Nothing was concluded — retry the query.",
+                    execution_context, messages, logger,
+                )
+            emit({"type": "status", "text": (
+                f"  ↻ Empty turn from the model — retrying "
+                f"({empty_turns}/{AGENT_EMPTY_TURN_RETRIES})."
+            )})
+            inject_reminder(messages,
+                            empty_turn_retry_message(execution_context,
+                                                     attempt=empty_turns),
+                            category="empty_turn",
+                            tagged=False, execution_context=execution_context,
+                            step=plan_nudges)
+            continue
+
         # Keep whatever prose the model emitted as a fallback answer.
         content = msg.get("content", "")
         if content:
@@ -392,7 +432,12 @@ async def _run_plan_mode(
                     except Exception:
                         pass
                 emit({"type": "mode", "mode": "agent"})
-                agent_system = await agent._build_system_content(active_mode="agent")
+                # Through the shared rule: the agent-mode prompt renders the
+                # checklist this plan just wrote, and the skill block survives the
+                # handoff instead of being dropped on the way into agent mode.
+                agent_system = await _rebuild_system_content(
+                    agent, "agent", execution_context,
+                )
                 messages[0]["content"] = agent_system
                 messages.append({"role": "user", "content": PLAN_APPROVED_EXECUTE})
                 # Seamlessly continue in agent mode, executing the approved plan to

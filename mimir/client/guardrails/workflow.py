@@ -677,7 +677,23 @@ EMPTY_TURN_OPENING = (
 )
 
 
-def empty_turn_retry_message(execution_context: dict | None = None) -> str:
+# What the reminder adds on the second and third attempt. A retry that re-sends the
+# same sentence is not a retry: the loop asked three times with one prompt, and the
+# reminder is transient, so the model saw the identical message each round. Escalating
+# the *ask* — narrower each time — is what makes the attempts different, and it does it
+# without keeping the reminder in history (which is what once put 21 copies of one
+# sentence in a single prompt).
+_EMPTY_TURN_ESCALATION = (
+	" The previous retry also came back empty. Emit a single tool call — the smallest "
+	"useful one — rather than a turn of prose.",
+	" Two retries have now come back empty. Do not call a tool this turn: write one "
+	"plain sentence saying where the work stands.",
+)
+
+
+def empty_turn_retry_message(
+	execution_context: dict | None = None, *, attempt: int = 1,
+) -> str:
 	"""What to say after a turn that produced nothing, given what the turn owes.
 
 	Offering "or write the answer" is right for a turn with nothing outstanding and wrong
@@ -687,15 +703,22 @@ def empty_turn_retry_message(execution_context: dict | None = None) -> str:
 
 	A constant could not know the difference. Every other corrective in this module is
 	already a function of the state it speaks about; this one was the exception.
+
+	*attempt* is the 1-based retry number, and only widens the advice: attempt 1 is the
+	wording this function has always returned.
 	"""
 	if execution_context is not None and unhonoured_commitments(execution_context):
-		return (
+		base = (
 			EMPTY_TURN_OPENING
 			+ "call the tool the next unfinished step needs. Your checklist still has "
 			"open steps and files you named are not written, so this is not a turn to "
 			"summarise — do the next piece of the work."
 		)
-	return EMPTY_TURN_OPENING + "call the tool the task needs next, or write the answer."
+	else:
+		base = EMPTY_TURN_OPENING + "call the tool the task needs next, or write the answer."
+	if attempt <= 1:
+		return base
+	return base + _EMPTY_TURN_ESCALATION[min(attempt, len(_EMPTY_TURN_ESCALATION) + 1) - 2]
 
 
 # Retained as the no-context wording; callers with an execution_context should call

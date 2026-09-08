@@ -834,32 +834,3 @@ def build_system_content(
         )
 
     return system_content
-
-
-_PIN_MARKER = "\n[Task checklist — auto-updated]\n"
-
-
-def build_checklist_pin_block(execution_context: dict[str, Any]) -> str:
-    """Build the live task checklist, re-read from disk, for the per-step pin.
-
-    Re-read rather than snapshotted so the block always reflects the latest state,
-    even after the model has marked a step complete mid-session: the copy in
-    ``messages[0]`` is a build-time snapshot, so this is the only live channel for
-    the checklist. Returns an empty string when there is no checklist.
-
-    This pin used to also carry discovery evidence — the paths read, written, and
-    planned this session. That was removed: the paths are already in the transcript
-    the model is reading, and repeating a bare list of them at the tail of every
-    prompt is a pattern the model copies rather than uses.
-    """
-    todo_fp = execution_context.get("todo_file_path", "")
-    if not todo_fp:
-        return ""
-    todo_items = _load_todo_items(todo_fp)
-    if not todo_items:
-        return ""
-
-    pending = sum(1 for it in todo_items if not it.get("done"))
-    lines = [f"Task checklist ({pending} pending):"]
-    lines.extend(f"  [{'x' if it['done'] else ' '}] {it['text']}" for it in todo_items)
-    return _PIN_MARKER + "\n".join(lines) + "\n"

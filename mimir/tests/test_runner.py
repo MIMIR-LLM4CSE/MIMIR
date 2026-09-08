@@ -54,7 +54,11 @@ class _RecordingAdapter:
         self.seen.append({
             "task_id": task.id,
             "workspace": ctx.workspace,
-            "agent_id": id(ctx.agent),
+            # The agent itself, not id(): an address freed between tasks is handed
+            # straight back to the next allocation, so two distinct agents compared
+            # by id() can and do collide. Holding the reference makes reuse
+            # impossible, and `is` asks the question the test actually means.
+            "agent": ctx.agent,
             # task_b must NOT see task_a's seeded file (workspace isolation):
             "leaked_a_file": os.path.isfile(os.path.join(ctx.workspace, "from_task_a.txt")),
         })
@@ -95,7 +99,7 @@ class IsolationTests(unittest.TestCase):
         a, b = adapter.seen
         # Distinct workspaces and distinct agent instances → no cross-task leakage.
         self.assertNotEqual(a["workspace"], b["workspace"])
-        self.assertNotEqual(a["agent_id"], b["agent_id"])
+        self.assertIsNot(a["agent"], b["agent"])
         # task_b's workspace never received task_a's seed file.
         self.assertFalse(b["leaked_a_file"])
 

@@ -263,5 +263,33 @@ class FiringPathTests(unittest.TestCase):
                                       active_mode="agent", execution_context=ec))
 
 
+
+class TheLadderIsReachableThroughAStatusLineTests(unittest.TestCase):
+    """The rung counter only accumulates if the ledger key holds the run together.
+
+    ``run_ledger_key`` used to fall back to raw text whenever the classifier refused a
+    command, and ``$`` is refused by the security default — so a model that appended
+    ``; echo "suite_exit=$?"`` to the command it was already retrying opened a fresh
+    entry each time. Every attempt read as the first, ``failures`` never passed
+    STUCK_REPAIR_ADVISE_AFTER, and this whole ladder was unreachable. The key's own
+    identity cases live in ``RunLedgerKeyTests`` (test_observations); what is pinned
+    here is that the counter this row reads actually adds up.
+    """
+
+    def test_the_failure_streak_accumulates_across_the_status_line(self) -> None:
+        from mimir.client.context.execution_context import (
+            build_execution_context, record_run,
+        )
+        from mimir.client.guardrails.observations import _register_run_failure
+        base = "python3 tests/test_wave2d.py"
+        forms = [base, base + '; echo "suite_exit=$?"', "cd sub && " + base]
+        ec = build_execution_context()
+        for cmd in forms:
+            record_run(ec, cmd, completed=False)
+            _register_run_failure(ec, cmd, "red")
+        self.assertEqual(len(ec["runs"]), 1)
+        self.assertEqual(ec["runs"][base]["failures"], len(forms))
+
+
 if __name__ == "__main__":
     unittest.main()

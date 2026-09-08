@@ -212,7 +212,6 @@ class LiveRungChangeTests(unittest.TestCase):
              patch.object(m, "_post_dispatch_inject", _noop_async), \
              patch.object(history_module, "_trim_tool_history", lambda *a, **k: None), \
              patch.object(history_module, "_maybe_compact_intra_query", lambda *a, **k: None), \
-             patch.object(m, "_inject_pin", lambda *a, **k: None), \
              patch.object(m, "tools_for_context", lambda **k: []), \
              patch.object(m, "needs_incomplete_finalization", lambda ec: False):
             asyncio.run(m.run_agent_query(agent=agent, query="do a thing", max_steps=5, thinking=True))
@@ -280,7 +279,9 @@ class StubFallbackTests(unittest.TestCase):
         bare = types.SimpleNamespace(model="m")
         messages = [{"role": "system", "content": "S"}]
         auto, sys_content = asyncio.run(
-            agent_loop_module._sync_thinking_directive(bare, messages, "agent", False, "S")
+            agent_loop_module._sync_thinking_directive(
+                bare, messages, "agent", False, "S", {},
+            )
         )
         self.assertFalse(auto)
         self.assertEqual(sys_content, "S")

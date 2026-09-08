@@ -35,7 +35,6 @@ from ..guardrails.workflow import (
     TERMINATION_STEP_LIMIT,
     TERMINATION_USER_STOPPED,
 )
-from ..prompt.system_prompt import build_checklist_pin_block, _PIN_MARKER
 from ..guardrails.nudges import (
     drop_transient_reminders,
     inject_reminder,
@@ -91,12 +90,30 @@ def _live_mode(agent: Any, active_mode: str, execution_context: dict) -> str:
     return val
 
 
+async def _rebuild_system_content(
+    agent: Any, active_mode: str, execution_context: dict,
+) -> str:
+    """The system message as it must be after ANY rebuild: prompt + skill block.
+
+    The skill block is folded into messages[0] rather than appended as a second
+    ``system`` message (appending made it accumulate across queries — one session
+    carried nine copies). The cost of that choice is that every rebuild has to put it
+    back, and four sites rebuilt messages[0] with three different answers to that
+    question: a mode switch, a thinking-rung change, the plan→agent handoff and the
+    checklist refresh. The three that forgot dropped the skill silently, mid-run, on a
+    user action. One function, so the rule cannot be half-applied.
+    """
+    content = await agent._build_system_content(active_mode=active_mode)
+    return content + (execution_context.get("_skill_suffix") or "")
+
+
 async def _sync_thinking_directive(
     agent: Any,
     messages: list[dict],
     active_mode: str,
     auto_active: bool,
     system_content: str,
+    execution_context: dict,
 ) -> tuple[bool, str]:
     """Rewrite the system message when the run enters or leaves the "auto" rung.
 
@@ -113,9 +130,11 @@ async def _sync_thinking_directive(
     now = depth == THINKING_DEPTH_AUTO
     if now == auto_active:
         return auto_active, system_content
-    build = getattr(agent, "_build_system_content", None)
-    if callable(build) and messages and messages[0].get("role") == "system":
-        system_content = await build(active_mode=active_mode)
+    if getattr(agent, "_build_system_content", None) and messages \
+            and messages[0].get("role") == "system":
+        system_content = await _rebuild_system_content(
+            agent, active_mode, execution_context,
+        )
         messages[0]["content"] = system_content
     return now, system_content
 
@@ -141,7 +160,7 @@ def _mode_tools(
 
 
 async def _apply_mode_switch(
-    agent: Any, messages: list[dict], *, new_mode: str,
+    agent: Any, messages: list[dict], *, new_mode: str, execution_context: dict,
 ) -> str:
     """Rebuild the mode-dependent system prompt after a mid-run mode change.
 
@@ -153,7 +172,7 @@ async def _apply_mode_switch(
     """
     emit({"type": "status", "text": f"  ↻ Switched to {new_mode} mode mid-run"})
     emit({"type": "mode", "mode": new_mode})
-    system_content = await agent._build_system_content(active_mode=new_mode)
+    system_content = await _rebuild_system_content(agent, new_mode, execution_context)
     if messages and messages[0].get("role") == "system":
         messages[0]["content"] = system_content
     return system_content
@@ -200,44 +219,66 @@ def _note_empty_turn(msg: dict, messages: list[dict], execution_context: dict,
     )})
 
 
-def _inject_pin(messages: list[dict], execution_context: dict):
-    """Append the checklist pin as a TRANSIENT tail user turn before a model call.
+async def _sync_checklist(
+    agent: Any,
+    messages: list[dict],
+    active_mode: str,
+    system_content: str,
+    execution_context: dict,
+) -> str:
+    """Rewrite the system message when the on-disk task checklist has changed.
 
-    Keeping the pin at the very end — instead of rewriting the static system
-    message (messages[0]) every step — leaves the whole conversation prefix
-    byte-stable across the steps of a query, so vLLM automatic prefix caching is
-    not invalidated each step. The returned token is handed to :func:`_remove_pin`
-    to strip the pin immediately after the call, so it never enters persisted
-    history (``_last_full_messages``) or the next step's prefix.
+    THE INVARIANT: a block of STATE never occupies the last position of the prompt.
 
-    A ``user`` turn is the only placement that is safe across chat templates. A tail
-    ``system`` message is not: a template is free to fold it into the preceding turn,
-    and the DeepSeek one drops the generation prompt along with it — the model is then
-    asked to *continue the pin's own text* rather than answer, which it does, looping
-    on the checklist until the step budget runs out. A tail user turn always renders
-    with the assistant marker after it, and the strict-alternation templates that
-    reject two user turns in a row are served by the backend's existing
-    consecutive-user merge (``_merge_consecutive_user_messages``), which folds the pin
-    into the preceding turn exactly as the old per-model "append_user" role did.
+    Every chat template appends its generation prompt after the last message, so
+    whatever sits there is what the model is being asked to respond to or continue. A
+    checklist has nothing to ask and nothing to answer — putting it last hands the model
+    a status report where its turn should be. What that produces is template-dependent
+    and the failure is not: one template continued the block's own text until the step
+    budget ran out, another emitted a short reasoning block and EOS. Two symptoms, one
+    cause. Measured on one backend (37 empty turns / 108 draws with the block in the
+    tail, 0 / 84 without, 0/40 with the same text in messages[0]); the numbers say where
+    it was quantified, not where it applies.
 
-    Returns an opaque token (or ``None`` when the pin is empty).
+    The corollary is the sorting rule this loop follows everywhere: PILOTAGE — nudges,
+    reminders, the empty-turn retry — belongs in the last position, because asking for
+    the next turn IS its function, and it measured harmless there. STATE goes in
+    messages[0]. Nothing here tests the model or the template: the placement is
+    unconditional, which is the point. It replaces a per-model workaround — the block
+    used to be a tail ``user`` turn specifically because a tail ``system`` turn broke
+    one template's generation prompt, a distinction that measured irrelevant to the
+    real failure (7/40 vs 8/40) and that no longer has to be maintained.
+
+    Two gates, cheapest first. The trigger is the file's mtime rather than the
+    ``todo_update`` tool because the tool is not its only writer (``todo_write``, a
+    plain write to the path, a sub-agent), and one stat() per step costs less than a
+    stale checklist. The content comparison after the rebuild is not a
+    micro-optimisation: the todo server re-saves the file even when the text does not
+    change (ticking an item already ticked), and without it every such touch would cost
+    the whole prefix rather than nothing.
+
+    Returns the system content to keep budgeting against, like
+    :func:`_sync_thinking_directive`.
     """
-    pin = build_checklist_pin_block(execution_context)
-    if not pin or not pin.strip():
-        return None
-    messages.append({"role": "user", "content": pin})
-    return len(messages) - 1
-
-
-def _remove_pin(messages: list[dict], token) -> None:
-    """Undo :func:`_inject_pin` so the transient pin never persists into history."""
-    if token is None:
-        return
-    if messages and str(messages[-1].get("content", "")).startswith(_PIN_MARKER):
-        messages.pop()
-
-
-
+    todo_fp = execution_context.get("todo_file_path", "")
+    if not todo_fp:
+        return system_content
+    try:
+        stamp = os.stat(todo_fp).st_mtime_ns
+    except OSError:
+        return system_content  # no checklist on disk — nothing to refresh
+    if stamp == execution_context.get("_checklist_stamp"):
+        return system_content
+    execution_context["_checklist_stamp"] = stamp
+    if not (getattr(agent, "_build_system_content", None) and messages
+             and messages[0].get("role") == "system"):
+        return system_content
+    rebuilt = await _rebuild_system_content(agent, active_mode, execution_context)
+    if rebuilt == messages[0].get("content"):
+        return system_content  # touched, not changed: the prefix still hits
+    messages[0]["content"] = rebuilt
+    emit({"type": "status", "text": "  ↻ Task checklist changed — system prompt refreshed"})
+    return rebuilt
 
 
 def _drain_steer(agent: Any, messages: list[dict]) -> None:
@@ -252,9 +293,15 @@ def _drain_steer(agent: Any, messages: list[dict]) -> None:
 
     Optional by design: callers that never set ``_poll_steer`` (CLI, sub-agents, tests)
     are unaffected, mirroring the ``getattr(agent, "_cancel_flag", None)`` pattern. The
-    injected messages persist in history (unlike the transient checklist pin). Adjacent
-    user turns (e.g. following a post-dispatch nudge) are reconciled downstream by the
-    backend's consecutive-user-message merge, so no folding is needed here.
+    injected messages persist in history. Adjacent user turns (e.g. following a
+    post-dispatch nudge) are reconciled downstream by the backend's
+    consecutive-user-message merge, so no folding is needed here.
+
+    Nothing may be appended after a steer before the call: it is a real user turn, and
+    the last position is what the model answers. The checklist used to be appended
+    there — after this, just before the call — so a mid-run instruction was merged into
+    one user turn ending in a status block, and the model answered the block. That is
+    the same defect as :func:`_sync_checklist` documents, in its most visible form.
     """
     poll = getattr(agent, "_poll_steer", None)
     if not poll:
@@ -446,7 +493,10 @@ async def _run_agent_loop(
         if live_mode != active_mode:
             active_mode = live_mode
             readonly = active_mode in READONLY_MODES
-            system_content = await _apply_mode_switch(agent, messages, new_mode=active_mode)
+            system_content = await _apply_mode_switch(
+                agent, messages, new_mode=active_mode,
+                execution_context=execution_context,
+            )
             if active_mode == "plan":
                 return await _run_plan_mode(
                     agent=agent,
@@ -480,13 +530,19 @@ async def _run_agent_loop(
         thinking = _live_thinking(agent, thinking)
         auto_active, system_content = await _sync_thinking_directive(
             agent, messages, active_mode, auto_active, system_content,
+            execution_context,
+        )
+        # Same reason, same place: a checklist the model ticked off last step is only
+        # visible to it once messages[0] carries it, and the budget below must account
+        # for the message it will actually send.
+        system_content = await _sync_checklist(
+            agent, messages, active_mode, system_content, execution_context,
         )
 
         # Enforce the context budget BEFORE every LLM call (not only after tool
         # dispatch) so the first iteration — and any call whose history grew via
         # injected nudges — can never overflow the model window. Accounts for the
-        # (stable) tools schema sent alongside `messages`. Runs while the transient
-        # checklist pin is NOT in `messages`, so trimming sees the real history.
+        # (stable) tools schema sent alongside `messages`.
         _enforce_context_budget(
             messages, system_content, query_tools, execution_context,
             agent.model, context_mode, compact_fn, _tok,
@@ -519,10 +575,6 @@ async def _run_agent_loop(
         )
         step_cb = {**cb, "token_callback": hold.capture} if hold else cb
 
-        # Inject the checklist pin as a transient tail message for THIS call only,
-        # then strip it immediately (even on cancellation) so it never persists
-        # into history or the next step's cacheable prefix.
-        pin_token = _inject_pin(messages, execution_context)
         try:
             msg = _stream_chat(
                 agent.model,
@@ -541,7 +593,6 @@ async def _run_agent_loop(
                 hold.flush()
             raise
         finally:
-            _remove_pin(messages, pin_token)
             # The reminders injected for THIS call have now been put to the model.
             # Keeping them is what let one sentence reach 21 identical copies in a
             # single session; the emitted nudge_injected events keep the diagnosis.
@@ -581,8 +632,11 @@ async def _run_agent_loop(
                         f"  ↻ Empty turn from the model — retrying "
                         f"({empty_turns}/{AGENT_EMPTY_TURN_RETRIES})."
                     )})
+                    # The attempt number, so three retries are three different asks
+                    # rather than the same sentence sent three times.
                     inject_reminder(messages,
-                                    empty_turn_retry_message(execution_context),
+                                    empty_turn_retry_message(execution_context,
+                                                             attempt=empty_turns),
                                     category="empty_turn",
                                     tagged=False, execution_context=execution_context,
                                     step=step)
@@ -751,7 +805,7 @@ async def run_agent_query(
 
     system_content = await agent._build_system_content(active_mode=active_mode)
 
-    # Store the active todo file path so the per-step pin can show live progress.
+    # Store the active todo file path so _sync_checklist can watch it for changes.
     execution_context["todo_file_path"] = agent._get_todo_file()
 
     # The caller may or may not have already appended the current user turn to
@@ -804,6 +858,7 @@ async def run_agent_query(
 
     if skill_name:
         skill = agent.skills[skill_name]
+        _base_system_content = system_content
         # Folded into messages[0] rather than appended as a second `system` message.
         # Appending made it accumulate: it is written back into session history, so the
         # next query appended another copy — one session reached nine, ~4.3k tokens of
@@ -820,10 +875,18 @@ async def run_agent_query(
             + skill["content"]
         )
         messages[0]["content"] = system_content
+        execution_context["_skill_suffix"] = system_content[len(_base_system_content):]
 
-    # The live task checklist is injected as a transient tail message on every step
-    # including the first (see _inject_pin), so the static system message at
-    # messages[0] stays byte-stable across the whole query for prefix caching.
+    # messages[0] now carries the checklist as it stands at query start; _sync_checklist
+    # rewrites it from here on, and only when the file behind it actually changes. The
+    # mtime is seeded rather than left unset so an unchanged checklist costs nothing on
+    # the first step of every query.
+    _todo_fp = execution_context.get("todo_file_path", "")
+    if _todo_fp:
+        try:
+            execution_context["_checklist_stamp"] = os.stat(_todo_fp).st_mtime_ns
+        except OSError:
+            pass
 
     # Streaming callbacks bundled once and forwarded to _stream_chat by the loops.
     cb = {

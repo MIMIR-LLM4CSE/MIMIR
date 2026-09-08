@@ -562,6 +562,12 @@ def hover(path: str, line: int, symbol: str = "") -> dict:
     ``symbol`` (optional) is located on that line to compute the column. Returns the
     language server's hover text, or an error when no language server is available for
     the file's language.
+
+    Args:
+        path:   ABSOLUTE path to the file. A relative path is rejected.
+        line:   1-based line number the symbol is on.
+        symbol: Optional name to locate on that line, used to compute the column.
+                Omitted, the position is the start of the line.
     """
     try:
         abs_err = require_absolute(path, SEARCH_ROOT)

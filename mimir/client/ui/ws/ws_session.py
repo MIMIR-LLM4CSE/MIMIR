@@ -237,9 +237,21 @@ class _Session:
         self.transcript.bind(session.id)
         self.worker.load_agent_state({"carry_context": session.carry_context})
 
-        # If session had todos, restore them to disk so agent picks them up.
+        # If session had todos, restore them to disk so agent picks them up —
+        # unless what is already on disk is newer than this snapshot (see below).
         if session.todos:
-            self._restore_todos(session.todos, getattr(session, 'todo_deps', None))
+            if not self._restore_todos(
+                session.todos, getattr(session, 'todo_deps', None),
+                snapshot_at=session.updated_at,
+            ):
+                try:
+                    await self.ws.send(json.dumps({
+                        "type": "status",
+                        "text": ("  ⓘ Kept the checklist already on disk — it is newer "
+                                 "than this session's saved copy."),
+                    }))
+                except Exception:
+                    pass
             # Only offer to resume if there are incomplete tasks remaining.
             pending_todos = [t for t in session.todos if not t.get("done")]
             try:
@@ -274,13 +286,34 @@ class _Session:
         self._last_context_usage = None  # client cleared its bar on session_loaded
         await self._emit_context_usage()
 
-    def _restore_todos(self, todos: list[dict], todo_deps: list | None = None) -> None:
-        """Write todo items back to the session-scoped todo file.
+    def _restore_todos(
+        self, todos: list[dict], todo_deps: list | None = None,
+        *, snapshot_at: str = "",
+    ) -> bool:
+        """Write todo items back to the session-scoped todo file. Returns whether it did.
 
         Also restores the todo_deps.json sidecar when deps are provided.
+
+        REFUSES to write over a file that is newer than *snapshot_at*, the session's
+        ``updated_at``. ``session.todos`` is captured at autosave time, so a run cut
+        short — a dropped connection mid-query — leaves the store holding the checklist
+        as it stood at the last save while the file on disk holds the one the model has
+        since written. Restoring unconditionally then destroys the live list and hands
+        the model a finished one: observed in session ba8eee87, where a disconnect
+        during an optimisation task restored the *previous* task's five completed steps,
+        so the next query ran with a plan of record reading "0 pending" and the
+        completion gate (``unchecked_checklist_items``) had nothing left to block on.
+
+        The snapshot is trusted when it is at least as recent as the file, when the file
+        does not exist, and when either timestamp cannot be read — restoring is the old
+        behaviour and the right default; only *destroying newer work* is refused. The
+        deps sidecar follows the same decision as the list it describes, since restoring
+        one without the other yields dependencies pointing at steps that are not there.
         """
         try:
             todo_file = _todo_file_for_session(self._active_session_id)
+            if not self._snapshot_is_current(todo_file, snapshot_at):
+                return False
             os.makedirs(os.path.dirname(todo_file), exist_ok=True)
             lines = []
             for item in todos:
@@ -299,8 +332,31 @@ class _Session:
                     os.remove(deps_file)
                 except OSError:
                     pass
+            return True
         except Exception:
-            pass
+            return False
+
+    @staticmethod
+    def _snapshot_is_current(todo_file: str, snapshot_at: str) -> bool:
+        """May a session snapshot taken at *snapshot_at* overwrite *todo_file*?
+
+        Only when the file is not newer than the snapshot. ``updated_at`` is written
+        with an explicit UTC offset, so its epoch is directly comparable to the file's
+        mtime. Anything unreadable — no timestamp, a malformed one, a missing file —
+        answers yes: the guard exists to stop one specific loss, not to become a second
+        way for a restore to fail.
+        """
+        if not snapshot_at:
+            return True
+        try:
+            from datetime import datetime
+            snapshot_ts = datetime.fromisoformat(snapshot_at).timestamp()
+        except Exception:
+            return True
+        try:
+            return os.path.getmtime(todo_file) <= snapshot_ts
+        except OSError:
+            return True  # nothing on disk to lose
 
     def _autosave_session(self, display_messages: list[dict]) -> None:
         """Persist current session state after an answer is delivered."""
@@ -1099,6 +1155,78 @@ class _Session:
                 await self.ws.send(json.dumps({"type": "output", "text": f"  ✓ Enforcement set to {level}\n"}))
             else:
                 await self.ws.send(json.dumps({"type": "error", "text": f"Unknown enforcement level: {level}. Use strict, light, or off."}))
+        elif text.startswith("/proxy"):
+            # Housekeeping the person running the session may need without asking the
+            # model for it: a proxy's runs and optimisation state used to be removable
+            # only by deleting a store directory whose path nobody has a reason to know.
+            parts = text.split()
+            if len(parts) >= 3 and parts[1] == "clean":
+                name = parts[2]
+                payload = await asyncio.wrap_future(
+                    self.worker.call_session_tool(
+                        "proxy_manage", {"op": "clean", "name": name, "confirm": True}))
+                if payload.get("status") != "ok":
+                    await self.ws.send(json.dumps({
+                        "type": "error",
+                        "text": f"  ✗ {payload.get('error', 'clean failed')}\n"}))
+                else:
+                    lines = [f"  ✓ Cleaned proxy '{name}'",
+                             "    removed: " + ", ".join(payload.get("removed") or ["nothing"])]
+                    # What survived is the part worth printing: this is the exact
+                    # question ("I deleted everything and it still remembers") that
+                    # made a whole session start from state nobody meant to keep.
+                    for k in (payload.get("kept") or []):
+                        lines.append("    kept:    " + k)
+                    await self.ws.send(json.dumps({
+                        "type": "output", "text": "\n".join(lines) + "\n"}))
+            else:
+                await self.ws.send(json.dumps({
+                    "type": "error",
+                    "text": "Usage: /proxy clean <name>  — removes that proxy's runs, "
+                            "optimisation state and snapshots, and reports what it "
+                            "left behind.\n"}))
+        elif text.startswith("/memory"):
+            # The memory tools existed but only the model could reach them, so "forget
+            # what you learned about this project" was a request rather than an action —
+            # and a stale memory keeps being recalled into every prompt until removed.
+            parts = text.split()
+            sub = parts[1] if len(parts) >= 2 else ""
+            if sub == "list":
+                payload = await asyncio.wrap_future(
+                    self.worker.call_session_tool("memory_list_all", {}))
+                entries = payload.get("memory") or []
+                if not entries:
+                    body = "  No memories stored.\n"
+                else:
+                    rows = [f"  {len(entries)} memory item(s):"]
+                    for e in entries:
+                        desc = (e.get("description") or "").strip()
+                        rows.append(f"    {e.get('name', '?')}" + (f" — {desc}" if desc else ""))
+                    body = "\n".join(rows) + "\n"
+                await self.ws.send(json.dumps({"type": "output", "text": body}))
+            elif sub == "delete" and len(parts) >= 3:
+                payload = await asyncio.wrap_future(
+                    self.worker.call_session_tool("memory_delete", {"name": parts[2]}))
+                ok_ = payload.get("status") == "ok"
+                await self.ws.send(json.dumps({
+                    "type": "output" if ok_ else "error",
+                    "text": (f"  ✓ Deleted memory '{parts[2]}'\n" if ok_
+                             else f"  ✗ {payload.get('error', 'delete failed')}\n")}))
+            elif sub == "clear":
+                # Irreversible, and deliberately typed in full by the person whose
+                # memory it is. The count is reported so the effect is visible.
+                payload = await asyncio.wrap_future(
+                    self.worker.call_session_tool("memory_clear", {}))
+                ok_ = payload.get("status") == "ok"
+                await self.ws.send(json.dumps({
+                    "type": "output" if ok_ else "error",
+                    "text": (f"  ✓ Cleared {payload.get('cleared', 0)} memory item(s). "
+                             "This cannot be undone.\n" if ok_
+                             else f"  ✗ {payload.get('error', 'clear failed')}\n")}))
+            else:
+                await self.ws.send(json.dumps({
+                    "type": "error",
+                    "text": "Usage: /memory list | /memory clear | /memory delete <name>\n"}))
         elif text == "/cancel":
             cancelled = self.worker.cancel()
             if not cancelled:

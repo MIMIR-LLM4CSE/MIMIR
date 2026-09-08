@@ -30,7 +30,9 @@ field naming the exact next call — follow it.
            {"metric": "l2_rel",  "operator": "lt",  "threshold": 1e-3},  # accuracy constraint
            {"metric": "finite",  "operator": "eq",  "threshold": 1},     # no NaN/Inf
        ],
-       proxy_source_path="/abs/path/to/proxy_source.py",
+       proxy_source_path="/abs/path/to/harness.py",   # runs the code, prints metrics — NEVER edited
+       optimize_paths=["/abs/path/to/pkg/solver.py",  # the real code the harness imports
+                       "/abs/path/to/pkg/kernel.py"], # several files are fine
        primary_metric="time_s",   # scalar objective the ratchet improves
        primary_goal="min",        # "min" or "max"
        min_improvement=0.02,      # relative margin required to count as an improvement (2%; guards timing noise)
@@ -38,7 +40,17 @@ field naming the exact next call — follow it.
        confirm=True,
    )
    ```
-   This takes a one-time canonical snapshot. It is never overwritten automatically.
+   This snapshots the `optimize_paths` **tree** as the baseline.
+
+   **The harness is not the subject.** `proxy_source_path` runs the code and prints
+   metrics; `optimize_paths` is the code, which the harness should **import**. Writing a
+   self-contained script that reproduces the code you meant to optimize means the
+   accuracy constraints hold for the copy and say nothing about what ships — `init`
+   refuses that shape rather than warning about it.
+
+4. **Measure the baseline first.** Run once with `optimize_paths` untouched, before any
+   edit. Until that run is on record the ratchet refuses to accept anything: with no
+   measurement of the original, every later number is an assertion, not a comparison.
 
 ### Numerical invariants (correctness gates)
 
@@ -82,17 +94,21 @@ these requirements.
      then try a *different* edit and run.
    - **converged** → `proxy_eval(op='reset_to_best', confirm=True)`, then summarize.
    - no verdict yet (constraints not met, no best) → edit the source and run again.
-4. Editing: `read_file(path=<proxy_source_path>)`, understand what is slow or
-   inaccurate, apply a targeted `replace_in_file(...)`, then go to step 1.
+4. Editing: read the files in `optimize_paths`, understand what is slow or
+   inaccurate, apply a targeted `replace_in_file(...)` to one of them, then go to
+   step 1. Never edit the harness at `proxy_source_path` — it is the measuring
+   instrument, not the subject.
 5. **Compare runs**: `proxy_eval_status(op='diff')` or `(op='runs')` (note `is_best`).
 
 ## Rules
 
-- Read the proxy source before every modification. Never edit blind.
+- Read the file you are about to change before every modification. Never edit blind.
 - Make one focused change per run cycle — do not batch multiple unrelated edits.
 - Trust the `verdict`: never keep an edit the ratchet rejected — reset_to_best first.
-- `reset_to_best` reverts to the best accepted run (keeps progress); `reset` reverts
-  all the way to the original canonical baseline.
+- `reset_to_best` reverts every `optimize_paths` file to the best accepted run (keeps
+  progress); `reset` reverts them all to the baseline taken at init. Both restore the
+  whole set or nothing: a per-file revert would assemble a combination that was never
+  measured together, which can run and still mean nothing.
 - Use `proxy_eval(op='configure', ...)` to change requirements or benchmark without re-initializing.
 - The loop is not finished until `results` returns a `verdict` (accept/converged).
   Never declare success from `status` log tails alone — after any interruption or
@@ -104,7 +120,8 @@ these requirements.
   is fine). Executing it by hand bypasses reference sealing, the invariants and the ratchet,
   so a hand-run can never be a valid result. End the session with `proxy_eval(op='end', confirm=True)`
   to lift the guard and run the proxy directly again.
-- Do NOT modify `_proxy_runner.py` — it is a stable orchestrator. Modify only the proxy source file.
+- Do NOT modify `_proxy_runner.py` — it is a stable orchestrator. Modify only the files
+  listed in `optimize_paths`.
 
 ## When to stop
 
@@ -112,5 +129,8 @@ Stop and summarize when the session reports `verdict="converged"` (constraints m
 and the primary metric stopped improving), after restoring the best with
 `proxy_eval(op='reset_to_best', confirm=True)`. If no feasible run was ever found,
 report what was tried and what remains. When you are fully done with the proxy,
-`proxy_eval(op='end', confirm=True)` closes the session (source/snapshots/ledger are
-kept) and lifts the direct-execution guard.
+`proxy_eval(op='end', confirm=True)` closes the session (code, snapshots and ledger are
+kept) and lifts the direct-execution guard. To discard a proxy's runs, optimization state
+and snapshots entirely — starting over rather than continuing — use
+`proxy_manage(op='clean', name=..., confirm=True)`; it reports what it left behind
+(sealed references, suites, the registry entry) and how to remove those too.

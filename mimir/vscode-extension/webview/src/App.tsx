@@ -51,7 +51,8 @@ import {
 } from "./components/mentionUtils";
 import {
   detectSlashQuery,
-  filterSkills,
+  filterSlashItems,
+  isSessionCommand,
   applySlash,
   type SlashQuery,
 } from "./components/slashUtils";
@@ -145,7 +146,7 @@ export const App: React.FC = () => {
   const [serverToggles, setServerToggles] = useState<ToggleItem[]>([]);
   const [skillToggles, setSkillToggles] = useState<ToggleItem[]>([]);
   const slashItems = useMemo(
-    () => (slash ? filterSkills(skillToggles, slash.query) : []),
+    () => (slash ? filterSlashItems(skillToggles, slash.query) : []),
     [slash, skillToggles]
   );
   const slashOpen = slash !== null && slashItems.length > 0;
@@ -516,6 +517,15 @@ export const App: React.FC = () => {
     setInput("");
     setMention(null);
     setSlash(null);
+    // A session command acts on the session, not on the conversation: it goes out as
+    // `type: "command"` for ws_session._handle_command. Sent as a query it would simply
+    // reach the model as text — which is what used to happen, so "/memory clear" asked
+    // the model to clear memory instead of clearing it, and typed session commands were
+    // indistinguishable from ordinary prose.
+    if (isSessionCommand(text)) {
+      send({ type: "command", text });
+      return;
+    }
     // Chat-while-busy: a message sent during a run is a "steer" — queued and
     // injected into the agent's current turn at its next step, not a new query.
     if (busy) {

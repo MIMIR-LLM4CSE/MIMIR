@@ -47,7 +47,7 @@ class BackgroundDescriptorTests(_TmpStorageTest):
         )
         server_proxy.proxy_eval(
             op="init", proxy_name="fast", benchmark_name="fastb",
-            proxy_source_path=exe, primary_metric="time_s",
+            proxy_source_path=exe, optimize_paths=[self._tracked()], primary_metric="time_s",
             requirements=[{"metric": "time_s", "operator": "lt", "threshold": 100.0}],
             confirm=True,
         )
@@ -223,7 +223,7 @@ class ProxySlurmBackgroundTests(_TmpStorageTest):
         )
         server_proxy.proxy_eval(
             op="init", proxy_name="fast", benchmark_name="fastb",
-            proxy_source_path=exe, primary_metric="time_s",
+            proxy_source_path=exe, optimize_paths=[self._tracked()], primary_metric="time_s",
             requirements=[{"metric": "time_s", "operator": "lt", "threshold": 100.0}],
             confirm=True,
         )

@@ -1516,6 +1516,138 @@ class ReportVerdictTests(unittest.TestCase):
         self.assertEqual(payload["status"], "ok")
         self.assertEqual(payload["run"], "solver.py")
 
+    def test_the_verdict_is_still_case_and_space_tolerant(self) -> None:
+        # Declaring the closed set in the schema must not tighten what the body accepts:
+        # the enum is a hint the model reads, not a second validator.
+        payload = server_bash.report_verdict("  PASS ", "l2_rel=3e-4")
+        self.assertEqual(payload["status"], "ok")
+        self.assertEqual(payload["verdict"], "pass")
+
+
+class ToolSchemaContractTests(unittest.IsolatedAsyncioTestCase):
+    """What a tool promises must be declared where the model reads it: the schema.
+
+    Observed defect: a live session dropped `verdict` from two report_verdict calls,
+    sending only {reason, run}. vLLM parsed the call fine — the rejection was pydantic's,
+    and the model saw a raw dump. The schema it had been given described all three
+    parameters as bare `{"type": "string"}` with no description and no enum: three
+    indistinguishable slots, with the closed four-value set stated only in the
+    docstring's prose. `reason` and `run` have obvious semantic anchors in that prose;
+    `verdict` is the abstract one, and it is the one that went missing.
+
+    The `Args:` block was written and is discarded — the bundled FastMCP builds its
+    schema from the signature alone and has no docstring-parsing option, so a contract
+    only reaches the model through `Field(...)`.
+    """
+
+    async def _schema(self, name: str) -> dict:
+        for t in await server_bash.mcp.list_tools():
+            if t.name == name:
+                return t.inputSchema or {}
+        self.fail(f"tool {name} not found")
+
+    async def test_the_verdict_enum_reaches_the_model(self) -> None:
+        prop = (await self._schema("report_verdict"))["properties"]["verdict"]
+        self.assertEqual(prop.get("enum"), list(server_bash._VERDICT_VALUES))
+
+    async def test_the_enum_is_the_same_list_the_body_enforces(self) -> None:
+        # One source: a schema advertising a value the body refuses is worse than none.
+        prop = (await self._schema("report_verdict"))["properties"]["verdict"]
+        for value in prop["enum"]:
+            self.assertEqual(
+                server_bash.report_verdict(value, "l2_rel=3e-4")["status"], "ok", value
+            )
+
+    async def test_every_parameter_carries_a_description(self) -> None:
+        props = (await self._schema("report_verdict"))["properties"]
+        for name, prop in props.items():
+            self.assertTrue(prop.get("description"), f"{name} has no description")
+
+    async def test_every_op_enum_is_the_list_its_body_enforces(self) -> None:
+        """A schema advertising a value the body refuses is worse than no schema.
+
+        Each of these tools dispatches on `op` against a module-level tuple and already
+        rejects anything outside it (`_unknown_op`). The tuple is the contract; the
+        schema only declares it, so the two can never be allowed to drift.
+        """
+        import importlib
+        cases = [
+            ("mimir.servers.proxy.server_proxy", {
+                "proxy_get": "_GET_OPS", "proxy_runs": "_RUNS_OPS",
+                "proxy_eval_status": "_EVAL_STATUS_OPS", "proxy_manage": "_MANAGE_OPS",
+                "proxy_exec": "_EXEC_OPS", "proxy_eval": "_EVAL_OPS",
+                "proxy_slurm": "_SLURM_OPS",
+            }),
+            ("mimir.servers.external.server_system", {"system": "_SYSTEM_OPS"}),
+            ("mimir.servers.utilities.server_strings", {"string_op": "_STRING_OPS"}),
+        ]
+        checked = 0
+        for modname, mapping in cases:
+            mod = importlib.import_module(modname)
+            for tool in await mod.mcp.list_tools():
+                if tool.name not in mapping:
+                    continue
+                prop = (tool.inputSchema or {})["properties"]["op"]
+                self.assertEqual(
+                    prop.get("enum"), list(getattr(mod, mapping[tool.name])), tool.name
+                )
+                self.assertTrue(prop.get("description"), tool.name)
+                checked += 1
+        self.assertEqual(checked, 9)
+
+    async def test_the_examples_use_the_form_the_interface_accepts(self) -> None:
+        # The docstring used to show `report_verdict("pass", "...")`. A model emitting
+        # JSON arguments cannot use a positional form: it has to invent the key names.
+        doc = server_bash.report_verdict.__doc__ or ""
+        self.assertNotIn('report_verdict("', doc)
+        self.assertIn('verdict="pass"', doc)
+
+
+
+class EveryToolDescribesItsParametersTests(unittest.IsolatedAsyncioTestCase):
+    """No tool ships a parameter the model is left to guess at.
+
+    A constraint stated only in a docstring's prose does not get followed. On one
+    recorded run the model dropped `report_verdict`'s required `verdict` twice, called
+    `proxy_get` with an `op` that is not one of the six the docstring lists and with
+    another that the same docstring says needs `name`, and hit `bash_run`'s 30s default
+    four times against a docstring that says to raise it — 9 wasted turns in 107 calls.
+    The prose reached the model every time; only the schema changes behaviour.
+
+    `_schema_with_arg_descriptions` closes that by lifting each tool's `Args:` block
+    into its schema, so the fix costs no new prose. This test is what keeps it closed:
+    without it the invariant lapses at the first tool added with an undocumented
+    parameter, and nothing would say so.
+    """
+
+    async def test_no_parameter_reaches_the_model_undescribed(self) -> None:
+        import glob
+        import importlib
+        from mimir.client.integration.server_manager import _schema_with_arg_descriptions
+
+        undescribed, total = [], 0
+        for path in sorted(glob.glob("mimir/servers/*/server_*.py")):
+            try:
+                mod = importlib.import_module(path[:-3].replace("/", "."))
+            except Exception:
+                continue  # a server whose deps are absent here is not this test's subject
+            mcp = getattr(mod, "mcp", None)
+            if mcp is None:
+                continue
+            for tool in await mcp.list_tools():
+                props = _schema_with_arg_descriptions(tool).get("properties") or {}
+                for name, prop in props.items():
+                    total += 1
+                    if not prop.get("description"):
+                        undescribed.append(f"{tool.name}.{name}")
+        self.assertGreater(total, 200, "the servers did not load; the sweep proved nothing")
+        self.assertEqual(
+            undescribed, [],
+            "these parameters reach the model with no description — add them to the "
+            "tool's Args: block (or a Field(description=...)):\n  "
+            + "\n  ".join(undescribed),
+        )
+
 
 class TodoServerTests(unittest.TestCase):
     def setUp(self) -> None:

@@ -106,29 +106,25 @@ def _load_best(proxy_name: str) -> dict | None:
 
 
 def _save_best(proxy_name: str, run_id: str, primary_value: float | None,
-               source_path: str, wall_value: float | None = None) -> str | None:
-    """Record *run_id* as best-so-far and snapshot its source for reset_to_best.
+               tree_snapshot_id: str, wall_value: float | None = None) -> str | None:
+    """Record *run_id* as best-so-far, pointing at the tree snapshot that produced it.
 
-    ``wall_value`` is the run's server-measured wall time, kept alongside the
-    (possibly self-reported) primary value so the timing audit can compare an
-    accepted run's wall time against the incumbent's.  Returns the snapshot
-    path on success, ``None`` if the source could not be snapshotted (the
-    pointer is still written so best tracking survives).
+    *tree_snapshot_id* identifies the state of every tracked file at the moment the run
+    was LAUNCHED — one id for the whole set, which is what makes reset_to_best restore a
+    combination that was actually measured. Keeping a best per file would let a restore
+    assemble file A from one run beside file B from another.
+
+    ``wall_value`` is the run's server-measured wall time, kept alongside the (possibly
+    self-reported) primary value so the timing audit can compare an accepted run's wall
+    time against the incumbent's. Returns the snapshot id it recorded, or None when the
+    run had none (the pointer is still written so best tracking survives).
     """
-    snap = store._opt_best_source_path(proxy_name, source_path)
-    snapped: str | None = None
-    if source_path and os.path.isfile(source_path):
-        try:
-            os.makedirs(os.path.dirname(snap), exist_ok=True)
-            shutil.copy2(source_path, snap)
-            snapped = snap
-        except OSError:
-            snapped = None
+    snapped = tree_snapshot_id or None
     record = {
         "run_id":        run_id,
         "primary_value": primary_value,
         "wall_value":    wall_value,
-        "source_snapshot": snapped,
+        "tree_snapshot": snapped,
         "updated_at":    datetime.now(timezone.utc).isoformat(),
     }
     try:

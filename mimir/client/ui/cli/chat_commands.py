@@ -99,6 +99,9 @@ async def handle_chat_command(
             "  /undo         -> revert all file changes made in the last agent turn\n"
             "  /modules [refresh|<term>] -> environment-module catalogue: index status,\n"
             "                           force a rebuild, or search it directly\n"
+            "  /memory list|clear|delete <name> -> inspect or wipe persistent memory\n"
+            "  /proxy clean <name> -> delete a proxy's runs, optimisation state and\n"
+            "                           snapshots; reports what it left behind\n"
             "  /resources    -> list attachable MCP resources (use @<uri> to attach one to a query)\n"
             "  @<path>[:a-b] -> attach a workspace file (or lines a-b) to a query, e.g. @src/foo.py:10-20\n"
             "  quit          -> exit\n",
@@ -313,7 +316,90 @@ async def handle_chat_command(
     if cmd == "/modules":
         return True, await _modules_command(agent, parts[1:])
 
+    if cmd == "/memory":
+        if len(parts) >= 2 and parts[1] in ("list", "clear", "delete"):
+            return True, await _memory_command(agent, parts[1], parts[2:])
+        return True, ("\n❌ Usage: /memory list | /memory clear | /memory delete <name>\n")
+
+    if cmd == "/proxy":
+        if len(parts) >= 3 and parts[1] == "clean":
+            return True, await _proxy_clean_command(agent, parts[2])
+        return True, ("\n❌ Usage: /proxy clean <name>  — removes that proxy's runs, "
+                      "optimisation state and snapshots, and reports what it left.\n")
+
     return True, "\n❌ Unknown command. Type /help.\n"
+
+
+async def _memory_command(agent: Any, sub: str, args: list[str]) -> str:
+    """Inspect or wipe persistent memory from the chat, without asking the model.
+
+    The tools existed (`memory_list_all`, `memory_delete`, `memory_clear`) but only the
+    model could reach them, so "forget what you learned about this project" was a request
+    rather than an action — and a stored memory that has gone stale keeps being recalled
+    into every prompt until somebody removes it.
+
+    `clear` is irreversible and takes no confirmation prompt here on purpose: it is typed
+    deliberately, in full, by the person whose memory it is. It still reports the count so
+    the effect is visible rather than silent.
+    """
+    if sub == "list":
+        payload = await _call_platform_tool(agent, "memory_list_all", {})
+        if payload is None:
+            return "\n❌ The memory server is not connected.\n"
+        entries = payload.get("memory") or []
+        if not entries:
+            return "\nNo memories stored.\n"
+        lines = [f"\n{len(entries)} memory item(s):"]
+        for e in entries:
+            desc = (e.get("description") or "").strip()
+            lines.append(f"  {e.get('name', '?')}" + (f" — {desc}" if desc else ""))
+        return "\n".join(lines) + "\n"
+
+    if sub == "delete":
+        if not args:
+            return "\n❌ Usage: /memory delete <name>\n"
+        payload = await _call_platform_tool(agent, "memory_delete", {"name": args[0]})
+        if payload is None:
+            return "\n❌ The memory server is not connected.\n"
+        if payload.get("status") != "ok":
+            return f"\n❌ {payload.get('error', 'delete failed')}\n"
+        return f"\n✓ Deleted memory '{args[0]}'.\n"
+
+    payload = await _call_platform_tool(agent, "memory_clear", {})
+    if payload is None:
+        return "\n❌ The memory server is not connected.\n"
+    if payload.get("status") != "ok":
+        return f"\n❌ {payload.get('error', 'clear failed')}\n"
+    return f"\n✓ Cleared {payload.get('cleared', 0)} memory item(s). This cannot be undone.\n"
+
+
+async def _proxy_clean_command(agent: Any, name: str) -> str:
+    """Remove one proxy's runs, optimisation state and snapshots.
+
+    Reachable by the model as proxy_manage(op='clean'), but the person who wants to
+    start an optimisation over should not have to ask the model to tidy up first. Before
+    this the only way was `rm -rf` on a store whose path nobody has a reason to know —
+    which is how a deleted project came back with a finished checklist and an
+    optimisation still marked "in progress".
+
+    Unlike :func:`_call_platform_tool` this one DELETES, so it goes through the tool
+    rather than around it: `clean` is the op that knows what belongs to a proxy and,
+    more importantly, what does not — sealed references and suites are shared and are
+    reported rather than removed.
+    """
+    payload = await _call_platform_tool(
+        agent, "proxy_manage", {"op": "clean", "name": name, "confirm": True})
+    if payload is None:
+        return "\n❌ The proxy server is not connected.\n"
+    if payload.get("status") != "ok":
+        return f"\n❌ {payload.get('error', 'clean failed')}\n"
+    lines = [f"\n✓ Cleaned proxy '{name}'",
+             "  removed: " + ", ".join(payload.get("removed") or ["nothing"])]
+    # What survived is the half worth printing: it is the answer to "I deleted
+    # everything and it still remembers".
+    for kept in (payload.get("kept") or []):
+        lines.append("  kept:    " + kept)
+    return "\n".join(lines) + "\n"
 
 
 async def _call_platform_tool(agent: Any, tool: str, arguments: dict) -> dict | None:

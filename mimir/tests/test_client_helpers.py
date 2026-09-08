@@ -994,7 +994,6 @@ class ClientHelperTests(unittest.TestCase):
              patch.object(agent_loop_module, "_post_dispatch_inject", _noop_async), \
              patch.object(history_module, "_trim_tool_history", lambda *a, **k: None), \
              patch.object(history_module, "_maybe_compact_intra_query", lambda *a, **k: None), \
-             patch.object(m, "_inject_pin", lambda *a, **k: None), \
              patch.object(m, "tools_for_context", lambda **k: []), \
              patch.object(m, "needs_incomplete_finalization", lambda ec: False), \
              patch.object(m, "_finalize_answer", _fake_finalize):

@@ -3,7 +3,8 @@
 Single source of truth for where proxy state lives on disk.  Every path is
 derived from the one module attribute ``_CACHE_DIR`` (env-overridable via
 ``MIMIR_PROXY_BENCH_DIR``), so tests repoint exactly one variable to get a
-hermetic store.  Also owns the generic atomic-IO helpers and the registry /
+hermetic store.  It defaults under the *workspace*, so the state of an experiment
+lives with the project it belongs to.  Also owns the generic atomic-IO helpers and the registry /
 suite / reference / optimization-session persistence built on them.
 """
 
@@ -18,8 +19,24 @@ import threading
 
 # ── storage root ──────────────────────────────────────────────────────────────
 
+# Under the WORKSPACE, not ~/.cache. Everything else MIMIR persists is already scoped
+# per workspace; this store was the exception, and the exception had a cost: deleting a
+# project left the registry behind with a run_cmd_template pointing at a file that no
+# longer existed, and an `opt_runs/active_session` still naming an optimisation as "in
+# progress" — so a fresh start silently resumed the old one. Here it is visible, and it
+# goes when the project goes.
+#
+# Not `<workspace>/.mimir/`: that name is the workspace's *extensions* directory. Not the
+# per-workspace state dir either: sealed reference fields are npz of several megabytes
+# each, and ~/.mimir has no business growing without bound.
+#
+# MCP_FILES_ROOT is how every server here learns the workspace root (see server_bash);
+# cwd is its fallback. MIMIR_PROXY_BENCH_DIR still wins, which is what lets a test
+# repoint the whole store by setting one variable.
+_WORKSPACE_ROOT = os.path.abspath(os.environ.get("MCP_FILES_ROOT") or os.getcwd())
+
 _CACHE_DIR = (os.environ.get("MIMIR_PROXY_BENCH_DIR")
-              or os.path.expanduser("~/.cache/proxy_bench"))
+              or os.path.join(_WORKSPACE_ROOT, "proxy_bench"))
 
 
 def cache_dir() -> str:
@@ -273,12 +290,6 @@ def _opt_ledger_file(proxy_name: str) -> str:
 def _opt_best_file(proxy_name: str) -> str:
     """Best-so-far pointer: opt_runs/<proxy>/best.json."""
     return os.path.join(_opt_session_runs_dir(proxy_name), "best.json")
-
-
-def _opt_best_source_path(proxy_name: str, source_path: str) -> str:
-    """Snapshot of the best run's source: opt_runs/<proxy>/best_source<ext>."""
-    ext = os.path.splitext(source_path)[1] or ".py"
-    return os.path.join(_opt_session_runs_dir(proxy_name), "best_source" + ext)
 
 
 def _resolve_proxy_name(arg: str) -> str | None:

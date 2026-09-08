@@ -22,20 +22,37 @@ class RatchetLoopTests(_TmpStorageTest):
             op="suite_define", name="bench",
             cases=[{"case_id": "a", "proxy_name": "tiny"}], confirm=True,
         )
-        self.source = os.path.join(self.root, "source.py")
+        # The harness runs the code and prints metrics; the ratchet edits the code.
+        # init refuses the two being the same file, so the fixture keeps them apart.
+        self.source = os.path.join(self.root, "harness.py")
+        with open(self.source, "w") as fh:
+            fh.write("import optimized\n")
+        self.optimized = os.path.join(self.root, "optimized.py")
         self._write_source("v0")
         res = server_proxy.proxy_eval(
             op="init", proxy_name="tiny", benchmark_name="bench",
             requirements=[{"metric": "time_s", "operator": "lt", "threshold": 100.0}],
-            proxy_source_path=self.source,
+            proxy_source_path=self.source, optimize_paths=[self.optimized],
             primary_metric="time_s", primary_goal="min", max_stall=max_stall,
             confirm=True,
         )
         self.assertEqual(res.get("status"), "ok")
         self.assertIn("minimize time_s", res["objective"])
 
+    def _baseline_run(self, feasible: bool = True) -> None:
+        """Measure the untouched code, which the ratchet now requires before accepting.
+
+        The first FEASIBLE run used to become the best, so a session whose first run was
+        already an edit had nothing to compare against — every later number was an
+        assertion. The run is recorded as the baseline whether or not it passed: what
+        matters is that the original was measured.
+        """
+        self._complete_run("20231231T235959Z", all_passed=feasible, time_s=9.0)
+        self._results()
+
     def _write_source(self, tag: str) -> None:
-        with open(self.source, "w") as fh:
+        """Edit the tracked code, never the harness — the shape init now enforces."""
+        with open(self.optimized, "w") as fh:
             fh.write(f"VERSION = '{tag}'\n")
 
     def _complete_run(self, run_id: str, all_passed: bool, time_s: float,
@@ -58,8 +75,31 @@ class RatchetLoopTests(_TmpStorageTest):
             fh.write(f"[proxy_runner] summary cases_passed={1 if all_passed else 0} "
                      f"cases_total=1 all_passed={all_passed} best_case=a "
                      f"best_time_s={time_s}\n")
+        self._record_launch_tree("tiny", run_dir)
         procs._update_opt_active_link("tiny", run_dir)
         return run_dir
+
+    @staticmethod
+    def _record_launch_tree(proxy_name: str, run_dir: str) -> None:
+        """What a real run records in _prepare_run: the tree as it stood at launch.
+
+        Fabricated run dirs used to skip it, and the ratchet now refuses to accept a run
+        with no recorded tree — rightly, since reset_to_best would have nothing to
+        restore. Writing it here keeps the fixture faithful to the path runs take.
+        """
+        from _lib import tree_snapshot
+        from _ops import eval_session as _es
+        cfg = _es._load_opt_config(proxy_name) or {}
+        paths = list(cfg.get("optimize_paths") or [])
+        if not paths:
+            return
+        sid = tree_snapshot.snapshot(_es.opt_git_dir(), _es._workspace_root(),
+                                     paths, f"launch: {os.path.basename(run_dir)}")
+        store._write_json_atomic(os.path.join(run_dir, "tree_at_launch.json"), {
+            "snapshot_id": sid,
+            "paths":       paths,
+            "is_baseline": bool(cfg.get("baseline_id")) and sid == cfg.get("baseline_id"),
+        })
 
     def _results(self) -> dict:
         return server_proxy.proxy_eval_status(op="results")
@@ -87,7 +127,7 @@ class RatchetLoopTests(_TmpStorageTest):
         # reset_to_best restores the best-so-far source (version 'A'), not canonical.
         rb = server_proxy.proxy_eval(op="reset_to_best", confirm=True)
         self.assertEqual(rb.get("status"), "ok")
-        with open(self.source) as fh:
+        with open(self.optimized) as fh:
             self.assertEqual(fh.read(), "VERSION = 'A'\n")
 
         # Run C: feasible improvement -> accepted, new best (3.0).
@@ -223,9 +263,13 @@ class RunnerConvergenceRequirementTests(_TmpStorageTest):
             reference_params={"n": 40}, confirm=True,
         )
         self.assertEqual(res.get("status"), "ok")
+        # The ratchet needs code to edit that is not the harness itself.
+        tracked = os.path.join(self.root, "tracked.py")
+        with open(tracked, "w") as fh:
+            fh.write("TUNABLE = 1\n")
         res = server_proxy.proxy_eval(
             op="init", proxy_name="conv", benchmark_name="convb",
-            proxy_source_path=exe, primary_metric="time_s",
+            proxy_source_path=exe, optimize_paths=[tracked], primary_metric="time_s",
             convergence={"h_param": "h", "error_metric": "err"},
             requirements=[
                 {"metric": "convergence_order", "operator": "gte", "threshold": 1.7},
@@ -284,9 +328,13 @@ class RunnerSettlesRatchetTests(_TmpStorageTest):
             op="suite_define", name="fastb",
             cases=[{"case_id": "a", "proxy_name": "fast"}], confirm=True,
         )
+        # The ratchet needs code to edit that is not the harness itself.
+        tracked = os.path.join(self.root, "tracked.py")
+        with open(tracked, "w") as fh:
+            fh.write("TUNABLE = 1\n")
         res = server_proxy.proxy_eval(
             op="init", proxy_name="fast", benchmark_name="fastb",
-            proxy_source_path=exe, primary_metric="time_s",
+            proxy_source_path=exe, optimize_paths=[tracked], primary_metric="time_s",
             requirements=[{"metric": "time_s", "operator": "lt",
                            "threshold": 100.0}],
             confirm=True,
@@ -326,9 +374,12 @@ class RunnerSettlesRatchetTests(_TmpStorageTest):
         self.assertIsNotNone(best)
         self.assertEqual(best["run_id"], os.path.basename(run_dir))
         self.assertTrue(os.path.isfile(os.path.join(run_dir, "ratchet.json")))
-        # Best snapshot comes from the launch-time copy of the source.
-        self.assertTrue(os.path.isfile(
-            os.path.join(run_dir, "source_at_launch.py")))
+        # The accepted state is the TREE as it stood at launch, recorded for the whole
+        # optimize_paths set — not a copy of one source file, which could only ever
+        # restore part of a multi-file change.
+        launch = store._read_json(os.path.join(run_dir, "tree_at_launch.json"))
+        self.assertTrue(launch, "no launch tree recorded")
+        self.assertEqual(best["tree_snapshot"], launch["snapshot_id"])
 
     def test_results_after_runner_settle_is_idempotent(self) -> None:
         self._setup_session()
@@ -345,15 +396,21 @@ class ReferenceRequirementGuardTests(_TmpStorageTest):
     forging the metric from inside the proxy)."""
 
     def _source(self) -> str:
-        path = os.path.join(self.root, "source.py")
+        """The harness, and the code it exercises — init refuses them being one file."""
+        path = os.path.join(self.root, "harness.py")
         with open(path, "w") as fh:
+            fh.write("import optimized\n")
+        self.optimized = os.path.join(self.root, "optimized.py")
+        with open(self.optimized, "w") as fh:
             fh.write("VERSION = 'v0'\n")
         return path
 
     def _init(self, requirements: list[dict], benchmark: str = "bench") -> dict:
+        src = self._source()
         return server_proxy.proxy_eval(
             op="init", proxy_name="tiny", benchmark_name=benchmark,
-            requirements=requirements, proxy_source_path=self._source(),
+            requirements=requirements, proxy_source_path=src,
+            optimize_paths=[self.optimized],
             confirm=True,
         )
 

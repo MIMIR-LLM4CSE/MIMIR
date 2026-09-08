@@ -31,6 +31,10 @@ class _TmpStorageTest(unittest.TestCase):
 
     Every path is derived from ``store._CACHE_DIR`` at call time, so one
     repoint makes the entire store hermetic.
+
+    The temp dir doubles as the WORKSPACE (``MCP_FILES_ROOT``): ``optimize_paths`` are
+    refused outside it, so a fixture with no workspace of its own would be measuring the
+    repository it runs from.
     """
 
     def setUp(self) -> None:
@@ -38,9 +42,28 @@ class _TmpStorageTest(unittest.TestCase):
         self._saved_root = store._CACHE_DIR
         store._CACHE_DIR = self._tmp.name
         self.root = self._tmp.name
+        self._saved_ws = os.environ.get("MCP_FILES_ROOT")
+        os.environ["MCP_FILES_ROOT"] = self._tmp.name
+
+    def _tracked(self) -> str:
+        """A file the ratchet may edit, distinct from the harness.
+
+        init refuses proxy_source_path being one of optimize_paths: a harness that is
+        its own subject means optimizing a copy, and the accuracy constraints then say
+        nothing about the code that ships.
+        """
+        path = os.path.join(self.root, "tracked.py")
+        if not os.path.exists(path):
+            with open(path, "w") as fh:
+                fh.write("TUNABLE = 1\n")
+        return path
 
     def tearDown(self) -> None:
         store._CACHE_DIR = self._saved_root
+        if self._saved_ws is None:
+            os.environ.pop("MCP_FILES_ROOT", None)
+        else:
+            os.environ["MCP_FILES_ROOT"] = self._saved_ws
         self._tmp.cleanup()
 
     # -- fixtures ------------------------------------------------------------
@@ -195,22 +218,53 @@ class EvalLoopTests(_TmpStorageTest):
         return server_proxy.proxy_eval(
             op="init", proxy_name="tiny", benchmark_name="bench",
             requirements=[{"metric": "time_s", "operator": "lt", "threshold": 2.0}],
-            proxy_source_path=self.source, confirm=True,
+            proxy_source_path=self.source, optimize_paths=[self._tracked()], confirm=True,
         )
 
-    def test_init_snapshots_canonical_and_sets_next_step(self) -> None:
+    def test_init_snapshots_the_tree_and_sets_next_step(self) -> None:
         res = self._init_session()
         self.assertEqual(res.get("status"), "ok")
-        self.assertFalse(res["canonical_existed"])
+        self.assertTrue(res["baseline_id"])          # the tracked tree was snapshotted
+        self.assertEqual(res["optimize_paths"], [self._tracked()])
         self.assertIn("proxy_eval(op='run'", res["next_step"])
 
-        # Second init never overwrites the canonical.
+    def test_the_init_note_points_at_the_code_not_the_harness(self) -> None:
+        """The old note said "Modify '<proxy_source_path>' between runs".
+
+        That sentence pointed the model at the harness as the thing to edit, and making
+        the harness the thing being optimized is exactly the self-contained copy that two
+        recorded sessions produced.
+        """
+        res = self._init_session()
+        self.assertIn("tracked.py", res["note"])
+        self.assertIn("never the harness", res["note"])
+        self.assertNotIn("Modify 'source.py'", res["note"])
+
+    def test_a_re_init_never_moves_the_baseline(self) -> None:
+        """Re-init is how requirements are widened mid-run; it must not rewrite history.
+
+        Re-snapshotting there would quietly promote the current, already-optimised tree
+        to "the original", after which every comparison is against work already done and
+        "is this faster than what we started with?" stops being answerable.
+        """
+        res = self._init_session()
+        tracked = self._tracked()
+        with open(tracked, "w") as fh:
+            fh.write("TUNABLE = 2  # progress so far\n")
         res2 = server_proxy.proxy_eval(
             op="init", proxy_name="tiny", benchmark_name="bench",
-            requirements=[{"metric": "time_s", "operator": "lt", "threshold": 2.0}],
-            proxy_source_path=self.source, confirm=True,
+            requirements=[{"metric": "time_s", "operator": "lt", "threshold": 5.0}],
+            proxy_source_path=self.source, optimize_paths=[tracked], confirm=True,
         )
-        self.assertTrue(res2["canonical_existed"])
+        self.assertEqual(res2.get("status"), "ok")
+        self.assertTrue(res2["baseline_existed"])
+        self.assertEqual(res2["baseline_id"], res["baseline_id"])
+        self.assertIn("kept, not moved", res2["note"])
+
+        # And reset still goes back to the ORIGINAL, not to the state at re-init.
+        server_proxy.proxy_eval(op="reset", confirm=True)
+        with open(tracked) as fh:
+            self.assertEqual(fh.read(), "TUNABLE = 1\n")
 
     def test_init_requires_existing_suite(self) -> None:
         self._register()
@@ -218,7 +272,7 @@ class EvalLoopTests(_TmpStorageTest):
         res = server_proxy.proxy_eval(
             op="init", proxy_name="tiny", benchmark_name="nope",
             requirements=[{"metric": "t", "operator": "lt", "threshold": 1}],
-            proxy_source_path=src, confirm=True,
+            proxy_source_path=src, optimize_paths=[self._tracked()], confirm=True,
         )
         self.assertEqual(res.get("status"), "error")
         self.assertIn("not found", res["error"])
@@ -232,7 +286,7 @@ class EvalLoopTests(_TmpStorageTest):
         res = server_proxy.proxy_eval(
             op="init", proxy_name="tiny", benchmark_name="bench",
             requirements=[{"metric": "t", "operator": "approx", "threshold": 1}],
-            proxy_source_path=self._make_exe("s.py"), confirm=True,
+            proxy_source_path=self._make_exe("s.py"), optimize_paths=[self._tracked()], confirm=True,
         )
         self.assertEqual(res.get("status"), "error")
         self.assertIn("invalid operator", res["error"])
@@ -246,7 +300,7 @@ class EvalLoopTests(_TmpStorageTest):
         res = server_proxy.proxy_eval(
             op="init", proxy_name="tiny", benchmark_name="bench",
             requirements=[{"metric": "time_s", "operator": "lt", "threshold": 2.0}],
-            proxy_source_path=self._make_exe("s.py"), min_improvement=-0.1, confirm=True,
+            proxy_source_path=self._make_exe("s.py"), optimize_paths=[self._tracked()], min_improvement=-0.1, confirm=True,
         )
         self.assertEqual(res.get("status"), "error")
         self.assertIn("min_improvement", res["error"])
@@ -277,14 +331,25 @@ class EvalLoopTests(_TmpStorageTest):
         self.assertEqual(res["config"]["requirements"][0]["metric"], "misfit")
         self.assertIn("next_step", res)
 
-    def test_reset_restores_canonical_source(self) -> None:
+    def test_reset_restores_the_tracked_tree_not_the_harness(self) -> None:
         self._init_session()
-        with open(self.source, "w") as fh:
-            fh.write("VERSION = 2  # broken attempt\n")
+        tracked = self._tracked()
+        with open(tracked, "w") as fh:
+            fh.write("TUNABLE = 99  # broken attempt\n")
         res = server_proxy.proxy_eval(op="reset", confirm=True)
         self.assertEqual(res.get("status"), "ok")
+        with open(tracked) as fh:
+            self.assertEqual(fh.read(), "TUNABLE = 1\n")
+
+    def test_reset_leaves_the_harness_alone(self) -> None:
+        # The harness is the measuring instrument: the ratchet neither edits nor
+        # restores it, so a change made to it on purpose survives a reset.
+        self._init_session()
+        with open(self.source, "w") as fh:
+            fh.write("VERSION = 1  # harness tweak\n")
+        server_proxy.proxy_eval(op="reset", confirm=True)
         with open(self.source) as fh:
-            self.assertEqual(fh.read(), "VERSION = 1\n")
+            self.assertIn("harness tweak", fh.read())
 
     def test_end_clears_the_active_session(self) -> None:
         self._init_session()
@@ -454,7 +519,7 @@ class SlurmSubmitEvalTests(_TmpStorageTest):
         server_proxy.proxy_eval(
             op="init", proxy_name="tiny", benchmark_name="bench",
             requirements=[{"metric": "time_s", "operator": "lt", "threshold": 2.0}],
-            proxy_source_path=src, max_hours=3.0,
+            proxy_source_path=src, optimize_paths=[self._tracked()], max_hours=3.0,
             convergence={"h_param": "n", "error_metric": "l2_rel"}, confirm=True,
         )
         res = server_proxy.proxy_slurm(op="eval", partition="debug", confirm=True)

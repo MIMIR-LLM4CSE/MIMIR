@@ -943,6 +943,33 @@ class _AgentWorker:
             augment_query_with_resources(self._agent, text), self._loop
         )
 
+    def call_session_tool(self, tool: str, args: dict) -> Any:
+        """Invoke *tool* on the worker's OWN loop; returns a Future of the decoded payload.
+
+        Same constraint as :meth:`resolve_resources`: the MCP ClientSession objects are
+        bound to this loop, so a tool call made from the WebSocket thread has to be
+        scheduled onto it rather than awaited where it was asked for.
+
+        This is what lets a slash command do housekeeping directly. These ops are
+        reachable by the model too, but the person who wants to start an optimisation
+        over — or to drop a memory that has gone stale and keeps being recalled into
+        every prompt — should not have to ask the model to do it. Before this the only
+        recourse was deleting files under a store whose path they had no reason to know.
+        """
+        if self._agent is None or self._loop is None:
+            fut: Any = concurrent.futures.Future()
+            fut.set_result({"status": "error", "error": "No agent session is running."})
+            return fut
+
+        async def _run() -> dict:
+            try:
+                raw = await self._agent._run_tool(tool, dict(args))
+                return json.loads(raw) if isinstance(raw, str) else (raw or {})
+            except Exception as exc:
+                return {"status": "error", "error": str(exc)}
+
+        return asyncio.run_coroutine_threadsafe(_run(), self._loop)
+
     def compact_middle(self, middle: list) -> Any:
         """Summarize *middle* into one message, off the WS event loop.
 

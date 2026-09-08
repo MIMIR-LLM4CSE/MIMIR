@@ -20,7 +20,12 @@ from mimir.client.query_engine import finalize as finalize_module
 from mimir.client.query_engine import streaming as streaming_module
 from mimir.client.query_engine.history import merge_consecutive_user_messages
 from mimir.tests._fake_backend import ScriptedBackend
-from mimir.tests.test_agent_loop import RunAgentQueryNonInteractiveTests
+from mimir.tests.test_agent_loop import (
+    RunAgentQueryNonInteractiveTests,
+    _CHECKLIST_CAPS,
+    _record_plan_flags,
+    _tool_call,
+)
 
 
 def _is_empty_assistant(m: dict) -> bool:
@@ -43,7 +48,6 @@ class _LoopRunner(unittest.TestCase):
         m = agent_loop_module
         with patch.object(streaming_module, "get_backend", lambda: backend), \
              patch.object(finalize_module, "auto_store_memory", new=_noop_async), \
-             patch.object(m, "_inject_pin", lambda *a, **k: None), \
              patch.object(m, "tools_for_context", lambda **k: k["tools"]), \
              patch.object(m, "emit", lambda ev: emitted.append(ev)), \
              patch.object(m, "needs_incomplete_finalization", lambda ec: False):
@@ -78,6 +82,25 @@ class EmptyTurnDebrisTests(_LoopRunner):
         """
         _, backend, _, _ = self._run([{"content": ""}] * 10)
         self.assertEqual(len(backend.calls), AGENT_EMPTY_TURN_RETRIES + 1)
+
+    def test_three_retries_are_three_different_prompts(self) -> None:
+        """A retry that re-sends the same sentence is not a retry.
+
+        The reminder is transient — taken back out after the call it was injected for —
+        so every attempt used to put the identical text to the model: `len(messages)`
+        stayed flat across steps 2/3/4/5 of the recorded session. Three attempts, one
+        prompt. The fix escalates the ask instead of persisting the message, which
+        would re-open the 21-copies regression the rest of this file pins.
+        """
+        _, backend, _, _ = self._run([{"content": ""}] * 10)
+        asks = []
+        for call in backend.calls[1:]:  # the first call carries no reminder yet
+            reminders = [m["content"] for m in call["messages"]
+                         if agent_loop_module.EMPTY_TURN_OPENING in str(m.get("content", ""))]
+            self.assertEqual(len(reminders), 1)  # one at a time, never accumulated
+            asks.append(reminders[0])
+        self.assertEqual(len(asks), AGENT_EMPTY_TURN_RETRIES)
+        self.assertEqual(len(set(asks)), len(asks))  # each attempt asks something new
 
     def test_the_empty_turn_is_diagnosed(self) -> None:
         _, _, emitted, _ = self._run([{"content": ""}, {"content": "the answer"}])
@@ -166,7 +189,6 @@ class SkillContextTests(unittest.TestCase):
         m = agent_loop_module
         with patch.object(streaming_module, "get_backend", lambda: backend), \
              patch.object(finalize_module, "auto_store_memory", new=_noop_async), \
-             patch.object(m, "_inject_pin", lambda *a, **k: None), \
              patch.object(m, "tools_for_context", lambda **k: k["tools"]), \
              patch.object(m, "emit", lambda ev: None), \
              patch.object(m, "needs_incomplete_finalization", lambda ec: False):
@@ -237,6 +259,70 @@ class SharedRoleNormalizationTests(unittest.TestCase):
                 [], False, False, {"num_ctx": 4096}, token_callback=lambda t: None,
             )
         self.assertEqual(sent["messages"], [{"role": "user", "content": "q\n\nreminder"}])
+
+
+class PlanModeEmptyTurnTests(unittest.TestCase):
+    """Plan mode had no empty-turn handling at all.
+
+    A turn with neither prose nor a tool call fell into the "no plan recorded yet"
+    branch, was nudged toward the plan and looped — leaving its empty assistant message
+    in history every round, which is exactly the shape the agent loop was taught to
+    refuse: it shows the model, over and over, that an empty message answers a reminder.
+    """
+
+    def _run(self, script):
+        import types
+        from mimir.client.context.execution_context import build_execution_context
+        from mimir.client.query_engine import plan_loop as plan_loop_module
+
+        backend = ScriptedBackend(script)
+
+        async def _plan_dispatch(tool_calls, agent, messages, execution_context):
+            _record_plan_flags(tool_calls, agent, execution_context)
+
+        async def _finalize(agent, query, answer, execution_context, messages, logger):
+            return answer
+
+        agent = types.SimpleNamespace(model="m", tools=[], tool_caps=dict(_CHECKLIST_CAPS))
+        messages = [{"role": "system", "content": "S"}, {"role": "user", "content": "plan it"}]
+        with patch.object(streaming_module, "get_backend", lambda: backend), \
+             patch.object(plan_loop_module, "tools_for_plan_mode", lambda tools, caps, **kw: []), \
+             patch.object(plan_loop_module, "_dispatch_tool_calls", _plan_dispatch), \
+             patch.object(plan_loop_module, "_finalize_answer", _finalize):
+            result = asyncio.run(
+                plan_loop_module._run_plan_mode(
+                    agent=agent, query="q", messages=messages,
+                    execution_context=build_execution_context(),
+                    max_steps=10, thinking=False, streaming=False, logger=None,
+                    cb={"think_token_callback": None},
+                )
+            )
+        return result, backend, messages
+
+    def test_a_recovered_empty_turn_leaves_nothing_behind(self) -> None:
+        result, _, messages = self._run([
+            {"content": ""},
+            {"content": "planning", "tool_calls": [_tool_call("todo_set_plan")]},
+            {"content": "Here is the plan."},
+        ])
+        self.assertEqual(result, "Here is the plan.")
+        self.assertEqual([m for m in messages if _is_empty_assistant(m)], [])
+
+    def test_an_exhausted_budget_leaves_nothing_behind(self) -> None:
+        result, backend, messages = self._run([{"content": ""}] * 10)
+        self.assertIn("empty turns", result)
+        self.assertEqual([m for m in messages if _is_empty_assistant(m)], [])
+        # And the model is not asked again past the budget.
+        self.assertEqual(len(backend.calls), AGENT_EMPTY_TURN_RETRIES + 1)
+
+    def test_the_retries_escalate_here_too(self) -> None:
+        _, backend, _ = self._run([{"content": ""}] * 10)
+        asks = []
+        for call in backend.calls[1:]:
+            asks += [m["content"] for m in call["messages"]
+                     if agent_loop_module.EMPTY_TURN_OPENING in str(m.get("content", ""))]
+        self.assertEqual(len(asks), AGENT_EMPTY_TURN_RETRIES)
+        self.assertEqual(len(set(asks)), len(asks))
 
 
 if __name__ == "__main__":

@@ -133,6 +133,9 @@ Critical hardening applied:
 """
 
 import os
+from typing import Annotated
+
+from pydantic import Field
 import re
 import shlex
 import subprocess
@@ -144,6 +147,7 @@ from mcp.server.fastmcp import FastMCP
 from capabilities import tool_caps, PLAN_READONLY, CODE_EXEC, JUDGE, RECOVERABLE
 from responses import err, ok
 from module_env import MODULE_ENV_PASSTHROUGH as _MODULE_ENV_PASSTHROUGH
+import proc_run
 from shell_paths import (
     CLUSTER_SUBMIT_COMMANDS,
     DESTRUCTIVE_COMMANDS,
@@ -664,7 +668,12 @@ def _run(
     segments: list[list[str]] | None = None,
 ) -> dict:
     try:
-        result = subprocess.run(
+        # proc_run, not subprocess.run: a timeout here must stop the work, not just
+        # stop waiting for it. `bash -c "<preamble><command>"` is a compound script, so
+        # bash forks rather than execs, and subprocess.run's timeout would kill bash
+        # while the fork ran on. Observed: a `find /` outliving its 30s timeout by an
+        # hour and forty minutes, three at a time, skewing every benchmark taken since.
+        result = proc_run.run(
             ["bash", "--noprofile", "--norc", "-c", preamble + command],
             cwd=cwd,
             env=_safe_env(cwd),
@@ -836,7 +845,27 @@ _VERDICT_VALUES = ("pass", "fail", "unknown", "blocked")
     },
     label="Verdict: {verdict}",
 ))
-def report_verdict(verdict: str, reason: str, run: str = "") -> dict:
+def report_verdict(
+    verdict: Annotated[str, Field(
+        description=(
+            "The judgement: one of 'pass', 'fail', 'unknown', 'blocked'. Required — a "
+            "reason without a verdict judges nothing."
+        ),
+        json_schema_extra={"enum": list(_VERDICT_VALUES)},
+    )],
+    reason: Annotated[str, Field(
+        description=(
+            "What in the output shows it — the number, message or behaviour you read. "
+            "\"it worked\" is not a reason."
+        ),
+    )],
+    run: Annotated[str, Field(
+        description=(
+            "Which run is being judged, as its command; a recognisable fragment is "
+            "enough. Optional — omitted, a 'pass' settles the most recent run."
+        ),
+    )] = "",
+) -> dict:
     """State what a run's output showed. Recommended after any execution you had to read.
 
     Exit 0 means a program reached its end, never that its answer is right, and nothing
@@ -848,10 +877,10 @@ def report_verdict(verdict: str, reason: str, run: str = "") -> dict:
 
     Report as soon as you have read the output, in the same step you would move on:
 
-        report_verdict("pass", "l2_rel=3.1e-4 against the analytic solution, under the 1e-3 bound")
-        report_verdict("fail", "energy grows from 1.56 to 4.02 — the absorbing layer reflects")
-        report_verdict("unknown", "only prints 'Simulation completed.', nothing about correctness")
-        report_verdict("blocked", "cmake needs a configured build tree; there is none here")
+        verdict="pass",    reason="l2_rel=3.1e-4 against the analytic solution, under the 1e-3 bound"
+        verdict="fail",    reason="energy grows from 1.56 to 4.02 — the absorbing layer reflects"
+        verdict="unknown", reason="only prints 'Simulation completed.', nothing about correctness"
+        verdict="blocked", reason="cmake needs a configured build tree; there is none here"
 
     Name the number, message or behaviour you read it from; "it worked" is not a
     reason. `fail` on a green run is expected sometimes and is not a setback — fix and

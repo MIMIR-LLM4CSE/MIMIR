@@ -9,8 +9,10 @@ overwriting the wrong session or a longer history), and the untrimmed record is 
 beside the window and is what a load restores.
 """
 import concurrent.futures
+import os
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from unittest import mock
 
 from mimir.client.ui.ws.session_store import FullSession, SessionStore
@@ -257,6 +259,100 @@ class AnswerDeltaTests(unittest.TestCase):
         """The loop replaced the middle with a handoff note — the answer is what is left."""
         full = [{"role": "assistant", "content": "done"}]
         self.assertEqual(self._added(4, full), [{"role": "assistant", "content": "done"}])
+
+
+class TodoRestoreTests(unittest.IsolatedAsyncioTestCase):
+    """A reconnect must not overwrite a checklist newer than the snapshot it holds.
+
+    `session.todos` is captured at autosave time, so a query cut short by a dropped
+    connection leaves the store holding the list as it stood at the last save while the
+    file on disk holds the one the model has written since. Restoring unconditionally
+    destroys the live list and hands the model a finished one. Observed in session
+    ba8eee87: a disconnect during an optimisation task restored the *previous* task's
+    five completed steps, so the next query ran with a plan of record reading
+    "0 pending" and the completion gate had nothing left to block on.
+    """
+
+    def _sess_with_todo_file(self, body: str | None, mtime_offset: float = 0.0):
+        """A session whose todo file holds *body* (None = no file), with a set mtime."""
+        d = tempfile.mkdtemp()
+        todo_file = os.path.join(d, "todo_list.md")
+        if body is not None:
+            with open(todo_file, "w", encoding="utf-8") as fh:
+                fh.write(body)
+            base = datetime.now(timezone.utc).timestamp() + mtime_offset
+            os.utime(todo_file, (base, base))
+        sess = _session()
+        sess.ws = _FakeWS()
+        sess._emit_context_usage = mock.AsyncMock()
+        return sess, todo_file
+
+    async def _load(self, sess, todo_file, todos, updated_at):
+        sess.store.saved["s1"] = FullSession(
+            id="s1", title="t", created_at="x", updated_at=updated_at, todos=todos,
+        )
+        with mock.patch("mimir.client.ui.ws.ws_session._write_active_session"), \
+             mock.patch("mimir.client.ui.ws.ws_session._todo_file_for_session",
+                        lambda _sid: todo_file):
+            await sess._load_session("s1")
+
+    SNAPSHOT = [{"text": "old step", "done": True}]
+    LIVE = "- [ ] the step the model is actually working on\n"
+
+    async def test_a_newer_file_on_disk_is_kept(self) -> None:
+        # The regression: the file is 60s newer than the snapshot — it is the live list.
+        now = datetime.now(timezone.utc)
+        sess, todo_file = self._sess_with_todo_file(self.LIVE, mtime_offset=+60)
+        await self._load(sess, todo_file, self.SNAPSHOT, now.isoformat())
+        with open(todo_file, encoding="utf-8") as fh:
+            self.assertEqual(fh.read(), self.LIVE)  # untouched
+
+    async def test_keeping_it_is_announced(self) -> None:
+        # A silently skipped restore is as hard to diagnose as the overwrite it avoids.
+        now = datetime.now(timezone.utc)
+        sess, todo_file = self._sess_with_todo_file(self.LIVE, mtime_offset=+60)
+        await self._load(sess, todo_file, self.SNAPSHOT, now.isoformat())
+        self.assertTrue(
+            any("newer" in payload for payload in sess.ws.sent),
+            f"no status about keeping the newer checklist: {sess.ws.sent}",
+        )
+
+    async def test_an_older_file_is_still_restored(self) -> None:
+        now = datetime.now(timezone.utc)
+        sess, todo_file = self._sess_with_todo_file(self.LIVE, mtime_offset=-60)
+        await self._load(sess, todo_file, self.SNAPSHOT, now.isoformat())
+        with open(todo_file, encoding="utf-8") as fh:
+            self.assertIn("old step", fh.read())
+
+    async def test_a_missing_file_is_restored(self) -> None:
+        now = datetime.now(timezone.utc)
+        sess, todo_file = self._sess_with_todo_file(None)
+        await self._load(sess, todo_file, self.SNAPSHOT, now.isoformat())
+        with open(todo_file, encoding="utf-8") as fh:
+            self.assertIn("old step", fh.read())
+
+    async def test_an_unreadable_timestamp_restores(self) -> None:
+        # The guard stops one specific loss; it must not become a second way to fail.
+        sess, todo_file = self._sess_with_todo_file(self.LIVE, mtime_offset=+60)
+        await self._load(sess, todo_file, self.SNAPSHOT, "not-a-timestamp")
+        with open(todo_file, encoding="utf-8") as fh:
+            self.assertIn("old step", fh.read())
+
+    async def test_the_deps_sidecar_follows_the_list(self) -> None:
+        # Restoring deps over a list that was kept yields dependencies pointing at
+        # steps that are not there.
+        now = datetime.now(timezone.utc)
+        sess, todo_file = self._sess_with_todo_file(self.LIVE, mtime_offset=+60)
+        deps_file = os.path.join(os.path.dirname(todo_file), "todo_deps.json")
+        sess.store.saved["s1"] = FullSession(
+            id="s1", title="t", created_at="x", updated_at=now.isoformat(),
+            todos=self.SNAPSHOT, todo_deps=[[], [0]],
+        )
+        with mock.patch("mimir.client.ui.ws.ws_session._write_active_session"), \
+             mock.patch("mimir.client.ui.ws.ws_session._todo_file_for_session",
+                        lambda _sid: todo_file):
+            await sess._load_session("s1")
+        self.assertFalse(os.path.exists(deps_file))
 
 
 class ResumeTests(unittest.IsolatedAsyncioTestCase):

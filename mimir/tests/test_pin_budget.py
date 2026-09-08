@@ -1,9 +1,11 @@
-"""Tests for the per-step pin and the recency-preserving sets (no network).
+"""Tests for the checklist section of the system prompt and the recency sets.
 
-The pin is re-sent on every step, so what it carries is load-bearing. It carries the
-live task checklist and nothing else: it used to also repeat the paths read, written
-and planned this session, which the model copied instead of used (a DeepSeek run
-looped on the file list until the step budget ran out).
+The checklist is state the model is held to, so what the prompt says about it is
+load-bearing. It carries the checklist and nothing else: it used to also repeat the
+paths read, written and planned this session, which the model copied instead of used
+(a DeepSeek run looped on the file list until the step budget ran out). It lives in
+messages[0] — never in the last position before the generation prompt, which is what
+emptied turns on GLM-5.3 (see test_prefix_cache).
 """
 
 import os
@@ -16,7 +18,7 @@ from mimir.client.context.execution_context import (
     recent_first,
     validate_execution_context,
 )
-from mimir.client.prompt.system_prompt import build_checklist_pin_block
+from mimir.client.prompt.system_prompt import build_system_content
 
 
 class RecencySetTests(unittest.TestCase):
@@ -69,50 +71,47 @@ class RecencySetTests(unittest.TestCase):
         validate_execution_context(ctx)  # must not raise
 
 
-class ChecklistPinTests(unittest.TestCase):
-    def _ctx_with_todo(self, body: str) -> dict:
+class ChecklistSectionTests(unittest.TestCase):
+    def _todo(self, body: str) -> str:
         tmp = tempfile.mkdtemp()
         path = os.path.join(tmp, "todo_list.md")
         with open(path, "w", encoding="utf-8") as fh:
             fh.write(body)
         self.addCleanup(os.rmdir, tmp)
         self.addCleanup(os.remove, path)
-        ctx = execution_context_template()
-        ctx["todo_file_path"] = path
-        return ctx
+        return path
+
+    def _prompt(self, body: str) -> str:
+        return build_system_content(
+            active_mode="agent", tool_owner={}, sensitive_tools=set(),
+            todo_file=self._todo(body),
+        )
 
     def test_it_renders_the_checklist_with_the_pending_count(self) -> None:
-        pin = build_checklist_pin_block(
-            self._ctx_with_todo("- [x] read the solver\n- [ ] add the binding\n")
-        )
-        self.assertIn("Task checklist (1 pending):", pin)
-        self.assertIn("  [x] read the solver", pin)
-        self.assertIn("  [ ] add the binding", pin)
+        out = self._prompt("- [x] read the solver\n- [ ] add the binding\n")
+        self.assertIn("Task checklist (1 pending", out)
+        self.assertIn("[x] read the solver", out)
+        self.assertIn("[ ] add the binding", out)
 
-    def test_discovery_evidence_is_not_pinned(self) -> None:
-        # The paths are already in the transcript; repeating them at the tail of every
+    def test_discovery_evidence_is_not_rendered(self) -> None:
+        # The paths are already in the transcript; repeating a bare list of them in the
         # prompt is a pattern the model copies rather than uses.
-        ctx = self._ctx_with_todo("- [ ] add the binding\n")
-        for i in range(20):
-            ctx["read_files"].add(f"src/module_{i:03d}.py")
-            ctx["existing_paths"].add(f"src/e_{i:03d}.py")
-            ctx["dirty_written_files"].add(f"src/w_{i:03d}.py")
-            ctx["planned_edit_targets"].add(f"src/p_{i:03d}.py")
-        pin = build_checklist_pin_block(ctx)
-        self.assertNotIn("module_", pin)
-        self.assertNotIn("Files read", pin)
-        self.assertNotIn("Known existing paths", pin)
-        self.assertNotIn("Planned edit targets", pin)
-        self.assertNotIn("Files written", pin)
+        out = self._prompt("- [ ] add the binding\n")
+        for absent in ("Files read", "Known existing paths",
+                       "Planned edit targets", "Files written"):
+            self.assertNotIn(absent, out)
 
-    def test_no_checklist_produces_no_pin(self) -> None:
-        self.assertEqual(build_checklist_pin_block(execution_context_template()), "")
-        self.assertEqual(build_checklist_pin_block(self._ctx_with_todo("no items\n")), "")
+    def test_no_checklist_says_so_rather_than_rendering_one(self) -> None:
+        out = self._prompt("no items\n")
+        self.assertIn("No task checklist yet", out)
+        self.assertNotIn("Task checklist (", out)
 
     def test_rendering_is_stable_across_calls(self) -> None:
-        ctx = self._ctx_with_todo("- [ ] a\n- [ ] b\n")
-        first = build_checklist_pin_block(ctx)
-        self.assertEqual(build_checklist_pin_block(ctx), first)
+        # Byte-stability is what lets _sync_checklist skip the rewrite, and with it the
+        # prefix-cache break, when the file was touched but not changed.
+        path = self._todo("- [ ] a\n- [ ] b\n")
+        kw = dict(active_mode="agent", tool_owner={}, sensitive_tools=set(), todo_file=path)
+        self.assertEqual(build_system_content(**kw), build_system_content(**kw))
 
 
 if __name__ == "__main__":

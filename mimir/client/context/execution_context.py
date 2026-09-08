@@ -685,9 +685,20 @@ def run_ledger_key(command: str) -> str:
     The key is the executing segment's head plus the files it named, taken from the same
     classifier the policy layer parses with, so ``timeout 280 python3 -m pytest a.py``
     and ``pytest a.py`` agree. Flags are dropped — they change how a run reports, not
-    what it exercises — and so is everything downstream of a pipe. A command the
-    classifier cannot read keys on its raw text, which is the old behaviour and the
-    right one: nothing about it is known well enough to call two of them the same.
+    what it exercises — and so is everything downstream of a pipe.
+
+    Parsed with ``allow_expansion=True``, unlike every other caller. A bare ``$VAR``
+    makes a command opaque to *classification* — its kind depends on what the value
+    turns out to be — but this function wants an identity, not a verdict, and it gates
+    nothing: the policy layer calls the classifier itself, with the strict default.
+    Without it, ``pytest a.py; echo "exit=$?"`` fell back to its raw text while the same
+    command without the echo keyed on ``pytest a.py``, so a model adding a status line
+    to a command it was already retrying opened a fresh ledger entry every time and the
+    repair budget never accumulated. Command *substitution* stays opaque either way: it
+    runs code.
+
+    A command the classifier still cannot read keys on its raw text: nothing about it is
+    known well enough to call two of them the same.
 
     A segment that named no file keeps its whole argv instead of collapsing to its head.
     Otherwise every ``python3 -c "…"`` probe in a session — the idiom the base prompt
@@ -703,7 +714,7 @@ def run_ledger_key(command: str) -> str:
     except Exception:  # pragma: no cover - defensive
         return command
     try:
-        segments = classify_bash_command(command) or []
+        segments = classify_bash_command(command, allow_expansion=True) or []
     except Exception:  # pragma: no cover - the classifier owns its own refusals
         segments = []
     parts: list[str] = []

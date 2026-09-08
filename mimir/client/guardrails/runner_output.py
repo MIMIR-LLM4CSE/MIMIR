@@ -51,7 +51,14 @@ import re
 VERDICT_KEYS = frozenset({"check", "verdict"})
 _FAILING_VERDICTS = frozenset({"fail", "failed", "failure", "error", "red", "false", "no"})
 # Keys that report a COUNT of failures rather than a verdict (``checks_failed=3``).
-_FAILURE_COUNT_KEYS = frozenset({"failed", "failures"})
+# ``exit`` rides the same "non-zero is a failure" rule, and reading it matters twice
+# over: ``suite_exit=1`` is how a wrapper script reports the status of what it ran, and
+# a trailing ``; echo "suite_exit=$?"`` makes the *shell's* returncode 0 — laundering a
+# red run into the green exit that ``judge_run`` treats as the one trustworthy signal.
+# The echo that launders the status is also the echo that prints the evidence, so the
+# idiom undoes itself. A bare ``; echo done`` still launders, and nothing here catches
+# it: attributing the exit to the last executing segment is a separate change.
+_FAILURE_COUNT_KEYS = frozenset({"failed", "failures", "exit"})
 
 # ``key=value`` at the start of a line, value a single token, remainder optional.
 #
@@ -107,8 +114,11 @@ def observed_failure_verdict(text: str) -> bool:
 
 # ── Dialect 2: what a test runner printed about itself ─────────────────────────
 # pytest's short-summary rows (``FAILED path::test - reason``, ``ERROR path::test``);
-# unittest's trailer ``FAILED (failures=1, errors=2)`` matches the same anchor.
-_RUNNER_FAILURE_LINE_RE = re.compile(r"^(?:FAILED|ERROR)\b\s*[\s(]\S")
+# unittest's trailer ``FAILED (failures=1, errors=2)`` matches the same anchor. A colon
+# is a separator too: a harness printing ``FAILED: convergence_order`` said exactly what
+# the other two say, and requiring whitespace or ``(`` read it as silent. A separator is
+# still required, so ``FAILED_COUNT`` and prose starting with the word do not match.
+_RUNNER_FAILURE_LINE_RE = re.compile(r"^(?:FAILED|ERROR)\b\s*[\s(:]\s*\S")
 
 # pytest's terminal counts line, decorated or bare, with or without the timing tail:
 # ``=== 4 failed, 2 passed in 1.52s ===``, ``1 failed, 5 passed in 0.96s``. Whole-line

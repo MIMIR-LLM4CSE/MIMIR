@@ -1010,7 +1010,6 @@ class RunAgentQueryNonInteractiveTests(unittest.TestCase):
              patch.object(agent_loop_module, "_post_dispatch_inject", _noop_async), \
              patch.object(history_module, "_trim_tool_history", lambda *a, **k: None), \
              patch.object(history_module, "_maybe_compact_intra_query", lambda *a, **k: None), \
-             patch.object(m, "_inject_pin", lambda *a, **k: None), \
              patch.object(m, "tools_for_context", lambda **k: []), \
              patch.object(m, "needs_incomplete_finalization", lambda ec: False):
             result = asyncio.run(
@@ -1051,7 +1050,6 @@ class LiveMessagesExposureTests(RunAgentQueryNonInteractiveTests):
              patch.object(agent_loop_module, "_post_dispatch_inject", _snapshot), \
              patch.object(history_module, "_trim_tool_history", lambda *a, **k: None), \
              patch.object(history_module, "_maybe_compact_intra_query", lambda *a, **k: None), \
-             patch.object(m, "_inject_pin", lambda *a, **k: None), \
              patch.object(m, "tools_for_context", lambda **k: []), \
              patch.object(m, "needs_incomplete_finalization", lambda ec: False):
             asyncio.run(m.run_agent_query(agent=agent, query="do a thing", max_steps=5))
@@ -1123,7 +1121,6 @@ class SteerInjectionInLoopTests(RunAgentQueryNonInteractiveTests):
              patch.object(agent_loop_module, "_post_dispatch_inject", _noop_async), \
              patch.object(history_module, "_trim_tool_history", lambda *a, **k: None), \
              patch.object(history_module, "_maybe_compact_intra_query", lambda *a, **k: None), \
-             patch.object(m, "_inject_pin", lambda *a, **k: None), \
              patch.object(m, "tools_for_context", lambda **k: []), \
              patch.object(m, "needs_incomplete_finalization", lambda ec: False):
             result = asyncio.run(
@@ -1137,6 +1134,73 @@ class SteerInjectionInLoopTests(RunAgentQueryNonInteractiveTests):
         step2_users = [msg["content"] for msg in backend.calls[1]["messages"] if msg["role"] == "user"]
         self.assertNotIn("focus on the parser", step1_users)
         self.assertIn("focus on the parser", step2_users)
+
+    def test_nothing_is_appended_after_a_steer(self) -> None:
+        """A steer is a real user turn, so it must hold the last position.
+
+        The last message is what the model answers — that is what the position is for.
+        The checklist used to be appended after the steer, just before the call, and
+        both being plain string `user` turns, the backend's consecutive-user merge
+        folded them into ONE turn ending in a status block: the model answered the
+        block and the instruction was buried. Measured worst on exactly this shape.
+        The checklist now lives in messages[0], so a steer stays last.
+        """
+        import tempfile
+        continue_calls = {"n": 0}
+        agent = self._query_agent(continue_calls)
+
+        # A live checklist, so this test exercises the shape that used to bury steers.
+        d = tempfile.mkdtemp()
+        todo_fp = os.path.join(d, "todo_list.md")
+        with open(todo_fp, "w", encoding="utf-8") as fh:
+            fh.write("- [x] one\n- [ ] two\n")
+        self.addCleanup(lambda: (os.remove(todo_fp), os.rmdir(d)))
+        agent._get_todo_file = lambda: todo_fp
+
+        # The shared stub returns a constant; use the real builder so the checklist
+        # actually has to find its way into messages[0].
+        from mimir.client.prompt.system_prompt import build_system_content
+
+        async def _build(active_mode="agent", **kw):
+            return build_system_content(
+                active_mode=active_mode, tool_owner={}, sensitive_tools=set(),
+                todo_file=todo_fp,
+            )
+
+        agent._build_system_content = _build
+
+        drains = {"n": 0}
+
+        def _poll():
+            drains["n"] += 1
+            return ["focus on the parser"] if drains["n"] == 2 else []
+
+        agent._poll_steer = _poll
+
+        backend = ScriptedBackend([
+            {"content": "working", "tool_calls": [_tool_call("noop")]},
+            {"content": "final answer"},
+        ])
+
+        async def _noop_async(*a, **k):
+            return None
+
+        m = agent_loop_module
+        with patch.object(streaming_module, "get_backend", lambda: backend), \
+             patch.object(finalize_module, "auto_store_memory", new=_noop_async), \
+             patch.object(agent_loop_module, "_dispatch_tool_calls", _noop_async), \
+             patch.object(agent_loop_module, "_post_dispatch_inject", _noop_async), \
+             patch.object(history_module, "_trim_tool_history", lambda *a, **k: None), \
+             patch.object(history_module, "_maybe_compact_intra_query", lambda *a, **k: None), \
+             patch.object(m, "tools_for_context", lambda **k: []), \
+             patch.object(m, "needs_incomplete_finalization", lambda ec: False):
+            asyncio.run(m.run_agent_query(agent=agent, query="do a thing", max_steps=5))
+
+        tail = backend.calls[1]["messages"][-1]
+        self.assertEqual(tail["role"], "user")
+        self.assertEqual(tail["content"], "focus on the parser")
+        # And the checklist reached the model without taking that position.
+        self.assertIn("Task checklist", backend.calls[1]["messages"][0]["content"])
 
 
 class EvidenceHandbackTests(RunAgentQueryNonInteractiveTests):
@@ -1165,7 +1229,6 @@ class EvidenceHandbackTests(RunAgentQueryNonInteractiveTests):
              patch.object(agent_loop_module, "_post_dispatch_inject", _noop_async), \
              patch.object(history_module, "_trim_tool_history", lambda *a, **k: None), \
              patch.object(history_module, "_maybe_compact_intra_query", lambda *a, **k: None), \
-             patch.object(m, "_inject_pin", lambda *a, **k: None), \
              patch.object(m, "tools_for_context", lambda **k: []), \
              patch.object(m, "maybe_append_nudge", lambda **k: False), \
              patch.object(m, "needs_incomplete_finalization", lambda ec: ec_holder.append(ec) or True):
@@ -1223,7 +1286,6 @@ class DomainRearmInLoopTests(RunAgentQueryNonInteractiveTests):
              patch.object(agent_loop_module, "_post_dispatch_inject", _noop_async), \
              patch.object(history_module, "_trim_tool_history", lambda *a, **k: None), \
              patch.object(history_module, "_maybe_compact_intra_query", lambda *a, **k: None), \
-             patch.object(m, "_inject_pin", lambda *a, **k: None), \
              patch.object(m, "tools_for_context", _fake_tools_for_context), \
              patch.object(m, "emit", lambda ev: emitted.append(ev)), \
              patch.object(m, "needs_incomplete_finalization", lambda ec: False):
@@ -1316,7 +1378,6 @@ class AskModeInLoopTests(RunAgentQueryNonInteractiveTests):
              patch.object(agent_loop_module, "_post_dispatch_inject", _noop_async), \
              patch.object(history_module, "_trim_tool_history", lambda *a, **k: None), \
              patch.object(history_module, "_maybe_compact_intra_query", lambda *a, **k: None), \
-             patch.object(m, "_inject_pin", lambda *a, **k: None), \
              patch.object(m, "tools_for_context", lambda **k: k["tools"]), \
              patch.object(m, "emit", lambda ev: None), \
              patch.object(m, "needs_incomplete_finalization", lambda ec: False):
@@ -1401,7 +1462,6 @@ class MidQueryModeSwitchTests(RunAgentQueryNonInteractiveTests):
             patch.object(agent_loop_module, "_post_dispatch_inject", _noop_async),
             patch.object(history_module, "_trim_tool_history", lambda *a, **k: None),
             patch.object(history_module, "_maybe_compact_intra_query", lambda *a, **k: None),
-            patch.object(m, "_inject_pin", lambda *a, **k: None),
             patch.object(m, "tools_for_context", lambda **k: k["tools"]),
             patch.object(m, "emit", lambda ev: emitted.append(ev)),
             patch.object(m, "needs_incomplete_finalization", lambda ec: False),
@@ -1496,7 +1556,6 @@ class MidQueryModeSwitchTests(RunAgentQueryNonInteractiveTests):
         m = agent_loop_module
         with patch.object(streaming_module, "get_backend", lambda: backend), \
              patch.object(finalize_module, "auto_store_memory", new=_noop_async), \
-             patch.object(m, "_inject_pin", lambda *a, **k: None), \
              patch.object(m, "tools_for_context", lambda **k: k["tools"]), \
              patch.object(m, "emit", lambda ev: emitted.append(ev)), \
              patch.object(m, "needs_incomplete_finalization", lambda ec: False):
@@ -1525,7 +1584,6 @@ class EmptyTurnTests(unittest.TestCase):
         m = agent_loop_module
         with patch.object(streaming_module, "get_backend", lambda: backend), \
              patch.object(finalize_module, "auto_store_memory", new=_noop_async), \
-             patch.object(m, "_inject_pin", lambda *a, **k: None), \
              patch.object(m, "tools_for_context", lambda **k: k["tools"]), \
              patch.object(m, "emit", lambda ev: emitted.append(ev)), \
              patch.object(m, "needs_incomplete_finalization", lambda ec: False):
@@ -1881,7 +1939,6 @@ class HeldDraftTests(RunAgentQueryNonInteractiveTests):
              patch.object(agent_loop_module, "_post_dispatch_inject", _noop_async), \
              patch.object(history_module, "_trim_tool_history", lambda *a, **k: None), \
              patch.object(history_module, "_maybe_compact_intra_query", lambda *a, **k: None), \
-             patch.object(m, "_inject_pin", lambda *a, **k: None), \
              patch.object(m, "tools_for_context", lambda **k: []), \
              patch.object(m, "nudge_pending", lambda **k: pending), \
              patch.object(m, "maybe_append_nudge", _nudge), \

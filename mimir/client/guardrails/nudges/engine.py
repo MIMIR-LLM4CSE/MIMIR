@@ -153,11 +153,10 @@ def drop_transient_reminders(
     """Take back the reminders injected for the call that has just been made.
 
     Removal is by IDENTITY, not by position: budget enforcement may have trimmed,
-    compacted or reordered the list between the injection and the call, and the pin
-    sits after the reminders at call time. ``_remove_pin``'s tail-only pop cannot be
-    reused here for exactly that reason — it silently does nothing whenever anything
-    else was appended in the meantime. A reminder that compaction already summarised
-    away is simply not found, which is the correct outcome.
+    compacted or reordered the list between the injection and the call, so a tail-only
+    pop would silently do nothing whenever anything else was appended in the meantime.
+    A reminder that compaction already summarised away is simply not found, which is
+    the correct outcome.
 
     The categories removed are left in ``_last_call_reminders`` so a caller can still
     say what the prompt carried after the fact — the empty-turn diagnostic reads it,

@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import os
+import shutil
 from datetime import datetime, timezone
 
 from _ops import _check_name, _with_next, err, ok
 from _lib.command import _PARAM_EXT
 from _lib.procs import _run_state
+from _lib import store
 from _lib.store import (
     _load_registry_or_err, _save_registry, _registry_lock,
     _proxy_runs_dir,
@@ -307,5 +309,82 @@ def unregister(name: str) -> dict:
         _save_registry(reg)
     return ok(_with_next(
         {"unregistered": removed,
-         "note": "Run history for this proxy is preserved."},
+         "note": "Run history, optimisation state and snapshots for this proxy are "
+                 "PRESERVED. proxy_manage(op='clean', name=..., confirm=True) removes "
+                 "them."},
         "proxy_get(op='proxies') to see what remains registered."))
+
+
+def clean(name: str) -> dict:
+    """Delete a proxy's runs, optimisation state and snapshots. Returns what survived.
+
+    ``unregister`` drops the registry entry and keeps everything else, which is correct
+    but was the whole story: there was no way to remove a proxy's state at all. Deleting
+    the workspace did not do it either, because the store used to live outside it — a
+    user who deleted a project and started again was silently resumed into the old
+    optimisation, since ``active_session`` still named the proxy and the registry still
+    held a run command pointing at a file that no longer existed.
+
+    It deliberately does NOT cascade into references and suites: a sealed reference costs
+    real compute and can be shared by a suite this proxy has nothing to do with. Instead
+    the response NAMES what it left behind and how to remove it — the property whose
+    absence made "I deleted everything and it still remembers" possible to live through
+    without ever seeing why.
+    """
+    removed, kept_refs, kept_suites = [], [], []
+    for path, label in (
+        (os.path.join(store.runs_dir(), name), "runs"),
+        (os.path.join(store.opt_runs_dir(), name), "optimisation state"),
+    ):
+        if os.path.isdir(path):
+            try:
+                shutil.rmtree(path)
+                removed.append(label)
+            except OSError as exc:
+                return err(f"Could not remove {label}: {exc}")
+
+    # The shadow snapshot repository and its fallback copies live beside the store root.
+    for path, label in ((os.path.join(store.cache_dir(), "opt.git"), "tree snapshots"),
+                        (os.path.join(store.cache_dir(), "tree_snapshots"), "tree snapshots")):
+        if os.path.isdir(path):
+            try:
+                shutil.rmtree(path)
+                if label not in removed:
+                    removed.append(label)
+            except OSError:
+                pass
+
+    if store._resolve_proxy_name("") == name:
+        store._clear_active_session()
+        removed.append("active-session pointer")
+
+    for d, sink in ((store.refs_dir(), kept_refs), (store.suites_dir(), kept_suites)):
+        try:
+            sink.extend(sorted(os.listdir(d)))
+        except OSError:
+            pass
+
+    still_registered = False
+    reg, _e = store._load_registry_or_err()
+    if not _e:
+        still_registered = name in (reg or {})
+
+    kept: list[str] = []
+    if still_registered:
+        kept.append(f"the registry entry — proxy_manage(op='unregister', name='{name}', "
+                    "confirm=True)")
+    if kept_refs:
+        kept.append("sealed references " + ", ".join(kept_refs)
+                    + " — shared with suites; remove by hand from " + store.refs_dir())
+    if kept_suites:
+        kept.append("benchmark suites " + ", ".join(kept_suites)
+                    + " — proxy_manage(op='suite_delete', name=..., confirm=True)")
+
+    return ok(_with_next({
+        "cleaned":  name,
+        "removed":  removed or ["nothing — no state was found"],
+        "kept":     kept or ["nothing"],
+        "note": ("Everything else about this proxy is gone. " if not kept else
+                 "What is listed under 'kept' still exists and will be found again by a "
+                 "new session. "),
+    }, "proxy_get(op='proxies') to see what remains registered."))

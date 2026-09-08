@@ -180,19 +180,53 @@ class ThinkingExtraBodyTest(unittest.TestCase):
                         model, True, {"thinking_budget": budget})
                     self.assertIn(body["reasoning_effort"], levels)
 
-    def test_a_family_with_a_toggle_switches_reasoning_right_off(self):
+    def test_an_effort_family_without_a_toggle_still_gets_its_weakest_rung(self):
+        """"Off" must not become "no instruction at all".
+
+        deepseek-v4 used to declare toggle_param='thinking_mode'. That field is inert on
+        the served build — it ships no chat template, and vLLM silently ignores unknown
+        top-level request fields — so `thinking_mode='chat'` returned reasoning
+        byte-identical to sending nothing (measured at temperature 0). Declaring it cost
+        more than nothing: with a toggle present the "off" branch sends the toggle and
+        withholds reasoning_effort, so switching reasoning off left the model at its
+        DEFAULT depth — more reasoning than the weakest rung, not less. Observed in a
+        real session: a run resumed with thinking off produced a turn of 226k characters
+        of reasoning prose in `content`, repeating one block 59 times until it hit
+        max_tokens.
+        """
         off = vllm_backend._thinking_extra_body("deepseek-v4", False, {})
-        self.assertEqual(off["thinking_mode"], "chat")
-        # The rung is meaningless with reasoning off, so it is not sent.
-        self.assertNotIn("reasoning_effort", off)
+        self.assertEqual(off, {"reasoning_effort": "low"})
+        self.assertNotIn("thinking_mode", off)
         on = vllm_backend._thinking_extra_body("deepseek-v4", True, {})
-        self.assertEqual(on["thinking_mode"], "thinking")
+        self.assertEqual(on.get("reasoning_effort"), "high")
+
+    def test_no_profile_declares_a_toggle_it_cannot_demonstrate(self):
+        """A toggle is a claim that reasoning can be switched off; it must be measured.
+
+        Not a style rule: a declared-but-inert toggle silently disables the one control
+        that does work (see above). If a family genuinely honours an on/off parameter,
+        add it here along with the measurement that showed it working.
+        """
+        from mimir.client.config import models as _models
+        profiles = _models._load_vllm_profiles() if hasattr(_models, "_load_vllm_profiles") else None
+        if profiles is None:
+            import json, pathlib
+            profiles = json.loads(
+                (pathlib.Path(_models.__file__).parent / "vllm_model_profiles.json").read_text()
+            )
+        with_toggle = [
+            k for k, v in profiles.items()
+            if isinstance(v, dict) and v.get("toggle_param")
+        ]
+        self.assertEqual(with_toggle, [])
 
     def test_a_family_that_always_reasons_reports_no_off(self):
         # GLM's template always emits its Reasoning Effort line; an "off" rung in the
         # panel would be a control that does nothing.
         self.assertFalse(models.thinking_can_disable("GLM-5.3-Flash"))
-        self.assertTrue(models.thinking_can_disable("deepseek-v4"))
+        # Same for deepseek-v4 since its inert toggle was removed: the UI must not
+        # offer an "off" rung that leaves the model reasoning at full default depth.
+        self.assertFalse(models.thinking_can_disable("deepseek-v4"))
         self.assertTrue(models.thinking_can_disable("qwen3:30b"))
 
     def test_sentinel_budgets_never_reach_the_template(self):

@@ -652,6 +652,11 @@ def append_file(path: str, content: str) -> dict:
     """Append text to a file (creates the file if it does not exist).
 
     For Python files, the final resulting content is syntax-checked before write.
+
+    Args:
+        path:    File to append to, created if it does not exist.
+        content: Text to add at the end. Appended verbatim — include a leading
+                 newline if the file does not already end with one.
     """
     try:
         abs_err = _require_abs(path)
@@ -926,6 +931,15 @@ def replace_all_in_file(
     Typical two-step workflow:
       1. replace_all_in_file(path, "math.", "np.")                 -> preview
       2. replace_all_in_file(path, "math.", "np.", confirm=True)   -> apply
+
+    Args:
+        path:       File to rewrite.
+        old_text:   Text to find. At least 4 characters.
+        new_text:   Replacement text.
+        whole_word: Match only at identifier boundaries (default True). Set False
+                    to replace inside longer identifiers as well.
+        confirm:    False (default) previews and writes nothing; True applies the
+                    replacement. Preview first, then apply.
     """
     try:
         abs_err = _require_abs(path)

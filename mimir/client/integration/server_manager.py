@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import os
+import re
 import sys
 from typing import Any
 
@@ -12,6 +14,100 @@ from mcp.client.stdio import stdio_client
 from ..context.capabilities import infer_tool_caps
 from ..config.constants import STATE_DIR
 from ...servers._shared.state_paths import scratch_home
+
+
+# A Google-style ``Args:`` block: the section header, then one entry per parameter as
+# ``name: text`` (an optional ``(type)`` between them), continued by more-indented lines.
+_ARGS_HEADER_RE = re.compile(r"^[ \t]*Args:[ \t]*$")
+# One entry may name SEVERAL parameters that share a description — ``run_a, run_b:``,
+# ``input_fmt, output_fmt:`` — which is how these docstrings are actually written.
+_ARGS_ENTRY_RE = re.compile(
+    r"^([ \t]+)(\*{0,2}\w+(?:[ \t]*,[ \t]*\*{0,2}\w+)*)"
+    r"[ \t]*(?:\([^)]*\))?[ \t]*:[ \t]*(.*)$"
+)
+# Any other Google-style section ends the Args block.
+_DOC_SECTION_RE = re.compile(
+    r"^[ \t]*(Args|Returns?|Yields?|Raises|Examples?|Notes?|Attributes)[ \t]*:[ \t]*$"
+)
+
+
+def _args_block_descriptions(doc: str) -> dict[str, str]:
+    """Parse a docstring's ``Args:`` block into ``{parameter: description}``.
+
+    Best-effort by design: anything it cannot read yields no entry rather than an
+    error. It runs once per tool at server registration, and a malformed docstring
+    must never stop a tool being registered.
+    """
+    lines = (doc or "").splitlines()
+    for i, line in enumerate(lines):
+        if _ARGS_HEADER_RE.match(line):
+            break
+    else:
+        return {}
+    out: dict[str, str] = {}
+    names: list[str] = []
+    indent = ""
+    for line in lines[i + 1:]:
+        if _DOC_SECTION_RE.match(line):
+            break
+        m = _ARGS_ENTRY_RE.match(line)
+        if m:
+            indent = m.group(1)
+            names = [n.strip().lstrip("*") for n in m.group(2).split(",")]
+            for n in names:
+                out[n] = m.group(3).strip()
+            continue
+        if not line.strip():
+            continue
+        # A more-indented line continues the entry above it (and every parameter that
+        # entry named). A line dedented past the entries has left the block. A line at
+        # entry indent that is not an entry is skipped rather than ending the block:
+        # one unparseable line must not discard every entry after it.
+        depth = len(line) - len(line.lstrip())
+        if names and depth > len(indent):
+            for n in names:
+                out[n] = (out[n] + " " + line.strip()).strip()
+        elif depth < len(indent):
+            break
+    return {k: v for k, v in out.items() if v}
+
+
+def _schema_with_arg_descriptions(tool: Any) -> dict:
+    """The tool's input schema with every missing parameter ``description`` filled in.
+
+    The constraint a tool documents only in prose does not change what the model does.
+    Observed on a real run: the model dropped `report_verdict`'s required `verdict`
+    twice, called `proxy_get` with `op="help"` (not one of the six the docstring lists)
+    and with `op="report"` while the same docstring says "requires: name", and hit
+    `bash_run`'s 30s default four times against a docstring that says to raise it. The
+    prose reaches the model — the whole docstring, ``Args:`` block included, is the
+    tool's `description` — and was not followed. What the schema says is what gets
+    obeyed, and every parameter here was a bare ``{"type": "string"}``.
+
+    So the text is not rewritten, it is *moved to where it is read*: the ``Args:``
+    blocks are already written and maintained beside the code they describe, and this
+    lifts them into the schema. Descriptions already set — by an explicit
+    ``Field(description=...)`` on the server — always win: a hand-written one is a
+    deliberate act, and this is a fallback for the ones nobody got to.
+
+    Returns a deep copy. ``infer_tool_caps`` reads ``tool.inputSchema`` too, and it
+    must keep seeing exactly what the server declared.
+    """
+    schema = getattr(tool, "inputSchema", None)
+    if not isinstance(schema, dict):
+        return {"type": "object", "properties": {}}
+    schema = copy.deepcopy(schema)
+    props = schema.get("properties")
+    if not isinstance(props, dict):
+        return schema
+    try:
+        described = _args_block_descriptions(getattr(tool, "description", "") or "")
+    except Exception:  # pragma: no cover - a docstring must never break registration
+        return schema
+    for name, prop in props.items():
+        if isinstance(prop, dict) and not prop.get("description") and described.get(name):
+            prop["description"] = described[name]
+    return schema
 
 
 def _make_elicitation_callback(agent: Any):
@@ -105,7 +201,9 @@ async def connect_server(*, agent: Any, name: str, script: str) -> None:
             "function": {
                 "name": tool.name,
                 "description": tool.description or "",
-                "parameters": tool.inputSchema,
+                # Parameter descriptions lifted out of the docstring's `Args:` block:
+                # a constraint only stated in prose does not get followed.
+                "parameters": _schema_with_arg_descriptions(tool),
             },
         })
 

@@ -27,10 +27,11 @@ from _lib.ratchet import (
     _run_primary_value,
 )
 from _lib.report import _diff_run_pair
+from _lib import tree_snapshot
 from _lib.store import (
-    opt_canonical_dir,
+    cache_dir,
     _load_registry_or_err, _load_suite,
-    _opt_config_file, _opt_session_runs_dir, _opt_best_source_path,
+    _opt_config_file, _opt_session_runs_dir,
     _resolve_proxy_name, _write_active_session, _clear_active_session,
     _read_json, _write_json_atomic, _file_lock, _run_dir_names,
 )
@@ -69,9 +70,57 @@ def _opt_tail_log(run_dir: str, n: int) -> list[str]:
     return lines[-n:]
 
 
-def _opt_canonical_path(proxy_name: str, source_path: str) -> str:
-    ext = os.path.splitext(source_path)[1] or ".py"
-    return os.path.join(opt_canonical_dir(), proxy_name + ext)
+def _workspace_root() -> str:
+    """The workspace the servers were started against (see server_bash's own copy)."""
+    return os.path.realpath(os.path.abspath(os.environ.get("MCP_FILES_ROOT") or os.getcwd()))
+
+
+def opt_git_dir() -> str:
+    """Shadow repository for the tracked tree, inside the proxy store."""
+    return os.path.join(cache_dir(), "opt.git")
+
+
+def _check_optimize_paths(paths: list[str], proxy_source_path: str) -> str | None:
+    """The proxy is a HARNESS; the code under optimisation is somewhere else.
+
+    Nothing used to say so, and twice running the model answered the gap the cheapest
+    way available: it wrote a self-contained script that reproduced the solver it was
+    meant to accelerate — 189 lines mirroring a 307-line package — and the ratchet
+    optimised the copy. The cost is not the manual port afterwards. The ratchet's whole
+    guarantee (l2_rel against a sealed reference) then holds for the duplicate and for
+    nothing that ships, and a standalone script does not even have the imports, the
+    module-level initialisation or the memory layout of the package it mirrors: what got
+    measured was not the thing.
+
+    So the shape is refused rather than discouraged. The lesson of the tool-schema work
+    is that prose is not followed and refusals are: this same skill already says "do NOT
+    poll a backgrounded run", and a recorded session polled 157 times.
+
+    Returns an error string, or None when the declared shape is sound.
+    """
+    root = _workspace_root()
+    if not paths:
+        return ("optimize_paths is required: name the file(s) the ratchet may edit. "
+                "The proxy at proxy_source_path is a HARNESS — it runs the code and "
+                "prints metrics — and optimize_paths is the code it exercises, which "
+                "the harness should import rather than reproduce.")
+    src_real = os.path.realpath(os.path.abspath(proxy_source_path))
+    seen: set[str] = set()
+    for raw in paths:
+        p = os.path.realpath(os.path.abspath(raw))
+        if not os.path.isfile(p):
+            return f"optimize_paths entry not found: {raw}"
+        if os.path.commonpath([p, root]) != root:
+            return (f"optimize_paths entry is outside the workspace: {raw}. "
+                    "The ratchet only edits code inside the workspace.")
+        if p == src_real:
+            return ("proxy_source_path cannot be one of optimize_paths. The harness "
+                    "must not be its own subject: optimising the script that measures "
+                    "means optimising a copy, and the accuracy constraints then say "
+                    "nothing about the code you ship. Point optimize_paths at the real "
+                    "module(s) and have the harness import them.")
+        seen.add(p)
+    return None
 
 
 def _check_requirements(requirements: list[dict]) -> str | None:
@@ -127,6 +176,7 @@ def init(
     benchmark_name: str,
     requirements: list[dict],
     proxy_source_path: str,
+    optimize_paths: list[str] | None = None,
     python_executable: str = "",
     max_hours: float = 0.0,
     primary_metric: str = "time_s",
@@ -166,24 +216,52 @@ def init(
     abs_src = os.path.abspath(proxy_source_path)
     if not os.path.isfile(abs_src):
         return err(f"proxy_source_path not found: {abs_src}")
+
+    paths_err = _check_optimize_paths(list(optimize_paths or []), abs_src)
+    if paths_err:
+        return err(paths_err)
+    abs_paths = [os.path.abspath(p) for p in (optimize_paths or [])]
     if python_executable and not os.path.isfile(python_executable):
         return err(f"python_executable not found: {python_executable}")
 
-    os.makedirs(opt_canonical_dir(), exist_ok=True)
-    canon_path        = _opt_canonical_path(proxy_name, abs_src)
-    canonical_existed = os.path.isfile(canon_path)
-    if not canonical_existed:
-        try:
-            shutil.copy2(abs_src, canon_path)
-        except OSError as exc:
-            return err(f"Could not snapshot canonical: {exc}")
+    # The baseline snapshots the whole tracked TREE, not one file: the state an accepted
+    # run is restored to has to be a state that was measured as a whole.
+    #
+    # A re-init NEVER moves an existing baseline. Re-initialising mid-optimisation is
+    # how requirements get widened or a benchmark swapped, and re-snapshotting there
+    # would quietly promote the current, already-optimised tree to "the original" —
+    # after which every comparison is against work already done, and the honest question
+    # "is this faster than what we started with?" can no longer be asked.
+    os.makedirs(cache_dir(), exist_ok=True)
+    prior = _load_opt_config(proxy_name) or {}
+    baseline_existed = bool(prior.get("baseline_id"))
+    if baseline_existed:
+        baseline_id  = prior["baseline_id"]
+        baseline_fp  = prior.get("baseline_fingerprint", "")
+        baseline_run = prior.get("baseline_run_id", "")
+    else:
+        baseline_id = tree_snapshot.snapshot(
+            opt_git_dir(), _workspace_root(), abs_paths,
+            f"baseline: {proxy_name} before optimisation",
+        )
+        if not baseline_id:
+            return err("Could not snapshot the baseline tree.",
+                       hint="Check that optimize_paths are readable and the proxy store "
+                            "is writable.")
+        baseline_fp  = tree_snapshot.fingerprint(_workspace_root(), abs_paths)
+        baseline_run = ""
 
     cfg = {
         "proxy_name":        proxy_name,
         "benchmark_name":    benchmark_name,
         "requirements":      requirements,
         "proxy_source_path": abs_src,
-        "canonical_path":    canon_path,
+        "optimize_paths":    abs_paths,
+        "baseline_id":       baseline_id,
+        # Content hash of the untouched tree. _prepare_run refuses the first run if the
+        # files have already moved away from it, so the baseline is measured, not assumed.
+        "baseline_fingerprint": baseline_fp,
+        "baseline_run_id":   baseline_run,
         "python_executable": python_executable,
         "max_hours":         max_hours if max_hours > 0 else 24.0,
         "primary_metric":    primary_metric,
@@ -201,16 +279,24 @@ def init(
         "proxy_name":        proxy_name,
         "benchmark_name":    benchmark_name,
         "proxy_source_path": abs_src,
-        "canonical_path":    canon_path,
-        "canonical_existed": canonical_existed,
+        "optimize_paths":    abs_paths,
+        "baseline_id":       baseline_id,
+        "baseline_existed":  baseline_existed,
         "requirements":      requirements,
         "objective":         f"{primary_goal}imize {primary_metric} subject to the requirements",
-        "note": (
-            "Canonical snapshot taken. " if not canonical_existed
-            else "Canonical already existed — not overwritten. "
-        ) + f"Modify '{abs_src}' between runs to test new implementations. "
-            "Feasible runs that improve the objective are accepted; regressions are "
-            "rejected — revert them with proxy_eval(op='reset_to_best', confirm=True).",
+        # Names optimize_paths, never proxy_source_path. The old wording here said
+        # "Modify '<proxy_source_path>' between runs", which pointed the model at the
+        # harness and is what produced a self-contained copy of the solver twice over.
+        "note": ("Baseline already recorded — kept, not moved. " if baseline_existed
+                 else "Baseline tree snapshotted. ") + "Edit "
+            + ", ".join(os.path.basename(p) for p in abs_paths)
+            + " between runs — never the harness at "
+            + os.path.basename(abs_src) + ", which only runs the code and prints "
+            "metrics. The FIRST run must be launched with those files untouched: it is "
+            "the baseline every later number is compared against, and until it exists "
+            "no run can be accepted. Feasible runs that improve the objective are "
+            "accepted; regressions are rejected — revert them with "
+            "proxy_eval(op='reset_to_best', confirm=True).",
     }, _NEXT_RUN))
 
 
@@ -290,6 +376,22 @@ def _prepare_run(proxy_name: str) -> tuple[dict | None, dict | None, str | None]
             return None, err(f"An optimization run is already active ({tag}).",
                              hint="Use proxy_eval(op='stop', confirm=True) first."), None
 
+    # The first run must measure the UNTOUCHED code. Checked here, before the run is
+    # spent, rather than at settle time: a run that cannot be compared to anything is
+    # not worth waiting for, and "restore and run" is an instruction the caller can act
+    # on immediately. Without it the first *feasible* run became the best, so a session
+    # whose first run was already an edit had no baseline at all and every later number
+    # was an assertion rather than a comparison.
+    paths = list(cfg.get("optimize_paths") or [])
+    if paths and not cfg.get("baseline_run_id"):
+        current = tree_snapshot.fingerprint(_workspace_root(), paths)
+        if current != cfg.get("baseline_fingerprint", current):
+            return None, err(
+                "No baseline run on record, and the tracked files have already been "
+                "edited — this run would have nothing to be compared against.",
+                hint="Restore the original with proxy_eval(op='reset', confirm=True), "
+                     "run once to measure it, then optimize from there."), None
+
     run_dir = _new_run_dir(_opt_session_runs_dir(name))
     _write_run_config(run_dir, {
         "proxy_name":        name,
@@ -300,16 +402,22 @@ def _prepare_run(proxy_name: str) -> tuple[dict | None, dict | None, str | None]
         "convergence":       cfg.get("convergence") or {},
         "started_at":        datetime.now(timezone.utc).isoformat(),
     })
-    # Freeze what is about to run: the best-source snapshot must capture the
-    # code that produced the run, not whatever the file contains when the run
-    # is settled (the agent may edit while a run is in flight).
-    src = cfg.get("proxy_source_path", "")
-    if src and os.path.isfile(src):
-        try:
-            shutil.copy2(src, os.path.join(
-                run_dir, "source_at_launch" + os.path.splitext(src)[1]))
-        except OSError:
-            pass  # legacy fallback in the settle path handles the absence
+    # Freeze what is about to run. The accepted state must be the code that PRODUCED
+    # the run, not whatever the files hold when it settles — the agent may edit while a
+    # run is in flight, and an accepted "best" that never ran would poison every later
+    # comparison. Recorded as a tree snapshot, so a multi-file edit is captured whole.
+    paths = list(cfg.get("optimize_paths") or [])
+    launch_id = tree_snapshot.snapshot(
+        opt_git_dir(), _workspace_root(), paths,
+        f"launch: {name} {os.path.basename(run_dir)}",
+    ) if paths else None
+    if launch_id:
+        _write_json_atomic(os.path.join(run_dir, "tree_at_launch.json"), {
+            "snapshot_id": launch_id,
+            "paths":       paths,
+            "fingerprint": tree_snapshot.fingerprint(_workspace_root(), paths),
+            "is_baseline": launch_id == cfg.get("baseline_id", ""),
+        })
     return cfg, None, run_dir
 
 
@@ -377,30 +485,27 @@ def stop(proxy_name: str = "") -> dict:
 
 
 def reset(proxy_name: str = "") -> dict:
-    """Restore the proxy source file from the canonical snapshot."""
+    """Restore every tracked file to the baseline tree taken at init."""
     cfg = _load_opt_config(proxy_name)
     if not cfg:
         return err("No optimization session found.",
                    hint="Call proxy_eval(op='init', ...) first.")
 
-    source_path = cfg.get("proxy_source_path", "")
-    canon_path  = cfg.get("canonical_path", "")
-    if not source_path:
-        return err("proxy_source_path not set in config.",
+    paths       = list(cfg.get("optimize_paths") or [])
+    baseline_id = cfg.get("baseline_id", "")
+    if not paths or not baseline_id:
+        return err("No baseline tree recorded for this session.",
                    hint="Call proxy_eval(op='init', ...) again.")
-    if not canon_path or not os.path.isfile(canon_path):
-        return err(f"Canonical not found at: {canon_path}",
-                   hint="Call proxy_eval(op='init', ...) to create it.")
 
-    try:
-        shutil.copy2(canon_path, source_path)
-    except OSError as exc:
-        return err(f"Could not restore canonical: {exc}")
+    if not tree_snapshot.restore(opt_git_dir(), _workspace_root(), paths, baseline_id):
+        return err("Could not restore the baseline tree.",
+                   hint="The snapshot store may be missing or unwritable.")
 
     return ok(_with_next({
-        "restored_to":    source_path,
-        "from_canonical": canon_path,
-        "note": "Proxy source restored to canonical. Try a different modification approach.",
+        "restored":  [os.path.basename(p) for p in paths],
+        "from":      "baseline",
+        "note": "Every tracked file is back to the baseline taken at init. "
+                "Try a different modification approach.",
     }, _NEXT_RUN + " to verify the baseline"))
 
 
@@ -422,25 +527,27 @@ def reset_to_best(proxy_name: str = "") -> dict:
                    hint="Run at least once until requirements pass, or use "
                         "proxy_eval(op='reset', confirm=True) to restore the baseline.")
 
-    source_path = cfg.get("proxy_source_path", "")
-    snapshot    = best.get("source_snapshot") or _opt_best_source_path(name, source_path)
-    if not source_path:
-        return err("proxy_source_path not set in config.")
-    if not snapshot or not os.path.isfile(snapshot):
-        return err(f"Best snapshot not found at: {snapshot}",
+    paths    = list(cfg.get("optimize_paths") or [])
+    snapshot = best.get("tree_snapshot") or ""
+    if not paths:
+        return err("optimize_paths not set in config.",
+                   hint="Call proxy_eval(op='init', ...) again.")
+    if not snapshot:
+        return err("The best run predates tree snapshots.",
                    hint="Use proxy_eval(op='reset', confirm=True) to restore the baseline.")
 
-    try:
-        shutil.copy2(snapshot, source_path)
-    except OSError as exc:
-        return err(f"Could not restore best snapshot: {exc}")
+    # All of them or none: restoring a per-file best would assemble a combination that
+    # was never measured together.
+    if not tree_snapshot.restore(opt_git_dir(), _workspace_root(), paths, snapshot):
+        return err("Could not restore the best tree.",
+                   hint="Use proxy_eval(op='reset', confirm=True) to restore the baseline.")
 
     return ok(_with_next({
-        "restored_to":  source_path,
+        "restored":     [os.path.basename(p) for p in paths],
         "from_best":    best.get("run_id"),
         "primary_value": best.get("primary_value"),
-        "note": "Proxy source restored to the best-so-far run. Try a different "
-                "modification approach from this baseline.",
+        "note": "Every tracked file is back to the state of the best accepted run. "
+                "Try a different modification approach from there.",
     }, _NEXT_RUN + " to verify, or summarize if converged"))
 
 
@@ -507,13 +614,10 @@ def _ratchet_settle_locked(
     goal            = cfg.get("primary_goal", "min")
     min_improvement = cfg.get("min_improvement", 0.0)
     max_stall       = int(cfg.get("max_stall", 5))
-    proxy_source    = cfg.get("proxy_source_path", "")
-    # Snapshot taken at launch: what actually ran, immune to edits made while
-    # the run was in flight. Fall back to the live source for legacy runs.
-    launch_snapshot = os.path.join(
-        run_dir, "source_at_launch" + os.path.splitext(proxy_source)[1])
-    if os.path.isfile(launch_snapshot):
-        proxy_source = launch_snapshot
+    # The tree as it stood when this run was LAUNCHED — what actually ran, immune to
+    # edits made while it was in flight.
+    launch = _read_json(os.path.join(run_dir, "tree_at_launch.json")) or {}
+    launch_tree = launch.get("snapshot_id", "")
 
     feasible      = bool(final_metrics.get("all_passed"))
     primary_value = _run_primary_value(final_metrics, primary_metric)
@@ -537,9 +641,15 @@ def _ratchet_settle_locked(
                 "or optimize primary_metric='wall_time_s' instead."
             )
 
+    # The launch gate in _prepare_run guarantees the first run measured the untouched
+    # tree; this records which run that was, so the gate opens exactly once.
+    baseline_run = cfg.get("baseline_run_id", "")
+    if not baseline_run:
+        cfg["baseline_run_id"] = baseline_run = run_id
+
     stall = int(cfg.get("stall", 0))
     if verdict == "accept":
-        _save_best(name, run_id, primary_value, proxy_source, wall_value=wall_value)
+        _save_best(name, run_id, primary_value, launch_tree, wall_value=wall_value)
         best  = _load_best(name)
         stall = 0
     elif feasible:
@@ -564,6 +674,7 @@ def _ratchet_settle_locked(
     })
 
     outcome = {
+        "baseline_run_id": baseline_run,
         "feasible":       feasible,
         "primary_value":  primary_value,
         "wall_value":     wall_value,

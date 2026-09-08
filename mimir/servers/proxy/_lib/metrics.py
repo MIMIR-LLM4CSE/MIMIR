@@ -20,16 +20,30 @@ from numerics import RESERVED_METRICS
 
 _METRICS_BEGIN = "PROXY_METRICS_BEGIN"
 _METRICS_END   = "PROXY_METRICS_END"
-_TRUE_VALS     = {"true", "1", "yes"}
-_FALSE_VALS    = {"false", "0", "no"}
+# WORDS ONLY. "1" and "0" were in these sets, and being tested before the int branch
+# they turned every metric that happened to equal one or zero into a boolean. This is a
+# numerics tool: 0 and 1 are values, not flags. What it cost, all of it observed in one
+# recorded run:
+#   * a summary line ``cases_passed=0 cases_total=1`` reached the model as
+#     ``cases_passed: false, cases_total: true`` — the counts were gone, and a case
+#     ``returncode=0`` (success) read as ``false`` (failure). The model was asked to
+#     judge an optimisation from that payload and re-read it 157 times instead.
+#   * a proxy reporting ``time_s=1`` — a plausible second — became True, so the
+#     plausibility guard below (which excludes bools by design) discarded the report and
+#     substituted wall time. ``time_s`` is the ratchet's default objective, so a run
+#     landing on exactly one second had its objective silently rewritten.
+# Genuine booleans are unaffected: the runner prints Python bools, so ``all_passed=True``
+# and ``converged=false`` still arrive as words. And a requirement like ``finite == 1``
+# still passes with the int, since the engine compares through float().
+_TRUE_VALS     = {"true", "yes"}
+_FALSE_VALS    = {"false", "no"}
 
 
 def _coerce(value: str) -> bool | int | float | str:
-    lv = value.lower()
-    if lv in _TRUE_VALS:
-        return True
-    if lv in _FALSE_VALS:
-        return False
+    """Read one metric value: a number where it can be, a word-boolean, else the text.
+
+    Numbers are tried FIRST so nothing numeric can be captured as a flag.
+    """
     try:
         return int(value)
     except ValueError:
@@ -38,6 +52,11 @@ def _coerce(value: str) -> bool | int | float | str:
         return float(value)
     except ValueError:
         pass
+    lv = value.lower()
+    if lv in _TRUE_VALS:
+        return True
+    if lv in _FALSE_VALS:
+        return False
     return value
 
 

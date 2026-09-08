@@ -41,6 +41,47 @@ class CoerceTests(unittest.TestCase):
         self.assertEqual(metrics._coerce("3.5"), 3.5)
         self.assertEqual(metrics._coerce("/abs/path"), "/abs/path")
 
+    def test_zero_and_one_stay_numbers(self) -> None:
+        """The values a numerics tool most needs to keep were read as flags.
+
+        "1" and "0" used to sit in the boolean word sets, tested ahead of the int
+        branch. A summary line ``cases_passed=0 cases_total=1`` therefore reached the
+        model as ``cases_passed: false, cases_total: true``, and a case ``returncode=0``
+        — a success — read as ``false``. Observed in a recorded run, where the model
+        re-read that payload 157 times rather than act on it.
+        """
+        for text in ("0", "1"):
+            got = metrics._coerce(text)
+            self.assertNotIsInstance(got, bool, f"{text!r} came back as a flag")
+            self.assertEqual(got, int(text))
+
+    def test_a_one_second_measurement_survives_the_plausibility_guard(self) -> None:
+        """`time_s=1` is a plausible second, and it is the ratchet's default objective.
+
+        Coerced to True it failed `_normalize_time_metrics`'s deliberate bool exclusion, so
+        the reported time was discarded and wall time substituted — silently rewriting
+        the objective for any run landing on exactly one second.
+        """
+        m = {"time_s": metrics._coerce("1")}
+        metrics._normalize_time_metrics(m, 1.2)
+        self.assertEqual(m["time_s"], 1)
+        self.assertNotIn("time_s_ignored", m)
+
+    def test_word_booleans_are_still_booleans(self) -> None:
+        # The runner prints Python bools, so genuine flags arrive as words.
+        for text in ("true", "True", "yes"):
+            self.assertIs(metrics._coerce(text), True)
+        for text in ("false", "False", "no"):
+            self.assertIs(metrics._coerce(text), False)
+
+    def test_a_one_valued_requirement_still_passes(self) -> None:
+        # `finite == 1` is a real requirement; the engine compares through float().
+        out = metrics._evaluate_requirements(
+            {"finite": metrics._coerce("1")},
+            [{"metric": "finite", "operator": "eq", "threshold": 1}],
+        )
+        self.assertTrue(out["passed"])
+
 
 class ParseMetricsBlockTests(unittest.TestCase):
     def test_block_is_parsed(self) -> None:
@@ -522,16 +563,25 @@ class RatchetStoreTests(unittest.TestCase):
         store._CACHE_DIR = self._saved_root
         self._tmp.cleanup()
 
-    def test_save_and_load_best_with_snapshot(self) -> None:
-        src = os.path.join(self._tmp.name, "proxy.py")
-        with open(src, "w") as fh:
-            fh.write("# v1\n")
-        snap = ratchet._save_best("p", "run1", 3.0, src)
-        self.assertTrue(os.path.isfile(snap))
+    def test_save_and_load_best_points_at_a_tree(self) -> None:
+        """The best is one id for the WHOLE tracked set, not a copy of one file.
+
+        A best per file would let reset_to_best assemble file A from one run beside
+        file B from another — a combination that was never measured together, which can
+        still run and produce a number that means nothing.
+        """
+        snap = ratchet._save_best("p", "run1", 3.0, "tree-abc123")
+        self.assertEqual(snap, "tree-abc123")
         best = ratchet._load_best("p")
         self.assertEqual(best["run_id"], "run1")
         self.assertEqual(best["primary_value"], 3.0)
-        self.assertEqual(best["source_snapshot"], snap)
+        self.assertEqual(best["tree_snapshot"], "tree-abc123")
+
+    def test_a_run_with_no_recorded_tree_records_none(self) -> None:
+        # Best tracking still survives, but reset_to_best refuses rather than restoring
+        # something it cannot identify.
+        self.assertIsNone(ratchet._save_best("q", "run1", 3.0, ""))
+        self.assertIsNone(ratchet._load_best("q")["tree_snapshot"])
 
     def test_ledger_appends_lines(self) -> None:
         ratchet._append_ledger("p", {"run_id": "r1", "verdict": "accept"})

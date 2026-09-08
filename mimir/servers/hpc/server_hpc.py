@@ -411,6 +411,9 @@ def slurm_job_status(job_id: str) -> dict:
 
     Returns ``state`` in running|pending|done|crashed|unknown (squeue for active
     jobs, sacct for finished ones) plus the raw Slurm state string.
+
+    Args:
+        job_id: The Slurm job ID to poll, as returned when the job was submitted.
     """
     if not str(job_id).strip():
         return err("job_id is required.")
