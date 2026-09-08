@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import json
 import os
 import re
 import sys
@@ -152,7 +153,18 @@ def _make_elicitation_callback(agent: Any):
         if not answers:
             return types.ElicitResult(action="decline")
 
-        return types.ElicitResult(action="accept", content={"answers": answers})
+        # ``ElicitResult.content`` is typed by the MCP SDK as
+        # ``dict[str, str | int | float | bool | list[str] | None]`` — a list of
+        # per-question answer objects does not fit it, and pydantic rejects the
+        # construction outright. So the batch travels as one JSON string and the
+        # interaction server decodes it. Sending the raw list made *answering*
+        # fail while declining succeeded: the validation error surfaced to the
+        # tool as "could not ask the user", and the run silently proceeded on the
+        # model's own judgment with the user's actual answer discarded.
+        return types.ElicitResult(
+            action="accept",
+            content={"answers": json.dumps(answers)},
+        )
 
     return _callback
 

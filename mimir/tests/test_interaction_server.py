@@ -186,3 +186,80 @@ class AskUserQuestionTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ElicitationTransportTests(unittest.TestCase):
+    """The answer must survive the *real* MCP result type, not a stand-in.
+
+    ``_FakeSession`` above returns a ``SimpleNamespace``, so every test that uses it
+    passes whatever shape the client hands over. The MCP schema restricts
+    ``ElicitResult.content`` values to primitives and string lists, and pydantic
+    rejects anything else at construction — which is why answering used to fail
+    while declining worked. These tests pin the transport itself.
+    """
+
+    def test_callback_result_is_a_valid_elicit_result(self) -> None:
+        import mcp.types as mcp_types
+
+        from mimir.client.integration.server_manager import _make_elicitation_callback
+
+        answers = [
+            {"selected": ["Postgres"], "other_text": None},
+            {"selected": ["Auth", "Cache"], "other_text": None},
+        ]
+        agent = types.SimpleNamespace(
+            _request_user_question=lambda questions: {"answers": answers}
+        )
+        params = types.SimpleNamespace(
+            requestedSchema={
+                "x_mimir": {
+                    "kind": "user_question",
+                    "questions": [_Q_DB, _Q_FEATURES],
+                }
+            }
+        )
+
+        # Constructing the ElicitResult is what used to raise ValidationError.
+        result = asyncio.run(_make_elicitation_callback(agent)(None, params))
+
+        self.assertIsInstance(result, mcp_types.ElicitResult)
+        self.assertEqual(result.action, "accept")
+
+    def test_answers_survive_the_round_trip(self) -> None:
+        from mimir.client.integration.server_manager import _make_elicitation_callback
+
+        answers = [
+            {"selected": ["Postgres"], "other_text": None},
+            {"selected": ["Ray Serve"], "other_text": "Ray Serve"},
+        ]
+        agent = types.SimpleNamespace(
+            _request_user_question=lambda questions: {"answers": answers}
+        )
+        params = types.SimpleNamespace(
+            requestedSchema={
+                "x_mimir": {
+                    "kind": "user_question",
+                    "questions": [_Q_DB, _Q_FEATURES],
+                }
+            }
+        )
+        elicit_result = asyncio.run(_make_elicitation_callback(agent)(None, params))
+
+        payload, _ = _run([_Q_DB, _Q_FEATURES], elicit_result)
+
+        self.assertEqual(payload["status"], "ok")
+        self.assertEqual(
+            [a["selected"] for a in payload["answers"]],
+            [["Postgres"], ["Ray Serve"]],
+        )
+
+    def test_channel_failure_is_an_error_not_a_free_choice(self) -> None:
+        class _RaisingSession:
+            async def elicit_form(self, message, requestedSchema):
+                raise RuntimeError("transport gone")
+
+        ctx = types.SimpleNamespace(session=_RaisingSession())
+        payload = asyncio.run(server.ask_user_question([_Q_DB], ctx=ctx))
+
+        self.assertEqual(payload["status"], "error")
+        self.assertIn("could not be put to the user", payload["error"])

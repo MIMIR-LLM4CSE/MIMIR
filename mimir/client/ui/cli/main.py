@@ -93,36 +93,44 @@ def _cli_ask_one(
         if multi_select
         else "   Select an option: "
     )
-    try:
-        # `ask_user_question` is itself a tool call, so the user's thinking time
-        # would otherwise burn its timeout budget (see human_pause).
-        with human_pause.human_pause():
-            raw = input(prompt).strip()
-    except EOFError:
-        return {"selected": [], "other_text": None}
+    # The agent asked because it needs the answer, so an empty or unparseable line
+    # re-prompts instead of counting as "declined": the run stays parked until a real
+    # selection arrives. EOF is the one way out — it means there is no interactive
+    # stdin to block on at all (a pipe, a headless run), not a user choosing silence.
+    while True:
+        try:
+            # `ask_user_question` is itself a tool call, so the user's thinking time
+            # would otherwise burn its timeout budget (see human_pause).
+            with human_pause.human_pause():
+                raw = input(prompt).strip()
+        except EOFError:
+            return {"selected": [], "other_text": None}
 
-    if not raw:
-        return {"selected": [], "other_text": None}
-
-    picks = [p.strip() for p in raw.split(",") if p.strip()] if multi_select else [raw]
-    selected: list[str] = []
-    other_text: str | None = None
-    for pick in picks:
-        if not pick.isdigit():
+        if not raw:
+            print("   An answer is needed to go on — the run is waiting.")
             continue
-        idx = int(pick)
-        if idx == other_idx:
-            try:
-                with human_pause.human_pause():
-                    other_text = input("   Your answer: ").strip() or None
-            except EOFError:
-                other_text = None
-            if other_text:
-                selected.append(other_text)
-        elif 1 <= idx <= len(labels):
-            selected.append(labels[idx - 1])
 
-    return {"selected": selected, "other_text": other_text}
+        picks = [p.strip() for p in raw.split(",") if p.strip()] if multi_select else [raw]
+        selected: list[str] = []
+        other_text: str | None = None
+        for pick in picks:
+            if not pick.isdigit():
+                continue
+            idx = int(pick)
+            if idx == other_idx:
+                try:
+                    with human_pause.human_pause():
+                        other_text = input("   Your answer: ").strip() or None
+                except EOFError:
+                    other_text = None
+                if other_text:
+                    selected.append(other_text)
+            elif 1 <= idx <= len(labels):
+                selected.append(labels[idx - 1])
+
+        if selected:
+            return {"selected": selected, "other_text": other_text}
+        print(f"   Enter a number between 1 and {other_idx}.")
 
 
 def _cli_request_question(questions: list) -> dict:

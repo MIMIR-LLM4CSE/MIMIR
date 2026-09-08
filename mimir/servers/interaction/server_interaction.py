@@ -21,6 +21,7 @@ back as ``{"answers": [{"selected": [...], "other_text": ...}, ...]}``.
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 from typing import Any
@@ -173,10 +174,11 @@ async def ask_user_question(
 
     Returns:
         ``{"answers": [{"header": ..., "selected": [<labels>], "other_text":
-        <str|None>}, ...]}`` — one entry per question, in order — on an answer, or
-        ``{"answers": [], "note": "user did not answer; proceed with best
-        judgment"}`` if the user declines/dismisses or no interactive frontend is
-        connected — in which case continue with your best judgment.
+        <str|None>}, ...]}`` — one entry per question, in order — on an answer.
+        The run is parked until the user answers, so expect to wait. If the user
+        cancels, or no interactive frontend is connected, the result carries an
+        empty ``answers`` list and a note: do NOT then decide for them — end your
+        turn by asking the question in your reply.
     """
     clean_questions = _normalize_questions(questions)
     if not clean_questions:
@@ -231,19 +233,37 @@ async def ask_user_question(
             message=message,
             requestedSchema=requested_schema,
         )
-    except Exception as exc:  # client declined elicitation / not supported
-        return ok({
-            "answers": [],
-            "note": f"could not ask the user ({exc}); proceed with best judgment",
-        })
+    except Exception as exc:  # the elicitation channel itself failed
+        return err(
+            f"The question could not be put to the user ({exc}).",
+            hint=(
+                "You asked because you needed the answer, so do NOT pick a direction "
+                "yourself and do NOT retry this tool. Stop here and end your turn by "
+                "putting the question to the user in your reply, stating what you will "
+                "do once they answer."
+            ),
+        )
 
     if result.action != "accept" or not result.content:
         return ok({
             "answers": [],
-            "note": "user did not answer; proceed with best judgment",
+            "note": (
+                "the user did not answer (cancelled, or no interactive frontend is "
+                "connected). Do not choose for them: stop and end your turn by asking "
+                "the question in your reply."
+            ),
         })
 
+    # The client carries the batch as a JSON string: ``ElicitResult.content`` values
+    # are restricted to primitives and string lists by the MCP schema, so a list of
+    # answer objects cannot ride there unencoded. A list is still accepted for
+    # in-process callers that bypass the transport.
     raw_answers = result.content.get("answers")
+    if isinstance(raw_answers, str):
+        try:
+            raw_answers = json.loads(raw_answers)
+        except ValueError:
+            raw_answers = []
     if not isinstance(raw_answers, list):
         raw_answers = []
 
