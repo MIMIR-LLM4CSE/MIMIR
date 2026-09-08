@@ -145,12 +145,21 @@ _REGISTRY_LOCK_LOCAL = threading.local()
 
 
 @contextlib.contextmanager
-def _registry_lock():
+def _registry_lock(create: bool = False):
     """Exclusive, re-entrant flock around registry read-modify-write operations.
 
     Re-entrant because mutation paths hold the lock while calling
     ``_load_registry``, which locks for its own read; the depth is thread-local
     so concurrent tool dispatch on worker threads still serializes.
+
+    ``create`` says whether taking the lock may bring the store into existence.
+    It defaults to False because the lock is on the read path too: a plain
+    ``proxy_get`` on a project that has never registered a proxy used to leave a
+    ``proxy_bench/`` directory and a lock file behind in the user's tree — a read
+    tool writing, and in plan mode, where nothing should be written at all. With
+    no store on disk there is no registry to race over, so the lock is skipped
+    entirely and the read returns empty. Only :func:`registry.register` passes
+    ``create=True``: registering a proxy is the act that creates the store.
     """
     depth = getattr(_REGISTRY_LOCK_LOCAL, "depth", 0)
     if depth > 0:
@@ -159,6 +168,9 @@ def _registry_lock():
             yield
         finally:
             _REGISTRY_LOCK_LOCAL.depth -= 1
+        return
+    if not create and not os.path.isdir(_CACHE_DIR):
+        yield
         return
     os.makedirs(_CACHE_DIR, exist_ok=True)
     fd = open(registry_lock_path(), "w")
@@ -205,7 +217,10 @@ def _load_registry_or_err() -> tuple[dict | None, str | None]:
 
 
 def _save_registry(reg: dict) -> None:
-    # Always acquire the registry lock for all registry writes
+    # Always acquire the registry lock for all registry writes. No ``create``: a save
+    # is always reached either under an outer lock that already took it (register) or
+    # on an entry that was found, which means the store is already there. The atomic
+    # write creates the directory itself in any case.
     with _registry_lock():
         _write_json_atomic(registry_path(), reg)
 

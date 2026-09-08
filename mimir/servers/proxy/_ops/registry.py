@@ -221,7 +221,11 @@ def register(
         return err(f"executable_path not found: {abs_exe}",
                    hint="Provide an absolute path to an existing file.")
 
-    with _registry_lock():
+    # The one op that may bring the store into existence: registering a proxy is what
+    # creates <workspace>/proxy_bench/. Reads (proxy_get) and the other mutations take
+    # the lock without create, so none of them leaves a directory behind on a project
+    # that has no proxy registered.
+    with _registry_lock(create=True):
         reg, _reg_err = _load_registry_or_err()
         if _reg_err:
             return err(_reg_err)
