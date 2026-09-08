@@ -26,8 +26,8 @@ Benchmark a proxy:
   -> proxy_exec(op='suite', ...) -> proxy_get(op='report', ...)
 
 Optimize a proxy — a monotone ratchet (see also the proxy-optimize skill):
-  proxy_eval(op='init', primary_metric=..., ...) -> proxy_eval(op='run')
-  -> proxy_eval_status() -> proxy_eval_status(op='results') -> follow the verdict:
+  proxy_eval(op='init', primary_metric=..., ...) -> proxy_eval(op='run'), which
+  waits for the run and answers with the verdict -> follow it:
      accepted -> edit source to improve further -> run again
      rejected -> proxy_eval(op='reset_to_best') -> try a different edit -> run
      converged -> proxy_eval(op='reset_to_best') -> summarize
@@ -506,10 +506,16 @@ def proxy_exec(
 
 _EVAL_OPS = ("init", "configure", "run", "stop", "reset", "reset_to_best", "end")
 
+# op='run' waits for the run it launched, so the default 120 s tool wall would cut it
+# off mid-measurement. Sits above eval_session's own wait budget, which detaches the
+# run before this is ever reached — this is the outer guard, not the normal path.
+_EVAL_RUN_TIMEOUT = 1800
+
 
 @mcp.tool(**tool_caps(caps=[PLAN_BLOCKED, CODE_EXEC, BACKGROUNDABLE], reversibility=RECOVERABLE, non_batch=True,
-                      label="Proxy eval: {op}", run_outcome=_RUN_OUTCOME))
-def proxy_eval(
+                      label="Proxy eval: {op}", run_outcome=_RUN_OUTCOME,
+                      timeout_secs=_EVAL_RUN_TIMEOUT))
+async def proxy_eval(
     op: Annotated[str, Field(
         description="Which operation to perform. Required — it selects everything else, and the parameters each one needs.",
         json_schema_extra={"enum": list(_EVAL_OPS)},
@@ -531,9 +537,10 @@ def proxy_eval(
 ) -> dict:
     """Drive an iterative proxy-optimization session as a monotone ratchet (sensitive).
 
-    Typical loop: init -> run -> poll proxy_eval_status() until 'done' ->
-    proxy_eval_status(op='results') -> edit the proxy source with the file
-    tools -> run again.  Every response includes a ``next_step`` field.
+    Typical loop: init -> run -> edit the proxy source with the file tools ->
+    run again.  ``run`` waits for the run it launched and answers with the
+    ratchet verdict and the per-case results, so there is nothing to poll.
+    Every response includes a ``next_step`` field.
 
     The session minimizes (or maximizes) ``primary_metric`` subject to the
     ``requirements`` acting as pass/fail constraints.  A completed run that
@@ -549,10 +556,12 @@ def proxy_eval(
                        requirements, proxy_source_path, optimize_paths)
       configure     -> patch requirements/benchmark_name/python_executable/
                        max_hours without re-snapshotting
-      run           -> launch a background eval run (non-blocking); errors if one
-                       is already active. Pass background=True for a long run to
-                       detach it: end your turn instead of polling; you are
-                       auto-resumed with the results when it completes.
+      run           -> launch a run, WAIT for it, and return the verdict with the
+                       per-case results inline; errors if one is already active.
+                       Do not poll proxy_eval_status() around it. A run still going
+                       after the wait budget detaches itself, and background=True
+                       detaches up front: both hand it to a watcher that resumes you
+                       with the results — end your turn when told to.
       stop          -> stop the active run (SIGTERM local / scancel Slurm)
       reset         -> restore every optimize_paths file to the baseline tree
       reset_to_best -> restore every optimize_paths file to the tree of the best
@@ -594,8 +603,10 @@ def proxy_eval(
         max_stall: Consecutive non-improving feasible runs before 'converged'.
         convergence: Optional {h_param, error_metric} to fit an observed order of
             accuracy across a sweep, exposed as the 'convergence_order' metric.
-        background: For op='run', detach the run so a watcher tracks completion and
-            auto-resumes you with the results (end your turn; do not poll).
+        background: For op='run', skip the wait and detach immediately, so a watcher
+            tracks completion and auto-resumes you with the results (end your turn;
+            do not poll). Use it when the run is known to be long; otherwise leave it
+            False and let the call answer directly.
         confirm: Must be True to apply any operation.
     """
     if op not in _EVAL_OPS:
@@ -619,7 +630,7 @@ def proxy_eval(
         return eval_session.configure(proxy_name, requirements, benchmark_name,
                                       python_executable, max_hours)
     if op == "run":
-        return eval_session.run(proxy_name, background=background)
+        return await eval_session.run_awaited(proxy_name, background=background)
     if op == "stop":
         return eval_session.stop(proxy_name)
     if op == "reset":

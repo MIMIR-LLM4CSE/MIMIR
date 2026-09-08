@@ -9,10 +9,12 @@ exact next call, so the loop is self-describing.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import shutil
 import sys
+import time
 from datetime import datetime, timezone
 
 from _ops import _PROXY_DIR, _with_next, err, ok
@@ -47,6 +49,18 @@ _NEXT_RUN       = "proxy_eval(op='run', confirm=True)"
 _NEXT_STATUS    = "proxy_eval_status() to monitor (state 'done' means finished)"
 _NEXT_RESULTS   = "proxy_eval_status(op='results')"
 _NEXT_RESET_BEST = "proxy_eval(op='reset_to_best', confirm=True)"
+_NEXT_DETACHED  = ("end your turn — a watcher follows this run and resumes you with "
+                   "the results when it finishes; do not poll")
+
+# A run that has reached one of these has nothing left to wait for.
+_TERMINAL_STATES = ("done", "crashed")
+# How often the wait re-reads the run dir. The run writes metrics.json once, at the
+# end, so polling faster buys nothing and only spins the server.
+_RUN_POLL_S = 2.0
+# How long op='run' waits before handing the job to the client watcher instead.
+# Sits under the tool-call budget proxy_eval declares, leaving room for the ratchet
+# to settle and the results to be read in the same call.
+_RUN_WAIT_BUDGET_S = 1500.0
 
 
 # ── session config helpers ────────────────────────────────────────────────────
@@ -467,7 +481,71 @@ def run(proxy_name: str = "", background: bool = False) -> dict:
     }
     if background:
         payload["background_job"] = _background_descriptor(name, run_dir)
+        payload["note"] = "Optimization run detached; a watcher will resume you with it."
+        return ok(_with_next(payload, _NEXT_DETACHED))
     return ok(_with_next(payload, _NEXT_STATUS))
+
+
+async def _await_terminal_state(run_dir: str, wait_s: float) -> str | None:
+    """Poll *run_dir* until the run finishes; ``None`` if *wait_s* elapsed first.
+
+    Async on purpose. FastMCP calls a synchronous tool directly on the server's
+    event loop, so a blocking sleep here would stop this process answering
+    anything for the whole wait — including the ``proxy_eval_status`` a watcher
+    polls, which is exactly what the caller falls back to when the budget runs out.
+    """
+    deadline = time.monotonic() + max(0.0, wait_s)
+    while True:
+        state = _run_state(run_dir)["state"]
+        if state in _TERMINAL_STATES:
+            return state
+        if time.monotonic() >= deadline:
+            return None
+        await asyncio.sleep(_RUN_POLL_S)
+
+
+async def run_awaited(
+    proxy_name: str = "", background: bool = False,
+    wait_s: float = _RUN_WAIT_BUDGET_S,
+) -> dict:
+    """Launch an optimization run and wait for its verdict (the default for op='run').
+
+    One call, one answer: the run is launched, awaited, settled by the ratchet, and
+    the ``results`` payload comes back inline. Repeatedly asking
+    ``proxy_eval_status`` for a run whose only interesting moment is its end spends
+    turns to learn "still running", and the ratchet verdict is the thing worth
+    reading anyway.
+
+    Two ways out of the wait, both of which detach rather than fail: ``background=True``
+    asks for it up front, and a run still going after *wait_s* is handed to the client
+    watcher on its own. Either way the response carries a ``background_job``
+    descriptor and tells the agent to end its turn — it is resumed with the results.
+    """
+    launched = run(proxy_name, background=background)
+    if background or launched.get("status") != "ok":
+        return launched
+
+    run_dir = launched.get("run_dir", "")
+    name    = launched.get("proxy_name", "")
+    state   = await _await_terminal_state(run_dir, wait_s)
+
+    if state is None:
+        # Still running. Detaching beats letting the tool call time out: a timeout
+        # would abandon a run that is alive and doing the work asked of it.
+        detached = {k: v for k, v in launched.items() if k not in ("status", "next_step")}
+        detached["note"] = (
+            f"Still running after {int(wait_s)}s — handed to the background watcher."
+        )
+        detached["background_job"] = _background_descriptor(name, run_dir)
+        return ok(_with_next(detached, _NEXT_DETACHED))
+
+    settled = results(name)
+    # Keep the launch identity on the answer: which run this was, and where its log
+    # is, are what a crash diagnosis needs and `results` does not carry.
+    for key in ("pid", "log", "benchmark_name"):
+        settled.setdefault(key, launched.get(key))
+    settled.setdefault("run_dir", run_dir)
+    return settled
 
 
 def stop(proxy_name: str = "") -> dict:

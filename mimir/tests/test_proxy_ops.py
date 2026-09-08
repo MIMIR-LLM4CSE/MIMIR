@@ -9,6 +9,8 @@ Run:
     python -m unittest mimir.tests.test_proxy_ops -v
 """
 
+import asyncio
+import inspect
 import os
 import sys
 import tempfile
@@ -24,6 +26,24 @@ for _p in (SERVERS_DIR / "_shared", SERVERS_DIR / "proxy"):
 import server_proxy  # noqa: E402
 from _lib import procs, ratchet, store  # noqa: E402,F401  (procs/ratchet re-exported for test_proxy_opt_loop)
 from _ops import eval_session, references, registry, runs, scaffold, slurm, suites  # noqa: E402,F401  (re-exported for sibling test modules)
+
+
+def _eval(*args, **kwargs):
+    """Call the now-async ``proxy_eval`` from a synchronous test.
+
+    ``op='run'`` awaits the run it launches, so the tool is a coroutine function.
+    """
+    return asyncio.run(server_proxy.proxy_eval(*args, **kwargs))
+
+
+def _call(tool, **kwargs):
+    """Call a proxy tool whether or not it is a coroutine function.
+
+    The dispatch tests below sweep every tool with the same arguments; only
+    ``proxy_eval`` is async, and which ones are is not what they are testing.
+    """
+    res = tool(**kwargs)
+    return asyncio.run(res) if inspect.isawaitable(res) else res
 
 
 class _TmpStorageTest(unittest.TestCase):
@@ -93,7 +113,7 @@ class DispatchTests(_TmpStorageTest):
             (server_proxy.proxy_slurm, {"partition": "p", "confirm": True}),
         ):
             with self.subTest(tool=tool.__name__):
-                res = tool(op="bogus", **kwargs)
+                res = _call(tool, op="bogus", **kwargs)
                 self.assertEqual(res.get("status"), "error")
                 self.assertIn("Unknown op 'bogus'", res["error"])
                 self.assertIn("Use one of:", res["hint"])
@@ -120,7 +140,7 @@ class DispatchTests(_TmpStorageTest):
             (server_proxy.proxy_slurm, {"op": "run", "partition": "p", "proxy_name": "x"}),
         ):
             with self.subTest(tool=tool.__name__):
-                res = tool(**kwargs)
+                res = _call(tool, **kwargs)
                 self.assertEqual(res.get("status"), "error")
                 self.assertIn("Not confirmed", res["error"])
                 self.assertIn("confirm=True", res["hint"])
@@ -215,7 +235,7 @@ class EvalLoopTests(_TmpStorageTest):
         self.source = os.path.join(self.root, "source.py")
         with open(self.source, "w") as fh:
             fh.write("VERSION = 1\n")
-        return server_proxy.proxy_eval(
+        return _eval(
             op="init", proxy_name="tiny", benchmark_name="bench",
             requirements=[{"metric": "time_s", "operator": "lt", "threshold": 2.0}],
             proxy_source_path=self.source, optimize_paths=[self._tracked()], confirm=True,
@@ -251,7 +271,7 @@ class EvalLoopTests(_TmpStorageTest):
         tracked = self._tracked()
         with open(tracked, "w") as fh:
             fh.write("TUNABLE = 2  # progress so far\n")
-        res2 = server_proxy.proxy_eval(
+        res2 = _eval(
             op="init", proxy_name="tiny", benchmark_name="bench",
             requirements=[{"metric": "time_s", "operator": "lt", "threshold": 5.0}],
             proxy_source_path=self.source, optimize_paths=[tracked], confirm=True,
@@ -262,14 +282,14 @@ class EvalLoopTests(_TmpStorageTest):
         self.assertIn("kept, not moved", res2["note"])
 
         # And reset still goes back to the ORIGINAL, not to the state at re-init.
-        server_proxy.proxy_eval(op="reset", confirm=True)
+        _eval(op="reset", confirm=True)
         with open(tracked) as fh:
             self.assertEqual(fh.read(), "TUNABLE = 1\n")
 
     def test_init_requires_existing_suite(self) -> None:
         self._register()
         src = self._make_exe("src.py")
-        res = server_proxy.proxy_eval(
+        res = _eval(
             op="init", proxy_name="tiny", benchmark_name="nope",
             requirements=[{"metric": "t", "operator": "lt", "threshold": 1}],
             proxy_source_path=src, optimize_paths=[self._tracked()], confirm=True,
@@ -283,7 +303,7 @@ class EvalLoopTests(_TmpStorageTest):
             op="suite_define", name="bench",
             cases=[{"case_id": "a", "proxy_name": "tiny"}], confirm=True,
         )
-        res = server_proxy.proxy_eval(
+        res = _eval(
             op="init", proxy_name="tiny", benchmark_name="bench",
             requirements=[{"metric": "t", "operator": "approx", "threshold": 1}],
             proxy_source_path=self._make_exe("s.py"), optimize_paths=[self._tracked()], confirm=True,
@@ -297,7 +317,7 @@ class EvalLoopTests(_TmpStorageTest):
             op="suite_define", name="bench",
             cases=[{"case_id": "a", "proxy_name": "tiny"}], confirm=True,
         )
-        res = server_proxy.proxy_eval(
+        res = _eval(
             op="init", proxy_name="tiny", benchmark_name="bench",
             requirements=[{"metric": "time_s", "operator": "lt", "threshold": 2.0}],
             proxy_source_path=self._make_exe("s.py"), optimize_paths=[self._tracked()], min_improvement=-0.1, confirm=True,
@@ -322,7 +342,7 @@ class EvalLoopTests(_TmpStorageTest):
 
     def test_configure_patches_without_resnapshot(self) -> None:
         self._init_session()
-        res = server_proxy.proxy_eval(
+        res = _eval(
             op="configure",
             requirements=[{"metric": "misfit", "operator": "lt", "threshold": 0.1}],
             confirm=True,
@@ -336,7 +356,7 @@ class EvalLoopTests(_TmpStorageTest):
         tracked = self._tracked()
         with open(tracked, "w") as fh:
             fh.write("TUNABLE = 99  # broken attempt\n")
-        res = server_proxy.proxy_eval(op="reset", confirm=True)
+        res = _eval(op="reset", confirm=True)
         self.assertEqual(res.get("status"), "ok")
         with open(tracked) as fh:
             self.assertEqual(fh.read(), "TUNABLE = 1\n")
@@ -347,14 +367,14 @@ class EvalLoopTests(_TmpStorageTest):
         self._init_session()
         with open(self.source, "w") as fh:
             fh.write("VERSION = 1  # harness tweak\n")
-        server_proxy.proxy_eval(op="reset", confirm=True)
+        _eval(op="reset", confirm=True)
         with open(self.source) as fh:
             self.assertIn("harness tweak", fh.read())
 
     def test_end_clears_the_active_session(self) -> None:
         self._init_session()
         self.assertEqual(store._resolve_proxy_name(""), "tiny")
-        res = server_proxy.proxy_eval(op="end", confirm=True)
+        res = _eval(op="end", confirm=True)
         self.assertEqual(res.get("status"), "ok")
         self.assertEqual(res["ended"], "tiny")
         self.assertIn("proxy_eval(op='init'", res["next_step"])
@@ -516,7 +536,7 @@ class SlurmSubmitEvalTests(_TmpStorageTest):
             cases=[{"case_id": "a", "proxy_name": "tiny"}], confirm=True,
         )
         src = self._make_exe("source.py")
-        server_proxy.proxy_eval(
+        _eval(
             op="init", proxy_name="tiny", benchmark_name="bench",
             requirements=[{"metric": "time_s", "operator": "lt", "threshold": 2.0}],
             proxy_source_path=src, optimize_paths=[self._tracked()], max_hours=3.0,

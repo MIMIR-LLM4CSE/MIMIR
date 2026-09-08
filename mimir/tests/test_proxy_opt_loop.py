@@ -9,10 +9,19 @@ Run:
     python -m unittest mimir.tests.test_proxy_opt_loop -v
 """
 
+import asyncio
 import json
 import os
 
 from mimir.tests.test_proxy_ops import _TmpStorageTest, procs, ratchet, server_proxy, store
+
+
+def _eval(*args, **kwargs):
+    """Call the now-async ``proxy_eval`` from a synchronous test.
+
+    ``op='run'`` awaits the run it launches, so the tool is a coroutine function.
+    """
+    return asyncio.run(server_proxy.proxy_eval(*args, **kwargs))
 
 
 class RatchetLoopTests(_TmpStorageTest):
@@ -29,7 +38,7 @@ class RatchetLoopTests(_TmpStorageTest):
             fh.write("import optimized\n")
         self.optimized = os.path.join(self.root, "optimized.py")
         self._write_source("v0")
-        res = server_proxy.proxy_eval(
+        res = _eval(
             op="init", proxy_name="tiny", benchmark_name="bench",
             requirements=[{"metric": "time_s", "operator": "lt", "threshold": 100.0}],
             proxy_source_path=self.source, optimize_paths=[self.optimized],
@@ -125,7 +134,7 @@ class RatchetLoopTests(_TmpStorageTest):
         self.assertEqual(res["best"]["run_id"], "20240101T000000Z")
 
         # reset_to_best restores the best-so-far source (version 'A'), not canonical.
-        rb = server_proxy.proxy_eval(op="reset_to_best", confirm=True)
+        rb = _eval(op="reset_to_best", confirm=True)
         self.assertEqual(rb.get("status"), "ok")
         with open(self.optimized) as fh:
             self.assertEqual(fh.read(), "VERSION = 'A'\n")
@@ -175,7 +184,7 @@ class RatchetLoopTests(_TmpStorageTest):
 
     def test_reset_to_best_errors_without_a_best(self) -> None:
         self._init()
-        res = server_proxy.proxy_eval(op="reset_to_best", confirm=True)
+        res = _eval(op="reset_to_best", confirm=True)
         self.assertEqual(res.get("status"), "error")
         self.assertIn("No best-so-far", res["error"])
 
@@ -267,7 +276,7 @@ class RunnerConvergenceRequirementTests(_TmpStorageTest):
         tracked = os.path.join(self.root, "tracked.py")
         with open(tracked, "w") as fh:
             fh.write("TUNABLE = 1\n")
-        res = server_proxy.proxy_eval(
+        res = _eval(
             op="init", proxy_name="conv", benchmark_name="convb",
             proxy_source_path=exe, optimize_paths=[tracked], primary_metric="time_s",
             convergence={"h_param": "h", "error_metric": "err"},
@@ -332,7 +341,7 @@ class RunnerSettlesRatchetTests(_TmpStorageTest):
         tracked = os.path.join(self.root, "tracked.py")
         with open(tracked, "w") as fh:
             fh.write("TUNABLE = 1\n")
-        res = server_proxy.proxy_eval(
+        res = _eval(
             op="init", proxy_name="fast", benchmark_name="fastb",
             proxy_source_path=exe, optimize_paths=[tracked], primary_metric="time_s",
             requirements=[{"metric": "time_s", "operator": "lt",
@@ -407,7 +416,7 @@ class ReferenceRequirementGuardTests(_TmpStorageTest):
 
     def _init(self, requirements: list[dict], benchmark: str = "bench") -> dict:
         src = self._source()
-        return server_proxy.proxy_eval(
+        return _eval(
             op="init", proxy_name="tiny", benchmark_name=benchmark,
             requirements=requirements, proxy_source_path=src,
             optimize_paths=[self.optimized],
@@ -461,7 +470,7 @@ class ReferenceRequirementGuardTests(_TmpStorageTest):
         res = self._init([{"metric": "time_s", "operator": "lt",
                            "threshold": 100.0}])
         self.assertEqual(res.get("status"), "ok")
-        res = server_proxy.proxy_eval(
+        res = _eval(
             op="configure", proxy_name="tiny",
             requirements=[{"metric": "l2_rel", "operator": "lt",
                            "threshold": 1e-3}],

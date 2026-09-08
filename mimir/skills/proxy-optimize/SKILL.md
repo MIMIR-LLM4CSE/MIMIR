@@ -80,25 +80,29 @@ these requirements.
 
 ## Optimization loop
 
-1. **Run**: `proxy_eval(op='run', confirm=True)`. For a run you expect to be long,
-   add `background=True`: **end your turn** afterward instead of polling — you are
-   automatically resumed with the results when it completes, and you (and the user)
-   stay free to do other work meanwhile. Do NOT poll a backgrounded run.
-2. **Wait** (non-background runs only): `proxy_eval_status()` until state is 'done'
-   or 'crashed'.
-   - If 'crashed': `proxy_eval_status(op='log', tail=100)` to diagnose.
-3. **Inspect**: `proxy_eval_status(op='results')` — read `verdict`, `best`, `stall`,
-   `recommendation`, and follow `next_step`:
+1. **Run**: `proxy_eval(op='run', confirm=True)`. The call **waits** for the run and
+   answers with the verdict and the per-case results, so there is nothing to poll —
+   do not call `proxy_eval_status()` around it.
+   - For a run you expect to be long, add `background=True` to skip the wait: **end
+     your turn** afterward, and you are automatically resumed with the results when
+     it completes, leaving you and the user free meanwhile. Do NOT poll a
+     backgrounded run either.
+   - A run still going when the wait budget expires detaches itself the same way:
+     the response says so, and the rule is again to end your turn.
+   - If the run crashed: `proxy_eval_status(op='log', tail=100)` to diagnose.
+2. **Inspect** the payload the run returned — `verdict`, `best`, `stall`,
+   `recommendation` — and follow `next_step`. (`proxy_eval_status(op='results')`
+   re-reads it later if you need it again):
    - **accept** → new best. Read the source and try a further improvement, then run again.
    - **reject** → this edit regressed. `proxy_eval(op='reset_to_best', confirm=True)`,
      then try a *different* edit and run.
    - **converged** → `proxy_eval(op='reset_to_best', confirm=True)`, then summarize.
    - no verdict yet (constraints not met, no best) → edit the source and run again.
-4. Editing: read the files in `optimize_paths`, understand what is slow or
+3. Editing: read the files in `optimize_paths`, understand what is slow or
    inaccurate, apply a targeted `replace_in_file(...)` to one of them, then go to
    step 1. Never edit the harness at `proxy_source_path` — it is the measuring
    instrument, not the subject.
-5. **Compare runs**: `proxy_eval_status(op='diff')` or `(op='runs')` (note `is_best`).
+4. **Compare runs**: `proxy_eval_status(op='diff')` or `(op='runs')` (note `is_best`).
 
 ## Rules
 

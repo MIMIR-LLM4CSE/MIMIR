@@ -19,6 +19,14 @@ from mimir.client.query_engine.background import _maybe_register_background_job
 from mimir.tests.test_proxy_ops import _TmpStorageTest, server_proxy
 
 
+def _eval(*args, **kwargs):
+    """Call the now-async ``proxy_eval`` from a synchronous test.
+
+    ``op='run'`` awaits the run it launches, so the tool is a coroutine function.
+    """
+    return asyncio.run(server_proxy.proxy_eval(*args, **kwargs))
+
+
 # ── 1. Server: the launch op emits a background_job descriptor on demand ────────
 
 class BackgroundDescriptorTests(_TmpStorageTest):
@@ -45,7 +53,7 @@ class BackgroundDescriptorTests(_TmpStorageTest):
             op="suite_define", name="fastb",
             cases=[{"case_id": "a", "proxy_name": "fast"}], confirm=True,
         )
-        server_proxy.proxy_eval(
+        _eval(
             op="init", proxy_name="fast", benchmark_name="fastb",
             proxy_source_path=exe, optimize_paths=[self._tracked()], primary_metric="time_s",
             requirements=[{"metric": "time_s", "operator": "lt", "threshold": 100.0}],
@@ -55,7 +63,7 @@ class BackgroundDescriptorTests(_TmpStorageTest):
 
     def test_background_true_attaches_descriptor(self) -> None:
         self._init_session()
-        res = server_proxy.proxy_eval(op="run", proxy_name="fast",
+        res = _eval(op="run", proxy_name="fast",
                                       background=True, confirm=True)
         self.assertEqual(res.get("status"), "ok")
         job = res.get("background_job")
@@ -65,14 +73,14 @@ class BackgroundDescriptorTests(_TmpStorageTest):
         self.assertEqual(job["status_op"]["tool"], "proxy_eval_status")
         self.assertEqual(job["summary_op"]["args"]["op"], "results")
         # Stop the detached run so it doesn't linger.
-        server_proxy.proxy_eval(op="stop", proxy_name="fast", confirm=True)
+        _eval(op="stop", proxy_name="fast", confirm=True)
 
     def test_background_false_has_no_descriptor(self) -> None:
         self._init_session()
-        res = server_proxy.proxy_eval(op="run", proxy_name="fast", confirm=True)
+        res = _eval(op="run", proxy_name="fast", confirm=True)
         self.assertEqual(res.get("status"), "ok")
         self.assertNotIn("background_job", res)
-        server_proxy.proxy_eval(op="stop", proxy_name="fast", confirm=True)
+        _eval(op="stop", proxy_name="fast", confirm=True)
 
 
 # ── 2. Client: dispatch detects the descriptor and registers a watcher ─────────
@@ -221,7 +229,7 @@ class ProxySlurmBackgroundTests(_TmpStorageTest):
             op="suite_define", name="fastb",
             cases=[{"case_id": "a", "proxy_name": "fast"}], confirm=True,
         )
-        server_proxy.proxy_eval(
+        _eval(
             op="init", proxy_name="fast", benchmark_name="fastb",
             proxy_source_path=exe, optimize_paths=[self._tracked()], primary_metric="time_s",
             requirements=[{"metric": "time_s", "operator": "lt", "threshold": 100.0}],

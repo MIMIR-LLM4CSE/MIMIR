@@ -35,13 +35,13 @@ so it is parseable by proxy_eval_status(op='results'):
       best_case=<case_id> best_time_s=<n>
 
 The agent can therefore:
-  1. proxy_eval(op='run') → proxy_eval_status()
-  2. proxy_eval_status(op='results') / (op='log') to see results
-  3. Read the proxy source file (proxy_source_path from opt_config.json)
-  4. Modify the proxy source with the file-edit tools
-  5. proxy_eval(op='run') again to measure the effect
-  6. Repeat until requirements are satisfied
-  7. proxy_eval(op='reset_to_best') if a change makes things worse
+  1. proxy_eval(op='run'), which waits and returns the parsed results + verdict
+     (proxy_eval_status(op='results') / (op='log') re-read them afterwards)
+  2. Read the proxy source file (proxy_source_path from opt_config.json)
+  3. Modify the proxy source with the file-edit tools
+  4. proxy_eval(op='run') again to measure the effect
+  5. Repeat until requirements are satisfied
+  6. proxy_eval(op='reset_to_best') if a change makes things worse
 """
 
 from __future__ import annotations
