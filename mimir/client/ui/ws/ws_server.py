@@ -22,7 +22,17 @@ Protocol — all messages are JSON objects, one per send/recv:
     {"type": "output",         "text": "..."}          # stdout (tool status + LLM tokens)
     {"type": "enforcement",    "mode": "strict"|"light"|"off"}  # active guidance-nudge level
     {"type": "mode",           "mode": "agent"|"plan"|"ask"}    # server-driven mode switch
-                                                                # (plan approval → agent)
+                                                                # (plan approval → agent),
+                                                                # and the answer to /mode
+    {"type": "thinking_depth", "depth": 0-5, "label": "..."}    # the depth the agent HOLDS,
+                                                                # after /thinking[-depth]
+    {"type": "streaming",      "enabled": bool}                 # after /streaming
+    {"type": "command_output", "command": "/memory list", "title": "3 memories",
+                               "items": [{"label": "...", "detail": "..."}],
+                               "note": "...", "tone": "ok"|"warn"|"empty"}
+                                                                # answer to a session command;
+                                                                # settings that own a control
+                                                                # report state instead
     {"type": "approval",       "id": "...", "tool": "...", "server": "...",
                                "args": {}, "risk": "...", "scope": "..."}
     {"type": "continue_prompt","id": "...", "summary": "..."}

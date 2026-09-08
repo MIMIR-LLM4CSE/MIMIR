@@ -370,53 +370,96 @@ describe("chatReducer", () => {
 });
 
 describe("session command replies", () => {
+  const listing = {
+    type: "command_output" as const,
+    command: "/memory list",
+    title: "3 memories",
+    items: [
+      { label: "a", detail: "first" },
+      { label: "b", detail: "" },
+      { label: "c", detail: "third" },
+    ],
+  };
+
   it("renders a command answer, unlike transient output", () => {
     const state = run([
       { type: "output", text: "  3 memory item(s): a, b, c\n" },
-      { type: "command_output", text: "  3 memory item(s): a, b, c\n" },
+      listing,
     ]);
 
-    // The same text on the "output" channel is dropped; on its own channel it lands.
+    // Transient tool chatter is still dropped; the command answer lands.
     expect(state.messages).toHaveLength(1);
-    expect(state.messages[0].kind).toBe("text");
-    expect(state.messages[0].text).toContain("3 memory item(s)");
+    expect(state.messages[0].kind).toBe("command");
   });
 
-  it("keeps the confirmation of an irreversible clear", () => {
+  it("carries the answer whole so the card can lay it out", () => {
+    // Flattening it to a line here is what made every answer a formatted blob the
+    // frontend could only print.
+    const state = run([listing]);
+    const result = state.messages[0].command!;
+
+    expect(result.command).toBe("/memory list");
+    expect(result.title).toBe("3 memories");
+    expect(result.items).toHaveLength(3);
+    expect(result.items![0]).toEqual({ label: "a", detail: "first" });
+  });
+
+  it("keeps the confirmation of an irreversible clear, and marks it", () => {
     // The reason this channel exists: "/memory clear" wiped the store and said
     // nothing, so it read as a command that had not worked.
     const state = run([
-      { type: "command_output", text: "  ✓ Cleared 4 memory item(s). This cannot be undone.\n" },
+      {
+        type: "command_output",
+        command: "/memory clear",
+        title: "Cleared 4 memories",
+        note: "This cannot be undone.",
+        tone: "warn",
+      },
     ]);
+    const result = state.messages[0].command!;
 
-    expect(state.messages).toHaveLength(1);
-    expect(state.messages[0].text).toContain("Cleared 4 memory item(s)");
+    expect(result.title).toBe("Cleared 4 memories");
+    expect(result.note).toBe("This cannot be undone.");
+    expect(result.tone).toBe("warn");
+  });
+
+  it("defaults the tone and drops nameless rows", () => {
+    const state = run([
+      {
+        type: "command_output",
+        command: "/mode",
+        title: "Mode",
+        items: [{ label: "agent" }, { label: "  " }],
+      },
+    ]);
+    const result = state.messages[0].command!;
+
+    expect(result.tone).toBe("ok");
+    expect(result.items).toEqual([{ label: "agent" }]);
   });
 
   it("commits streamed prose above the answer instead of losing it", () => {
     const state = run([
       { type: "token", text: "Working on it." },
-      { type: "command_output", text: "  ✓ Mode set to agent\n" },
+      { type: "command_output", command: "/mode", title: "Mode", items: [{ label: "agent" }] },
     ]);
 
     expect(state.draft).toBe("");
-    expect(state.messages.map((m) => m.text)).toEqual([
-      "Working on it.",
-      "  ✓ Mode set to agent",
-    ]);
+    expect(state.messages.map((m) => m.kind)).toEqual(["text", "command"]);
+    expect(state.messages[0].text).toBe("Working on it.");
   });
 
   it("does not end the turn — a command runs beside a run, not as one", () => {
     const state = run([
       { type: "query", text: "hi" },
-      { type: "command_output", text: "  ✓ Batch mode on\n" },
+      { type: "command_output", command: "/batch", title: "Batch review", items: [{ label: "on" }] },
     ]);
 
     expect(state.busy).toBe(true);
   });
 
-  it("ignores an empty answer", () => {
-    const state = run([{ type: "command_output", text: "   \n" }]);
+  it("ignores an answer with no title", () => {
+    const state = run([{ type: "command_output", command: "/mode", title: "   " }]);
     expect(state.messages).toHaveLength(0);
   });
 });

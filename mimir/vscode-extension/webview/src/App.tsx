@@ -331,6 +331,17 @@ export const App: React.FC = () => {
         setAgentMode(msg.mode);
         return;
 
+      // The depth the agent actually holds, reported after any change. The panel
+      // used to assert its own stored value on connect and never learn the real
+      // one, which is how a session could open showing a depth it was not on.
+      case "thinking_depth":
+        setThinkingLevel(msg.depth);
+        return;
+
+      case "streaming":
+        setStreaming(msg.enabled);
+        return;
+
       case "continue_prompt":
         setContinuePrompt({ id: msg.id, summary: msg.summary });
         return;

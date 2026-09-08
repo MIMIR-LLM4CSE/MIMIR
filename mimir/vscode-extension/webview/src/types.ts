@@ -34,16 +34,39 @@ export interface StatusMessage {
   text: string;
 }
 
+/** One row of a command answer: a name, optionally what it is. */
+export interface CommandItem {
+  label: string;
+  detail?: string;
+}
+
+/**
+ * How a command answer should read. "warn" is for something irreversible that has
+ * just happened (a wipe), "empty" for a listing with nothing in it.
+ */
+export type CommandTone = "ok" | "warn" | "empty";
+
 /**
  * The answer to a session command the user typed ("/memory list", "/proxy clean x").
  *
  * Separate from OutputMessage because that one is transient tool-activity text the
  * reducer drops — which silently swallowed every command answer, including the
  * confirmation of an irreversible "/memory clear".
+ *
+ * Structured rather than a formatted line: a setting change and a listing of twenty
+ * memories want different shapes on screen, and the frontend cannot lay out what
+ * arrives as an already-indented blob.
  */
 export interface CommandOutputMessage {
   type: "command_output";
-  text: string;
+  /** The command that produced this, e.g. "/memory list". */
+  command: string;
+  /** The headline result, e.g. "3 memories" or "Cleared 4 memories". */
+  title: string;
+  items?: CommandItem[];
+  /** A single line under the rows, e.g. "This cannot be undone." */
+  note?: string;
+  tone?: CommandTone;
 }
 
 export interface ApprovalMessage {
@@ -302,6 +325,25 @@ export interface AgentModeMessage {
   mode: AgentMode;
 }
 
+/**
+ * The reasoning depth the agent actually holds, reported after any change.
+ *
+ * State, not narration: the depth has a control in the settings panel, so a line
+ * about it in the transcript repeats the chrome — and the webview replays its
+ * stored settings on every connect, which made that line greet each session.
+ */
+export interface ThinkingDepthMessage {
+  type: "thinking_depth";
+  depth: number;
+  label?: string;
+}
+
+/** Whether the agent is actually streaming, reported after any change. */
+export interface StreamingStateMessage {
+  type: "streaming";
+  enabled: boolean;
+}
+
 export interface ContinuePromptMessage {
   type: "continue_prompt";
   id: string;
@@ -439,6 +481,8 @@ export type ServerMessage =
   | EnforcementModeMessage
   | ApprovalModeMessage
   | AgentModeMessage
+  | ThinkingDepthMessage
+  | StreamingStateMessage
   | ContextUsageMessage
   | ContinuePromptMessage
   | JobCompleteMessage
@@ -586,7 +630,8 @@ export type ClientMessage =
 // ── UI state types ─────────────────────────────────────────────────────────────
 
 export type MessageRole = "user" | "agent";
-export type MessageKind = "text" | "approval" | "error" | "editing" | "thinking" | "tools";
+export type MessageKind =
+  | "text" | "approval" | "error" | "editing" | "thinking" | "tools" | "command";
 
 /** A single tool invocation tracked from start (tool_call) to finish (tool_result). */
 export interface ToolActivity {
@@ -639,6 +684,8 @@ export interface ChatMessage {
   /** Reasoning size (tokens) for a frozen kind="thinking" message. */
   thinkingTokens?: number;
   approval?: ApprovalMessage;
+  /** The structured answer of a session command, for kind="command". */
+  command?: CommandOutputMessage;
   streaming?: boolean;
   /** True while the agent is still editing (pulsing indicator shown). */
   live?: boolean;

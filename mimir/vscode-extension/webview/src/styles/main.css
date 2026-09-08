@@ -537,6 +537,109 @@ body {
 }
 .error-card__retry:hover { color: var(--fg); border-color: var(--fg-dim); }
 
+/* ── Session-command answers ─────────────────────────────────────────────────
+   The reply to something the user typed ("/memory list", "/memory clear"). Not
+   agent prose: no bubble, no avatar, no markdown. Two shapes — a one-line form
+   for a setting change, a card for a listing or an irreversible result — chosen
+   in CommandResult.tsx from the same payload.
+
+   The tone accent is the whole visual story: routine results stay quiet, and a
+   wipe that cannot be undone is the one that gets warm colour. */
+.cmd-chip {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--fg-dim);
+  background: var(--code-bg);
+  border-radius: var(--radius-sm);
+  padding: 1px 5px;
+  white-space: nowrap;
+}
+
+/* One line: ✓  /mode  Mode  agent */
+.cmd-line {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-3);
+  padding: var(--sp-2) var(--sp-4);
+  font-size: 12px;
+  color: var(--fg-dim);
+}
+.cmd-line__icon { flex-shrink: 0; color: var(--accent); }
+.cmd-line--warn .cmd-line__icon { color: var(--approval-border); }
+.cmd-line--empty .cmd-line__icon { color: var(--fg-dim); }
+.cmd-line__title { color: var(--fg); }
+.cmd-value {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--accent-fg);
+  background: var(--accent);
+  border-radius: var(--radius-sm);
+  padding: 1px 6px;
+}
+
+/* Card: a listing, or a result carrying a note. */
+.cmd-card {
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
+  padding: var(--sp-4) var(--sp-5);
+  font-size: 12px;
+  color: var(--fg);
+}
+.cmd-card--warn {
+  border-left-color: var(--approval-border);
+  background: color-mix(in srgb, var(--approval-border) 8%, transparent);
+}
+.cmd-card--empty {
+  border-left-color: var(--border);
+  background: transparent;
+}
+.cmd-card__head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-3);
+  margin-bottom: var(--sp-3);
+}
+.cmd-card__icon { flex-shrink: 0; color: var(--accent); }
+.cmd-card--warn .cmd-card__icon { color: var(--approval-border); }
+.cmd-card--empty .cmd-card__icon { color: var(--fg-dim); }
+.cmd-card__title { font-weight: 600; }
+.cmd-card__items { list-style: none; margin: 0; padding: 0; }
+/* Rows indent under the head, so the list reads as belonging to the title
+   rather than as a second block that happens to sit below it. */
+.cmd-card__item {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-3);
+  padding: 2px 0 2px var(--sp-5);
+  min-width: 0;
+}
+.cmd-card__item + .cmd-card__item {
+  border-top: 1px solid color-mix(in srgb, var(--border) 45%, transparent);
+}
+.cmd-card__label {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--fg);
+  flex-shrink: 0;
+}
+/* The description is context, not the row's identity: it yields the space first
+   and truncates rather than wrapping a long slug into a paragraph. */
+.cmd-card__detail {
+  color: var(--fg-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.cmd-card__note {
+  margin-top: var(--sp-3);
+  padding-left: var(--sp-5);
+  color: var(--fg-dim);
+  font-style: italic;
+}
+.cmd-card--warn .cmd-card__note { color: var(--approval-border); font-style: normal; }
+
 /* Soft "typing" indicator shown at the tail of the bubble that is actively
    streaming. A rotating status word (Reasoning / Analysing / Working …) whose
    letters fall in from the top one-by-one (left → right), then fall out

@@ -341,12 +341,29 @@ export function createChatReducer(makeId: () => string) {
       // silence. Does not touch `busy`: a session command runs beside a turn, not
       // as one.
       case "command_output": {
-        const text = action.text.replace(/\s+$/, "");
-        if (!text.trim()) return state;
+        const title = (action.title ?? "").trim();
+        if (!title) return state;
         const s = commitDraft(state, makeId);
         return {
           ...s,
-          messages: [...s.messages, { id: makeId(), role: "agent", kind: "text", text }],
+          messages: [
+            ...s.messages,
+            {
+              id: makeId(),
+              role: "agent",
+              kind: "command",
+              // Carried whole rather than flattened to a line: the card decides how
+              // a setting change and a twenty-row listing each want to look.
+              command: {
+                type: "command_output",
+                command: action.command ?? "",
+                title,
+                items: (action.items ?? []).filter((i) => (i?.label ?? "").trim()),
+                note: (action.note ?? "").trim(),
+                tone: action.tone ?? "ok",
+              },
+            },
+          ],
         };
       }
 

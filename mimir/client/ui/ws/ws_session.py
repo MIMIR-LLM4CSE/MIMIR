@@ -1100,6 +1100,79 @@ class _Session:
     async def _handle_command_msg(self, msg: dict) -> None:
         await self._handle_command((msg.get("text") or "").strip())
 
+    async def _command_reply(
+        self,
+        command: str,
+        title: str,
+        *,
+        items: list[dict] | None = None,
+        note: str = "",
+        tone: str = "ok",
+    ) -> None:
+        """Send one structured answer for a session command.
+
+        Only two kinds of command reach here: a LISTING, and something IRREVERSIBLE
+        that just happened. Every setting — mode, thinking, streaming, batch,
+        context, approvals, enforcement — reports state instead and writes nothing to
+        the transcript: each already has a control that shows its value, so a line
+        about it repeats the chrome. The webview also replays its stored settings on
+        every connect, so those lines were not even reports of anything the user had
+        just done; they greeted each session with changes nobody had made.
+
+        Structured, not pre-formatted. A listing of twenty memories and a one-line
+        result want different shapes on screen, and a frontend cannot lay out what
+        reaches it as an already-indented blob of text — which is all it used to get,
+        so the best any of them could do was print the blob.
+
+        ``tone`` says how the result should read: ``ok`` for routine, ``warn`` for
+        something irreversible that just happened, ``empty`` for a listing with
+        nothing in it. ``items`` are ``{label, detail}`` rows.
+        """
+        await self.ws.send(json.dumps({
+            "type":    "command_output",
+            "command": command,
+            "title":   title,
+            "items":   items or [],
+            "note":    note,
+            "tone":    tone,
+        }))
+
+    async def _send_thinking_state(self) -> None:
+        """Report the reasoning depth the agent ACTUALLY holds after a change.
+
+        A state message, not a transcript line. The depth already has a control in
+        the settings panel, so narrating it in the conversation says twice what the
+        panel says once — and the webview replays its stored settings on every
+        connect, so that line greeted each session with a depth nobody had just
+        chosen. Reporting the agent's own value rather than echoing the requested
+        one is also what stops the greeting being wrong: the request is a wish, the
+        attribute is the fact.
+        """
+        agent = getattr(self.worker, "_agent", None)
+        depth = getattr(agent, "thinking_depth", None)
+        if depth is None:
+            return
+        label = (THINKING_DEPTH_LABELS[depth]
+                 if 0 <= depth < len(THINKING_DEPTH_LABELS) else "")
+        await self.ws.send(json.dumps({
+            "type": "thinking_depth", "depth": depth, "label": label,
+        }))
+
+    async def _send_streaming_state(self) -> None:
+        """Report whether the agent is ACTUALLY streaming, after a change.
+
+        Same reasoning as :meth:`_send_thinking_state`: the toggle owns a control in
+        the settings panel, and the webview replays its stored value on connect, so a
+        transcript line about it was chrome repeated as session-opening noise.
+        """
+        agent = getattr(self.worker, "_agent", None)
+        enabled = getattr(agent, "streaming", None)
+        if enabled is None:
+            return
+        await self.ws.send(json.dumps({
+            "type": "streaming", "enabled": bool(enabled),
+        }))
+
     async def _handle_command(self, text: str) -> None:
         """Answer a session command the user typed (never seen by the model).
 
@@ -1116,15 +1189,18 @@ class _Session:
             if error:
                 await self.ws.send(json.dumps({"type": "error", "text": f"  ✗ {error}\n"}))
             else:
-                await self.ws.send(json.dumps({"type": "command_output", "text": f"  ✓ Mode set to {mode}\n"}))
+                # State, not narration: the mode switcher shows it, so a line in the
+                # transcript would only repeat the chrome — and the webview replays
+                # its own mode on connect, which made that line session-opening noise.
+                await self.ws.send(json.dumps({"type": "mode", "mode": mode}))
         elif text.startswith("/batch "):
             flag = text[7:].strip().lower()
             self.worker.set_batch(flag in ("on", "true", "1", "yes"))
-            await self.ws.send(json.dumps({"type": "command_output", "text": f"  ✓ Batch mode {flag}\n"}))
         elif text.startswith("/thinking "):
             flag = text[10:].strip().lower()
-            self.worker.set_thinking(flag in ("on", "true", "1", "yes"))
-            await self.ws.send(json.dumps({"type": "command_output", "text": f"  ✓ Thinking {'on' if flag in ('on','true','1','yes') else 'off'}\n"}))
+            on = flag in ("on", "true", "1", "yes")
+            self.worker.set_thinking(on)
+            await self._send_thinking_state()
         elif text.startswith("/thinking-depth "):
             arg = text[16:].strip()
             level = thinking_depth_from_label(arg) if not arg.lstrip("-").isdigit() else int(arg)
@@ -1133,17 +1209,17 @@ class _Session:
                 await self.ws.send(json.dumps({"type": "error", "text": usage}))
                 return
             self.worker.set_thinking_depth(level)
-            await self.ws.send(json.dumps({"type": "command_output", "text": f"  ✓ Thinking depth: {THINKING_DEPTH_LABELS[level]}\n"}))
+            await self._send_thinking_state()
         elif text.startswith("/streaming "):
             flag = text[11:].strip().lower()
-            self.worker.set_streaming(flag in ("on", "true", "1", "yes"))
-            await self.ws.send(json.dumps({"type": "command_output", "text": f"  ✓ Streaming {'on' if flag in ('on','true','1','yes') else 'off'}\n"}))
+            on = flag in ("on", "true", "1", "yes")
+            self.worker.set_streaming(on)
+            await self._send_streaming_state()
         elif text.startswith("/context "):
             mode = text[9:].strip().lower()
             if mode in ("compact", "full"):
                 self.worker.set_context_mode(mode)
                 await self.ws.send(json.dumps({"type": "context_mode", "mode": mode}))
-                await self.ws.send(json.dumps({"type": "command_output", "text": f"  ✓ Context mode set to {mode}\n"}))
             else:
                 await self.ws.send(json.dumps({"type": "error", "text": f"Unknown context mode: {mode}. Use compact or full."}))
         elif text.startswith("/approvals "):
@@ -1153,7 +1229,6 @@ class _Session:
             if mode in ("manual", "auto", "auto_all"):
                 self.worker.set_approval_mode(mode)
                 await self.ws.send(json.dumps({"type": "approval_mode", "mode": mode}))
-                await self.ws.send(json.dumps({"type": "command_output", "text": f"  ✓ Approvals set to {mode}\n"}))
             else:
                 await self.ws.send(json.dumps({"type": "error", "text": f"Unknown approval mode: {raw}. Use manual, auto, or all."}))
         elif text.startswith("/enforcement "):
@@ -1161,7 +1236,6 @@ class _Session:
             if level in ("strict", "light", "off"):
                 self.worker.set_enforcement(level)
                 await self.ws.send(json.dumps({"type": "enforcement", "mode": level}))
-                await self.ws.send(json.dumps({"type": "command_output", "text": f"  ✓ Enforcement set to {level}\n"}))
             else:
                 await self.ws.send(json.dumps({"type": "error", "text": f"Unknown enforcement level: {level}. Use strict, light, or off."}))
         elif text.startswith("/proxy"):
@@ -1181,17 +1255,16 @@ class _Session:
                         "text": f"  ✗ {payload.get('error', 'list failed')}\n"}))
                 else:
                     entries = payload.get("proxies") or []
-                    if not entries:
-                        body = "  No proxies registered.\n"
-                    else:
-                        rows = [f"  {len(entries)} registered proxy(ies):"]
-                        for e in entries:
-                            desc = (e.get("description") or "").strip()
-                            rows.append(f"    {e.get('name', '?')}"
-                                        + (f" — {desc}" if desc else ""))
-                        body = "\n".join(rows) + "\n"
-                    await self.ws.send(json.dumps({
-                        "type": "command_output", "text": body}))
+                    await self._command_reply(
+                        "/proxy list",
+                        f"{len(entries)} registered "
+                        + ("proxy" if len(entries) == 1 else "proxies")
+                        if entries else "No proxies registered",
+                        items=[{"label": e.get("name", "?"),
+                                "detail": (e.get("description") or "").strip()}
+                               for e in entries],
+                        tone="ok" if entries else "empty",
+                    )
             elif len(parts) >= 3 and parts[1] == "clean":
                 name = parts[2]
                 payload = await asyncio.wrap_future(
@@ -1202,15 +1275,17 @@ class _Session:
                         "type": "error",
                         "text": f"  ✗ {payload.get('error', 'clean failed')}\n"}))
                 else:
-                    lines = [f"  ✓ Cleaned proxy '{name}'",
-                             "    removed: " + ", ".join(payload.get("removed") or ["nothing"])]
-                    # What survived is the part worth printing: this is the exact
+                    # What survived is the part worth showing: this is the exact
                     # question ("I deleted everything and it still remembers") that
                     # made a whole session start from state nobody meant to keep.
-                    for k in (payload.get("kept") or []):
-                        lines.append("    kept:    " + k)
-                    await self.ws.send(json.dumps({
-                        "type": "command_output", "text": "\n".join(lines) + "\n"}))
+                    items = [{"label": "removed",
+                              "detail": ", ".join(payload.get("removed") or ["nothing"])}]
+                    items += [{"label": "kept", "detail": k}
+                              for k in (payload.get("kept") or [])]
+                    await self._command_reply(
+                        "/proxy clean", f"Cleaned proxy '{name}'",
+                        items=items, tone="warn",
+                    )
             else:
                 await self.ws.send(json.dumps({
                     "type": "error",
@@ -1228,34 +1303,42 @@ class _Session:
                 payload = await asyncio.wrap_future(
                     self.worker.call_session_tool("memory_list_all", {}))
                 entries = payload.get("memory") or []
-                if not entries:
-                    body = "  No memories stored.\n"
-                else:
-                    rows = [f"  {len(entries)} memory item(s):"]
-                    for e in entries:
-                        desc = (e.get("description") or "").strip()
-                        rows.append(f"    {e.get('name', '?')}" + (f" — {desc}" if desc else ""))
-                    body = "\n".join(rows) + "\n"
-                await self.ws.send(json.dumps({"type": "command_output", "text": body}))
+                await self._command_reply(
+                    "/memory list",
+                    f"{len(entries)} " + ("memory" if len(entries) == 1 else "memories")
+                    if entries else "No memories stored",
+                    items=[{"label": e.get("name", "?"),
+                            "detail": (e.get("description") or "").strip()}
+                           for e in entries],
+                    tone="ok" if entries else "empty",
+                )
             elif sub == "delete" and len(parts) >= 3:
                 payload = await asyncio.wrap_future(
                     self.worker.call_session_tool("memory_delete", {"name": parts[2]}))
-                ok_ = payload.get("status") == "ok"
-                await self.ws.send(json.dumps({
-                    "type": "command_output" if ok_ else "error",
-                    "text": (f"  ✓ Deleted memory '{parts[2]}'\n" if ok_
-                             else f"  ✗ {payload.get('error', 'delete failed')}\n")}))
+                if payload.get("status") != "ok":
+                    await self.ws.send(json.dumps({
+                        "type": "error",
+                        "text": f"  ✗ {payload.get('error', 'delete failed')}\n"}))
+                else:
+                    await self._command_reply(
+                        "/memory delete", "Deleted 1 memory",
+                        items=[{"label": parts[2]}], tone="warn")
             elif sub == "clear":
                 # Irreversible, and deliberately typed in full by the person whose
-                # memory it is. The count is reported so the effect is visible.
+                # memory it is. The count is reported so the effect is visible —
+                # a wipe that says nothing reads as a wipe that did not happen.
                 payload = await asyncio.wrap_future(
                     self.worker.call_session_tool("memory_clear", {}))
-                ok_ = payload.get("status") == "ok"
-                await self.ws.send(json.dumps({
-                    "type": "command_output" if ok_ else "error",
-                    "text": (f"  ✓ Cleared {payload.get('cleared', 0)} memory item(s). "
-                             "This cannot be undone.\n" if ok_
-                             else f"  ✗ {payload.get('error', 'clear failed')}\n")}))
+                if payload.get("status") != "ok":
+                    await self.ws.send(json.dumps({
+                        "type": "error",
+                        "text": f"  ✗ {payload.get('error', 'clear failed')}\n"}))
+                else:
+                    n = payload.get("cleared", 0)
+                    await self._command_reply(
+                        "/memory clear",
+                        f"Cleared {n} " + ("memory" if n == 1 else "memories"),
+                        note="This cannot be undone.", tone="warn")
             else:
                 await self.ws.send(json.dumps({
                     "type": "error",
@@ -1263,12 +1346,12 @@ class _Session:
         elif text == "/cancel":
             cancelled = self.worker.cancel()
             if not cancelled:
-                await self.ws.send(json.dumps({"type": "command_output", "text": "  (nothing to cancel)\n"}))
+                await self._command_reply("/cancel", "Nothing to cancel", tone="empty")
         elif text.startswith("/backend "):
             mode = text[9:].strip().lower()
             if mode in ("ollama", "vllm", "ray"):
                 self.worker._agent.set_backend(mode)
-                await self.ws.send(json.dumps({"type": "command_output", "text": f"  ✓ Backend set to {mode}\n"}))
+                await self._command_reply("/backend", "Backend", items=[{"label": mode}])
             else:
                 await self.ws.send(json.dumps({"type": "error", "text": f"Unknown backend: {mode}. Use ollama, vllm or ray."}))
         else:

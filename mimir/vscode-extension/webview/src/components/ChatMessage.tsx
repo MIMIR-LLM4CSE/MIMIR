@@ -4,6 +4,7 @@ import { MarkdownContent } from "./MarkdownContent";
 import { FileDiff } from "./FileDiff";
 import { countDiffLines } from "./diffUtils";
 import { ToolActivityList } from "./ToolActivityList";
+import { CommandResult } from "./CommandResult";
 import { ThinkingPanel } from "./ThinkingPanel";
 import { VerificationLedger } from "./VerificationLedger";
 import { splitAnswerLedger } from "./ledgerUtils";
@@ -33,6 +34,13 @@ const ChatMessageInner: React.FC<Props> = ({ message, onApprovalResponse, onRetr
   // the message stream. Rendered without an avatar so it reads as a sub-step.
   if (message.kind === "tools") {
     return <ToolActivityList tools={message.tools ?? []} />;
+  }
+
+  // The answer to a session command the user typed. Not agent prose, so it gets
+  // neither the bubble nor the markdown pass — it is a result, and it says which
+  // command produced it.
+  if (message.kind === "command" && message.command) {
+    return <CommandResult result={message.command} />;
   }
 
   // Frozen reasoning block (kind="thinking") — a collapsed, re-openable panel.
