@@ -50,9 +50,9 @@ VLLM_MODEL_PROFILES: dict[str, dict] = _load_vllm_model_profiles()
 def _normalize_model_key(name: str) -> str:
     """Fold a model name to the form profile keys are matched in.
 
-    Version separators are not stable across publishers: the same family ships as
-    ``Llama-3_1-Nemotron`` on one repo and ``Llama-3.1-Nemotron`` on another. Matching
-    the raw spelling means a family key silently covers one and misses the other — and
+    Version separators are not stable across publishers: the same family ships with an
+    underscore between version parts on one repo and a dot on another. Matching the raw
+    spelling means a family key silently covers one and misses the other — and
     a missed profile costs that model its reasoning, which is precisely the failure the
     profile exists to prevent. So ``_`` and ``.`` are treated as the same separator.
     """
@@ -62,9 +62,9 @@ def _normalize_model_key(name: str) -> str:
 def profile_for_model(model: str) -> dict:
     """Return the matching profile for *model* (longest case-insensitive prefix).
 
-    Matched against the whole name, its last path segment, and each segment, so
-    ``nvidia/Llama-3_1-Nemotron-Ultra-253B-v1`` reaches a ``llama-3.1-nemotron``
-    family key. Returns ``{}`` on no match, which is a normal outcome: every default
+    Matched against the whole name, its last path segment, and each segment, so a
+    fully qualified ``publisher/Family-Version-Size-Revision`` name reaches its
+    ``family-version`` key. Returns ``{}`` on no match, which is a normal outcome: every default
     is chosen so that an unlisted model still behaves correctly.
     """
     model_lower = _normalize_model_key(model)
@@ -93,9 +93,9 @@ DEFAULT_THINKING_MECHANISM = "kwarg"
 
 # Effort rungs, weakest first, for the "effort" mechanism when a family does not name
 # its own. OpenAI's scale is the default only because it is the most common one — it
-# is NOT universal: DeepSeek-V4 and GLM take low/high/max, and sending them "medium"
-# lands on the template's fallback instead of the rung the user picked. Any family
-# whose ladder differs must declare `effort_levels`.
+# is NOT universal: other families take low/high/max, and sending those "medium" lands
+# on the template's fallback instead of the rung the user picked. Any family whose
+# ladder differs must declare `effort_levels`.
 DEFAULT_EFFORT_LEVELS: tuple[str, ...] = ("low", "medium", "high")
 DEFAULT_EFFORT_PARAM = "reasoning_effort"
 

@@ -65,10 +65,49 @@ def referenced_identifiers(*, exclude: set[pathlib.Path]) -> set[str]:
     return used
 
 
+def _vocab_helper_bodies(used_by_client: set[str]) -> set[str]:
+    """Identifiers used inside vocab-file helpers that client code actually calls.
+
+    A capability can be consumed *through* a derivation the vocabulary owns rather than
+    by name: ``CONTENT_WRITE`` reaches the dispatcher only via ``is_write``, and reaches
+    plan mode only via the ``PLAN_BLOCKED`` derivation in ``_caps_from_meta``. Both are
+    live client control-flow, so the capability has earned its place — the reference is
+    simply one hop away, where a flat name scan cannot see it.
+
+    Only helpers the client references are followed, so this removes the false positive
+    without weakening the guard: a capability referenced *only* by a vocab-file function
+    nothing calls is still reported as the orphan it is.
+    """
+    tree = ast.parse(CAP_DEF_FILE.read_text(), filename=str(CAP_DEF_FILE))
+    used: set[str] = set()
+    for node in tree.body:
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        # A private helper is followed when a public one the client uses calls it; the
+        # two that matter (`_caps_from_meta`, `_derive_reversibility`) are reached from
+        # `infer_tool_caps`, which the server manager calls for every connected tool.
+        reachable = node.name in used_by_client or any(
+            isinstance(n, ast.Name) and n.id == node.name
+            for fn in tree.body
+            if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and fn.name in used_by_client
+            for n in ast.walk(fn)
+        )
+        if not reachable:
+            continue
+        for inner in ast.walk(node):
+            if isinstance(inner, ast.Name):
+                used.add(inner.id)
+            elif isinstance(inner, ast.Attribute):
+                used.add(inner.attr)
+    return used
+
+
 def capabilities_without_consumer() -> list[str]:
     """Declared capabilities that no client module outside the vocab file references."""
     declared = capability_constants()
     referenced = referenced_identifiers(exclude={CAP_DEF_FILE})
+    referenced |= _vocab_helper_bodies(referenced)
     return sorted(declared - referenced)
 
 

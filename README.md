@@ -152,7 +152,7 @@ Reasoning is requested with `chat_template_kwargs.enable_thinking`, which thinki
 vLLM templates read and others ignore, so an unlisted model still gets its thinking;
 [`vllm_model_profiles.json`](mimir/client/config/vllm_model_profiles.json) declares only the
 models steered another way (gpt-oss's `reasoning_effort`, Nemotron-Ultra's system-prompt
-directive) plus per-model `max_tools` / `enforcement`. Full backend and thinking-model setup
+directive) plus the per-model `enforcement` knob. Full backend and thinking-model setup
 is documented in [`SETUP.md`](SETUP.md).
 
 ## Architecture

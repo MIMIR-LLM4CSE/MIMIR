@@ -236,7 +236,7 @@ The plan-mode explore phase **withholds the plan-document tool** until the model
 
 `strict` permits every guidance branch and is now the **opt-in**, declared per model with `"enforcement": "strict"` in `vllm_model_profiles.json`. The branches' own `active_mode == "agent"` gates mean agent-only nudges still don't leak into plan mode, so `strict` does not strip guidance by mode. `off` cuts the whole guidance layer. Ask mode is empty at every level — it neither plans nor edits, so nothing in the guidance layer applies. The line is per-mode, so adding (say) a plan-mode `light` nudge later is a one-line table edit.
 
-Which models opt back in: the marker is **empirical, not a guess about model families** — a profile that already carries a recorded workaround is a model that has been observed struggling. Today that is `devstral` (which also carries a tool-count cap). `test_client_helpers` pins it, so flipping the default can never silently un-rail it.
+Which models opt back in: the marker is **empirical, not a guess about model families** — a profile that already carries a recorded workaround is a model that has been observed struggling. Today that is one profile carrying a recorded workaround. `test_client_helpers` pins it, so flipping the default can never silently un-rail it.
 
 **Verification and safety/correctness enforcement is never tiered:** the verification-layer nudges (denial, error-recovery, validation, regression, unexercised, unfinished-plan, output-verdict), write-policy, approval/sensitivity, the workflow state-machine anti-thrashing guard, and plan-blocked tool hiding run at every level.
 

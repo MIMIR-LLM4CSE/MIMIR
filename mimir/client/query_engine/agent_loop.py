@@ -5,7 +5,7 @@ from typing import Any
 
 from . import streaming as _streaming
 from ..event_sink import emit
-from .toollist import domains_signaled_by_text, tools_for_context, tools_for_readonly_mode
+from .toollist import tools_for_context, tools_for_readonly_mode
 from .streaming import _DraftHold, _note_truncated_turn, _process_response, _stream_chat
 from .history import _enforce_context_budget, reconcile_tool_pairs
 from .finalize import _finalize_answer
@@ -18,10 +18,8 @@ from ..config.constants import (
     AGENT_STEP_EXTENSION,
     AGENT_STEP_HARD_CEILING,
     AGENT_EMPTY_TURN_RETRIES,
-    DOMAIN_REARM_MAX_PER_QUERY,
     NUDGE_MAX_CONSECUTIVE_NOOP,
     THINKING_DEPTH_AUTO,
-    max_tools_for,
 )
 from ..config.models import READONLY_MODES, VALID_MODES
 from ..context import validate_execution_context
@@ -155,7 +153,6 @@ def _mode_tools(
         execution_context=execution_context,
         tools=tools,
         tool_caps=agent.tool_caps,
-        max_tools=max_tools_for(agent.model),
     )
 
 
@@ -312,70 +309,6 @@ def _drain_steer(agent: Any, messages: list[dict]) -> None:
             continue
         messages.append({"role": "user", "content": text})
         emit({"type": "steer_injected", "text": text})
-
-
-def _step_output_text(messages: list[dict], since: int, answer: str) -> str:
-    """Concatenate the text this step produced: the model's prose + tool results."""
-    parts = [answer or ""]
-    for message in messages[since:]:
-        content = message.get("content")
-        if isinstance(content, str):
-            parts.append(content)
-    return "\n".join(p for p in parts if p)
-
-
-def _maybe_rearm_domains(
-    agent: Any,
-    query: str,
-    execution_context: dict,
-    query_tools: list[dict],
-    step_text: str,
-    active_mode: str = "agent",
-) -> list[dict]:
-    """Unlock a domain tool group the query never signaled but the work now needs.
-
-    The tool list is frozen per query so the prompt prefix stays cacheable, which means
-    a domain pruned at step 0 is invisible for the rest of the run — however clearly the
-    work later calls for it. This reopens that door a bounded number of times
-    (``DOMAIN_REARM_MAX_PER_QUERY``), driven by what the run itself produced rather than
-    by the user's opening wording.
-
-    Returns the tool list to use from here on: the rebuilt one when a domain was
-    unlocked, otherwise *query_tools* unchanged (the common case, no cache break).
-    """
-    if DOMAIN_REARM_MAX_PER_QUERY <= 0:
-        return query_tools
-    rearmed = execution_context.setdefault("rearmed_domains", set())
-    if len(rearmed) >= DOMAIN_REARM_MAX_PER_QUERY:
-        return query_tools
-    signaled = domains_signaled_by_text(query, step_text, rearmed)
-    if not signaled:
-        return query_tools
-
-    # Deterministic pick when several domains surface at once: honour the budget by
-    # unlocking one per step, in DOMAIN_TOOL_GROUPS order via the sorted key.
-    unlocked = sorted(signaled)[: DOMAIN_REARM_MAX_PER_QUERY - len(rearmed)]
-    rearmed.update(unlocked)
-    # Re-arming reopens a *domain*, never the write/exec surface: going through
-    # _mode_tools keeps a read-only mode's filter applied, so the rebuild cannot
-    # quietly hand write tools back to the model.
-    rebuilt = _mode_tools(agent, query, execution_context, active_mode)
-    # The cache break is the whole cost of this feature, so it is reported, not hidden.
-    # (This module signals through `emit` rather than a logger, like its siblings; the
-    # rebuilt prune set is logged inside toollist.inactive_domain_prefixes.)
-    emit({
-        "type": "tools_rearmed",
-        "domains": unlocked,
-        "tool_count": len(rebuilt),
-    })
-    return rebuilt
-
-
-
-
-
-
-
 
 
 def _turn_may_be_rejected(
@@ -719,17 +652,9 @@ async def _run_agent_loop(
             tool_calls = filter_readonly_tool_calls(
                 tool_calls, agent=agent, messages=messages, mode_label=active_mode,
             )
-        _pre_dispatch_len = len(messages)
         await _dispatch_tool_calls(tool_calls, agent, messages, execution_context)
         await _post_dispatch_inject(
             agent, messages, execution_context, active_mode=active_mode,
-        )
-        # What the step produced can reveal a tool domain the opening query never
-        # mentioned; re-arming it here is the one sanctioned break of the frozen list.
-        query_tools = _maybe_rearm_domains(
-            agent, query, execution_context, query_tools,
-            _step_output_text(messages, _pre_dispatch_len, msg.get("content", "")),
-            active_mode=active_mode,
         )
         # Trim/compact again after appending tool results so history stays bounded
         # between iterations. The pre-call enforcement at the top of the loop is
@@ -813,9 +738,8 @@ async def run_agent_query(
     # message before dispatching), the CLI does not. Only add the query ourselves
     # when history doesn't already end with this exact user message — otherwise the
     # prompt carries two consecutive identical ``user`` turns. Tolerant templates
-    # (Ollama/Qwen) ignore that, but the Mistral tokenizer (Devstral in native
-    # mistral mode) treats the illegal role sequence as garbage and degenerates
-    # into token salad.
+    # ignore that, but a strict tokenizer treats the illegal role sequence as garbage
+    # and degenerates into token salad.
     hist = list(history or [])
     messages: list[dict] = [
         {

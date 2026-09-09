@@ -41,7 +41,6 @@ from .execution_context import (
     validate_execution_context,
 )
 from .signals import (
-    DOMAIN_TOOL_GROUPS,
     QUERY_CREATE_SIGNALS,
     QUERY_DISCOVERY_SIGNALS,
     QUERY_EDIT_SIGNALS,
@@ -59,7 +58,6 @@ from .signals import (
 
 __all__ = [
     "ExecutionContext",
-    "DOMAIN_TOOL_GROUPS",
     "QUERY_CREATE_SIGNALS",
     "QUERY_DISCOVERY_SIGNALS",
     "QUERY_EDIT_SIGNALS",

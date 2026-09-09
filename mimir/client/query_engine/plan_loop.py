@@ -18,7 +18,6 @@ from ..context.signals import query_requires_repo_discovery
 from ..config.models import resolve_enforcement
 from ..config.constants import (
     AGENT_EMPTY_TURN_RETRIES, PLAN_EXPLORE_MAX_TURNS, THINKING_DEPTH_AUTO,
-    max_tools_for,
 )
 from ..guardrails.workflow import (
     PLAN_TODO_NUDGE_EARLY,
@@ -42,7 +41,7 @@ from .streaming import _DraftHold, _note_truncated_turn, _stream_chat, _process_
 from .dispatch import _dispatch_tool_calls
 from .finalize import _finalize_answer
 from .readonly_guard import filter_readonly_tool_calls
-from .toollist import tools_for_plan_mode, cap_tools_by_relevance
+from .toollist import tools_for_plan_mode
 
 
 _PLAN_ACCEPT = "Accept & start"
@@ -200,9 +199,8 @@ async def _run_plan_mode(
     )
 
     def _plan_tools(*, exploring: bool) -> list:
-        tools = tools_for_plan_mode(_advertised_tools(agent), agent.tool_caps, exploring=exploring)
-        return cap_tools_by_relevance(
-            tools, query=query, tool_caps=agent.tool_caps, max_tools=max_tools_for(agent.model),
+        return tools_for_plan_mode(
+            _advertised_tools(agent), agent.tool_caps, exploring=exploring,
         )
 
     answer = ""

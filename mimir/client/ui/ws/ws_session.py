@@ -828,7 +828,7 @@ class _Session:
                 total_tokens -= counts[idx]
                 idx += 1
             # Front-trimming can orphan a ``{"role": "tool"}`` whose assistant tool_call
-            # was popped, which strict tokenizers (Mistral) reject — so drop leading
+            # was popped, which a strict tokenizer rejects — so drop leading
             # tool messages until history starts on a valid turn boundary.
             while self.history and self.history[0].get("role") == "tool":
                 self.history.pop(0)

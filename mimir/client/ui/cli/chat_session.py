@@ -286,7 +286,7 @@ async def run_chat_session(agent: Any) -> None:
                     total_tokens -= counts[idx]
                     idx += 1
                 # Front-trimming can orphan a {"role": "tool"} whose assistant tool_call
-                # was popped, which strict tokenizers (Mistral) reject — so drop leading
+                # was popped, which a strict tokenizer rejects — so drop leading
                 # tool messages until history starts on a valid turn boundary. Mirrors
                 # the same guard in the WebSocket session's pre-query trim.
                 while history and history[0].get("role") == "tool":

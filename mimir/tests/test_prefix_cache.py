@@ -2,7 +2,7 @@
 
 The checklist used to be appended as a transient tail message before every model
 call. That kept the prefix byte-stable but put a block of *state* in the last
-position before the generation prompt, which is what emptied turns on GLM-5.3
+position before the generation prompt, which is what emptied turns on a served model
 (37/108 draws with it, 0/84 without; 0/40 once the same text sat in messages[0]).
 These tests hold the checklist to messages[0] and hold the rebuild to the moments
 the checklist actually changed.
@@ -213,17 +213,52 @@ class PlanModeChecklistTests(unittest.TestCase):
 
 
 class ToolListStabilityTest(unittest.TestCase):
+    """The tools payload must be byte-identical whenever nothing the user controls moved.
+
+    This matters more than it used to. The list is no longer trimmed by domain or by a
+    relevance cap, so it is the *whole* advertised surface — the largest single block in
+    the prompt prefix. Constant, it is tokenized and cached once per session; varying by
+    anything the request or the run's progress says, it would miss that cache on every
+    call and cost far more than the trimming ever saved.
+    """
+
+    TOOLS = [{"function": {"name": n}} for n in
+             ("read_file_lines", "replace_in_file", "grep", "find_definition")]
+
+    def _build(self, ec, query="update the parser module"):
+        return pe.tools_for_context(
+            query=query, execution_context=ec,
+            tools=self.TOOLS, tool_caps=build_declared_registry(),
+        )
+
     def test_tool_list_is_identical_across_discovery_state(self):
-        reg = build_declared_registry()
-        tools = [{"function": {"name": n}} for n in
-                 ("read_file_lines", "replace_in_file", "grep", "find_definition")]
-        before = pe.tools_for_context(query="update the parser module",
-                                      execution_context={}, tools=tools,
-                                      tool_caps=reg, max_tools=40)
-        after = pe.tools_for_context(query="update the parser module",
-                                     execution_context={"searched": True, "read_files": {"x.py"}},
-                                     tools=tools, tool_caps=reg, max_tools=40)
+        before = self._build({})
+        after = self._build({"searched": True, "read_files": {"x.py"}})
         self.assertEqual(before, after)
+
+    def test_tool_list_is_identical_across_different_queries(self):
+        """Cross-*query* stability, which the domain pruning used to break by design.
+
+        A session's second request about a different subject must reuse the first's
+        tokenized tool block, not invalidate it.
+        """
+        self.assertEqual(
+            self._build({}, query="optimise ce solveur"),
+            self._build({}, query="write a poem about the sea"),
+        )
+
+    def test_the_whole_advertised_surface_is_passed_through(self):
+        # Nothing is dropped: the guarantee the removal of the two filters bought.
+        self.assertEqual(self._build({}), self.TOOLS)
+
+    def test_serialization_is_byte_identical(self):
+        # Equality of dicts is not enough for a cache that hashes tokens: the rendered
+        # JSON must match too, which it does only if key order is preserved as well.
+        import json
+        self.assertEqual(
+            json.dumps(self._build({})),
+            json.dumps(self._build({"searched": True, "read_files": {"x.py"}})),
+        )
 
 
 if __name__ == "__main__":

@@ -1,48 +1,16 @@
-"""Model-profile-driven knobs: the tool-count cap and the thinking mechanism.
+"""Model-profile-driven knobs: the thinking mechanism.
 
-The weak-model accommodations (the ~40-tool cap) are per-model settings, not hard
-globals, so the same codebase scales from Devstral-24B to a 400B-class model on the
-B300s.
+The tool-count cap that used to live here is gone: every advertised tool is sent, to
+every model. It was a per-model accommodation whose cost was a request-dependent prompt
+prefix, and which decided what to drop from the request's wording.
 
 Tool-call and reasoning parsers are deliberately absent: they are flags on the user's
 own ``vllm serve`` command, not something MIMIR sends or needs to know.
 """
-import os
 import unittest
 
 from mimir.client.config import models, constants
 from mimir.client.query_engine.backends import vllm_backend
-
-
-class ModelKnobsTest(unittest.TestCase):
-    def setUp(self):
-        os.environ.pop("MIMIR_MAX_TOOLS", None)
-        self._added: list[str] = []
-
-    def tearDown(self):
-        for k in self._added:
-            models.VLLM_MODEL_PROFILES.pop(k, None)
-        os.environ.pop("MIMIR_MAX_TOOLS", None)
-
-    def test_max_tools_uncapped_via_profile(self):
-        models.VLLM_MODEL_PROFILES["bigmodel-x"] = {"max_tools": 0}
-        self._added.append("bigmodel-x")
-        self.assertEqual(constants.max_tools_for("bigmodel-x"), 0)  # 0 = uncapped
-
-    def test_max_tools_custom_via_profile(self):
-        models.VLLM_MODEL_PROFILES["midmodel-y"] = {"max_tools": 120}
-        self._added.append("midmodel-y")
-        self.assertEqual(constants.max_tools_for("midmodel-y"), 120)
-
-    def test_max_tools_default_when_no_profile(self):
-        self.assertEqual(constants.max_tools_for("qwen3:8b"), constants.MAX_TOOLS_PER_QUERY)
-
-    def test_env_override_beats_profile(self):
-        os.environ["MIMIR_MAX_TOOLS"] = "7"
-        models.VLLM_MODEL_PROFILES["bigmodel-z"] = {"max_tools": 0}
-        self._added.append("bigmodel-z")
-        # Explicit env override takes precedence over the profile's max_tools.
-        self.assertEqual(constants.max_tools_for("bigmodel-z"), constants.MAX_TOOLS_PER_QUERY)
 
 
 class ThinkingMechanismTest(unittest.TestCase):
@@ -80,9 +48,10 @@ class ThinkingMechanismTest(unittest.TestCase):
     def test_shipped_profiles_only_declare_a_thinking_mechanism(self):
         """The file is a thinking table, not a per-model tuning dump.
 
-        max_tools / enforcement stay supported for anyone who needs them, but nothing
-        ships with them: a shipped opinion about one model's tool budget outlives the
-        model it was measured on.
+        `enforcement` stays supported for anyone who needs it, but nothing ships with
+        it: a shipped opinion about one model's rails outlives the model it was
+        measured on. (`max_tools` used to sit beside it and is gone — every advertised
+        tool now goes to every model.)
         """
         for key, profile in models.VLLM_MODEL_PROFILES.items():
             with self.subTest(key=key):
@@ -135,8 +104,8 @@ class ThinkingMechanismTest(unittest.TestCase):
 class ThinkingExtraBodyTest(unittest.TestCase):
     """What actually reaches vLLM for each mechanism.
 
-    Nothing is forwarded blindly from the profile: ``max_tools`` / ``enforcement`` are
-    client knobs and would be bogus sampling params.
+    Nothing is forwarded blindly from the profile: ``enforcement`` is a client knob and
+    would be a bogus sampling param, and so would any client knob added later.
     """
 
     def test_kwarg_mechanism_sends_enable_thinking_both_ways(self):
@@ -168,8 +137,9 @@ class ThinkingExtraBodyTest(unittest.TestCase):
     def test_a_family_gets_its_own_ladder_not_openai_s(self):
         """The rung sent must be one the template accepts.
 
-        DeepSeek-V4 and GLM take low/high/max; sending them OpenAI's "medium" lands on
-        the template's fallback, silently ignoring the level the user picked.
+        Some families take low/high/max; sending those OpenAI's "medium" lands on the
+        template's fallback, silently ignoring the level the user picked. The names below
+        are fixtures for that rule, not a claim about which models matter.
         """
         for model in ("deepseek-v4", "GLM-5.3-Flash"):
             with self.subTest(model=model):
@@ -183,7 +153,7 @@ class ThinkingExtraBodyTest(unittest.TestCase):
     def test_an_effort_family_without_a_toggle_still_gets_its_weakest_rung(self):
         """"Off" must not become "no instruction at all".
 
-        deepseek-v4 used to declare toggle_param='thinking_mode'. That field is inert on
+        One profile used to declare toggle_param='thinking_mode'. That field is inert on
         the served build — it ships no chat template, and vLLM silently ignores unknown
         top-level request fields — so `thinking_mode='chat'` returned reasoning
         byte-identical to sending nothing (measured at temperature 0). Declaring it cost
@@ -245,13 +215,15 @@ class ThinkingExtraBodyTest(unittest.TestCase):
         self.assertEqual(body, {})
 
     def test_client_only_knobs_never_reach_the_request(self):
+        # `some_future_knob` stands for any client-side key added later: the rule is
+        # that the request carries only what the *mechanism* needs, never the profile.
         models.VLLM_MODEL_PROFILES["knobby"] = {
-            "max_tools": 12, "enforcement": "strict", "thinking": "kwarg",
+            "enforcement": "strict", "some_future_knob": 12, "thinking": "kwarg",
         }
         self.addCleanup(models.VLLM_MODEL_PROFILES.pop, "knobby", None)
         body = vllm_backend._thinking_extra_body("knobby", True, {})
         flat = {**body, **body.get("chat_template_kwargs", {})}
-        for key in ("max_tools", "enforcement", "thinking", "thinking_directive"):
+        for key in ("enforcement", "some_future_knob", "thinking", "thinking_directive"):
             self.assertNotIn(key, flat)
 
 

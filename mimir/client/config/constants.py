@@ -132,40 +132,13 @@ AGENT_EMPTY_TURN_RETRIES: int = 3
 # the session auto-escapes to conclude (incomplete).
 VALIDATION_RETRY_BUDGET: int = 5
 
-# Cap on the number of tool schemas exposed to the model on a single step. Small
-# models (e.g. Devstral-Small-24B served in mistral mode) stop emitting native
-# tool calls and degenerate into echoing the tool *schema* as plain text once
-# given more than ~45 tools. When the per-step tool list exceeds this cap, it is
-# ranked by per-query relevance — always retaining the agent's core discovery /
-# edit / validate / todo plumbing — and the long tail is trimmed. Set to 0 to
-# disable the cap (large models that handle the full toolkit fine). Override via
-# the MIMIR_MAX_TOOLS environment variable.
+# The per-step tool list is not capped: every advertised tool is sent, whatever the
+# model. A cap traded a constant, cacheable prompt prefix for a request-dependent one,
+# and it decided what to drop from the request's wording — a guess whose cost, when
+# wrong, is a capability the run then cannot use. `_env_int` stays: other settings read it.
 def _env_int(name: str, default: int) -> int:
     raw = os.environ.get(name, "").strip()
     return int(raw) if raw.lstrip("-").isdigit() else default
-
-MAX_TOOLS_PER_QUERY: int = _env_int("MIMIR_MAX_TOOLS", 40)
-
-
-def max_tools_for(model: str) -> int:
-    """Per-model tool-count cap (B300-ready).
-
-    The cap exists for small models that garble past ~45 tools (see the Devstral
-    note); larger models tolerate the full surface. Resolution order:
-      1. ``MIMIR_MAX_TOOLS`` env (explicit global override) — if set.
-      2. the model's vLLM profile ``max_tools`` (``0`` = uncapped).
-      3. the default (40).
-    So a 400B-class model on the B300s can declare ``"max_tools": 0`` in its profile
-    and see every tool, while Devstral keeps the safe default — same codebase.
-    """
-    if os.environ.get("MIMIR_MAX_TOOLS", "").strip():
-        return MAX_TOOLS_PER_QUERY
-    try:
-        from .models import profile_for_model
-        val = profile_for_model(model).get("max_tools")
-    except Exception:
-        val = None
-    return val if isinstance(val, int) and val >= 0 else MAX_TOOLS_PER_QUERY
 
 
 # Thinking-depth scale — the single source of truth for the reasoning-depth ladder
@@ -298,12 +271,6 @@ TODO_NUDGE_MULTIFILE_THRESHOLD: int = 3
 # that is many operations but few files (e.g. an optimisation loop editing one file
 # while running many benchmarks) is still recognised as multi-step.
 TODO_NUDGE_OP_THRESHOLD: int = 5
-
-# How many times a single query may un-prune a domain tool group that its wording
-# never signaled (see query_engine.toollist.domains_signaled_by_text). Each re-arm
-# rebuilds the tool list and therefore breaks the vLLM prefix cache once, so the
-# budget is deliberately tight: 0 disables the mechanism entirely.
-DOMAIN_REARM_MAX_PER_QUERY: int = 1
 
 # Distinct discovery-evidence signals required before the agent-mode discovery
 # gate is satisfied (local exploration). A single stray search/read is not enough.

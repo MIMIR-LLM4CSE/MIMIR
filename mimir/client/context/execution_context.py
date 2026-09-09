@@ -55,7 +55,6 @@ class ExecutionContext(TypedDict):
     env_probed: bool                                 # True once the model enumerated the available interpreters/envs
     env_mutations: list[dict[str, Any]]              # installs / env creations recorded this query (conclude-phase cleanup nudge)
     # ── Todo / planning ────────────────────────────────────────────────────────
-    rearmed_domains: set[str]                       # domain-group keys unlocked mid-query after the work revealed a need the query never signaled (bounded by DOMAIN_REARM_MAX_PER_QUERY)
     todo_written: bool                              # True once an ordered checklist (plan_steps) was recorded
     plan_written: bool                              # True once a prose plan/rationale was recorded
     todo_file_path: str                             # absolute path to the active todo_list.md (set at query start)
@@ -267,8 +266,6 @@ _FIELD_SPECS: tuple[_FieldSpec, ...] = (
     ("todo_written", lambda: False, (bool,), _NO_TRAITS),
     ("plan_written", lambda: False, (bool,), _NO_TRAITS),
     ("todo_file_path", lambda: "", (str,), _NO_TRAITS),
-    # ── Tool visibility ────────────────────────────────────────────────────────
-    ("rearmed_domains", set, (set,), _NO_TRAITS),
     # ── Cross-query and loop bookkeeping ───────────────────────────────────────
     # These were live without being declared: written by the loop, the dispatcher or
     # the carry merge, and read by the history budget — but invisible to the template,

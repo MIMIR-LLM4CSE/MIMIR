@@ -108,56 +108,6 @@ class EmbedHelperTests(unittest.TestCase):
         self.assertEqual(ranked[0][0], 1)
 
 
-class CapToolsLexicalFallbackTests(unittest.TestCase):
-    """With embeddings unavailable, cap_tools_by_relevance keeps the non-core tools
-    with the highest query token-overlap — identical to the pre-embedding behaviour."""
-
-    def setUp(self):
-        self._is_avail = toollist._embed.is_available
-        toollist._embed.is_available = lambda: False
-
-    def tearDown(self):
-        toollist._embed.is_available = self._is_avail
-
-    def test_keeps_most_relevant_noncore_within_budget(self):
-        tools = [
-            _tool("alpha", "manage cluster job submission on slurm"),
-            _tool("beta", "convert dates and times between zones"),
-            _tool("gamma", "run a benchmark to measure performance"),
-        ]
-        kept = toollist.cap_tools_by_relevance(
-            tools, query="submit a cluster job", tool_caps=None, max_tools=1,
-        )
-        names = [t["function"]["name"] for t in kept]
-        self.assertEqual(names, ["alpha"])
-
-    def test_core_tools_always_kept(self):
-        tools = [
-            _tool("todo_write", "track tasks"),          # core by prefix
-            _tool("spawn_agent", "delegate to a subagent"),  # core by name
-            _tool("beta", "totally unrelated date tool"),
-        ]
-        kept = toollist.cap_tools_by_relevance(
-            tools, query="cluster job", tool_caps=None, max_tools=2,
-        )
-        names = {t["function"]["name"] for t in kept}
-        self.assertIn("todo_write", names)
-        self.assertIn("spawn_agent", names)
-
-    def test_output_preserves_original_order(self):
-        tools = [
-            _tool("gamma", "benchmark performance measurement"),
-            _tool("alpha", "cluster job submission"),
-            _tool("beta", "date conversion"),
-        ]
-        kept = toollist.cap_tools_by_relevance(
-            tools, query="cluster job benchmark", tool_caps=None, max_tools=2,
-        )
-        names = [t["function"]["name"] for t in kept]
-        # gamma precedes alpha in the input, so it must precede it in the output.
-        self.assertEqual(names, ["gamma", "alpha"])
-
-
 def _fake_vec(text: str, vocab: list[str]) -> list[float]:
     """Deterministic bag-of-words vector over a fixed vocabulary — lets us exercise
     the semantic path (cosine selection, backfill, caching) without a live backend."""
@@ -167,35 +117,15 @@ def _fake_vec(text: str, vocab: list[str]) -> list[float]:
 
 class SemanticPathTests(unittest.TestCase):
     """Drive the embedding path with a fake embedder to prove the wiring: query and
-    candidates are embedded, cosine-ranked, and the right items selected."""
+    candidates are embedded, cosine-ranked, and the right items selected.
+
+    The tool-list cap used to be the other caller of this path; it was removed, so the
+    remaining consumer is memory search."""""
 
     VOCAB = ["cluster", "job", "slurm", "date", "benchmark", "performance"]
 
     def _fake_embed_texts(self, texts):
         return [_fake_vec(t, self.VOCAB) for t in texts]
-
-    def test_cap_tools_semantic_selection(self):
-        tools = [
-            _tool("alpha", "cluster job slurm submission"),
-            _tool("beta", "date conversion utility"),
-            _tool("gamma", "benchmark performance measurement"),
-        ]
-        saved = (toollist._embed.is_available, toollist._embed.embed_texts,
-                 toollist._embed.embed_one, toollist._embed.embed_model_id)
-        toollist._embed.is_available = lambda: True
-        toollist._embed.embed_texts = self._fake_embed_texts
-        toollist._embed.embed_one = lambda t: _fake_vec(t, self.VOCAB)
-        toollist._embed.embed_model_id = lambda: "fake-model"
-        toollist._TOOL_EMBED_CACHE.clear()
-        try:
-            kept = toollist.cap_tools_by_relevance(
-                tools, query="run a cluster slurm job", tool_caps=None, max_tools=1,
-            )
-            self.assertEqual([t["function"]["name"] for t in kept], ["alpha"])
-        finally:
-            (toollist._embed.is_available, toollist._embed.embed_texts,
-             toollist._embed.embed_one, toollist._embed.embed_model_id) = saved
-            toollist._TOOL_EMBED_CACHE.clear()
 
     def test_memory_search_semantic_ranks_and_scores(self):
         tmp = tempfile.TemporaryDirectory()

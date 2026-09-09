@@ -33,8 +33,9 @@
     "or any segment -- so 'gpt' matches 'openai/gpt-oss-120b'. '_' and '.' are the same",
     "separator, so one family key covers 'Llama-3_1-...' and 'Llama-3.1-...' alike.",
     "",
-    "Two optional per-model knobs are also read from here and unset by default:",
-    "max_tools (cap on tools exposed per query) and enforcement ('strict'|'light'|'off')."
+    "One optional per-model knob is also read from here, unset by default:",
+    "enforcement ('strict'|'light'|'off'). There is no tool cap: every advertised",
+    "tool is sent to every model, so the list stays constant and prefix-cacheable."
   ],
 
   "deepseek-v4": {

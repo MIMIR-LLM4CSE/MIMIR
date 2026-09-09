@@ -349,7 +349,7 @@ def merge_consecutive_user_messages(prepared: list[dict]) -> list[dict]:
     Anthropic path — which requires strict alternation — and no normalization at all
     on Ollama.
 
-    The Mistral tokenizer (``--tokenizer-mode mistral``, e.g. Devstral) enforces
+    A strict tokenizer (vLLM's ``--tokenizer-mode mistral`` is one) enforces
     strict role alternation and degenerates into token salad when it sees two
     consecutive ``user`` turns. Upstream can legitimately produce them (plan-mode
     nudges, a caller that already appended the current turn). Joining their text

@@ -201,8 +201,15 @@ silently ignores what the user picked.
 
 Add an entry only for a family whose published behaviour differs, and record in its
 `note` where you verified it — the default already works, so an entry added on a hunch
-can only make things worse. That file also carries the optional per-model `max_tools`
-and `enforcement` knobs, unset by default.
+can only make things worse. That file also carries the optional per-model `enforcement`
+knob, unset by default.
+
+There is no per-model tool cap: every advertised tool is sent to every model. The list
+is therefore constant, which is what lets a server started with `--enable-prefix-caching`
+tokenize it once and reuse it for the rest of the session. Run the client at `INFO` to
+see the hit rate reported per call (`vllm prefix cache: ... hit_rate=...`); a rate stuck
+near zero across the steps of one query means the prefix is being invalidated, or that
+the flag is not on.
 
 To see reasoning rendered as a thinking block rather than inline text, start vLLM with
 the matching `--reasoning-parser`.

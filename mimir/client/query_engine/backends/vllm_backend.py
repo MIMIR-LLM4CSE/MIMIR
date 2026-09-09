@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import sys
 import threading
 from typing import Any, Callable
@@ -19,6 +20,8 @@ from ..history import merge_consecutive_user_messages, reconcile_tool_pairs
 # Single source of truth in _shared so the embedding helper (which runs in the
 # separate MCP server processes too) applies the exact same TLS policy.
 from ....servers._shared.embed import verify_ssl
+
+logger = logging.getLogger(__name__)
 
 
 def _get_vllm_config() -> tuple[str, str]:
@@ -152,25 +155,73 @@ def _drop_thinking_kwargs(create_kwargs: dict) -> bool:
     return bool(dropped)
 
 
+def _log_cache_usage(usage: Any) -> None:
+    """Log prefix-cache effectiveness from an OpenAI-compatible ``usage`` block.
+
+    vLLM reports how much of the prompt it served from its prefix cache in
+    ``usage.prompt_tokens_details.cached_tokens``. That number is the only direct
+    evidence the cache is working, and it matters here: the whole advertised tool list
+    is sent on every call, so it is the largest constant block in the prompt and the
+    thing prefix caching is expected to pay for.
+
+    What to read into it. A hit rate climbing toward 1.0 across the steps of one query
+    is the expected shape — each step re-sends everything before it. A rate that stays
+    near zero across repeated steps means something is invalidating the prefix on every
+    call: a system prompt that varies, a reordered tool list, or prefix caching simply
+    not enabled on the server (``--enable-prefix-caching``). The counterpart of
+    ``anthropic_backend._log_cache_usage``, which reads the same fact under other names.
+
+    Best-effort: telemetry never breaks a chat turn.
+    """
+    if usage is None or not logger.isEnabledFor(logging.INFO):
+        return
+    try:
+        prompt_total = getattr(usage, "prompt_tokens", 0) or 0
+        details = getattr(usage, "prompt_tokens_details", None)
+        cached = (getattr(details, "cached_tokens", 0) or 0) if details is not None else 0
+        if prompt_total <= 0:
+            return
+        logger.info(
+            "vllm prefix cache: cached=%d prompt_total=%d hit_rate=%.2f completion=%d",
+            cached, prompt_total, cached / prompt_total,
+            getattr(usage, "completion_tokens", 0) or 0,
+        )
+    except Exception:
+        pass
+
+
+# Servers that 400 on `stream_options`. Like `_NO_TEMPLATE_KWARGS`: absorb the one
+# rejection, remember it, and never pay it again for this process.
+_NO_STREAM_OPTIONS: set[str] = set()
+
+
 def _create(client, create_kwargs: dict):
-    """POST the chat request, retrying once without the thinking template kwargs.
+    """POST the chat request, retrying once without a kwarg the server rejected.
 
     Sending `enable_thinking` to every model is what makes reasoning work on a model
     we have no profile for, and a template that doesn't know the kwarg ignores it.
     A rare template errors instead — so absorb that one 400, remember the model, and
     never pay it again. Structural kwargs (`continue_final_message`) are kept: they
-    are what makes the request valid in the first place. Any other failure
-    propagates untouched.
+    are what makes the request valid in the first place.
+
+    `stream_options` gets the same treatment for the same reason: it is asked for only
+    to measure prefix-cache hits, so an OpenAI-compatible server that does not accept it
+    must cost a turn nothing. Any other failure propagates untouched.
     """
     model = create_kwargs.get("model", "")
     if model in _NO_TEMPLATE_KWARGS:
         _drop_thinking_kwargs(create_kwargs)
+    if model in _NO_STREAM_OPTIONS:
+        create_kwargs.pop("stream_options", None)
     try:
         return client.chat.completions.create(**create_kwargs)
     except Exception as exc:
         if getattr(exc, "status_code", None) != 400:
             raise
         msg = str(exc).lower()
+        if "stream_options" in msg and create_kwargs.pop("stream_options", None) is not None:
+            _NO_STREAM_OPTIONS.add(model)
+            return client.chat.completions.create(**create_kwargs)
         if "template" not in msg and "kwarg" not in msg:
             raise
         if not _drop_thinking_kwargs(create_kwargs):
@@ -583,11 +634,22 @@ class VllmBackend(LLMBackend):
             create_kwargs["max_tokens"] = max(1, int(max_tokens))
 
         if streaming:
+            # A streaming response carries no usage block unless it is asked for. Only
+            # requested when the reader is actually listening, so a server that rejects
+            # the option costs nothing to anyone who is not measuring — and `_create`
+            # retries without it if one does.
+            if logger.isEnabledFor(logging.INFO):
+                create_kwargs["stream_options"] = {"include_usage": True}
             response = _create(client, create_kwargs)
+            usage = None
             for chunk in response:
                 if cancel_flag is not None and cancel_flag.is_set():
                     raise asyncio.CancelledError("Cancelled by user")
 
+                # The usage block arrives on a final chunk of its own, with an empty
+                # `choices` list — so it is read before the choice guard below returns.
+                if getattr(chunk, "usage", None) is not None:
+                    usage = chunk.usage
                 choice = chunk.choices[0] if chunk.choices else None
                 # Why the server stopped. It rides on the choice, not the delta, and
                 # arrives on the last chunk (null on every earlier one) — so keep the
@@ -657,8 +719,11 @@ class VllmBackend(LLMBackend):
             if parser.thinking_parts and think_end_callback is not None and not parser._in_think:
                 think_end_callback()
 
+            _log_cache_usage(usage)
+
         else:
             response = _create(client, create_kwargs)
+            _log_cache_usage(getattr(response, "usage", None))
             choice = response.choices[0] if response.choices else None
             if choice:
                 finish_reason = normalize_finish_reason(

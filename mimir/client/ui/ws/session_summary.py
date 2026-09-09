@@ -28,8 +28,8 @@ SUMMARY_VERSION = 2
 # Stamped on the query fallback (and matching the pre-summary default), so a
 # provisional description is shown but always regenerated.
 PROVISIONAL_VERSION = 0
-# Generous answer budget: thinking-capable models (nemotron, qwen3, …) may still
-# emit a reasoning block even with thinking disabled, and a tight budget lets it
+# Generous answer budget: a thinking-capable model may still emit a reasoning block
+# even with thinking disabled, and a tight budget lets it
 # swallow the whole completion, leaving empty content and a fallback title.
 _MAX_TOKENS = 400
 
