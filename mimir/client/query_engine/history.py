@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from typing import Any
 
 from ..event_sink import emit
@@ -128,6 +129,92 @@ def reconcile_tool_pairs(messages: list[dict]) -> list[dict]:
             out.append(m)
             i += 1
     return out
+
+
+# Opening of the one message a compaction leaves behind. Both producers build it
+# through ``compaction_summary_message`` below, so the marker exists once: a resume
+# decides what to reload by looking for it, and a second spelling would silently read
+# as "never compacted" and reload the whole untrimmed record instead.
+COMPACTION_MARKER_PREFIX = "[Context summary"
+
+# How far into a window the marker may sit and still be this window's own opening.
+_COMPACTION_MARKER_SCAN = 3
+
+# The count inside the marker. Read back so a second compaction can add what the
+# summary it is about to swallow already stood for.
+_MARKER_EXCHANGES = re.compile(r"(\d+)\s+prior\s+exchange", re.IGNORECASE)
+
+
+def _marker_exchanges(m: dict) -> int | None:
+    """Exchanges *m* already stands in for, or None when it is not a summary at all.
+
+    Matched case-insensitively: the CLI spelled the marker with a capital S until the
+    two producers were merged, and those windows are still on disk. A summary whose
+    count cannot be read is still a summary — 0, never None — so it is not miscounted
+    as one raw message of conversation.
+    """
+    content = m.get("content")
+    if not isinstance(content, str):
+        return None
+    if not content[:len(COMPACTION_MARKER_PREFIX)].lower() == COMPACTION_MARKER_PREFIX.lower():
+        return None
+    found = _MARKER_EXCHANGES.search(content[:200])
+    return int(found.group(1)) if found else 0
+
+
+def compacted_exchanges(messages: list[dict]) -> int:
+    """How many exchanges a summary over *messages* would stand in for.
+
+    Not ``len(messages) // 2``: a slice being compacted for the second time opens on
+    the previous summary, and that one message stands for everything the first pass
+    swallowed. Counting it as a single exchange is what made each pass announce less
+    than the one before — a window holding hundreds of collapsed exchanges eventually
+    told the model it was missing four. That number is what the model reads to judge
+    how much of its own past it can no longer see.
+    """
+    absorbed = raw = 0
+    for m in messages:
+        already = _marker_exchanges(m)
+        if already is None:
+            raw += 1
+        else:
+            absorbed += already
+    return absorbed + raw // 2
+
+
+def compaction_summary_message(n_exchanges: int, summary: str) -> dict:
+    """The single assistant message that stands in for *n_exchanges* summarized turns.
+
+    Assistant role, not user: the model reads the handoff note as its own prior memory
+    rather than as something the user typed.
+    """
+    plural = "s" if n_exchanges != 1 else ""
+    return {
+        "role": "assistant",
+        "content": (
+            f"{COMPACTION_MARKER_PREFIX} \u2014 {n_exchanges} prior exchange{plural} "
+            f"compacted]\n\n{summary}"
+        ),
+    }
+
+
+def carries_compaction_summary(messages: list[dict]) -> bool:
+    """True when *messages* opens on a compaction summary.
+
+    The question a resume asks: is this window the *product of a compaction* — a
+    handoff note that already stands in for what was cut — or merely the tail a
+    front-trim left behind? Only the first is worth reloading in place of the
+    untrimmed record; dropping the prefix of the second would lose context that was
+    never summarized anywhere.
+
+    Scans the head rather than only index 0: the first user message is kept ahead of
+    the summary (it is the task, and the loop protects it), so the marker lands second
+    in practice. Bounded to the first few messages so a summary buried mid-history —
+    the residue of an older compaction that a later front-trim reduced to a tail
+    again — does not read as this window's own.
+    """
+    return any(m.get("role") == "assistant" and _marker_exchanges(m) is not None
+               for m in messages[:_COMPACTION_MARKER_SCAN])
 
 
 def served_compaction_instruction() -> str:

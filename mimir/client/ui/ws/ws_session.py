@@ -19,7 +19,9 @@ from ._ws_runtime import (
     get_backend,
 )
 from .transcript_log import TranscriptLog
-from ...query_engine.history import reconcile_tool_pairs
+from ...query_engine.history import (
+    carries_compaction_summary, reconcile_tool_pairs,
+)
 from .ws_worker import _AgentWorker
 from ...config import THINKING_DEPTH_LABELS, thinking_depth_from_label
 
@@ -121,6 +123,15 @@ class _Session:
         # rather than single: two jobs can finish into two different conversations
         # before either answers, and the second must not evict the first's bookkeeping.
         self._detached_turns: dict[str, int] = {}
+        # Finished background jobs whose result has not yet been handed to a turn, as
+        # {session_id: [job_complete, ...]}. A job that lands while a turn of its own
+        # session runs is steered into that turn instead of queueing one of its own —
+        # but a steer deposited past the turn's last step boundary is purged unread, so
+        # an entry only leaves this map on *proof* of injection (or when a catch-up turn
+        # carries it). Without that, three jobs finishing together produced three turns
+        # and three near-identical final answers, one of them contradicting the last on
+        # how many jobs there even were.
+        self._pending_wakes: dict[str, list[dict]] = {}
 
     async def run(self) -> None:
         # Send ready immediately so the webview transitions out of "connecting".
@@ -252,17 +263,29 @@ class _Session:
         if switching:  # different session → drop prior grants + repeat guard
             self.worker.reset_session_guards()
         _write_active_session(session.id)
-        # Resume from the untrimmed record: the model picks the conversation back up
-        # where it left it, and the pre-query front-trim cuts it to the window again on
-        # the next turn if it no longer fits. Sessions saved before this field existed
-        # only have the trimmed window — that is still the best they have.
+        # The untrimmed record is always the archive, whatever the model resumes on.
+        # Sessions saved before this field existed only have the trimmed window — that
+        # is still the best they have.
         self.history_full = list(session.llm_history_full or session.llm_history)
+        # What the model actually resumes on. A window that already carries a
+        # compaction summary *is* the conversation: the handoff note stands in for
+        # everything that was cut, at a fraction of the tokens. Reloading the untrimmed
+        # record over it threw that work away and handed the model a context that was
+        # full before the user had typed anything — a long session came back at its own
+        # pre-compaction size, and the first turn had to trim it all over again.
+        #
+        # Absent a summary the window is only the tail a front-trim left behind, so the
+        # untrimmed record stays the faithful resume: its prefix was never summarized
+        # anywhere, and dropping it would lose it outright.
+        resumed = (session.llm_history
+                   if carries_compaction_summary(session.llm_history)
+                   else self.history_full)
         # Copy each message, not just the list: the budgeting pass mutates messages
         # in place (force-fit rewrites `content`, and the argument digest rewrites
         # `tool_calls`). Sharing the dicts made those writes reach straight into the
         # untrimmed record this line exists to preserve — the list-level protection
         # in the answer handler below cannot see through a shared reference.
-        self.history = _reconcile([dict(m) for m in self.history_full])
+        self.history = _reconcile([dict(m) for m in resumed])
         self._submitted_len = len(self.history)
         self._display_messages = list(session.display_messages)
         self.transcript.bind(session.id)
@@ -523,6 +546,30 @@ class _Session:
         total, reserved, _, _ = context_budget_for(self.worker.model, mode)
         return total, reserved
 
+    def _turn_messages(self, full: list[dict], submitted: int | None = None) -> list[dict]:
+        """The slice of *full* this turn produced — what the archive has yet to record.
+
+        The boundary comes from the loop, which is the only place it is knowable. Ours
+        was the length we submitted, and that stopped being an index into *full* the
+        moment the in-turn budget pass rewrote the list: it evicts old tool results,
+        replaces the middle with a summary and then repairs the assistant↔tool pairing
+        those break. Every such rewrite shifts the prefix, and a stale boundary then
+        re-archives whatever it shifted past or drops whatever it shifted over — and
+        cuts through an assistant↔tool pair on the way, which is how tool results with
+        no call in front of them ended up in a record whose source cannot contain one.
+
+        Falls back to the submitted length, and then to the answer alone, when the loop
+        cannot place the boundary — a turn long enough to have its own opening message
+        summarized away. Better a turn recorded by its answer than a record quietly
+        interleaved with a copy of an older one.
+        """
+        hook = getattr(self.worker, "last_turn_start", None)
+        start = hook() if hook else None
+        if not isinstance(start, int):
+            start = self._submitted_len if submitted is None else submitted
+        added = full[start:] if len(full) > start else []
+        return added or full[-1:]
+
     async def _emit_context_usage(self) -> None:
         """Push a context_usage event to the WS client (best-effort, never raises)."""
         try:
@@ -553,8 +600,8 @@ class _Session:
                 "total_tokens": total,
                 "reserved_tokens": reserved,
                 "overhead_tokens": overhead,
-                # What the model actually has this turn, against the untrimmed record a
-                # resume would start from — so a trimmed window is visible, not silent.
+                # What the model actually has this turn, against the untrimmed record
+                # kept behind it — so a trimmed window is visible, not silent.
                 "history_messages": len(self.history),
                 "history_messages_full": len(self.history_full),
             }))
@@ -603,10 +650,19 @@ class _Session:
                 if ev.get("type") == "job_complete":
                     # Routed by the session that launched the job rather than the one
                     # on screen, so it is handled ahead of the foreign-event filter.
-                    if not self._is_foreign_event(ev):
+                    foreign = self._is_foreign_event(ev)
+                    if not foreign:
                         self.transcript.append(ev)
                     try:
-                        await self.ws.send(json.dumps(ev, default=str))
+                        # A wake starts a turn nobody pressed send for. The client
+                        # marks itself busy on its own submit, so without this it has
+                        # no way to know one began, and offers no way to stop it. It
+                        # cannot work the answer out for itself either: the wake may
+                        # resume a session that is not the one on screen, and marking
+                        # the visible chat busy for a turn running elsewhere leaves a
+                        # stop button that stops nothing.
+                        await self.ws.send(json.dumps(
+                            {**ev, "resumes_active_session": not foreign}, default=str))
                     except Exception:
                         return
                     await self._handle_job_complete(ev)
@@ -661,6 +717,11 @@ class _Session:
                             await self.ws.send(json.dumps({"type": "batch_status", "files": files}))
                     except Exception:
                         pass
+                if ev.get("type") == "steer_injected":
+                    # The loop confirming what it took in is the only proof a steered
+                    # wake was actually read. Anything still pending after this is
+                    # carried by the catch-up turn below.
+                    self._drop_injected_wakes(str(ev.get("text") or ""))
                 if ev.get("type") == "answer":
                     # In full-context mode keep the structured transcript (tool_calls +
                     # results + answer, chain-of-thought stripped) so the model recalls
@@ -675,8 +736,7 @@ class _Session:
                         # so it must not be overwritten by the shortened copy. A turn
                         # whose own messages were compacted away still has its answer,
                         # which is the part worth keeping.
-                        added = (full[self._submitted_len:]
-                                 if len(full) > self._submitted_len else full[-1:])
+                        added = self._turn_messages(full)
                         # Copied, for the same reason as the load path above: a later
                         # turn's budgeting rewrites `content` / `tool_calls` in place,
                         # and these dicts would otherwise be the archive's own.
@@ -704,6 +764,10 @@ class _Session:
                         await self.ws.send(json.dumps({"type": "batch_status", "files": files}))
                     except Exception:
                         pass
+                    # Last, so the catch-up turn is handed the history this answer just
+                    # wrote rather than the one it inherited. Jobs that finished during
+                    # the turn and were never taken in leave together, as one turn.
+                    await self._flush_pending_wakes(self._active_session_id)
             await asyncio.sleep(0.005)
             await _check_and_push_todos()
             await _tick_context_usage()
@@ -802,36 +866,128 @@ class _Session:
         return f"{head} Carry on with the work it was part of."
 
     async def _handle_job_complete(self, ev: dict) -> None:
-        """Notify the user and auto-resume the agent when a background job finishes.
+        """Hand a finished background job to a turn — the running one where possible.
 
-        The event was already forwarded to the client (notification) by the drain
-        loop. Here we synthesize a wake and enqueue it through the normal query path
-        so the agent resumes with full session history; the serial query loop makes
-        it queue behind any turn currently in flight.
+        The event was already forwarded to the client (notification) by the drain loop.
 
-        The wake goes to the session that *launched* the job, which the watcher
+        The news goes to the session that *launched* the job, which the watcher
         recorded. A two-hour build outlives the conversation on screen, and dropping
         its result into whatever the user happens to be reading puts an answer in a
         conversation that never asked the question.
+
+        Where it goes *within* that session depends on whether it already has a turn in
+        flight. If it does, the job is steered into it: the turn learns the run finished
+        at its next step boundary and carries on, costing no extra turn and no second
+        final answer. If it does not, a turn is started, carrying every job still
+        waiting — so a burst that finished during the last turn arrives as one turn
+        rather than one apiece.
         """
-        wake = self._wake_text(ev)
         owner = ev.get("session_id") or self._active_session_id
-        if owner != self._active_session_id:
-            await self._resume_detached_session(owner, wake, ev)
+        # Each entry remembers whether the user has already been shown this job, so a
+        # later flush re-tells the *model* (a steer may never have been read) without
+        # writing the notice and the log line a second time.
+        item = {"ev": ev, "told": False}
+        self._pending_wakes.setdefault(owner, []).append(item)
+        # `_query_session_id` names the session of the turn in flight, which is the
+        # right comparison here and `_running_turn_is_ours` is not: that one asks
+        # whether the turn belongs to the session *on screen*, the correct test for a
+        # message the user typed, but a wake belongs to its own conversation whether or
+        # not anyone is reading it.
+        if owner and self.worker._query_session_id == owner:
+            wake = self._wake_text(ev)
+            self._record_wake(owner, wake, [ev])
+            item["told"] = True
+            # Left pending deliberately: a steer is only known to have arrived when the
+            # loop says so, and until then this job still needs a turn of its own.
+            self.worker.submit_steer(wake)
             return
-        # Show a distinct system-style note rather than a fake user bubble.
-        self._display_messages.append({
-            "role": "system", "kind": "text",
-            "text": f"🔔 {wake}",
-        })
+        await self._flush_pending_wakes(owner)
+
+    def _record_wake(self, owner: str | None, wake: str, events: list[dict]) -> None:
+        """Show a wake and log it — once per job, whichever route carried it.
+
+        Deliberately does NOT touch the history: which message a turn is *given* is the
+        flush's business, and a job handed to a running turn arrives in that turn's own
+        messages instead. Writing here as well is what put the same wake in the history
+        twice, once as a steer and once inside the combined catch-up message.
+
+        Without the log line, a job reported through the running turn left no
+        ``job_wake`` at all — and the log is what the mechanism is checked with, so it
+        would have undercounted exactly the runs it handled best.
+
+        Which conversation gets it is decided by *owner*, not by what is on screen: a
+        detached session's turn can be running and absorb a second job of its own.
+        """
+        entries = [{"type": "job_wake", "text": self._wake_text(e), "job": e.get("job_key")}
+                   for e in events]
+        note = {"role": "system", "kind": "text", "text": f"🔔 {wake}"}
+        if owner == self._active_session_id:
+            self._display_messages.append(note)
+            for entry in entries:
+                self.transcript.append(entry)
+            self._autosave_session(list(self._display_messages))
+            return
+        try:
+            session = self.store.load_session(owner)
+        except Exception:
+            return
+        session.display_messages.append(note)
+        try:
+            self.store.save_session(session)
+        except Exception:
+            return
+        log = self._detached_log(owner)
+        for entry in entries:
+            log.append(entry)
+
+    def _drop_injected_wakes(self, text: str) -> None:
+        """Forget the pending jobs whose wake *text* the running turn just took in.
+
+        Matched on the job key rather than the whole message because the loop reports
+        what it injected, not which event it came from — and a wake names its job key,
+        so the match is exact. Anything not matched here stays pending and is carried by
+        the catch-up turn, which is what keeps an unread steer from losing a run.
+        """
+        for owner, items in list(self._pending_wakes.items()):
+            kept = [i for i in items
+                    if str(i["ev"].get("job_key") or "\x00") not in text]
+            if kept:
+                self._pending_wakes[owner] = kept
+            else:
+                self._pending_wakes.pop(owner, None)
+
+    async def _flush_pending_wakes(self, owner: str | None) -> None:
+        """Start one turn for every job of *owner* still waiting to be reported.
+
+        The turn is given every pending job, including ones already steered: a steer is
+        only known to have been read when the loop says so, and re-telling a run is
+        recoverable where losing one is not. Only the jobs the user has not already been
+        shown are recorded again.
+
+        The message is the concatenation of each job's own wake text. Nothing is
+        summarised into a sentence of this layer's own: a wake may relay a next step the
+        *server* wrote, and a précis would drop it — the same reason :meth:`_wake_text`
+        passes the payload through rather than describing it.
+        """
+        items = self._pending_wakes.pop(owner, [])
+        if not items:
+            return
+        events = [i["ev"] for i in items]
+        fresh = [i["ev"] for i in items if not i["told"]]
+        wake = "\n\n".join(self._wake_text(e) for e in events)
+        if owner != self._active_session_id:
+            await self._resume_detached_session(owner, wake, fresh)
+            return
+        if fresh:
+            self._record_wake(owner, "\n\n".join(self._wake_text(e) for e in fresh), fresh)
         self.history.append({"role": "user", "content": wake})
         self.history_full.append({"role": "user", "content": wake})
-        self.transcript.append({"type": "job_wake", "text": wake, "job": ev.get("job_key")})
         self._autosave_session(list(self._display_messages))
         self._submitted_len = len(self.history)
         self.worker.submit_query(wake, list(self.history), session_id=owner)
 
-    async def _resume_detached_session(self, session_id: str, wake: str, ev: dict) -> None:
+    async def _resume_detached_session(self, session_id: str, wake: str,
+                                       fresh: list[dict]) -> None:
         """Run a job wake against a stored session that is not the one on screen.
 
         The conversation lives on disk, not in this object's ``history``, so the wake
@@ -841,22 +997,28 @@ class _Session:
         writes the answer back. Best-effort: a session that has since been deleted is
         dropped with a note to the client rather than resurrected.
         """
+        keys = ", ".join(str(e.get("job_key", "?")) for e in fresh) or "?"
         try:
             session = self.store.load_session(session_id)
         except Exception:
-            await self._notify(f"Background job '{ev.get('job_key', '?')}' finished, but "
+            await self._notify(f"Background job '{keys}' finished, but "
                                f"the session that launched it is gone.")
             return
         wake_msg = {"role": "user", "content": wake}
         session.llm_history.append(wake_msg)
         session.llm_history_full.append(dict(wake_msg))
-        session.display_messages.append({"role": "system", "kind": "text", "text": f"🔔 {wake}"})
+        if fresh:
+            shown = "\n\n".join(self._wake_text(e) for e in fresh)
+            session.display_messages.append(
+                {"role": "system", "kind": "text", "text": f"🔔 {shown}"})
         try:
             self.store.save_session(session)
         except Exception:
             return
-        self._detached_log(session_id).append(
-            {"type": "job_wake", "text": wake, "job": ev.get("job_key")})
+        log = self._detached_log(session_id)
+        for e in fresh:
+            log.append({"type": "job_wake", "text": self._wake_text(e),
+                        "job": e.get("job_key")})
         # What the turn was handed, so the answer path can tell the turn's own messages
         # from the prefix it inherited — the same bookkeeping ``_submitted_len`` does
         # for the active session.
@@ -898,7 +1060,7 @@ class _Session:
         full = self.worker.full_history()
         context_mode = getattr(self.worker._agent, "context_mode", "full")
         if full is not None and context_mode == "full":
-            added = full[submitted:] if len(full) > submitted else full[-1:]
+            added = self._turn_messages(full, submitted)
             session.llm_history_full.extend(dict(m) for m in added)
             session.llm_history = list(full)
         else:
@@ -914,6 +1076,10 @@ class _Session:
         self._detached_log(session_id).append(ev)
         await self._notify(f"“{session.title or session_id}” finished its background turn.")
         await self._send_sessions_list()
+        # The detached twin of the flush after an active turn's answer: jobs that
+        # finished into this conversation while it was answering leave together now,
+        # against the history this turn just wrote.
+        await self._flush_pending_wakes(session_id)
 
     async def _compact_history(self) -> bool:
         """Summarize the middle of the session history. True when it actually shrank.

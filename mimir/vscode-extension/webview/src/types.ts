@@ -357,6 +357,10 @@ export interface JobCompleteMessage {
   kind?: string;
   state: string;
   summary?: Record<string, unknown>;
+  /** True when this wake auto-resumes the session on screen, so a turn is starting
+   *  here. False when it resumes another conversation, which must leave this chat
+   *  idle. Decided by the server: the client cannot tell whose turn it is. */
+  resumes_active_session?: boolean;
 }
 
 export interface QuestionOption {

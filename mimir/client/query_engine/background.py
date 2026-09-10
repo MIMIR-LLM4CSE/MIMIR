@@ -10,10 +10,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from typing import Any
 
 from ..event_sink import emit
 from ..context.capabilities import BACKGROUNDABLE, has_cap
+from ..tool_execution.formatter import parse_tool_payload
+
+logger = logging.getLogger(__name__)
 
 
 def _maybe_emit_open_editor(result_text: str) -> None:
@@ -24,11 +28,13 @@ def _maybe_emit_open_editor(result_text: str) -> None:
     ``open_in_editor: true`` plus an absolute ``path`` opts in — the loop does not
     hard-code any tool name. Used so a written plan (.md) pops open in VS Code for
     the user to read. Best-effort: any parse failure is silently ignored.
+
+    Read through ``parse_tool_payload``, like the exec preview, because a result is an
+    envelope followed by its text blocks and then whatever the executor appended. A
+    bare ``json.loads`` sees all of that as one broken document and returns nothing —
+    so the editor would stop opening the moment a post-tool annotation appeared.
     """
-    try:
-        payload = json.loads(result_text)
-    except (TypeError, ValueError):
-        return
+    payload = parse_tool_payload(result_text) if isinstance(result_text, str) else None
     if not isinstance(payload, dict) or not payload.get("open_in_editor"):
         return
     path = payload.get("path")
@@ -39,50 +45,75 @@ def _maybe_emit_open_editor(result_text: str) -> None:
 def _detect_background_job(name: str, result_text: str, agent: Any) -> dict | None:
     """Return a ``background_job`` descriptor from a BACKGROUNDABLE tool result, else None.
 
-    Shape-driven like ``_maybe_emit_open_editor`` — no tool name is hard-coded.
+    Shape-driven like ``_maybe_emit_open_editor`` — no tool name is hard-coded, and
+    the payload is read through ``parse_tool_payload`` for the same reason: a launched
+    run must not stop being watched because something was appended after its JSON.
     """
     if not has_cap(name, BACKGROUNDABLE, agent.tool_caps):
         return None
-    try:
-        payload = json.loads(result_text)
-    except (TypeError, ValueError):
-        return None
+    payload = parse_tool_payload(result_text) if isinstance(result_text, str) else None
     if not isinstance(payload, dict):
         return None
     descriptor = payload.get("background_job")
     return descriptor if isinstance(descriptor, dict) else None
 
 
-def _maybe_register_background_job(name: str, result_text: str, agent: Any) -> str:
+def _maybe_register_background_job(
+    name: str, result_text: str, agent: Any, descriptor: dict | None = None,
+) -> tuple[str, bool]:
     """Register a completion watcher for a detached run and tell the model to yield.
 
     Registration is delegated to the optional front-end hook
     ``agent._register_background_job`` (the WebSocket worker sets it; CLI does not),
     mirroring the ``_poll_steer``/``_cancel_flag`` optional-hook pattern.
 
-    Returns the result augmented with a "you were backgrounded, end your turn" note
-    **only when a watcher was actually registered**. Callers use ``_detect_background_job``
-    to route the CLI (no hook) to ``_await_background_job`` instead. Best-effort.
+    Returns ``(result, registered)``. The result carries the "you were backgrounded,
+    end your turn" note **only when a watcher is actually holding the run**, and
+    ``registered`` says so, because that is the one thing the caller cannot infer from
+    the text: it decides whether the turn may end on the promise of a resume or must
+    fall back to ``_await_background_job``. Returning only the text is what let a
+    declined registration read exactly like a successful one — see the caller.
+
+    *descriptor* lets a caller that already detected one pass it in rather than have
+    the result parsed a second time; omitted, it is detected here as before.
+
+    Best-effort: every failure path returns the result unchanged, and says so in the
+    log. A watcher that was never posted used to leave no trace at all, which is why a
+    run could finish into silence with nothing anywhere to explain it.
     """
-    descriptor = _detect_background_job(name, result_text, agent)
     if descriptor is None:
-        return result_text
+        descriptor = _detect_background_job(name, result_text, agent)
+    if descriptor is None:
+        return result_text, False
+    job_key = descriptor.get("job_key", "?")
     hook = getattr(agent, "_register_background_job", None)
     if not hook:
-        return result_text  # no watcher — caller handles the CLI await path
+        # CLI: there is no watcher to register with. Not a failure — the caller waits
+        # the run out in-turn instead.
+        logger.debug("no background-job watcher hook; job %r will be awaited in-turn",
+                     job_key)
+        return result_text, False
     try:
         registered = bool(hook(descriptor))
     except Exception:
-        return result_text
+        logger.warning("background watcher registration raised for job %r — "
+                       "falling back to an in-turn await", job_key, exc_info=True)
+        return result_text, False
     if not registered:
-        return result_text
-    job_key = descriptor.get("job_key", "?")
+        logger.warning("background watcher registration declined job %r — "
+                       "falling back to an in-turn await", job_key)
+        return result_text, False
+    # Order matters: waiting is the *last* resort, not the first instruction. Read
+    # the other way round, a model with plenty left to do would stop dead on a
+    # two-hour build rather than get on with the rest of the task.
     note = (
         f"\n\n[background] This run is now tracked as background job '{job_key}'. "
-        "Do NOT poll its status — end your turn (or start other work / answer the "
-        "user). You will be automatically resumed with the results when it completes."
+        "A watcher resumes you automatically with its results when it completes, so "
+        "do NOT poll its status and do NOT sleep waiting for it. If there is other "
+        "useful work in this task, carry on with it now. If the only thing left is "
+        "waiting for this run, end your turn and say what you are waiting for."
     )
-    return result_text + note
+    return result_text + note, True
 
 
 async def _await_background_job(descriptor: dict, agent: Any, result_text: str) -> str:
@@ -111,8 +142,11 @@ async def _await_background_job(descriptor: dict, agent: Any, result_text: str) 
         try:
             raw = await agent._run_tool(status_tool, dict(status_op.get("args") or {}),
                                         record_observations=False)
-            payload = json.loads(raw) if isinstance(raw, str) else (raw or {})
-            state = str(payload.get("state") or "")
+            # parse_tool_payload, not json.loads: a status result is an envelope plus
+            # whatever was appended to it, and a poll that cannot read its own answer
+            # is a run that never reaches a terminal state.
+            payload = parse_tool_payload(raw) if isinstance(raw, str) else (raw or {})
+            state = str((payload or {}).get("state") or "")
         except Exception:
             continue  # transient poll failure — retry next tick
         emit({"type": "status", "text": f"background run: {state}"})

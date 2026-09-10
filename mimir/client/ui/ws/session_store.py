@@ -14,7 +14,9 @@ Session JSON schema:
   "summary_version": 0,       # session_summary.SUMMARY_VERSION that produced it
   "title_custom": false,      # true once the user renamed the session by hand
   "llm_history": [{"role": "...", "content": "..."}],      # working window sent to the LLM
-  "llm_history_full": [...],  # same, never trimmed — the context a resume starts from
+  "llm_history_full": [...],  # same, never trimmed — the archive a resume falls back to
+                              #   (a window that carries a compaction summary is what a
+                              #   resume reloads instead; see _Session._load_session)
   "display_messages": [...],  # serialised UI ChatMessage objects
   "carry_context": {...},     # MimirAgent._carry_context
   "todos": [{"text": "...", "done": false}]

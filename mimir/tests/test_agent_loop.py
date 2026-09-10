@@ -337,6 +337,55 @@ class FinalizeAnswerTests(unittest.TestCase):
         self.assertEqual(carry["n"], 1)                      # carry context saved
         self.assertEqual(agent._last_full_messages, messages[1:])  # system stripped
 
+    def test_the_turn_boundary_survives_a_rewrite_of_the_prefix(self) -> None:
+        """The index is resolved by identity, so an in-turn rewrite cannot shift it.
+
+        ``_enforce_context_budget`` runs between the loop's prologue and this point and
+        mutates the list in place — evicting old tool results, replacing the middle
+        with a summary. Anything that counted positions beforehand is wrong by however
+        much moved; the opening message is still the same object.
+        """
+        agent, _ = self._agent()
+        opening = {"role": "user", "content": "the turn's own query"}
+        messages = [
+            {"role": "system", "content": "S"},
+            {"role": "user", "content": "older"},
+            {"role": "assistant", "content": "[Context summary — 40 compacted]"},
+            opening,
+            {"role": "assistant", "content": "done"},
+        ]
+        agent._turn_opening_message = opening
+        start = finalize_module._turn_start_index(agent, messages)
+        # messages[1:] is what the front-end sees; the turn's own work starts after
+        # the opening message, which sits at index 2 there.
+        self.assertEqual(start, 3)
+        exposed = messages[1:]
+        self.assertIs(exposed[start - 1], opening)      # the boundary sits just after it
+        self.assertEqual([m["content"] for m in exposed[start:]], ["done"])
+
+    def test_a_turn_whose_opening_was_summarized_away_has_no_boundary(self) -> None:
+        """Compaction can swallow a long turn's own start. Saying None beats guessing."""
+        agent, _ = self._agent()
+        agent._turn_opening_message = {"role": "user", "content": "gone"}
+        messages = [{"role": "system", "content": "S"},
+                    {"role": "assistant", "content": "[Context summary — 90 compacted]"}]
+        self.assertIsNone(finalize_module._turn_start_index(agent, messages))
+
+    def test_an_equal_message_is_not_the_opening_message(self) -> None:
+        """Identity, not equality: two turns can carry byte-identical wake messages.
+
+        The session this came from had exactly that — the same background-job wake
+        text delivered twice — and matching on content would pick the wrong one.
+        """
+        agent, _ = self._agent()
+        opening = {"role": "user", "content": "job J1 finished"}
+        twin = {"role": "user", "content": "job J1 finished"}
+        agent._turn_opening_message = opening
+        messages = [{"role": "system", "content": "S"}, twin,
+                    {"role": "assistant", "content": "a"}, opening,
+                    {"role": "assistant", "content": "done"}]
+        self.assertEqual(finalize_module._turn_start_index(agent, messages), 3)
+
     def test_no_annotation_when_nothing_written(self) -> None:
         agent, _ = self._agent()
 

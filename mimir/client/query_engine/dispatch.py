@@ -23,7 +23,7 @@ from ..config.constants import (
 )
 from ..event_sink import emit
 from .. import human_pause
-from ..context.capabilities import EDIT, has_cap, label_for, timeout_for
+from ..context.capabilities import EDIT, has_cap, label_for, scope_spec, timeout_for
 from ..context.execution_context import loop_control, nudge_count
 from ..tool_execution.normalizer import _make_hashable
 from ..tool_execution.executor import run_post_tool_annotations
@@ -81,6 +81,131 @@ async def _await_tool(coro, timeout: float):
         raise
 
 
+
+# ── Guards for a run something else is already watching ───────────────────────
+#
+# Both read one deterministic fact — the set of watchers currently alive — through the
+# optional ``agent._watched_background_jobs`` hook (the WS worker sets it; the CLI does
+# not, and then both guards abstain). They live in the dispatch rather than in a policy
+# gate on purpose: the dispatch is the *model's* path, while the watcher's own probes
+# and the CLI's in-turn await call ``agent._run_tool`` directly. A gate would see both
+# and, refusing the watcher's probe, would break the very mechanism these protect.
+
+
+def _watched_jobs(agent: Any) -> list[dict]:
+    """Descriptors of the runs a watcher is holding right now. Best-effort, never raises."""
+    hook = getattr(agent, "_watched_background_jobs", None)
+    if not hook:
+        return []
+    try:
+        jobs = hook() or []
+    except Exception:
+        return []
+    return [d for d in jobs if isinstance(d, dict)]
+
+
+def _asks_whether_a_watched_run_is_done(
+    agent: Any, name: str, args: dict,
+) -> str | None:
+    """The job_key this call is asking the state of, when a watcher already answers it.
+
+    Shape-driven: the comparison is against the descriptor's own ``status_op`` and
+    ``summary_op``, which is registry data the server put there — no tool name is
+    spelled out here, for the same reason the watcher can poll generically.
+
+    The summary op is checked first and always allowed. Reading a run's output while it
+    goes is progress ("which target is this build on"), which the watcher does not
+    report until the end; the state op is the question "is it finished yet", which the
+    wake answers on its own. Only the second one is refused.
+
+    Matching is containment, not equality: the descriptor's args are the ones that
+    identify the job, and a caller that adds an explicit default (an ``op="status"``
+    the descriptor left implicit) is asking the same question. Equality would have let
+    exactly that spelling through.
+    """
+    def _matches(op: Any) -> bool:
+        if not isinstance(op, dict) or op.get("tool") != name:
+            return False
+        op_args = op.get("args")
+        if not isinstance(op_args, dict):
+            return False
+        return all(args.get(k) == v for k, v in op_args.items())
+
+    for descriptor in _watched_jobs(agent):
+        if _matches(descriptor.get("summary_op")):
+            return None            # progress, not "are we there yet" — always allowed
+        if _matches(descriptor.get("status_op")):
+            return str(descriptor.get("job_key") or "?")
+    return None
+
+
+def _waits_by_blocking_the_turn(agent: Any, name: str, args: dict) -> bool:
+    """True when this call's command opens by doing nothing but passing time.
+
+    Registry-driven on both halves: the tool that carries a raw command line is the one
+    declaring a ``command_prefix`` scope (the test ``gates._shell_command_args`` and
+    ``observations._carries_shell_command`` already make), and the program of the
+    leading segment comes from the shared segmenter, which skips ``VAR=val`` assignments
+    and wrappers of its own. ``sleep`` is named as a POSIX program, the way this
+    codebase already names interpreters and wrappers — never as a tool.
+
+    Only the *leading* segment counts. ``./run.sh --sleep 60`` runs a script, and
+    ``make; sleep 1`` has already done the work; neither is a turn spent waiting.
+    Fail-open on a command the shared parser refuses, as every other shell guard does.
+    """
+    spec = scope_spec(name, getattr(agent, "tool_caps", None))
+    if not spec or spec.get("kind") != "command_prefix":
+        return False
+    from ..guardrails.policy.bash_classify import shell_segments
+    from ..guardrails.policy.gates import _segment_program
+    for arg in (spec.get("args") or ("command",)):
+        command = args.get(arg)
+        if not isinstance(command, str) or not command.strip():
+            continue
+        segments = shell_segments(command, allow_expansion=True)
+        if not segments:
+            continue
+        program = _segment_program(list(segments[0].argv))
+        if program and os.path.basename(program) == "sleep":
+            return True
+    return False
+
+
+def _watched_poll_blocked_payload(job_key: str) -> str:
+    """Synthetic result for a call asking whether a watched run has finished."""
+    return json.dumps({
+        "status": "error",
+        "error": (
+            f"Background job '{job_key}' is being watched, so its state was not read. "
+            "You will be resumed automatically with its results the moment it finishes."
+        ),
+        "hint": (
+            "Do not ask again whether it is done. If there is other useful work in this "
+            "task, carry on with it now. If the only thing left is waiting for this run, "
+            "end your turn and say what you are waiting for. Reading the run's output "
+            "for progress is still available if you need to see how far along it is."
+        ),
+    })
+
+
+def _blocking_wait_payload() -> str:
+    """Synthetic result for a turn spent waiting on a run something else is watching."""
+    return json.dumps({
+        "status": "error",
+        "error": (
+            "This command opens by waiting, and a background job is already being "
+            "watched for you, so it was not run. Blocking the turn this way also delays "
+            "the completion notice it is waiting for, and any message the user sends "
+            "meanwhile."
+        ),
+        "hint": (
+            "You will be resumed automatically when the run finishes. If there is other "
+            "useful work in this task, carry on with it now. If the only thing left is "
+            "waiting, end your turn and say what you are waiting for."
+        ),
+    })
+
+
 async def _dispatch_tool_calls(
     tool_calls: list,
     agent: Any,
@@ -132,6 +257,27 @@ async def _dispatch_tool_calls(
         elif call_fails.get(key, 0) >= HARD_REPEAT_LIMIT:
             blocked_results[call_id] = _repeat_blocked_payload(name, call_fails[key])
             emit({"type": "status", "text": f"  ⛔ Blocking repeated failing call: {name}"})
+        # A run a watcher is already holding answers both of these on its own: asking
+        # whether it is done, and spending the turn waiting for it. Refused rather than
+        # nudged, because the fact is a lookup and not a judgement — and because the
+        # standing instruction is delivered once, at launch, and long buried by the time
+        # it is disregarded.
+        #
+        # Deliberately outside the chain above rather than another `elif`: that chain
+        # branches on whether the tool writes, which has nothing to do with whether a
+        # run is being watched. A backgroundable tool that also edited a file would
+        # silently escape a guard hung off its `else`. Never overrides a block already
+        # decided — the repeat guard's answer is the more specific one.
+        if call_id not in blocked_results:
+            watched_key = _asks_whether_a_watched_run_is_done(agent, name, args)
+            if watched_key:
+                blocked_results[call_id] = _watched_poll_blocked_payload(watched_key)
+                emit({"type": "status", "text":
+                      "  ⛔ Already watching that run — you will be resumed when it ends"})
+            elif _waits_by_blocking_the_turn(agent, name, args):
+                blocked_results[call_id] = _blocking_wait_payload()
+                emit({"type": "status", "text":
+                      "  ⛔ Not waiting in-turn — a watcher already holds that run"})
         normalized.append((name, args, call_id))
 
     for name, args, call_id in normalized:
@@ -291,10 +437,17 @@ async def _dispatch_tool_calls(
             _maybe_emit_open_editor(result)
             descriptor = _detect_background_job(name, result, agent)
             if descriptor is not None:
-                if getattr(agent, "_register_background_job", None):
-                    result = _maybe_register_background_job(name, result, agent)
-                else:
-                    # CLI (no watcher): wait it out efficiently in-turn.
+                # Branching on the hook's *existence* left the WS front-end with no
+                # fallback at all: it installs the hook unconditionally, so a
+                # registration that failed produced no watcher, no in-turn await and
+                # no note — and the model, told nothing, polled the job by hand until
+                # the step limit. What decides is whether a watcher is actually
+                # holding the run.
+                result, registered = _maybe_register_background_job(
+                    name, result, agent, descriptor)
+                if not registered:
+                    # No watcher (CLI, or a registration that declined): wait it out
+                    # efficiently in-turn. Costs zero model calls either way.
                     result = await _await_background_job(descriptor, agent, result)
             return result
 

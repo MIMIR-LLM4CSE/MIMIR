@@ -782,6 +782,17 @@ async def run_agent_query(
     # is covered too, and no backend ever has to cope with a dangling pair.
     messages[:] = reconcile_tool_pairs(messages)
 
+    # The message this turn opens on — the caller's own last archived message, or the
+    # query just appended above. Handed over as the *object*, never as an index:
+    # ``_enforce_context_budget`` rewrites this list in place while the turn runs
+    # (evicting old tool results, replacing the middle with a summary, then repairing
+    # the assistant↔tool pairing those break), so a position computed before the turn
+    # stops meaning what it meant. ``_finalize_answer`` resolves it back to an index at
+    # the one moment both are true together. A caller that slices on its own arithmetic
+    # instead re-archives or drops whatever the rewrite shifted — and, because the
+    # repair leaves no orphan behind, cuts straight through an assistant↔tool pair.
+    agent._turn_opening_message = messages[-1] if messages else None
+
     # Every loop below mutates this exact list in place, so handing the reference out
     # is enough for a front-end to read the in-flight context without polling the agent.
     agent._live_messages = messages

@@ -488,9 +488,11 @@ def finalize_incomplete_answer(
 			"\n\nNot attempted (a prerequisite this environment does not have):\n- "
 			+ "\n- ".join(blocked)
 		)
-	unjudged = unjudged_run_lines(execution_context)
-	if unjudged:
-		summary += "\n\nRan, with no verdict on record:\n- " + "\n- ".join(unjudged)
+	# Deliberately NOT listed here: the ledger appended to this same answer already
+	# carries one row per unjudged run, in the same words. Said twice — capped at five
+	# above and uncapped below — it was the largest single thing in the report, and the
+	# second copy told the reader nothing the first had not. `unjudged_run_lines` is
+	# still what decides, below, whether there is anything to report at all.
 	unmeasured = unmeasured_proxy_source_lines(execution_context)
 	if unmeasured:
 		summary += "\n\nChecked but never measured:\n- " + "\n- ".join(unmeasured)

@@ -6,7 +6,12 @@ bubbles, so tool rows, reasoning panels and diff cards came back stripped to pro
 left no record anywhere and a resumed session started amnesiac. These tests pin the two
 halves of the fix: a client transcript is stored verbatim (with the guards that stop it
 overwriting the wrong session or a longer history), and the untrimmed record is kept
-beside the window and is what a load restores.
+beside the window.
+
+What a load hands the model is the third thing pinned here. A front-trimmed tail resumes
+from the record, because its prefix was summarized nowhere; a window that already
+carries a compaction summary resumes from itself, because reloading the record over it
+throws that summary away and starts the session back at its pre-compaction size.
 """
 import concurrent.futures
 import os
@@ -15,6 +20,9 @@ import unittest
 from datetime import datetime, timezone
 from unittest import mock
 
+from mimir.client.query_engine.history import (
+    carries_compaction_summary, compacted_exchanges, compaction_summary_message,
+)
 from mimir.client.ui.ws.session_store import FullSession, SessionStore
 from mimir.client.ui.ws.ws_session import _Session
 
@@ -56,8 +64,12 @@ class _FakeStore:
 
 
 class _FakeWorker:
-    def __init__(self):
+    def __init__(self, turn_start=None):
         self.active_session_id = None
+        self._turn_start = turn_start
+
+    def last_turn_start(self):
+        return self._turn_start
 
     def export_agent_state(self):
         return {"carry_context": {}}
@@ -234,31 +246,66 @@ class UntrimmedHistoryTests(unittest.TestCase):
 class AnswerDeltaTests(unittest.TestCase):
     """What the record takes from a finished turn.
 
-    The agent hands back its whole transcript, but the loop is free to trim or compact
-    the prefix it inherited — and that prefix is exactly what the record exists to
-    preserve, so only the turn's own messages may be taken from it.
+    The agent hands back its whole transcript, but the loop is free to rewrite the
+    prefix it inherited while the turn runs — and that prefix is exactly what the
+    record exists to preserve, so only the turn's own messages may be taken from it.
+
+    These drive `_Session._turn_messages` itself. They used to carry a copy of its
+    arithmetic instead, which is why they kept passing while the real path was cutting
+    an archive to ribbons: a test that restates the code cannot disagree with it.
     """
 
+    TURN = [
+        {"role": "user", "content": "old"},
+        {"role": "user", "content": "new"},
+        {"role": "assistant", "content": "", "tool_calls": [{"id": "c1"}]},
+        {"role": "tool", "tool_call_id": "c1", "content": "ok"},
+        {"role": "assistant", "content": "done"},
+    ]
+
     @staticmethod
-    def _added(submitted_len: int, full: list[dict]) -> list[dict]:
-        return full[submitted_len:] if len(full) > submitted_len else full[-1:]
+    def _sess(turn_start, submitted_len):
+        sess = _session()
+        sess.worker = _FakeWorker(turn_start=turn_start)
+        sess._submitted_len = submitted_len
+        return sess
 
     def test_only_the_turn_takes_its_place_in_the_record(self):
-        full = [
-            {"role": "user", "content": "old"},
-            {"role": "user", "content": "new"},
-            {"role": "assistant", "content": "", "tool_calls": [{"id": "c1"}]},
-            {"role": "tool", "tool_call_id": "c1", "content": "ok"},
-            {"role": "assistant", "content": "done"},
-        ]
-        added = self._added(2, full)
+        added = self._sess(2, 2)._turn_messages(self.TURN)
         self.assertEqual(len(added), 3)
         self.assertEqual(added[0]["tool_calls"][0]["id"], "c1")
+
+    def test_the_boundary_the_loop_gives_beats_the_length_we_submitted(self):
+        """The bug, in one assertion.
+
+        We submitted 2 messages; the in-turn budget pass rewrote the prefix and the
+        turn now starts at 1. Trusting our own count re-archives message 1 — already
+        in the record — and, in the session this came from, cut into an assistant↔tool
+        pair and left the tool result orphaned.
+        """
+        added = self._sess(1, 2)._turn_messages(self.TURN)
+        self.assertEqual([m["content"] for m in added][:1], ["new"])
+        self.assertEqual(len(added), 4)
+
+    def test_a_stale_boundary_is_not_used_when_the_loop_supplies_one(self):
+        """The mirror case: our count is too large, and would drop the turn's own work."""
+        added = self._sess(2, 4)._turn_messages(self.TURN)
+        self.assertEqual(len(added), 3)
+
+    def test_without_a_boundary_the_submitted_length_still_serves(self):
+        added = self._sess(None, 2)._turn_messages(self.TURN)
+        self.assertEqual(len(added), 3)
 
     def test_a_compacted_turn_still_contributes_its_answer(self):
         """The loop replaced the middle with a handoff note — the answer is what is left."""
         full = [{"role": "assistant", "content": "done"}]
-        self.assertEqual(self._added(4, full), [{"role": "assistant", "content": "done"}])
+        self.assertEqual(self._sess(None, 4)._turn_messages(full),
+                         [{"role": "assistant", "content": "done"}])
+
+    def test_a_turn_that_added_nothing_is_recorded_by_its_answer(self):
+        """The boundary points past the end — an empty slice must not erase the turn."""
+        self.assertEqual(self._sess(5, 5)._turn_messages(self.TURN),
+                         [{"role": "assistant", "content": "done"}])
 
 
 class TodoRestoreTests(unittest.IsolatedAsyncioTestCase):
@@ -389,6 +436,51 @@ class ResumeTests(unittest.IsolatedAsyncioTestCase):
         sess.history[0]["content"] = "…[truncated]…"
         self.assertEqual(sess.history_full[0]["content"], "turn 0")
 
+    async def test_a_compacted_window_is_what_a_resume_reloads(self):
+        """A summary already stands in for what was cut — reloading the record undoes it.
+
+        The bug this pins: a long session compacted its 1346-message history down to a
+        162-message window, and the reload handed the model the 1346 again. The context
+        bar sat full before the user had typed, and the first turn spent an LLM call
+        re-compacting what was already compacted.
+        """
+        sess = _session()
+        window = [
+            {"role": "user", "content": "port the build to the new target"},
+            compaction_summary_message(257, "# Handoff Note\n\nthe arch is set in cmake/"),
+            {"role": "assistant", "content": "picking it back up"},
+        ]
+        sess.store.saved["s1"] = FullSession(
+            id="s1", title="t", created_at="x", updated_at="y",
+            llm_history=window,
+            llm_history_full=[{"role": "user", "content": f"turn {i}"} for i in range(600)],
+        )
+        sess.ws = mock.AsyncMock()
+        sess._emit_context_usage = mock.AsyncMock()
+        with mock.patch("mimir.client.ui.ws.ws_session._write_active_session"):
+            await sess._load_session("s1")
+        self.assertEqual(len(sess.history), 3)
+        self.assertIn("Handoff Note", sess.history[1]["content"])
+        # The record is still kept whole beside it: nothing is lost, it is just not
+        # what the model is handed.
+        self.assertEqual(len(sess.history_full), 600)
+        self.assertEqual(sess._submitted_len, 3)
+
+    async def test_a_compacted_window_is_not_shared_with_the_archive_either(self):
+        sess = _session()
+        sess.store.saved["s1"] = FullSession(
+            id="s1", title="t", created_at="x", updated_at="y",
+            llm_history=[compaction_summary_message(9, "note")],
+            llm_history_full=[compaction_summary_message(9, "note"),
+                              {"role": "user", "content": "after"}],
+        )
+        sess.ws = mock.AsyncMock()
+        sess._emit_context_usage = mock.AsyncMock()
+        with mock.patch("mimir.client.ui.ws.ws_session._write_active_session"):
+            await sess._load_session("s1")
+        sess.history[0]["content"] = "…[truncated]…"
+        self.assertIn("note", sess.history_full[0]["content"])
+
     async def test_an_older_session_falls_back_to_the_window_it_saved(self):
         sess = _session()
         sess.store.saved["s1"] = FullSession(
@@ -400,6 +492,101 @@ class ResumeTests(unittest.IsolatedAsyncioTestCase):
         with mock.patch("mimir.client.ui.ws.ws_session._write_active_session"):
             await sess._load_session("s1")
         self.assertEqual(sess.history_full, [{"role": "user", "content": "only this"}])
+
+
+class CompactionMarkerTests(unittest.TestCase):
+    """The marker is how a resume tells a compacted window from a front-trimmed tail.
+
+    It is matched by prefix, so the builder and the predicate have to agree exactly.
+    They lived apart once and disagreed on a capital letter — which would have read as
+    "never compacted" and quietly reloaded the whole record.
+    """
+
+    def test_what_the_builder_writes_is_what_the_predicate_reads(self):
+        self.assertTrue(carries_compaction_summary(
+            [compaction_summary_message(12, "note")]))
+
+    def test_the_summary_is_found_behind_the_task_that_is_kept_ahead_of_it(self):
+        self.assertTrue(carries_compaction_summary([
+            {"role": "user", "content": "the task"},
+            compaction_summary_message(12, "note"),
+        ]))
+
+    def test_a_front_trimmed_tail_carries_no_summary(self):
+        self.assertFalse(carries_compaction_summary([
+            {"role": "user", "content": "turn 8"},
+            {"role": "assistant", "content": "turn 9"},
+        ]))
+
+    def test_an_empty_window_carries_no_summary(self):
+        self.assertFalse(carries_compaction_summary([]))
+
+    def test_a_summary_buried_mid_history_is_not_this_window_opening(self):
+        """An older compaction a later front-trim reduced to a tail again.
+
+        The window no longer opens on the note, so what precedes the note inside it
+        was never summarized — the record is still the faithful resume.
+        """
+        self.assertFalse(carries_compaction_summary([
+            {"role": "assistant", "content": f"turn {i}"} for i in range(6)
+        ] + [compaction_summary_message(3, "note")]))
+
+    def test_the_old_capital_s_spelling_is_still_recognised(self):
+        """Windows the CLI compacted before the two producers merged are still on disk."""
+        self.assertTrue(carries_compaction_summary([
+            {"role": "assistant",
+             "content": "[Context Summary — 12 prior exchanges compacted]\n\nnote"},
+        ]))
+
+    def test_a_user_message_quoting_the_marker_is_not_a_summary(self):
+        self.assertFalse(carries_compaction_summary([
+            {"role": "user", "content": "[Context summary — why did it say that?"},
+        ]))
+
+
+class CompactedExchangeCountTests(unittest.TestCase):
+    """What the marker claims the summary stands for.
+
+    The model reads this number to judge how much of its own past it can no longer
+    see. Counting the slice's messages made every pass after the first announce less
+    than the one before it, because a summary absorbing hundreds of exchanges counts
+    as a single message.
+    """
+
+    @staticmethod
+    def _raw(n):
+        return [{"role": "assistant", "content": f"m{i}"} for i in range(n)]
+
+    def test_a_first_pass_counts_exchanges(self):
+        self.assertEqual(compacted_exchanges(self._raw(16)), 8)
+
+    def test_a_second_pass_adds_what_the_first_already_absorbed(self):
+        middle = [compaction_summary_message(8, "note")] + self._raw(8)
+        self.assertEqual(compacted_exchanges(middle), 12)   # 8 absorbed + 4 fresh
+
+    def test_the_count_never_shrinks_across_passes(self):
+        """The regression, stated directly: pass N+1 cannot claim less than pass N."""
+        counts = []
+        middle = self._raw(12)
+        for _ in range(4):
+            n = compacted_exchanges(middle)
+            counts.append(n)
+            middle = [compaction_summary_message(n, "note")] + self._raw(12)
+        self.assertEqual(counts, sorted(counts))
+        self.assertEqual(counts, [6, 12, 18, 24])
+
+    def test_an_older_capital_s_marker_still_contributes_its_count(self):
+        middle = [{"role": "assistant",
+                   "content": "[Context Summary — 30 prior exchanges compacted]\n\nx"}]
+        self.assertEqual(compacted_exchanges(middle), 30)
+
+    def test_a_summary_with_no_readable_count_is_not_read_as_conversation(self):
+        """It is still a summary: worth 0 exchanges, never one raw message."""
+        self.assertEqual(compacted_exchanges(
+            [{"role": "assistant", "content": "[Context summary] lost its count"}]), 0)
+
+    def test_the_singular_marker_reads_back(self):
+        self.assertEqual(compacted_exchanges([compaction_summary_message(1, "n")]), 1)
 
 
 if __name__ == "__main__":

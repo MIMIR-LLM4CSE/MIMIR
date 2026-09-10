@@ -65,4 +65,31 @@ async def _finalize_answer(
     await _persist_answer(agent, query, answer, execution_context, logger)
     agent._update_carry_context(execution_context)
     agent._last_full_messages = messages[1:]
+    agent._last_turn_start = _turn_start_index(agent, messages)
     return answer
+
+
+def _turn_start_index(agent: Any, messages: list[dict]) -> int | None:
+    """Where this turn's own messages begin in ``_last_full_messages``, or None.
+
+    Resolved by identity against the message the loop recorded as this turn's opening
+    (see ``_run_agent_loop``), because that is the only thing about the list that the
+    in-turn budget rewrites cannot invalidate: they evict, summarize and truncate
+    messages, but the object a surviving entry *is* does not change.
+
+    Returned as an index into ``messages[1:]`` — the system message is not exposed —
+    and pointing one past the opening message, since a caller that appended the query
+    to its own record before submitting has already stored everything up to it.
+
+    ``None`` says the opening message is gone: a long turn can have its own start
+    summarized away by the compaction pass, and there is then no honest boundary to
+    give. A caller must fall back rather than guess, which is the whole point of
+    saying so instead of returning a number that looks usable.
+    """
+    opening = getattr(agent, "_turn_opening_message", None)
+    if opening is None:
+        return None
+    for i, m in enumerate(messages):
+        if m is opening:
+            return i  # index in messages[1:] of the message *after* the opening one
+    return None

@@ -206,6 +206,12 @@ class MimirAgent:
         # Full message list from the last completed query (system message excluded).
         # Used by chat_session in full-context mode to keep tool results in history.
         self._last_full_messages: list[dict] = []
+        # Where the last completed turn's own messages begin in ``_last_full_messages``
+        # (None when the turn's opening message did not survive compaction), and the
+        # object that boundary is resolved against. Set by the loop and its finalizer;
+        # read by a front-end that keeps a record of its own. See finalize._turn_start_index.
+        self._last_turn_start: int | None = None
+        self._turn_opening_message: dict | None = None
         # Reference to the message list of the query currently running (system message
         # INCLUDED, index 0). Front-ends read it to report context usage mid-turn.
         self._live_messages: list[dict] | None = None
@@ -983,7 +989,10 @@ class MimirAgent:
         if not middle:
             return middle
         from .query_engine.backends.factory import get_backend
-        from .query_engine.history import _force_fit_to_window, served_compaction_instruction
+        from .query_engine.history import (
+            _force_fit_to_window, compacted_exchanges, compaction_summary_message,
+            served_compaction_instruction,
+        )
 
         backend = get_backend()
         tok = lambda t: backend.count_text_tokens(self.model, t)  # noqa: E731
@@ -1007,14 +1016,9 @@ class MimirAgent:
         summary = (msg or {}).get("content", "") if isinstance(msg, dict) else ""
         if not summary:
             return middle
-        n = len(middle) // 2
-        return [{
-            "role": "assistant",
-            "content": (
-                f"[Context summary — {n} prior exchange{'s' if n != 1 else ''} "
-                f"compacted]\n\n{summary}"
-            ),
-        }]
+        # compacted_exchanges, not len(middle) // 2: on a second pass *middle* opens on
+        # the previous summary, which stands for far more than the one message it is.
+        return [compaction_summary_message(compacted_exchanges(middle), summary)]
 
     def load_skills(self, skills_dir: str, *, merge: bool = False) -> None:
         """

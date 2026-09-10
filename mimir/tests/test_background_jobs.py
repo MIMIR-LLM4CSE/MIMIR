@@ -87,16 +87,21 @@ class BackgroundDescriptorTests(_TmpStorageTest):
 # ── 2. Client: dispatch detects the descriptor and registers a watcher ─────────
 
 class _FakeAgent:
-    def __init__(self, cap: bool, with_hook: bool) -> None:
+    def __init__(self, cap: bool, with_hook: bool, outcome: object = True) -> None:
         caps = frozenset({BACKGROUNDABLE}) if cap else frozenset()
         self.tool_caps = {"proxy_eval": ToolCaps(name="proxy_eval", capabilities=caps)}
         self.registered: list[dict] = []
+        # What the front-end hook does: True registers, False declines, an Exception
+        # instance is raised. The last two are the paths the field failure took.
+        self._outcome = outcome
         if with_hook:
             self._register_background_job = self._hook
 
     def _hook(self, descriptor: dict) -> bool:
         self.registered.append(descriptor)
-        return True
+        if isinstance(self._outcome, BaseException):
+            raise self._outcome
+        return bool(self._outcome)
 
 
 class RegisterBackgroundJobTests(unittest.TestCase):
@@ -108,34 +113,92 @@ class RegisterBackgroundJobTests(unittest.TestCase):
 
     def test_registers_and_augments_when_hook_present(self) -> None:
         agent = _FakeAgent(cap=True, with_hook=True)
-        out = _maybe_register_background_job("proxy_eval", self._RESULT, agent)
+        out, registered = _maybe_register_background_job("proxy_eval", self._RESULT, agent)
         self.assertEqual(len(agent.registered), 1)
+        self.assertTrue(registered)
         self.assertIn("background job", out)
         self.assertIn("end your turn", out)
 
     def test_no_hook_leaves_result_unchanged(self) -> None:
         # CLI path: no _register_background_job hook → normal poll contract kept.
         agent = _FakeAgent(cap=True, with_hook=False)
-        out = _maybe_register_background_job("proxy_eval", self._RESULT, agent)
+        out, registered = _maybe_register_background_job("proxy_eval", self._RESULT, agent)
         self.assertEqual(out, self._RESULT)
+        self.assertFalse(registered)
 
     def test_without_capability_is_noop(self) -> None:
         agent = _FakeAgent(cap=False, with_hook=True)
-        out = _maybe_register_background_job("proxy_eval", self._RESULT, agent)
+        out, registered = _maybe_register_background_job("proxy_eval", self._RESULT, agent)
         self.assertEqual(out, self._RESULT)
+        self.assertFalse(registered)
         self.assertEqual(agent.registered, [])
 
     def test_no_descriptor_is_noop(self) -> None:
         agent = _FakeAgent(cap=True, with_hook=True)
         plain = json.dumps({"status": "ok", "note": "no job here"})
-        out = _maybe_register_background_job("proxy_eval", plain, agent)
+        out, registered = _maybe_register_background_job("proxy_eval", plain, agent)
         self.assertEqual(out, plain)
+        self.assertFalse(registered)
         self.assertEqual(agent.registered, [])
 
     def test_malformed_result_is_noop(self) -> None:
         agent = _FakeAgent(cap=True, with_hook=True)
-        out = _maybe_register_background_job("proxy_eval", "not json", agent)
+        out, registered = _maybe_register_background_job("proxy_eval", "not json", agent)
         self.assertEqual(out, "not json")
+        self.assertFalse(registered)
+
+    # ── The three ways registration fails, which used to be indistinguishable ──
+    # from success. Each one promised the model a resume nobody was holding.
+
+    def test_declined_registration_promises_nothing(self) -> None:
+        agent = _FakeAgent(cap=True, with_hook=True, outcome=False)
+        with self.assertLogs("mimir.client.query_engine.background", "WARNING") as log:
+            out, registered = _maybe_register_background_job(
+                "proxy_eval", self._RESULT, agent)
+        self.assertFalse(registered)
+        # The note is the promise of a resume. A declined registration must not carry
+        # it: that is exactly what let the model end its turn on a wake that never came.
+        self.assertEqual(out, self._RESULT)
+        self.assertIn("declined", "\n".join(log.output))
+
+    def test_raising_hook_promises_nothing(self) -> None:
+        agent = _FakeAgent(cap=True, with_hook=True, outcome=RuntimeError("no loop"))
+        with self.assertLogs("mimir.client.query_engine.background", "WARNING") as log:
+            out, registered = _maybe_register_background_job(
+                "proxy_eval", self._RESULT, agent)
+        self.assertFalse(registered)
+        self.assertEqual(out, self._RESULT)
+        self.assertIn("raised", "\n".join(log.output))
+
+    def test_annotated_result_still_finds_its_descriptor(self) -> None:
+        """A post-tool annotation must not be able to hide a launched run.
+
+        The dispatcher appends advisory prose to the same string the descriptor lives
+        in, and a result is an envelope plus its text blocks besides. Read with a bare
+        ``json.loads`` that is one broken document and the run goes unwatched — which
+        is why detection goes through ``parse_tool_payload``, like every other
+        consumer of a tool payload.
+        """
+        from mimir.client.query_engine.background import _detect_background_job
+        agent = _FakeAgent(cap=True, with_hook=True)
+        annotated = self._RESULT + "\n\nAUTO_VALIDATION\nlooks fine"
+        self.assertIsNotNone(_detect_background_job("proxy_eval", annotated, agent))
+        out, registered = _maybe_register_background_job("proxy_eval", annotated, agent)
+        self.assertTrue(registered)
+        self.assertIn("[background]", out)
+
+    def test_annotated_result_still_opens_the_editor(self) -> None:
+        """Same defect, same fix, on the sibling that opens a written plan."""
+        from mimir.client.query_engine import background as bg
+        payload = json.dumps({"status": "ok", "name": "p",
+                              "path": "/tmp/plan.md", "open_in_editor": True})
+        seen: list[dict] = []
+        orig, bg.emit = bg.emit, seen.append
+        try:
+            bg._maybe_emit_open_editor(payload + "\n\nAUTO_VALIDATION\nlooks fine")
+        finally:
+            bg.emit = orig
+        self.assertEqual(seen, [{"type": "open_editor", "path": "/tmp/plan.md"}])
 
 
 # ── 2b. The joint: a real launch result, read through the real live registry ────
@@ -189,10 +252,12 @@ class LiveRegistrySeamTests(unittest.TestCase):
             tool_caps=registry,
             _register_background_job=lambda d: bool(registered.append(d) or True),
         )
-        out = _maybe_register_background_job("bash_run", json.dumps(result), agent)
+        out, was_registered = _maybe_register_background_job(
+            "bash_run", json.dumps(result), agent)
 
         self.assertEqual(len(registered), 1)
         self.assertEqual(registered[0]["job_key"], job_key)
+        self.assertTrue(was_registered)
         # The note is the only promise of a resume the model should ever see, and the
         # only proof a watcher exists. Its absence is what the field failure looked like.
         self.assertIn("[background]", out)
@@ -370,6 +435,168 @@ class WatchJobTests(unittest.TestCase):
         self._run(worker, self._descriptor())
         ev = worker.out_q.get_nowait()
         self.assertEqual(ev["state"], "crashed")
+
+
+class RegisterBgJobTests(unittest.TestCase):
+    """``_register_bg_job``'s refusals: each one must say so.
+
+    Its return value is the whole contract — False means no watcher is holding the
+    run, and the caller must await it in-turn instead. Refusing silently is what made
+    a run finish into nothing with no line anywhere to explain it.
+    """
+
+    def _worker(self) -> object:
+        from mimir.client.ui.ws.ws_server import _AgentWorker
+        w = _AgentWorker.__new__(_AgentWorker)   # bypass __init__ (spawns a thread)
+        w._bg_jobs = {}
+        w._query_session_id = None
+        w.active_session_id = None
+        w._loop = None
+        return w
+
+    def test_descriptor_without_a_key_is_refused_out_loud(self) -> None:
+        w = self._worker()
+        with self.assertLogs("mimir.client.ui.ws.ws_worker", "WARNING") as log:
+            self.assertFalse(w._register_bg_job({"server": "bash", "status_op": {}}))
+        self.assertIn("job_key", "\n".join(log.output))
+        self.assertEqual(w._bg_jobs, {})
+
+    def test_non_dict_descriptor_is_refused_out_loud(self) -> None:
+        w = self._worker()
+        with self.assertLogs("mimir.client.ui.ws.ws_worker", "WARNING") as log:
+            self.assertFalse(w._register_bg_job("not a descriptor"))
+        self.assertIn("not a dict", "\n".join(log.output))
+
+    def test_no_running_loop_is_refused_out_loud(self) -> None:
+        """Called off the worker loop there is nothing to host the watcher."""
+        w = self._worker()
+        with self.assertLogs("mimir.client.ui.ws.ws_worker", "WARNING") as log:
+            self.assertFalse(w._register_bg_job({"job_key": "fast", "status_op": {}}))
+        self.assertIn("event loop", "\n".join(log.output))
+        self.assertEqual(w._bg_jobs, {})
+
+
+# ── 3c. The dispatch guards: a watched run is neither polled nor waited on ─────
+
+class _GuardAgent:
+    """Just enough agent for the two dispatch guards."""
+
+    def __init__(self, watched: list[dict] | None = None, *, with_hook: bool = True,
+                 shell_tool: str = "bash_run") -> None:
+        from mimir.client.context.capabilities import ToolCaps
+        self.tool_caps = {
+            shell_tool: ToolCaps(name=shell_tool, capabilities=frozenset(),
+                                 scope={"args": ["command"], "kind": "command_prefix"}),
+            "bash_job": ToolCaps(name="bash_job", capabilities=frozenset()),
+        }
+        self._watched = watched or []
+        if with_hook:
+            self._watched_background_jobs = lambda: list(self._watched)
+
+
+def _descriptor(job_key: str = "j1") -> dict:
+    return {
+        "server": "bash", "kind": "shell-command", "job_key": job_key,
+        "status_op":  {"tool": "bash_job", "args": {"job_key": job_key}},
+        "summary_op": {"tool": "bash_job",
+                       "args": {"op": "output", "job_key": job_key}},
+    }
+
+
+class WatchedRunPollGuardTests(unittest.TestCase):
+    def _asks(self, agent, name, args):
+        from mimir.client.query_engine.dispatch import (
+            _asks_whether_a_watched_run_is_done)
+        return _asks_whether_a_watched_run_is_done(agent, name, args)
+
+    def test_state_of_a_watched_run_is_refused(self) -> None:
+        agent = _GuardAgent([_descriptor()])
+        self.assertEqual(self._asks(agent, "bash_job", {"job_key": "j1"}), "j1")
+
+    def test_an_explicit_default_is_the_same_question(self) -> None:
+        """Containment, not equality: spelling out the implicit op must not slip past."""
+        agent = _GuardAgent([_descriptor()])
+        self.assertEqual(
+            self._asks(agent, "bash_job", {"op": "status", "job_key": "j1"}), "j1")
+
+    def test_reading_the_output_stays_allowed(self) -> None:
+        """Progress mid-run is information the watcher does not report until the end."""
+        agent = _GuardAgent([_descriptor()])
+        self.assertIsNone(
+            self._asks(agent, "bash_job", {"op": "output", "job_key": "j1"}))
+
+    def test_an_unwatched_run_is_not_guarded(self) -> None:
+        agent = _GuardAgent([_descriptor("j1")])
+        self.assertIsNone(self._asks(agent, "bash_job", {"job_key": "other"}))
+
+    def test_listing_every_job_is_not_polling_one(self) -> None:
+        agent = _GuardAgent([_descriptor()])
+        self.assertIsNone(self._asks(agent, "bash_job", {"op": "list"}))
+
+    def test_without_the_hook_the_guard_abstains(self) -> None:
+        """The CLI has no watcher, so nothing may be refused on its behalf."""
+        agent = _GuardAgent([_descriptor()], with_hook=False)
+        self.assertIsNone(self._asks(agent, "bash_job", {"job_key": "j1"}))
+
+    def test_a_raising_hook_abstains(self) -> None:
+        agent = _GuardAgent()
+        def _boom():
+            raise RuntimeError("worker gone")
+        agent._watched_background_jobs = _boom
+        self.assertIsNone(self._asks(agent, "bash_job", {"job_key": "j1"}))
+
+
+class BlockingWaitGuardTests(unittest.TestCase):
+    def _waits(self, agent, command, name="bash_run"):
+        from mimir.client.query_engine.dispatch import _waits_by_blocking_the_turn
+        return _waits_by_blocking_the_turn(agent, name, {"command": command})
+
+    def test_leading_sleep_is_refused_while_a_run_is_watched(self) -> None:
+        agent = _GuardAgent([_descriptor()])
+        self.assertTrue(self._waits(agent, "sleep 60; tail -2 build.log"))
+
+    def test_wrappers_and_env_assignments_are_seen_through(self) -> None:
+        agent = _GuardAgent([_descriptor()])
+        self.assertTrue(self._waits(agent, "FOO=1 sleep 60"))
+        self.assertTrue(self._waits(agent, "env sleep 90"))
+
+    def test_sleep_that_is_not_the_leading_program_is_allowed(self) -> None:
+        """A flag named --sleep is not a wait, and work already done is not one either."""
+        agent = _GuardAgent([_descriptor()])
+        self.assertFalse(self._waits(agent, "./run.sh --sleep 60"))
+        self.assertFalse(self._waits(agent, "make -j8; sleep 1"))
+
+    def test_a_tool_that_takes_no_command_line_abstains(self) -> None:
+        agent = _GuardAgent([_descriptor()])
+        self.assertFalse(self._waits(agent, "sleep 60", name="bash_job"))
+
+
+class WatcherProbeIsNeverGuardedTests(unittest.TestCase):
+    """The failure mode this guard could introduce, pinned down.
+
+    The watcher polls the very status op the guard refuses. It reaches the tool through
+    ``agent._run_tool``, never through ``_dispatch_tool_calls``, so the separation is
+    structural — but nothing said so out loud until this test, and getting it wrong
+    would silently kill every wake.
+    """
+
+    def test_dispatch_is_the_only_caller_that_consults_the_guards(self) -> None:
+        import inspect
+        from mimir.client.query_engine import dispatch, background
+        from mimir.client.ui.ws import ws_worker
+
+        guard_names = ("_asks_whether_a_watched_run_is_done",
+                       "_waits_by_blocking_the_turn")
+        # The watcher (WS) and the in-turn await (CLI) must not reference either guard.
+        for module in (background, ws_worker):
+            src = inspect.getsource(module)
+            for guard in guard_names:
+                self.assertNotIn(guard, src, f"{module.__name__} must not gate its own probes")
+        # And both probe paths go through _run_tool, not the dispatcher.
+        for probe in (background._await_background_job, ws_worker._AgentWorker._watch_job):
+            src = inspect.getsource(probe)
+            self.assertIn("_run_tool", src)
+            self.assertNotIn("_dispatch_tool_calls", src)
 
 
 # ── 3b. proxy_slurm(op='eval', background=True) attaches the descriptor ─────────
@@ -553,6 +780,7 @@ class _FakeWorker:
 
     def __init__(self) -> None:
         self.submitted: list[tuple] = []
+        self.steered: list[str] = []
         self._query_session_id = None
         self._agent = types.SimpleNamespace(context_mode="flat")
         self.model = "test-model"
@@ -560,6 +788,9 @@ class _FakeWorker:
     def submit_query(self, text, history, session_id=None) -> None:
         self.submitted.append((text, list(history), session_id))
         self._query_session_id = session_id
+
+    def submit_steer(self, text) -> None:
+        self.steered.append(text)
 
     def full_history(self):
         return None
@@ -706,3 +937,177 @@ class DetachedSessionResumeTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ── 6. A burst of finished jobs is one turn, not one turn apiece ───────────────
+
+class WakeCoalescingTests(unittest.TestCase):
+    """Three jobs finishing together used to mean three turns and three answers.
+
+    Measured in the field: three near-identical "the work is done" summaries inside
+    3.5 minutes, one of them saying two jobs had finished and the next, seven seconds
+    later, saying three — because each turn had seen a different subset. The wake
+    mechanism working is what created this; nothing about it was wrong before it fired.
+    """
+
+    def setUp(self) -> None:
+        import shutil
+        import tempfile
+        from unittest import mock
+        from mimir.client.ui.ws import session_store, transcript_log
+        from mimir.client.ui.ws.ws_session import _Session
+
+        self._tmp = tempfile.mkdtemp(prefix="mimir-coalesce-")
+        self.addCleanup(shutil.rmtree, self._tmp, ignore_errors=True)
+        for target, attr in ((session_store, "STATE_DIR"), (transcript_log, "_MIMIR_DIR_WS")):
+            patcher = mock.patch.object(target, attr, self._tmp)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+        self.ws, self.worker = _FakeWS(), _FakeWorker()
+        self.session = _Session(self.ws, self.worker)
+        self.here = self.session.store.new_session()
+        self.session.store.save_session(self.here)
+        self.session._active_session_id = self.here.id
+        self.session.history = [{"role": "user", "content": "go"}]
+        self.session.history_full = list(self.session.history)
+        self.session._display_messages = []
+
+    def _event(self, job_key: str, session_id: str | None = None) -> dict:
+        return {"type": "job_complete", "job_key": job_key, "kind": "shell-command",
+                "state": "done", "session_id": session_id or self.here.id,
+                "status_op": {"tool": "bash_job", "args": {}},
+                "summary": {"state": "done", "exit_code": 0}}
+
+    def _running(self, session_id: str | None) -> None:
+        """Pretend a turn of *session_id* is in flight."""
+        self.worker._query_session_id = session_id
+
+    def _wake(self, ev: dict) -> None:
+        asyncio.run(self.session._handle_job_complete(ev))
+
+    def _answer(self) -> None:
+        self._running(None)
+        asyncio.run(self.session._flush_pending_wakes(self.here.id))
+
+    # ── idle: unchanged behaviour ────────────────────────────────────────────
+
+    def test_a_job_finishing_while_idle_starts_its_turn_at_once(self) -> None:
+        self._wake(self._event("j1"))
+        self.assertEqual(len(self.worker.submitted), 1)
+        self.assertIn("j1", self.worker.submitted[0][0])
+        self.assertEqual(self.worker.steered, [])
+
+    # ── busy: steered into the turn that is already running ──────────────────
+
+    def test_a_job_finishing_mid_turn_is_handed_to_that_turn(self) -> None:
+        self._running(self.here.id)
+        self._wake(self._event("j1"))
+        # No second turn: the running one is told, and carries on.
+        self.assertEqual(self.worker.submitted, [])
+        self.assertEqual(len(self.worker.steered), 1)
+        self.assertIn("j1", self.worker.steered[0])
+
+    def test_a_burst_becomes_one_catch_up_turn(self) -> None:
+        self._running(self.here.id)
+        for key in ("j1", "j2", "j3"):
+            self._wake(self._event(key))
+        self.assertEqual(self.worker.submitted, [])
+        self._answer()
+        # One turn, naming all three — not three turns naming one each.
+        self.assertEqual(len(self.worker.submitted), 1)
+        text = self.worker.submitted[0][0]
+        for key in ("j1", "j2", "j3"):
+            self.assertIn(key, text)
+
+    def test_an_injected_wake_needs_no_catch_up(self) -> None:
+        self._running(self.here.id)
+        self._wake(self._event("j1"))
+        self.session._drop_injected_wakes(self.worker.steered[0])
+        self._answer()
+        self.assertEqual(self.worker.submitted, [], "the running turn already had it")
+
+    def test_only_the_unconfirmed_half_is_carried(self) -> None:
+        self._running(self.here.id)
+        self._wake(self._event("j1"))
+        self._wake(self._event("j2"))
+        self.session._drop_injected_wakes(self.worker.steered[0])   # j1 only
+        self._answer()
+        self.assertEqual(len(self.worker.submitted), 1)
+        text = self.worker.submitted[0][0]
+        self.assertIn("j2", text)
+        self.assertNotIn("j1", text)
+
+    # ── the invariant: nothing is ever swallowed ─────────────────────────────
+
+    def test_every_job_is_reported_exactly_once(self) -> None:
+        """A steer the loop never took in must still reach a turn.
+
+        This is the failure the opportunistic injection could introduce, and it would
+        be invisible in a session: the job finished, the history carries the message,
+        and no turn ever reads it.
+        """
+        self._running(self.here.id)
+        for key in ("j1", "j2", "j3"):
+            self._wake(self._event(key))
+        self.session._drop_injected_wakes(self.worker.steered[1])   # j2 taken in
+        self._answer()
+
+        carried = "".join(t for t, _h, _s in self.worker.submitted)
+        absorbed = self.worker.steered[1]        # the one the loop confirmed taking in
+        for key in ("j1", "j2", "j3"):
+            routes = [key in absorbed, key in carried]
+            self.assertEqual(routes.count(True), 1,
+                             f"{key} reached {routes.count(True)} turns, not exactly one")
+        self.assertIn("j2", absorbed)
+        self.assertNotIn("j2", carried)
+
+    # ── the record, whichever route the wake took ────────────────────────────
+
+    def test_a_steered_wake_is_still_written_to_the_record(self) -> None:
+        """The log is how the mechanism is checked; the quiet route must appear in it.
+
+        The history is the one thing it must NOT write: the running turn receives the
+        wake in its own messages, and adding it here as well put the same text in twice.
+        """
+        before = list(self.session.history)
+        self._running(self.here.id)
+        self._wake(self._event("j1"))
+        self.assertEqual(self.worker.submitted, [])
+        self.assertTrue(any("🔔" in m.get("text", "")
+                            for m in self.session._display_messages))
+        self.assertEqual(self.session.history, before)
+
+    def test_a_steered_wake_is_recorded_once_even_if_a_later_flush_retells_it(self) -> None:
+        """The re-tell is for the model, not for the record.
+
+        An unconfirmed steer must still reach a turn, so the catch-up message repeats
+        it — but the user was already shown it and the log already has it. Counting it
+        twice was the first thing this coalescing got wrong.
+        """
+        self._running(self.here.id)
+        self._wake(self._event("jA"))            # steered
+        self._running(None)
+        self._wake(self._event("jB"))            # idle → flushes jA and jB together
+
+        notes = [m for m in self.session._display_messages if "🔔" in m.get("text", "")]
+        self.assertEqual(len(notes), 2, "one notice per job, not one per telling")
+        # The model is told about both, because jA's steer was never confirmed read.
+        self.assertEqual(len(self.worker.submitted), 1)
+        text = self.worker.submitted[0][0]
+        self.assertIn("jA", text)
+        self.assertIn("jB", text)
+        # ...but the history carries jA once, not once per route.
+        occurrences = sum(str(m.get("content", "")).count("jA") for m in self.session.history)
+        self.assertEqual(occurrences, 1)
+
+    # ── a wake for another conversation is never steered into this turn ──────
+
+    def test_a_detached_wake_is_not_injected_into_the_visible_turn(self) -> None:
+        other = self.session.store.new_session()
+        self.session.store.save_session(other)
+        self._running(self.here.id)          # the turn in flight is THIS session's
+        self._wake(self._event("j9", session_id=other.id))
+        self.assertEqual(self.worker.steered, [], "that turn is not its conversation")
+        self.assertEqual(len(self.worker.submitted), 1)
+        self.assertEqual(self.worker.submitted[0][2], other.id)

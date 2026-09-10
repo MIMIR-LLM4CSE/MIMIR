@@ -463,3 +463,49 @@ describe("session command replies", () => {
     expect(state.messages).toHaveLength(0);
   });
 });
+
+describe("background-job wake", () => {
+  // A wake starts a turn nobody pressed send for. `busy` is what puts the composer
+  // in stop mode, and only `submit_query` sets it — so before this the agent ran on
+  // with the button still offering "send", and the user could not interrupt it.
+  it("marks the turn busy when the wake resumes this conversation", () => {
+    const state = run([
+      {
+        type: "job_complete",
+        job_key: "j1",
+        state: "done",
+        resumes_active_session: true,
+      },
+    ]);
+    expect(state.busy).toBe(true);
+  });
+
+  it("leaves this conversation idle when the wake resumes another one", () => {
+    // The wake belongs to a session that is not on screen: a stop button here would
+    // stop nothing, and the composer must stay usable.
+    const state = run([
+      {
+        type: "job_complete",
+        job_key: "j1",
+        state: "done",
+        resumes_active_session: false,
+      },
+    ]);
+    expect(state.busy).toBe(false);
+  });
+
+  it("leaves this conversation idle when the server said nothing either way", () => {
+    // An older server sends no flag. Guessing "busy" there would freeze the composer
+    // of a chat that is not running, which is worse than the button it replaces.
+    const state = run([{ type: "job_complete", job_key: "j1", state: "done" }]);
+    expect(state.busy).toBe(false);
+  });
+
+  it("does not end a turn that is already running", () => {
+    const state = run([
+      { type: "submit_query", text: "go" },
+      { type: "job_complete", job_key: "j1", state: "done", resumes_active_session: true },
+    ]);
+    expect(state.busy).toBe(true);
+  });
+});

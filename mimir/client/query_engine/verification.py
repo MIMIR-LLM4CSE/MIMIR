@@ -58,8 +58,46 @@ _VERDICT_NOTE = (
 )
 
 
+#: How much of a command a row shows. A row's job is to *identify* the run, not to
+#: reproduce it — the transcript keeps the text in full. Left unbounded, a single row
+#: reached 896 characters of shell (a multi-line ``python -c`` probe), and a ledger of
+#: those is a paste rather than a record.
+_COMMAND_WIDTH = 110
+
+#: How many run rows a ledger names before it stops and gives a count. The chips
+#: already carry the totals, so past this the enumeration only repeats them at length:
+#: one turn listed 22 runs the summary had already counted.
+_MAX_RUN_ROWS = 6
+
+#: Ordering for the cap: what a reader has to act on survives, what is merely
+#: outstanding is the first to become a count. An unjudged run is the bulk of every
+#: long session (65% of one measured ledger) and the least actionable row in it.
+_RUN_ROW_PRIORITY = ("blocked", "broken", "unknown", "pass", "unjudged")
+
+
+def _short_command(command: str) -> str:
+    """*command* on one line, cut to :data:`_COMMAND_WIDTH`."""
+    flat = " ".join(str(command).split())
+    return flat if len(flat) <= _COMMAND_WIDTH else flat[:_COMMAND_WIDTH - 1] + "…"
+
+
+def _run_class(run: dict) -> str:
+    """Which :data:`_RUN_ROW_PRIORITY` bucket *run* falls in."""
+    if run.get("blocked"):
+        return "blocked"
+    if not run.get("completed") or run.get("verdict") == "fail":
+        return "broken"
+    verdict = run.get("verdict")
+    if verdict == "unknown":
+        return "unknown"
+    if verdict:
+        return "pass"
+    return "unjudged"
+
+
 def _run_row(command: str, run: dict) -> str:
     """One execution, as what is actually known about it."""
+    command = _short_command(command)
     reason = str(run.get("reason") or "").strip()
     tail = f" — {reason}" if reason else ""
     # Before the not-completed branch, which a blocked run also satisfies: what matters
@@ -122,10 +160,19 @@ def build_ledger(execution_context: dict) -> dict | None:
         else:
             rows.append(f"`{f}` — checked: {validation_tier(execution_context, f) or 'structural'}")
 
-    for command, run in sorted(runs.items()):
-        # The dict key is the run's identity (flags and pipelines dropped); the report
-        # must show what was actually typed.
+    # The dict key is the run's identity (flags and pipelines dropped); the report must
+    # show what was actually typed. Ordered by what the reader has to act on, then cut:
+    # a ledger that names every run stops being read at all, and the counts below say
+    # how many there were either way.
+    ordered = sorted(
+        runs.items(),
+        key=lambda kv: (_RUN_ROW_PRIORITY.index(_run_class(kv[1])), kv[0]),
+    )
+    for command, run in ordered[:_MAX_RUN_ROWS]:
         rows.append(_run_row(run.get("command") or command, run))
+    if len(ordered) > _MAX_RUN_ROWS:
+        hidden = len(ordered) - _MAX_RUN_ROWS
+        rows.append(f"{_plural(hidden, 'further run')} not listed — counted above")
 
     open_runs = [c for c, r in runs.items() if r.get("completed") and r.get("verdict") in ("", "unknown")]
     failed = [

@@ -8,6 +8,9 @@ from ...context.capabilities import name_with_arg_role
 from ...context.resource_context import augment_query_with_resources
 from ...prompt.system_prompt import _load_todo_items
 from ...query_engine.backends.factory import get_backend
+from ...query_engine.history import (
+    compacted_exchanges, compaction_summary_message,
+)
 from ...query_engine.verification import parse_ledger_block, split_answer_ledger
 from ...config.constants import context_budget_for, STATE_DIR
 from ...guardrails.workflow import is_incomplete_answer
@@ -138,8 +141,13 @@ async def run_chat_session(agent: Any) -> None:
             print("  ↳ Nothing to compact.")
             return
 
-        n_exchanges = len(history) // 2
-        print(f"⚡ Compacting history ({n_exchanges} exchange{'s' if n_exchanges != 1 else ''})...")
+        # Two different counts. The print says what is being collapsed right now; the
+        # marker says what the summary will stand for, which includes everything an
+        # earlier summary in *history* already absorbed.
+        n_messages = len(history)
+        collapsing = n_messages // 2
+        n_exchanges = compacted_exchanges(history)
+        print(f"⚡ Compacting history ({collapsing} exchange{'s' if collapsing != 1 else ''})...")
 
         summary = await agent.compact_history(history)
         if not summary:
@@ -147,17 +155,11 @@ async def run_chat_session(agent: Any) -> None:
             return
 
         history.clear()
-        # Store as assistant role so the model reads the summary as its own
-        # prior memory, not as something the user typed.
-        history.append({
-            "role": "assistant",
-            "content": (
-                f"[Context Summary — {n_exchanges} prior exchange"
-                f"{'s' if n_exchanges != 1 else ''} compacted]\n\n{summary}"
-            ),
-        })
+        history.append(compaction_summary_message(n_exchanges, summary))
         _compact_cooldown = _COMPACT_COOLDOWN_TURNS
-        print(f"  ↳ History compacted: {n_exchanges * 2} messages → 1 summary message")
+        # Read before the clear above, not after it.
+        print(f"  ↳ History compacted: {n_messages} messages → 1 summary message "
+              f"standing for {n_exchanges} exchanges")
 
     def set_compact_threshold(n: int) -> None:
         nonlocal auto_compact_threshold

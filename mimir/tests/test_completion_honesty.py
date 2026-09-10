@@ -310,6 +310,48 @@ class OutputVerdictLedgerTests(_ChecklistFixture):
         self.assertIn("`pytest` — ran; verdict: pass — matches the reference", out)
         self.assertIn("the model's own reading", out)
 
+    def test_a_long_command_is_identified_not_reproduced(self):
+        # A row names the run so the reader can find it; the transcript keeps the text.
+        # Unbounded, one row reached 896 characters of a multi-line `python -c` probe,
+        # and a ledger of those is a paste rather than a record.
+        long_cmd = ('source /opt/env.sh > /dev/null 2>&1;\n'
+                    'export PYTHONPATH=/opt/install/python:$PYTHONPATH;\n'
+                    'python -c "\nimport kokkos\nimport pysolver.model\n'
+                    'print(kokkos.__file__)\nprint(pysolver.model.__name__)\n"'
+                    ' 2>&1 | tail -8')
+        out = _annotate_answer_with_changes("Done.", self._run(long_cmd))
+        row = next(ln for ln in out.splitlines() if "never judged" in ln)
+        self.assertLess(len(row), 160)
+        self.assertNotIn("\n", row[2:])          # one line, whatever the command was
+        self.assertIn("source /opt/env.sh", row)  # still recognisable
+        self.assertIn("…", row)
+
+    def test_past_a_handful_of_runs_the_ledger_counts_instead_of_listing(self):
+        runs = {f"python probe_{i}.py": {"completed": True, "verdict": "", "reason": "",
+                                         "failures": 0, "attempts": [], "call_id": ""}
+                for i in range(22)}
+        out = _annotate_answer_with_changes("Done.", _ctx(runs=runs))
+        named = [ln for ln in out.splitlines() if "never judged" in ln]
+        self.assertEqual(len(named), 6)
+        self.assertIn("16 further runs not listed — counted above", out)
+        self.assertIn("22 runs", out)   # the chip still carries the total
+
+    def test_the_rows_that_survive_the_cut_are_the_ones_to_act_on(self):
+        # An unjudged run is the bulk of any long session and the least actionable
+        # thing in it, so it is the first to become a count — never a failure.
+        runs = {f"python probe_{i}.py": {"completed": True, "verdict": "", "reason": "",
+                                         "failures": 0, "attempts": [], "call_id": ""}
+                for i in range(10)}
+        runs["make -j"] = {"completed": False, "verdict": "", "reason": "link error",
+                           "failures": 1, "attempts": [], "call_id": ""}
+        runs["cmake .."] = {"completed": False, "verdict": "", "reason": "",
+                            "failures": 0, "attempts": [], "call_id": "",
+                            "blocked": "cmake is not installed here"}
+        out = _annotate_answer_with_changes("Done.", _ctx(runs=runs))
+        self.assertIn("`make -j` — **did not complete** — link error", out)
+        self.assertIn("`cmake ..` — **not attempted**: cmake is not installed here", out)
+        self.assertIn("further runs not listed", out)
+
     def test_what_was_tried_is_reported_when_the_budget_runs_out(self):
         from mimir.client.config.constants import VALIDATION_RETRY_BUDGET
         ec = self._run(
@@ -999,8 +1041,17 @@ class TestRedRunRaisesResidualRisk(unittest.TestCase):
         ec = self._clean_but_for_runs()
         record_run(ec, "python solver.py", completed=True)
         out = finalize_incomplete_answer("Done.", ec)
-        self.assertIn("no verdict on record", out)
         self.assertIn("Residual risk: low.", out)
+
+    def test_an_unjudged_run_is_named_once_in_the_ledger(self):
+        # The report used to list it too, in the same words, capped at five while the
+        # ledger listed every one. One fact, one place: the ledger, which is the record.
+        ec = self._clean_but_for_runs()
+        record_run(ec, "python solver.py", completed=True)
+        report = finalize_incomplete_answer("Done.", ec)
+        self.assertNotIn("no verdict on record", report)
+        self.assertIn("**its output was never judged**",
+                      _annotate_answer_with_changes(report, ec))
 
 
 if __name__ == "__main__":

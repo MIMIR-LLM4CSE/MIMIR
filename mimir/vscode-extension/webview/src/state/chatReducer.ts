@@ -316,6 +316,25 @@ export function createChatReducer(makeId: () => string) {
         return { ...state, messages, busy: true };
       }
 
+      // A finished background run auto-resumes the session that launched it. No one
+      // pressed send, so `busy` — which only `submit_query` sets — would stay false
+      // for the whole turn: the composer keeps offering "send" and the stop button
+      // never appears, leaving a running agent that cannot be interrupted.
+      //
+      // Only when the wake resumes THIS conversation. A wake for a detached session
+      // runs a turn elsewhere, and marking this chat busy for it would show a stop
+      // button that stops nothing.
+      case "job_complete": {
+        if (!action.resumes_active_session) return state;
+        return {
+          ...state,
+          busy: true,
+          liveThinkingBlocks: [],
+          liveToolCalls: [],
+          toolCallAfterToken: true,
+        };
+      }
+
       // ── Server messages ────────────────────────────────────────────────────
       case "output":
       case "status": {

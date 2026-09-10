@@ -20,13 +20,17 @@ from ._ws_runtime import (
 import asyncio
 import concurrent.futures
 import json
+import logging
 import os
 import queue as _queue
 import threading
 import uuid
-from typing import Any
+from typing import Any, NamedTuple
 
 from ... import human_pause
+from ...tool_execution.formatter import parse_tool_payload
+
+logger = logging.getLogger(__name__)
 
 
 def _direct_opener():
@@ -61,6 +65,18 @@ def _labelled_questions(questions: list, prefix: str) -> list:
             q = {**q, "question": f"{prefix}{q['question']}"}
         out.append(q)
     return out
+
+
+class _Watch(NamedTuple):
+    """A live background-job watcher: the polling task, and what it is watching.
+
+    The descriptor is kept next to the task because the dispatch guard compares an
+    incoming call against the *job's own* ``status_op`` — registry data travelling on
+    the descriptor, the same reason the watcher itself can poll generically. Holding
+    only the task would have forced the guard to name a tool.
+    """
+    task: asyncio.Task
+    descriptor: dict
 
 
 def _first_line(value: Any) -> str:
@@ -99,9 +115,10 @@ class _AgentWorker:
         # serves every session, so events must carry the session they were produced
         # for or a turn that outlives a switch lands in the wrong conversation.
         self._query_session_id: str | None = None
-        # Background-job watchers: job_key -> asyncio.Task polling a detached run to
-        # completion. Registered by the agent loop via _register_bg_job (below).
-        self._bg_jobs: dict[str, asyncio.Task] = {}
+        # Background-job watchers: job_key -> _Watch(task, descriptor), polling a
+        # detached run to completion. Registered by the agent loop via _register_bg_job
+        # (below) and read back by _watched_bg_jobs, which the dispatch guard uses.
+        self._bg_jobs: dict[str, _Watch] = {}
 
         self._thread = threading.Thread(target=self._main, name="mimir-worker", daemon=True)
         self._thread.start()
@@ -238,6 +255,9 @@ class _AgentWorker:
             # Let the loop detach a long run: the agent ends its turn and this
             # worker watches the run to completion, then notifies + auto-resumes.
             agent._register_background_job = self._register_bg_job
+            # The twin of the hook above: what the dispatch guard reads to know a run
+            # is already being watched, so asking whether it is done can be refused.
+            agent._watched_background_jobs = self._watched_bg_jobs
 
             self._agent = agent
             self.out_q.put({"type": "ready", "model": self.model})
@@ -666,6 +686,19 @@ class _AgentWorker:
         msgs = getattr(self._agent, "_last_full_messages", None)
         return list(msgs) if msgs else None
 
+    def last_turn_start(self) -> int | None:
+        """Index in :meth:`full_history` where the last completed turn's own messages begin.
+
+        The loop's own answer to "which of these did this turn produce", so a caller
+        keeping a record of its own need not infer it from the length it submitted —
+        an inference the in-turn budget rewrites invalidate. ``None`` when the boundary
+        cannot be given honestly and the caller must fall back.
+        """
+        if self._agent is None:
+            return None
+        start = getattr(self._agent, "_last_turn_start", None)
+        return start if isinstance(start, int) else None
+
     def live_history(self) -> list | None:
         """The in-flight transcript of the query currently running (system excluded).
 
@@ -774,21 +807,51 @@ class _AgentWorker:
         happens to be reading when it lands.
         """
         if not isinstance(descriptor, dict):
+            logger.warning("background-job registration refused: descriptor is %s, "
+                           "not a dict", type(descriptor).__name__)
             return False
         job_key = str(descriptor.get("job_key") or descriptor.get("run_dir") or "")
         if not job_key:
+            logger.warning("background-job registration refused: descriptor carries "
+                           "neither 'job_key' nor 'run_dir' (keys: %s)",
+                           sorted(descriptor))
             return False
         existing = self._bg_jobs.get(job_key)
-        if existing is not None and not existing.done():
+        if existing is not None and not existing.task.done():
             return True  # already watched
         session_id = self._query_session_id or self.active_session_id
         try:
-            task = asyncio.get_event_loop().create_task(
+            # get_running_loop, not get_event_loop: the latter can hand back a loop
+            # that is not running, and a task created on one of those never polls
+            # anything while registration still reports success. That combination is
+            # the worst of both — the model is promised a resume, and nothing is
+            # holding the run. Registering is only ever done from the worker loop, so
+            # requiring a running one states the real precondition.
+            task = asyncio.get_running_loop().create_task(
                 self._watch_job(job_key, descriptor, session_id))
         except RuntimeError:
+            # No running loop to host the watcher. Logged rather than swallowed: this
+            # is the point where a launched run stops being tracked by anything, and
+            # every minute after it is a run finishing into silence.
+            logger.warning("background-job registration failed for %r: no running "
+                           "event loop to host the watcher", job_key, exc_info=True)
             return False
-        self._bg_jobs[job_key] = task
+        self._bg_jobs[job_key] = _Watch(task, descriptor)
         return True
+
+    def _watched_bg_jobs(self) -> list[dict]:
+        """Descriptors of the runs a watcher is currently holding (the agent's hook).
+
+        The deterministic half of the dispatch guard: a job is in this list or it is
+        not, so nothing has to be inferred about what the model meant. Read on the
+        worker loop, which is also the only thread that writes ``_bg_jobs``.
+
+        Finished tasks are filtered rather than trusted to have been popped: a watcher
+        that raised leaves its entry behind, and a guard that refused calls on a job
+        nobody is watching would block the one question the model still needs to ask.
+        """
+        return [w.descriptor for w in self._bg_jobs.values()
+                if isinstance(w.descriptor, dict) and not w.task.done()]
 
     async def _watch_job(self, job_key: str, descriptor: dict,
                          session_id: str | None = None) -> None:
@@ -827,8 +890,12 @@ class _AgentWorker:
                     raw = await self._agent._run_tool(
                         status_tool, dict(status_op.get("args") or {}),
                         record_observations=False)
-                    payload = json.loads(raw) if isinstance(raw, str) else (raw or {})
-                    state = str(payload.get("state") or "")
+                    # parse_tool_payload, not json.loads: the result is an envelope
+                    # followed by its text blocks and any appended annotation, and a
+                    # bare load reads that as one broken document. Five of those in a
+                    # row and the watcher gives the run up as unreadable.
+                    payload = parse_tool_payload(raw) if isinstance(raw, str) else (raw or {})
+                    state = str((payload or {}).get("state") or "")
                     if not state:
                         reason = (_first_line(payload.get("error"))
                                   or f"'{status_tool}' returned no state")
@@ -1181,8 +1248,8 @@ class _AgentWorker:
 
     def shutdown(self) -> None:
         # Cancel any in-flight background-job watchers on the worker loop.
-        for task in list(self._bg_jobs.values()):
-            if self._loop is not None and not task.done():
-                self._loop.call_soon_threadsafe(task.cancel)
+        for watch in list(self._bg_jobs.values()):
+            if self._loop is not None and not watch.task.done():
+                self._loop.call_soon_threadsafe(watch.task.cancel)
         self._query_q.put(None)
         self._query_event.set()
