@@ -140,6 +140,7 @@ import re
 import shlex
 import subprocess
 import sys
+import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '_shared'))
 
@@ -150,7 +151,7 @@ from capabilities import (
 )
 from responses import err, ok
 from module_env import MODULE_ENV_PASSTHROUGH as _MODULE_ENV_PASSTHROUGH
-import proc_run
+import _bash_divert
 import _bash_jobs
 from shell_paths import (
     CLUSTER_SUBMIT_COMMANDS,
@@ -180,9 +181,21 @@ _WORKSPACE_ROOT = os.path.realpath(
 _MAX_OUTPUT = 64 * 1024
 # Sized for the work this shell actually does now that it compiles and runs: a default
 # that survives an ordinary build or test suite, and a ceiling past which a run belongs
-# to the background-job route rather than to a call that blocks the turn.
-_DEFAULT_TIMEOUT = 30
-_MAX_TIMEOUT = 300
+# to the background-job route rather than to a call that blocks the turn. A run still
+# going at the ceiling is stopped, as it always was — the ceiling is what bounds a
+# command gone astray — but it now returns whatever it had printed before the stop,
+# which is what makes a low ceiling cheap rather than wasteful.
+_DEFAULT_TIMEOUT = 60
+_MAX_TIMEOUT = 120
+
+# How often the blocking path looks at the job it is waiting on. Short commands are
+# the common case and must stay as immediate as a pipe made them, so the first ticks
+# are tiny and only a genuinely long run relaxes into a lazy poll.
+_TICKS = ((0.1, 0.005), (1.0, 0.02), (5.0, 0.05))
+_TICK_MAX = 0.2
+# The divert sidecar is stat'ed at most this often, so a long wait does not turn into
+# a stat storm on the shared state dir.
+_DIVERT_POLL_S = 0.25
 
 # Commands run with the user's real home as HOME (see _safe_env, which rebuilds the
 # env from scratch); the validator needs the same value to know where a bare 'cd' lands.
@@ -678,6 +691,95 @@ def _is_clean_no_match(segments: list[list[str]] | None, returncode: int, stdout
     return returncode == 1 and head in _NO_MATCH_COMMANDS
 
 
+def _output_targets(command: str) -> list[str]:
+    """Files the command redirects its own output to, from the validator's parse.
+
+    Recorded on the job so a later empty log is explained rather than guessed about.
+    """
+    try:
+        return [t for seg in _parse_segments(command) for t in seg.write_targets]
+    except _ShellParseError:
+        return []  # it parsed at validation; a change of heart here is not fatal
+
+
+def _finished_payload(command: str, cwd: str, returncode: int, stdout: str,
+                      stderr: str, truncated: bool,
+                      segments: list[list[str]] | None) -> dict:
+    """What a run that reached its own end reports — unchanged by backgrounding."""
+    if returncode == 0:
+        payload = ok({
+            "returncode": returncode,
+            "stdout": stdout,
+            "stderr": stderr,
+            "cwd": cwd,
+        })
+    elif _is_clean_no_match(segments, returncode, stdout):
+        payload = ok({
+            "returncode": returncode,
+            "stdout": stdout,
+            "stderr": stderr,
+            "cwd": cwd,
+            "matches": 0,
+            "note": "The command ran correctly and found nothing. This is a "
+                    "conclusive negative answer, not a failure — treat the "
+                    "result as 'absent' and do not re-run the command.",
+        })
+    else:
+        classification = _classify_runtime_error(stderr)
+
+        payload = err(
+            "Command returned a non-zero exit code.",
+            returncode=returncode,
+            stdout=stdout,
+            stderr=stderr,
+            cwd=cwd,
+        )
+
+        if classification:
+            payload["diagnostic"] = classification
+            payload["hint"] = (
+                "The failure appears to be due to the runtime environment "
+                "(missing or incompatible dependencies), not shell syntax. "
+                "Consider checking the Python environment or loaded modules."
+            )
+        else:
+            payload["hint"] = (
+                "Read stderr before doing anything else: a non-zero exit is "
+                "often a real finding (a failing test, an absent file, a "
+                "compile error) rather than a malformed command. Act on what "
+                "stderr says; do not re-run the same command unchanged."
+            )
+
+    if truncated:
+        payload["truncated"] = True
+    return payload
+
+
+def _job_descriptor(job_key: str, job_dir: str) -> dict:
+    """The handle the client watcher polls.
+
+    Data, not a tool name in loop code: the client reads status_op / summary_op off it
+    and polls them generically, which is how a run gets watched without the agent
+    spending a model call per poll.
+    """
+    return {
+        "server": "bash",
+        "kind": "shell-command",
+        "job_key": job_key,
+        "run_dir": job_dir,
+        "status_op": {"tool": "bash_job", "args": {"job_key": job_key}},
+        "summary_op": {"tool": "bash_job",
+                       "args": {"op": "output", "job_key": job_key}},
+    }
+
+
+def _tick(elapsed: float) -> float:
+    for boundary, interval in _TICKS:
+        if elapsed < boundary:
+            return interval
+    return _TICK_MAX
+
+
 def _run(
     command: str,
     cwd: str,
@@ -685,104 +787,124 @@ def _run(
     preamble: str = "",
     segments: list[list[str]] | None = None,
 ) -> dict:
+    """Run *command* to completion, or until the cap, or until the user detaches it.
+
+    The command goes through the job launcher even when nothing is being detached, so
+    its output lands in a file rather than a pipe. That is the whole point: bytes on
+    disk survive the process, so a run that is stopped at the cap still reports what it
+    printed, and one the user moves to the background keeps everything it has done.
+    Before this, output lived in a pipe read only by the final communicate(), and a
+    timeout discarded every byte of it.
+
+    Three ways out, and only one of them leaves a process alive:
+      * the command ended        — the ordinary payload, byte-for-byte as before;
+      * the cap was reached      — the process group is killed, exactly as the old
+                                   timeout did, and the partial output comes back
+                                   with the error instead of being thrown away;
+      * the user asked to detach — the process is left running and the caller gets a
+                                   background handle. This is the only promotion
+                                   there is: an explicit human act, never the clock.
+    """
     try:
-        # proc_run, not subprocess.run: a timeout here must stop the work, not just
-        # stop waiting for it. `bash -c "<preamble><command>"` is a compound script, so
-        # bash forks rather than execs, and subprocess.run's timeout would kill bash
-        # while the fork ran on. Observed: a `find /` outliving its 30s timeout by an
-        # hour and forty minutes, three at a time, skewing every benchmark taken since.
-        result = proc_run.run(
-            ["bash", "--noprofile", "--norc", "-c", preamble + command],
-            cwd=cwd,
-            env=_safe_env(cwd),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            timeout=timeout,
-            text=True,
+        launched = _bash_jobs.launch(
+            command, cwd, _safe_env(cwd), preamble=preamble,
+            output_targets=_output_targets(command),
+            split_stderr=True, ephemeral=True,
         )
+    except OSError as exc:
+        return err(f"Could not start the command: {exc}", cwd=cwd)
 
-        stdout = result.stdout[:_MAX_OUTPUT]
-        stderr = result.stderr[:_MAX_OUTPUT]
+    job_key = launched["job_key"]
+    proc = launched["proc"]
+    started = time.monotonic()
+    deadline = started + timeout
+    _bash_divert.publish(job_key, launched["pid"], command, cwd, float(timeout))
 
-        if result.returncode == 0:
-            payload = ok({
-                "returncode": result.returncode,
-                "stdout": stdout,
-                "stderr": stderr,
-                "cwd": cwd,
-            })
-        elif _is_clean_no_match(segments, result.returncode, stdout):
-            payload = ok({
-                "returncode": result.returncode,
-                "stdout": stdout,
-                "stderr": stderr,
-                "cwd": cwd,
-                "matches": 0,
-                "note": "The command ran correctly and found nothing. This is a "
-                        "conclusive negative answer, not a failure — treat the "
-                        "result as 'absent' and do not re-run the command.",
-            })
-        else:
-            classification = _classify_runtime_error(stderr)
+    try:
+        next_divert_check = started + _DIVERT_POLL_S
+        while True:
+            if proc.poll() is not None:
+                # proc.poll(), not the exit_code file: the trap that writes that file
+                # is replaced by any command installing its own EXIT trap, and a
+                # blocking run must report the status its command actually returned.
+                stdout, stderr, truncated = _bash_jobs.streams(job_key, _MAX_OUTPUT)
+                payload = _finished_payload(command, cwd, proc.returncode,
+                                            stdout, stderr, truncated, segments)
+                _bash_jobs.discard(job_key)
+                return payload
 
-            payload = err(
-                "Command returned a non-zero exit code.",
-                returncode=result.returncode,
-                stdout=stdout,
-                stderr=stderr,
-                cwd=cwd,
-            )
+            now = time.monotonic()
 
-            if classification:
-                payload["diagnostic"] = classification
-                payload["hint"] = (
-                    "The failure appears to be due to the runtime environment "
-                    "(missing or incompatible dependencies), not shell syntax. "
-                    "Consider checking the Python environment or loaded modules."
+            if now >= deadline:
+                stopped = _bash_jobs.stop(job_key)
+                stdout, stderr, truncated = _bash_jobs.streams(
+                    job_key, _MAX_OUTPUT, keep="tail")
+                payload = err(
+                    f"Command timed out after {timeout}s and was stopped.",
+                    returncode=stopped.get("returncode", 124),
+                    stdout=stdout,
+                    stderr=stderr,
+                    partial=True,
+                    elapsed_s=round(now - started, 1),
+                    cwd=cwd,
+                    hint="The output above is everything the command had printed "
+                         "before it was stopped — read it before deciding anything. "
+                         "If the work genuinely takes this long, start it again with "
+                         "background=True rather than with a larger timeout.",
                 )
-            else:
-                payload["hint"] = (
-                    "Read stderr before doing anything else: a non-zero exit is "
-                    "often a real finding (a failing test, an absent file, a "
-                    "compile error) rather than a malformed command. Act on what "
-                    "stderr says; do not re-run the same command unchanged."
-                )
+                if truncated:
+                    payload["truncated"] = True
+                _bash_jobs.discard(job_key)
+                return payload
 
-        if len(result.stdout) > _MAX_OUTPUT or len(result.stderr) > _MAX_OUTPUT:
-            payload["truncated"] = True
+            if now >= next_divert_check:
+                next_divert_check = now + _DIVERT_POLL_S
+                if _bash_divert.requested(job_key):
+                    _bash_jobs.promote(job_key, "diverted")
+                    _bash_jobs._ABANDONED.append(proc)
+                    stdout, stderr, truncated = _bash_jobs.streams(
+                        job_key, _MAX_OUTPUT, keep="tail")
+                    payload = ok({
+                        "cwd": cwd,
+                        "command": command,
+                        "stdout": stdout,
+                        "stderr": stderr,
+                        # No returncode: the run has not produced one. Inventing a
+                        # status the command did not return is the one lie the caller
+                        # cannot detect.
+                        "partial": True,
+                        "reason": "diverted",
+                        "elapsed_s": round(now - started, 1),
+                        "job_key": job_key,
+                        "pid": launched["pid"],
+                        "log": launched["log"],
+                        "note": "The user moved this run to the background while it "
+                                "was still going. It was not killed: the output "
+                                "above is what it had produced at that moment, and "
+                                "it continues as job '" + job_key + "'. Do not "
+                                "run it again.",
+                        "background_job": _job_descriptor(job_key,
+                                                          launched["job_dir"]),
+                    })
+                    if truncated:
+                        payload["truncated"] = True
+                    return payload
 
-        return payload
-
-    except subprocess.TimeoutExpired:
-        return err(
-            f"Command timed out after {timeout}s.",
-            hint=f"Raise the call's own 'timeout' (up to {_MAX_TIMEOUT}s) if the work "
-                 f"genuinely takes that long, or narrow the scope. Past that ceiling a "
-                 f"run does not belong in a call that blocks the turn: re-issue it "
-                 f"with background=True, which returns a handle instead of waiting.",
-            cwd=cwd,
-        )
-    except Exception as e:
-        return err(str(e), cwd=cwd)
+            time.sleep(_tick(now - started))
+    finally:
+        _bash_divert.clear(job_key)
 
 
 def _launch_background(command: str, cwd: str, preamble: str) -> dict:
     """Detach an already-validated command and return the watcher's handle.
 
-    The descriptor is data, not a tool name in loop code: the client reads status_op /
-    summary_op off it and polls them generically, which is how a run gets watched
-    without the agent spending a model call per poll.
+    The blocking path launches the same way (see :func:`_run`); what differs is only
+    that nothing here waits, and the job directory is a handle rather than a scratch
+    buffer.
     """
-    # Where the command sends its own output, from the parse validation already did.
-    # Recorded now so a later empty log is explained rather than guessed about.
-    try:
-        targets = [t for seg in _parse_segments(command) for t in seg.write_targets]
-    except _ShellParseError:
-        targets = []  # it parsed at validation; a change of heart here is not fatal
-
     try:
         launched = _bash_jobs.launch(command, cwd, _safe_env(cwd), preamble=preamble,
-                                     output_targets=targets)
+                                     output_targets=_output_targets(command))
     except OSError as exc:
         return err(f"Could not start the background job: {exc}", cwd=cwd)
 
@@ -799,15 +921,7 @@ def _launch_background(command: str, cwd: str, preamble: str) -> dict:
         # ends its turn on a guarantee nobody is holding.
         "note": "Started in the background; this call returns before it finishes. "
                 "Its log is readable at the path above while it runs.",
-        "background_job": {
-            "server": "bash",
-            "kind": "shell-command",
-            "job_key": job_key,
-            "run_dir": launched["job_dir"],
-            "status_op": {"tool": "bash_job", "args": {"job_key": job_key}},
-            "summary_op": {"tool": "bash_job",
-                           "args": {"op": "output", "job_key": job_key}},
-        },
+        "background_job": _job_descriptor(job_key, launched["job_dir"]),
     })
 
 
@@ -877,14 +991,17 @@ def bash_run(command: str, timeout: int = _DEFAULT_TIMEOUT,
 
     Args:
         command: Shell command string (single command or simple pipeline).
-        timeout: Seconds to wait, capped at 300. Raise it for a real build or suite;
-            past the cap, pass background=True instead.
-        background: Detach the run and return a handle immediately, for work that does
-            not fit in the cap — a long build, a large download, a full test matrix.
-            The command is validated and approved exactly as a blocking one; only the
-            waiting changes. Its output goes to a log you can read while it runs. If
-            the result comes back saying the run is being watched, end your turn on it
-            — you are resumed with the results. Say that only when the result says it.
+        timeout: Seconds to wait, capped at 120. Raise it for a real build or suite.
+            A run still going at the cap is stopped, but you are given whatever it had
+            printed by then — read that before deciding anything.
+        background: Set it true from the start for work that plausibly runs longer than
+            timeout — a full build, a whole test matrix, an install, a large download,
+            a long solver. Do not try a blocking call first to find out: that spends
+            the cap and stops the run, and starting detached costs nothing. The command
+            is validated and approved exactly as a blocking one; only the waiting
+            changes. Its output goes to a log you can read while it runs. If the result
+            comes back saying the run is being watched, end your turn on it — you are
+            resumed with the results. Say that only when the result says it.
     """
     cwd = _WORKSPACE_ROOT
 

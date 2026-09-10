@@ -516,16 +516,21 @@ async def execute_tool_call(
     normalized += _build_imputation_hint(agent, execution_context, failed_before)
 
     normalized += _build_fork_hint(agent, tool_name, arguments, payload_text, execution_context)
-    normalized += bash_effect.report(effect_probe)
-    # A file created by the shell is a fork candidate exactly like one created by the
-    # edit tool — `cp solver.py solver.py.bak` was the observed case. The probe already
-    # knows what appeared, so this reuses the existing rule instead of adding one.
-    for created in bash_effect.created_paths(effect_probe):
-        normalized += _build_fork_hint(
-            agent, tool_name, {"path": created},
-            json.dumps({"operation": "created"}), execution_context,
-            require_edit_cap=False,
-        )
+    # Not for a run that is still going: the probe was taken before the command
+    # started and would report the disk halfway through a build. An effect that has
+    # not finished happening is not an effect to annotate.
+    if not payload_dict.get("background_job"):
+        normalized += bash_effect.report(effect_probe)
+        # A file created by the shell is a fork candidate exactly like one created by
+        # the edit tool — `cp solver.py solver.py.bak` was the observed case. The probe
+        # already knows what appeared, so this reuses the existing rule instead of
+        # adding one.
+        for created in bash_effect.created_paths(effect_probe):
+            normalized += _build_fork_hint(
+                agent, tool_name, {"path": created},
+                json.dumps({"operation": "created"}), execution_context,
+                require_edit_cap=False,
+            )
 
     # Cached with its annotations, stamped with the state of the file it read. The
     # annotations are part of the answer: cached without them, a repeat of the same

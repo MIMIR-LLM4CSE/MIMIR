@@ -104,16 +104,16 @@ export function iconForTool(name: string): string {
  * look in both places. Returns null when the row is nowhere: an event for a turn the
  * user has already cleared is dropped, not applied to a stranger.
  */
-function patchToolById(
+function patchToolWhere(
   state: ChatState,
-  id: string,
+  match: (t: ToolActivity) => boolean,
   transform: (tools: ToolActivity[]) => ToolActivity[],
 ): ChatState | null {
-  if (state.liveToolCalls.some((t) => t.id === id)) {
+  if (state.liveToolCalls.some(match)) {
     return { ...state, liveToolCalls: transform(state.liveToolCalls) };
   }
   const idx = state.messages.findIndex(
-    (m) => m.kind === "tools" && (m.tools ?? []).some((t) => t.id === id)
+    (m) => m.kind === "tools" && (m.tools ?? []).some(match)
   );
   if (idx >= 0) {
     return {
@@ -124,6 +124,15 @@ function patchToolById(
     };
   }
   return null;
+}
+
+/** The common case: the row is known by the call id it was opened with. */
+function patchToolById(
+  state: ChatState,
+  id: string,
+  transform: (tools: ToolActivity[]) => ToolActivity[],
+): ChatState | null {
+  return patchToolWhere(state, (t) => t.id === id, transform);
 }
 
 /**
@@ -325,9 +334,50 @@ export function createChatReducer(makeId: () => string) {
       // runs a turn elsewhere, and marking this chat busy for it would show a stop
       // button that stops nothing.
       case "job_complete": {
-        if (!action.resumes_active_session) return state;
+        // First, close the loop on the row the user detached, if this is that job:
+        // it has been sitting on "moved to background" with only partial output, and
+        // this is the only message that ever says how the run actually ended. Done
+        // before the branch below clears liveToolCalls, since the row may still be
+        // there.
+        const settled = patchToolWhere(
+          state,
+          (t) => t.exec?.job_key === action.job_key,
+          (tools) =>
+            tools.map((t) =>
+              t.exec?.job_key === action.job_key
+                ? {
+                    ...t,
+                    status:
+                      action.state === "done"
+                        ? ("ok" as const)
+                        : ("error" as const),
+                    summary: `background run ${action.state}`,
+                    exec: {
+                      ...t.exec!,
+                      running: undefined,
+                      returncode:
+                        typeof action.summary?.returncode === "number"
+                          ? (action.summary.returncode as number)
+                          : t.exec!.returncode,
+                      // The job's own log, which already carries stderr under its
+                      // marker — so the partial stderr is replaced, not doubled.
+                      stdout:
+                        typeof action.summary?.output === "string"
+                          ? (action.summary.output as string)
+                          : t.exec!.stdout,
+                      stderr:
+                        typeof action.summary?.output === "string"
+                          ? ""
+                          : t.exec!.stderr,
+                    },
+                  }
+                : t
+            )
+        );
+        const base = settled ?? state;
+        if (!action.resumes_active_session) return base;
         return {
-          ...state,
+          ...base,
           busy: true,
           liveThinkingBlocks: [],
           liveToolCalls: [],
@@ -534,6 +584,7 @@ export function createChatReducer(makeId: () => string) {
           label: action.label,
           detail: action.detail,
           status: "running",
+          divertible: action.divertible,
           startedAt: Date.now(),
         };
         // A tool ran → the next token opens a fresh streaming bubble.
@@ -550,8 +601,14 @@ export function createChatReducer(makeId: () => string) {
           t.id === id
             ? {
                 ...t,
-                status: ok ? ("ok" as const) : ("error" as const),
-                summary,
+                // A detached run has not succeeded — it has left. Its own ending
+                // arrives later, on job_complete.
+                status: exec?.running
+                  ? ("background" as const)
+                  : ok
+                  ? ("ok" as const)
+                  : ("error" as const),
+                summary: exec?.running ? "moved to background" : summary,
                 // Fall back to the (clipped) summary so a failed row is always
                 // expandable, even when the server sent no full error body.
                 error: ok ? undefined : error || summary || "The tool call failed.",

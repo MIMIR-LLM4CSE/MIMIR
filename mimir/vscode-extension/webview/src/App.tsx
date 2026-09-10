@@ -756,6 +756,14 @@ export const App: React.FC = () => {
     ]
   );
 
+  // The click travels to the shell server through the session's state dir, not
+  // through the model: the agent is parked awaiting this very tool call, so an
+  // instruction it had to read would arrive too late to divert anything.
+  const handleDivert = useCallback(
+    (id: string) => send({ type: "divert_to_background", id }),
+    [send]
+  );
+
   const handleApprovalResponse = useCallback(
     (id: string, choice: "y" | "n" | "a", approvedFiles?: string[]) => {
       // Send approval_response for every merged ID so all blocked shims unblock.
@@ -933,6 +941,7 @@ export const App: React.FC = () => {
           onScroll={handleChatScroll}
           onApprovalResponse={handleApprovalResponse}
           onRetry={retryLastQuery}
+          onDivert={handleDivert}
           emptyState={
             connection === "disconnected" ? (
               <div className="empty-state">

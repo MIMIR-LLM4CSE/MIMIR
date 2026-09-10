@@ -149,14 +149,15 @@ const _diffContentProvider = new class implements vscode.TextDocumentContentProv
 // a new resource, and switching an open preview's resource leaves it rendering
 // the old one; with a fixed resource every plan reuses the same preview tab.
 //
-// Invalidating that resource is necessary but NOT sufficient. Nothing holds an
-// editor on the virtual document, so VS Code drops it once it is unreferenced;
-// firing the change event on a dropped document is a no-op, and the preview keeps
-// rendering the plan it last saw — which is why a plan written minutes earlier (in
-// this session or another) stayed on screen for every plan after it. Hence the
-// three steps in _showPlanPreview: reopen the document (fresh provider read),
-// invalidate it (fresh content if it was still open), then force the preview to
-// re-render (revealing an existing preview re-renders nothing by itself).
+// Invalidating that resource is necessary but NOT sufficient, for two reasons.
+// Nothing holds an editor on the virtual document, so VS Code drops it once it is
+// unreferenced, and firing the change event on a dropped document is a no-op —
+// hence the reopen before the fire. And the fire only *asks* VS Code to re-request
+// the content: the model is edited a tick or more later, so a refresh issued right
+// after it re-renders a document that is still on the previous plan's bytes. That
+// ordering is systematic, not flaky, which is why a plan written minutes earlier
+// stayed on screen for every plan after it. So the refresh waits for the document
+// to actually carry the new bytes (_awaitPlanDocument) instead of racing it.
 
 const _planChanged = new vscode.EventEmitter<vscode.Uri>();
 
@@ -166,15 +167,20 @@ let _currentPlanPath: string | undefined;
 /** The single document the plan preview renders. `.md` types it as Markdown. */
 const PLAN_URI = vscode.Uri.from({ scheme: "mimir-plan", path: "/MIMIR plan.md" });
 
+/** The bytes the plan preview should be showing right now. */
+function _planContent(): string {
+  if (!_currentPlanPath) return "No plan yet.";
+  try {
+    return fs.readFileSync(_currentPlanPath, "utf8");
+  } catch (e) {
+    return `Cannot read ${_currentPlanPath}\n\n${e}`;
+  }
+}
+
 const _planContentProvider = new class implements vscode.TextDocumentContentProvider {
   readonly onDidChange = _planChanged.event;
   provideTextDocumentContent(_uri: vscode.Uri): string {
-    if (!_currentPlanPath) return "No plan yet.";
-    try {
-      return fs.readFileSync(_currentPlanPath, "utf8");
-    } catch (e) {
-      return `Cannot read ${_currentPlanPath}\n\n${e}`;
-    }
+    return _planContent();
   }
 }();
 
@@ -214,6 +220,42 @@ function _watchPreviewedFile(abs: string): void {
   _previewWatch = { path: abs, mtimeMs: stamp(), timer };
 }
 
+/** The plan document, if VS Code still holds one open. */
+function _openPlanDocument(): vscode.TextDocument | undefined {
+  const key = PLAN_URI.toString();
+  return vscode.workspace.textDocuments.find((d) => d.uri.toString() === key);
+}
+
+/**
+ * Resolve once the plan document actually carries `expected`.
+ *
+ * The change event is the fast path; the poll covers a model updated without one
+ * reaching us. Bounded, so a provider that never delivers costs one stale frame
+ * rather than a handler that never returns.
+ */
+function _awaitPlanDocument(expected: string, timeoutMs = 1000): Promise<void> {
+  if (_openPlanDocument()?.getText() === expected) return Promise.resolve();
+  return new Promise<void>((resolve) => {
+    let settled = false;
+    const finish = (): void => {
+      if (settled) return;
+      settled = true;
+      sub.dispose();
+      clearInterval(poll);
+      clearTimeout(deadline);
+      resolve();
+    };
+    const check = (): void => {
+      if (_openPlanDocument()?.getText() === expected) finish();
+    };
+    const sub = vscode.workspace.onDidChangeTextDocument((e) => {
+      if (e.document.uri.toString() === PLAN_URI.toString()) check();
+    });
+    const poll = setInterval(check, 25);
+    const deadline = setTimeout(finish, timeoutMs);
+  });
+}
+
 /** Re-render every open Markdown preview from its (re-read) document. */
 async function _refreshPlanPreview(): Promise<void> {
   try {
@@ -225,6 +267,9 @@ async function _refreshPlanPreview(): Promise<void> {
 
 /** Re-read the plan document and push the new bytes to the preview. */
 async function _invalidatePlanDocument(): Promise<void> {
+  // Read the target bytes before touching VS Code: this is what the provider will
+  // hand back, and what the document must hold before the preview is refreshed.
+  const expected = _planContent();
   // Reopening resurrects the document if VS Code dropped it (no editor holds it),
   // which re-runs the content provider on the current path; the fire covers the
   // opposite case, a document still open on the previous plan's bytes.
@@ -233,7 +278,12 @@ async function _invalidatePlanDocument(): Promise<void> {
   } catch {
     /* provider threw — the fire below still reaches an open document */
   }
-  _planChanged.fire(PLAN_URI);
+  if (_openPlanDocument()?.getText() !== expected) {
+    // Subscribe before firing, so the update cannot land between the two.
+    const carried = _awaitPlanDocument(expected);
+    _planChanged.fire(PLAN_URI);
+    await carried;
+  }
   await _refreshPlanPreview();
 }
 
@@ -244,12 +294,7 @@ function _showPlanPreview(abs: string): void {
   // content, so an earlier plan would still be on screen.
   void _invalidatePlanDocument().then(() =>
     vscode.commands.executeCommand("markdown.showPreview", PLAN_URI).then(
-      () => {
-        _watchPreviewedFile(abs);
-        // Again once the preview is up: a preview created by this very call
-        // renders before the first invalidation can reach it.
-        setTimeout(() => void _invalidatePlanDocument(), 120);
-      },
+      () => _watchPreviewedFile(abs),
       () => vscode.window.showWarningMessage(`MIMIR: cannot preview ${abs}`)
     )
   );

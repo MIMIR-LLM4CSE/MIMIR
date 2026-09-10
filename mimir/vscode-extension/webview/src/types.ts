@@ -169,19 +169,29 @@ export interface ToolCallMessage {
   label: string;
   /** Short arg preview, e.g. a command line or search pattern (may be empty). */
   detail: string;
+  /** Whether this row may be detached to the background while it runs. Decided by
+   *  the server from the tool registry — the UI never learns which tool is a shell. */
+  divertible?: boolean;
 }
 
 /** Terminal in/out of an exec-shaped tool result (shell / code runner / compiler).
- *  Sent by the server only for results carrying returncode + stdout/stderr. */
+ *  Sent for results carrying stdout/stderr plus either a returncode or, for a run
+ *  the user detached mid-flight, a background job handle. */
 export interface ExecResult {
   /** Full command or code body that was run (clipped server-side). */
   command?: string;
   stdout: string;
   stderr: string;
-  returncode: number;
+  /** Absent on a detached run: it has not produced an exit status yet. */
+  returncode?: number;
   cwd?: string;
   /** True when a stream was clipped (server or wire budget). */
   truncated?: boolean;
+  /** The run was moved to the background and is still going; the streams above are
+   *  what it had printed at that moment. */
+  running?: boolean;
+  /** Handle of the background job it continues as — present with `running`. */
+  job_key?: string;
 }
 
 export interface ToolResultMessage {
@@ -521,6 +531,13 @@ export interface SteerMessage {
   text: string;
 }
 
+/** Detach the shell run currently blocking the turn, keeping what it has done. */
+export interface DivertToBackgroundMessage {
+  type: "divert_to_background";
+  /** The running tool row the user acted on. */
+  id: string;
+}
+
 export interface ApprovalResponseMessage {
   type: "approval_response";
   id: string;
@@ -614,6 +631,7 @@ export type ClientMessage =
   | QueryMessage
   | TranscriptMessage
   | SteerMessage
+  | DivertToBackgroundMessage
   | ApprovalResponseMessage
   | ContinueResponseMessage
   | UserQuestionResponseMessage
@@ -644,8 +662,12 @@ export interface ToolActivity {
   icon: string;
   label: string;
   detail: string;
-  status: "running" | "ok" | "error";
+  /** "background" is a running row the user detached: settled for this turn, but the
+   *  job carries on and a later job_complete fills in how it really ended. */
+  status: "running" | "ok" | "error" | "background";
   summary?: string;
+  /** Whether the row may be detached while running — see ToolCallMessage. */
+  divertible?: boolean;
   /** Full error text of a failed call, shown in the expandable panel under the row. */
   error?: string;
   /** Terminal in/out panel data, revealed when the row is expanded (exec tools only). */

@@ -1122,6 +1122,11 @@ def _observe_bash_validation(
     command_args = _carries_shell_command(agent, tool_name)
     if command_args is None:
         return
+    if payload.get("background_job"):
+        # The run is still going: this payload is a handle plus whatever it had
+        # printed so far, not a verdict. Judging it would credit a whole pending
+        # validation set at the instant a suite was launched.
+        return
     command = str(arguments.get(command_args[0], "") or "")
     explicit, whole_project, tier, execution, missing_head, exit_is_the_run_s = (
         _bash_validation_scan(agent, command)
@@ -1182,6 +1187,8 @@ def _observe_command(
     command_args = _carries_shell_command(agent, tool_name)
     if command_args is None:
         return
+    if payload.get("background_job"):
+        return  # still running — its effects have not happened yet
     command = arguments.get(command_args[0], "")
     segments = classify_bash_command(command)
     if not segments:

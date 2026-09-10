@@ -18,8 +18,10 @@ const ExecOutput: React.FC<{ exec: ExecResult }> = ({ exec }) => {
 
   const commandLines = (exec.command ?? "").split("\n");
   const noOutput = !exec.stdout && !exec.stderr;
-  const failed = exec.returncode !== 0;
-  const showNotes = failed || !!exec.truncated || noOutput;
+  // A detached run carries no exit code: without the first clause every diverted
+  // run would read as a failure, since `undefined !== 0`.
+  const failed = exec.returncode !== undefined && exec.returncode !== 0;
+  const showNotes = failed || !!exec.truncated || noOutput || !!exec.running;
 
   // Detect whether *either* pane clips its content, so the expand control only
   // appears when it would actually do something (or to collapse back).
@@ -68,8 +70,15 @@ const ExecOutput: React.FC<{ exec: ExecResult }> = ({ exec }) => {
       </div>
       {(showNotes || showResize) && (
         <div className="tool-exec-meta">
-          {failed && (
-            <span className="tool-exec-badge">exit {exec.returncode}</span>
+          {exec.running ? (
+            <span
+              className="tool-exec-badge tool-exec-badge--bg"
+              title="Still running in the background — this is the output it had produced when it was detached"
+            >
+              background{exec.job_key ? ` · ${exec.job_key}` : ""}
+            </span>
+          ) : (
+            failed && <span className="tool-exec-badge">exit {exec.returncode}</span>
           )}
           {noOutput && <span className="tool-exec-note">(no output)</span>}
           {exec.truncated && <span className="tool-exec-note">output truncated</span>}
@@ -130,9 +139,11 @@ interface RowProps {
   tool: ToolActivity;
   /** Rows a delegating call produced — rendered as its collapsible content. */
   childRows?: ToolActivity[];
+  /** Detach this run, keeping what it has already done. Absent on frozen rows. */
+  onDivert?: (id: string) => void;
 }
 
-const ToolRow: React.FC<RowProps> = ({ tool, childRows = [] }) => {
+const ToolRow: React.FC<RowProps> = ({ tool, childRows = [], onDivert }) => {
   const isError = tool.status === "error";
   const hasExec = tool.exec !== undefined;
   const hasError = isError && !!tool.error;
@@ -166,6 +177,11 @@ const ToolRow: React.FC<RowProps> = ({ tool, childRows = [] }) => {
   const showsCommandBelow = expanded && hasExec && !!tool.exec?.command;
 
   const running = tool.status === "running";
+  // Latched locally rather than waiting for the row to change status: the request
+  // travels to the shell server and back, and a control that stays live in the
+  // meantime invites a second click on a run already on its way out.
+  const [diverting, setDiverting] = useState(false);
+  const canDivert = running && !!tool.divertible && !!onDivert;
   const elapsed = useElapsed(tool.startedAt, running);
   const duration = tool.durationMs ?? elapsed;
 
@@ -184,6 +200,7 @@ const ToolRow: React.FC<RowProps> = ({ tool, childRows = [] }) => {
     <div
       className={`tool-row tool-row--${tool.status}${tool.parentId ? " tool-row--child" : ""}`}
     >
+      <div className="tool-row-line">
       <button
         className="tool-row-head"
         onClick={() => canExpand && setExpanded((e) => !e)}
@@ -244,6 +261,29 @@ const ToolRow: React.FC<RowProps> = ({ tool, childRows = [] }) => {
           )}
         </span>
       </button>
+      {/* Icon only: the row is already a dense line, and the sentence belongs in the
+          tooltip. A sibling of the head rather than a child — the head is itself a
+          button, and a button inside a button is not valid markup. */}
+      {canDivert && (
+        <button
+          className="tool-divert"
+          disabled={diverting}
+          aria-label="Move this run to the background without interrupting it"
+          title={
+            diverting
+              ? "Moving it to the background…"
+              : "Move this run to the background without interrupting it"
+          }
+          onClick={(e) => {
+            e.stopPropagation();
+            setDiverting(true);
+            onDivert!(tool.id);
+          }}
+        >
+          {diverting ? "⋯" : "↗"}
+        </button>
+      )}
+      </div>
       {expanded && tool.exec && <ExecOutput exec={tool.exec} />}
       {expanded && hasError && (
         <ErrorOutput error={tool.error!} onCollapse={() => setExpanded(false)} />
@@ -261,6 +301,8 @@ const ToolRow: React.FC<RowProps> = ({ tool, childRows = [] }) => {
 
 interface Props {
   tools: ToolActivity[];
+  /** Detach a running row. Passed only for the live list: frozen rows are settled. */
+  onDivert?: (id: string) => void;
 }
 
 /** Renders a list of tool invocations (live or frozen) as a compact card.
@@ -269,7 +311,7 @@ interface Props {
  *  work: a delegated run can be dozens of rows, and flat they buried the turn. They
  *  are grouped under the delegating row and folded away until asked for. A child
  *  whose parent is gone from this list still gets rendered, flat, rather than lost. */
-export const ToolActivityList: React.FC<Props> = ({ tools }) => {
+export const ToolActivityList: React.FC<Props> = ({ tools, onDivert }) => {
   if (tools.length === 0) return null;
   const ids = new Set(tools.map((t) => t.id));
   const childrenOf = new Map<string, ToolActivity[]>();
@@ -283,7 +325,12 @@ export const ToolActivityList: React.FC<Props> = ({ tools }) => {
       {tools
         .filter((t) => !(t.parentId && ids.has(t.parentId)))
         .map((t) => (
-          <ToolRow key={t.id} tool={t} childRows={childrenOf.get(t.id)} />
+          <ToolRow
+            key={t.id}
+            tool={t}
+            childRows={childrenOf.get(t.id)}
+            onDivert={onDivert}
+          />
         ))}
     </div>
   );

@@ -23,6 +23,7 @@ from ...query_engine.history import (
     carries_compaction_summary, reconcile_tool_pairs,
 )
 from .ws_worker import _AgentWorker
+from ...tool_execution import bash_divert
 from ...config import THINKING_DEPTH_LABELS, thinking_depth_from_label
 
 import asyncio
@@ -778,6 +779,7 @@ class _Session:
         "query": "_handle_query",
         "transcript": "_handle_transcript",
         "steer": "_handle_steer",
+        "divert_to_background": "_handle_divert_to_background",
         "approval_response": "_handle_approval_response",
         "continue_response": "_handle_continue_response",
         "user_question_response": "_handle_user_question_response",
@@ -1258,6 +1260,26 @@ class _Session:
         self.transcript.append({"type": "steer", "text": text})
         self._autosave_session(list(self._display_messages))
         self.worker.submit_steer(text)
+
+    async def _handle_divert_to_background(self, msg: dict) -> None:
+        """Move the shell run currently blocking the turn into the background.
+
+        Served here, on the WS loop, and deliberately never through the model: the
+        worker thread is parked awaiting the tool result for the whole call, and the
+        steer queue is drained only at a step boundary, so an instruction routed that
+        way could not arrive until after the run it was meant to divert had ended.
+        Writing the request to the shared state dir is what reaches a bash server
+        whose event loop the synchronous tool body is holding.
+
+        Nothing worker- or agent-side is touched: the confirmation the user sees is
+        the tool result that lands a moment later, carrying the output produced so far
+        and the job handle. Saying anything more here would be predicting it.
+        """
+        if bash_divert.request_divert() is None:
+            await self.ws.send(json.dumps({
+                "type": "status",
+                "text": "  ⓘ Nothing to move — the command had already finished.",
+            }))
 
     async def _handle_approval_response(self, msg: dict) -> None:
         self.worker.resolve_approval(msg.get("choice", "n"), msg.get("approved_files"))

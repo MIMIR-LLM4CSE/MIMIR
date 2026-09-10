@@ -286,6 +286,30 @@ reloaded from disk splits again on the stored answer text. The CLI applies the s
 
 ---
 
+## Moving a running command to the background
+
+A tool row in `ToolActivityList.tsx` carries one control that talks to the server:
+while a row is `running` and the server marked it `divertible` (read off the tool
+registry in `dispatch.py` — the webview never learns which tool is a shell), an icon
+appears beside the head on hover or focus. It sends
+`{type: "divert_to_background", id}`; the sentence lives in the tooltip, since the row
+is already a dense line.
+
+The click deliberately does **not** reach the model. The agent thread is parked
+awaiting that very tool call, and a steer is only drained at a step boundary, so an
+instruction routed that way would arrive after the run it meant to divert had ended.
+`_handle_divert_to_background` serves it on the WS loop and writes a request into the
+shared state dir, which the bash server's wait loop consumes on its next tick
+(`SERVERS_DETAILED.md` → *Detached runs*). The process is left running.
+
+What comes back is an ordinary `tool_result` whose `exec` carries `running: true`, a
+`job_key`, and the output produced so far — but no `returncode`, because the run has
+not produced one. The reducer marks the row `background`; the existing `job_complete`
+message later finds the row by `exec.job_key` and settles it with how the run really
+ended, live or already frozen into a `kind:"tools"` message.
+
+---
+
 ## How to add a new chat card kind
 
 Chat messages are rendered by `ChatMessage.tsx` based on `msg.kind`. To add a new visual card:

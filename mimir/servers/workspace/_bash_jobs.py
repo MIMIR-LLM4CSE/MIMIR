@@ -17,12 +17,20 @@ stays refused. Detaching is the server's job, not a shell operator the caller su
 
 The job directory lives under a fixed cache root (``trusted_read_roots``) so the log is
 readable with the ordinary file tools while the run is still going.
+
+Every ``bash_run`` comes through here now, detached or not: a blocking call launches a
+job and waits on it. That is what lets a run be abandoned without being lost, since its
+output is on disk rather than in a pipe nobody is left to drain. The two uses want
+different things from a job directory, and ``ephemeral`` is which — a transient output
+buffer for a blocking run, deleted the moment it returns, or a durable handle for a
+detached one, which only ``sweep`` may ever touch and only while still ephemeral.
 """
 
 import json
 import os
 import re
 import shlex
+import shutil
 import signal
 import subprocess
 import time
@@ -39,6 +47,15 @@ _JOB_KEY_RE = re.compile(r"^[0-9]{8}T[0-9]{6}Z-[0-9a-f]{4}$")
 # the signal and stops cleanly.
 _TERM_GRACE_S = 5.0
 
+# Popen handles for children we deliberately stopped waiting on (a diverted run).
+# Held only so the garbage collector does not warn about a still-running child; the
+# zombie one of these leaves behind is the case ``_is_running`` already reads.
+_ABANDONED: list[subprocess.Popen] = []
+
+# Set once per server process, so the sweep below costs one listdir per process
+# rather than one per command.
+_swept = False
+
 
 def _job_dir(job_key: str) -> str:
     return os.path.join(JOBS_ROOT, job_key)
@@ -50,6 +67,11 @@ def _path(job_key: str, name: str) -> str:
 
 def log_path(job_key: str) -> str:
     return _path(job_key, "run.log")
+
+
+def err_path(job_key: str) -> str:
+    """Where a split-stream job's stderr goes; absent for a merged one."""
+    return _path(job_key, "run.err")
 
 
 def _read(job_key: str, name: str, default: str = "") -> str:
@@ -142,13 +164,25 @@ def _wrap(script: str, rc_path: str) -> str:
 
 
 def launch(command: str, cwd: str, env: dict, preamble: str = "",
-           output_targets: list[str] | None = None) -> dict:
-    """Spawn *command* detached; return its key, pid and log path.
+           output_targets: list[str] | None = None, *,
+           split_stderr: bool = False, ephemeral: bool = False) -> dict:
+    """Spawn *command* in its own session; return its key, pid, log path and handle.
 
     *output_targets* are the files the command redirects its own output to, taken from
     the parse the validator already performed. Recorded so an empty log can be told
     apart from output that went somewhere else, without guessing after the fact.
+
+    *split_stderr* gives stderr its own file. A detached job merges the two, which is
+    what a tailed log wants; a blocking run must keep them apart, because the payload
+    it builds classifies the failure from stderr alone and the UI gives it its own
+    pane. *ephemeral* marks a job dir as a blocking run's scratch buffer rather than a
+    handle somebody was handed — see ``discard`` and ``sweep``.
+
+    ``proc`` is in the returned dict but never in ``meta.json``: a Popen is a handle
+    valid inside this process only, not state a later reader could act on. A blocking
+    caller polls it for the authoritative exit status; a detaching one drops it.
     """
+    _sweep_once()
     job_key = _new_job_key()
     os.makedirs(_job_dir(job_key), exist_ok=True)
 
@@ -156,18 +190,23 @@ def launch(command: str, cwd: str, env: dict, preamble: str = "",
     script = _wrap(preamble + command, rc_path)
 
     log = log_path(job_key)
-    with open(log, "w") as log_fh:
-        proc = subprocess.Popen(
-            ["bash", "--noprofile", "--norc", "-c", script],
-            cwd=cwd,
-            env=env,
-            stdout=log_fh,
-            stderr=subprocess.STDOUT,
-            close_fds=True,
-            # Its own session: the job must outlive the call that started it, and a
-            # stop must be able to signal the whole tree rather than just the shell.
-            start_new_session=True,
-        )
+    err_fh = open(err_path(job_key), "w") if split_stderr else None
+    try:
+        with open(log, "w") as log_fh:
+            proc = subprocess.Popen(
+                ["bash", "--noprofile", "--norc", "-c", script],
+                cwd=cwd,
+                env=env,
+                stdout=log_fh,
+                stderr=err_fh if err_fh is not None else subprocess.STDOUT,
+                close_fds=True,
+                # Its own session: the job must outlive the call that started it, and a
+                # stop must be able to signal the whole tree rather than just the shell.
+                start_new_session=True,
+            )
+    finally:
+        if err_fh is not None:
+            err_fh.close()
 
     meta = {
         "job_key": job_key,
@@ -177,10 +216,83 @@ def launch(command: str, cwd: str, env: dict, preamble: str = "",
         "pid_starttime": _proc_starttime(proc.pid),
         "started_at": time.time(),
         "output_targets": list(output_targets or ()),
+        "split_stderr": bool(split_stderr),
+        "ephemeral": bool(ephemeral),
     }
     with open(_path(job_key, "meta.json"), "w") as fh:
         json.dump(meta, fh, indent=2)
-    return {"job_key": job_key, "pid": proc.pid, "log": log, "job_dir": _job_dir(job_key)}
+    return {"job_key": job_key, "pid": proc.pid, "log": log,
+            "job_dir": _job_dir(job_key), "proc": proc}
+
+
+def _clip(path: str, max_bytes: int, keep: str) -> tuple[str, bool]:
+    """*path*'s content, clipped to *max_bytes* from whichever end matters."""
+    try:
+        size = os.path.getsize(path)
+        with open(path, errors="replace") as fh:
+            if size > max_bytes and keep == "tail":
+                fh.seek(size - max_bytes)
+                return fh.read(), True
+            return fh.read(max_bytes), size > max_bytes
+    except OSError:
+        return "", False
+
+
+def streams(job_key: str, max_bytes: int, keep: str = "head") -> tuple[str, str, bool]:
+    """The job's stdout and stderr so far, and whether either was clipped.
+
+    *keep* is "head" for a run that finished — the first error is what explains the
+    rest — and "tail" for one still going, where the frontier is the whole point.
+    """
+    out, out_cut = _clip(log_path(job_key), max_bytes, keep)
+    errs, err_cut = _clip(err_path(job_key), max_bytes, keep)
+    return out, errs, out_cut or err_cut
+
+
+def promote(job_key: str, reason: str) -> None:
+    """Turn a blocking run's scratch directory into a handle somebody now holds."""
+    meta = _meta(job_key)
+    if not meta:
+        return
+    meta.update({"ephemeral": False, "diverted": True, "divert_reason": reason,
+                 "diverted_at": time.time()})
+    try:
+        with open(_path(job_key, "meta.json"), "w") as fh:
+            json.dump(meta, fh, indent=2)
+    except OSError:
+        pass
+
+
+def discard(job_key: str) -> None:
+    """Delete a finished blocking run's directory — nobody was given its key."""
+    shutil.rmtree(_job_dir(job_key), ignore_errors=True)
+
+
+def _sweep_once() -> None:
+    """Remove ephemeral leftovers, once per server process.
+
+    A blocking run deletes its own directory on the way out, so anything ephemeral
+    still here belongs to a run that died with the server. Only ephemeral dirs, and
+    only cold ones: a detached job's directory is the only record of it and is never
+    swept, however old.
+    """
+    global _swept
+    if _swept:
+        return
+    _swept = True
+    try:
+        keys = [k for k in os.listdir(JOBS_ROOT) if valid_key(k)]
+    except OSError:
+        return
+    for key in keys:
+        meta = _meta(key)
+        if not meta.get("ephemeral"):
+            continue
+        if time.time() - float(meta.get("started_at") or 0) < 3600:
+            continue
+        if _is_running(int(meta.get("pid") or 0), meta.get("pid_starttime")):
+            continue
+        discard(key)
 
 
 def _meta(job_key: str) -> dict:
@@ -267,6 +379,13 @@ def output(job_key: str, max_bytes: int) -> dict:
                 payload["truncated"] = True
                 payload["log_bytes"] = size
             payload["output"] = fh.read()
+        if meta.get("split_stderr"):
+            # A diverted run keeps its streams apart, so the log alone is half the
+            # story. Appended under a marker rather than merged blind: the reader
+            # must be able to tell which stream said what.
+            errs, _ = _clip(err_path(job_key), max_bytes, "tail")
+            if errs:
+                payload["output"] = f"{payload['output']}\n--- stderr ---\n{errs}"
         targets = meta.get("output_targets") or []
         if size == 0 and targets:
             # A state note (a signal death) may already hold the key and explains

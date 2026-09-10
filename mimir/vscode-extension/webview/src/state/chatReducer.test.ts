@@ -146,6 +146,41 @@ describe("chatReducer", () => {
     expect(state.liveToolCalls[0].output).toBe("a.ts:1\nb.ts:2");
   });
 
+  it("marks a run the user detached as background, not as finished", () => {
+    const state = run([
+      { type: "tool_call", id: "c1", name: "bash_run", label: "Running shell command", detail: "make -j8", divertible: true },
+      {
+        type: "tool_result", id: "c1", name: "bash_run", ok: true, summary: "exit 0",
+        exec: { stdout: "configuring…\n", stderr: "", running: true, job_key: "J1" },
+        duration_ms: 900,
+      },
+    ]);
+    expect(state.liveToolCalls[0].status).toBe("background");
+    expect(state.liveToolCalls[0].summary).toBe("moved to background");
+  });
+
+  it("settles the detached row when its job finally completes", () => {
+    // The only message that ever says how the run actually ended: until it arrives
+    // the row shows partial output and no exit code.
+    const state = run([
+      { type: "tool_call", id: "c1", name: "bash_run", label: "Running shell command", detail: "make -j8", divertible: true },
+      {
+        type: "tool_result", id: "c1", name: "bash_run", ok: true, summary: "exit 0",
+        exec: { stdout: "configuring…\n", stderr: "", running: true, job_key: "J1" },
+        duration_ms: 900,
+      },
+      {
+        type: "job_complete", job_key: "J1", state: "done",
+        summary: { returncode: 0, output: "configuring…\nbuilt\n" },
+      },
+    ]);
+    const tool = state.liveToolCalls[0];
+    expect(tool.status).toBe("ok");
+    expect(tool.exec?.running).toBeUndefined();
+    expect(tool.exec?.returncode).toBe(0);
+    expect(tool.exec?.stdout).toContain("built");
+  });
+
   it("badges the run's row when a verdict settles it", () => {
     const state = run([
       { type: "tool_call", id: "c1", name: "bash_run", label: "Running shell command", detail: "python solver.py" },

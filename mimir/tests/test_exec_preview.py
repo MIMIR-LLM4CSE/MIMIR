@@ -2,7 +2,9 @@
 
 The extractor turns an exec-shaped tool result (returncode + stdout/stderr —
 the command-runner envelope) into the clipped ``exec`` display object attached
-to ``tool_result`` events. Shape-driven: no tool names anywhere.
+to ``tool_result`` events. A run the user detached mid-flight is the second shape:
+streams plus a job handle, and no returncode, because it has not produced one.
+Shape-driven: no tool names anywhere.
 """
 
 import json
@@ -39,6 +41,25 @@ class ExecShapeDetection(unittest.TestCase):
         info = extract_exec_preview(result, {"command": "false"})
         self.assertEqual(info["returncode"], 2)
         self.assertEqual(info["stderr"], "boom\n")
+
+    def test_a_diverted_run_previews_its_output_without_an_exit_code(self):
+        # It is still going: what came back is what it had printed, plus the handle.
+        result = json.dumps({
+            "status": "ok", "stdout": "configuring…\n", "stderr": "", "cwd": "/work",
+            "partial": True, "reason": "diverted",
+            "background_job": {"job_key": "20260101T120000Z-ab12"},
+        })
+        info = extract_exec_preview(result, {"command": "make -j8"})
+        self.assertTrue(info["running"])
+        self.assertEqual(info["job_key"], "20260101T120000Z-ab12")
+        self.assertEqual(info["stdout"], "configuring…\n")
+        self.assertEqual(info["command"], "make -j8")
+        # No invented status: the UI reads its absence as "no exit badge yet".
+        self.assertNotIn("returncode", info)
+
+    def test_a_payload_with_neither_a_returncode_nor_a_handle_is_not_exec(self):
+        result = json.dumps({"status": "ok", "stdout": "x", "stderr": ""})
+        self.assertIsNone(extract_exec_preview(result, {"command": "x"}))
 
     def test_non_exec_payload_returns_none(self):
         # A read-tool envelope has no returncode — not a command runner.

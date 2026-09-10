@@ -63,6 +63,10 @@ Protocol — all messages are JSON objects, one per send/recv:
     {"type": "continue_response", "id": "...", "choice": "y"|"n"}
     {"type": "user_question_response", "id": "...", "answers": [
                                {"selected": ["..."], "otherText": "..."}]}
+    {"type": "divert_to_background", "id": "..."}   # detach the shell run now blocking
+                                  # the turn, keeping what it has already done. Served on
+                                  # the WS loop, never through the model: the agent is
+                                  # parked awaiting that very call.
     {"type": "command",           "text": "/mode agent|plan|ask"}
     {"type": "create_session"}
     {"type": "switch_session",    "session_id": "..."}

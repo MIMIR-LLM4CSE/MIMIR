@@ -56,21 +56,32 @@ def _clip_stream(text: str, keep: str) -> tuple[str, bool]:
 def extract_exec_preview(result_text: str, arguments: dict | None) -> dict[str, Any] | None:
     """Build the ``exec`` display object for an exec-shaped tool result.
 
-    Returns ``None`` for anything that isn't a command-runner envelope
-    (unparseable result, or no returncode/stdout/stderr keys), which is also
-    the signal that the UI should keep a plain summary row.
+    Two shapes qualify. A finished run carries a ``returncode`` alongside its
+    streams. A run the user moved to the background carries no returncode — it has
+    not produced one — but does carry a ``background_job`` handle and whatever it had
+    printed by then; that one previews as ``running``, and the panel shows the output
+    so far instead of an exit badge.
+
+    Returns ``None`` for anything that is neither (unparseable result, or no
+    returncode/stdout/stderr keys), which is also the signal that the UI should keep
+    a plain summary row.
     """
     payload = parse_tool_payload(result_text)
     if payload is None:
         return None
-    if "returncode" not in payload:
+    running = bool(payload.get("background_job"))
+    if "returncode" not in payload and not running:
         return None
     if "stdout" not in payload and "stderr" not in payload:
         return None
 
-    try:
-        returncode = int(payload.get("returncode"))
-    except (TypeError, ValueError):
+    returncode = None
+    if "returncode" in payload:
+        try:
+            returncode = int(payload.get("returncode"))
+        except (TypeError, ValueError):
+            return None
+    elif not running:
         return None
 
     stdout, out_clipped = _clip_stream(str(payload.get("stdout") or ""), keep="tail")
@@ -79,8 +90,14 @@ def extract_exec_preview(result_text: str, arguments: dict | None) -> dict[str, 
     info: dict[str, Any] = {
         "stdout": stdout,
         "stderr": stderr,
-        "returncode": returncode,
     }
+    if returncode is not None:
+        info["returncode"] = returncode
+    if running:
+        info["running"] = True
+        job_key = (payload.get("background_job") or {}).get("job_key")
+        if isinstance(job_key, str) and job_key:
+            info["job_key"] = job_key
 
     # The command body, from whichever arg carries it (same key priority as the
     # tool_call `detail` preview, but the full text — the panel shows real input).

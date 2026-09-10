@@ -23,7 +23,9 @@ from ..config.constants import (
 )
 from ..event_sink import emit
 from .. import human_pause
-from ..context.capabilities import EDIT, has_cap, label_for, scope_spec, timeout_for
+from ..context.capabilities import (
+    BACKGROUNDABLE, EDIT, has_cap, label_for, scope_spec, timeout_for,
+)
 from ..context.execution_context import loop_control, nudge_count
 from ..tool_execution.normalizer import _make_hashable
 from ..tool_execution.executor import run_post_tool_annotations
@@ -302,6 +304,10 @@ async def _dispatch_tool_calls(
             "name": display_name,
             "label": row_label,
             "detail": row_detail,
+            # Whether the front-end may offer to detach this row while it runs. Read
+            # off the registry, like every other row property: the UI must not learn
+            # which tool happens to be a shell.
+            "divertible": has_cap(display_name, BACKGROUNDABLE, agent.tool_caps),
         })
 
     

@@ -30,6 +30,9 @@ interface Props {
   onApprovalResponse: (id: string, choice: "y" | "n" | "a", approvedFiles?: string[]) => void;
   /** Re-runs the last turn; surfaced as a Retry button on the latest error card. */
   onRetry?: () => void;
+  /** Detach a still-running tool call. Offered on live rows only — a frozen row
+   *  has already ended, and there is nothing left to move. */
+  onDivert?: (id: string) => void;
 }
 
 /**
@@ -55,6 +58,7 @@ export const ChatThread: React.FC<Props> = ({
   onScroll,
   onApprovalResponse,
   onRetry,
+  onDivert,
 }) => {
   // All message kinds render via renderMessage; thinking blocks (frozen) and
   // tool lists each have their own render branch in ChatMessage.
@@ -132,7 +136,7 @@ export const ChatThread: React.FC<Props> = ({
 
           {/* Live tool calls for the in-flight step (not yet frozen). */}
           {liveToolCalls.length > 0 && (
-            <ToolActivityList tools={liveToolCalls} />
+            <ToolActivityList tools={liveToolCalls} onDivert={onDivert} />
           )}
 
           {/* The turn in flight. It joins the transcript only once the loop

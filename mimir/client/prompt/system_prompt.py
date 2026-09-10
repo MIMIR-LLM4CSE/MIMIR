@@ -262,7 +262,7 @@ _SECTION_RUNNING = (
     "the project's test suite all go through it, only the command differs.\n"
     "- A fragment that reimplements or stubs what the project actually imports proves nothing "
     "about the project: run the real code, in its real layout.\n"
-    "- A long run needs the detached/background capability, not a bigger timeout.\n"
+    "- Start a long run detached from the outset, not after a timeout or with a bigger one.\n"
     "- When the default interpreter is the wrong environment, invoke the resolved one by absolute "
     "path.\n"
     "- A check that fails on a missing module is an environment problem, not a code defect: enumerate "

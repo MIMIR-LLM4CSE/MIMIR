@@ -183,6 +183,17 @@ class MeasuredTierTests(unittest.TestCase):
         self.assertEqual(validation_tier(self.ec, self.source), "measured")
         self.assertIn(self.source, self.ec["validated_files"])
 
+    def test_a_run_still_going_credits_nothing(self) -> None:
+        # A launched or diverted run reports status ok with whatever it had printed
+        # so far. Judged as a result, a whole-project check would credit every pending
+        # file at the instant the suite was started, before it had proved anything.
+        O._observe_bash_validation(
+            self.agent, "bash_run", {"command": f"ruff check {self.source}"},
+            "ok",
+            {"stdout": "", "background_job": {"job_key": "20260101T120000Z-ab12"}},
+            self.ec, "call")
+        self.assertIsNone(validation_tier(self.ec, self.source))
+
     def test_a_static_check_alone_does_not_reach_measured(self) -> None:
         O._observe_bash_validation(
             self.agent, "bash_run", {"command": f"ruff check {self.source}"},

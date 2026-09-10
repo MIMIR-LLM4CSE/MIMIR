@@ -468,7 +468,7 @@ confinement, with the no-substitution model kept load-bearing. This is also the
 read-only, so it needs no approval and feeds the same discovery signals a tool would.
 
 Tools:
-- `bash_run` — takes `background=True` for a run that does not fit the 300 s cap (see
+- `bash_run` — takes `background=True` for a run that does not fit the 120 s cap (see
   *Detached runs* below).
 - `bash_job(op, job_key)` — read-only handle on a detached run: `status` (its state),
   `output` (the tail of its log, with the state), `list` (every job this host knows).
@@ -485,10 +485,31 @@ Tools:
 
 ### Detached runs (`_bash_jobs.py`)
 
-`bash_run` blocks its turn and is capped at 300 s — the right shape for a search, a
+`bash_run` blocks its turn and is capped at 120 s — the right shape for a search, a
 test suite or a short build, and the wrong one for a dependency tree that takes two
 hours to compile. `background=True` spawns the same **already-validated** command into
 its own session with its output redirected to a log, and returns a handle immediately.
+
+Every run goes through the launcher now, detached or not: a blocking call starts a job
+and waits on it, polling the handle it got back. What that buys is output on disk
+rather than in a pipe nobody is left to drain — so a run stopped at the cap still
+reports what it printed (it is stopped exactly as before; only the bytes are kept), and
+one the user detaches mid-flight keeps everything it has already done. A blocking run's
+job directory is a scratch buffer, marked `ephemeral` in its `meta.json` and deleted
+the moment the call returns; a detached one's is the handle itself and is never swept.
+
+**Diverting a run in flight.** The user can move a still-running blocking command to
+the background from the tool row in the UI. It cannot travel through the model — the
+agent is parked awaiting this very call, and a steer is only drained at a step boundary
+— nor through MCP, since the synchronous tool body holds the bash server's event loop.
+So it goes through the shared state dir, like the approved-paths allowlist:
+`servers/workspace/_bash_divert.py` announces the run being waited on in
+`<state_dir>/bash_run/current.json`, and `client/tool_execution/bash_divert.py` names
+it back in a `divert` file the wait loop consumes on its next tick. The process is left
+running, the result carries the output so far plus the ordinary `background_job`
+descriptor, and the existing watcher takes it from there. It carries **no**
+`returncode`: the run has not produced one. This is the only promotion there is — an
+explicit human act, never the clock.
 
 Backgrounding is a parameter on a command that has passed the same path checks and
 denylists, which is why the `&` operator stays refused: detaching is the server's job,

@@ -1095,6 +1095,16 @@ body {
   opacity: 0.75;
 }
 
+/* Head plus its row-level controls. The row itself stacks (head, then exec panel),
+   so anything sitting beside the head needs its own horizontal line — and it has to
+   be a sibling of the head, which is a button and cannot contain one. */
+.tool-row-line {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
 .tool-row-head {
   all: unset;
   box-sizing: border-box;
@@ -1102,6 +1112,7 @@ body {
   align-items: center;
   gap: 7px;
   width: 100%;
+  flex: 1 1 auto;
   padding: 5px 6px;
   border-radius: 4px;
   cursor: default;
@@ -3129,4 +3140,45 @@ body.vscode-light .hljs-addition, body.vscode-high-contrast-light .hljs-addition
 body.vscode-light .hljs-deletion, body.vscode-high-contrast-light .hljs-deletion {
   color: #b31d28;
   background: #ffeef0;
+}
+
+/* Move a running command to the background. Icon only — the row is already a dense
+   line and the sentence lives in the tooltip. Hidden until the row is hovered or the
+   control is focused, so it never competes with the label, and never becomes
+   keyboard-unreachable either. */
+.tool-divert {
+  all: unset;
+  box-sizing: border-box;
+  flex-shrink: 0;
+  padding: 2px 6px;
+  border-radius: 4px;
+  color: var(--fg-dim);
+  font-size: 0.9em;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0;
+}
+.tool-row:hover .tool-divert,
+.tool-divert:focus-visible {
+  opacity: 1;
+}
+.tool-divert:hover {
+  background: var(--bg-input);
+  color: var(--fg);
+}
+.tool-divert:disabled {
+  opacity: 1;
+  cursor: default;
+  color: var(--fg-dim);
+}
+
+/* A run the user detached: settled for this turn, but not finished. Dimmed like a
+   closed row rather than marked like a failure — nothing went wrong. */
+.tool-row--background .tool-row-head {
+  opacity: 0.85;
+}
+.tool-exec-badge--bg {
+  font-family: var(--mono);
+  font-size: 0.72em;
+  opacity: 0.9;
 }
