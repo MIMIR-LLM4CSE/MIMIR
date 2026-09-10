@@ -319,6 +319,27 @@ def unregister(name: str) -> dict:
         "proxy_get(op='proxies') to see what remains registered."))
 
 
+def _other_proxies_with_state(name: str) -> list[str]:
+    """Proxies other than *name* that still have runs or an optimisation session.
+
+    Read from the store rather than from the registry: an unregistered proxy can still
+    own a best-so-far worth restoring, and it is the state on disk, not the registration,
+    that a shared snapshot store is keeping alive. Called AFTER this proxy's own
+    directories are gone, so it never counts itself. A missing directory reads as "none",
+    which is the same answer it would give if it were empty.
+    """
+    found: set[str] = set()
+    for directory in (store.runs_dir(), store.opt_runs_dir()):
+        try:
+            entries = os.listdir(directory)
+        except OSError:
+            continue
+        for entry in entries:
+            if entry != name and os.path.isdir(os.path.join(directory, entry)):
+                found.add(entry)
+    return sorted(found)
+
+
 def clean(name: str) -> dict:
     """Delete a proxy's runs, optimisation state and snapshots. Returns what survived.
 
@@ -336,6 +357,7 @@ def clean(name: str) -> dict:
     without ever seeing why.
     """
     removed, kept_refs, kept_suites = [], [], []
+    kept_snapshots = ""
     for path, label in (
         (os.path.join(store.runs_dir(), name), "runs"),
         (os.path.join(store.opt_runs_dir(), name), "optimisation state"),
@@ -347,16 +369,31 @@ def clean(name: str) -> dict:
             except OSError as exc:
                 return err(f"Could not remove {label}: {exc}")
 
-    # The shadow snapshot repository and its fallback copies live beside the store root.
-    for path, label in ((os.path.join(store.cache_dir(), "opt.git"), "tree snapshots"),
-                        (os.path.join(store.cache_dir(), "tree_snapshots"), "tree snapshots")):
-        if os.path.isdir(path):
-            try:
-                shutil.rmtree(path)
-                if label not in removed:
-                    removed.append(label)
-            except OSError:
-                pass
+    # The shadow snapshot repository and its fallback copies live beside the store root —
+    # ONE of them, written by every proxy, with no per-proxy identity inside it to remove
+    # (a single branch, a shared index, and each commit carrying the union of every path
+    # ever tracked). So the choice is all or nothing, and cleaning one proxy used to take
+    # the other proxies' history with it: their `best.json` kept a snapshot id pointing
+    # into a repository that no longer existed, and `reset_to_best` failed with "Could not
+    # restore the best tree" — a rollback lost by tidying up something else.
+    #
+    # The rule is the one this function already states for references and suites: what is
+    # shared is not removed on behalf of one proxy. Applied here, it was simply missing.
+    snapshot_paths = [os.path.join(store.cache_dir(), "opt.git"),
+                      os.path.join(store.cache_dir(), "tree_snapshots")]
+    others = _other_proxies_with_state(name)
+    if others:
+        if any(os.path.isdir(p) for p in snapshot_paths):
+            kept_snapshots = ", ".join(others)
+    else:
+        for path in snapshot_paths:
+            if os.path.isdir(path):
+                try:
+                    shutil.rmtree(path)
+                    if "tree snapshots" not in removed:
+                        removed.append("tree snapshots")
+                except OSError:
+                    pass
 
     if store._resolve_proxy_name("") == name:
         store._clear_active_session()
@@ -383,6 +420,11 @@ def clean(name: str) -> dict:
     if kept_suites:
         kept.append("benchmark suites " + ", ".join(kept_suites)
                     + " — proxy_manage(op='suite_delete', name=..., confirm=True)")
+    if kept_snapshots:
+        kept.append(f"tree snapshots — one store shared with {kept_snapshots}, whose "
+                    f"reset_to_best still needs it; removing it here would break their "
+                    f"rollback. It goes when the last proxy with state is cleaned, or by "
+                    f"hand from {store.cache_dir()}")
 
     return ok(_with_next({
         "cleaned":  name,

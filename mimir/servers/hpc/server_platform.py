@@ -160,6 +160,18 @@ def _collect_memory() -> dict:
 # which is vendor-neutral.
 _GPU_PROBES = (("nvidia", "nvidia-smi"), ("amd", "rocm-smi"), ("intel", "xpu-smi"))
 
+# compute_cap is queried alongside the descriptive fields because it is the one that
+# decides a build: on a CUDA/Kokkos project the arch flag comes from it, and nothing
+# else here substitutes. Reported without it, a host is described by its marketing
+# name, and the gap gets filled by inference from that name — which is exactly where
+# it breaks (B200 is sm_100, B300 is sm_103), silently, until the first kernel launch.
+_GPU_FIELDS_BASE = ("name", "memory", "driver")
+_GPU_FIELDS = _GPU_FIELDS_BASE + ("compute_cap",)
+_GPU_QUERY_BASE = ("nvidia-smi --query-gpu=name,memory.total,driver_version"
+                   " --format=csv,noheader")
+_GPU_QUERY = ("nvidia-smi --query-gpu=name,memory.total,driver_version,compute_cap"
+              " --format=csv,noheader")
+
 
 @lru_cache(maxsize=1)
 def _collect_gpu() -> dict:
@@ -172,15 +184,26 @@ def _collect_gpu() -> dict:
             "note": "Accelerator detected but not enumerated: only the NVIDIA probe is "
                     "parsed here. Ask Slurm (slurm_nodes) for GPU type and count.",
         }
-    query = "nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv,noheader"
-    out = _run_shell(query)
+    out = _run_shell(_GPU_QUERY)
+    fields = _GPU_FIELDS
+    if not out["ok"]:
+        # An nvidia-smi too old to know a field rejects the whole query rather than
+        # the field, which would cost us the enumeration entirely. Retry without the
+        # newer field before reporting the host as unreadable.
+        out = _run_shell(_GPU_QUERY_BASE)
+        fields = _GPU_FIELDS_BASE
     if not out["ok"]:
         return {"available": False, "vendors": present, "error": out["stderr"].strip()}
     gpus = []
     for line in out["stdout"].splitlines():
         parts = [p.strip() for p in line.split(",")]
-        if len(parts) >= 3:
-            gpus.append({"name": parts[0], "memory": parts[1], "driver": parts[2]})
+        if len(parts) < len(_GPU_FIELDS_BASE):
+            continue
+        # nvidia-smi prints '[N/A]' / '[Not Supported]' for a field this driver cannot
+        # answer. Dropping it says "unknown"; keeping it would read as a real value.
+        gpu = {k: v for k, v in zip(fields, parts) if not v.startswith("[")}
+        if gpu.get("name"):
+            gpus.append(gpu)
     return {"available": bool(gpus), "vendors": present, "count": len(gpus), "devices": gpus}
 
 

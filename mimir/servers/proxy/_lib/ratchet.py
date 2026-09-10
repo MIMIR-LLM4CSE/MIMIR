@@ -28,6 +28,19 @@ def _select_best_case(
     ``None`` time sorts as +infinity so any case with a real time wins over one
     without.  Returns ``(None, None)`` when no case passed — a failing case is
     never reported as best.
+
+    A minimum, and deliberately so: cases in a suite are different configurations
+    — grid sizes, backends, thread counts — not repeated measurements of one, so
+    "the fastest configuration" is a real answer to a real question. The selection
+    bias that a minimum *does* carry lives one level down, between replicates of a
+    single case, and is handled there: the runner reduces replicates by median
+    before a case ever reaches this function. Reporting the minimum across
+    replicates was how a headline 3.2x speed-up came out of a distribution whose
+    middle said 2.8x.
+
+    ``primary_value`` — what the ratchet actually compares — does not come from
+    here in any case; see ``_run_primary_value``, which averages across cases
+    rather than taking the best of them.
     """
     best_case: str | None = None
     best_key: float | None = None

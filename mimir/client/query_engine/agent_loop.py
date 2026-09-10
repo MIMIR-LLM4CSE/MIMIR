@@ -9,6 +9,7 @@ from .toollist import tools_for_context, tools_for_readonly_mode
 from .streaming import _DraftHold, _note_truncated_turn, _process_response, _stream_chat
 from .history import _enforce_context_budget, reconcile_tool_pairs
 from .finalize import _finalize_answer
+from .verification import build_ledger
 from .dispatch import _dispatch_tool_calls, _post_dispatch_inject
 from .readonly_guard import filter_readonly_tool_calls
 from .plan_loop import _run_plan_mode
@@ -697,6 +698,26 @@ async def _run_agent_loop(
     return answer
 
 
+def _emit_interrupted_state(execution_context: dict) -> None:
+    """Say what an abandoned query left behind, best-effort and never raising.
+
+    Best-effort because it runs while an exception is in flight: a failure here
+    would replace the real error with a worse one.
+    """
+    try:
+        ledger = build_ledger(execution_context)
+        if ledger is None:
+            return
+        emit({
+            "type": "status",
+            "text": "  ⚠ Query ended early — state left behind: " + ledger["summary"],
+        })
+        for row in ledger["rows"]:
+            emit({"type": "status", "text": f"    · {row}"})
+    except Exception:  # noqa: BLE001 — never mask the failure being reported
+        pass
+
+
 async def run_agent_query(
     *,
     agent: Any,
@@ -846,5 +867,18 @@ async def run_agent_query(
             logger=logger,
             cb=cb,
         )
+    except Exception:
+        # A query that dies mid-flight leaves the workspace wherever it stood, and
+        # the one thing nobody could reconstruct afterwards is *where* that was.
+        # Observed at the end of session ``7d322a3b``: the provider error was
+        # rendered as the whole answer, while a source file edited ninety seconds
+        # earlier had never been measured and an optimisation session sat open on
+        # a baseline nobody would remember. Same ledger the normal exit funnel
+        # renders — this path simply never reached it.
+        #
+        # Emitted, never swallowed: the exception is the outcome and it keeps
+        # propagating. This only means the outcome arrives with its state.
+        _emit_interrupted_state(execution_context)
+        raise
     finally:
         agent._live_messages = None

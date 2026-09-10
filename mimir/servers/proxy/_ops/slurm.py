@@ -198,7 +198,7 @@ def submit_eval(
     job_name: str = "proxy_opt",
 ) -> dict:
     """Submit an optimization-session run as a Slurm batch job (non-blocking)."""
-    cfg, error, run_dir = _prepare_run(proxy_name)
+    cfg, error, run_dir, resume_notice = _prepare_run(proxy_name)
     if error:
         return error
     name       = cfg["proxy_name"]
@@ -233,6 +233,8 @@ def submit_eval(
         "benchmark_name": cfg["benchmark_name"],
         "note": f"Slurm job {job_id} submitted to '{partition}'.",
     }
+    if resume_notice:
+        payload["resume_notice"] = resume_notice
     if background:
         # Same descriptor as the local run: the watcher polls proxy_eval_status,
         # whose _run_state reports Slurm state via squeue.

@@ -184,6 +184,65 @@ class RepresentativeServerContractTests(unittest.TestCase):
         self.assertEqual(payload["status"], "ok")
         self.assertEqual(payload["value"], "x")
 
+    # ── what a fetch hands back to the model ───────────────────────────────────
+    # A fetch is sized against the context window it has to share, not only
+    # against the socket. Two 512 KB bodies — a wiki page and a paper — ended
+    # session ``7d322a3b`` by themselves, neither call doing anything unusual.
+
+    _PAGE = (
+        '<!doctype html><html><head><title>T</title>'
+        '<style>.x{color:red}</style><script>var a="lots of javascript";</script>'
+        '</head><body><div class="mw-body"><h1>Absorbing boundary condition</h1>'
+        '<p>In numerical analysis, an <b>absorbing</b> boundary condition is used.</p>'
+        "<p>Mur's condition is first order.</p></div></body></html>"
+    )
+
+    def test_web_html_comes_back_as_text_not_markup(self) -> None:
+        body, note = server_web._readable_body(self._PAGE, "text/html", raw=False)
+        self.assertTrue(note["extracted_text"])
+        self.assertIn("Absorbing boundary condition", body)
+        self.assertNotIn("javascript", body)   # script dropped
+        self.assertNotIn("color:red", body)    # style dropped
+        self.assertLess(len(body), len(self._PAGE) // 2)
+
+    def test_web_raw_returns_the_markup_untouched(self) -> None:
+        body, note = server_web._readable_body(self._PAGE, "text/html", raw=True)
+        self.assertEqual(body, self._PAGE)
+        self.assertEqual(note, {})
+
+    def test_web_long_document_is_cut_and_says_so(self) -> None:
+        big = "<html><body>" + ("<p>word word word</p>" * 40_000) + "</body></html>"
+        body, note = server_web._readable_body(big, "text/html", raw=False)
+        self.assertLessEqual(len(body), server_web._MAX_TEXT_CHARS)
+        self.assertTrue(note["truncated"])
+        self.assertGreater(note["full_chars"], len(body))
+        self.assertIn("specific", note["hint"])  # says what to do about it
+
+    def test_web_a_page_with_no_text_keeps_its_markup(self) -> None:
+        """Empty extraction means the parser lost, not that the page is empty."""
+        shell = "<html><body><script>" + "var x=1;" * 500 + "</script></body></html>"
+        body, note = server_web._readable_body(shell, "text/html", raw=False)
+        self.assertEqual(body, shell)
+        self.assertNotIn("extracted_text", note)
+
+    def test_web_non_html_under_the_ceiling_is_untouched(self) -> None:
+        payload = '{"a": 1}'
+        self.assertEqual(
+            server_web._readable_body(payload, "application/json", raw=False),
+            (payload, {}),
+        )
+
+    def test_web_text_ceiling_is_a_fraction_of_a_context_window(self) -> None:
+        """The property the old 512 KB ceiling did not have.
+
+        At ~3 chars/token on escape-dense markup, 512 KB is ~170k tokens — most
+        of a 256k window in one call. Whatever the ceiling is set to, it has to
+        leave room for the conversation around it.
+        """
+        smallest_window_tokens = 32_000   # CTX_TOTAL_COMPACT
+        worst_case_tokens = server_web._MAX_TEXT_CHARS / 3
+        self.assertLess(worst_case_tokens, smallest_window_tokens * 1.5)
+
     def test_files_missing_file_is_structured_error(self) -> None:
         payload = server_search.read_file_lines("does-not-exist.txt")
         self.assertEqual(payload["status"], "error")
@@ -262,6 +321,61 @@ class PlatformPortabilityTests(unittest.TestCase):
         cpu = self._probe_cpu("riscv64", "Architecture: riscv64\nFlags: rv64imafdc\n")
         self.assertEqual(cpu["simd"], {})
         self.assertIn("riscv64", cpu["simd_note"])
+
+    def _probe_gpu(self, replies: dict) -> dict:
+        """Run _collect_gpu with nvidia-smi present and *replies* keyed by query."""
+        server_platform._collect_gpu.cache_clear()
+        orig_exists, orig_shell = server_platform._cmd_exists, server_platform._run_shell
+
+        def fake_shell(script: str, timeout: int = 10) -> dict:
+            for key, reply in replies.items():
+                if key in script:
+                    return reply
+            return {"ok": False, "stdout": "", "stderr": "unknown query"}
+
+        server_platform._cmd_exists = lambda name: name == "nvidia-smi"
+        server_platform._run_shell = fake_shell
+        try:
+            return server_platform._collect_gpu()
+        finally:
+            server_platform._cmd_exists = orig_exists
+            server_platform._run_shell = orig_shell
+            server_platform._collect_gpu.cache_clear()
+
+    def test_compute_capability_is_reported_not_inferred_from_the_name(self) -> None:
+        # The arch flag of a CUDA build comes from compute_cap and from nothing else
+        # here. Absent, the model fills the gap from the marketing name, and that is
+        # where it breaks: a B300 reads as Blackwell/sm_100 when it is sm_103, and the
+        # wrong -arch survives the whole build to fail at the first kernel launch.
+        gpu = self._probe_gpu({
+            "compute_cap": {"ok": True, "stderr": "",
+                            "stdout": "NVIDIA B300 SXM6 AC, 275040 MiB, 595.71.05, 10.3\n"},
+        })
+        self.assertEqual(gpu["count"], 1)
+        self.assertEqual(gpu["devices"][0]["compute_cap"], "10.3")
+        self.assertEqual(gpu["devices"][0]["name"], "NVIDIA B300 SXM6 AC")
+
+    def test_old_nvidia_smi_still_enumerates_without_compute_cap(self) -> None:
+        # An nvidia-smi that does not know a field rejects the entire query, so the
+        # newer field must not cost us the enumeration on an older driver.
+        gpu = self._probe_gpu({
+            "compute_cap": {"ok": False, "stdout": "",
+                            "stderr": "Field 'compute_cap' is not a valid field to query."},
+            "driver_version --format": {"ok": True, "stderr": "",
+                                        "stdout": "Tesla V100, 32510 MiB, 470.82.01\n"},
+        })
+        self.assertEqual(gpu["count"], 1)
+        self.assertEqual(gpu["devices"][0]["name"], "Tesla V100")
+        self.assertNotIn("compute_cap", gpu["devices"][0])
+
+    def test_unanswerable_field_is_omitted_rather_than_reported(self) -> None:
+        # nvidia-smi prints '[N/A]' for a field the driver cannot answer; kept, it
+        # would read as a real compute capability.
+        gpu = self._probe_gpu({
+            "compute_cap": {"ok": True, "stderr": "",
+                            "stdout": "NVIDIA T4, 15360 MiB, 470.82.01, [N/A]\n"},
+        })
+        self.assertNotIn("compute_cap", gpu["devices"][0])
 
     def test_non_nvidia_accelerator_is_not_reported_as_no_gpu(self) -> None:
         """Claiming "no GPU" on a host whose accelerator this probe cannot read is
@@ -1163,8 +1277,12 @@ class BashServerTests(unittest.TestCase):
         # and `cd` moves within it. A second base was only ever a second thing to
         # keep confined.
         import inspect
-        params = inspect.signature(server_bash.bash_run).parameters
-        self.assertEqual(list(params), ["command", "timeout"])
+        params = set(inspect.signature(server_bash.bash_run).parameters)
+        # Named for what must stay absent, not for the exact signature: the guarantee
+        # is "no second base to confine", which a later parameter (background) does
+        # not touch.
+        self.assertEqual(params & {"cwd", "chdir", "directory", "workdir", "cd"}, set())
+        self.assertIn("command", params)
         self.assertFalse(hasattr(server_bash, "_safe_cwd"))
 
     def test_search_pattern_is_not_treated_as_a_path(self) -> None:
@@ -1427,6 +1545,28 @@ class BashServerTests(unittest.TestCase):
         payload = server_bash._validate_command("pdflatex /etc/passwd", cwd)
         self.assertEqual(payload["status"], "error")
         self.assertIn("outside workspace", payload["error"])
+
+    def test_proxy_is_passed_through_to_commands(self) -> None:
+        # Outbound HTTP here goes through a corporate proxy that curl/wget/pip/git read
+        # from the environment. Absent from the minimal env, a network command does not
+        # fail — it hangs until its timeout, which cost one install session 180s and any
+        # signal about why. Passed through from the ambient env, never synthesized.
+        import os
+        import unittest.mock
+        ambient = {
+            "http_proxy": "http://proxy.example:8080",
+            "HTTPS_PROXY": "http://proxy.example:8080",
+            "no_proxy": "localhost,10.0.0.1",
+        }
+        with unittest.mock.patch.dict(os.environ, ambient):
+            env = server_bash._safe_env(server_bash._WORKSPACE_ROOT)
+        for name, value in ambient.items():
+            self.assertEqual(env[name], value)
+        # An unset var stays unset rather than being handed over as an empty string,
+        # which curl reads as "no proxy" and would mask the site's own configuration.
+        with unittest.mock.patch.dict(os.environ, {}, clear=True):
+            env = server_bash._safe_env(server_bash._WORKSPACE_ROOT)
+        self.assertNotIn("http_proxy", env)
 
     def test_tex_sandbox_is_pinned_in_the_environment(self) -> None:
         # Backstop for the denylisted flags: kpathsea reads these from the env,

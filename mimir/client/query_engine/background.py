@@ -93,6 +93,9 @@ async def _await_background_job(descriptor: dict, agent: Any, result_text: str) 
     here with ``asyncio.sleep`` (zero model calls) until the run is terminal, fetch the
     summary, and fold it into the tool result. The launch tool already returned, so
     this runs outside the per-tool timeout. Best-effort: failures return what we have.
+
+    The polls carry ``record_observations=False``: a watcher tick is the client asking
+    a question on its own account, not a step the model took.
     """
     status_op   = descriptor.get("status_op") or {}
     summary_op  = descriptor.get("summary_op") or {}
@@ -106,7 +109,8 @@ async def _await_background_job(descriptor: dict, agent: Any, result_text: str) 
         await asyncio.sleep(interval)
         interval = min(interval * 1.5, max_interval)
         try:
-            raw = await agent._run_tool(status_tool, dict(status_op.get("args") or {}))
+            raw = await agent._run_tool(status_tool, dict(status_op.get("args") or {}),
+                                        record_observations=False)
             payload = json.loads(raw) if isinstance(raw, str) else (raw or {})
             state = str(payload.get("state") or "")
         except Exception:
@@ -119,7 +123,8 @@ async def _await_background_job(descriptor: dict, agent: Any, result_text: str) 
     if summary_tool:
         try:
             summary_text = await agent._run_tool(
-                summary_tool, dict(summary_op.get("args") or {}))
+                summary_tool, dict(summary_op.get("args") or {}),
+                record_observations=False)
         except Exception:
             summary_text = ""
     note = f"\n\n[background:awaited] Run reached state '{state}'."

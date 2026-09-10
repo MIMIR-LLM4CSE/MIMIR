@@ -10,6 +10,17 @@ from ...config.constants import chars_per_token_for
 # Cap on the per-text token-count cache so a long-running session can't grow it
 # unbounded. When exceeded the cache is cleared wholesale (simple + adequate;
 # entries are cheap to recompute).
+class PromptTooLongError(ValueError):
+    """The prompt does not fit the model's window, as the provider counted it.
+
+    A ``ValueError`` subclass so nothing that used to catch the untyped error
+    stops catching it, and a type of its own so the retry loop can tell the one
+    failure that re-sending cannot fix from the flaky connection it looks like.
+    Retrying it spent three backoffs and three requests on a prompt that was the
+    same size each time, and then ended the query anyway.
+    """
+
+
 _TOKEN_CACHE_CAP = 8192
 
 
@@ -49,28 +60,55 @@ def normalize_finish_reason(raw: Any) -> str | None:
     return _FINISH_REASONS.get(key, "unknown")
 
 
-def _countable_text(message: dict) -> str:
-    """Everything in *message* that is sent to the model, as one string.
+# The keys a message actually travels with. Serialising the dict wholesale would
+# also count local bookkeeping a backend never sees, so the wire form is spelled
+# out rather than inferred — an extra key added here later must be one the
+# provider receives.
+_WIRE_KEYS = ("role", "content", "name", "tool_call_id", "tool_calls", "thinking")
+
+
+def message_wire_form(message: dict) -> str:
+    """*message* as the provider is sent it: the JSON, envelope included.
 
     Content alone is not the message: in full-context mode history keeps the
     structured transcript, where an assistant turn carries its ``tool_calls`` and
     usually has empty content. Counting content only scored those turns at ~0 —
     including calls whose arguments hold a whole file — so the context bar
-    under-reported and the pre-query trim under-trimmed. Serialising the call
-    payload is an approximation of the server's chat template, but a far closer
-    one than dropping it.
+    under-reported and the pre-query trim under-trimmed.
+
+    Serialising content and arguments as bare *text* closed that gap and left a
+    second one of the same kind. What a window is measured against is
+    ``json.dumps(messages)`` — see the guard in ``VLLMBackend.chat`` — so every
+    ``\n`` that serialisation escapes, every quote it doubles and every ``role`` /
+    ``tool_call_id`` key it adds is prompt that a text-shaped count never saw. On
+    an ordinary tool-heavy history that envelope is ~18% of the total; on
+    escape-dense content — HTML, LaTeX, JSON inside JSON, the shapes a web fetch
+    returns — it reaches 30%. Measured in the wrong units, a budget cannot be
+    conservative by accident: it is optimistic by construction, and it was an
+    optimism of exactly this size that let a backstop announce a fit on a prompt
+    the provider then rejected.
+
+    Falls back to the joined-text approximation on anything unserialisable. That
+    only ever under-counts, which is the old behaviour rather than a new failure.
     """
-    parts = [str(message.get("content") or "")]
-    tool_calls = message.get("tool_calls")
-    if tool_calls:
-        try:
-            parts.append(json.dumps(tool_calls, default=str))
-        except Exception:
+    # Keyed on presence, not on truth: a message that carries ``content: None``
+    # is serialised with ``"content": null`` and paid for, so dropping the falsy
+    # ones would reintroduce the same under-count one level down — ~16 characters
+    # per assistant turn, and an assistant turn is every other message.
+    payload = {k: message[k] for k in _WIRE_KEYS if k in message}
+    if not payload:
+        return ""
+    try:
+        return json.dumps(payload, default=str)
+    except Exception:
+        parts = [str(message.get("content") or "")]
+        tool_calls = message.get("tool_calls")
+        if tool_calls:
             parts.append(str(tool_calls))
-    thinking = message.get("thinking")
-    if thinking:
-        parts.append(str(thinking))
-    return "\n".join(p for p in parts if p)
+        thinking = message.get("thinking")
+        if thinking:
+            parts.append(str(thinking))
+        return "\n".join(p for p in parts if p)
 
 
 class LLMBackend(ABC):
@@ -177,7 +215,7 @@ class LLMBackend(ABC):
     ) -> list[int]:
         """Per-message token counts, aligned with *messages*."""
         return [
-            self.count_text_tokens(model, _countable_text(m), allow_network=allow_network)
+            self.count_text_tokens(model, message_wire_form(m), allow_network=allow_network)
             for m in messages
         ]
 

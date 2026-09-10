@@ -12,6 +12,7 @@ import random
 import time
 from typing import Any
 
+from .backends.base import PromptTooLongError
 from .backends.factory import get_backend
 from ..event_sink import emit
 from ..config.constants import (
@@ -108,6 +109,41 @@ class _DraftHold:
         self._buf.clear()
 
 
+# Provider errors that say the *request* is wrong, matched on the text because most
+# providers give no type to match on. Deliberately narrow: anything unrecognised stays
+# retryable, so an unfamiliar transient failure keeps the behaviour it always had.
+_DETERMINISTIC_ERROR_MARKERS = (
+    "context window",
+    "context length",
+    "maximum context",
+    "too many tokens",
+    "reduce the length of the messages",
+    "invalid_request_error",
+    "invalid api key",
+    "authentication",
+    "permission denied",
+)
+
+
+def _is_retryable(exc: Exception) -> bool:
+    """Whether re-sending the identical request could plausibly succeed.
+
+    A retry loop that cannot tell "the connection dropped" from "this prompt is
+    too long" treats both as bad luck. The second is not bad luck: the prompt is
+    byte-identical on every attempt, so the backoff only delays an outcome that
+    was already decided — three requests and eight seconds, observed, before a
+    query ended on the error it would have ended on immediately.
+
+    Errs toward retrying. A transient failure wrongly called permanent loses a
+    whole query; a permanent one wrongly called transient loses a few seconds, and
+    that is the trade the default has to respect.
+    """
+    if isinstance(exc, PromptTooLongError):
+        return False
+    text = f"{exc}".lower()
+    return not any(marker in text for marker in _DETERMINISTIC_ERROR_MARKERS)
+
+
 def _stream_chat(model: str,
                  messages: list[dict],
                  tools: list[dict],
@@ -154,7 +190,7 @@ def _stream_chat(model: str,
             )
         except Exception as exc:  # noqa: BLE001 — backend exception types vary by provider
             last_exc = exc
-            if attempt >= LLM_RETRY_ATTEMPTS:
+            if attempt >= LLM_RETRY_ATTEMPTS or not _is_retryable(exc):
                 break
             delay = min(
                 LLM_RETRY_BASE_DELAY_SECS * (2 ** attempt),
@@ -168,5 +204,11 @@ def _stream_chat(model: str,
             })
             time.sleep(delay)
 
+    if last_exc is not None and not _is_retryable(last_exc):
+        emit({
+            "type": "status",
+            "text": f"  ⚠ Model call failed ({type(last_exc).__name__}); not retried — "
+                    f"the same request would fail the same way",
+        })
     assert last_exc is not None
     raise last_exc

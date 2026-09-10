@@ -49,6 +49,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import statistics
 import sys
 import time
 from datetime import datetime, timezone
@@ -56,6 +57,59 @@ from datetime import datetime, timezone
 
 def _log(msg: str) -> None:
     print(msg, flush=True)
+
+
+def _aggregate_replicates(replicates: list[dict]) -> dict:
+    """One set of metrics from several measurements of the same code.
+
+    Numeric metrics collapse to their **median**, which is the whole point: the
+    minimum is what a ratchet reaches for on its own, and the minimum of N draws
+    is a biased estimate that improves with N whatever the code does. Non-numeric
+    values are taken from the first replicate — a dtype or a reference name does
+    not vary between runs of the same tree, and if it did, averaging it would be
+    meaningless anyway.
+
+    A single replicate returns exactly what it measured, so the one-run path is
+    unchanged.
+    """
+    if not replicates:
+        return {}
+    if len(replicates) == 1:
+        return dict(replicates[0])
+    out: dict = {}
+    for key in replicates[0]:
+        values = [r.get(key) for r in replicates]
+        numeric = [v for v in values if isinstance(v, (int, float))
+                   and not isinstance(v, bool)]
+        if len(numeric) == len(values) and numeric:
+            out[key] = statistics.median(numeric)
+        else:
+            out[key] = values[0]
+    return out
+
+
+def _relative_spread(replicates: list[dict], metric: str) -> float | None:
+    """How far apart repeated measurements of the SAME code landed, as a fraction.
+
+    The number the ratchet has never had. ``min_improvement`` was a constant
+    documented as guarding timing noise, chosen before any noise was measured; on
+    the machine this comes from, two runs of one untouched tree differed by 3.1%
+    while that guard stood at 2%, so an edit worth nothing was accepted as an
+    improvement and the guard had no way to know.
+
+    Reported as a full range rather than a standard deviation: with three or five
+    replicates the range is what a threshold actually has to clear, and a
+    dispersion estimate from n=3 is not worth the sophistication.
+    """
+    values = [r.get(metric) for r in replicates]
+    numeric = [float(v) for v in values
+               if isinstance(v, (int, float)) and not isinstance(v, bool)]
+    if len(numeric) < 2:
+        return None
+    mid = statistics.median(numeric)
+    if not mid:
+        return None
+    return abs(max(numeric) - min(numeric)) / abs(mid)
 
 
 def main() -> None:
@@ -126,6 +180,9 @@ def main() -> None:
     # ── iterate suite ────────────────────────────────────────────────────────
     deadline    = time.monotonic() + cfg.get("deadline_s", 86400.0)  # default 24 h
     per_case_timeout_s = cfg.get("per_case_timeout_s") or None
+    # How many times each case is measured before its metrics are believed.
+    repeat = max(1, int(cfg.get("repeat", 1) or 1))
+    primary_metric = cfg.get("primary_metric", "time_s")
     all_results: list[dict] = []
     cases_passed = 0
     cases_total  = 0
@@ -157,19 +214,30 @@ def main() -> None:
             cases_total += 1
             tag_suffix = f"opt_{proxy_name}_{case_id}_{idx}"
 
-            _log(f"[proxy_runner] running case={case_id} sweep={idx} overrides={sweep_overrides}")
+            _log(f"[proxy_runner] running case={case_id} sweep={idx} "
+                 f"overrides={sweep_overrides} repeat={repeat}")
 
-            run_case_dir, row = _run_benchmark_case(
-                entry=case_entry,
-                proxy_name=case_proxy,
-                reference_name=reference_name,
-                extra_params=extra_params,
-                param_overrides=sweep_overrides,
-                extra_metrics=extra_metrics,
-                deadline=deadline,
-                tag_suffix=tag_suffix,
-                per_case_timeout_s=per_case_timeout_s,
-            )
+            replicate_metrics: list[dict] = []
+            for rep in range(repeat):
+                run_case_dir, row = _run_benchmark_case(
+                    entry=case_entry,
+                    proxy_name=case_proxy,
+                    reference_name=reference_name,
+                    extra_params=extra_params,
+                    param_overrides=sweep_overrides,
+                    extra_metrics=extra_metrics,
+                    deadline=deadline,
+                    tag_suffix=tag_suffix if repeat == 1 else f"{tag_suffix}_r{rep}",
+                    per_case_timeout_s=per_case_timeout_s,
+                )
+                if "error" in row:
+                    break
+                rep_metrics = _read_json(
+                    os.path.join(run_case_dir, "metrics.json"), {}) or {}
+                replicate_metrics.append(rep_metrics)
+                if repeat > 1:
+                    _log(f"[proxy_runner] case={case_id} sweep={idx} replicate={rep} "
+                         f"{primary_metric}={rep_metrics.get(primary_metric)}")
 
             if "error" in row:
                 _log(f"[proxy_runner] case={case_id} sweep={idx} error={row['error']}")
@@ -181,11 +249,17 @@ def main() -> None:
                 })
                 continue
 
-            # Evaluate requirements against this case's metrics
-            case_metrics = {}
-            metrics_path = os.path.join(run_case_dir, "metrics.json")
-            if os.path.isfile(metrics_path):
-                case_metrics = _read_json(metrics_path, case_metrics) or case_metrics
+            # Evaluate requirements against this case's metrics. With replicates,
+            # that is the MEDIAN of each numeric metric across them — never the
+            # best. A ratchet that keeps the minimum of several draws does not
+            # measure the code, it measures how lucky the node was: in the session
+            # this was built from, four runs of one unchanged tree spread
+            # 0.0592-0.0642 s while the "best" on record was 0.0556, and the
+            # headline speed-up inherited the whole gap.
+            case_metrics = _aggregate_replicates(replicate_metrics)
+            spread = _relative_spread(replicate_metrics, primary_metric)
+            if spread is not None:
+                case_metrics["primary_spread"] = spread
 
             req_result = _evaluate_requirements(case_metrics, case_requirements)
             passed     = req_result["passed"]

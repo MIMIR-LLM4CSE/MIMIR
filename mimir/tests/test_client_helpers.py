@@ -9,6 +9,10 @@ import asyncio
 
 import mimir.client.event_sink as event_sink_module
 import mimir.client.config.constants as constants_module
+from mimir.client.query_engine.backends.base import (
+    PromptTooLongError,
+    message_wire_form,
+)
 from mimir.client.query_engine.backends.vllm_backend import VllmBackend
 from mimir.tests._fake_backend import ScriptedBackend
 
@@ -1052,10 +1056,18 @@ class ClientHelperTests(unittest.TestCase):
         self.assertEqual(backend.count_text_tokens("m", ""), 0)  # empty never tokenized
         self.assertEqual(calls["n"], 1)
 
-    def test_count_messages_tokens_sums_content(self) -> None:
+    def test_count_messages_tokens_measures_the_wire_form(self) -> None:
+        """Content plus the envelope the provider is actually sent.
+
+        Was ``5`` — the bare content of the two messages that had any. What goes
+        on the wire is the JSON around it too, so the count is larger and the
+        third message, which carries only a role, is no longer free.
+        """
         backend, _ = self._counting_backend()
-        total = backend.count_messages_tokens("m", [{"content": "abc"}, {"content": "de"}, {"role": "x"}])
-        self.assertEqual(total, 5)
+        msgs = [{"content": "abc"}, {"content": "de"}, {"role": "x"}]
+        total = backend.count_messages_tokens("m", msgs)
+        self.assertGreater(total, 5)
+        self.assertEqual(total, sum(len(message_wire_form(m)) for m in msgs))
 
     def test_count_messages_tokens_includes_tool_call_payload(self) -> None:
         """An assistant turn is mostly its tool call; content-only scored it ~0."""
@@ -1066,8 +1078,14 @@ class ClientHelperTests(unittest.TestCase):
 
     def test_count_messages_tokens_includes_thinking(self) -> None:
         backend, _ = self._counting_backend()
-        counts = backend.message_token_counts("m", [{"content": "ab", "thinking": "cde"}])
-        self.assertEqual(counts, [6])  # "ab" + "\n" + "cde"
+        m = {"content": "ab", "thinking": "cde"}
+        counts = backend.message_token_counts("m", [m])
+        # Both fields are counted, now inside the JSON envelope rather than joined
+        # by a newline — so what is asserted is that neither is dropped, not that
+        # the two happen to sum to 6.
+        self.assertEqual(counts, [len(message_wire_form(m))])
+        self.assertIn("ab", message_wire_form(m))
+        self.assertIn("cde", message_wire_form(m))
 
     def test_allow_network_false_uses_heuristic_when_uncached(self) -> None:
         backend, calls = self._counting_backend()
@@ -1124,11 +1142,14 @@ class ClientHelperTests(unittest.TestCase):
             for i in range(5)
         ]
         execution_context = {"read_files": set(), "tool_msg_files": {}}
-        # token_counter=len -> 100 "tokens" each, total 500; budget 250 evicts the
-        # 3 oldest (500 -> 200) and keeps the 2 newest.
+        # token_counter=len over the wire form -> 100 of content plus its JSON
+        # envelope each, so the budget that keeps exactly the two newest is
+        # derived from the measure rather than hard-coded to the content length
+        # it used to equal.
+        each = len(message_wire_form(messages[-1]))
         history_module._trim_tool_history(
             messages, execution_context=execution_context,
-            token_counter=len, token_budget=250,
+            token_counter=len, token_budget=2 * each + each // 2,
         )
         remaining = [m["tool_call_id"] for m in messages if m.get("role") == "tool"]
         self.assertEqual(remaining, ["t3", "t4"])
@@ -1328,6 +1349,57 @@ class ClientHelperTests(unittest.TestCase):
                 )
         # 1 initial attempt + LLM_RETRY_ATTEMPTS retries, all of which ran.
         self.assertEqual(calls["n"], streaming_module.LLM_RETRY_ATTEMPTS + 1)
+
+    def test_stream_chat_does_not_retry_a_prompt_that_is_too_long(self) -> None:
+        """The one failure re-sending cannot fix.
+
+        Observed ending session ``7d322a3b``: a prompt over the window was retried
+        three times with backoff — the same bytes each time — and the query died
+        on the error it would have died on at once.
+        """
+        calls = {"n": 0}
+
+        def too_long(**kwargs):
+            calls["n"] += 1
+            raise PromptTooLongError(
+                "Prompt (272386 tokens) exceeds the model's context "
+                "window (262144 tokens) for 'deepseek-v4'."
+            )
+
+        fake_backend = types.SimpleNamespace(chat=too_long)
+        with patch.object(streaming_module, "get_backend", return_value=fake_backend), \
+             patch.object(streaming_module.time, "sleep", return_value=None) as slept:
+            with self.assertRaises(PromptTooLongError):
+                agent_loop_module._stream_chat(
+                    model="m", messages=[], tools=[],
+                    thinking=False, streaming=False, options={},
+                )
+        self.assertEqual(calls["n"], 1)      # tried once
+        self.assertEqual(slept.call_count, 0)  # and waited for nothing
+
+    def test_stream_chat_does_not_retry_an_untyped_window_error(self) -> None:
+        """Most providers give no type to match on, so the text is read too."""
+        calls = {"n": 0}
+
+        def too_long(**kwargs):
+            calls["n"] += 1
+            raise RuntimeError("This model's maximum context length is 8192 tokens")
+
+        fake_backend = types.SimpleNamespace(chat=too_long)
+        with patch.object(streaming_module, "get_backend", return_value=fake_backend), \
+             patch.object(streaming_module.time, "sleep", return_value=None):
+            with self.assertRaises(RuntimeError):
+                agent_loop_module._stream_chat(
+                    model="m", messages=[], tools=[],
+                    thinking=False, streaming=False, options={},
+                )
+        self.assertEqual(calls["n"], 1)
+
+    def test_stream_chat_still_retries_an_unrecognised_failure(self) -> None:
+        """The default has to stay "retry": a transient error called permanent
+        loses a whole query, the reverse loses a few seconds."""
+        self.assertTrue(streaming_module._is_retryable(RuntimeError("upstream 503")))
+        self.assertTrue(streaming_module._is_retryable(ConnectionError("reset by peer")))
 
     def test_stream_chat_does_not_retry_when_already_cancelled(self) -> None:
         calls = {"n": 0}

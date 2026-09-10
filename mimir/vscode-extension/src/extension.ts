@@ -312,14 +312,28 @@ class MimirAgentViewProvider implements vscode.WebviewViewProvider {
   private _ws: WebSocket | undefined;
   private _view: vscode.WebviewView | undefined;
   private _pendingMessages: string[] = [];
-  /** Auto-connect is a startup courtesy: once per window, never on a view reload. */
-  private _autoConnectTried = false;
+  /** An auto-connect is already running (or has run) — never start a second one. */
+  private _autoConnectStarted = false;
+  /** A probe is in flight; a view resolving meanwhile must not fire its own. */
+  private _autoConnectProbing = false;
   /**
-   * Endpoint we auto-connected to before any webview existed. The socket is live
-   * but the React app has never seen the server's greeting, so the first view to
-   * resolve re-attaches (see `resolveWebviewView`) to be told `ready`.
+   * Bumped by every new connect attempt. A retry chain carries the generation it
+   * was born with, so the one a superseded attempt left running goes inert instead
+   * of reclaiming `_ws` and then reporting the connection closed.
    */
-  private _headlessConnect: RememberedEndpoint | undefined;
+  private _connectGen = 0;
+  /**
+   * Log channel of an active `mimir.wsUrl` attach, or undefined when we spawned the
+   * server ourselves. Kept so a failed attach can name the setting responsible.
+   */
+  private _attachLog: vscode.OutputChannel | undefined;
+  /**
+   * Endpoint we auto-connected to, kept until a webview has actually been told.
+   * The React app is what shows the connecting state, and it mounts long after we
+   * start — so this is replayed on every `get_config` (its mount handshake) until
+   * the socket is up.
+   */
+  private _pendingAutoConnect: RememberedEndpoint | undefined;
   /**
    * Address of the server this window talks to, learned from the server's own
    * "Listening on ws://…" line (it binds an OS-assigned port, so each VS Code
@@ -358,27 +372,13 @@ class MimirAgentViewProvider implements vscode.WebviewViewProvider {
     // Seed the active-file chip on (re)load.
     this.pushActiveEditor();
 
-    if (this._headlessConnect) {
-      // We connected at startup, before this webview existed. Its `ready` frame
-      // was sent to nobody, so re-attach: the Python server greets every new
-      // client, which is what moves the UI from "connecting" to "connected".
-      const saved = this._headlessConnect;
-      this._headlessConnect = undefined;
-      view.webview.postMessage({ type: "auto_connect", ...saved });
-      const stale = this._ws;
-      if (stale && this._wsUrl) {
-        this._ws = undefined;
-        stale.close();
-        this._connectToServer(this._wsUrl);
-      }
-      // No socket yet — the connect already in flight will attach on its own,
-      // and this webview is here to receive the `ready` it brings back. Opening
-      // a second one here would leave the server with two clients.
-    } else {
-      // …otherwise reconnect on our own to the address the user asked us to
-      // remember (no-op when activation already did it, or nothing is stored).
-      void this._maybeAutoConnect();
-    }
+    // Reconnect on our own to the address the user asked us to remember (a no-op
+    // when activation already started it, or nothing is stored). Catching a
+    // webview up on a connect it never saw is *not* done here: nothing posted
+    // from `resolveWebviewView` is guaranteed to be heard, because the React app
+    // has not loaded its message listener yet. That happens on `get_config`, the
+    // handshake the app sends once it is mounted (see `_resumeAutoConnect`).
+    void this._maybeAutoConnect();
   }
 
   /**
@@ -397,30 +397,64 @@ class MimirAgentViewProvider implements vscode.WebviewViewProvider {
   }
 
   private async _maybeAutoConnect(): Promise<void> {
-    if (this._autoConnectTried) return;
-    this._autoConnectTried = true;
+    if (this._autoConnectStarted || this._autoConnectProbing) return;
 
     const saved = this._remembered();
     if (!saved) return;
 
     const verifySsl = vscode.workspace.getConfiguration("mimir").get<boolean>("vllmVerifySsl", true);
+    this._autoConnectProbing = true;
     try {
-      await fetchModels(saved.backend as DiscoverableBackend, saved.baseUrl, verifySsl, 3000);
+      await fetchModels(saved.backend as DiscoverableBackend, saved.baseUrl, verifySsl, 5000);
     } catch {
-      return; // endpoint not up — leave the user on the connect form
+      // Endpoint not up — leave the user on the connect form. The attempt is not
+      // marked as started, so opening the chat panel later probes once more: at
+      // VS Code startup the network (VPN, compute node) is often not up yet.
+      return;
+    } finally {
+      this._autoConnectProbing = false;
     }
     // The user can have been impatient and connected by hand while we probed
     // (the server spawns before the socket exists, so check both).
     if (this._ws || (serverProcess && !serverProcess.killed)) return;
+    this._autoConnectStarted = true;
 
-    if (this._view) {
-      this._view.webview.postMessage({ type: "auto_connect", ...saved });
-    } else {
-      // No webview yet — remember to greet the first one that resolves.
-      this._headlessConnect = saved;
-    }
+    // Replayed on the webview's `get_config` until the socket is up, because the
+    // React app may not be listening yet (or may not exist at all).
+    this._pendingAutoConnect = saved;
+    this._announceAutoConnect();
     // Startup connect: don't pop the server log over whatever the user opened.
     this._startServerAndConnect(saved.model, saved.backend, saved.baseUrl, "", { silent: true });
+  }
+
+  /** Tell the webview, if there is one, which endpoint we are connecting to. */
+  private _announceAutoConnect(): void {
+    if (!this._view || !this._pendingAutoConnect) return;
+    this._view.webview.postMessage({ type: "auto_connect", ...this._pendingAutoConnect });
+  }
+
+  /**
+   * Bring a freshly mounted webview up to date with a connection it never saw.
+   *
+   * Called from the `get_config` handshake — the first moment the React app is
+   * known to be listening. Two cases: the connect is still in flight (replay
+   * `auto_connect`, so the app shows the connecting state instead of the form),
+   * or the socket is already live and its `ready` greeting went to a webview that
+   * did not exist. The Python server greets every new client, so re-attaching is
+   * what moves the UI to "connected".
+   */
+  private _resumeAutoConnect(): void {
+    if (!this._pendingAutoConnect) return; // nothing was missed — leave the socket alone
+    this._announceAutoConnect();
+    const live = this._ws;
+    if (live && this._wsUrl) {
+      this._ws = undefined; // so the close below drives no retry/teardown
+      live.close();
+      this._connectToServer(this._wsUrl);
+    }
+    // The webview has now heard it — replaying again would throw a connected UI
+    // back into "connecting" and needlessly cycle a healthy socket.
+    this._pendingAutoConnect = undefined;
   }
 
   /** The remembered endpoint, or undefined when nothing valid is stored. */
@@ -480,13 +514,29 @@ class MimirAgentViewProvider implements vscode.WebviewViewProvider {
     });
   }
 
-  private _connectToServer(wsUrl: string, retryCount = 0): void {
+  /**
+   * Open the socket to *wsUrl*, retrying while the server is still coming up.
+   *
+   * *gen* identifies the attempt. Omit it to start a new one — that supersedes
+   * any attempt already in flight, whose retries then find a newer generation and
+   * stop. Without that, a chain still retrying the previous server's port would
+   * reassign `_ws` to its own dead socket and, once out of retries, tell the
+   * webview the connection closed — dropping a working session back to the
+   * connect form.
+   */
+  private _connectToServer(wsUrl: string, retryCount = 0, gen?: number): void {
     const maxRetries = 40; // retry for up to ~40 seconds while server starts
+    const myGen = gen ?? ++this._connectGen;
+    if (myGen !== this._connectGen) return; // superseded while this retry waited
 
     const ws = new WebSocket(wsUrl);
     this._ws = ws;
 
     ws.on("open", () => {
+      if (myGen !== this._connectGen) {
+        ws.close();
+        return;
+      }
       // Flush any messages queued before the connection was ready
       for (const m of this._pendingMessages) {
         ws.send(m);
@@ -495,6 +545,7 @@ class MimirAgentViewProvider implements vscode.WebviewViewProvider {
     });
 
     ws.on("message", (data: WebSocket.RawData) => {
+      if (myGen !== this._connectGen) return;
       // Forward Python server messages → React webview
       const text = data.toString();
       this._view?.webview.postMessage({ type: "ws", payload: text });
@@ -505,18 +556,26 @@ class MimirAgentViewProvider implements vscode.WebviewViewProvider {
     ws.on("close", () => {
       // A socket we replaced ourselves (headless re-attach) must not drive the
       // retry/teardown of the one that took its place.
-      if (this._ws !== ws) return;
+      if (myGen !== this._connectGen || this._ws !== ws) return;
       const stillRunning = serverProcess && !serverProcess.killed;
       if (retryCount < maxRetries && stillRunning) {
         // Server still starting up — retry after 2 seconds
-        setTimeout(() => this._connectToServer(wsUrl, retryCount + 1), 2000);
+        setTimeout(() => this._connectToServer(wsUrl, retryCount + 1, myGen), 2000);
       } else {
+        // In attach mode there is no server log to consult, so the reason the
+        // connection never came up would otherwise go unrecorded entirely.
+        this._attachLog?.appendLine(
+          `Nothing answered at ${wsUrl}. That address comes from the "mimir.wsUrl" ` +
+          `setting; clear it (check the workspace's .vscode/settings.json) to have ` +
+          `MIMIR start its own server instead.`
+        );
         // Notify webview — no auto-reconnect (user must click Connect again)
         this._view?.webview.postMessage({ type: "ws_closed" });
       }
     });
 
     ws.on("error", () => {
+      if (myGen !== this._connectGen) return;
       // close fires immediately after error (which handles reconnect/teardown);
       // surface a distinct error signal so the webview can show an error state.
       this._view?.webview.postMessage({ type: "ws_error" });
@@ -580,9 +639,15 @@ class MimirAgentViewProvider implements vscode.WebviewViewProvider {
         kind = "warn";
         break;
       case "job_complete":
-        // A detached background run finished; the agent auto-resumes.
+        // A detached background run reached a terminal state; the session that
+        // launched it auto-resumes, which is not necessarily the one on screen.
         if (msg.state === "crashed") {
           title = `Tâche en arrière-plan « ${msg.job_key ?? ""} » terminée en échec.`;
+          kind = "warn";
+        } else if (msg.state === "unknown") {
+          // Not a success reported quietly: the run stopped being trackable, and
+          // saying "terminée" here would claim an outcome nobody observed.
+          title = `Tâche en arrière-plan « ${msg.job_key ?? ""} » : suivi perdu.`;
           kind = "warn";
         } else {
           title = `Tâche en arrière-plan « ${msg.job_key ?? ""} » terminée.`;
@@ -617,6 +682,11 @@ class MimirAgentViewProvider implements vscode.WebviewViewProvider {
   // A server we only attached to (the `mimir.wsUrl` override) is not ours to kill,
   // and `serverProcess` is undefined in that case.
   private _teardownServer(): void {
+    // The socket belongs to the process being killed: retiring the generation
+    // stops its retry chain from outliving it and hunting a port nobody serves.
+    this._connectGen++;
+    this._ws?.close();
+    this._ws = undefined;
     if (serverProcess && !serverProcess.killed) {
       serverProcess.kill();
     }
@@ -646,11 +716,24 @@ class MimirAgentViewProvider implements vscode.WebviewViewProvider {
     // That server is not ours, so it is never torn down either.
     const override = (cfg.get<string>("wsUrl") ?? "").trim();
     if (override) {
+      // Attach mode starts nothing, so it never reaches the server log below. Say
+      // so in that same channel anyway: a stray `mimir.wsUrl` (easily left behind
+      // in a workspace's .vscode/settings.json) otherwise silently disables the
+      // whole spawn path, and the connect form just reappears with no trace of why.
+      const attachLog = vscode.window.createOutputChannel("MIMIR Server");
+      if (!silent) attachLog.show();
+      attachLog.appendLine(
+        `Attaching to ${override} — no server is started here because the ` +
+        `"mimir.wsUrl" setting is set. Clear it to let MIMIR start its own server.`
+      );
+      this._attachLog = attachLog;
       this._teardownServer();
       this._wsUrl = override;
       this._connectToServer(override);
       return;
     }
+    // A spawned connect is not attached to anything.
+    this._attachLog = undefined;
 
     // Clean slate: a server left over from a previous connect (possibly on another
     // backend) is ours, and nothing else should be left holding a port.
@@ -710,6 +793,7 @@ class MimirAgentViewProvider implements vscode.WebviewViewProvider {
         "\nServer did not report a listening address within 120s — giving up. " +
         "Check the endpoint above is reachable, then connect again."
       );
+      this._pendingAutoConnect = undefined;
       this._view?.webview.postMessage({ type: "ws_closed" });
     }, 120_000);
 
@@ -730,6 +814,8 @@ class MimirAgentViewProvider implements vscode.WebviewViewProvider {
       clearTimeout(startupTimer);
       outputChannel.appendLine(`\nServer exited (code ${code})`);
       serverProcess = undefined;
+      // Nothing left to catch a webview up on — don't replay "connecting".
+      this._pendingAutoConnect = undefined;
       this._view?.webview.postMessage({ type: "ws_closed" });
     });
   }
@@ -902,7 +988,10 @@ class MimirAgentViewProvider implements vscode.WebviewViewProvider {
     }
 
     if (m.type === "get_config") {
+      // The webview's mount handshake: the one point where it is certainly
+      // listening, so it is also where a connect it missed is replayed.
       this._sendConfig();
+      this._resumeAutoConnect();
       return;
     }
 
@@ -939,6 +1028,9 @@ class MimirAgentViewProvider implements vscode.WebviewViewProvider {
         void this.memento.update(REMEMBERED_KEY, undefined);
       }
 
+      // A hand-typed connect supersedes any auto-connect still being replayed.
+      this._pendingAutoConnect = undefined;
+      this._autoConnectStarted = true;
       this._startServerAndConnect(model, backend, baseUrl, anthropicApiKey);
       return;
     }

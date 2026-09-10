@@ -8,7 +8,7 @@ import sys
 import threading
 from typing import Any, Callable
 
-from .base import LLMBackend, normalize_finish_reason
+from .base import LLMBackend, normalize_finish_reason, PromptTooLongError
 from .tag_parser import ThinkTagParser
 # The assistant↔tool pairing invariant belongs to the history, not to this provider:
 # history.py owns the single implementation and applies it before every model call.
@@ -41,8 +41,14 @@ def _get_vllm_config() -> tuple[str, str]:
     return base_url, api_key
 
 
-def _fetch_models(config: tuple[str, str] | None = None) -> list[dict]:
-    """Return the raw model objects from GET <base_url>/v1/models, or [] on error.
+def probe_models(config: tuple[str, str] | None = None) -> tuple[list[dict], str]:
+    """Ask GET <base_url>/v1/models, returning (model objects, failure reason).
+
+    The reason is "" when the request succeeded — an endpoint that answers while
+    serving nothing yields ([], ""). Callers that only want the list use
+    ``_fetch_models``; the reason exists so a caller can tell "the endpoint is not
+    answering" apart from "the endpoint serves no model", which are the same empty
+    list but very different things to report to the user.
 
     *config* is the (base_url, api_key) pair to ask; ``None`` means the vLLM
     endpoint. Ray Serve speaks the same OpenAI API on its own address, so the
@@ -60,9 +66,14 @@ def _fetch_models(config: tuple[str, str] | None = None) -> list[dict]:
             resp = client.get(url, headers=headers)
             resp.raise_for_status()
             data = resp.json()
-    except Exception:
-        return []
-    return [m for m in data.get("data", []) if isinstance(m, dict)]
+    except Exception as exc:
+        return [], f"{type(exc).__name__}: {exc}"
+    return [m for m in data.get("data", []) if isinstance(m, dict)], ""
+
+
+def _fetch_models(config: tuple[str, str] | None = None) -> list[dict]:
+    """Return the raw model objects from GET <base_url>/v1/models, or [] on error."""
+    return probe_models(config)[0]
 
 
 def list_served_models(config: tuple[str, str] | None = None) -> list[str]:
@@ -623,7 +634,7 @@ class VllmBackend(LLMBackend):
                 prompt_text += _json.dumps(tools)
             prompt_tokens = self.count_text_tokens(model, prompt_text)
             if prompt_tokens >= mml:
-                raise ValueError(
+                raise PromptTooLongError(
                     f"Prompt ({prompt_tokens} tokens) exceeds the model's context "
                     f"window ({mml} tokens) for {model!r}. Reduce the conversation "
                     f"(/context compact, /clear) or use a model with a larger window."

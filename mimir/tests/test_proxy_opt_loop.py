@@ -289,7 +289,7 @@ class RunnerConvergenceRequirementTests(_TmpStorageTest):
         self.assertEqual(res.get("status"), "ok")
 
         from mimir.tests.test_proxy_ops import eval_session
-        cfg, err_response, run_dir = eval_session._prepare_run("conv")
+        cfg, err_response, run_dir, _notice = eval_session._prepare_run("conv")
         self.assertIsNone(err_response)
 
         import _proxy_runner
@@ -355,7 +355,7 @@ class RunnerSettlesRatchetTests(_TmpStorageTest):
         import sys
         from unittest import mock
         from mimir.tests.test_proxy_ops import eval_session
-        cfg, err_response, run_dir = eval_session._prepare_run("fast")
+        cfg, err_response, run_dir, _notice = eval_session._prepare_run("fast")
         self.assertIsNone(err_response)
         procs._update_opt_active_link("fast", run_dir)
         import _proxy_runner

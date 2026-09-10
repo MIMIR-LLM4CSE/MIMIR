@@ -13,6 +13,9 @@ import json
 import unittest
 from unittest.mock import patch
 
+from mimir.client.event_sink import event_sink
+from mimir.client.prompt.system_prompt import build_tool_catalog_for_planning
+from mimir.client.query_engine import agent_loop
 from mimir.client.query_engine import history as history_module
 from mimir.client.query_engine.history import (
     _digest_call_args,
@@ -20,6 +23,7 @@ from mimir.client.query_engine.history import (
     _force_fit_to_window,
     _maybe_compact_intra_query,
     _message_tokens,
+    WIRE_LIST_TOKENS_PER_MESSAGE,
     reconcile_tool_pairs,
 )
 
@@ -61,8 +65,88 @@ class MessageTokensTests(unittest.TestCase):
         self.assertIsNone(m["content"])
         self.assertGreater(_message_tokens(m, len), 0)
 
-    def test_empty_message_costs_nothing(self) -> None:
-        self.assertEqual(_message_tokens({"role": "user", "content": ""}, len), 0)
+    def test_empty_content_still_costs_its_envelope(self) -> None:
+        """A message with nothing to say is still a message on the wire.
+
+        It used to score 0, which was the same optimism one layer down: the
+        provider is sent ``{"role": "user", ...}`` whether or not the content is
+        empty, and a budget that scores it free is a budget that will be short by
+        one envelope per message. Small per message, and there are hundreds.
+        """
+        empty = _message_tokens({"role": "user", "content": ""}, len)
+        self.assertGreater(empty, 0)
+        # Bounded, though: an envelope is an envelope, not a message's worth.
+        self.assertLess(empty, 32)
+
+    def test_nothing_at_all_costs_nothing(self) -> None:
+        self.assertEqual(_message_tokens({}, len), 0)
+
+
+class WireUnitsTests(unittest.TestCase):
+    """The budget's units are the provider's units.
+
+    Regression cover for the crash that ended session ``7d322a3b``: the backstop
+    announced ``truncated ~441,752 tokens of older content to fit the model's
+    window`` — the branch it only takes when ``_force_fit_to_window`` returned
+    True — and the very next call was refused with *Prompt (272,386 tokens)
+    exceeds the model's context window (262,144 tokens)*. Both sides used the
+    same tokenizer. They were counting different strings: the budget measured
+    content and tool-call arguments as bare text, the provider measured
+    ``json.dumps(messages)``. No tokenizer closes a difference in what is
+    measured, so the fit was optimistic by construction — by ~18% on ordinary
+    tool traffic and ~30% on the escape-dense pages a web fetch returns, which is
+    what two of them had just put in the history.
+    """
+
+    @staticmethod
+    def _escape_dense_history(n: int = 60) -> list[dict]:
+        """The shape that broke it: quotes, newlines and JSON inside JSON."""
+        fetched = json.dumps({
+            "status": "ok",
+            "body": "\n".join(
+                f'<p class="mw-body">a "quoted" span \\( x_{i} \\) and a path /a/b_{i}.py</p>'
+                for i in range(30)
+            ),
+        }, indent=2)
+        messages = [{"role": "system", "content": "sys " * 200}]
+        for i in range(n):
+            messages.append(_assistant(_call(f"c{i}", url=f"https://x/{i}")))
+            messages.append({"role": "tool", "tool_call_id": f"c{i}", "content": fetched})
+        return messages
+
+    def test_budget_is_never_under_what_the_provider_will_count(self) -> None:
+        messages = self._escape_dense_history()
+        budget = (sum(_message_tokens(m, len) for m in messages)
+                  + len(messages) * WIRE_LIST_TOKENS_PER_MESSAGE)
+        # What VLLMBackend.chat measures before it refuses.
+        on_the_wire = len(json.dumps(messages))
+        self.assertGreaterEqual(
+            budget, on_the_wire,
+            "the budget under-counts what the provider will be sent — "
+            "the shape that let a fit be announced on a prompt that was refused",
+        )
+
+    def test_the_old_text_shaped_measure_would_have_under_counted(self) -> None:
+        """The premise, so the test above cannot pass by measuring nothing."""
+        messages = self._escape_dense_history()
+        text_shaped = sum(
+            len("\n".join(
+                [str(m.get("content") or "")]
+                + [json.dumps((tc.get("function") or {}).get("arguments", ""))
+                   for tc in (m.get("tool_calls") or [])]
+            ))
+            for m in messages
+        )
+        self.assertLess(text_shaped, len(json.dumps(messages)))
+
+    def test_a_fitted_history_fits_on_the_wire(self) -> None:
+        """End to end: what the backstop calls a fit, the provider can accept."""
+        messages = self._escape_dense_history()
+        window = len(json.dumps(messages)) // 2  # force the backstop to engage
+        target = window - len(messages) * WIRE_LIST_TOKENS_PER_MESSAGE
+        fitted = _force_fit_to_window(messages, target, len)
+        self.assertTrue(fitted)
+        self.assertLessEqual(len(json.dumps(messages)), window)
 
 
 class CompactionTriggerTests(unittest.TestCase):
@@ -120,6 +204,13 @@ class CompactionTriggerTests(unittest.TestCase):
 class ForceFitArgumentsTests(unittest.TestCase):
     """The backstop must be able to reduce what it counts."""
 
+    # Above the irreducible floor of the fixture below (~603 under the wire
+    # measure: two protected messages plus every message's envelope). Was 600,
+    # which sat just under that floor once the measure stopped ignoring the
+    # envelope — the reduction under test still happens either way, so the
+    # number is pressure, not the subject.
+    TARGET = 700
+
     @staticmethod
     def _history() -> list[dict]:
         return [
@@ -134,15 +225,16 @@ class ForceFitArgumentsTests(unittest.TestCase):
     def test_a_message_with_no_content_but_huge_arguments_is_reducible(self) -> None:
         messages = self._history()
         self.assertIsNone(messages[1]["content"])  # nothing for the old pass to shrink
-        fitted = _force_fit_to_window(messages, 600, len)
+        fitted = _force_fit_to_window(messages, self.TARGET, len)
         self.assertTrue(fitted)
-        self.assertLessEqual(sum(_message_tokens(m, len) for m in messages), 600)
+        self.assertLessEqual(
+            sum(_message_tokens(m, len) for m in messages), self.TARGET)
         self.assertIn("elided", messages[1]["tool_calls"][0]["function"]["arguments"]["content"])
 
     def test_the_newest_call_turn_keeps_its_arguments(self) -> None:
         """The turn whose results are being answered must stay legible to the model."""
         messages = self._history()
-        _force_fit_to_window(messages, 600, len)
+        _force_fit_to_window(messages, self.TARGET, len)
         self.assertEqual(messages[3]["tool_calls"][0]["function"]["arguments"]["content"],
                          "y" * 10)
 
@@ -250,3 +342,89 @@ class EnforceBudgetIntegrationTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class InterruptedQueryStateTests(unittest.TestCase):
+    """A query that dies still says what it left behind.
+
+    Session ``7d322a3b`` ended on a provider error rendered as the entire answer.
+    A source file edited ninety seconds earlier had never been measured and an
+    optimisation session sat open on a baseline nobody would remember — none of
+    which appeared anywhere, because the ledger that reports exactly this is
+    built on the normal exit path and that path was never reached.
+    """
+
+    @staticmethod
+    def _context_with_unfinished_work() -> dict:
+        return {
+            "dirty_written_files": {"/w/wave2d/abc.py"},
+            "validated_files": set(),
+            "runs": {},
+        }
+
+    def test_state_is_emitted_when_a_query_dies(self) -> None:
+        events: list[dict] = []
+        with event_sink(events.append):
+            agent_loop._emit_interrupted_state(self._context_with_unfinished_work())
+        text = " ".join(e.get("text", "") for e in events)
+        self.assertIn("ended early", text)
+        self.assertIn("abc.py", text)
+
+    def test_a_clean_context_says_nothing(self) -> None:
+        events: list[dict] = []
+        with event_sink(events.append):
+            agent_loop._emit_interrupted_state({})
+        self.assertEqual(events, [])
+
+    def test_reporting_never_masks_the_failure_it_reports(self) -> None:
+        """It runs with an exception in flight; it may not raise a second one."""
+        events: list[dict] = []
+        with event_sink(events.append):
+            agent_loop._emit_interrupted_state({"dirty_written_files": object()})  # type: ignore[dict-item]
+
+
+class PlanModeToolCatalogTests(unittest.TestCase):
+    """Plan mode hides the tools; it must not hide what they do.
+
+    In session ``7d322a3b`` the plan was built entirely around ``proxy_eval`` /
+    ``proxy_manage`` / ``proxy_exec``, all of which are PLAN_BLOCKED and therefore
+    stripped from the tool list — schemas included. A third of the planning phase
+    went on recovering their contract: two filesystem-wide ``find`` calls that timed
+    out at 30 s and 60 s, a grep through the session's own transcripts, and finally
+    ``sed -n '204,300p'`` over mimir's own server source. The docstrings enumerate
+    every op; they were simply not in the room.
+    """
+
+    _DESCRIPTIONS = {
+        "proxy_eval": ("Drive an iterative proxy-optimization session as a monotone "
+                       "ratchet (sensitive).\n\n    Operations (set op): init, run"),
+        "bash_run": "Run a shell command in the workspace.",
+    }
+
+    def _catalog(self, **kw):
+        return build_tool_catalog_for_planning(
+            {"proxy_eval": "proxy", "bash_run": "bash"}, {"proxy_eval"}, **kw)
+
+    def test_each_tool_carries_what_it_does(self) -> None:
+        catalog = self._catalog(tool_descriptions=self._DESCRIPTIONS)
+        self.assertIn("monotone ratchet", catalog)
+        self.assertIn("shell command", catalog)
+
+    def test_the_name_and_its_server_are_still_there(self) -> None:
+        catalog = self._catalog(tool_descriptions=self._DESCRIPTIONS)
+        self.assertIn("proxy_eval", catalog)
+        self.assertIn("- proxy:", catalog)
+        self.assertIn("[sensitive]", catalog)
+
+    def test_one_line_per_tool_and_no_more(self) -> None:
+        """A catalog long enough to be skipped is the same as no catalog."""
+        catalog = self._catalog(tool_descriptions=self._DESCRIPTIONS)
+        for line in catalog.splitlines():
+            self.assertLessEqual(len(line), 140, line)
+        # The op list belongs to the schema, not here.
+        self.assertNotIn("Operations (set op)", catalog)
+
+    def test_it_degrades_to_names_when_no_description_is_known(self) -> None:
+        catalog = self._catalog()
+        self.assertIn("proxy_eval", catalog)
+        self.assertNotIn("—", catalog)

@@ -38,6 +38,8 @@ from ....servers._shared.shell_paths import (
     EXEC_COMMANDS,
     EXEC_EFFECTS,
     INSPECT_COMMANDS,
+    GIT_READ_SUBCOMMANDS,
+    GIT_VALUE_FLAGS,
     NEUTRAL_COMMANDS,
     READ_COMMANDS,
     SEARCH_COMMANDS,
@@ -327,6 +329,8 @@ def _classify_segment(argv: list[str]) -> Segment:
         target = next((a for a in argv[1:] if not a.startswith("-") and a != "~"), None)
         return Segment(Kind.CHDIR, [target] if target else [])
 
+    if head == "git":
+        return _git_segment(argv)
     if head == "module":
         return _module_segment(argv)
     if head in ENV_MANAGER_COMMANDS:
@@ -352,6 +356,45 @@ def _classify_segment(argv: list[str]) -> Segment:
     # Unplaced head: read as a run. Its path-position operands are still credited and
     # confined, which is what an unclassified command most needs.
     return Segment(Kind.UNKNOWN, _file_operands(argv), head, effect=EFFECT_RUN)
+
+
+def _git_subcommand(argv: list[str]) -> str:
+    """The subcommand in a ``git`` invocation, or "" if there is none to find.
+
+    Global flags come before it and one class of them eats the following token, so a
+    scan that stopped at the first non-flag word read ``/repo`` as the subcommand of
+    ``git -C /repo status``.
+    """
+    i = 1
+    while i < len(argv):
+        tok = argv[i]
+        if tok in GIT_VALUE_FLAGS:
+            i += 2
+            continue
+        if tok.startswith("-"):
+            i += 1
+            continue
+        return tok
+    return ""
+
+
+def _git_segment(argv: list[str]) -> Segment:
+    """Place a ``git`` invocation by what its subcommand does to the repository.
+
+    Read-only subcommands are INSPECT, which is what lets plan mode run them: a mode
+    that exists to find out what the code is was refusing ``git status`` and
+    ``git log`` — observed three times in one planning phase, which then went looking
+    for the same information by walking the filesystem instead.
+
+    Everything else keeps the UNKNOWN/run classification it has always had. A
+    multiplexer is only as safe as its narrowest reading, and this is a policy
+    predicate rather than a security boundary — the bash server validates every
+    accepted call on its own.
+    """
+    sub = _git_subcommand(argv)
+    if sub in GIT_READ_SUBCOMMANDS:
+        return Segment(Kind.INSPECT, _inspect_operands(argv))
+    return Segment(Kind.UNKNOWN, _file_operands(argv), "git", effect=EFFECT_RUN)
 
 
 def shell_segments(

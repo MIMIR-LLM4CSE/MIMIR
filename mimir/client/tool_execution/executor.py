@@ -413,6 +413,7 @@ async def execute_tool_call(
     execution_context: dict[str, Any] | None = None,
     run_auto_validation: bool = True,
     call_id: str = "",
+    record_observations: bool = True,
 ) -> str:
     """Run the full policy-and-execution pipeline for one tool call.
 
@@ -423,6 +424,13 @@ async def execute_tool_call(
 
     ``call_id`` is the id the UI put this call's row under; it travels with a run that
     ends up awaiting a verdict so the verdict can be shown on that row.
+
+    ``record_observations=False`` runs the call without adding it to what the
+    guardrails have seen. It is for a call the *client* makes on its own account — a
+    background-job watcher polling a status op — where crediting the observation to
+    the agent would put a step it never took into the record the nudges read. Only
+    the bookkeeping is skipped: the policy gates, the registry and the approval path
+    all still apply, because the tool being called is still a real tool call.
     """
     evaluation = evaluate_tool_preconditions(
         agent=agent,
@@ -485,7 +493,8 @@ async def execute_tool_call(
 
     runs_before = set(unsettled_runs(execution_context or {}))
     failed_before = set(failed_runs(execution_context or {}))
-    record_tool_observation(agent, tool_name, arguments, normalized, execution_context, call_id)
+    if record_observations:
+        record_tool_observation(agent, tool_name, arguments, normalized, execution_context, call_id)
 
     # Invalidate cached reads for a path when it has just been written.
     if has_cap(tool_name, EDIT, agent.tool_caps):

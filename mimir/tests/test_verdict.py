@@ -26,6 +26,7 @@ import mimir.client.tool_execution.executor as executor
 from mimir.client.config.constants import EXERCISE_BUDGET, VALIDATION_RETRY_BUDGET
 from mimir.client.context.capabilities import JUDGE, ToolCaps
 from mimir.client.context.execution_context import build_execution_context, record_run
+from mimir.client.event_sink import event_sink
 from mimir.client.guardrails.verdict import apply_verdict
 
 
@@ -186,6 +187,102 @@ class ApplyVerdictTests(unittest.TestCase):
         apply_verdict("pass", "fine", "bench.py", ec)
         apply_verdict("pass", "fine", "foo.py", ec)
         self.assertEqual(ec["nudge_counts"][EXERCISE_BUDGET], 1)
+
+
+class RejectedVerdictTests(unittest.TestCase):
+    """A run that worked and lost is not a run that failed.
+
+    Reconstructed from session ``7d322a3b``, where the model wrote
+
+        report_verdict(verdict='fail',
+          reason="OMP_NUM_THREADS=64 rejected: time_s=0.064247 > best 0.055586")
+
+    about a run that had measured cleanly. `fail` addresses everything outstanding
+    and charges the repair budget, so one accurate sentence about a thread count
+    marked thirteen unrelated runs — rebuilds, a pytest run, greps — as defects.
+    """
+
+    def _ctx(self):
+        ec = build_execution_context()
+        record_run(ec, "gcc -O3 -shared kernel.c", completed=True, call_id="c1")
+        record_run(ec, "pytest -q tests/", completed=True, call_id="c2")
+        record_run(ec, "proxy_eval", completed=True, call_id="c3")
+        return ec
+
+    def test_a_rejection_settles_only_the_run_it_names(self) -> None:
+        ec = self._ctx()
+        settled = apply_verdict(
+            "rejected", "0.0642 vs the incumbent's 0.0556 — slower", "proxy_eval", ec)
+        self.assertEqual([r["command"] for r in settled], ["proxy_eval"])
+        self.assertEqual(ec["runs"]["proxy_eval"]["verdict"], "rejected")
+        # The runs it said nothing about are untouched, and still owe a reading.
+        self.assertEqual(ec["runs"]["gcc kernel.c"]["verdict"], "")
+        self.assertEqual(ec["runs"]["pytest tests/"]["verdict"], "")
+
+    def test_a_rejection_charges_no_repair_budget(self) -> None:
+        """The point of the word. A search rejects most of what it tries."""
+        ec = self._ctx()
+        for _ in range(VALIDATION_RETRY_BUDGET + 2):
+            record_run(ec, "proxy_eval", completed=True, call_id="c3")
+            apply_verdict("rejected", "slower than the incumbent", "proxy_eval", ec)
+        self.assertEqual(ec["runs"]["proxy_eval"]["failures"], 0)
+
+    def test_a_fail_on_the_same_run_still_charges(self) -> None:
+        """`rejected` is a new word, not a softening of the existing one."""
+        ec = self._ctx()
+        apply_verdict("fail", "segfault in the fused kernel", "proxy_eval", ec)
+        self.assertEqual(ec["runs"]["proxy_eval"]["failures"], 1)
+
+    def test_an_unscoped_rejection_takes_the_most_recent_run(self) -> None:
+        ec = self._ctx()
+        settled = apply_verdict("rejected", "no improvement", "", ec)
+        self.assertEqual([r["command"] for r in settled], ["proxy_eval"])
+
+
+class VerdictScopeResolutionTests(unittest.TestCase):
+    """A scope the model wrote precisely has to match.
+
+    The ledger key drops flags and pipelines, so it is normally *shorter* than
+    anything a model would write to name a run. Matching only "scope inside key"
+    meant a more informative scope matched nothing and fell back — to one run for
+    `pass`, to every run for `fail`. Precision widened the blast radius.
+    """
+
+    def _ctx(self):
+        ec = build_execution_context()
+        record_run(ec, "gcc -O3 -shared kernel.c", completed=True, call_id="c1")
+        record_run(ec, "proxy_eval", completed=True, call_id="c2")
+        return ec
+
+    def test_a_scope_longer_than_the_key_still_matches_it(self) -> None:
+        ec = self._ctx()
+        # Exactly what the session wrote, after VERDICT_DUE told it run="proxy_eval".
+        settled = apply_verdict(
+            "fail", "the run crashed", "proxy_eval(op='run') OMP=64", ec)
+        self.assertEqual([r["command"] for r in settled], ["proxy_eval"])
+        self.assertEqual(ec["runs"]["gcc kernel.c"]["verdict"], "")
+        self.assertEqual(ec["runs"]["gcc kernel.c"]["failures"], 0)
+
+    def test_a_scope_shorter_than_the_key_still_matches_it(self) -> None:
+        """The original direction keeps working."""
+        ec = self._ctx()
+        settled = apply_verdict("fail", "compile error", "gcc", ec)
+        self.assertEqual([r["command"] for r in settled], ["gcc -O3 -shared kernel.c"])
+
+    def test_a_scope_that_names_nothing_still_addresses_everything(self) -> None:
+        """Deliberate, and unchanged: a dropped statement was the worse failure."""
+        ec = self._ctx()
+        settled = apply_verdict("fail", "something broke", "make -j8", ec)
+        self.assertEqual(len(settled), 2)
+
+    def test_and_says_so_rather_than_doing_it_quietly(self) -> None:
+        ec = self._ctx()
+        events: list[dict] = []
+        with event_sink(events.append):
+            apply_verdict("fail", "something broke", "make -j8", ec)
+        text = " ".join(e.get("text", "") for e in events)
+        self.assertIn("matched no outstanding run", text)
+        self.assertIn("proxy_eval", text)  # names what it could have said
 
 
 class VerdictToolTests(unittest.TestCase):

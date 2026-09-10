@@ -13,6 +13,7 @@ import json
 from typing import Any
 
 from ..event_sink import emit
+from .backends.base import message_wire_form
 from ..config.constants import (
     TOOL_HISTORY_CHAR_BUDGET as _TOOL_HISTORY_CHAR_BUDGET,
     TOOL_HISTORY_TOKEN_BUDGET as _TOOL_HISTORY_TOKEN_BUDGET,
@@ -271,7 +272,14 @@ def _trim_tool_history(
                 continue
 
         to_remove.append(idx)
-        removed_size += _size(content)
+        # Credited in the same units the budget is spent in. `total_size` is the
+        # wire form of each message; crediting only `content` back made every
+        # eviction look smaller than it was, so the loop kept going and evicted
+        # the whole tool history to reach a budget it had already met. Invisible
+        # while the two happened to coincide — a tool result carries no
+        # tool_call arguments — and a systematic over-eviction the moment the
+        # measure grew an envelope.
+        removed_size += _message_tokens(msg, _size)
         # Keep execution_context in sync: evicting a file read invalidates its
         # read_files entry, so policy demands a fresh re-read before the next edit.
         # The substring fallback covers untracked (carried-over) messages.
@@ -414,26 +422,43 @@ def _message_content_str(m: dict) -> str:
     return c if isinstance(c, str) else json.dumps(c)
 
 
+# What one message costs beyond its own wire form, once it sits in the list that is
+# serialised and sent: the ", " that separates it from the next, its share of the
+# enclosing brackets, and the sub-token remainder every per-message count floors.
+# Measured at ~3 on a 241-message tool-heavy history; kept whole and slightly
+# generous, because under-counting here is the failure this whole measure exists
+# to prevent.
+WIRE_LIST_TOKENS_PER_MESSAGE = 4
+
+
 def _message_tokens(m: dict, token_counter: Any) -> int:
-    """Tokens for one message: its ``content`` PLUS its tool calls' arguments.
+    """Tokens for one message, measured on the form the provider is sent.
 
-    The single size measure every budgeting pass uses. Counting only ``content``
+    The single size measure every budgeting pass uses, and it has to be in the
+    same units as the wall it is protecting against. Counting only ``content``
     is what let a history whose weight lived in ``tool_calls[].function.arguments``
-    — file bodies handed to write_file — read as barely half its real size: the
-    trim and compaction triggers never fired, while the prompt the provider
-    actually received (it serializes the whole message, arguments included) was
-    nearly twice what they measured.
+    — file bodies handed to write_file — read as barely half its real size.
+    Counting content *and* arguments as bare text left a second gap of the same
+    kind, quieter and never closed: the backend refuses on
+    ``json.dumps(prepared_messages)`` (see the window guard in vllm_backend.chat),
+    so every ``\n`` it escapes, every quote it doubles and every ``role`` /
+    ``tool_call_id`` key it adds is prompt the budget never saw. On an ordinary
+    tool-heavy history that envelope is ~18% of the total, and on escape-dense
+    content — HTML, LaTeX, JSON inside JSON, the shapes a web fetch returns — it
+    reaches 30%.
 
-    Content and arguments are joined into ONE string and counted in a single call:
-    ``count_text_tokens`` may make a blocking /tokenize round-trip (cached per
-    model/length/hash), so one call per message beats one per argument.
+    That gap is what let ``_force_fit_to_window`` report a fit and the provider
+    reject the very same prompt: 272,386 tokens against a 262,144 window, after a
+    backstop that had just announced it had made it fit. The two were never
+    reading the same string, and no tokenizer — heuristic or exact — closes a
+    difference in *what is measured* rather than in how.
+
+    Serialised in ONE call per message: ``count_text_tokens`` may make a blocking
+    /tokenize round-trip, cached per model/length/hash, so one call per message
+    beats one per part — and the wire form of a message is as stable across steps
+    as its content, so the cache still hits.
     """
-    parts = [_message_content_str(m)]
-    for tc in m.get("tool_calls") or []:
-        args = (tc.get("function") or {}).get("arguments", "")
-        if args:
-            parts.append(args if isinstance(args, str) else json.dumps(args))
-    text = "\n".join(p for p in parts if p)
+    text = message_wire_form(m)
     return token_counter(text) if text else 0
 
 
@@ -703,7 +728,14 @@ def _enforce_context_budget(
     # per-message estimate omits. Destructive, so the user is notified when it drops
     # content — that loss is otherwise silent.
     if total:
-        usable = max(1, total - reserved - overhead)
+        # Per-message counts are the wire form of each message; the list that holds
+        # them costs a little more still — the separators between the objects, the
+        # enclosing brackets, and the rounding each per-message count floors away.
+        # ~0.8% on a tool-heavy history, and the one part of the envelope a
+        # per-message measure cannot see, so it is subtracted rather than hoped for:
+        # the point of this budget is that it is never the optimistic one.
+        usable = max(1, total - reserved - overhead
+                     - len(messages) * WIRE_LIST_TOKENS_PER_MESSAGE)
         before = sum(_message_tokens(m, token_counter) for m in messages)
         fitted = _force_fit_to_window(messages, usable, token_counter)
         after = sum(_message_tokens(m, token_counter) for m in messages)

@@ -29,6 +29,46 @@ from typing import Any
 from ... import human_pause
 
 
+def _direct_opener():
+    """An opener that ignores HTTP_PROXY/HTTPS_PROXY.
+
+    The LLM backend is an internal cluster address; a corporate proxy has no
+    route to it, so a proxied probe hangs until its own timeout instead of
+    failing fast. ``urlopen`` consults the environment by default, unlike the
+    ``trust_env=False`` httpx clients the backends use — same posture, stated
+    explicitly here.
+    """
+    import urllib.request as _r
+    return _r.build_opener(_r.ProxyHandler({}))
+
+
+# Consecutive status probes that come back without a state we recognise before a
+# watcher gives up. A probe that stopped working — a policy violation, a dead server,
+# a renamed op — is indistinguishable from a running job if we only look for a
+# terminal state, and a watcher that keeps polling one leaves the agent waiting on a
+# wake that can never come. Five ticks is past the exponential backoff's early, short
+# intervals, so a single transient failure never trips it.
+_UNREADABLE_POLL_LIMIT = 5
+
+
+def _labelled_questions(questions: list, prefix: str) -> list:
+    """Mark each question with *prefix* (empty prefix: the list, untouched)."""
+    if not prefix:
+        return questions
+    out = []
+    for q in questions:
+        if isinstance(q, dict) and q.get("question"):
+            q = {**q, "question": f"{prefix}{q['question']}"}
+        out.append(q)
+    return out
+
+
+def _first_line(value: Any) -> str:
+    """The first line of an error payload, for a one-line reason. "" when there is none."""
+    text = str(value or "").strip()
+    return text.splitlines()[0][:200] if text else ""
+
+
 class _AgentWorker:
     """Runs MimirAgent in a dedicated background thread with its own event loop.
 
@@ -103,7 +143,6 @@ class _AgentWorker:
         - MIMIR_BACKEND_TIMEOUT  (seconds, default 600)
         - MIMIR_BACKEND_POLL_INTERVAL (seconds, default 5)
         """
-        import urllib.request as _req
         import urllib.error as _uerr
 
         try:
@@ -136,7 +175,7 @@ class _AgentWorker:
 
         def _check() -> bool:
             try:
-                with _req.urlopen(health_url, timeout=4) as r:
+                with _direct_opener().open(health_url, timeout=4) as r:
                     return r.status == 200
             except _uerr.HTTPError as e:
                 # 403/401 means server is up but requires auth — treat as ready
@@ -232,7 +271,7 @@ class _AgentWorker:
         def _call():
             req = _urllib_req.Request(_url, data=_body,
                                       headers={"Content-Type": "application/json"})
-            with _urllib_req.urlopen(req, timeout=120):
+            with _direct_opener().open(req, timeout=120):
                 pass
         try:
             await asyncio.get_event_loop().run_in_executor(None, _call)
@@ -258,7 +297,7 @@ class _AgentWorker:
                 return  # shutdown sentinel
 
             self._current_task = asyncio.current_task()
-            self._query_session_id = self.active_session_id
+            self._query_session_id = item.get("session_id") or self.active_session_id
             await self._run_query(item)
             self._current_task = None
             self._query_session_id = None
@@ -483,7 +522,7 @@ class _AgentWorker:
             # instead of keyword-sniffing the risk sentence for "destructive".
             "reversibility": reversibility_of(tool_name, agent.tool_caps),
             "scope": scope_label,
-            "label": label,
+            "label": f"{self._detached_prefix()}{label}" if label else label,
         }
         self.out_q.put(payload)
 
@@ -575,7 +614,7 @@ class _AgentWorker:
         self.out_q.put({
             "type": "continue_prompt",
             "id": req_id,
-            "summary": summary,
+            "summary": f"{self._detached_prefix()}{summary}",
         })
         # No timeout: keep the agent parked until answered (Stop cancels).
         response = self._await_response(self._continue_q)
@@ -596,7 +635,7 @@ class _AgentWorker:
         self.out_q.put({
             "type": "user_question",
             "id": req_id,
-            "questions": list(questions),
+            "questions": _labelled_questions(list(questions), self._detached_prefix()),
         })
         # No timeout: keep the agent parked until answered (Stop cancels).
         response = self._await_response(self._question_q)
@@ -652,8 +691,15 @@ class _AgentWorker:
         if self._agent is not None:
             self._agent.load_state(state)
 
-    def submit_query(self, text: str, history: list) -> None:
-        self._query_q.put({"text": text, "history": history})
+    def submit_query(self, text: str, history: list,
+                     session_id: str | None = None) -> None:
+        """Queue a turn. ``session_id`` names the conversation it belongs to.
+
+        Omitted, the turn belongs to whichever session is active when it starts —
+        the ordinary case, a user typing. A background-job wake passes it explicitly,
+        because the conversation that launched the job may no longer be on screen.
+        """
+        self._query_q.put({"text": text, "history": history, "session_id": session_id})
         self._query_event.set()  # wake the query loop immediately
 
     def submit_steer(self, text: str) -> None:
@@ -691,6 +737,19 @@ class _AgentWorker:
                     break
         self._drain_steer_q()
 
+    def _detached_prefix(self) -> str:
+        """A marker for a prompt raised by a turn the user is not currently reading.
+
+        A background-job wake resumes the session that launched the job, which may not
+        be the one on screen. Its approval and question cards still have to be shown —
+        the turn is parked until they are answered — so they say which conversation
+        they belong to instead of appearing to come from the one being read.
+        """
+        running = self._query_session_id
+        if running and running != self.active_session_id:
+            return "⏱ background session · "
+        return ""
+
     def _drain_steer_q(self) -> list[str]:
         """Pop and return all queued steer messages (the agent's ``_poll_steer``)."""
         out: list[str] = []
@@ -708,6 +767,11 @@ class _AgentWorker:
         ``job_key`` so re-launching the same job never spawns a second watcher.
         Returns True when a watcher is (already) active — the loop uses this to
         tell the model it may end its turn.
+
+        The session that launched the job is captured here and travels with the
+        watcher: a two-hour build outlives the conversation on screen, and the wake
+        belongs to the conversation that asked for it, not to whichever one the user
+        happens to be reading when it lands.
         """
         if not isinstance(descriptor, dict):
             return False
@@ -717,21 +781,31 @@ class _AgentWorker:
         existing = self._bg_jobs.get(job_key)
         if existing is not None and not existing.done():
             return True  # already watched
+        session_id = self._query_session_id or self.active_session_id
         try:
             task = asyncio.get_event_loop().create_task(
-                self._watch_job(job_key, descriptor))
+                self._watch_job(job_key, descriptor, session_id))
         except RuntimeError:
             return False
         self._bg_jobs[job_key] = task
         return True
 
-    async def _watch_job(self, job_key: str, descriptor: dict) -> None:
+    async def _watch_job(self, job_key: str, descriptor: dict,
+                         session_id: str | None = None) -> None:
         """Poll a detached run to completion, then emit ``job_complete`` on ``out_q``.
 
         An independent task on the worker loop that outlives the launching turn.
         Read-only status polling only (safe to interleave with an active turn on the
         single-threaded loop). The WS session handles the UI notification and the
         auto-resume, because it owns the conversation history (see ``_drain_loop``).
+
+        The probes run with observations off: a watcher tick is this worker asking a
+        question, not a step the model took, and recording it as one would credit the
+        agent with work it did not do.
+
+        The event carries the descriptor's own ops. The session that reads it knows
+        nothing about what kind of job this was, so what it can say to the model comes
+        from the descriptor and the summary rather than from anything it names itself.
         """
         status_op  = descriptor.get("status_op") or {}
         summary_op = descriptor.get("summary_op") or {}
@@ -743,20 +817,36 @@ class _AgentWorker:
         interval, max_interval = 5.0, 30.0
         terminal = {"done", "crashed", "unknown"}
         state = "running"
+        reason = ""
+        unreadable = 0
         try:
             while True:
                 await asyncio.sleep(interval)
                 interval = min(interval * 1.5, max_interval)
                 try:
                     raw = await self._agent._run_tool(
-                        status_tool, dict(status_op.get("args") or {}))
+                        status_tool, dict(status_op.get("args") or {}),
+                        record_observations=False)
                     payload = json.loads(raw) if isinstance(raw, str) else (raw or {})
                     state = str(payload.get("state") or "")
+                    if not state:
+                        reason = (_first_line(payload.get("error"))
+                                  or f"'{status_tool}' returned no state")
                 except asyncio.CancelledError:
                     raise
-                except Exception:
-                    continue  # transient poll failure — retry next tick
+                except Exception as exc:
+                    state, reason = "", f"'{status_tool}' raised {type(exc).__name__}"
                 if state in terminal:
+                    break
+                if state:
+                    unreadable = 0   # 'running', or any state the descriptor's op owns
+                    continue
+                # Not a state we can act on. Retried a few times in case it is
+                # transient, then reported as unknown — an honest "I lost track of it"
+                # reaches the user, where another silent tick never would.
+                unreadable += 1
+                if unreadable >= _UNREADABLE_POLL_LIMIT:
+                    state = "unknown"
                     break
         except asyncio.CancelledError:
             self._bg_jobs.pop(job_key, None)
@@ -767,18 +857,23 @@ class _AgentWorker:
         if summary_tool:
             try:
                 raw = await self._agent._run_tool(
-                    summary_tool, dict(summary_op.get("args") or {}))
+                    summary_tool, dict(summary_op.get("args") or {}),
+                    record_observations=False)
                 summary = json.loads(raw) if isinstance(raw, str) else (raw or {})
             except Exception:
                 summary = {}
 
         self.out_q.put({
-            "type":    "job_complete",
-            "job_key": job_key,
-            "server":  descriptor.get("server"),
-            "kind":    descriptor.get("kind"),
-            "state":   state,
-            "summary": summary,
+            "type":       "job_complete",
+            "job_key":    job_key,
+            "server":     descriptor.get("server"),
+            "kind":       descriptor.get("kind"),
+            "state":      state,
+            "summary":    summary,
+            "status_op":  status_op,
+            "summary_op": summary_op,
+            "session_id": session_id,
+            "reason":     reason if state == "unknown" else "",
         })
         self._bg_jobs.pop(job_key, None)
 

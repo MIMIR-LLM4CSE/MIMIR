@@ -30,17 +30,40 @@ field naming the exact next call — follow it.
            {"metric": "l2_rel",  "operator": "lt",  "threshold": 1e-3},  # accuracy constraint
            {"metric": "finite",  "operator": "eq",  "threshold": 1},     # no NaN/Inf
        ],
-       proxy_source_path="/abs/path/to/harness.py",   # runs the code, prints metrics — NEVER edited
+       proxy_source_path="<workspace>/proxy_bench/harnesses/<name>.py",  # NEVER edited
        optimize_paths=["/abs/path/to/pkg/solver.py",  # the real code the harness imports
                        "/abs/path/to/pkg/kernel.py"], # several files are fine
        primary_metric="time_s",   # scalar objective the ratchet improves
        primary_goal="min",        # "min" or "max"
-       min_improvement=0.02,      # relative margin required to count as an improvement (2%; guards timing noise)
+       min_improvement=0.02,      # FLOOR for the accept margin — the measured noise wins if it is larger
        max_stall=5,               # non-improving feasible runs before "converged"
+       repeat=0,                  # measurements per case; 0 = 3 for a timing metric, 1 for a reproducible one
        confirm=True,
    )
    ```
    This snapshots the `optimize_paths` **tree** as the baseline.
+
+   **Measure the baseline, then read the margin the reply gives you.** Each case is
+   run `repeat` times and reduced to its **median**, never its best — the minimum of
+   several draws improves with the number of draws whatever the code does. The spread
+   across the baseline's own replicates is the noise floor of this machine, and the
+   margin a run must clear is that floor or `min_improvement`, whichever is larger.
+   `min_improvement` alone cannot guard noise it has not measured: on a 192-core shared
+   node it stood at 2% against a real spread of 3.1%, and a kernel rewrite worth nothing
+   was accepted on a 2.8% "gain" that four later runs of the same code could not
+   reproduce. Every run reports `min_improvement`, `margin_source` and `primary_spread`
+   — if the spread is close to your gains, raise `repeat` before believing them.
+
+   **Write the harness under `proxy_bench/harnesses/`.** Everything else the proxy owns
+   already lives in `<workspace>/proxy_bench/` — the registry, the sealed references, the
+   runs, the optimisation state, the snapshot repository, and the harnesses
+   `proxy_manage(op='scaffold')` generates. A harness written by hand belongs with them,
+   and putting it anywhere else leaves a project with two directories for one activity:
+   observed as a `benchmarks/` beside a `proxy_bench/`, with nothing to say which held
+   what. `proxy_manage(op='clean')` removes runs, optimisation state and snapshots — it
+   does not touch harnesses, so they survive a reset like the references do. Keeping the
+   harness in the repo instead is a legitimate choice when it is a deliverable the user
+   maintains; drifting there by accident is not.
 
    **The harness is not the subject.** `proxy_source_path` runs the code and prints
    metrics; `optimize_paths` is the code, which the harness should **import**. Writing a
@@ -83,10 +106,11 @@ these requirements.
 1. **Run**: `proxy_eval(op='run', confirm=True)`. The call **waits** for the run and
    answers with the verdict and the per-case results, so there is nothing to poll —
    do not call `proxy_eval_status()` around it.
-   - For a run you expect to be long, add `background=True` to skip the wait: **end
-     your turn** afterward, and you are automatically resumed with the results when
-     it completes, leaving you and the user free meanwhile. Do NOT poll a
-     backgrounded run either.
+   - For a run you expect to be long, add `background=True` to skip the wait. If the
+     result says the run is being watched, **end your turn** on it: you are resumed
+     with the results when it completes, leaving you and the user free meanwhile, and
+     you must NOT poll it. Say that only when the result says it — a promise of a
+     resume is the client's to make, never yours to assume.
    - A run still going when the wait budget expires detaches itself the same way:
      the response says so, and the rule is again to end your turn.
    - If the run crashed: `proxy_eval_status(op='log', tail=100)` to diagnose.

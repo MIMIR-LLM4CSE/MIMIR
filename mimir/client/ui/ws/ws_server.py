@@ -104,6 +104,38 @@ __all__ = ["serve", "main", "_AgentWorker", "_Session"]
 _MAX_FRAME_BYTES = 32 * 1024 * 1024
 
 
+def _no_model_message() -> str:
+    """Explain why no model could be resolved, naming the endpoint that was asked.
+
+    Falls back to the plain "pass --model" advice for backends that cannot
+    enumerate themselves (Ollama, Anthropic), where an empty list says nothing
+    about reachability.
+    """
+    advice = "No model specified. Pass --model <name> or set MIMIR_DEFAULT_MODEL."
+    try:
+        from ...query_engine.backends.vllm_backend import probe_models, _get_vllm_config
+    except ImportError:
+        return advice
+    backend = os.environ.get("LLM_BACKEND", "vllm")
+    if backend not in ("vllm", "ray"):
+        return advice
+    try:
+        base_url, api_key = _get_vllm_config()
+        _, reason = probe_models((base_url, api_key))
+    except Exception as exc:  # config resolution itself failed
+        return f"{advice} (could not resolve the endpoint address: {exc})"
+    if reason:
+        return (
+            f"The {backend} endpoint at {base_url} did not answer, so the served "
+            f"model could not be resolved ({reason}). Check that it is running and "
+            f"reachable from here, then connect again."
+        )
+    return (
+        f"The {backend} endpoint at {base_url} answered but serves no model. "
+        f"{advice}"
+    )
+
+
 async def serve(
     host: str = "localhost",
     port: int = 8765,
@@ -128,9 +160,10 @@ async def serve(
             _model = served[0]
             print(f"Auto-selected served model: {_model}", file=_ORIGINAL_STDOUT)
     if not _model:
-        raise ValueError(
-            "No model specified. Pass --model <name> or set MIMIR_DEFAULT_MODEL."
-        )
+        # An unreachable endpoint and one serving nothing both leave the list
+        # empty, and blaming the missing --model sends the user hunting for a
+        # setting when the real answer is that nothing answered at that address.
+        raise ValueError(_no_model_message())
 
     # Prime the context-window cache (/v1/models for vLLM and Ray, /api/show for
     # Ollama) so the budget checks on the WS event loop hit the cache instead of

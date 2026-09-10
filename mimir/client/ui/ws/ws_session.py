@@ -42,6 +42,32 @@ _WS = Any
 # tool call that ignores cancellation.
 _CANCEL_SETTLE_TICKS = 200
 
+# How much of a finished job's own summary a wake carries. Enough for an exit code
+# and the tail of a build log; short of pasting a whole test suite into the history.
+_WAKE_SUMMARY_LIMIT = 2000
+
+# Events that must reach the user no matter which conversation they belong to: each
+# one is a question the agent is parked on, and filtering it as "foreign" (which it is,
+# during a background-job wake in another session) would leave the turn waiting on an
+# answer the user was never shown. They carry their ``session_id``, so the client can
+# say which conversation is asking.
+_INTERACTION_EVENTS = frozenset({"approval", "continue_prompt", "user_question"})
+
+
+def _compact_summary(payload: dict) -> str:
+    """A job's recorded result, as one line of JSON, cut to a budget.
+
+    Passed through rather than interpreted: the client does not know what kind of job
+    ran, so it hands the model what the server recorded instead of paraphrasing it.
+    """
+    try:
+        text = json.dumps(payload, ensure_ascii=False, default=str)
+    except (TypeError, ValueError):
+        text = str(payload)
+    if len(text) <= _WAKE_SUMMARY_LIMIT:
+        return text
+    return f"{text[:_WAKE_SUMMARY_LIMIT]}… [cut: {len(text)} chars in all]"
+
 
 def _reconcile(messages: list[dict]) -> list[dict]:
     """Repair assistant/tool pairing in a restored history.
@@ -90,6 +116,11 @@ class _Session:
         # Length of `history` at the moment the running turn was submitted, so the
         # answer can tell the turn's own messages from the prefix it inherited.
         self._submitted_len = 0
+        # Wake turns running against sessions that are NOT on screen, as
+        # {session_id: length of that session's history when it was submitted}. Keyed
+        # rather than single: two jobs can finish into two different conversations
+        # before either answers, and the second must not evict the first's bookkeeping.
+        self._detached_turns: dict[str, int] = {}
 
     async def run(self) -> None:
         # Send ready immediately so the webview transitions out of "connecting".
@@ -558,8 +589,8 @@ class _Session:
             bar only moves when the answer lands and looks frozen for the whole run.
             """
             nonlocal _last_ctx_tick
-            if not self.worker.is_busy():
-                return
+            if not self._running_turn_is_ours():
+                return  # a detached wake turn's usage is not this session's
             now = time.monotonic()
             if now - _last_ctx_tick < 1.0:
                 return
@@ -569,7 +600,22 @@ class _Session:
         while True:
             events = self.worker.drain()
             for ev in events:
+                if ev.get("type") == "job_complete":
+                    # Routed by the session that launched the job rather than the one
+                    # on screen, so it is handled ahead of the foreign-event filter.
+                    if not self._is_foreign_event(ev):
+                        self.transcript.append(ev)
+                    try:
+                        await self.ws.send(json.dumps(ev, default=str))
+                    except Exception:
+                        return
+                    await self._handle_job_complete(ev)
+                    continue
                 if self._is_foreign_event(ev):
+                    # A detached wake turn still has to leave its answer somewhere:
+                    # its own session file, since it is not this conversation's.
+                    if ev.get("type") == "answer":
+                        await self._persist_detached_answer(ev)
                     continue
                 # Unwrap embedded JSON events (e.g. diff) from output lines.
                 if ev.get("type") == "output":
@@ -658,8 +704,6 @@ class _Session:
                         await self.ws.send(json.dumps({"type": "batch_status", "files": files}))
                     except Exception:
                         pass
-                if ev.get("type") == "job_complete":
-                    await self._handle_job_complete(ev)
             await asyncio.sleep(0.005)
             await _check_and_push_todos()
             await _tick_context_usage()
@@ -705,31 +749,57 @@ class _Session:
     def _wake_text(ev: dict) -> str:
         """Build the auto-resume instruction from a job_complete event.
 
-        Enriched from a proxy results summary (verdict/best/next_step) when present,
-        else a generic completion + diagnose-on-crash instruction.
+        The client does not know what a job *does*. A detached run can be a two-hour
+        compile, a Slurm batch or a proxy optimization, and the only thing this layer
+        holds about it is the descriptor the server handed over. So the wake states
+        the fact and passes the payload through: what the model should do next comes
+        from the job's own recorded result, never from an instruction invented here.
+        Naming another server's ops in this function is how a build once got told to
+        review proxy results and continue an optimization loop that did not exist.
+
+        The one tool name it may use is ``status_op``'s, and only because that is
+        registry data travelling on the descriptor — the same reason the watcher can
+        poll generically. It is the last resort, for a job that recorded no summary.
         """
         job_key = ev.get("job_key", "?")
         state   = ev.get("state", "done")
-        server  = ev.get("server")
+        kind    = ev.get("kind")
         summary = ev.get("summary") if isinstance(ev.get("summary"), dict) else {}
+
+        what = f"Background job '{job_key}'" + (f" ({kind})" if kind else "")
         if state == "crashed":
-            how = ("proxy_eval_status(op='log', tail=100)" if server == "proxy"
-                   else "the job's Slurm logs (slurm_job_status / sacct)")
-            return (f"Background job '{job_key}' crashed. Inspect the failure via "
-                    f"{how} and decide how to proceed.")
-        verdict   = summary.get("verdict")
-        best      = summary.get("best") or {}
-        next_step = summary.get("next_step")
-        parts = [f"Background job '{job_key}' finished."]
-        if verdict:
-            parts.append(f"verdict={verdict}")
+            head = f"{what} crashed."
+        elif state == "unknown":
+            why = ev.get("reason") or "its status stopped being readable"
+            head = f"{what} can no longer be tracked: {why}."
+        else:
+            head = f"{what} finished."
+
+        # Payload conventions, shown only where the server put them — keys, not tool
+        # names, so a job that carries none is described by its summary alone.
+        marks = []
+        if summary.get("verdict"):
+            marks.append(f"verdict={summary['verdict']}")
+        best = summary.get("best") or {}
         if isinstance(best, dict) and best.get("primary_value") is not None:
-            parts.append(f"best {summary.get('primary_metric', 'primary')}="
+            marks.append(f"best {summary.get('primary_metric', 'primary')}="
                          f"{best.get('primary_value')}")
-        head = " ".join(parts)
-        tail = (next_step or "Review proxy_eval_status(op='results') and continue "
-                "the optimization loop, or summarize if converged.")
-        return f"{head} {tail}"
+        if marks:
+            head = f"{head} {' '.join(marks)}"
+
+        # A next step the *server* wrote is an instruction from something that knows
+        # the job; relayed verbatim.
+        next_step = summary.get("next_step")
+        if next_step:
+            return f"{head} {next_step}"
+        if summary:
+            return (f"{head} Here is what it recorded — read it, then carry on with "
+                    f"the work it was part of:\n{_compact_summary(summary)}")
+        status_tool = (ev.get("status_op") or {}).get("tool")
+        if status_tool:
+            return (f"{head} It recorded no result of its own; read its state with "
+                    f"'{status_tool}', then carry on with the work it was part of.")
+        return f"{head} Carry on with the work it was part of."
 
     async def _handle_job_complete(self, ev: dict) -> None:
         """Notify the user and auto-resume the agent when a background job finishes.
@@ -738,8 +808,17 @@ class _Session:
         loop. Here we synthesize a wake and enqueue it through the normal query path
         so the agent resumes with full session history; the serial query loop makes
         it queue behind any turn currently in flight.
+
+        The wake goes to the session that *launched* the job, which the watcher
+        recorded. A two-hour build outlives the conversation on screen, and dropping
+        its result into whatever the user happens to be reading puts an answer in a
+        conversation that never asked the question.
         """
         wake = self._wake_text(ev)
+        owner = ev.get("session_id") or self._active_session_id
+        if owner != self._active_session_id:
+            await self._resume_detached_session(owner, wake, ev)
+            return
         # Show a distinct system-style note rather than a fake user bubble.
         self._display_messages.append({
             "role": "system", "kind": "text",
@@ -750,7 +829,91 @@ class _Session:
         self.transcript.append({"type": "job_wake", "text": wake, "job": ev.get("job_key")})
         self._autosave_session(list(self._display_messages))
         self._submitted_len = len(self.history)
-        self.worker.submit_query(wake, list(self.history))
+        self.worker.submit_query(wake, list(self.history), session_id=owner)
+
+    async def _resume_detached_session(self, session_id: str, wake: str, ev: dict) -> None:
+        """Run a job wake against a stored session that is not the one on screen.
+
+        The conversation lives on disk, not in this object's ``history``, so the wake
+        is appended there and the turn is submitted against that copy. Its events come
+        back stamped with *this* session id and are filtered out of the socket's
+        stream by :meth:`_is_foreign_event`; :meth:`_persist_detached_answer` is what
+        writes the answer back. Best-effort: a session that has since been deleted is
+        dropped with a note to the client rather than resurrected.
+        """
+        try:
+            session = self.store.load_session(session_id)
+        except Exception:
+            await self._notify(f"Background job '{ev.get('job_key', '?')}' finished, but "
+                               f"the session that launched it is gone.")
+            return
+        wake_msg = {"role": "user", "content": wake}
+        session.llm_history.append(wake_msg)
+        session.llm_history_full.append(dict(wake_msg))
+        session.display_messages.append({"role": "system", "kind": "text", "text": f"🔔 {wake}"})
+        try:
+            self.store.save_session(session)
+        except Exception:
+            return
+        self._detached_log(session_id).append(
+            {"type": "job_wake", "text": wake, "job": ev.get("job_key")})
+        # What the turn was handed, so the answer path can tell the turn's own messages
+        # from the prefix it inherited — the same bookkeeping ``_submitted_len`` does
+        # for the active session.
+        self._detached_turns[session_id] = len(session.llm_history)
+        self.worker.submit_query(wake, list(session.llm_history), session_id=session_id)
+        await self._notify(f"🔔 “{session.title or session_id}” resumed in the "
+                           f"background: {wake.split(chr(10))[0]}")
+        await self._send_sessions_list()
+
+    def _detached_log(self, session_id: str) -> TranscriptLog:
+        """A transcript writer bound to a session other than the active one."""
+        log = TranscriptLog()
+        log.bind(session_id)
+        return log
+
+    async def _notify(self, text: str) -> None:
+        """One line of chrome for the client, outside any conversation. Never raises."""
+        try:
+            await self.ws.send(json.dumps({"type": "output", "text": f"  {text}\n"}))
+        except Exception:
+            pass
+
+    async def _persist_detached_answer(self, ev: dict) -> None:
+        """Write a detached turn's answer into its own session file.
+
+        The counterpart of :meth:`_resume_detached_session`. Without it the turn would
+        run, cost its tokens, and vanish: its ``answer`` event belongs to a session
+        this socket is not showing, so the drain loop's normal answer handling — which
+        writes to ``self.history`` — must not touch it.
+        """
+        session_id = ev.get("session_id")
+        if not session_id or session_id not in self._detached_turns:
+            return
+        submitted = self._detached_turns.pop(session_id)
+        try:
+            session = self.store.load_session(session_id)
+        except Exception:
+            return
+        full = self.worker.full_history()
+        context_mode = getattr(self.worker._agent, "context_mode", "full")
+        if full is not None and context_mode == "full":
+            added = full[submitted:] if len(full) > submitted else full[-1:]
+            session.llm_history_full.extend(dict(m) for m in added)
+            session.llm_history = list(full)
+        else:
+            answer_msg = {"role": "assistant", "content": ev.get("text", "")}
+            session.llm_history.append(answer_msg)
+            session.llm_history_full.append(dict(answer_msg))
+        session.display_messages.append(
+            {"role": "agent", "kind": "text", "text": ev.get("text", "")})
+        try:
+            self.store.save_session(session)
+        except Exception:
+            return
+        self._detached_log(session_id).append(ev)
+        await self._notify(f"“{session.title or session_id}” finished its background turn.")
+        await self._send_sessions_list()
 
     async def _compact_history(self) -> bool:
         """Summarize the middle of the session history. True when it actually shrank.
@@ -868,7 +1031,11 @@ class _Session:
         # would wipe the chat on the frontend.
         self._autosave_session(list(self._display_messages))
         self._submitted_len = len(self.history)
-        self.worker.submit_query(effective_text, list(self.history[:-1]) + [{"role": "user", "content": effective_text}])
+        self.worker.submit_query(
+            effective_text,
+            list(self.history[:-1]) + [{"role": "user", "content": effective_text}],
+            session_id=self._active_session_id,
+        )
 
     @staticmethod
     def _text_count(messages: list) -> int:
@@ -912,7 +1079,10 @@ class _Session:
         text = (msg.get("text") or "").strip()
         if not text:
             return
-        if not self.worker.is_busy():
+        if not self._running_turn_is_ours():
+            # Nothing of ours in flight — or a detached wake turn running in another
+            # session, which this message must not be injected into. Either way the
+            # normal query path is right: the serial query loop queues it.
             await self._handle_query(msg)
             return
         self.history.append({"role": "user", "content": text})
@@ -1003,6 +1173,19 @@ class _Session:
         self.worker._clear_todos()
         await self.ws.send(json.dumps({"type": "todo", "items": []}))
 
+    def _running_turn_is_ours(self) -> bool:
+        """True when the worker's in-flight turn belongs to the session on screen.
+
+        One worker serves every session, and a background-job wake runs a turn for the
+        session that launched the job — which may not be the one being read. Steering
+        aims at whatever turn is in flight, so without this check a message typed here
+        would be injected into that other conversation.
+        """
+        if not self.worker.is_busy():
+            return False
+        running = self.worker._query_session_id
+        return running is None or running == self._active_session_id
+
     def _is_foreign_event(self, ev: dict) -> bool:
         """True when *ev* was produced for a session other than the active one.
 
@@ -1010,7 +1193,15 @@ class _Session:
         in; one worker serves every session, so a turn that outlives a switch would
         otherwise stream into the conversation now on screen. Unstamped events
         (produced outside a query) always pass.
+
+        So do the interaction events. Each one is a question the agent is parked on,
+        and a background-job wake runs turns in sessions the user is not looking at:
+        filtering those prompts as foreign would park the turn forever on an answer
+        nobody was shown. They carry their session id, so the prompt can say which
+        conversation is asking.
         """
+        if ev.get("type") in _INTERACTION_EVENTS:
+            return False
         ev_session = ev.get("session_id")
         return ev_session is not None and ev_session != self._active_session_id
 

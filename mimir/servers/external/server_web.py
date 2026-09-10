@@ -7,6 +7,7 @@ Requests to loopback / link-local / private RFC-1918 addresses are blocked.
 """
 
 import ipaddress
+from html.parser import HTMLParser
 import json
 import os
 import socket
@@ -40,7 +41,20 @@ _BLOCKED_NETS = [
 ]
 
 _TIMEOUT = 10   # seconds
-_MAX_BYTES = 512 * 1024  # 512 KB
+
+# Two different ceilings, because they defend against two different things.
+#
+# _MAX_BYTES bounds the socket read: it stops a hostile or runaway endpoint from
+# streaming forever, and 512 KB has always been the right order for that.
+#
+# _MAX_TEXT_CHARS bounds what comes back to the *model*, which is a separate
+# question nobody was asking. A 512 KB body is ~170k tokens on escape-dense
+# markup — around 80% of a 256k window, so two fetches could and did put a
+# session over it with no single call doing anything unusual. A ceiling
+# expressed only in socket bytes cannot see that; this one is sized against the
+# window it has to share.
+_MAX_BYTES = 512 * 1024        # 512 KB — what we will read off the wire
+_MAX_TEXT_CHARS = 128 * 1024   # 128 KB — what we will hand back to the model
 
 
 def _is_blocked_ip(ip: ipaddress._BaseAddress) -> bool:
@@ -104,20 +118,116 @@ class _SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
         return super().redirect_request(req, fp, code, msg, headers, resolved)
 
 
-def _http_request(method: str, url: str, headers: dict = None, data: bytes = None) -> dict:
+class _TextExtractor(HTMLParser):
+    """Visible text from an HTML document, script and style discarded.
+
+    Stdlib only, and deliberately crude: the aim is to stop shipping markup to a
+    model that wanted prose, not to render the page. Markup is most of a modern
+    page's bytes — the tags, the class attributes, the inline JSON — and every one
+    of those bytes is escaped again when the message is serialised, so it is paid
+    for twice before anyone reads it.
+    """
+
+    _SKIP = {"script", "style", "noscript", "svg", "head"}
+    _BREAK = {"p", "br", "div", "li", "tr", "h1", "h2", "h3", "h4", "h5", "h6"}
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self._parts: list[str] = []
+        self._skip_depth = 0
+
+    def handle_starttag(self, tag: str, attrs) -> None:
+        if tag in self._SKIP:
+            self._skip_depth += 1
+        elif tag in self._BREAK:
+            self._parts.append("\n")
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in self._SKIP and self._skip_depth:
+            self._skip_depth -= 1
+
+    def handle_data(self, data: str) -> None:
+        if not self._skip_depth:
+            self._parts.append(data)
+
+    def text(self) -> str:
+        joined = "".join(self._parts)
+        lines = [ln.strip() for ln in joined.splitlines()]
+        return "\n".join(ln for ln in lines if ln)
+
+
+def _looks_like_html(content_type: str, body: str) -> bool:
+    if "html" in content_type.lower():
+        return True
+    head = body[:2048].lstrip().lower()
+    return head.startswith("<!doctype html") or head.startswith("<html")
+
+
+def _readable_body(body: str, content_type: str, raw: bool) -> tuple[str, dict]:
+    """The body as the model should receive it, plus what was done to it.
+
+    Extraction happens *before* the size ceiling, not after: markup is what the
+    ceiling would otherwise spend itself on, and a page whose prose fits easily
+    should not be cut just because its tags did not.
+    """
+    note: dict = {}
+    if not raw and _looks_like_html(content_type, body):
+        parser = _TextExtractor()
+        try:
+            parser.feed(body)
+            parser.close()
+            extracted = parser.text()
+        except Exception:
+            extracted = ""
+        # Empty is the only reliable sign this parser did not understand the page
+        # — a script-shell app, or markup it choked on — and there returning the
+        # markup beats returning nothing. Short-but-present text is not a failure:
+        # a page really can be three sentences, and `extracted_text` in the reply
+        # says what happened, so a caller who wanted the markup can ask for it.
+        if extracted.strip():
+            note["extracted_text"] = True
+            note["html_chars"] = len(body)
+            body = extracted
+    if len(body) > _MAX_TEXT_CHARS:
+        note["truncated"] = True
+        note["full_chars"] = len(body)
+        note["hint"] = (
+            "Only the first part of this document was returned. Fetch a more "
+            "specific URL, or ask for the section you need by name."
+        )
+        body = body[:_MAX_TEXT_CHARS]
+    return body, note
+
+
+def _http_request(method: str, url: str, headers: dict = None, data: bytes = None,
+                  raw: bool = False) -> dict:
     safe_url = _safe_url(url)
     req = urllib.request.Request(safe_url, headers=headers or {}, data=data, method=method)
     opener = urllib.request.build_opener(_SafeRedirectHandler())
     with opener.open(req, timeout=_TIMEOUT) as resp:
-        body = resp.read(_MAX_BYTES)
+        # One byte past the cap, so a body that exactly fills it can be told from
+        # one that was cut off.
+        raw_bytes = resp.read(_MAX_BYTES + 1)
+        wire_truncated = len(raw_bytes) > _MAX_BYTES
+        raw_bytes = raw_bytes[:_MAX_BYTES]
         charset = resp.headers.get_content_charset("utf-8")
+        content_type = resp.headers.get("Content-Type", "")
+        body, note = _readable_body(
+            raw_bytes.decode(charset, errors="replace"), content_type, raw)
+        if wire_truncated:
+            note["truncated"] = True
+            note.setdefault("hint", (
+                f"The response exceeded the {_MAX_BYTES // 1024} KB read limit and "
+                f"was cut off. Fetch a more specific URL."
+            ))
         return ok({
             "method": method,
             "url": url,
             "final_url": resp.geturl(),
             "http_status": getattr(resp, "status", None),
-            "content_type": resp.headers.get("Content-Type", ""),
-            "body": body.decode(charset, errors="replace"),
+            "content_type": content_type,
+            "body": body,
+            **note,
         })
 
 
@@ -133,15 +243,22 @@ def _http_request(method: str, url: str, headers: dict = None, data: bytes = Non
     risk_note="fetches from an authenticated or otherwise sensitive endpoint",
     label="Fetching {url}",
 ))
-def http_get(url: str, headers: dict = None) -> dict:
-    """Perform an HTTP GET request and return the response body (text).
+def http_get(url: str, headers: dict = None, raw: bool = False) -> dict:
+    """Perform an HTTP GET request and return the response body as readable text.
+
+    An HTML page comes back as its visible text, with script, style and markup
+    dropped; anything else comes back as-is. A long document is cut and the reply
+    says so — ``truncated`` with a ``full_chars`` count — so what you get back is
+    never silently a fragment.
 
     Args:
         url:     The target URL (http or https only).
         headers: Optional dict of extra request headers.
+        raw:     Return the HTML untouched instead of its text. For reading the
+                 markup itself — structure, attributes, embedded data.
     """
     try:
-        return _http_request("GET", url, headers=headers)
+        return _http_request("GET", url, headers=headers, raw=raw)
     except ValueError as e:
         return err(str(e), hint="Use a public http(s) URL that does not resolve to internal addresses.")
     except urllib.error.HTTPError as e:

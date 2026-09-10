@@ -488,6 +488,14 @@ class MimirAgent:
             plan_todos=self.plan_todos,
             thinking_depth=self.thinking_depth,
             delegation_available=bool(names_with_cap(DELEGATE, self.tool_caps)),
+            # Read from the live schemas rather than restated anywhere: the server that
+            # declares a tool owns what it does, and a catalog copied by hand is a
+            # catalog that goes stale without anyone noticing.
+            tool_descriptions={
+                fn.get("name", ""): fn.get("description", "")
+                for fn in (t.get("function", {}) for t in self.tools)
+                if fn.get("name")
+            },
         )
 
     def _apply_carry_context(self, execution_context: dict) -> None:
@@ -899,6 +907,7 @@ class MimirAgent:
         execution_context: dict | None = None,
         run_auto_validation: bool = True,
         call_id: str = "",
+        record_observations: bool = True,
     ) -> str:
         return await execute_tool_call(
             agent=self,
@@ -907,6 +916,7 @@ class MimirAgent:
             execution_context=execution_context,
             run_auto_validation=run_auto_validation,
             call_id=call_id,
+            record_observations=record_observations,
         )
 
     async def compact_history(self, history: list[dict]) -> str:

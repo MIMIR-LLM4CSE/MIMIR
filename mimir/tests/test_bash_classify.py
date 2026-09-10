@@ -315,7 +315,7 @@ class ChdirTests(unittest.TestCase):
         operands stay legible enough to credit and to confine.
         """
         for cmd in ("rm -rf .", "curl http://x", "awk '{print}' f.txt",
-                    "bash -c 'ls'", "git status"):
+                    "bash -c 'ls'", "git bisect start"):
             segments = classify_bash_command(cmd)
             self.assertIsNotNone(segments, cmd)
             self.assertEqual([s.kind for s in segments], [Kind.UNKNOWN], cmd)

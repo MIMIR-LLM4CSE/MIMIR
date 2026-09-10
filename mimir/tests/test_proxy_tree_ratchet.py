@@ -32,6 +32,17 @@ class _Workspace(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.wt, True)
         os.environ["MCP_FILES_ROOT"] = self.wt
         self.addCleanup(os.environ.pop, "MCP_FILES_ROOT", None)
+        # `store._CACHE_DIR` is computed once at import, so setting MCP_FILES_ROOT here
+        # moves the workspace without moving the store — every test in this file was
+        # sharing one, and `opt_runs/` accumulated the proxies of whichever tests ran
+        # first. Harmless until something asks "is this the last proxy with state?", and
+        # then answered with another test's leftovers. Repointed the same way
+        # `test_proxy_ops._TmpStorageTest` does, at the path `TreeAtomicityTests` already
+        # spells out by hand.
+        from _lib import store
+        self._saved_cache = store._CACHE_DIR
+        store._CACHE_DIR = os.path.join(self.wt, "proxy_bench")
+        self.addCleanup(setattr, store, "_CACHE_DIR", self._saved_cache)
         os.makedirs(os.path.join(self.wt, "pkg"))
         self.harness = os.path.join(self.wt, "harness.py")
         self.a = os.path.join(self.wt, "pkg", "solver.py")
@@ -271,3 +282,375 @@ class ProxyCleanCommandTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RebaselineTests(_Workspace):
+    """Moving a baseline without burning the record of how you got there.
+
+    ``init`` will not move an existing baseline, and it should not: re-snapshotting
+    mid-optimisation promotes already-optimised code to "the original". But that left
+    the other question — *the harness was wrong, measure again from here* — with no
+    supported answer, and in session ``7d322a3b`` the model found the unsupported one
+    twice in three minutes: ``end`` → ``proxy_manage(op='clean')`` → ``init``. The
+    second pass discarded a boundary condition measured 40% better than the incumbent.
+    """
+
+    def _session(self) -> tuple:
+        from _ops import eval_session
+        from _lib import store
+        cfg = {
+            "proxy_name": "p", "benchmark_name": "b", "requirements": [],
+            "proxy_source_path": self.harness,
+            "optimize_paths": [self.a, self.b],
+            "baseline_id": "ORIGINAL", "baseline_fingerprint": "fp0",
+            "baseline_run_id": "r0", "primary_metric": "time_s",
+            "primary_goal": "min", "min_improvement": 0.02,
+            "max_stall": 5, "stall": 3,
+        }
+        os.makedirs(store._opt_session_runs_dir("p"), exist_ok=True)
+        eval_session._save_opt_config(cfg)
+        with open(store._opt_ledger_file("p"), "w", encoding="utf-8") as fh:
+            fh.write('{"run_id": "r0", "primary_value": 0.0894}\n')
+            fh.write('{"run_id": "r1", "primary_value": 0.0538}\n')
+        store._write_json_atomic(store._opt_best_file("p"),
+                                 {"run_id": "r1", "primary_value": 0.0538})
+        return eval_session, store
+
+    def test_the_ledger_is_archived_not_destroyed(self) -> None:
+        eval_session, store = self._session()
+        out = eval_session.rebaseline("p")
+        self.assertEqual(out["status"], "ok")
+        self.assertFalse(os.path.exists(store._opt_ledger_file("p")))
+        # The result that was lost twice: still readable, under a timestamp. The
+        # stamp goes before the extension so the archive is still a .jsonl.
+        archived = [n for n in out["archived"] if n.startswith("ledger")]
+        self.assertEqual(len(archived), 1)
+        self.assertTrue(archived[0].endswith(".jsonl"))
+        with open(os.path.join(store._opt_session_runs_dir("p"), archived[0])) as fh:
+            self.assertIn("0.0538", fh.read())
+        # The best-so-far moves with it: both or neither, never a ledger that
+        # disagrees with the best it is supposed to explain.
+        self.assertFalse(os.path.exists(store._opt_best_file("p")))
+        self.assertEqual(len(out["archived"]), 2)
+
+    def test_the_baseline_moves_to_the_tree_as_it_stands(self) -> None:
+        eval_session, _ = self._session()
+        self._write(self.a, "A_OPTIMISED\n")
+        out = eval_session.rebaseline("p")
+        self.assertNotEqual(out["baseline_id"], "ORIGINAL")
+        self.assertEqual(out["previous_baseline_id"], "ORIGINAL")
+        cfg = eval_session._load_opt_config("p")
+        self.assertEqual(cfg["baseline_id"], out["baseline_id"])
+        self.assertEqual(cfg["stall"], 0)   # a new baseline is not a stalled one
+        # And it restores to the tree that was there, not the original.
+        self._write(self.a, "SCRATCH\n")
+        from _lib import tree_snapshot
+        tree_snapshot.restore(eval_session.opt_git_dir(), self.wt,
+                              [self.a, self.b], out["baseline_id"])
+        self.assertEqual(self._read(self.a), "A_OPTIMISED")
+
+    def test_the_reply_says_comparisons_moved(self) -> None:
+        """The honesty the end+clean+init route could not offer."""
+        eval_session, _ = self._session()
+        note = eval_session.rebaseline("p")["note"].lower()
+        self.assertIn("new baseline", note)
+        self.assertIn("not against the original", note)
+
+    def test_init_still_refuses_to_move_a_baseline_and_names_the_route(self) -> None:
+        """The invariant stays; what changes is that the exit is signposted."""
+        eval_session, _ = self._session()
+        cfg = eval_session._load_opt_config("p")
+        self.assertEqual(cfg["baseline_id"], "ORIGINAL")  # untouched by anything but rebaseline
+
+    def test_rebaseline_without_a_session_is_a_structured_error(self) -> None:
+        from _ops import eval_session
+        out = eval_session.rebaseline("nope")
+        self.assertEqual(out["status"], "error")
+
+
+class NoiseFloorTests(unittest.TestCase):
+    """A ratchet that cannot see noise ratchets noise in.
+
+    From session ``7d322a3b`` on a 192-core shared node. Two runs of one untouched
+    tree: 0.174488 and 0.179888 — a spread of 3.1%. ``min_improvement`` stood at its
+    default 0.02, documented as guarding timing noise. The next run, a full rewrite of
+    the OpenMP kernels, measured 0.17491 — a 2.8% "gain" the ratchet accepted and the
+    session reported as a step forward. Four later runs of the accepted state spread
+    0.0592-0.0642 against a recorded best of 0.0556, so the headline 3.2x was the
+    minimum of a distribution whose middle said 2.8x.
+    """
+
+    def _cfg(self, **over) -> dict:
+        cfg = {"primary_metric": "time_s", "min_improvement": 0.02}
+        cfg.update(over)
+        return cfg
+
+    def test_the_configured_margin_stands_until_something_is_measured(self) -> None:
+        from _ops import eval_session
+        margin, source = eval_session._effective_min_improvement(self._cfg())
+        self.assertAlmostEqual(margin, 0.02)
+        self.assertEqual(source, "configured")
+
+    def test_a_measured_floor_above_the_configured_one_wins(self) -> None:
+        from _ops import eval_session
+        margin, source = eval_session._effective_min_improvement(
+            self._cfg(noise_floor=0.031))
+        self.assertAlmostEqual(margin, 0.031)
+        self.assertIn("measured", source)
+
+    def test_the_session_that_produced_this_would_now_reject_its_own_step(self) -> None:
+        """The regression this whole lane exists for, with its real numbers."""
+        from _ops import eval_session
+        from _lib.ratchet import _is_improvement
+        baseline, fused = 0.179888, 0.17491          # what the two runs measured
+        floor = abs(0.179888 - 0.174488) / 0.179888  # 3.1%, from the two baseline runs
+        margin, _ = eval_session._effective_min_improvement(
+            self._cfg(noise_floor=floor))
+        self.assertTrue(_is_improvement(fused, baseline, "min", 0.02),
+                        "premise: the old 2% margin accepted it")
+        self.assertFalse(_is_improvement(fused, baseline, "min", margin),
+                         "a 2.8% gain cannot clear a 3.1% noise floor")
+
+    def test_a_real_gain_still_clears_the_measured_floor(self) -> None:
+        """The floor rejects noise, not results: float32 was a 22% win."""
+        from _ops import eval_session
+        from _lib.ratchet import _is_improvement
+        margin, _ = eval_session._effective_min_improvement(
+            self._cfg(noise_floor=0.031))
+        self.assertTrue(_is_improvement(0.136145, 0.17491, "min", margin))
+
+    def test_repeat_is_decided_from_the_metric_when_unset(self) -> None:
+        from _ops import eval_session
+        self.assertEqual(eval_session._effective_repeat({"primary_metric": "time_s"}), 3)
+        # An accuracy metric against a sealed reference is bit-reproducible.
+        self.assertEqual(eval_session._effective_repeat({"primary_metric": "l2_rel"}), 1)
+
+    def test_an_explicit_repeat_is_obeyed(self) -> None:
+        from _ops import eval_session
+        self.assertEqual(
+            eval_session._effective_repeat({"primary_metric": "time_s", "repeat": 1}), 1)
+        self.assertEqual(
+            eval_session._effective_repeat({"primary_metric": "l2_rel", "repeat": 7}), 7)
+
+
+class ReplicateAggregationTests(unittest.TestCase):
+    """Replicates collapse to their middle, never to their best."""
+
+    def _runner(self):
+        import importlib.util
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "..", "servers", "proxy", "_proxy_runner.py")
+        spec = importlib.util.spec_from_file_location("_proxy_runner_under_test", path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+
+    def test_the_median_is_taken_not_the_minimum(self) -> None:
+        runner = self._runner()
+        # The four re-runs of the accepted state, as recorded.
+        reps = [{"time_s": v} for v in (0.064247, 0.063696, 0.059171, 0.063534)]
+        agg = runner._aggregate_replicates(reps)
+        self.assertAlmostEqual(agg["time_s"], 0.063615)
+        self.assertGreater(agg["time_s"], min(r["time_s"] for r in reps))
+
+    def test_a_single_replicate_is_left_exactly_as_measured(self) -> None:
+        runner = self._runner()
+        self.assertEqual(runner._aggregate_replicates([{"time_s": 1.5, "dtype": "f32"}]),
+                         {"time_s": 1.5, "dtype": "f32"})
+
+    def test_non_numeric_metrics_survive_aggregation(self) -> None:
+        runner = self._runner()
+        agg = runner._aggregate_replicates(
+            [{"dtype": "float32", "time_s": 1.0}, {"dtype": "float32", "time_s": 3.0}])
+        self.assertEqual(agg["dtype"], "float32")
+        self.assertAlmostEqual(agg["time_s"], 2.0)
+
+    def test_the_spread_is_reported_as_a_fraction_of_the_middle(self) -> None:
+        runner = self._runner()
+        spread = runner._relative_spread(
+            [{"time_s": 0.174488}, {"time_s": 0.179888}], "time_s")
+        self.assertAlmostEqual(spread, 0.0305, places=3)  # the 3.1% floor
+
+    def test_one_measurement_has_no_spread_to_report(self) -> None:
+        runner = self._runner()
+        self.assertIsNone(runner._relative_spread([{"time_s": 1.0}], "time_s"))
+
+
+class CleanKeepsSharedSnapshotsTests(_Workspace):
+    """Tidying one optimisation must not break another's rollback.
+
+    Every proxy writes into ONE snapshot store — a single branch, a shared index, each
+    commit carrying the union of every path ever tracked — so there is no per-proxy
+    history inside it to remove. `clean` handled that by deleting the whole thing, which
+    took the other proxies' snapshots with it: their `best.json` kept an id pointing into
+    a repository that no longer existed, and `reset_to_best` answered "Could not restore
+    the best tree". A rollback lost by cleaning up something else.
+
+    The rule was already stated one paragraph up in `clean`'s own docstring — it does not
+    cascade into references and suites *because they can be shared*. Snapshots are too.
+    """
+
+    def _optimisation(self, name: str, marker: str) -> None:
+        from _ops import eval_session
+        from _lib import store, tree_snapshot
+        os.makedirs(store._opt_session_runs_dir(name), exist_ok=True)
+        self._write(self.a, f"{marker}\n")
+        snap = tree_snapshot.snapshot(
+            eval_session.opt_git_dir(), self.wt, [self.a, self.b], f"{name} best")
+        eval_session._save_opt_config({
+            "proxy_name": name, "benchmark_name": "b", "requirements": [],
+            "proxy_source_path": self.harness, "optimize_paths": [self.a, self.b],
+            "baseline_id": snap, "baseline_run_id": "r0", "primary_metric": "time_s",
+            "primary_goal": "min", "min_improvement": 0.02, "max_stall": 5, "stall": 0})
+        store._write_json_atomic(store._opt_best_file(name),
+                                 {"run_id": "r1", "primary_value": 0.1,
+                                  "tree_snapshot": snap})
+
+    def _rollback(self, name: str):
+        from _ops import eval_session
+        self._write(self.a, "SCRATCH\n")
+        return eval_session.reset_to_best(name)
+
+    def test_cleaning_one_leaves_the_other_able_to_roll_back(self) -> None:
+        from _ops import registry
+        self._optimisation("bench", "BENCH_BEST")
+        self._optimisation("abc", "ABC_BEST")
+        self.assertEqual(self._rollback("abc")["status"], "ok")  # premise
+
+        registry.clean("bench")
+
+        out = self._rollback("abc")
+        self.assertEqual(out["status"], "ok", out.get("error"))
+        self.assertEqual(self._read(self.a), "ABC_BEST")
+
+    def test_and_says_it_kept_them_and_why(self) -> None:
+        from _ops import registry
+        self._optimisation("bench", "BENCH_BEST")
+        self._optimisation("abc", "ABC_BEST")
+        out = registry.clean("bench")
+        kept = " ".join(out["kept"])
+        self.assertIn("tree snapshots", kept)
+        self.assertIn("abc", kept)                       # names who still needs them
+        self.assertNotIn("tree snapshots", out["removed"])
+
+    def test_cleaning_the_last_one_still_removes_them(self) -> None:
+        """Conservative, not hoarding: with nothing left to point in, they go."""
+        from _ops import registry, eval_session
+        self._optimisation("bench", "BENCH_BEST")
+        registry.clean("bench")
+        self.assertFalse(os.path.isdir(eval_session.opt_git_dir()))
+
+    def test_the_last_one_reports_the_removal(self) -> None:
+        from _ops import registry
+        self._optimisation("bench", "BENCH_BEST")
+        out = registry.clean("bench")
+        self.assertIn("tree snapshots", out["removed"])
+
+    def test_an_unregistered_proxy_still_counts_as_needing_them(self) -> None:
+        """State on disk is what keeps a snapshot store alive, not registration."""
+        from _ops import registry, eval_session
+        self._optimisation("bench", "BENCH_BEST")
+        self._optimisation("abc", "ABC_BEST")
+        registry.clean("bench")
+        self.assertTrue(os.path.isdir(eval_session.opt_git_dir()))
+
+
+class ResumeNoticeTests(_Workspace):
+    """Coming back to an old optimisation whose code moved on without it.
+
+    Two guards covered one question between them and left a gap in the middle.
+    `_prepare_run` refuses a first run on an already-edited tree — but only while no
+    baseline run is on record (`if paths and not cfg.get("baseline_run_id")`). Once one
+    is, nothing checks again, so resuming a finished session ran it against a best
+    measured on code no longer on disk and said nothing. Both fingerprints were already
+    on the disk; nobody compared them.
+
+    The action stays manual: `rebaseline` moves the point of comparison, and doing that
+    automatically would let a regression read as progress the moment the new reference
+    landed on a degraded state. Only the *detection* is automatic.
+    """
+
+    def _session(self, *, measured: bool = True) -> None:
+        from _ops import eval_session
+        from _lib import store, procs, tree_snapshot
+        self._write(self.a, "MEASURED_STATE\n")
+        os.makedirs(store._opt_session_runs_dir("bench"), exist_ok=True)
+        snap = tree_snapshot.snapshot(
+            eval_session.opt_git_dir(), self.wt, [self.a], "baseline")
+        eval_session._save_opt_config({
+            "proxy_name": "bench", "benchmark_name": "b", "requirements": [],
+            "proxy_source_path": self.harness, "optimize_paths": [self.a],
+            "baseline_id": snap,
+            "baseline_fingerprint": tree_snapshot.fingerprint(self.wt, [self.a]),
+            "baseline_run_id": "r0" if measured else "",
+            "primary_metric": "time_s", "primary_goal": "min",
+            "min_improvement": 0.02, "max_stall": 5, "stall": 0})
+        run_dir = os.path.join(store._opt_session_runs_dir("bench"), "20240101T000000Z")
+        os.makedirs(run_dir, exist_ok=True)
+        store._write_json_atomic(os.path.join(run_dir, "tree_at_launch.json"), {
+            "snapshot_id": snap, "paths": [self.a],
+            "fingerprint": tree_snapshot.fingerprint(self.wt, [self.a])})
+        procs._update_opt_active_link("bench", run_dir)
+
+    def _notice(self) -> str:
+        from _ops import eval_session
+        cfg = eval_session._load_opt_config("bench")
+        return eval_session._resume_notice(cfg, "bench", [self.a])
+
+    def _activate(self, name: str | None) -> None:
+        from _lib import store
+        if name is None:
+            store._clear_active_session()
+        else:
+            store._write_active_session(name)
+
+    def test_a_resumed_session_on_changed_code_is_flagged(self) -> None:
+        self._session()
+        self._activate(None)                       # the session was ended
+        self._write(self.a, "CHANGED_SINCE\n")     # by a pull, a person, anything
+        notice = self._notice()
+        self.assertTrue(notice)
+        self.assertIn("rebaseline", notice)        # names the supported route
+        self.assertIn("previous best", notice)     # says what it will compare against
+
+    def test_an_ordinary_iteration_is_not(self) -> None:
+        """The false positive that would make the warning unreadable.
+
+        Inside a live session the tree differs from what was last measured on every
+        single iteration — that is the loop working. A check that fired here would fire
+        every time, and a warning that always fires is not read.
+        """
+        self._session()
+        self._activate("bench")
+        self._write(self.a, "CANDIDATE_EDIT\n")
+        self.assertEqual(self._notice(), "")
+
+    def test_a_resumed_session_on_untouched_code_is_not(self) -> None:
+        self._session()
+        self._activate(None)
+        self.assertEqual(self._notice(), "")
+
+    def test_another_proxy_being_active_is_still_a_resumption(self) -> None:
+        self._session()
+        self._activate("some_other_proxy")
+        self._write(self.a, "CHANGED_SINCE\n")
+        self.assertTrue(self._notice())
+
+    def test_a_never_measured_session_is_left_to_the_older_guard(self) -> None:
+        """It is refused outright there; two messages about one thing help nobody."""
+        self._session(measured=False)
+        self._activate(None)
+        self._write(self.a, "CHANGED_SINCE\n")
+        self.assertEqual(self._notice(), "")
+
+    def test_the_notice_survives_the_path_a_caller_reaches(self) -> None:
+        """`run_awaited` rebuilds its answer from `results()` on the completed path.
+
+        Anything set only on the launch payload is dropped there — which is the branch
+        `op='run'` actually takes, so a notice added to `run()` alone would be invisible
+        exactly where it matters.
+        """
+        import inspect
+        from _ops import eval_session
+        carried = inspect.getsource(eval_session.run_awaited)
+        self.assertIn('"resume_notice"', carried)

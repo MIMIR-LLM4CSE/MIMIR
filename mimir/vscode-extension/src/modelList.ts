@@ -57,8 +57,11 @@ export function parseModels(backend: DiscoverableBackend, body: unknown): string
 /**
  * GET the model list from *baseUrl*.
  *
- * Uses Node's http/https directly: they ignore the proxy env vars, which is what
- * we want for an on-prem endpoint a corporate proxy would black-hole. `verifySsl`
+ * Uses Node's http/https with an agent of our own. The env vars are ignored either
+ * way, but `http.proxySupport` (VS Code's default) patches these modules in the
+ * extension host to inject a proxy agent — which black-holes the on-prem endpoint
+ * this asks about. Passing an explicit agent leaves nothing for that patch to fill
+ * in, so the request goes straight to the address the user typed. `verifySsl`
  * mirrors the `mimir.vllmVerifySsl` setting — one switch for both OpenAI-compatible
  * endpoints — for internal HTTPS routes served behind a private CA.
  */
@@ -76,10 +79,15 @@ export function fetchModels(
       reject(new Error(`invalid URL: ${baseUrl}`));
       return;
     }
-    const mod = url.protocol === "https:" ? https : http;
+    const secure = url.protocol === "https:";
+    const mod = secure ? https : http;
+    // Explicit, so VS Code's proxy patching has no default agent to substitute.
+    const agent = secure
+      ? new https.Agent({ rejectUnauthorized: verifySsl })
+      : new http.Agent();
     const req = mod.get(
       url,
-      { rejectUnauthorized: verifySsl, timeout: timeoutMs },
+      { agent, rejectUnauthorized: verifySsl, timeout: timeoutMs },
       (res) => {
         const status = res.statusCode ?? 0;
         if (status < 200 || status >= 300) {

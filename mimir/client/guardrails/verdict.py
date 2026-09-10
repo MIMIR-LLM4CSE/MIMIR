@@ -44,7 +44,31 @@ from __future__ import annotations
 from typing import Any
 
 from ..context import VERDICTS, failed_runs, unsettled_runs
+from ..event_sink import emit
 from .observations import _register_run_failure
+
+
+# Verdicts that settle the one run they speak for and no other. ``pass`` because
+# crediting a run the statement did not mean is the unsafe direction; ``rejected``
+# because a losing candidate says nothing whatsoever about the runs around it — it
+# is a statement about one measurement, and the whole reason the word exists is
+# that ``fail`` was being made to carry it.
+_NARROW_VERDICTS = ("pass", "rejected")
+
+
+def _warn_unmatched_scope(scope: str, runs: dict[str, Any]) -> None:
+    """Say that a ``fail``'s scope named nothing, and what it could have named.
+
+    The fallback stands — dropping the statement silently was the worse failure,
+    and that reasoning has not changed. What was missing is that nobody was told:
+    the model wrote a precise scope, watched it address every outstanding run
+    instead, and had no way to learn the difference.
+    """
+    keys = ", ".join(sorted(runs)[:6]) or "none"
+    emit({"type": "status", "text": (
+        f"  ⚠ Verdict scope '{scope}' matched no outstanding run — applied to all "
+        f"of them. Outstanding: {keys}"
+    )})
 
 
 def _runs_addressed(runs: dict[str, Any], scope: str) -> dict[str, Any]:
@@ -65,9 +89,27 @@ def _runs_addressed(runs: dict[str, Any], scope: str) -> dict[str, Any]:
     if not scope:
         return dict(runs)
     needle = scope.lower()
-    return {
+    matched = {
         key: run for key, run in runs.items()
         if needle in key.lower() or needle in str(run.get("command", "")).lower()
+    }
+    if matched:
+        return matched
+    # Containment the other way round, because precision was being punished. The
+    # ledger key drops flags and pipelines, so it is usually SHORTER than anything
+    # the model would write: told `run="proxy_eval"` by VERDICT_DUE, a model that
+    # writes the more informative `proxy_eval(op='run') OMP=64` has a scope the
+    # key sits inside, not one that sits inside the key — and matched nothing. Every
+    # scope in the session that produced this matched nothing for that reason, and
+    # the fallback then decided what happened next: harmless for `pass`, which falls
+    # back to one run, and thirteen wrongly-failed runs for `fail`, which falls back
+    # to all of them. The more exactly the model named its run, the wider the damage.
+    return {
+        key: run for key, run in runs.items()
+        if key.lower() in needle or (
+            str(run.get("command", "")).lower() in needle
+            if run.get("command") else False
+        )
     }
 
 
@@ -82,8 +124,12 @@ def apply_verdict(
 
     - ``fail`` / ``unknown`` address every outstanding run. Withholding credit from a run
       the statement did not mean costs nothing but a re-judgement.
-    - ``pass`` settles the run it addresses and no other: the one it names, or — unscoped
-      — the most recent one. The rest stay outstanding and are asked about on their own.
+    - ``pass`` and ``rejected`` settle the run they address and no other: the one they
+      name, or — unscoped — the most recent one. The rest stay outstanding and are asked
+      about on their own.
+    - ``rejected`` additionally charges nothing. A candidate that measured correctly and
+      lost is the ordinary outcome of a search, not a defect to repair, and it is the
+      verdict that exists so ``fail`` no longer has to be borrowed for it.
     - ``blocked`` addresses *failed* runs instead, which is a disjoint set: a run that never
       completed is not outstanding, it is already judged. See :func:`_apply_blocked`.
 
@@ -96,7 +142,9 @@ def apply_verdict(
 
     ``fail`` routes through :func:`_register_run_failure`, the *same* ladder a non-zero
     exit drives — retry budget, workflow transition, and the record of what was tried.
-    There is no second mechanism.
+    There is no second mechanism. ``rejected`` deliberately routes through none of it:
+    an optimisation loop rejects most of what it tries, and a ladder that fires on each
+    of those is a ladder that fires on the loop working correctly.
     """
     if execution_context is None or verdict not in VERDICTS:
         return []
@@ -109,9 +157,11 @@ def apply_verdict(
     matched = bool(addressed)
     if not matched:
         addressed = dict(runs)
-    if verdict == "pass" and (not scope or not matched):
+    if verdict in _NARROW_VERDICTS and (not scope or not matched):
         command = next(reversed(addressed))
         addressed = {command: addressed[command]}
+    if verdict == "fail" and scope and not matched:
+        _warn_unmatched_scope(scope, runs)
     settled: list[dict[str, Any]] = []
     for command, run in addressed.items():
         run["verdict"], run["reason"] = verdict, reason

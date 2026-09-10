@@ -144,10 +144,14 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '_shared'))
 
 from mcp.server.fastmcp import FastMCP
-from capabilities import tool_caps, PLAN_READONLY, CODE_EXEC, JUDGE, RECOVERABLE
+from capabilities import (
+    tool_caps, PLAN_READONLY, PLAN_BLOCKED, CODE_EXEC, JUDGE, RECOVERABLE,
+    BACKGROUNDABLE,
+)
 from responses import err, ok
 from module_env import MODULE_ENV_PASSTHROUGH as _MODULE_ENV_PASSTHROUGH
 import proc_run
+import _bash_jobs
 from shell_paths import (
     CLUSTER_SUBMIT_COMMANDS,
     DESTRUCTIVE_COMMANDS,
@@ -311,6 +315,19 @@ def _denial_kind(name: str) -> str:
 _NO_MATCH_COMMANDS = {"grep", "rg", "which"}
 
 
+# Outbound HTTP on this site goes through a corporate proxy, and curl/wget/pip/git
+# read it from the environment alone. Left out of the minimal env, every network
+# command hung until its timeout instead of failing fast: a CUDA runfile fetch burned
+# 180s to reach nothing, and an install session stalled with no error to act on.
+# These are endpoint/bypass config, not code — passed through, never synthesized, so
+# a command sees exactly the proxy the user's own shell sees. Both cases: the tools
+# disagree on which they read, and no_proxy is what keeps internal hosts direct.
+_PROXY_ENV_PASSTHROUGH = (
+    "http_proxy", "https_proxy", "ftp_proxy", "no_proxy",
+    "HTTP_PROXY", "HTTPS_PROXY", "FTP_PROXY", "NO_PROXY",
+)
+
+
 def _safe_env(cwd: str) -> dict:
     """Minimal environment for subprocess execution.
 
@@ -344,9 +361,10 @@ def _safe_env(cwd: str) -> dict:
         "openout_any": "p",
         "openin_any": "p",
     }
-    # Let Lmod find the site's modulefiles when a 'module' command is in play.
-    # These are config/path vars only — they do not themselves run code.
-    for var in _MODULE_ENV_PASSTHROUGH:
+    # Let Lmod find the site's modulefiles when a 'module' command is in play, and
+    # let a network command reach the site's proxy. These are config/path vars only —
+    # they do not themselves run code.
+    for var in _MODULE_ENV_PASSTHROUGH + _PROXY_ENV_PASSTHROUGH:
         val = os.environ.get(var)
         if val:
             env[var] = val
@@ -740,17 +758,62 @@ def _run(
             f"Command timed out after {timeout}s.",
             hint=f"Raise the call's own 'timeout' (up to {_MAX_TIMEOUT}s) if the work "
                  f"genuinely takes that long, or narrow the scope. Past that ceiling a "
-                 f"run does not belong in a call that blocks the turn: submit it as a "
-                 f"background job, which returns a handle this session tracks and "
-                 f"resumes on.",
+                 f"run does not belong in a call that blocks the turn: re-issue it "
+                 f"with background=True, which returns a handle instead of waiting.",
             cwd=cwd,
         )
     except Exception as e:
         return err(str(e), cwd=cwd)
 
 
+def _launch_background(command: str, cwd: str, preamble: str) -> dict:
+    """Detach an already-validated command and return the watcher's handle.
+
+    The descriptor is data, not a tool name in loop code: the client reads status_op /
+    summary_op off it and polls them generically, which is how a run gets watched
+    without the agent spending a model call per poll.
+    """
+    # Where the command sends its own output, from the parse validation already did.
+    # Recorded now so a later empty log is explained rather than guessed about.
+    try:
+        targets = [t for seg in _parse_segments(command) for t in seg.write_targets]
+    except _ShellParseError:
+        targets = []  # it parsed at validation; a change of heart here is not fatal
+
+    try:
+        launched = _bash_jobs.launch(command, cwd, _safe_env(cwd), preamble=preamble,
+                                     output_targets=targets)
+    except OSError as exc:
+        return err(f"Could not start the background job: {exc}", cwd=cwd)
+
+    job_key = launched["job_key"]
+    return ok({
+        "cwd": cwd,
+        "command": command,
+        "job_key": job_key,
+        "pid": launched["pid"],
+        "log": launched["log"],
+        # What was started, not what will happen next: whether anything watches this
+        # run is the client's to know, and it says so itself when it registers one.
+        # A server that promises a resume it does not perform produces a model that
+        # ends its turn on a guarantee nobody is holding.
+        "note": "Started in the background; this call returns before it finishes. "
+                "Its log is readable at the path above while it runs.",
+        "background_job": {
+            "server": "bash",
+            "kind": "shell-command",
+            "job_key": job_key,
+            "run_dir": launched["job_dir"],
+            "status_op": {"tool": "bash_job", "args": {"job_key": job_key}},
+            "summary_op": {"tool": "bash_job",
+                           "args": {"op": "output", "job_key": job_key}},
+        },
+    })
+
+
 @mcp.tool(**tool_caps(
-    caps=[PLAN_READONLY, CODE_EXEC], reversibility=RECOVERABLE, non_batch=True,
+    caps=[PLAN_READONLY, CODE_EXEC, BACKGROUNDABLE], reversibility=RECOVERABLE,
+    non_batch=True,
     fallbacks=['read_file_lines'],
     scope={"args": ["command"], "kind": "command_prefix"},
     risk_note="runs a shell command in the workspace",
@@ -759,7 +822,8 @@ def _run(
     # gets the "raise the call's own 'timeout'" hint instead of a bare loop timeout.
     timeout_secs=_MAX_TIMEOUT + 30,
 ))
-def bash_run(command: str, timeout: int = _DEFAULT_TIMEOUT) -> dict:
+def bash_run(command: str, timeout: int = _DEFAULT_TIMEOUT,
+             background: bool = False) -> dict:
     """Run a controlled bash command inside the workspace root.
 
     This is the primary way to search file contents (there is no separate grep tool)
@@ -801,7 +865,8 @@ def bash_run(command: str, timeout: int = _DEFAULT_TIMEOUT) -> dict:
     - no shell interpreter (bash, sh, eval, sudo): it would run a command nothing
       here can check, and chaining covers what a script would do. Wrappers that take a
       command are fine ('timeout 60 pytest -q', 'env A=B ./run'). No heredoc — pass the
-      text as a quoted argument. No backgrounding, substitution or subshell.
+      text as a quoted argument. No substitution or subshell, and '&' stays refused:
+      to detach a run, pass background=True rather than backgrounding it in the shell.
     - no job submission (sbatch/salloc): the cluster tools return a handle this session
       tracks. No 'dd'/'shred'. These are absent by design: report the limitation
       instead of trying another spelling.
@@ -813,7 +878,13 @@ def bash_run(command: str, timeout: int = _DEFAULT_TIMEOUT) -> dict:
     Args:
         command: Shell command string (single command or simple pipeline).
         timeout: Seconds to wait, capped at 300. Raise it for a real build or suite;
-            past the cap, submit the run as a background job instead.
+            past the cap, pass background=True instead.
+        background: Detach the run and return a handle immediately, for work that does
+            not fit in the cap — a long build, a large download, a full test matrix.
+            The command is validated and approved exactly as a blocking one; only the
+            waiting changes. Its output goes to a log you can read while it runs. If
+            the result comes back saying the run is being watched, end your turn on it
+            — you are resumed with the results. Say that only when the result says it.
     """
     cwd = _WORKSPACE_ROOT
 
@@ -826,6 +897,9 @@ def bash_run(command: str, timeout: int = _DEFAULT_TIMEOUT) -> dict:
     needs_modules = any(seg and seg[0] == "module" for seg in validation["segments"])
     preamble = _module_preamble() if needs_modules else ""
 
+    if background:
+        return _launch_background(command, cwd, preamble)
+
     requested_timeout = timeout
     timeout = max(1, min(timeout, _MAX_TIMEOUT))
     result = _run(command, cwd, timeout, preamble=preamble, segments=validation["segments"])
@@ -835,7 +909,73 @@ def bash_run(command: str, timeout: int = _DEFAULT_TIMEOUT) -> dict:
     return result
 
 
-_VERDICT_VALUES = ("pass", "fail", "unknown", "blocked")
+_JOB_OPS = ("status", "output", "list")
+
+
+@mcp.tool(**tool_caps(label="Background job: {op}"))
+def bash_job(
+    op: Annotated[str, Field(
+        description="status (default) | output | list")] = "status",
+    job_key: str = "",
+) -> dict:
+    """Read a detached bash_run job: its state, its output, or the list of them.
+
+    Read-only, so it stays available while planning and needs no approval.
+
+        status  state of one job: running | done | crashed | unknown, with its
+                elapsed time and, once finished, its exit code.
+        output  the tail of its log, with the same state. This is what to read when
+                a job finishes, and what to read for progress while it runs.
+        list    every job this host knows about, newest first.
+
+    You do not need to poll a job whose launch result said it is being watched: that
+    watcher resumes you when it reaches a terminal state, so end your turn instead.
+    Poll when it said nothing of the sort, or when you deliberately want progress
+    mid-run (a build's current target, say).
+
+    'unknown' is its own answer, not a variant of 'crashed': the process is gone and
+    left no exit code, so it was killed from outside rather than having returned.
+
+    Args:
+        op: The operation to perform (default 'status').
+        job_key: The handle bash_run returned. Required for 'status' and 'output'.
+    """
+    if op not in _JOB_OPS:
+        return err(f"Unknown op '{op}'.", valid_ops=list(_JOB_OPS))
+    if op == "list":
+        return ok({"jobs": _bash_jobs.listing()})
+    if not _bash_jobs.valid_key(job_key):
+        return err("A job_key from bash_run(background=True) is required.",
+                   hint="Use op='list' to see the jobs this host knows about.")
+    if op == "status":
+        return ok(_bash_jobs.state(job_key))
+    return ok(_bash_jobs.output(job_key, _MAX_OUTPUT))
+
+
+@mcp.tool(**tool_caps(
+    caps=[PLAN_BLOCKED], reversibility=RECOVERABLE, non_batch=True,
+    risk_note="kills a running background command",
+    label="Stopping background job",
+))
+def bash_job_stop(job_key: str) -> dict:
+    """Stop a running detached job (SIGTERM, then SIGKILL).
+
+    The whole process group goes, not just the shell — otherwise the compiler it
+    launched keeps the machine busy after the job reads as stopped.
+
+    A stopped job reports state 'unknown' afterwards: it was killed rather than having
+    returned a status. Whatever it had already written to disk stays written — stopping
+    a build halfway leaves a half-built tree to clean up, not a clean slate.
+
+    Args:
+        job_key: The handle bash_run returned.
+    """
+    if not _bash_jobs.valid_key(job_key):
+        return err("A job_key from bash_run(background=True) is required.")
+    return ok(_bash_jobs.stop(job_key))
+
+
+_VERDICT_VALUES = ("pass", "fail", "unknown", "blocked", "rejected")
 
 
 @mcp.tool(**tool_caps(
@@ -848,8 +988,8 @@ _VERDICT_VALUES = ("pass", "fail", "unknown", "blocked")
 def report_verdict(
     verdict: Annotated[str, Field(
         description=(
-            "The judgement: one of 'pass', 'fail', 'unknown', 'blocked'. Required — a "
-            "reason without a verdict judges nothing."
+            "The judgement: one of 'pass', 'fail', 'unknown', 'blocked', 'rejected'. "
+            "Required — a reason without a verdict judges nothing."
         ),
         json_schema_extra={"enum": list(_VERDICT_VALUES)},
     )],
@@ -880,6 +1020,7 @@ def report_verdict(
         verdict="pass",    reason="l2_rel=3.1e-4 against the analytic solution, under the 1e-3 bound"
         verdict="fail",    reason="energy grows from 1.56 to 4.02 — the absorbing layer reflects"
         verdict="unknown", reason="only prints 'Simulation completed.', nothing about correctness"
+        verdict="rejected", reason="32 threads: 0.0642 s against the incumbent's 0.0556 — slower, not kept"
         verdict="blocked", reason="cmake needs a configured build tree; there is none here"
 
     Name the number, message or behaviour you read it from; "it worked" is not a
@@ -898,6 +1039,13 @@ def report_verdict(
     not blocked on being certain, and the user is the last judge of what you could not
     settle.
 
+    `rejected` is for a run that worked and lost: it measured cleanly, you read the
+    number, and the candidate was not an improvement. That is the ordinary outcome of a
+    search, not a defect — it costs no retry budget, settles only the run it names, and
+    is the honest word for most iterations of an optimisation loop. Do not spend `fail`
+    on it: `fail` says the run is broken, and it withholds credit from every other run
+    still awaiting one.
+
     `blocked` is for a run that failed on a wall that is not in your change: a build to
     configure, a package that is not installed, a dataset, an allocation. It does not make
     the run a success — it stays reported as not completed, with your reason attached. It
@@ -906,13 +1054,14 @@ def report_verdict(
     its own; never to avoid a fix you could make.
 
     Args:
-        verdict: "pass", "fail", "unknown" or "blocked".
+        verdict: "pass", "fail", "unknown", "blocked" or "rejected".
         reason:  What in the output shows it — the number, message or behaviour.
         run:     Which run is being judged, as its command — a recognisable fragment is
-                 enough. Optional: left out, a "pass" settles the most recent run, so
-                 name the run whenever you are judging an earlier one. "fail" and
-                 "unknown" address everything outstanding and never need it; "blocked"
-                 addresses every failed run the same way.
+                 enough. Optional: left out, a "pass" or "rejected" settles the most
+                 recent run, so name the run whenever you are judging an earlier one.
+                 "fail" and "unknown" address everything outstanding, which is why a
+                 losing candidate belongs under "rejected" and not under "fail";
+                 "blocked" addresses every failed run the same way.
     """
     value = (verdict or "").strip().lower()
     if value not in _VERDICT_VALUES:

@@ -460,9 +460,9 @@ def sbatch_submit(
     """Submit *command* as a non-blocking Slurm batch job (sensitive, backgroundable).
 
     Unlike salloc_submit (synchronous, interactive), this returns immediately with a
-    ``job_id`` and a ``background_job`` descriptor so the run is tracked off the
-    critical path: end your turn and you are auto-resumed when the job finishes
-    (poll manually with slurm_job_status(job_id) if needed).
+    ``job_id`` and a ``background_job`` descriptor so the run can be tracked off the
+    critical path: when the result says the run is being watched, end your turn and
+    you are auto-resumed when the job finishes; otherwise poll slurm_job_status(job_id).
 
     Args:
         command: The shell command line to run inside the batch job.

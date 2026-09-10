@@ -16,6 +16,7 @@ import os
 TRUSTED_CACHE_ROOTS = (
     "~/.cache/proxy_bench",   # proxy runs + optimization sessions
     "~/.cache/mimir_hpc",     # HPC batch job dirs
+    "~/.cache/mimir_bash",    # detached bash_run job dirs (logs read while running)
 )
 
 

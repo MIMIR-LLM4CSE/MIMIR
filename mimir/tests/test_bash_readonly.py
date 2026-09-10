@@ -58,11 +58,38 @@ class BashCommandReadonlyTests(unittest.TestCase):
         # but never unattended and never while planning. Which is why widening what
         # bash accepts widens what the user is *asked* about, not what slips through.
         for cmd in [
-            "git status",               # reads, but nothing here knows that
+            "git commit -m wip",        # git is placed by subcommand; this one writes
+            "git push",
             "rm -rf build",
             "curl -sL https://example.com",
             "tar -xzf archive.tar.gz",
             "ls && tox -e py311",       # one unplaced segment poisons the chain
+        ]:
+            self.assertFalse(bash_command_is_readonly(cmd), cmd)
+
+    def test_reading_a_repository_is_read_only(self):
+        """`git status` and `git log` are how you find out what a repo is.
+
+        They used to be unplaced, so they classified as runs and plan mode — the
+        mode whose whole job is finding things out — refused them. Observed three
+        times in one planning phase, which then went looking for the same facts by
+        walking the filesystem instead.
+        """
+        for cmd in [
+            "git status",
+            "git log --oneline -10",
+            "git -C /repo status",                       # global flag eats its value
+            "cd /r && git status | head -30; git log -5",  # the shape that was refused
+            "git diff HEAD~1",
+            "git show abc123",
+        ]:
+            self.assertTrue(bash_command_is_readonly(cmd), cmd)
+
+    def test_writing_to_a_repository_is_not(self):
+        """A multiplexer is only as safe as its narrowest reading."""
+        for cmd in [
+            "git commit -am x", "git push", "git checkout -- .", "git stash",
+            "git reset --hard", "git clean -fd", "git config user.name x",
         ]:
             self.assertFalse(bash_command_is_readonly(cmd), cmd)
 

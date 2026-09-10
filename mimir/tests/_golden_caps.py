@@ -33,7 +33,7 @@ _BUILD_DESCRIPTOR_PARAMS = frozenset(inspect.signature(srv.build_descriptor).par
 
 # --- golden expected classification (independent literal snapshots) ----------
 SENSITIVE_TOOLS = {
-    "delete_file", "bash_run", "http_post",
+    "delete_file", "bash_run", "bash_job_stop", "http_post",
     "salloc_submit", "sbatch_submit", "memory_delete",
     "memory_clear", "todo_delete_plan",
     "ft_config_set", "ft_run", "ft_run_slurm", "ft_stop", "ft_runner_promote",
@@ -44,7 +44,7 @@ SENSITIVE_TOOLS = {
 # bash_run is intentionally NOT here: it is PLAN_READONLY (kept available in plan
 # mode for read-only discovery; its exec use is gated client-side at call time).
 PLAN_BLOCKED_TOOLS = {
-    "append_file", "delete_file", "replace_in_file",
+    "append_file", "bash_job_stop", "delete_file", "replace_in_file",
     "replace_all_in_file", "replace_lines", "write_file", "salloc_submit",
     "http_post", "memory_delete", "memory_clear",
     "ft_config_set", "ft_run", "ft_run_slurm", "ft_stop",
@@ -55,6 +55,7 @@ PLAN_BLOCKED_TOOLS = {
 }
 
 NON_BATCH_TOOLS = {
+    "bash_job_stop",
     "proxy_manage", "proxy_exec", "proxy_eval", "proxy_slurm",
     "salloc_submit", "sbatch_submit", "ft_run", "ft_run_slurm", "ft_stop",
     "ft_runner_promote",
@@ -69,7 +70,7 @@ CLUSTER_SUBMIT_TOOLS = {
 
 # Launchers of long detached runs a client watcher can track to completion.
 BACKGROUNDABLE_TOOLS = {
-    "proxy_eval", "proxy_slurm", "sbatch_submit",
+    "bash_run", "proxy_eval", "proxy_slurm", "sbatch_submit",
 }
 
 # Dual-use tools kept available in a read-only mode for read-only invocations only:
@@ -197,7 +198,7 @@ SCOPE_KIND_BY_TOOL = {
 RISK_NOTE_TOOLS = {
     "write_file", "append_file", "delete_file", "replace_in_file",
     "replace_all_in_file",
-    "bash_run", "http_get", "http_post",
+    "bash_run", "bash_job_stop", "http_get", "http_post",
     "env_pip_install", "env_pip_uninstall", "env_create", "env_delete",
     "salloc_submit", "sbatch_submit", "memory_delete",
     "memory_clear", "todo_delete_plan", "proxy_slurm",

@@ -549,22 +549,58 @@ def summarize_search_matches(matches: list[dict], max_items: int = 3) -> str:
     return "\n".join(lines)
 
 
+def _tool_summary(description: str) -> str:
+    """The first sentence of a tool's docstring, short enough to list.
+
+    One line per tool is the whole budget: a catalog long enough to be ignored is
+    the same as no catalog.
+    """
+    text = " ".join((description or "").split())
+    if not text:
+        return ""
+    for stop in (". ", " — ", "; "):
+        if stop in text:
+            text = text.split(stop, 1)[0]
+            break
+    text = text.rstrip(".")
+    return text[:110] + ("…" if len(text) > 110 else "")
+
+
 def build_tool_catalog_for_planning(
     tool_owner: dict[str, str],
     sensitive_tools: set[str],
+    tool_descriptions: dict[str, str] | None = None,
 ) -> str:
+    """What the execution phase will be able to do, for a mode that cannot try it.
+
+    Plan mode strips the write/exec tools from the model's tool list, which removes
+    their schemas along with them — so a plan built entirely around one of them is
+    written by a model that cannot see what it takes. Observed: a third of one
+    planning phase spent on two filesystem-wide ``find`` calls that timed out, a
+    grep through the session's own transcripts for op names, and finally reading
+    mimir's own server source to recover an API whose docstring enumerates every op
+    it accepts. That only worked because the source happened to be on the same disk.
+
+    Names alone were never the answer — the model already had those, and knowing
+    that ``proxy_eval`` exists is not knowing what ``op`` it takes. So each tool
+    carries its one-line summary here, and the schema stays out of the tool list:
+    knowable without being callable.
+    """
+    descriptions = tool_descriptions or {}
     by_server: dict[str, list[str]] = {}
     for tool_name, server_name in tool_owner.items():
         suffix = " [sensitive]" if tool_name in sensitive_tools else ""
-        by_server.setdefault(server_name, []).append(f"{tool_name}{suffix}")
+        summary = _tool_summary(descriptions.get(tool_name, ""))
+        entry = f"{tool_name}{suffix}" + (f" — {summary}" if summary else "")
+        by_server.setdefault(server_name, []).append(entry)
 
     if not by_server:
         return "No tools registered."
 
     lines = []
     for server in sorted(by_server):
-        tools = sorted(by_server[server])
-        lines.append(f"- {server}: {', '.join(tools)}")
+        lines.append(f"- {server}:")
+        lines.extend(f"    {entry}" for entry in sorted(by_server[server]))
     return "\n".join(lines)
 
 
@@ -674,6 +710,7 @@ def build_system_content(
     context_file: str = "",
     thinking_depth: int = 0,
     delegation_available: bool = False,
+    tool_descriptions: dict[str, str] | None = None,
 ) -> str:
     system_content = build_base_system_content(context_file)
 
@@ -776,7 +813,8 @@ def build_system_content(
             )
 
     if active_mode == "plan":
-        tool_catalog = build_tool_catalog_for_planning(tool_owner, sensitive_tools)
+        tool_catalog = build_tool_catalog_for_planning(
+            tool_owner, sensitive_tools, tool_descriptions)
 
         system_content += _section(
             "Current mode: PLAN. Write, execution, and mutation tools are blocked — only the plan document tool is available. "

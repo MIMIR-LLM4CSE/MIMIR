@@ -468,7 +468,12 @@ confinement, with the no-substitution model kept load-bearing. This is also the
 read-only, so it needs no approval and feeds the same discovery signals a tool would.
 
 Tools:
-- `bash_run`
+- `bash_run` — takes `background=True` for a run that does not fit the 300 s cap (see
+  *Detached runs* below).
+- `bash_job(op, job_key)` — read-only handle on a detached run: `status` (its state),
+  `output` (the tail of its log, with the state), `list` (every job this host knows).
+- `bash_job_stop(job_key)` — signals the job's whole process group (TERM, then KILL
+  after a grace period), so a build does not leave its compiler running.
 - `report_verdict` — the model's reading of what a run's output showed (`judge`
   capability). It executes nothing: the client's observer settles the run it names on the
   blackboard (see POLICY.md → *Validation Policy*). It lives here because a verdict is
@@ -477,6 +482,32 @@ Tools:
   **red** one from the change to the environment (a build to configure, a package, a dataset,
   an allocation). It never makes the run green — it stays reported as not completed — it only
   stops it being charged as a defect. Unclaimed, a red exit drives the repair ladder as before.
+
+### Detached runs (`_bash_jobs.py`)
+
+`bash_run` blocks its turn and is capped at 300 s — the right shape for a search, a
+test suite or a short build, and the wrong one for a dependency tree that takes two
+hours to compile. `background=True` spawns the same **already-validated** command into
+its own session with its output redirected to a log, and returns a handle immediately.
+
+Backgrounding is a parameter on a command that has passed the same path checks and
+denylists, which is why the `&` operator stays refused: detaching is the server's job,
+not a shell operator the caller supplies. The job directory lives under a fixed cache
+root (`_shared/trusted_read_roots.py`), so the log is readable with the ordinary file
+tools while the run is still going.
+
+States — `running` (the process is alive), `done` (exited 0), `crashed` (exited
+non-zero), `unknown`. The last is its own answer rather than a variant of the other
+two: the process is gone and left no exit code, so it was killed from outside rather
+than having returned, and reporting that as `done` would be the worst answer this
+module could give. A signal death records `128+signum`.
+
+**Who promises the resume.** The launch result says what was *started* — nothing more.
+Whether anything is watching the job is the client's to know, and the client says so
+itself, in the note it appends when it registers a watcher (see `CLIENT_DETAILED.md` →
+*Background jobs*). This split is load-bearing: a server note that guaranteed a resume
+it does not perform once produced five two-hour builds that finished into silence while
+the model kept ending its turns on a promise nobody was holding.
 
 ### Scope of the sandbox (read this before trusting "confined")
 

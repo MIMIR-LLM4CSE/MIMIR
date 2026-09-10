@@ -63,8 +63,11 @@ none.
 Storage layout
 --------------
 All state lives under ``<workspace>/proxy_bench/`` (registry.json, references/,
-runs/<proxy>/<timestamp>/, suites/<name>/, opt_runs/<proxy>/, scaffolds/, and the
-``opt.git`` snapshot repository). It sits with the project it belongs to, so deleting
+runs/<proxy>/<timestamp>/, suites/<name>/, opt_runs/<proxy>/, scaffolds/, harnesses/,
+and the ``opt.git`` snapshot repository). ``harnesses/`` is where a hand-written
+``proxy_source_path`` belongs, beside the generated ones — a harness put elsewhere gives
+a project a second directory for the same activity, and nothing then says which of the
+two holds what. It sits with the project it belongs to, so deleting
 the project resets the experiment; it used to live in ``~/.cache`` and a deleted project
 came back with its registry, an "in progress" optimisation and a stale run command.
 Override the root with the ``MIMIR_PROXY_BENCH_DIR`` environment variable.
@@ -504,7 +507,8 @@ def proxy_exec(
     return _missing_args(op, run_id=run_id) or runs.cancel(run_id)
 
 
-_EVAL_OPS = ("init", "configure", "run", "stop", "reset", "reset_to_best", "end")
+_EVAL_OPS = ("init", "configure", "run", "stop", "reset", "reset_to_best",
+             "rebaseline", "end")
 
 # op='run' waits for the run it launched, so the default 120 s tool wall would cut it
 # off mid-measurement. Sits above eval_session's own wait budget, which detaches the
@@ -532,6 +536,7 @@ async def proxy_eval(
     min_improvement: float = 0.02,
     max_stall: int = 5,
     convergence: dict | None = None,
+    repeat: int = 0,
     background: bool = False,
     confirm: bool = False,
 ) -> dict:
@@ -568,6 +573,12 @@ async def proxy_eval(
                        *accepted* run (undo a regression without discarding
                        progress). All of them or none: a per-file restore would
                        assemble a combination that was never measured together.
+      rebaseline    -> make the tree as it stands the new baseline, archiving the
+                       ledger and best-so-far under a timestamp rather than
+                       discarding them. For when the HARNESS was wrong and the
+                       baseline has to be re-measured from here — not for making a
+                       regression look like progress: every later comparison then
+                       runs against this point, and the reply says so.
       end           -> end the session: clear the active-session pointer (source,
                        snapshots and ledger are kept). Lifts the direct-execution
                        guard so the proxy can be run by hand again; re-init to
@@ -596,11 +607,18 @@ async def proxy_eval(
         primary_metric: Scalar objective the ratchet improves (default 'time_s').
         primary_goal: 'min' or 'max' (default 'min').
         min_improvement: Relative margin a run must beat the incumbent by to count
-            as an improvement (default 0.02, i.e. 2%). A non-zero default keeps
-            measurement noise on a wall-clock metric from ratcheting in spurious
-            "improvements"; set 0.0 only for a metric with negligible run-to-run
-            variance.
+            as an improvement (default 0.02, i.e. 2%). A FLOOR, not the answer: once
+            the baseline has been measured more than once, the spread across its own
+            replicates is known and the larger of the two is used. A constant alone
+            cannot guard noise it never measured — on a shared node this was set to
+            2% while two runs of one untouched tree differed by 3.1%, and a kernel
+            rewrite worth nothing was accepted on a 2.8% "gain".
         max_stall: Consecutive non-improving feasible runs before 'converged'.
+        repeat: How many times each case is measured before its metrics are believed;
+            the median is what the ratchet compares, never the best of them. 0
+            (default) decides from the metric — 3 for a timing metric, 1 for one
+            that is bit-reproducible against a sealed reference. Raise it on a busy
+            node, set 1 to opt out.
         convergence: Optional {h_param, error_metric} to fit an observed order of
             accuracy across a sweep, exposed as the 'convergence_order' metric.
         background: For op='run', skip the wait and detach immediately, so a watcher
@@ -625,7 +643,7 @@ async def proxy_eval(
                                  proxy_source_path, optimize_paths,
                                  python_executable, max_hours,
                                  primary_metric, primary_goal, min_improvement,
-                                 max_stall, convergence)
+                                 max_stall, convergence, repeat)
     if op == "configure":
         return eval_session.configure(proxy_name, requirements, benchmark_name,
                                       python_executable, max_hours)
@@ -637,6 +655,8 @@ async def proxy_eval(
         return eval_session.reset(proxy_name)
     if op == "reset_to_best":
         return eval_session.reset_to_best(proxy_name)
+    if op == "rebaseline":
+        return eval_session.rebaseline(proxy_name)
     # op == "end"
     return eval_session.end(proxy_name)
 

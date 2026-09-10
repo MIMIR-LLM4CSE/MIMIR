@@ -661,7 +661,19 @@ def files_below_tier(execution_context: dict[str, Any], tier: str) -> list[str]:
 # mistaken for an observation and "the file lints" is never read as "the answer is right".
 # ``blocked`` grades nothing either, and settles nothing: it re-imputes a red exit from
 # the change to the environment, leaving the run as red as the machine saw it.
-VERDICTS: tuple[str, ...] = ("pass", "fail", "unknown", "blocked")
+#
+# ``rejected`` is the fifth because four were not enough to describe an experiment. In a
+# search loop most runs lose, and losing is not failing: the program ran, the number was
+# read, the candidate was simply not better. With no word for that the model reached for
+# ``fail`` — recorded doing exactly this: `fail`, "OMP_NUM_THREADS=64 rejected:
+# time_s=0.064247 > best 0.055586" — and `fail` charges the repair budget and addresses
+# every outstanding run at once, so one honest sentence about a thread count marked
+# thirteen unrelated runs as defects and asked whose fault a healthy run was. The
+# machine side already knew better: `observations._settle_from_machine` declines to
+# charge a run that measured correctly without improving, "the ordinary outcome of an
+# experiment, and charging it would punish most of them". This is the same judgement,
+# made available to the only party that can actually recognise it.
+VERDICTS: tuple[str, ...] = ("pass", "fail", "unknown", "blocked", "rejected")
 
 
 def run_ledger_key(command: str) -> str:

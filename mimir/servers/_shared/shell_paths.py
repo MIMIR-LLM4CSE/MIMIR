@@ -130,6 +130,21 @@ READ_COMMANDS = frozenset({
 })
 SEARCH_COMMANDS = frozenset({"grep", "rg"})
 INSPECT_COMMANDS = frozenset({"ls", "find", "du"})
+# ``git`` is a multiplexer, so it is placed by its subcommand or not at all. These are
+# the ones that only read the repository. Unplaced, the whole of git classified UNKNOWN
+# and so counted as a run, which made ``git status`` and ``git log`` — the two commands
+# for finding out what a repository is — inexpressible in the mode whose entire job is
+# finding things out. Conservative on purpose: anything that writes an object, moves a
+# ref, touches the worktree or talks to a remote is absent, and ``config`` is absent
+# because the same subcommand both reads and writes.
+GIT_READ_SUBCOMMANDS = frozenset({
+    "status", "log", "diff", "show", "branch", "tag", "remote",
+    "rev-parse", "rev-list", "ls-files", "ls-tree", "cat-file",
+    "blame", "describe", "shortlog", "whatchanged", "reflog", "grep",
+})
+# git's own flags that consume the token after them; skipped when looking for the
+# subcommand so ``git -C /repo status`` is still a status.
+GIT_VALUE_FLAGS = frozenset({"-C", "--git-dir", "--work-tree", "--namespace", "-c"})
 # Unconditional writes. ``chmod`` writes a file's *mode* rather than its contents and is
 # here for one reason: a script arriving without the x bit (fresh checkout, or one the
 # agent just wrote) otherwise dead-ends on "Permission denied" with no allowed command
@@ -606,8 +621,19 @@ def parse_segments(command: str) -> list[ParsedSegment]:
             continue
 
         if is_operator:
+            # Grouping parentheses are the one operator a caller routinely means as an
+            # argument rather than as a subshell: `find . \( -name a -o -name b \)`.
+            # The refusal stands — an unquoted `(` starts a subshell whatever was
+            # intended — but saying only "not allowed" sent a planning phase off to
+            # walk the filesystem instead of rewriting one expression, so the reply
+            # names the shape that does work.
+            hint = ""
+            if tok in ("(", ")"):
+                hint = (" An unquoted parenthesis starts a subshell. For a `find`"
+                        " expression, drop the grouping: `-name a -o -name b` already"
+                        " means either.")
             raise ShellParseError(
-                "operator", f"Shell operator '{tok}' is not allowed.")
+                "operator", f"Shell operator '{tok}' is not allowed.{hint}")
 
         argv.append(tok)
         i += 1

@@ -34,6 +34,7 @@ from _lib.store import (
     cache_dir,
     _load_registry_or_err, _load_suite,
     _opt_config_file, _opt_session_runs_dir,
+    _opt_ledger_file, _opt_best_file,
     _resolve_proxy_name, _write_active_session, _clear_active_session,
     _read_json, _write_json_atomic, _file_lock, _run_dir_names,
 )
@@ -49,8 +50,9 @@ _NEXT_RUN       = "proxy_eval(op='run', confirm=True)"
 _NEXT_STATUS    = "proxy_eval_status() to monitor (state 'done' means finished)"
 _NEXT_RESULTS   = "proxy_eval_status(op='results')"
 _NEXT_RESET_BEST = "proxy_eval(op='reset_to_best', confirm=True)"
-_NEXT_DETACHED  = ("end your turn — a watcher follows this run and resumes you with "
-                   "the results when it finishes; do not poll")
+_NEXT_DETACHED  = ("this run continues without you; if the result says it is being "
+                   "watched, end your turn on it rather than polling — you are resumed "
+                   "with the results")
 
 # A run that has reached one of these has nothing left to wait for.
 _TERMINAL_STATES = ("done", "crashed")
@@ -198,6 +200,7 @@ def init(
     min_improvement: float = 0.02,
     max_stall: int = 5,
     convergence: dict | None = None,
+    repeat: int = 0,
 ) -> dict:
     reg, _reg_err = _load_registry_or_err()
     if _reg_err:
@@ -226,6 +229,8 @@ def init(
         return err(f"max_stall must be >= 1, got {max_stall}.")
     if min_improvement < 0:
         return err(f"min_improvement must be >= 0, got {min_improvement}.")
+    if repeat < 0:
+        return err(f"repeat must be >= 0 (0 = decide from the metric), got {repeat}.")
 
     abs_src = os.path.abspath(proxy_source_path)
     if not os.path.isfile(abs_src):
@@ -282,6 +287,7 @@ def init(
         "primary_goal":      primary_goal,
         "min_improvement":   float(min_improvement),
         "max_stall":         int(max_stall),
+        "repeat":            int(repeat),
         "stall":             0,
         "convergence":       convergence or {},
         "initialized_at":    datetime.now(timezone.utc).isoformat(),
@@ -296,8 +302,32 @@ def init(
         "optimize_paths":    abs_paths,
         "baseline_id":       baseline_id,
         "baseline_existed":  baseline_existed,
+        # Said on the reply, not buried in a doc: this is exactly the moment a model
+        # discovers its harness was wrong, and the only route it used to find from
+        # here was end + clean + init, which moves the baseline by destroying the
+        # ledger. Naming the supported one costs a line.
+        **({"baseline_note":
+            "This baseline was taken by an earlier init and has NOT been moved — "
+            "comparisons still run against the original tree. If the harness itself "
+            "was wrong and the baseline must be re-measured from the tree as it "
+            "stands, use proxy_eval(op='rebaseline', confirm=True): it archives the "
+            "ledger and best-so-far instead of discarding them."}
+           if baseline_existed else {}),
         "requirements":      requirements,
         "objective":         f"{primary_goal}imize {primary_metric} subject to the requirements",
+        # What each run will actually cost, and what the accept threshold is until
+        # the machine has been measured. Both were previously silent, and the
+        # second one was a constant asserting a property of a machine nobody had
+        # checked — it read "2% guards timing noise" on a node whose noise was 3.1%.
+        "repeat":            _effective_repeat(cfg),
+        "min_improvement":   float(min_improvement),
+        "margin_note": (
+            f"Each case is measured {_effective_repeat(cfg)}x and reduced to its "
+            f"median. A run must beat the incumbent by {min_improvement:.1%} OR by "
+            f"the spread measured across the baseline's own replicates, whichever "
+            f"is larger — so an edit cannot be accepted on a difference this "
+            f"machine produces without it."
+        ),
         # Names optimize_paths, never proxy_source_path. The old wording here said
         # "Modify '<proxy_source_path>' between runs", which pointed the model at the
         # harness and is what produced a self-contained copy of the solver twice over.
@@ -362,23 +392,117 @@ def configure(
     return ok(_with_next({"config": cfg}, _NEXT_RUN))
 
 
-def _prepare_run(proxy_name: str) -> tuple[dict | None, dict | None, str | None]:
+# Metrics whose value moves between two runs of identical code. A timing metric on a
+# shared node is the whole reason this file needed a notion of noise; an accuracy metric
+# against a sealed reference is reproducible to the bit, and repeating it buys nothing.
+_NOISY_METRICS = ("time_s", "wall_time_s", "elapsed_s", "runtime_s", "gflops_per_s",
+                  "bandwidth_gbytes_per_s")
+
+# Replicates per case when the primary metric is a noisy one and the caller expressed no
+# preference. Three is the smallest number with a middle — enough for a median to mean
+# something, cheap enough to be the default.
+_AUTO_REPEAT = 3
+
+
+def _effective_repeat(cfg: dict) -> int:
+    """How many times to measure each case: what was asked, or what the metric needs.
+
+    ``repeat=0`` means "decide for me", and the decision is made on the metric rather
+    than on a constant: repeating a bit-reproducible accuracy check is pure cost, and
+    not repeating a timing on a 192-core shared node is how a 2.8% edit gets accepted
+    against a 3.1% noise floor.
+    """
+    asked = int(cfg.get("repeat", 0) or 0)
+    if asked > 0:
+        return asked
+    return _AUTO_REPEAT if cfg.get("primary_metric", "time_s") in _NOISY_METRICS else 1
+
+
+def _effective_min_improvement(cfg: dict) -> tuple[float, str]:
+    """The margin a run must clear, and where that number came from.
+
+    ``min_improvement`` was a caller-supplied constant, defaulted to 0.02 and annotated
+    "guards timing noise" — an assertion about a machine nobody had measured. Where the
+    real floor is higher, the guard admits exactly the changes it exists to exclude:
+    observed at 2% configured against 3.1% measured, with a kernel rewrite worth nothing
+    accepted on a 2.8% "gain".
+
+    So the configured value becomes a floor, not the answer. Once the baseline has been
+    measured more than once, the spread of those measurements is known, and the margin
+    is whichever of the two is larger.
+    """
+    configured = float(cfg.get("min_improvement", 0.0) or 0.0)
+    floor = cfg.get("noise_floor")
+    if not isinstance(floor, (int, float)) or floor <= configured:
+        return configured, "configured"
+    return float(floor), "measured noise floor"
+
+
+def _resume_notice(cfg: dict, name: str, paths: list[str]) -> str:
+    """Say when a run is resuming a session whose code moved on without it.
+
+    Two guards used to cover one question between them, and left a gap in the middle.
+    ``_prepare_run`` refuses a first run on an already-edited tree — but only while no
+    baseline run is on record. Once one is, nothing checks anything again, so coming back
+    to a finished optimisation months later ran it against a best measured on code that no
+    longer exists, and said nothing about it.
+
+    The hard part is not noticing that the tree changed: during an optimisation it changes
+    on every iteration, which is the loop working. What distinguishes the two cases is
+    whether this is a **resumption** — a run on a session that is not the current one,
+    because it was ended and is being picked up again. Inside a live session the active
+    pointer names this proxy and nothing fires.
+
+    Compared against the last run's launch tree, not against the baseline: the baseline
+    differs from every candidate by construction, while "different from what we last
+    measured, and we are only now coming back" is precisely "something changed that this
+    loop did not do".
+
+    A notice, never a refusal. Continuing can be exactly right — the change may be the very
+    thing being measured — and the caller is the one who knows.
+    """
+    if not paths or not cfg.get("baseline_run_id"):
+        return ""
+    if _resolve_proxy_name("") == name:
+        return ""  # a live session, not a resumption
+    last_run = _opt_active_run_dir(name)
+    if not last_run:
+        return ""
+    measured = (_read_json(os.path.join(last_run, "tree_at_launch.json")) or {}).get(
+        "fingerprint", "")
+    if not measured or measured == tree_snapshot.fingerprint(_workspace_root(), paths):
+        return ""
+    return (
+        "Resuming a session whose tracked files have changed since it was last measured. "
+        "This run will be compared against the previous best, which was measured on code "
+        "that is no longer on disk. If the change is part of what you are optimising, "
+        "carry on. If it arrived from anywhere else, take the current state as the new "
+        "reference first: proxy_eval(op='rebaseline', confirm=True)."
+    )
+
+
+def _prepare_run(
+    proxy_name: str,
+) -> tuple[dict | None, dict | None, str | None, str]:
     """Shared preamble for local/Slurm eval runs.
 
-    Returns ``(cfg, err_response, run_dir)``: on failure *err_response* is set;
+    Returns ``(cfg, err_response, run_dir, notice)``: on failure *err_response* is set;
     on success *cfg* holds the session config and *run_dir* the fresh run dir
-    (config.json + start_time already written).
+    (config.json + start_time already written). *notice* is a caller-facing warning about
+    the run being launched (see :func:`_resume_notice`), empty when there is nothing to
+    say. Returned rather than hung on *cfg*, which is persisted elsewhere by
+    ``_save_opt_config`` — a warning about one run has no business on disk.
     """
     cfg = _load_opt_config(proxy_name)
     if not cfg:
         return None, err("No optimization session found.",
-                         hint="Call proxy_eval(op='init', ...) first."), None
+                         hint="Call proxy_eval(op='init', ...) first."), None, ""
 
     name           = cfg.get("proxy_name", "")
     benchmark_name = cfg.get("benchmark_name", "")
     if not name or not benchmark_name:
         return None, err("proxy_name and benchmark_name must be set.",
-                         hint="Call proxy_eval(op='init', ...) first."), None
+                         hint="Call proxy_eval(op='init', ...) first."), None, ""
 
     active = _opt_active_run_dir(name)
     if active:
@@ -388,7 +512,7 @@ def _prepare_run(proxy_name: str) -> tuple[dict | None, dict | None, str | None]
             jid = rs.get("slurm_job_id")
             tag = f"slurm_job_id={jid}" if jid else f"pid={pid}"
             return None, err(f"An optimization run is already active ({tag}).",
-                             hint="Use proxy_eval(op='stop', confirm=True) first."), None
+                             hint="Use proxy_eval(op='stop', confirm=True) first."), None, ""
 
     # The first run must measure the UNTOUCHED code. Checked here, before the run is
     # spent, rather than at settle time: a run that cannot be compared to anything is
@@ -404,7 +528,9 @@ def _prepare_run(proxy_name: str) -> tuple[dict | None, dict | None, str | None]
                 "No baseline run on record, and the tracked files have already been "
                 "edited — this run would have nothing to be compared against.",
                 hint="Restore the original with proxy_eval(op='reset', confirm=True), "
-                     "run once to measure it, then optimize from there."), None
+                     "run once to measure it, then optimize from there."), None, ""
+
+    notice = _resume_notice(cfg, name, paths)
 
     run_dir = _new_run_dir(_opt_session_runs_dir(name))
     _write_run_config(run_dir, {
@@ -414,6 +540,8 @@ def _prepare_run(proxy_name: str) -> tuple[dict | None, dict | None, str | None]
         "python_executable": cfg.get("python_executable", ""),
         "deadline_s":        (cfg.get("max_hours") or 24.0) * 3600,
         "convergence":       cfg.get("convergence") or {},
+        "primary_metric":    cfg.get("primary_metric", "time_s"),
+        "repeat":            _effective_repeat(cfg),
         "started_at":        datetime.now(timezone.utc).isoformat(),
     })
     # Freeze what is about to run. The accepted state must be the code that PRODUCED
@@ -432,7 +560,7 @@ def _prepare_run(proxy_name: str) -> tuple[dict | None, dict | None, str | None]
             "fingerprint": tree_snapshot.fingerprint(_workspace_root(), paths),
             "is_baseline": launch_id == cfg.get("baseline_id", ""),
         })
-    return cfg, None, run_dir
+    return cfg, None, run_dir, notice
 
 
 def _background_descriptor(name: str, run_dir: str) -> dict:
@@ -459,7 +587,7 @@ def run(proxy_name: str = "", background: bool = False) -> dict:
     monitors completion off the agent's critical path and auto-resumes the agent with
     the results — the agent should end its turn instead of polling.
     """
-    cfg, error, run_dir = _prepare_run(proxy_name)
+    cfg, error, run_dir, resume_notice = _prepare_run(proxy_name)
     if error:
         return error
     name       = cfg["proxy_name"]
@@ -479,9 +607,12 @@ def run(proxy_name: str = "", background: bool = False) -> dict:
         "benchmark_name": cfg["benchmark_name"],
         "note": "Optimization run started in background.",
     }
+    if resume_notice:
+        payload["resume_notice"] = resume_notice
     if background:
         payload["background_job"] = _background_descriptor(name, run_dir)
-        payload["note"] = "Optimization run detached; a watcher will resume you with it."
+        # States what was started; whether a watcher is on it is the client's to say.
+        payload["note"] = "Optimization run detached; this call returns before it ends."
         return ok(_with_next(payload, _NEXT_DETACHED))
     return ok(_with_next(payload, _NEXT_STATUS))
 
@@ -541,8 +672,12 @@ async def run_awaited(
 
     settled = results(name)
     # Keep the launch identity on the answer: which run this was, and where its log
-    # is, are what a crash diagnosis needs and `results` does not carry.
-    for key in ("pid", "log", "benchmark_name"):
+    # is, are what a crash diagnosis needs and `results` does not carry. `resume_notice`
+    # rides along for a blunter reason: this branch rebuilds its reply from `results()`,
+    # so anything set only on the launch payload is dropped here — and this is the branch
+    # a caller actually reaches, which would have made the warning invisible exactly
+    # where it matters.
+    for key in ("pid", "log", "benchmark_name", "resume_notice"):
         settled.setdefault(key, launched.get(key))
     settled.setdefault("run_dir", run_dir)
     return settled
@@ -629,6 +764,101 @@ def reset_to_best(proxy_name: str = "") -> dict:
     }, _NEXT_RUN + " to verify, or summarize if converged"))
 
 
+def rebaseline(proxy_name: str = "") -> dict:
+    """Re-measure from the current tree, keeping the history that led here.
+
+    ``init`` refuses to move an existing baseline, and it is right to: re-snapshotting
+    mid-optimisation quietly promotes already-optimised code to "the original", after
+    which "is this faster than what we started with?" can no longer be asked. But that
+    invariant answered only half the question. The other half — *the instrument was
+    wrong, measure again from here* — had no supported answer at all, and a harness is
+    sealed before anyone has seen it produce a number.
+
+    So it got an unsupported one. Observed twice in three minutes in session
+    ``7d322a3b``::
+
+        end -> proxy_manage(op='clean') -> init -> run
+
+    which is the only sequence that moves a baseline, and it moves it by destroying the
+    ledger to get there. The run it discarded the second time was a real result: a
+    boundary condition measured 40% better than the incumbent, gone from the record
+    while its code stayed on disk, uncredited.
+
+    This op is that sequence made honest. The ledger and the best-so-far are *archived*
+    under a timestamp rather than deleted, the new baseline is taken from the tree as it
+    stands, and the reply says plainly that comparisons now run against this point and
+    not against the original.
+    """
+    cfg = _load_opt_config(proxy_name)
+    if not cfg:
+        return err("No optimization session found.",
+                   hint="Call proxy_eval(op='init', ...) first.")
+
+    name = cfg.get("proxy_name", "") or _resolve_proxy_name(proxy_name) or ""
+    paths = [os.path.abspath(p) for p in (cfg.get("optimize_paths") or [])]
+    if not paths:
+        return err("optimize_paths not set in config.",
+                   hint="Call proxy_eval(op='init', ...) again.")
+
+    active = _opt_active_run_dir(name)
+    if active and _run_state(active).get("state") in ("running", "pending"):
+        return err("A run is still active — stop it before re-baselining.",
+                   hint="proxy_eval(op='stop', confirm=True), then retry.")
+
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    archived = _archive_session_history(name, stamp)
+
+    baseline_id = tree_snapshot.snapshot(
+        opt_git_dir(), _workspace_root(), paths,
+        f"rebaseline: {name} at {stamp}",
+    )
+    if not baseline_id:
+        return err("Could not snapshot the new baseline tree.",
+                   hint="Check that optimize_paths are readable and the proxy store "
+                        "is writable.")
+
+    previous = cfg.get("baseline_id", "")
+    cfg["baseline_id"] = baseline_id
+    cfg["baseline_fingerprint"] = tree_snapshot.fingerprint(_workspace_root(), paths)
+    cfg["baseline_run_id"] = ""
+    cfg["stall"] = 0
+    cfg["rebaselined_at"] = datetime.now(timezone.utc).isoformat()
+    cfg["previous_baseline_id"] = previous
+    _save_opt_config(cfg)
+    _write_active_session(name)
+
+    return ok(_with_next({
+        "rebaselined":         name,
+        "baseline_id":         baseline_id,
+        "previous_baseline_id": previous,
+        "archived":            archived,
+        "note": "The tree as it stands is the new baseline. Every later comparison is "
+                "against THIS point, not against the original — the ledger and best-so-far "
+                "that led here are archived, not deleted, so the earlier progression is "
+                "still on record. Measure the new baseline before editing anything.",
+    }, _NEXT_RUN + " to measure the new baseline"))
+
+
+def _archive_session_history(proxy_name: str, stamp: str) -> list[str]:
+    """Move the ledger and best-so-far aside under *stamp*; return what moved.
+
+    Renamed rather than removed. A ledger is the only record that a run happened at
+    all, and the reason to re-baseline is never "that history was wrong".
+    """
+    moved: list[str] = []
+    for path in (_opt_ledger_file(proxy_name), _opt_best_file(proxy_name)):
+        if not os.path.isfile(path):
+            continue
+        base, ext = os.path.splitext(path)
+        target = f"{base}.{stamp}{ext}"
+        try:
+            os.replace(path, target)
+        except OSError:
+            continue
+        moved.append(os.path.basename(target))
+    return moved
+
+
 def end(proxy_name: str = "") -> dict:
     """End the optimization session: drop the active-session pointer.
 
@@ -690,7 +920,6 @@ def _ratchet_settle_locked(
 ) -> dict:
     primary_metric  = cfg.get("primary_metric", "time_s")
     goal            = cfg.get("primary_goal", "min")
-    min_improvement = cfg.get("min_improvement", 0.0)
     max_stall       = int(cfg.get("max_stall", 5))
     # The tree as it stood when this run was LAUNCHED — what actually ran, immune to
     # edits made while it was in flight.
@@ -703,6 +932,14 @@ def _ratchet_settle_locked(
     run_id        = os.path.basename(os.path.normpath(run_dir))
     best          = _load_best(name)
 
+    # The baseline is the one run whose spread describes the machine rather than the
+    # change, so it is where the noise floor comes from — recorded once, then applied
+    # to every comparison after it.
+    spread = _run_primary_value(final_metrics, "primary_spread")
+    if not cfg.get("baseline_run_id") and isinstance(spread, (int, float)):
+        cfg["noise_floor"] = float(spread)
+
+    min_improvement, margin_source = _effective_min_improvement(cfg)
     verdict = _ratchet_verdict(feasible, primary_value, best, goal, min_improvement)
 
     # An accepted time_s improvement whose measured wall time regressed is
@@ -746,7 +983,9 @@ def _ratchet_settle_locked(
         "primary_value": primary_value,
         "wall_value":    wall_value,
         "verdict":       verdict,
-        "stall":         stall,
+        "stall":          stall,
+        "primary_spread": spread,
+        "min_improvement": min_improvement,
         "best_run_id":   best.get("run_id") if best else None,
         **({"timing_warning": timing_warning} if timing_warning else {}),
     })
@@ -761,6 +1000,13 @@ def _ratchet_settle_locked(
         "max_stall":      max_stall,
         "primary_metric": primary_metric,
         "goal":           goal,
+        # Said on every run, not buried in the config: the margin is what decides
+        # accept from reject, and a model that cannot see it cannot tell an edit
+        # that did nothing from one the threshold was too loose to catch.
+        "min_improvement": min_improvement,
+        "margin_source":   margin_source,
+        "primary_spread":  spread,
+        "noise_floor":     cfg.get("noise_floor"),
         "timing_warning": timing_warning,
     }
     try:
