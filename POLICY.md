@@ -60,9 +60,7 @@ flowchart TD
     E -- yes --> X
     E -- ok --> F{"Launching a costly cluster job<br/>before testing locally?"}
     F -- yes --> X
-    F -- ok --> P{"Planning to go and look,<br/>instead of to change?"}
-    P -- yes --> X
-    P -- ok --> G{"Right moment in<br/>the workflow?"}
+    F -- ok --> G{"Right moment in<br/>the workflow?"}
     G -- no --> X
     G -- ok --> H{"Writing a file before<br/>understanding it?"}
     H -- yes --> X
@@ -81,7 +79,7 @@ flowchart TD
 
     class A,K entry;
     class B,L step;
-    class C,D,E,F,P,G,H,I,J decision;
+    class C,D,E,F,G,H,I,J decision;
     class X,Y block;
 ```
 
@@ -186,8 +184,8 @@ standing in for, asked directly.
   - `evaluate_tool_preconditions` orchestrator
   - registry validation
   - tool rewrite handling
-  - registry → cluster-submit guard → plan-shape guard → proxy-exec guard → state guard → write policy → out-of-workspace guard → approval pipeline
-  - capability-driven call-time guards (no hardcoded tool names), all living in `guardrails/policy/gates.py`: `_check_cluster_submit` (CLUSTER_SUBMIT held until local-validation evidence, unless the session wrote nothing — see Cluster-Submission Guard), `_check_proxy_exec` (CODE_EXEC tools blocked from running the proxy under optimization directly — see Proxy Direct-Execution Guard), `_check_out_of_workspace_access` (any path outside the workspace root prompts before running — see Out-of-Workspace Access Approval), and `_check_plan_shape` (a plan document whose axes are exploration steps is refused before it is recorded — see Plan-Shape Guard)
+  - registry → cluster-submit guard → proxy-exec guard → state guard → write policy → out-of-workspace guard → approval pipeline
+  - capability-driven call-time guards (no hardcoded tool names), all living in `guardrails/policy/gates.py`: `_check_cluster_submit` (CLUSTER_SUBMIT held until local-validation evidence, unless the session wrote nothing — see Cluster-Submission Guard), `_check_proxy_exec` (CODE_EXEC tools blocked from running the proxy under optimization directly — see Proxy Direct-Execution Guard), `_check_out_of_workspace_access` (any path outside the workspace root prompts before running — see Out-of-Workspace Access Approval)
   - interactive path clarification (interactive sessions only)
   - violation payload enrichment with:
     - `policy_stage`
@@ -540,33 +538,30 @@ Rationale:
 
 ---
 
-## Plan-Shape Guard
+## Why there is no plan-shape guard
 
-PHASE 2 of the plan-mode prompt has always stated the rule — *"exploring, surveying,
-examining, reviewing and identifying gaps … are never steps or axes of the plan"* — and
-nothing checked it. `_check_plan_shape` does, refusing the plan **before** it is
-recorded, so there is no document to clear afterwards.
+PHASE 2 of the plan-mode prompt states the rule — *"exploring, surveying, examining,
+reviewing and identifying gaps … are never steps or axes of the plan"* — and a guard
+used to enforce it, refusing a plan document whose axis titles began with one of 23
+listed verbs. It was removed, and the reasoning is worth keeping because it applies to
+anything proposed in its place.
 
-Observed in the wild, and the reason this exists: a plan whose first axis was *"Audit
-Existing Bindings"*. The audit came back "nothing is missing", every axis after it was
-vacuous, and the run was padded with cosmetic edits rather than re-decided. An axis that
-is a question cannot be planned around, because the plan is then a guess about what the
-answer will be.
+Deciding that *"Audit the existing bindings"* is exploration while *"Map the old API
+onto the new one"* is a change is a semantic judgement. The verb list was an
+approximation of it, and an approximation is the wrong instrument for a **refusal**:
+a nudge that misfires costs a sentence, a block that misfires costs a turn and teaches
+the model to word its way past the check. That happened — an early version read
+sub-steps as axes and refused *"Add a conditional block that: 1. Check the flag"*; the
+model cleared the gate by deleting the steps, so the guard bought a vaguer plan than the
+one it turned down.
 
-- **Targeted by capability and arg-role, never by tool name**: `TASK_PLANNING` plus the
-  `plan_document` role. That reaches the prose plan and never the checklist
-  (`plan_steps`), where "validate the solver" is a legitimate implementation step.
-- **Only axis titles are read.** `PLAN_EXPLORE_BUDGET_SPENT` explicitly asks the model to
-  state which assumptions it could not verify, and that sentence belongs in the body.
-  Stating an open assumption is honest; making it an axis is not. The two instructions
-  cannot collide because the guard never looks at prose.
-- Structure is excluded by construction: the section boundary is computed from the
-  Approach heading's own level (a fixed one cut the section at its first axis), and the
-  prescribed headings — Overview, Approach, Decisions & risks, **Validation** — never
-  match.
-- `map` and `list` are deliberately not exploration verbs: both can head a real change
-  ("map the old API onto the new one"), and refusing a legitimate axis costs a turn for
-  nothing.
+The observed failure it was built for is real: a plan whose first axis was *"Audit
+Existing Bindings"*, the audit returning "nothing is missing", every axis after it
+vacuous, and the run padded with cosmetic edits. But the cause of that is a model
+planning before it has explored, and the cure for a cause is instruction, not a wall at
+the door. The prompt carries it, and the plan-mode explore phase already makes the
+plan-document tool **unreachable** until code has actually been read
+(`plan_evidence_ready`) — which is a gate on a fact, and the kind that belongs here.
 
 ---
 

@@ -21,7 +21,7 @@ from typing import Any
 from ....servers._shared.shell_paths import COMMAND_WRAPPERS
 
 from ...context.capabilities import (
-    CLUSTER_SUBMIT, EDIT, PLAN_BLOCKED, READ, TASK_PLANNING,
+    CLUSTER_SUBMIT, EDIT, PLAN_BLOCKED, READ,
     arg_role, has_cap, scope_spec,
 )
 
@@ -486,139 +486,6 @@ def _check_proxy_exec(
             "proxy_eval(op='run') — executing it directly bypasses reference sealing, "
             "the numerical invariants and the ratchet, so a hand-run cannot be a valid "
             "result. To run it directly again, end the session with proxy_eval(op='reset')."
-        ),
-        tool=tool_name,
-    )
-
-
-# ── plan shape ────────────────────────────────────────────────────────────────
-#
-# PHASE 2 of the plan-mode prompt already states the rule — "exploring, surveying,
-# examining, reviewing and identifying gaps ... are never steps or axes of the plan"
-# — and nothing checked it. A plan whose first axis is "Audit the existing bindings"
-# was observed in the wild: the audit then returned "nothing is missing", every axis
-# after it was vacuous, and the model padded the run with cosmetic edits rather than
-# re-deciding. The exploration has to be spent BEFORE the plan, or the plan is a
-# guess about what the exploration will find.
-#
-# Only axis TITLES are read, never the prose: `PLAN_EXPLORE_BUDGET_SPENT` explicitly
-# asks the model to state which assumptions it could not verify, and that sentence
-# belongs in the body. Stating an open assumption is honest; making it an axis is not.
-
-# Verbs that describe finding something out. A plan axis is a change to make, so a
-# title leading with one of these names work that either is already done or belongs
-# in the exploration phase.
-# "map" and "list" are deliberately absent: both can head a real change ("map the old
-# API onto the new one", "list the supported orders in the docs"), and a guard that
-# refuses a legitimate axis costs a turn for nothing.
-_PLAN_EXPLORATION_VERBS: frozenset[str] = frozenset({
-    "analyse", "analyze", "assess", "audit", "catalog", "catalogue", "check",
-    "compare", "determine", "diagnose", "evaluate", "examine", "explore",
-    "identify", "inspect", "inventory", "investigate", "locate", "review",
-    "study", "survey", "understand", "verify",
-})
-# The headings the tool's own docstring prescribes. They are structure, not axes:
-# "## Validation" must never read as "Validate ...".
-_PLAN_PRESCRIBED_HEADINGS: frozenset[str] = frozenset({
-    "overview", "approach", "decisions", "decisions & risks", "decisions and risks",
-    "risks", "validation", "context", "key files", "files",
-})
-# Only TOP-LEVEL items are axes. The indentation is the whole distinction: an
-# indented list item is a sub-step *inside* an axis, and reading those refused
-# "Add a conditional block that: 1. Check the flag" — a change, described by its
-# steps. The model then cleared the gate by deleting the steps, so the guard bought
-# a vaguer plan than the one it turned down.
-_PLAN_AXIS_RE = re.compile(
-    r"^(?:#{3,6}\s*|[-*]\s+|\d+[.)]\s+)(?:\*\*)?\s*([^\n]{1,120}?)\s*(?:\*\*)?\s*$",
-    re.MULTILINE,
-)
-_PLAN_APPROACH_RE = re.compile(r"^(#{1,3})[ \t]*approach\b.*$", re.IGNORECASE | re.MULTILINE)
-
-
-def _leading_verb(title: str) -> str:
-    """First alphabetic word of *title*, lowercased and de-suffixed to a bare verb."""
-    words = re.findall(r"[A-Za-z]+", title)
-    if not words:
-        return ""
-    word = words[0].lower()
-    # "Auditing the bindings" / "Audits" are the same axis as "Audit the bindings".
-    for suffix in ("ing", "s"):
-        if word.endswith(suffix) and len(word) > len(suffix) + 2:
-            stem = word[: -len(suffix)]
-            if stem in _PLAN_EXPLORATION_VERBS:
-                return stem
-            if suffix == "ing" and (stem + "e") in _PLAN_EXPLORATION_VERBS:
-                return stem + "e"
-    return word
-
-
-def _approach_body(text: str) -> str:
-    """The slice of *text* under its Approach heading, or "" when there is none.
-
-    The section ends at the next heading of the SAME level or shallower — the axes
-    themselves are deeper headings, and a fixed boundary cut the section at its own
-    first axis, which is exactly the content this reads.
-    """
-    match = _PLAN_APPROACH_RE.search(text)
-    if match is None:
-        return ""
-    level = len(match.group(1))
-    rest = text[match.end():]
-    nxt = re.compile(rf"^#{{1,{level}}}[ \t]+", re.MULTILINE).search(rest)
-    return rest[: nxt.start()] if nxt else rest
-
-
-def _exploration_axes(text: str) -> list[str]:
-    """Axis titles under Approach that lead with an exploration verb."""
-    offenders: list[str] = []
-    for title in _PLAN_AXIS_RE.findall(_approach_body(text)):
-        cleaned = title.strip().strip("*_`").strip()
-        if not cleaned or cleaned.rstrip(":").strip().lower() in _PLAN_PRESCRIBED_HEADINGS:
-            continue
-        if _leading_verb(cleaned) in _PLAN_EXPLORATION_VERBS:
-            offenders.append(cleaned)
-    return offenders
-
-
-def _check_plan_shape(
-    agent: Any, tool_name: str, arguments: dict, execution_context: dict[str, Any] | None
-) -> str | None:
-    """Refuse a plan document whose axes are exploration steps.
-
-    Verification-tier guard, never enforcement-tiered: it holds a plan that has not
-    been paid for, and the refusal costs one turn because the message names the
-    offending axes verbatim — a stated exit, not a wall. The plan is refused BEFORE
-    it is recorded, so there is no document to clear afterwards.
-
-    Targeted by capability and arg-role, never by tool name: the ``plan_document``
-    role reaches the prose plan and never the checklist (``plan_steps``), where
-    "validate the solver" is a legitimate step.
-    """
-    if not has_cap(tool_name, TASK_PLANNING, agent.tool_caps):
-        return None
-    body_args = arg_role(tool_name, "plan_document", agent.tool_caps)
-    if not body_args:
-        return None
-    text = str(arguments.get(body_args[0]) or "")
-    if not text.strip():
-        return None
-    try:
-        offenders = _exploration_axes(text)
-    except Exception:
-        return None  # fail open: a malformed plan is the model's problem, not a block
-    if not offenders:
-        return None
-    named = "; ".join(f"'{axis}'" for axis in offenders[:4])
-    return agent._json_error_payload(
-        f"Plan not recorded: {len(offenders)} of its axes are exploration, not change — {named}.",
-        hint=(
-            "Every axis of a plan is a change to make. Finding out what has to change "
-            "is what the exploration phase is for, and a plan that opens with it is a "
-            "guess about what that exploration will return. Either do that work now "
-            "with the read-only tools and write the plan over what you find, or — if "
-            "you already know the answer — restate the axis as the change it leads to. "
-            "An assumption you could not settle belongs in the plan's prose, named as "
-            "an assumption; it is never an axis."
         ),
         tool=tool_name,
     )

@@ -14,7 +14,6 @@ from .state_machine import check_state_machine_guard
 from .gates import (
     _check_cluster_submit,
     _check_out_of_workspace_access,
-    _check_plan_shape,
     _check_proxy_exec,
     _out_of_workspace_targets,
 )
@@ -372,21 +371,6 @@ def evaluate_tool_preconditions(
             violation=_enrich_violation_payload(
                 violation=cluster_violation,
                 policy_stage="cluster_submit",
-                execution_context=normalized_context,
-                tool_name=normalized_tool_name,
-            ),
-        )
-
-    plan_shape_violation = _check_plan_shape(
-        agent, normalized_tool_name, rewritten_arguments, normalized_context)
-    if plan_shape_violation is not None:
-        return PolicyEvaluation(
-            tool_name=normalized_tool_name,
-            arguments=rewritten_arguments,
-            execution_context=normalized_context,
-            violation=_enrich_violation_payload(
-                violation=plan_shape_violation,
-                policy_stage="plan_shape",
                 execution_context=normalized_context,
                 tool_name=normalized_tool_name,
             ),

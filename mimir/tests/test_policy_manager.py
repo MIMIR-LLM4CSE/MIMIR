@@ -5,7 +5,6 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import mimir.client.guardrails.policy.engine as policy_manager_module
-import mimir.client.guardrails.policy.gates as gates
 from mimir.client.query_engine import toollist
 from mimir.tests._golden_caps import build_declared_registry
 
@@ -628,90 +627,3 @@ class ValidationNudgeTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
-
-class PlanShapeGateTests(unittest.TestCase):
-    """A plan axis is a change to make, never a step of the exploration.
-
-    PHASE 2 of the plan-mode prompt has always said so; nothing checked it. Observed in
-    the wild: a plan whose first axis was "Audit Existing Bindings". The audit then
-    reported nothing missing, every axis after it was vacuous, and the run was padded
-    with cosmetic edits rather than re-decided.
-    """
-
-    def setUp(self) -> None:
-        self.agent = _FakeAgent()
-        self.agent.tool_caps = dict(_DECLARED_REGISTRY)
-
-    def _check(self, text: str):
-        return gates._check_plan_shape(
-            self.agent, "todo_set_plan", {"text": text, "title": "t"}, {})
-
-    _FUNTIDES = (
-        "## Overview\nBindings exist for gradient, model and solver.\n"
-        "## Approach\n"
-        "### 1. Audit Existing Bindings\nList every public class.\n"
-        "### 2. Extend Bindings for Missing Components\nAdd the declarations.\n"
-        "## Validation\n- Run the examples.\n"
-    )
-
-    def test_an_exploration_axis_is_refused_and_named(self) -> None:
-        violation = self._check(self._FUNTIDES)
-        self.assertIsNotNone(violation)
-        # The refusal has to be trivially clearable, so it quotes the offending axis.
-        self.assertIn("Audit Existing Bindings", violation)
-        self.assertNotIn("Extend Bindings", violation)
-
-    def test_a_plan_of_changes_passes(self) -> None:
-        self.assertIsNone(self._check(
-            "## Approach\n### Extend the solver bindings\nAdd the six methods.\n"
-            "### Wire them into the DG module\n## Validation\n- pytest\n"))
-
-    def test_a_gerund_and_a_numbered_list_are_the_same_axis(self) -> None:
-        violation = self._check(
-            "# Approach\n1. Auditing the mesh module\n2. Rewrite the dispatch table\n")
-        self.assertIsNotNone(violation)
-        self.assertIn("Auditing the mesh module", violation)
-
-    def test_a_sub_step_of_an_axis_is_not_an_axis(self) -> None:
-        # Observed in the wild: a plan refused three times over the numbered steps
-        # *inside* its axes ("Add a conditional block that: 1. Check the flag"), which
-        # are how a change is spelled out. The model cleared the gate by deleting them,
-        # so the guard bought a vaguer plan than the one it turned down. Only top-level
-        # items are axes; the indentation is the distinction.
-        self.assertIsNone(self._check(
-            "## Approach\n"
-            "### Extend the operator with the forward skip\n"
-            "- **What**: add a conditional block that:\n"
-            "  1. Check the new flag\n"
-            "  2. Compute the seabed depth\n"
-            "- **Where**: `operator_tw_init_time`\n"
-            "## Validation\n- pytest\n"))
-
-    def test_the_prescribed_validation_section_never_fires(self) -> None:
-        # "## Validation" is structure the tool's own docstring asks for, and the axes
-        # under Approach are the only thing read.
-        self.assertIsNone(self._check(
-            "## Approach\n### Add the missing methods\n"
-            "## Validation\n### Review the diff\n### Verify the build\n"))
-
-    def test_an_unverified_assumption_in_prose_is_not_an_axis(self) -> None:
-        # PLAN_EXPLORE_BUDGET_SPENT explicitly asks for this sentence. Only axis titles
-        # are read, so the two instructions cannot collide.
-        self.assertIsNone(self._check(
-            "## Approach\n### Extend the solver bindings\n"
-            "I could not verify whether orders 4-9 are reachable; reviewing the "
-            "builders would settle it. Identifying that gap is left open.\n"))
-
-    def test_the_checklist_tool_is_never_inspected(self) -> None:
-        # todo_write carries plan_steps, not plan_document: "validate the solver" is a
-        # legitimate implementation step there.
-        self.assertIsNone(gates._check_plan_shape(
-            self.agent, "todo_write", {"steps": ["Audit the bindings"]}, {}))
-
-    def test_a_non_planning_tool_is_never_inspected(self) -> None:
-        self.assertIsNone(gates._check_plan_shape(
-            self.agent, "read_file_lines", {"text": self._FUNTIDES}, {}))
-
-    def test_an_empty_plan_is_left_to_the_other_gates(self) -> None:
-        self.assertIsNone(self._check("   "))
