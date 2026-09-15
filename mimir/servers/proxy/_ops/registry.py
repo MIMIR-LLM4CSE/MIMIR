@@ -7,6 +7,7 @@ import shutil
 from datetime import datetime, timezone
 
 from _ops import _check_name, _with_next, err, ok
+from _lib import build
 from _lib.command import _PARAM_EXT
 from _lib.procs import _run_state
 from _lib import store
@@ -16,7 +17,10 @@ from _lib.store import (
     _read_json,
 )
 
-# Descriptive registration fields carried by the ``metadata`` dict parameter.
+# Registration fields carried by the ``metadata`` dict parameter. Descriptive,
+# except the build triple: ``build_cmd`` is executed by the server before every
+# evaluation run (see _lib/build.py), and ``build_cwd``/``build_timeout_s``
+# parameterise it.
 # On-disk registry entries keep these flat, so existing registries stay valid.
 _METADATA_DEFAULTS: dict = {
     "arch": "",
@@ -27,6 +31,10 @@ _METADATA_DEFAULTS: dict = {
     "tags": [],
     "version": "",
     "build_cmd": "",
+    # Where build_cmd runs (default: the workspace root) and how long it may take
+    # (default: 30 min). See _lib/build.py for why the server runs the build itself.
+    "build_cwd": "",
+    "build_timeout_s": 0.0,
     "source_url": "",
     "notes": "",
     "input_description": "",
@@ -45,6 +53,11 @@ def _check_metadata(metadata: dict | None) -> str | None:
     if unknown:
         return (f"Unknown metadata key(s): {', '.join(unknown)}. "
                 f"Valid keys: {', '.join(sorted(_METADATA_DEFAULTS))}.")
+    # Caught here rather than at build time: a shell operator in build_cmd fails
+    # half an hour into the first run, with a message about a missing target.
+    bad = build.check_cmd(str(metadata.get("build_cmd") or ""))
+    if bad:
+        return bad
     return None
 
 
@@ -74,9 +87,21 @@ def _proxy_readme(entry: dict) -> str:
     lines.append(f"- **output_format:** {entry.get('output_format', 'npz')}")
     if entry.get("source_url"):
         lines.append(f"- **source_url:** {entry['source_url']}")
-    if entry.get("build_cmd"):
-        lines.append(f"- **build_cmd:** `{entry['build_cmd']}`")
     lines.append("")
+
+    if entry.get("build_cmd"):
+        lines.append("## Build")
+        lines.append(f"- **build_cmd:** `{entry['build_cmd']}`")
+        if entry.get("build_cwd"):
+            lines.append(f"- **build_cwd:** `{entry['build_cwd']}`")
+        if entry.get("build_timeout_s"):
+            lines.append(f"- **build_timeout_s:** {entry['build_timeout_s']}")
+        lines.append("")
+        lines.append("Run by the server once per evaluation run, before any case is "
+                     "measured, as argv (no shell). A build that fails ends the run "
+                     "with no verdict. Build time is outside the measurement budget, "
+                     "and is paid once per run whatever `repeat` is set to.")
+        lines.append("")
 
     if entry.get("input_description"):
         lines.append("## Input")
@@ -217,9 +242,14 @@ def register(
         return err(meta_err)
 
     abs_exe = os.path.abspath(executable_path)
-    if not os.path.isfile(abs_exe):
+    # A compiled proxy that has never been built has no executable yet, and refusing
+    # the registration would refuse the very build_cmd that would produce it. The
+    # runner checks again after building, where the absence means something.
+    declares_build = bool((metadata or {}).get("build_cmd", "").strip())
+    if not os.path.isfile(abs_exe) and not declares_build:
         return err(f"executable_path not found: {abs_exe}",
-                   hint="Provide an absolute path to an existing file.")
+                   hint="Provide an absolute path to an existing file, or declare "
+                        "metadata={'build_cmd': ...} if a build produces it.")
 
     # The one op that may bring the store into existence: registering a proxy is what
     # creates <workspace>/proxy_bench/. Reads (proxy_get) and the other mutations take
@@ -244,8 +274,15 @@ def register(
         }
         reg[name] = entry
         _save_registry(reg)
+    payload: dict = {"registered": entry}
+    if not os.path.isfile(abs_exe):
+        payload["executable_not_yet_built"] = abs_exe
+        payload["note"] = (
+            "The executable does not exist yet; the declared build_cmd is expected to "
+            "produce it. Seal the reference after a build, not before: a reference is "
+            "immutable, so one sealed from a stale or missing binary is wrong for good.")
     return ok(_with_next(
-        {"registered": entry},
+        payload,
         f"proxy_exec(op='reference', proxy_name='{name}', reference_name='"
         f"{name}_ref', confirm=True) to seal a reference for comparisons."))
 
@@ -274,7 +311,10 @@ def update(
         entry = reg[name]
         if executable_path:
             abs_exe = os.path.abspath(executable_path)
-            if not os.path.isfile(abs_exe):
+            declares_build = bool(
+                str((metadata or {}).get("build_cmd",
+                                         entry.get("build_cmd", "")) or "").strip())
+            if not os.path.isfile(abs_exe) and not declares_build:
                 return err(f"executable_path not found: {abs_exe}")
             entry["executable_path"] = abs_exe
         if run_cmd_template:

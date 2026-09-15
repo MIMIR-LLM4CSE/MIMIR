@@ -501,12 +501,20 @@ def opaque_command_executes(command: str) -> bool:
     against the same ``EXEC_COMMANDS`` vocabulary the classifier itself uses, so an
     unparseable ``cat`` or ``grep`` still reports nothing. Deliberately used *only* to
     demand a verdict, never to grant credit.
+
+    The path-like test is the one that has to be read defensively here. Everywhere else
+    :func:`is_path_like_command` is handed an ``argv[0]`` the tokenizer already produced;
+    this function is handed *whatever text the command contains*, heredoc bodies
+    included, so a token has to name a program before being taken for one. ``//`` — the
+    start of a C++ comment — is path-like by that test and has an empty basename, which
+    is how a comment inside a refused heredoc came to be recorded as a run.
     """
     for piece in _OPAQUE_SEGMENT_SPLIT_RE.split(command):
         for tok in piece.split():
             if _OPAQUE_ENV_ASSIGN_RE.match(tok):
                 continue
-            if os.path.basename(tok) in EXEC_COMMANDS or is_path_like_command(tok):
+            name = os.path.basename(tok)
+            if name in EXEC_COMMANDS or (name and is_path_like_command(tok)):
                 return True
             break
     return False

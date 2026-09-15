@@ -64,6 +64,15 @@ export function parseModels(backend: DiscoverableBackend, body: unknown): string
  * in, so the request goes straight to the address the user typed. `verifySsl`
  * mirrors the `mimir.vllmVerifySsl` setting — one switch for both OpenAI-compatible
  * endpoints — for internal HTTPS routes served behind a private CA.
+ *
+ * The deadline is enforced by a timer of our own, not by the `timeout` request
+ * option. That option only arms `socket.setTimeout`, and only once a socket has been
+ * assigned: a name that never resolves, a connection that never completes, or a
+ * proxy CONNECT that never answers leaves the request with no socket, no timer and
+ * no error — a promise that never settles. The caller then waits forever on a
+ * question that will never be answered, which is the one outcome a discovery call
+ * must not produce. The rejection names the last phase reached, because "it hung"
+ * and "it hung before DNS even answered" call for different fixes.
  */
 export function fetchModels(
   backend: DiscoverableBackend,
@@ -85,29 +94,60 @@ export function fetchModels(
     const agent = secure
       ? new https.Agent({ rejectUnauthorized: verifySsl })
       : new http.Agent();
+
+    // How far the request got, for the message if it gets no further.
+    let phase = "no socket assigned (name resolution, connection or proxy CONNECT)";
+    let settled = false;
+    const finish = (fn: () => void) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(deadline);
+      fn();
+    };
+    const deadline = setTimeout(() => {
+      finish(() => {
+        req.destroy();
+        reject(new Error(`timed out after ${timeoutMs} ms — ${phase}`));
+      });
+    }, timeoutMs);
+
     const req = mod.get(
       url,
       { agent, rejectUnauthorized: verifySsl, timeout: timeoutMs },
       (res) => {
+        phase = `response started (HTTP ${res.statusCode ?? 0})`;
         const status = res.statusCode ?? 0;
         if (status < 200 || status >= 300) {
           res.resume();
-          reject(new Error(`HTTP ${status} from ${url.href}`));
+          finish(() => reject(new Error(`HTTP ${status} from ${url.href}`)));
           return;
         }
         let raw = "";
         res.setEncoding("utf8");
         res.on("data", (chunk: string) => { raw += chunk; });
         res.on("end", () => {
-          try {
-            resolve(parseModels(backend, JSON.parse(raw)));
-          } catch {
-            reject(new Error(`unreadable response from ${url.href}`));
-          }
+          finish(() => {
+            try {
+              resolve(parseModels(backend, JSON.parse(raw)));
+            } catch {
+              reject(new Error(`unreadable response from ${url.href}`));
+            }
+          });
         });
       },
     );
-    req.on("timeout", () => req.destroy(new Error(`timed out after ${timeoutMs} ms`)));
-    req.on("error", (err) => reject(err));
+
+    // Each step the request clears, so a hang can say where it stopped rather than
+    // only that it stopped. A socket assigned but never connected is a blocked route
+    // or a proxy holding the CONNECT; a connection made but no response is the
+    // endpoint itself going quiet.
+    req.on("socket", (socket) => {
+      phase = "socket assigned, connecting";
+      socket.on("lookup", () => { phase = "name resolved, connecting"; });
+      socket.on("connect", () => { phase = "connected, waiting for a response"; });
+      socket.on("secureConnect", () => { phase = "TLS established, waiting for a response"; });
+    });
+    req.on("timeout", () => req.destroy(new Error(`timed out after ${timeoutMs} ms — ${phase}`)));
+    req.on("error", (err) => finish(() => reject(err)));
   });
 }

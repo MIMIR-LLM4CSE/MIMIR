@@ -5,6 +5,7 @@ card stayed on screen, its answer resolved the old turn, and its `open_editor`
 opened the *other* session's plan. These tests pin the three seams that fence a
 turn to the session it started in.
 """
+import json
 import queue as _queue
 import unittest
 
@@ -22,6 +23,7 @@ def _bare_worker() -> _AgentWorker:
     w._steer_q = _queue.Queue()
     w.active_session_id = None
     w._query_session_id = None
+    w._pending_prompt = None
     return w
 
 
@@ -121,6 +123,40 @@ class SessionFencingTests(unittest.IsolatedAsyncioTestCase):
         sess._load_session = _load
         await sess._handle_switch_session({"session_id": "s2"})
         self.assertEqual(order, ["cancel", "load"])
+
+    async def test_set_model_reports_the_new_model_and_derived_settings(self):
+        w = _bare_worker()
+        w.model = "old-model"
+        w.set_model = lambda m: (setattr(w, "model", m), "")[1]
+        w.get_thinking_profile = lambda: {"mechanism": "kwarg"}
+        w.get_enforcement = lambda: "light"
+        sess = self._session(w)
+        await sess._handle_set_model({"model": "qwen3:30b"})
+        self.assertEqual(len(sess.ws.sent), 1)
+        payload = json.loads(sess.ws.sent[0])
+        self.assertEqual(payload["type"], "model_changed")
+        self.assertEqual(payload["model"], "qwen3:30b")
+        self.assertEqual(payload["thinking"], {"mechanism": "kwarg"})
+        self.assertEqual(payload["enforcement"], "light")
+
+    async def test_set_model_with_no_name_sends_an_error_not_a_change(self):
+        sess = self._session(_bare_worker())
+        await sess._handle_set_model({"model": "  "})
+        self.assertEqual(len(sess.ws.sent), 1)
+        payload = json.loads(sess.ws.sent[0])
+        self.assertEqual(payload["type"], "error")
+        self.assertNotEqual(payload["type"], "model_changed")
+
+    async def test_set_model_failure_is_surfaced_as_an_error(self):
+        w = _bare_worker()
+        w.model = "old-model"
+        w.set_model = lambda m: "Agent is not ready yet."
+        sess = self._session(w)
+        await sess._handle_set_model({"model": "qwen3:30b"})
+        self.assertEqual(len(sess.ws.sent), 1)
+        payload = json.loads(sess.ws.sent[0])
+        self.assertEqual(payload["type"], "error")
+        self.assertIn("not ready", payload["text"])
 
 
 async def _noop_async(*args, **kwargs):

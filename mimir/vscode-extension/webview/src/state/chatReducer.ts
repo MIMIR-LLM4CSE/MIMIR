@@ -61,6 +61,8 @@ export type ChatAction =
   | { type: "reset" }
   | { type: "connection_lost" }
   | { type: "session_loaded_messages"; messages: ChatMessage[] }
+  | { type: "turn_resumed" }
+  | { type: "prompt_answered"; resumes: boolean }
   | { type: "toggle_thinking"; id: string }
   | { type: "approval_response"; id: string; choice: "y" | "n" | "a" };
 
@@ -189,17 +191,66 @@ function freezePending(state: ChatState, makeId: () => string): ChatState {
  * an error — so committed prose keeps its place in the order it was written.
  * NOT called on `answer` (the authoritative text supersedes the draft) or on
  * `nudge_injected` (the turn was not accepted, so there is nothing to keep).
+ *
+ * *provisional* is for the two places where the turn has not been accepted and yet
+ * the draft must not be thrown away: it parked on a question, or the connection
+ * dropped under it. Both interrupt the turn at a point where this prose is the only
+ * copy of it anywhere — it is not in `messages`, not on the server, not on disk — so
+ * it is committed, flagged, and dropped again by the `answer` that supersedes it.
  */
-function commitDraft(state: ChatState, makeId: () => string): ChatState {
+function commitDraft(
+  state: ChatState, makeId: () => string, provisional = false,
+): ChatState {
   if (!state.draft.trim()) return state.draft ? { ...state, draft: "" } : state;
   return {
     ...state,
     draft: "",
     messages: [
       ...state.messages,
-      { id: makeId(), role: "agent", kind: "text", text: state.draft },
+      { id: makeId(), role: "agent", kind: "text", text: state.draft,
+        ...(provisional ? { provisional: true } : {}) },
     ],
   };
+}
+
+/**
+ * True when *answer* is the finished form of the provisional prose *held*.
+ *
+ * The two shapes that produce one: a turn whose prose was committed because it parked
+ * on a question nobody was asked anything else about, and a turn cut off mid-sentence
+ * that later finished — the held text is then a prefix of the answer. Compared on
+ * collapsed whitespace, since the draft's paragraph breaks are inserted by the token
+ * coalescing rather than by the model.
+ */
+function isRewordedBy(answer: string, held: string | undefined): boolean {
+  const flat = (t: string) => t.replace(/\s+/g, " ").trim();
+  const a = flat(answer ?? "");
+  const h = flat(held ?? "");
+  return h.length > 0 && a.startsWith(h);
+}
+
+/** Settle every provisional bubble: they are ordinary transcript from here on. */
+function clearProvisional(messages: ChatMessage[]): ChatMessage[] {
+  if (!messages.some((m) => m.provisional)) return messages;
+  return messages.map((m) => {
+    if (!m.provisional) return m;
+    const { provisional, ...rest } = m;
+    return rest;
+  });
+}
+
+/**
+ * Commit the draft and stop the turn's live state, for a turn parked on a question.
+ *
+ * A plan approval, a clarification batch and a continue prompt all park the worker
+ * thread indefinitely: the agent is waiting on a person, and until they answer there
+ * is no `answer` event, so nothing else marks this moment. That matters beyond the
+ * spinner — the transcript only travels back to the server when `busy` falls, and the
+ * plan the user is being asked to approve lives, until this runs, in `draft` alone.
+ */
+function parkOnPrompt(state: ChatState, makeId: () => string): ChatState {
+  const s = freezePending(commitDraft(state, makeId, true), makeId);
+  return { ...s, busy: false, toolCallAfterToken: false };
 }
 
 /**
@@ -214,7 +265,11 @@ export function createChatReducer(makeId: () => string) {
         const userMsg: ChatMessage = { id: makeId(), role: "user", kind: "text", text: action.text };
         return {
           ...state,
-          messages: [...state.messages, userMsg],
+          // Whatever a previous turn left provisional is settled by a new question
+          // being asked: it is the transcript now, and the `answer` this turn ends on
+          // must supersede its own prose only — never reach back and delete an older
+          // turn's, which is all that would be left of a run that was interrupted.
+          messages: [...clearProvisional(state.messages), userMsg],
           liveThinkingBlocks: [],
           liveToolCalls: [],
           busy: true,
@@ -263,9 +318,19 @@ export function createChatReducer(makeId: () => string) {
 
       case "connection_lost": {
         // Keep whatever prose had arrived: the turn was cut off, not superseded.
-        const s = commitDraft(state, makeId);
+        // Provisional, because the turn on the other end is not necessarily dead —
+        // the worker runs on, and a reconnect can still be handed the `answer` it
+        // ends on, which must replace this partial rather than repeat under it.
+        const s = commitDraft(state, makeId, true);
         return { ...s, busy: false, liveThinkingBlocks: [], liveToolCalls: [] };
       }
+
+      // The turn parked on a question for the user: a plan awaiting approval, a
+      // clarification batch, or the continue prompt. Rendering the card is App's
+      // business; what belongs here is that the turn stopped producing.
+      case "user_question":
+      case "continue_prompt":
+        return parkOnPrompt(state, makeId);
 
       case "session_loaded_messages":
         return {
@@ -278,6 +343,22 @@ export function createChatReducer(makeId: () => string) {
           pendingDiffs: [],
           pendingThinking: "",
         };
+
+      // A turn of this session outlived the connection and is still producing, so
+      // the run is live even though this window did not start it. Dispatched after
+      // session_loaded_messages, which clears the state a reload arrives with; a card
+      // the turn is parked on lands after this and parks it again.
+      case "turn_resumed":
+        return state.busy ? state : { ...state, busy: true };
+
+      // The card a turn parked on was answered. The turn goes back to producing —
+      // the same tail as `approval_response`, and the same reason: `busy` is what
+      // offers the stop button, and what makes the end of the turn observable at
+      // all, which is when the finished transcript is handed back for saving.
+      // `resumes` is false for the answer that ends the run instead (a declined
+      // continue prompt), where claiming a live turn would strand the composer.
+      case "prompt_answered":
+        return action.resumes ? { ...state, busy: true } : state;
 
       case "toggle_thinking": {
         const { id } = action;
@@ -749,7 +830,19 @@ export function createChatReducer(makeId: () => string) {
         const diffs = [...s.pendingDiffs];
         const thinkingText = s.pendingThinking;
         s = { ...s, pendingDiffs: [], pendingThinking: "", busy: false };
-        const noApproval = s.messages.filter((m) => !(m.kind === "approval" && !m.text));
+        // Dropped alongside the unanswered approval cards: a provisional bubble the
+        // answer turns out to be a fuller copy of. Only *that* one — a plan the user
+        // approved is followed by the report of executing it, and a plan they rejected
+        // by the refusal, neither of which repeats the plan; dropping those would take
+        // the plan out of a transcript the user watched it arrive in. What does repeat
+        // is a plan nobody was asked about (delivered as the answer) and a turn cut off
+        // mid-prose that later finished, whose bubble is a prefix of the answer.
+        // Whitespace-insensitive, and a comparison that fails leaves both: a visible
+        // duplicate is recoverable, a silently deleted answer is not.
+        const noApproval = s.messages.filter(
+          (m) => !(m.kind === "approval" && !m.text)
+            && !(m.provisional && isRewordedBy(action.text, m.text))
+        );
         const finalized = noApproval.map((m) =>
           m.kind === "editing" && m.live ? { ...m, live: false } : m
         );

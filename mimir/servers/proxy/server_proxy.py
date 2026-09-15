@@ -60,6 +60,16 @@ Without block markers the server falls back to a ``key=value`` scan of the
 last log lines.  Supported field output formats: npz (default), raw_float64,
 none.
 
+Compiled proxies
+----------------
+Nothing here is Python-specific: the proxy is whatever ``run_cmd_template``
+launches, and ``optimize_paths`` is whatever files the ratchet may edit. A
+compiled project adds one thing — the edited source is not the running program —
+so the registration declares ``build_cmd`` and the server builds before every
+evaluation run, once, ahead of the measurement. Incrementality comes from the
+project's own build system, so the long build is paid once and an edit to one
+file costs that file.
+
 Storage layout
 --------------
 All state lives under ``<workspace>/proxy_bench/`` (registry.json, references/,
@@ -329,8 +339,11 @@ def proxy_manage(
                       (requires: name). Leaves sealed references and suites, and
                       names what it left in the response. `unregister` removes the
                       registry entry; `clean` removes the state behind it.
-      scaffold     -> generate reference + test harness files for a source
-                      component (requires: proxy_path, component_hint)
+      scaffold     -> generate a PYTHON reference + test harness for a source
+                      component (requires: proxy_path, component_hint). The
+                      generated harness is Python whatever the source language;
+                      for a compiled project, write the harness by hand — it
+                      only has to run the binary and print a metrics block.
 
     run_cmd_template placeholders: {executable}, {output_file}, {param_file},
     {extra_params}; other placeholders (e.g. {n}) come from param_overrides at
@@ -353,10 +366,18 @@ def proxy_manage(
         param_file_format: 'text' (register default), 'json', 'yaml',
             'fortran_namelist', 'ini'.
         description: Free-text description of the proxy or suite.
-        metadata: Optional descriptive fields for register/update: arch,
-            backend, parallelism, peak_gflops_per_s,
-            peak_bandwidth_gbytes_per_s, tags, version, build_cmd, source_url,
-            notes, input_description, output_description, usage_examples.
+        metadata: Optional fields for register/update: arch, backend,
+            parallelism, peak_gflops_per_s, peak_bandwidth_gbytes_per_s, tags,
+            version, source_url, notes, input_description, output_description,
+            usage_examples, conserved_metric — plus the build triple below.
+            build_cmd is NOT documentation: the server runs it, once per
+            evaluation run, before any case is measured, so the binary measured
+            is always the one the current sources produce. It is argv, never a
+            shell line ('make -C <dir> <target>' is fine; a sequence, a module
+            load or a redirect belongs in a wrapper script named here).
+            build_cwd defaults to the workspace root, build_timeout_s to 1800.
+            A proxy that declares a build may be registered before its
+            executable exists — the build is what produces it.
         cases: For suite_define/suite_update: list of case dicts (see schema above).
         proxy_path: For 'scaffold': absolute path to the proxy source file.
         component_hint: For 'scaffold': function/subroutine/class name to target.
@@ -561,8 +582,12 @@ async def proxy_eval(
                        requirements, proxy_source_path, optimize_paths)
       configure     -> patch requirements/benchmark_name/python_executable/
                        max_hours without re-snapshotting
-      run           -> launch a run, WAIT for it, and return the verdict with the
+      run           -> build if the registration declares a build_cmd, then launch
+                       the run, WAIT for it, and return the verdict with the
                        per-case results inline; errors if one is already active.
+                       A failed build ends the run with no verdict and no ledger
+                       entry. Build time is outside the measurement budget and is
+                       paid once per run, not once per `repeat`.
                        Do not poll proxy_eval_status() around it. A run still going
                        after the wait budget detaches itself, and background=True
                        detaches up front: both hand it to a watcher that resumes you
@@ -593,16 +618,23 @@ async def proxy_eval(
             one of lt, gt, lte, gte, eq. Numerical invariants (l2_rel, linf_rel,
             finite, conservation_residual, convergence_order) are ordinary metrics
             here and can gate feasibility.
-        proxy_source_path: Absolute path to the HARNESS — the script the runner
-            executes, which exercises the code and prints metrics. It is not the
-            subject of the optimization and the ratchet never edits it.
+        proxy_source_path: Absolute path to the HARNESS — the program the runner
+            executes, which exercises the code and prints metrics. Any language:
+            a script, or a wrapper that builds and launches a compiled binary. It
+            is not the subject of the optimization and the ratchet never edits it.
         optimize_paths: Absolute paths to the code the ratchet may edit — the real
-            modules the harness imports. Required, inside the workspace, and must
-            not contain proxy_source_path: a harness that is its own subject means
-            optimizing a copy, and the accuracy constraints then say nothing about
-            the code that ships. All the listed files are snapshotted and restored
-            as ONE state, so a restore can never mix files from different runs.
-        python_executable: Python interpreter for the runner (default: server's).
+            sources the harness exercises, whether it imports them, links them or
+            loads them at run time (.py, .cpp, .h, .f90 alike). Required, inside
+            the workspace, and must not contain proxy_source_path: a harness that
+            is its own subject means optimizing a copy, and the accuracy
+            constraints then say nothing about the code that ships. All the listed
+            files are snapshotted and restored as ONE state, so a restore can
+            never mix files from different runs. For a compiled project, list the
+            sources and declare a build_cmd at registration; never list generated
+            files, which a build would rewrite under the snapshot.
+        python_executable: Python interpreter used to run MIMIR's own runner
+            process (default: server's). It has no bearing on the harness or the
+            code under optimization, which may be in any language.
         max_hours: Hard deadline per run in hours (0.0 = 24 h).
         primary_metric: Scalar objective the ratchet improves (default 'time_s').
         primary_goal: 'min' or 'max' (default 'min').

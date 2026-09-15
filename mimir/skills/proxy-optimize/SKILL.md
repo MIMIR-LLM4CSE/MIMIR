@@ -31,7 +31,7 @@ field naming the exact next call — follow it.
            {"metric": "finite",  "operator": "eq",  "threshold": 1},     # no NaN/Inf
        ],
        proxy_source_path="<workspace>/proxy_bench/harnesses/<name>.py",  # NEVER edited
-       optimize_paths=["/abs/path/to/pkg/solver.py",  # the real code the harness imports
+       optimize_paths=["/abs/path/to/pkg/solver.py",  # the real code the harness runs
                        "/abs/path/to/pkg/kernel.py"], # several files are fine
        primary_metric="time_s",   # scalar objective the ratchet improves
        primary_goal="min",        # "min" or "max"
@@ -65,8 +65,38 @@ field naming the exact next call — follow it.
    harness in the repo instead is a legitimate choice when it is a deliverable the user
    maintains; drifting there by accident is not.
 
+   **A compiled project works the same way.** Nothing in the loop is
+   Python-specific. List the sources in `optimize_paths` (`.cpp`, `.h`, `.f90`)
+   and declare the build at registration:
+
+   ```
+   proxy_manage(op='register', name=..., executable_path='/abs/build/solver',
+                run_cmd_template='{executable} {param_file}',
+                metadata={"build_cmd": "make -C /abs/build solver"},
+                confirm=True)
+   ```
+
+   The server runs `build_cmd` **once per evaluation run**, before any case is
+   measured — so the binary measured is always the one the current sources
+   produce, and a `reset_to_best` cannot leave you timing the rejected attempt's
+   binary. A build that fails ends the run with no verdict and nothing recorded:
+   read `build_log_tail` in the reply, fix it, run again.
+
+   **Do not rebuild between edits.** The rhythm is unchanged: edit as many files
+   as the change needs, then call `proxy_eval(op='run')` once. Build time sits
+   outside the measurement budget and is paid once per run whatever `repeat` is,
+   and incrementality comes from `make`/`ninja` — the long first build is paid
+   once, an edit to one file costs that file. Name a target in `build_cmd`
+   (`make -C build bench_solver`) to narrow it further. `build_cmd` is argv, not
+   a shell line: a sequence or a `module load` belongs in a wrapper script.
+   Registration accepts an `executable_path` that does not exist yet when a
+   build is declared — the build is what produces it. Seal references *after* a
+   build: a reference is immutable, so one sealed from a stale binary is wrong
+   for good.
+
    **The harness is not the subject.** `proxy_source_path` runs the code and prints
-   metrics; `optimize_paths` is the code, which the harness should **import**. Writing a
+   metrics; `optimize_paths` is the code, which the harness should **use** — import,
+   link or load it, whatever the language. Writing a
    self-contained script that reproduces the code you meant to optimize means the
    accuracy constraints hold for the copy and say nothing about what ships — `init`
    refuses that shape rather than warning about it.

@@ -66,7 +66,7 @@ export function useWebSocket({
         onCloseRef.current?.();
       } else if (data.type === "ws_error") {
         onErrorRef.current?.(event as unknown as Event);
-      } else if (data.type === "config" || data.type === "active_editor" || data.type === "auto_connect") {
+      } else if (data.type === "config" || data.type === "active_editor" || data.type === "auto_connect" || data.type === "models") {
         // Messages emitted directly by the extension host (not the Python server) —
         // forward as ServerMessages for the App reducer/handler.
         onMessageRef.current(data as unknown as ServerMessage);

@@ -29,6 +29,7 @@ from mimir.client.context.execution_context import (  # noqa: E402
 from mimir.client.context import failed_runs, unsettled_runs  # noqa: E402
 from mimir.client.guardrails import observations as O  # noqa: E402
 from mimir.client.guardrails import workflow  # noqa: E402
+from mimir.client.guardrails.policy.bash_classify import opaque_command_executes  # noqa: E402
 from mimir.client.guardrails.verdict import apply_verdict  # noqa: E402
 from mimir.servers._shared.capabilities import build_descriptor  # noqa: E402
 from mimir.servers.proxy._lib import store  # noqa: E402
@@ -229,3 +230,87 @@ class MeasuredTierTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# The command that produced the report this class exists to prevent: a heredoc the
+# server refused outright, whose C++ body carries two `//` comments. Kept verbatim,
+# comments included, because both are load-bearing.
+REFUSED_HEREDOC = """cat > /tmp/ws/team_size_test.cpp << 'EOF'
+#include <Kokkos_Core.hpp>
+int main() {
+  // Mimic the elastic Q1 scratch: fields (2*8*4=64B) + gemm (576B) = 640B
+  size_t bytes = 640;
+  TeamPolicy p(1000000, Kokkos::AUTO);
+  // Fixed small team
+  TeamPolicy p2(1000000, 32);
+  return 0;
+}
+EOF
+echo "written"
+"""
+
+# What server_bash answers for it. `refused` is the whole point: it is how a rejection
+# decided before any shell opened is told apart from a command that ran and came back red.
+REFUSAL_PAYLOAD = {
+    "refused": True,
+    "status": "error",
+    "error": "Redirection operator '<<' is not supported.",
+    "hint": "A heredoc body is not a command this can validate.",
+}
+
+
+class RefusedCallTests(unittest.TestCase):
+    """A call the server refused never ran, so it owes and charges nothing.
+
+    Both halves of one observed failure. A refused heredoc was entered in the run
+    ledger as red: it charged the repair budget, steered the workflow back to `edit`,
+    and printed its whole body into the user's chat under `Run failing, unresolved`.
+    It got there because `opaque_command_executes` read `//` — the start of a C++
+    comment in the heredoc body — as a program invoked by path.
+    """
+
+    def setUp(self) -> None:
+        self.agent = _agent(bash_run=ToolCaps(
+            "bash_run", frozenset({PLAN_READONLY, CODE_EXEC}),
+            scope={"kind": "command_prefix", "args": ["command"]}))
+        self.ec = build_execution_context()
+
+    def _observe_bash(self, command: str, status: str, payload: dict) -> None:
+        O._observe_bash_validation(
+            self.agent, "bash_run", {"command": command}, status, payload, self.ec, "call")
+
+    def test_a_comment_in_a_heredoc_is_not_a_run(self) -> None:
+        """`//` is path-like and names no program; only the second test is the barrier."""
+        self.assertFalse(opaque_command_executes(REFUSED_HEREDOC))
+
+    def test_a_refused_heredoc_opens_no_run(self) -> None:
+        self._observe_bash(REFUSED_HEREDOC, "error", REFUSAL_PAYLOAD)
+        self.assertEqual(self.ec["runs"], {})
+        self.assertEqual(failed_runs(self.ec), {})
+
+    def test_a_refused_call_does_not_reach_the_completion_report(self) -> None:
+        """The symptom itself: the heredoc body, printed to the user as an open issue."""
+        self._observe_bash(REFUSED_HEREDOC, "error", REFUSAL_PAYLOAD)
+        summary = workflow.finalize_incomplete_answer("done", self.ec)
+        self.assertNotIn("Kokkos", summary)
+        self.assertNotIn("failing, unresolved", summary)
+
+    def test_a_refused_call_charges_no_validation_budget(self) -> None:
+        """The other half: a rejection must not count against the file it named."""
+        self.ec["dirty_written_files"].add("/tmp/ws/solver.py")
+        self._observe_bash("ruff check /tmp/ws/solver.py", "error", REFUSAL_PAYLOAD)
+        self.assertEqual(self.ec.get("validation_fail_count_by_file", {}), {})
+
+    def test_a_real_red_exit_is_still_a_failing_run(self) -> None:
+        """Non-regression: same error status, no `refused`, so it is a real finding."""
+        self._observe_bash(
+            "python solver.py", "error",
+            {"status": "error", "returncode": 1, "cwd": "/tmp/ws", "stderr": "boom"})
+        self.assertIn("python solver.py", failed_runs(self.ec))
+
+    def test_a_timeout_is_still_a_failing_run(self) -> None:
+        """It reached a shell and hit a wall there, which is a finding like any other."""
+        self._observe_bash(
+            "python solver.py", "error",
+            {"status": "error", "error": "Command timed out after 300s.", "cwd": "/tmp/ws"})
+        self.assertIn("python solver.py", failed_runs(self.ec))

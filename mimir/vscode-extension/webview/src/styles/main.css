@@ -282,6 +282,17 @@ body {
 
 .connection-dot { font-size: 9px; }
 .model-name { font-weight: 500; }
+.model-picker {
+  font: inherit;
+  font-weight: 500;
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 1px 4px;
+  max-width: 160px;
+  cursor: pointer;
+}
 /* ── Chat thread ────────────────────────────────────────────────────────────── */
 
 .chat-thread {
@@ -3002,6 +3013,16 @@ body {
   opacity: 0.55;
 }
 
+/* The completion report reuses the ledger's panel styling — same job, same shape, one
+   click from the same place. What differs is its body: markdown sections rather than
+   a row list, so it needs the spacing the row layout above does not provide. */
+.ledger--report .ledger-label { font-weight: 600; color: var(--fg); }
+.ledger--report .ledger-body { gap: 0; line-height: 1.5; }
+.ledger--report .ledger-body p { margin: 0 0 var(--sp-2); }
+.ledger--report .ledger-body ul { margin: 0 0 var(--sp-3); padding-left: var(--sp-4); }
+.ledger--report .ledger-body li { margin: 0; color: var(--fg-dim); overflow-wrap: anywhere; }
+.ledger--report .ledger-body > :last-child { margin-bottom: 0; }
+
 /* ── "Show more / less" affordance for clipped tool logs & diffs ──────────── */
 .show-more-btn {
   align-self: flex-start;
@@ -3142,34 +3163,43 @@ body.vscode-light .hljs-deletion, body.vscode-high-contrast-light .hljs-deletion
   background: #ffeef0;
 }
 
-/* Move a running command to the background. Icon only — the row is already a dense
-   line and the sentence lives in the tooltip. Hidden until the row is hovered or the
-   control is focused, so it never competes with the label, and never becomes
-   keyboard-unreachable either. */
+/* Move a running command to the background. Shown as a labelled pill, not a
+   hover-only glyph: it appears on the few rows that are actually divertible, and
+   only while they run, so standing out costs the rest of the list nothing — and a
+   control the user cannot see is a control they do not know they have. */
 .tool-divert {
   all: unset;
   box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   flex-shrink: 0;
-  padding: 2px 6px;
-  border-radius: 4px;
-  color: var(--fg-dim);
-  font-size: 0.9em;
-  line-height: 1;
+  padding: 2px 8px;
+  border: 1px solid var(--accent);
+  border-radius: 10px;
+  color: var(--accent-fg, var(--fg));
+  background: var(--accent);
+  font-size: 0.85em;
+  line-height: 1.5;
+  white-space: nowrap;
   cursor: pointer;
-  opacity: 0;
-}
-.tool-row:hover .tool-divert,
-.tool-divert:focus-visible {
-  opacity: 1;
+  transition: background 0.1s, border-color 0.1s, opacity 0.1s;
 }
 .tool-divert:hover {
-  background: var(--bg-input);
-  color: var(--fg);
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
+}
+.tool-divert:focus-visible {
+  outline: 1px solid var(--focus-ring, var(--accent-hover));
+  outline-offset: 2px;
 }
 .tool-divert:disabled {
-  opacity: 1;
+  opacity: 0.65;
   cursor: default;
-  color: var(--fg-dim);
+}
+.tool-divert-icon {
+  font-size: 1.05em;
+  line-height: 1;
 }
 
 /* A run the user detached: settled for this turn, but not finished. Dimmed like a

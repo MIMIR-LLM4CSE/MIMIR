@@ -1,6 +1,7 @@
 import contextlib
 import io
 import json
+import os
 import time
 import unittest
 from pathlib import Path
@@ -55,6 +56,38 @@ class ClientHelperTests(unittest.TestCase):
     def test_client_config_servers_match_client_registry(self) -> None:
         self.assertEqual(client_module.SERVERS, client_config_module.SERVERS)
         self.assertEqual(client_module._BASE, client_config_module.SERVER_BASE)
+
+    def test_set_model_switches_the_active_model_and_environment(self) -> None:
+        agent = client_module.MimirAgent()
+        original = agent.model
+        self.assertNotEqual(original, "qwen3:30b")
+        agent.set_model("qwen3:30b")
+        self.assertEqual(agent.model, "qwen3:30b")
+        self.assertEqual(os.environ.get("MIMIR_DEFAULT_MODEL"), "qwen3:30b")
+
+    def test_set_model_re_resolves_enforcement_from_the_profile(self) -> None:
+        agent = client_module.MimirAgent()
+        agent.set_model("qwen3:30b")
+        self.assertEqual(agent.enforcement, "light")
+        # A profile-declared strict model opts up; unknown names fall back to light.
+        client_config_module.VLLM_MODEL_PROFILES["strict-test-model"] = {
+            "thinking": "kwarg", "enforcement": "strict",
+        }
+        self.addCleanup(
+            client_config_module.VLLM_MODEL_PROFILES.pop, "strict-test-model", None,
+        )
+        agent.set_model("strict-test-model")
+        self.assertEqual(agent.enforcement, "strict")
+        agent.set_model("some-unlisted-model")
+        self.assertEqual(agent.enforcement, "light")
+
+    def test_set_model_refuses_an_empty_name(self) -> None:
+        agent = client_module.MimirAgent()
+        with self.assertRaises(ValueError):
+            agent.set_model("")
+        with self.assertRaises(ValueError):
+            agent.set_model("   ")
+        self.assertEqual(agent.model, client_config_module.DEFAULT_MODEL)
 
     def test_new_execution_context_matches_runtime_contract(self) -> None:
         context = client_module.MimirAgent._new_execution_context()

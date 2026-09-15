@@ -46,7 +46,10 @@ from mimir.client.guardrails.workflow import (
     TERMINATION_USER_STOPPED,
     _collect_completion_issues,
     finalize_incomplete_answer,
+    COMPLETION_MARKER,
     is_incomplete_answer,
+    parse_completion_block,
+    split_answer_completion,
     unchecked_checklist_items,
     unjudged_run_lines,
 )
@@ -638,6 +641,12 @@ class RefusedActionReportTests(_ChecklistFixture):
     different honest endings, and none of them is silence about the skipped step.
     """
 
+    def _headline(self, out):
+        """The report's headline, read off the marker it now rides behind."""
+        _, block = split_answer_completion(out)
+        self.assertIsNotNone(block, "the report must be a marked block, not bare prose")
+        return parse_completion_block(block)["headline"]
+
     def _refused(self, times=1, **over):
         # An otherwise clean run — validated, concluded, nothing else outstanding — so
         # the refusal is the only thing the report has to account for.
@@ -653,7 +662,7 @@ class RefusedActionReportTests(_ChecklistFixture):
 
     def test_a_dropped_step_is_reported_but_is_not_a_failure(self):
         out = finalize_incomplete_answer("Done.", self._refused())
-        self.assertTrue(out.startswith(HEADLINE_REFUSED_ONLY))
+        self.assertEqual(self._headline(out), HEADLINE_REFUSED_ONLY)
         self.assertIn("Not performed (you refused these", out)
         self.assertIn("bash_run", out)
         # Named and visible, but not filed as something still to fix.
@@ -662,7 +671,7 @@ class RefusedActionReportTests(_ChecklistFixture):
 
     def test_the_end_of_the_ladder_reports_a_hand_back(self):
         out = finalize_incomplete_answer("Done.", self._refused(times=3))
-        self.assertTrue(out.startswith(HEADLINE_HANDBACK))
+        self.assertEqual(self._headline(out), HEADLINE_HANDBACK)
         self.assertIn("Stopped at the user's request", out)
         self.assertIn("Residual risk: high.", out)
 
@@ -670,7 +679,7 @@ class RefusedActionReportTests(_ChecklistFixture):
         ec = self._refused()
         ec["declared_edit_set"] = {"a.py", "b.py"}  # promised and never written
         out = finalize_incomplete_answer("Done.", ec)
-        self.assertTrue(out.startswith(HEADLINE_INCOMPLETE))
+        self.assertEqual(self._headline(out), HEADLINE_INCOMPLETE)
         self.assertIn("Declared but never written", out)
 
     def test_a_refused_run_is_never_labelled_with_an_unknown_blocker(self):
@@ -687,7 +696,7 @@ class RefusedActionReportTests(_ChecklistFixture):
             self._refused(),
             TERMINATION_STEP_LIMIT,
         )
-        self.assertTrue(out.startswith(HEADLINE_INCOMPLETE))
+        self.assertEqual(self._headline(out), HEADLINE_INCOMPLETE)
         self.assertIn("Not performed (you refused these", out)
         self.assertIn("the step budget ran out", out)
 
@@ -701,11 +710,15 @@ class RefusedActionReportTests(_ChecklistFixture):
         self.assertNotIn("step budget ran out", out)
 
     def test_only_a_hand_back_counts_as_an_unfinished_answer(self):
-        self.assertTrue(is_incomplete_answer(HEADLINE_INCOMPLETE + "\n..."))
-        self.assertTrue(is_incomplete_answer(HEADLINE_HANDBACK + "\n..."))
+        self.assertTrue(is_incomplete_answer(
+            finalize_incomplete_answer("Done.", self._refused(times=3))))
         # A run that skipped what the user refused *is* finished — the CLI must not
         # offer to re-plan it and a sub-agent must not report it as failed.
-        self.assertFalse(is_incomplete_answer(HEADLINE_REFUSED_ONLY + "\n..."))
+        out = finalize_incomplete_answer("Done.", self._refused())
+        self.assertEqual(self._headline(out), HEADLINE_REFUSED_ONLY)
+        self.assertFalse(is_incomplete_answer(out))
+        # Prose carrying the headline as text is not a report: only the marker counts.
+        self.assertFalse(is_incomplete_answer(HEADLINE_INCOMPLETE + "\n..."))
 
 
 class ChecklistReaderTests(_ChecklistFixture):
@@ -900,7 +913,7 @@ class BlockedRunIsALimitationTests(unittest.TestCase):
         ec["runs"]["make"]["blocked"] = ""
         issues, _ = _collect_completion_issues(ec)
         self.assertTrue(any("make" in i for i in issues))
-        self.assertTrue(finalize_incomplete_answer("Done.", ec).startswith(HEADLINE_INCOMPLETE))
+        self.assertTrue(is_incomplete_answer(finalize_incomplete_answer("Done.", ec)))
 
 
 class ExerciseRouteTests(unittest.TestCase):
@@ -1056,3 +1069,61 @@ class TestRedRunRaisesResidualRisk(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CompletionBlockTests(_ChecklistFixture):
+    """The report's marker contract with the front-ends.
+
+    The report used to be bare prose concatenated ahead of the answer. Nothing could
+    lift it off, so every front-end rendered the whole of it as body text and the
+    model's own words arrived underneath — which is how an ordinary interim turn read
+    as a wall of machine output. It is now a marked block at the tail, folded by the
+    front-ends into a disclosure. These tests hold the shape that makes that possible.
+    """
+
+    def _report(self, answer="Le build tourne toujours."):
+        ec = _written({"a.py"}, validated=False)
+        return finalize_incomplete_answer(answer, ec), ec
+
+    def test_the_model_s_prose_is_the_body_and_comes_first(self):
+        out, _ = self._report()
+        self.assertTrue(out.startswith("Le build tourne toujours."))
+        # The label that used to demote it is gone; the panel says it instead.
+        self.assertNotIn("What the model claims", out)
+
+    def test_the_block_round_trips(self):
+        out, _ = self._report()
+        prose, block = split_answer_completion(out)
+        self.assertEqual(prose, "Le build tourne toujours.")
+        rep = parse_completion_block(block)
+        self.assertEqual(rep["headline"], HEADLINE_INCOMPLETE)
+        self.assertEqual(rep["status"], "incomplete")
+        self.assertEqual(rep["risk"], "high")
+        self.assertIn("Modified files never checked", rep["body"])
+        # The framing line is the panel's chrome, not part of the body it renders.
+        self.assertNotIn("machine-recorded", rep["body"])
+
+    def test_nothing_is_dropped_on_the_way(self):
+        """Folded, not shortened: every section still reaches the answer text."""
+        out, _ = self._report()
+        body = parse_completion_block(split_answer_completion(out)[1])["body"]
+        self.assertIn("Completed:", body)
+        self.assertIn("Remaining issues:", body)
+        self.assertIn("Residual risk:", body)
+
+    def test_an_empty_answer_still_produces_a_readable_block(self):
+        out, _ = self._report(answer="")
+        self.assertTrue(out.lstrip().startswith(COMPLETION_MARKER))
+        self.assertEqual(parse_completion_block(out)["headline"], HEADLINE_INCOMPLETE)
+
+    def test_both_blocks_peel_off_in_the_order_they_are_appended(self):
+        """The order ChatMessage.tsx and the CLI both rely on: ledger last, so first off."""
+        out, ec = self._report()
+        full = _annotate_answer_with_changes(out, ec)
+        rest, ledger = split_answer_ledger(full)
+        self.assertIsNotNone(ledger)
+        self.assertTrue(ledger.startswith(LEDGER_MARKER))
+        prose, block = split_answer_completion(rest)
+        self.assertEqual(prose, "Le build tourne toujours.")
+        self.assertTrue(block.startswith(COMPLETION_MARKER))
+        self.assertNotIn(LEDGER_MARKER, block)

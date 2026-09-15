@@ -13,13 +13,19 @@ from ...query_engine.history import (
 )
 from ...query_engine.verification import parse_ledger_block, split_answer_ledger
 from ...config.constants import context_budget_for, STATE_DIR
-from ...guardrails.workflow import is_incomplete_answer
+from ...guardrails.workflow import (
+    is_incomplete_answer, parse_completion_block, split_answer_completion,
+)
 
 _TODO_FILE = os.path.join(STATE_DIR, "todo_list.md")
 
 # Ledger status → glyph. The ledger stays a one-liner unless the user asks for it,
 # so the glyph carries the whole verdict at a glance.
 _LEDGER_GLYPH = {"ok": "✅", "note": "🛡", "warn": "⚠️"}
+
+# Completion-report status → glyph, on the same principle: the headline and the glyph
+# are what the terminal shows, and the sections stay folded inside the answer text.
+_COMPLETION_GLYPH = {"incomplete": "⚠️", "handback": "✋", "refused-only": "✅"}
 
 _PROCEED_SIGNALS = frozenset({
     "start implementation",
@@ -65,6 +71,20 @@ def format_ledger_full(block: str) -> str:
         lines.append(f"   {led['summary']}")
     lines.extend(f"   • {_plain_row(r)}" for r in led["rows"])
     return "\n".join(lines) + "\n"
+
+
+def format_completion_summary(block: str) -> str:
+    """The one-liner printed under an answer whose run ended with something open.
+
+    The terminal never reprinted the answer — it is streamed as it is produced, and the
+    report is appended after — so before this the report simply did not reach the CLI at
+    all. One line is the whole of what it gets: the headline the report already chose as
+    its readable-without-unfolding line, plus the residual risk.
+    """
+    rep = parse_completion_block(block)
+    glyph = _COMPLETION_GLYPH.get(rep["status"], "⚠️")
+    risk = f" · risk: {rep['risk']}" if rep["risk"] else ""
+    return f"\n{glyph} {rep['headline']}{risk}"
 
 
 def _is_proceed_signal(query: str) -> bool:
@@ -256,8 +276,14 @@ async def run_chat_session(agent: Any) -> None:
 
             # The ledger travels inside `answer` (history keeps it for the model); the
             # terminal only gets the one-liner unless the user runs /ledger.
-            _, last_ledger = split_answer_ledger(answer)
+            # Both blocks travel inside `answer` (history keeps them for the model); the
+            # terminal only gets a one-liner for each. The ledger is appended last, so it
+            # comes off first and the report is the tail of what is left.
+            rest, last_ledger = split_answer_ledger(answer)
             ledger = parse_ledger_block(last_ledger) if last_ledger else None
+            _, last_report = split_answer_completion(rest)
+            if last_report:
+                print(format_completion_summary(last_report))
             if ledger:
                 print(format_ledger_summary(last_ledger))
 

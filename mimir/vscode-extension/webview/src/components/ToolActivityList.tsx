@@ -261,9 +261,10 @@ const ToolRow: React.FC<RowProps> = ({ tool, childRows = [], onDivert }) => {
           )}
         </span>
       </button>
-      {/* Icon only: the row is already a dense line, and the sentence belongs in the
-          tooltip. A sibling of the head rather than a child — the head is itself a
-          button, and a button inside a button is not valid markup. */}
+      {/* Labelled rather than icon-only: the row is dense, but a glyph alone never
+          told the user the run could be detached at all. A sibling of the head rather
+          than a child — the head is itself a button, and a button inside a button is
+          not valid markup. */}
       {canDivert && (
         <button
           className="tool-divert"
@@ -280,7 +281,10 @@ const ToolRow: React.FC<RowProps> = ({ tool, childRows = [], onDivert }) => {
             onDivert!(tool.id);
           }}
         >
-          {diverting ? "⋯" : "↗"}
+          <span className="tool-divert-icon" aria-hidden="true">
+            {diverting ? "⋯" : "↗"}
+          </span>
+          {diverting ? "backgrounding…" : "background"}
         </button>
       )}
       </div>

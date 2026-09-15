@@ -150,6 +150,14 @@ def _copy_restore(git_dir: str, work_tree: str, paths: list[str], snapshot_id: s
             staged.append((tmp, final))
         for tmp, final in staged:
             os.replace(tmp, final)
+            # copy2 carried the snapshot's mtime across, which would date a
+            # restored file to before the artifact built from it. `make` reads
+            # exactly that comparison and would skip the rebuild, so the next
+            # run would measure the binary of the attempt this restore is
+            # undoing. Stamping the file as new is what lets the build system
+            # decide correctly -- and it is also what keeps the rebuild
+            # incremental instead of forcing a full one.
+            os.utime(final, None)
     except OSError:
         for tmp, _ in staged:
             try:

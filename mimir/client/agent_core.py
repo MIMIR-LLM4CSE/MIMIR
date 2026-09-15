@@ -286,6 +286,23 @@ class MimirAgent:
         self.backend = mode
         clear_backend_cache()
 
+    def set_model(self, model: str) -> None:
+        """Switch the served model mid-session.
+
+        The model is read live at every LLM call (``agent.model`` is passed to the
+        backend per step), so mutating it here is enough for the next call to use
+        the new model — no reconnect is needed. The environment is refreshed so
+        sub-agents (spawned in a separate thread) inherit the new model, and
+        ``enforcement`` is re-derived from the new model's profile, matching how it
+        is resolved once at ``__init__``.
+        """
+        model = (model or "").strip()
+        if not model:
+            raise ValueError("Model name must not be empty.")
+        self.model = model
+        os.environ["MIMIR_DEFAULT_MODEL"] = model
+        self.enforcement = enforcement_level(model)
+
     def set_batch_mode(self, enabled: bool) -> None:
         self.approvals.batch_mode = enabled
 

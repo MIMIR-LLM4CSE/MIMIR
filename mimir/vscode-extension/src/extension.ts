@@ -373,6 +373,12 @@ class MimirAgentViewProvider implements vscode.WebviewViewProvider {
    */
   private _attachLog: vscode.OutputChannel | undefined;
   /**
+   * Log channel for model-discovery results, created on first use. The connect
+   * form probes the endpoint before any server is started, so this cannot rely
+   * on the per-connect channel existing.
+   */
+  private _modelLog: vscode.OutputChannel | undefined;
+  /**
    * Endpoint we auto-connected to, kept until a webview has actually been told.
    * The React app is what shows the connecting state, and it mounts long after we
    * start — so this is replayed on every `get_config` (its mount handshake) until
@@ -879,14 +885,19 @@ class MimirAgentViewProvider implements vscode.WebviewViewProvider {
     const verifySsl = vscode.workspace.getConfiguration("mimir").get<boolean>("vllmVerifySsl", true);
     try {
       const models = await fetchModels(backend as DiscoverableBackend, baseUrl, verifySsl);
+      (this._modelLog ??= vscode.window.createOutputChannel("MIMIR Model Discovery")).appendLine(
+        `Model list from ${baseUrl}: ${models.length ? models.join(", ") : "(none named)"}`,
+      );
       this._view?.webview.postMessage({ type: "models", backend, models });
     } catch (err) {
-      this._view?.webview.postMessage({
-        type: "models",
-        backend,
-        models: [],
-        error: err instanceof Error ? err.message : String(err),
-      });
+      const reason = err instanceof Error ? err.message : String(err);
+      // Also to the output channel: the panel shows one line under the address,
+      // which the user may have moved past by the time they come looking for why
+      // the list was empty.
+      (this._modelLog ??= vscode.window.createOutputChannel("MIMIR Model Discovery")).appendLine(
+        `Model list from ${baseUrl} failed: ${reason}`,
+      );
+      this._view?.webview.postMessage({ type: "models", backend, models: [], error: reason });
     }
   }
 

@@ -17,6 +17,7 @@ detached run carries exactly the metrics a synchronous one does.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
@@ -52,6 +53,26 @@ def _settle_metrics(stdout: str, wall_s: float | None, returncode: int | None) -
     return run_metrics
 
 
+def _binary_fingerprint(path: str) -> dict:
+    """Identify the executable a reference was sealed from.
+
+    A reference is immutable, so one sealed from a stale binary is wrong for
+    good, and every l2_rel in the session inherits it. The server cannot rebuild
+    here — sealing runs inside the MCP process, under the client's call budget —
+    so it records what it ran and names the drift later instead.
+    """
+    try:
+        st = os.stat(path)
+        h = hashlib.sha256()
+        with open(path, "rb") as fh:
+            for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+                h.update(chunk)
+        return {"path": path, "size": st.st_size,
+                "mtime": round(st.st_mtime, 3), "sha256": h.hexdigest()}
+    except OSError:
+        return {}
+
+
 def _apply_invariants(
     run_metrics: dict,
     run_out: str,
@@ -72,6 +93,19 @@ def _apply_invariants(
         for k in ("l2_abs", "l2_rel", "linf_abs", "linf_rel"):
             if isinstance(comparison.get(k), (int, float)):
                 run_metrics[k] = comparison[k]
+
+    if reference_name:
+        sealed = (store._read_json(os.path.join(store._ref_dir(reference_name),
+                                                "config.json"), {}) or {}
+                  ).get("executable_fingerprint") or {}
+        current = _binary_fingerprint(entry.get("executable_path", ""))
+        if sealed and current and sealed.get("sha256") != current.get("sha256"):
+            run_metrics["reference_binary_changed"] = 1
+            run_metrics.setdefault("comparison_to_reference", {})[
+                "binary_changed"] = (
+                "the executable differs from the one this reference was sealed "
+                "from; the comparison holds only if the reference is still valid "
+                "for this build")
 
     field = metrics_mod._load_field(run_out, output_format)
     if field is not None:
@@ -240,6 +274,8 @@ def _seal_reference(
         "output_format":  entry.get("output_format", "npz"),
         "reference_name": reference_name,
         "created_at":     datetime.now(timezone.utc).isoformat(),
+        "executable_fingerprint": _binary_fingerprint(
+            entry.get("executable_path", "")),
     }
     procs._write_run_config(rd, config)
 

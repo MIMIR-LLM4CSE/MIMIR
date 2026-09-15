@@ -877,6 +877,23 @@ def _outside_workspace(path: str) -> bool:
     return os.path.isabs(path) or path == ".." or path.startswith(".." + os.sep)
 
 
+def _call_was_refused(status: Any, payload: dict[str, Any]) -> bool:
+    """Whether the server rejected this call before any shell opened.
+
+    A shell tool answers ``status: "error"`` for two different things, and only one of
+    them is evidence. A command that ran and exited non-zero — or timed out — is a
+    finding about the change; a call the server *refused* (a heredoc, a substitution, a
+    denied command, a path outside the workspace) never reached a shell, so it says
+    nothing about anything and must charge nothing: not a file's retry budget, not a
+    run's.
+
+    The server says which it is, rather than this inferring it from the payload's shape:
+    a rejection is the one answer it produces before knowing anything about a run, and
+    a flag it sets deliberately cannot drift the way "no ``returncode`` field" can.
+    """
+    return status != "ok" and bool(payload.get("refused"))
+
+
 def _bash_validation_scan(
     agent: Any, command: str,
 ) -> tuple[list[str], bool, str, str, str, bool]:
@@ -1126,6 +1143,10 @@ def _observe_bash_validation(
         # The run is still going: this payload is a handle plus whatever it had
         # printed so far, not a verdict. Judging it would credit a whole pending
         # validation set at the instant a suite was launched.
+        return
+    if _call_was_refused(status, payload):
+        # The server refused the call before any shell opened, so there is nothing to
+        # observe in either direction: no check ran, and no run failed.
         return
     command = str(arguments.get(command_args[0], "") or "")
     explicit, whole_project, tier, execution, missing_head, exit_is_the_run_s = (

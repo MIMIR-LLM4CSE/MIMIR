@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import warnings
 
 from ..context.signals import SOURCE_FILE_EXTENSIONS
@@ -440,25 +441,97 @@ def refused_action_lines(execution_context: dict) -> list[str]:
 	return lines[:5]
 
 
-# Report headlines. The wording is load-bearing: it is what the user reads first and
-# what `is_incomplete_answer` matches on, so both live here rather than being spelled
-# out at each consumer.
+# Report headlines. The wording is load-bearing: it is the one line of the report the
+# user is meant to read without unfolding anything, so it lives here rather than being
+# spelled out at each consumer.
 HEADLINE_INCOMPLETE: str = "Task is incomplete."
 HEADLINE_HANDBACK: str = "Stopped at your request."
 HEADLINE_REFUSED_ONLY: str = "Task complete, except for what you refused."
 
-_INCOMPLETE_HEADLINES: tuple[str, ...] = (HEADLINE_INCOMPLETE, HEADLINE_HANDBACK)
+# The status token the marker carries, which is what `is_incomplete_answer` reads. Kept
+# beside the headlines it labels: the two are set together and must not drift.
+_STATUS_BY_HEADLINE: dict[str, str] = {
+	HEADLINE_INCOMPLETE:   "incomplete",
+	HEADLINE_HANDBACK:     "handback",
+	HEADLINE_REFUSED_ONLY: "refused-only",
+}
+_INCOMPLETE_STATUSES: frozenset[str] = frozenset({"incomplete", "handback"})
+
+# Marker contract with the front-ends, deliberately the same shape as the verification
+# ledger's (see query_engine/verification.py): an HTML comment carrying the header
+# fields, then a markdown body. The front-end lifts the block off the answer and shows
+# it as a collapsed disclosure — headline and risk visible, the detail one click away.
+#
+# The report used to be concatenated *ahead* of the answer as bare prose, with no marker
+# to lift it by, so every front-end rendered the whole of it as body text and the model's
+# own words arrived underneath it. That is what made an ordinary interim turn read as a
+# wall of machine output. Nothing is dropped here — only folded.
+COMPLETION_MARKER: str = "<!--mimir:completion"
+COMPLETION_FRAMING: str = "Completion report — machine-recorded, not model-authored:"
+
+_COMPLETION_MARKER_RE = re.compile(
+	re.escape(COMPLETION_MARKER) + r"(?P<attrs>[^>]*)-->")
+_COMPLETION_ATTR_RE = re.compile(r'(\w+)="([^"]*)"')
+
+
+def render_completion_report(headline: str, risk: str, body: str) -> str:
+	"""The report as the block appended to an answer (marker + markdown body)."""
+	# Quotes would close the marker's attributes early; nothing generated here contains
+	# one, so a plain swap is enough insurance.
+	safe = headline.replace('"', "'")
+	return (
+		f'\n\n{COMPLETION_MARKER} status="{_STATUS_BY_HEADLINE[headline]}"'
+		f' risk="{risk}" headline="{safe}"-->\n'
+		f"{COMPLETION_FRAMING}\n{body}"
+	)
+
+
+def split_answer_completion(text: str) -> tuple[str, str | None]:
+	"""Split *text* into ``(answer prose, completion block)``; block is None when absent.
+
+	The counterpart of ``split_answer_ledger``. Both blocks ride at the tail, the ledger
+	appended last, so a caller that has already lifted the ledger off passes the rest
+	here and gets the prose.
+	"""
+	idx = text.rfind(COMPLETION_MARKER)
+	if idx == -1:
+		return text, None
+	return text[:idx].rstrip(), text[idx:].strip()
+
+
+def parse_completion_block(block: str) -> dict:
+	"""``{"status", "risk", "headline", "body"}`` recovered from a rendered block.
+
+	Front-end helper, mirroring ``parse_ledger_block``: the marker carries the header
+	fields and everything past the framing line is the markdown body.
+	"""
+	m = _COMPLETION_MARKER_RE.search(block)
+	attrs = dict(_COMPLETION_ATTR_RE.findall(m.group("attrs"))) if m else {}
+	body = block[m.end():] if m else block
+	body = body.lstrip("\n")
+	if body.startswith(COMPLETION_FRAMING):
+		body = body[len(COMPLETION_FRAMING):]
+	return {
+		"status":   attrs.get("status", "incomplete"),
+		"risk":     attrs.get("risk", ""),
+		"headline": attrs.get("headline", ""),
+		"body":     body.strip(),
+	}
 
 
 def is_incomplete_answer(answer: str) -> bool:
 	"""True when a finalized answer reports the task as unfinished.
 
-	The consumers (the CLI's re-plan offer, the sub-agent's ``completed`` flag) used to
-	match the one literal prefix there was. Now that a refusal can end a run three
-	different ways, they ask here instead — a run that only skipped what the user
-	refused *is* finished, and must not be reported as a failure.
+	The consumers (the CLI's re-plan offer, the sub-agent's ``completed`` flag) matched
+	the headline as a literal prefix, which only worked while the report was the head of
+	the answer. It is now a marked block at the tail, so they read the status the marker
+	states — a run that only skipped what the user refused *is* finished, and must not be
+	reported as a failure.
 	"""
-	return answer.startswith(_INCOMPLETE_HEADLINES)
+	_, block = split_answer_completion(answer)
+	if block is None:
+		return False
+	return parse_completion_block(block)["status"] in _INCOMPLETE_STATUSES
 
 
 def finalize_incomplete_answer(
@@ -481,11 +554,11 @@ def finalize_incomplete_answer(
 	else:
 		headline = HEADLINE_INCOMPLETE
 
-	summary = headline + "\n\nCompleted:\n- " + "\n- ".join(completed)
+	sections: list[str] = ["Completed:\n- " + "\n- ".join(completed)]
 	blocked = blocked_run_lines(execution_context)
 	if blocked:
-		summary += (
-			"\n\nNot attempted (a prerequisite this environment does not have):\n- "
+		sections.append(
+			"Not attempted (a prerequisite this environment does not have):\n- "
 			+ "\n- ".join(blocked)
 		)
 	# Deliberately NOT listed here: the ledger appended to this same answer already
@@ -495,12 +568,12 @@ def finalize_incomplete_answer(
 	# still what decides, below, whether there is anything to report at all.
 	unmeasured = unmeasured_proxy_source_lines(execution_context)
 	if unmeasured:
-		summary += "\n\nChecked but never measured:\n- " + "\n- ".join(unmeasured)
+		sections.append("Checked but never measured:\n- " + "\n- ".join(unmeasured))
 	if issues:
-		summary += "\n\nRemaining issues:\n- " + "\n- ".join(issues)
+		sections.append("Remaining issues:\n- " + "\n- ".join(issues))
 	if refused and not handback:
-		summary += (
-			"\n\nNot performed (you refused these; they were skipped, not attempted "
+		sections.append(
+			"Not performed (you refused these; they were skipped, not attempted "
 			"another way):\n- " + "\n- ".join(refused)
 		)
 
@@ -527,12 +600,16 @@ def finalize_incomplete_answer(
 		else ("medium" if pending or _unwritten or denied_calls or _failed_runs or unmeasured
 		      else "low")
 	)
-	summary += f"\n\nResidual risk: {risk_level}."
-	if answer.strip():
-		# Named as a claim, not as the answer: everything above is machine-recorded, and
-		# what follows is what the model says about the same run.
-		summary += "\n\nWhat the model claims:\n" + answer.strip()
-	return summary
+	sections.append(f"Residual risk: {risk_level}.")
+
+	# The model's own prose is the answer again, and the machine's account of the same run
+	# rides behind the marker. It used to be the other way round — the report first, the
+	# prose last under "What the model claims:" — which is what a reader met head-on on an
+	# ordinary interim turn. The framing that label carried is not lost: it is the marker's
+	# own ("machine-recorded, not model-authored"), stated once, where the machine's lines
+	# actually are.
+	return answer.strip() + render_completion_report(
+		headline, risk_level, "\n\n".join(sections))
 
 # --- Loop-control nudge copy -----------------------------------------------
 # Message bodies for the nudges fired directly from query_engine.agent_loop

@@ -154,6 +154,16 @@ export interface ModelsMessage {
   error?: string;
 }
 
+/** The served model changed mid-session — the status bar and derived controls follow. */
+export interface ModelChangedMessage {
+  type: "model_changed";
+  model: string;
+  /** Re-derived thinking profile for the new model, when the server reports it. */
+  thinking?: ThinkingProfile;
+  /** Re-derived enforcement level for the new model, when the server reports it. */
+  enforcement?: "strict" | "light" | "off";
+}
+
 export interface ThinkingMessage {
   type: "thinking";
   text: string;
@@ -303,6 +313,8 @@ export interface SessionLoadedMessage {
   title: string;
   display_messages: ChatMessage[];
   todos: TodoItem[];
+  /** A turn of this session is still in flight — it outlived the last connection. */
+  turn_running?: boolean;
 }
 
 export interface ContextModeMessage {
@@ -484,6 +496,7 @@ export type ServerMessage =
   | ConfigMessage
   | AutoConnectMessage
   | ModelsMessage
+  | ModelChangedMessage
   | DiffMessage
   | SteerInjectedMessage
   | NudgeInjectedMessage
@@ -569,6 +582,12 @@ export interface ConnectMessage {
   vllmBaseUrl?: string;
 }
 
+/** Switch the served model mid-session (no reconnect). */
+export interface SetModelMessage {
+  type: "set_model";
+  model: string;
+}
+
 export interface CreateSessionMessage {
   type: "create_session";
 }
@@ -647,7 +666,8 @@ export type ClientMessage =
   | ListTogglesMessage
   | ListResourcesMessage
   | ToggleServerMessage
-  | ToggleSkillMessage;
+  | ToggleSkillMessage
+  | SetModelMessage;
 
 // ── UI state types ─────────────────────────────────────────────────────────────
 
@@ -720,6 +740,13 @@ export interface ChatMessage {
   /** A user steer message queued mid-run, awaiting injection (shows a "queued" tag
    *  until the server confirms with steer_injected). */
   queued?: boolean;
+  /** Prose committed out of `draft` before the turn that wrote it was accepted —
+   *  because the turn parked on a question, or the connection dropped under it.
+   *  Kept so an interruption cannot lose the only copy, and dropped again by the
+   *  `answer` that supersedes it. Renders exactly like any other text bubble, and
+   *  is deliberately carried into the stored transcript: a reload landing while the
+   *  turn is still parked must come back able to drop it. */
+  provisional?: boolean;
 }
 
 export type ConnectionState = "disconnected" | "connecting" | "connected" | "error";

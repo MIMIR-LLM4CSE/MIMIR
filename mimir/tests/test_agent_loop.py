@@ -436,6 +436,56 @@ class RunPlanModeTests(unittest.TestCase):
         self.assertTrue(_reminder_calls_containing(backend, "final answer"))
         self.assertEqual(len(backend.calls), 2)
 
+    def test_plan_mode_delivers_the_repeated_call_corrective(self) -> None:
+        """Regression: plan mode dispatched but never consumed the staged alert.
+
+        ``_dispatch_tool_calls`` only *stages* ``_repeat_alert`` when a non-write call
+        fails identically; ``_post_dispatch_inject`` is what turns it into a reminder.
+        Plan mode called the first and not the second, so a model spinning on the same
+        failing fetch was never told — and the alert sat in the execution context until
+        an approved plan handed the run to the agent loop, which then fired it about a
+        call made several turns earlier.
+        """
+        backend = ScriptedBackend([
+            {"content": "planning", "tool_calls": [_tool_call("todo_set_plan")]},
+            {"content": "Here is the plan."},
+        ])
+        context = build_execution_context()
+        dispatches = []
+
+        async def _plan_dispatch(tool_calls, agent, messages, execution_context):
+            _record_plan_flags(tool_calls, agent, execution_context)
+            dispatches.append(1)
+            if len(dispatches) == 1:
+                # Exactly what the real dispatch records on the second identical failure.
+                execution_context["_repeat_alert"] = ("github_get_file", 2)
+
+        async def _finalize(agent, query, answer, execution_context, messages, logger):
+            return answer
+
+        agent = types.SimpleNamespace(model="m", tools=[], tool_caps=dict(_CHECKLIST_CAPS))
+        messages = [{"role": "system", "content": "S"}, {"role": "user", "content": "plan it"}]
+
+        with patch.object(streaming_module, "get_backend", lambda: backend), \
+             patch.object(plan_loop_module, "tools_for_plan_mode", lambda tools, caps, **kw: []), \
+             patch.object(plan_loop_module, "_dispatch_tool_calls", _plan_dispatch), \
+             patch.object(plan_loop_module, "_finalize_answer", _finalize):
+            asyncio.run(
+                plan_loop_module._run_plan_mode(
+                    agent=agent, query="q", messages=messages, execution_context=context,
+                    max_steps=10, thinking=False, streaming=False, logger=None,
+                    cb={"think_token_callback": None},
+                )
+            )
+
+        # The corrective reached the model on the call right after the failing dispatch.
+        self.assertEqual(
+            _reminder_calls_containing(backend, "failed 2 times with identical arguments"),
+            [1],
+        )
+        # And it was consumed, so it cannot resurface in a later mode.
+        self.assertNotIn("_repeat_alert", context)
+
     def test_replaying_the_plan_forever_is_cut_short(self) -> None:
         # Regression: with the plan already recorded, some models keep re-reading /
         # re-writing it and echoing its text every turn. A turn that calls tools never
@@ -1296,7 +1346,11 @@ class EvidenceHandbackTests(RunAgentQueryNonInteractiveTests):
         self.assertTrue(any("machine-recorded facts" in c for c in second_users))
         # And only once: the corrected answer goes straight to the report.
         self.assertTrue(ec_holder[-1]["evidence_handback_used"])
-        self.assertIn("What the model claims", result)
+        # The report is there, as a marked block behind the model's own prose rather
+        # than a wall of text in front of it.
+        from mimir.client.guardrails.workflow import COMPLETION_MARKER
+        self.assertTrue(result.startswith("Edited solver.f90"))
+        self.assertIn(COMPLETION_MARKER, result)
         self.assertIn("Edited solver.f90", result)
 
 

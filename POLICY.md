@@ -813,6 +813,12 @@ Two ledgers are kept, deliberately: `denied_tool_calls` is the *open* set that f
 
 A skipped step is never silent, whichever headline applies. Two report sections sit outside the issue list that picks the headline, on the same principle: *Not attempted (a prerequisite this environment does not have)* (`blocked_run_lines`) and *Ran, with no verdict on record* (`unjudged_run_lines`). Both are recommended axes, so they are reported in full and charged at nothing — a headline a recommendation can set is a requirement.
 
+**Where the report is shown.** Behind a marker, at the tail of the answer, on the same contract as the verification ledger (`COMPLETION_MARKER`, `split_answer_completion`, `parse_completion_block` — mirrored in `webview/src/components/completionUtils.ts`). The front-ends lift the block off the prose and render it as a **collapsed disclosure**: the headline and the residual risk stay in view, the sections are one click away (`CompletionReport.tsx`; the CLI prints the same one line).
+
+It was bare prose concatenated *ahead* of the answer, with the model's own words demoted beneath it under *What the model claims*. Nothing could lift it off, so every front-end rendered the whole of it as body text — which is how an ordinary interim turn ("the build is still running, I'll wait for it") reached the user as a wall of machine output with a heredoc dumped in the middle of it. Prominence was the intent and prominence is what it lost the moment it was unreadable: a report skipped every time is not read more than one that is folded. The framing that the *What the model claims* label carried is not dropped — it is the panel's own, stated once, over the machine's lines rather than over the model's.
+
+What is folded is the **presentation**, and nothing else. The block is still appended to the answer text, so history keeps it for the model verbatim, `is_incomplete_answer` still gates the CLI's re-plan offer and the sub-agent's `completed` flag (off the marker's `status` now, not a prefix match), and no line is dropped or shortened on the way.
+
 ### Interactive clarification vs approval
 
 The engine may offer **interactive path clarification** before surfacing some write-policy violations to the model, but only in truly interactive sessions.

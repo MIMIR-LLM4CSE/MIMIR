@@ -13,6 +13,8 @@ interface Props {
   /** Models the endpoint reports it serves, fetched by the extension host. */
   models?: string[];
   modelsError?: string | null;
+  /** Whether the endpoint has answered the model-list question yet. */
+  modelsProbed?: boolean;
   /** Endpoint the host remembers — seeds the address, model and the checkbox. */
   remembered?: RememberedEndpoint | null;
   onFetchModels: (backend: string, baseUrl: string) => void;
@@ -40,6 +42,7 @@ export const ConnectForm: React.FC<Props> = ({
   anthropicModels = [],
   models = [],
   modelsError = null,
+  modelsProbed = false,
   remembered = null,
   onFetchModels,
   onConnect,
@@ -74,9 +77,9 @@ export const ConnectForm: React.FC<Props> = ({
     return () => clearTimeout(t);
   }, [backend, url, anthropic, onFetchModels]);
 
-  // The model is not shown in the form: it is picked from what the endpoint
-  // serves. The remembered model wins over the first entry, so a reconnect lands
-  // on the same model as last time.
+  // The model is picked from what the endpoint serves. The remembered model wins
+  // over the first entry, so a reconnect lands on the same model as last time —
+  // and the control below shows that choice rather than making it silently.
   useEffect(() => {
     if (options.length > 0 && !options.includes(model)) {
       const preferred =
@@ -140,10 +143,52 @@ export const ConnectForm: React.FC<Props> = ({
           {modelsError && (
             <div className="connect-field-hint connect-field-error">
               No model list from this address: {modelsError}
+              {/* A refused certificate is the one failure with a one-click remedy,
+                  and the one the server does not share: it verifies nothing by
+                  default, so the list can work there and fail here. */}
+              {/certificate|self.signed|SSL|TLS/i.test(modelsError) && (
+                <> — untick <code>mimir.vllmVerifySsl</code> if this is an internal
+                route behind a private CA.</>
+              )}
             </div>
           )}
         </div>
       )}
+
+      {options.length > 1 ? (
+        <div className="connect-field">
+          <label className="connect-label">Model</label>
+          <select
+            className="connect-select"
+            value={model}
+            onChange={e => setModel(e.target.value)}
+          >
+            {options.map(name => (
+              <option key={name} value={name}>{name}</option>
+            ))}
+          </select>
+        </div>
+      ) : options.length === 1 ? (
+        // One served model is not a choice; naming it still tells the user what
+        // they are about to connect to.
+        <div className="connect-field">
+          <label className="connect-label">Model</label>
+          <div className="connect-field-hint">{options[0]}</div>
+        </div>
+      ) : !anthropic && !modelsError ? (
+        // Nothing to pick from. "Asking", "answered with nothing" and "answered
+        // with a list" must not all look like an empty space: the user is left
+        // reading silence and concluding the feature is missing. An endpoint that
+        // answers but names no model is the server's own distinction, kept here.
+        <div className="connect-field">
+          <label className="connect-label">Model</label>
+          <div className="connect-field-hint">
+            {modelsProbed
+              ? "This address answered but named no model — connecting will let the server pick."
+              : "Asking this address what it serves…"}
+          </div>
+        </div>
+      ) : null}
 
       {!anthropic && (
         <label className="connect-remember">

@@ -148,12 +148,7 @@ class _Session:
         except Exception:
             return
 
-        # Flush any stale todo/output events left in the queue from a previous session.
-        while not self.worker.out_q.empty():
-            try:
-                self.worker.out_q.get_nowait()
-            except Exception:
-                break
+        self._drop_stale_events()
 
         # ── Session initialisation ────────────────────────────────────────────
         # Purge any empty sessions left over from previous (pre-fix) reconnects.
@@ -170,6 +165,9 @@ class _Session:
                 await self._create_new_session()
         else:
             await self._create_new_session()
+
+        # Last, so the card lands under a chat that is already on screen.
+        await self._resend_parked_prompt()
 
         drain_task = asyncio.create_task(self._drain_loop())
         try:
@@ -200,6 +198,47 @@ class _Session:
                         self.store.delete_session(meta.id)
                 except Exception:
                     pass
+        except Exception:
+            pass
+
+    def _drop_stale_events(self) -> None:
+        """Empty the worker's event queue of debris left by a previous connection.
+
+        Only an idle worker's queue is debris. One worker serves every connection and
+        outlives them all, so a turn whose socket dropped mid-run is still working, and
+        what is queued then is that turn's own output waiting for someone to read it.
+        Emptying it regardless is what made a reconnect land in a session where the
+        agent was demonstrably busy and nothing it did ever appeared — not the card it
+        was parked on, not the answer it eventually wrote.
+        """
+        if self.worker.is_busy():
+            return
+        while not self.worker.out_q.empty():
+            try:
+                self.worker.out_q.get_nowait()
+            except Exception:
+                break
+
+    async def _resend_parked_prompt(self) -> None:
+        """Put back the card the running turn is parked on, if there is one.
+
+        A turn parks on a person: an approval, a clarification, a plan awaiting
+        approval. The worker blocks on that answer with no timeout — deliberately, so
+        nothing proceeds because the user was slow — which means a connection that
+        drops while a card is up parks it forever. The query loop is serial, so every
+        later query queues behind a wait nobody can end, and the session goes quiet in
+        a way no message on screen explains.
+
+        Resending is the whole recovery: the card comes back, the user answers it, the
+        turn finishes. Nothing here judges whose session it belongs to — a card always
+        carries its own conversation label (``_detached_prefix``), and a prompt filtered
+        out as foreign is one the turn waits on for ever.
+        """
+        prompt = self.worker.pending_prompt()
+        if not prompt:
+            return
+        try:
+            await self.ws.send(json.dumps(prompt))
         except Exception:
             pass
 
@@ -316,6 +355,12 @@ class _Session:
                     "title": session.title,
                     "display_messages": session.display_messages,
                     "todos": [] if pending_todos else session.todos,
+                    # A turn of this conversation that outlived the last connection is
+                    # still producing. Said here rather than left to be inferred: the
+                    # client shows the run as live, and — the part that is not
+                    # cosmetic — knows a turn is open, so the answer that ends it is
+                    # what hands the finished transcript back for saving.
+                    "turn_running": self._running_turn_is_ours(),
                 }))
             except Exception:
                 pass
@@ -335,6 +380,7 @@ class _Session:
                     "title": session.title,
                     "display_messages": session.display_messages,
                     "todos": session.todos,
+                    "turn_running": self._running_turn_is_ours(),
                 }))
             except Exception:
                 pass
@@ -799,6 +845,7 @@ class _Session:
         "toggle_server": "_handle_toggle_server",
         "toggle_skill": "_handle_toggle_skill",
         "toggle_nudge": "_handle_toggle_nudge",
+        "set_model": "_handle_set_model",
     }
 
     async def _handle(self, raw: str) -> None:
@@ -1774,3 +1821,28 @@ class _Session:
         if name:
             self.worker.set_nudge_enabled(name, bool(msg.get("enabled", True)))
         await self._send_toggles()
+
+    async def _handle_set_model(self, msg: dict) -> None:
+        """Switch the served model mid-session.
+
+        On success, report the new model plus the model-derived settings
+        (thinking profile, enforcement) so the webview's controls stay coherent —
+        the same state-not-narration pattern as ``/mode``. On failure, surface an
+        error rather than silently keeping the old model.
+        """
+        model = (msg.get("model") or "").strip()
+        if not model:
+            await self.ws.send(json.dumps({
+                "type": "error", "text": "  ✗ No model name given.\n",
+            }))
+            return
+        error = self.worker.set_model(model)
+        if error:
+            await self.ws.send(json.dumps({"type": "error", "text": f"  ✗ {error}\n"}))
+            return
+        await self.ws.send(json.dumps({
+            "type": "model_changed",
+            "model": self.worker.model,
+            "thinking": self.worker.get_thinking_profile(),
+            "enforcement": self.worker.get_enforcement(),
+        }))

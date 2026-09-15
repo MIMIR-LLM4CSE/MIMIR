@@ -42,6 +42,12 @@ function pruneTool(tool: ToolActivity): ToolActivity {
  * them would put a spinner over work that finished long ago. A message still holding an
  * `approval` is a prompt nobody answered — the reducer rewrites answered ones into text
  * or drops them — and it renders as nothing, so it is left out entirely.
+ *
+ * `provisional` is the exception that is deliberately kept: it marks prose whose turn
+ * has not landed yet, and the turn it belongs to can outlive this transcript by a long
+ * way — a plan parked on its approval card waits for a person. A reload in that window
+ * must come back still knowing the bubble is provisional, or the `answer` that finally
+ * arrives repeats it instead of replacing it.
  */
 export function pruneForStorage(messages: ChatMessage[]): ChatMessage[] {
   return messages
@@ -51,4 +57,51 @@ export function pruneForStorage(messages: ChatMessage[]): ChatMessage[] {
       const tools = rest.tools?.map(pruneTool);
       return tools ? { ...rest, tools } : rest;
     });
+}
+
+/**
+ * Plain-text bubbles in *messages* — the part of a transcript both sides share.
+ *
+ * Mirrors ``_Session._text_count`` on the server: the server assembles nothing but
+ * text bubbles, so this is the one measure on which the two copies are comparable,
+ * and the only honest way to ask which of them holds more of the conversation.
+ */
+export function textBubbleCount(messages: ChatMessage[]): number {
+  return messages.filter((m) => (m.kind ?? "text") === "text").length;
+}
+
+/** What a `session_loaded` should leave on screen, and whether to push it back. */
+export interface RestoreChoice {
+  messages: ChatMessage[];
+  /** True when what we kept is richer than what arrived — the server's copy is behind. */
+  push: boolean;
+}
+
+/**
+ * Decide between the stored transcript and the one already on screen.
+ *
+ * A `session_loaded` for a *different* session is a switch: whatever it carries is the
+ * conversation, and what was on screen belongs to the one being left.
+ *
+ * For the *same* session it is a reconnect, and the two copies are rivals. The one on
+ * screen is the richer by construction — the server only ever assembles text bubbles,
+ * and it is handed the rendered transcript at points the client chooses — so taking the
+ * stored copy unconditionally is what turned a dropped connection into a conversation
+ * reduced to its questions. Kept whenever it holds at least as much, which is the same
+ * test the server applies to transcripts we send it (``_handle_transcript``), read from
+ * the other side. Pushed back when it holds strictly more, so the disk copy stops being
+ * behind rather than waiting for the next turn to end.
+ */
+export function chooseRestoredMessages(
+  incoming: ChatMessage[] | undefined,
+  onScreen: ChatMessage[],
+  sameSession: boolean,
+): RestoreChoice {
+  const stored = incoming ?? [];
+  if (!sameSession) return { messages: stored, push: false };
+  const here = textBubbleCount(onScreen);
+  const there = textBubbleCount(stored);
+  if (here < there) return { messages: stored, push: false };
+  if (onScreen.length === 0) return { messages: stored, push: false };
+  return { messages: onScreen, push: here > there };
 }

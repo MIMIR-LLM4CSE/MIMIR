@@ -11,6 +11,7 @@ public data is available and rate limits are lower.
 """
 
 import base64
+import difflib
 import json
 import os
 import sys
@@ -33,6 +34,11 @@ mcp = FastMCP(
 _API_BASE = "https://api.github.com"
 _MAX_FILE_BYTES = 256 * 1024
 _MAX_RESULTS = 25
+# A 404 on a file path is almost always a guessed name, not a missing repo. The
+# error walks back up to the deepest directory that does exist and names what is
+# in it, so the next call is informed instead of another guess.
+_MAX_SIBLINGS = 40
+_MAX_WALK_UP = 4
 _TOKEN = os.environ.get("GITHUB_TOKEN")
 
 
@@ -155,6 +161,46 @@ def github_list_issues(owner: str, repo: str, state: str = "open", limit: int = 
     return ok({"issues": issues, "count": len(issues)})
 
 
+def _list_directory(owner: str, repo: str, dirpath: str, ref: str) -> list[str] | None:
+    """Names in one repository directory, or None when it is not a listable directory."""
+    params = {"ref": ref} if ref else None
+    quoted = "/".join(urllib.parse.quote(part) for part in dirpath.split("/") if part)
+    result = _request(f"/repos/{owner}/{repo}/contents/{quoted}", params)
+    if result["status"] != "ok" or not isinstance(result["data"], list):
+        return None
+    return [entry.get("name", "") for entry in result["data"]]
+
+
+def _not_found(owner: str, repo: str, path: str, ref: str, fallback: dict) -> dict:
+    """Turn a bare 404 on ``path`` into the listing of its closest existing parent."""
+    parts = [part for part in path.split("/") if part]
+    # Walk up from the file's own directory: the first level that lists is where the
+    # guessed path stopped matching the repository.
+    for depth in range(1, min(len(parts), _MAX_WALK_UP) + 1):
+        parent = "/".join(parts[:-depth])
+        names = _list_directory(owner, repo, parent, ref)
+        if names is None:
+            continue
+        shown = sorted(names)[:_MAX_SIBLINGS]
+        where = f"'{parent}'" if parent else "the repository root"
+        near = difflib.get_close_matches(parts[-1], names, n=3, cutoff=0.6)
+        # Near matches lead: they are the actionable part, and a long listing is the
+        # first thing a downstream truncation would cut.
+        hint = f"Closest names to '{parts[-1]}': {', '.join(near)}. " if near else ""
+        hint += f"{where} exists and contains: {', '.join(shown)}."
+        if len(names) > len(shown):
+            hint += f" ({len(names) - len(shown)} more not shown.)"
+        return err(
+            f"'{path}' does not exist in {owner}/{repo}" + (f" at ref '{ref}'." if ref else "."),
+            hint=hint,
+            http_status=404,
+            listed_path=parent,
+            entries=shown,
+            near_matches=near,
+        )
+    return fallback
+
+
 @mcp.tool(**tool_caps(caps=[EXTERNAL_FETCH], label="Fetching from GitHub: {path}"))
 def github_get_file(owner: str, repo: str, path: str, ref: str = "") -> dict:
     """Fetch a text file from a GitHub repository and decode its content.
@@ -172,6 +218,8 @@ def github_get_file(owner: str, repo: str, path: str, ref: str = "") -> dict:
     quoted_path = "/".join(urllib.parse.quote(part) for part in path.split("/"))
     result = _request(f"/repos/{owner}/{repo}/contents/{quoted_path}", params)
     if result["status"] != "ok":
+        if result.get("http_status") == 404:
+            return _not_found(owner, repo, path, ref, result)
         return result
     data = result["data"]
     if data.get("type") != "file":

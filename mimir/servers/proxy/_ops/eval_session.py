@@ -29,7 +29,7 @@ from _lib.ratchet import (
     _run_primary_value,
 )
 from _lib.report import _diff_run_pair
-from _lib import tree_snapshot
+from _lib import build, procs, tree_snapshot
 from _lib.store import (
     cache_dir,
     _load_registry_or_err, _load_suite,
@@ -61,8 +61,16 @@ _TERMINAL_STATES = ("done", "crashed")
 _RUN_POLL_S = 2.0
 # How long op='run' waits before handing the job to the client watcher instead.
 # Sits under the tool-call budget proxy_eval declares, leaving room for the ratchet
-# to settle and the results to be read in the same call.
-_RUN_WAIT_BUDGET_S = 1500.0
+# to settle and the results to be read in the same call. That budget is capped
+# client-side at TOOL_CALL_TIMEOUT_MAX_SECS (1200 s) whatever the tool declares, so
+# a larger value here would mean the client always cut the call before the server
+# ever detached — the orderly hand-off to the watcher would never happen. With a
+# build ahead of the measurement, that stopped being a corner case.
+_RUN_WAIT_BUDGET_S = 1100.0
+# Above this measured build time, a run is worth detaching rather than waiting out.
+# One minute: short enough to catch any real compiled project, long enough that a
+# scripted proxy with a trivial build never triggers it.
+_LONG_BUILD_S = 60.0
 
 
 # ── session config helpers ────────────────────────────────────────────────────
@@ -99,6 +107,12 @@ def opt_git_dir() -> str:
 def _check_optimize_paths(paths: list[str], proxy_source_path: str) -> str | None:
     """The proxy is a HARNESS; the code under optimisation is somewhere else.
 
+    Nothing here is language-specific: an entry is checked for being a file, inside
+    the workspace, and not the harness itself. A compiled project lists its sources
+    and declares a build_cmd; the harness then exercises the binary the build
+    produces. What must not be listed is a generated file, which a build would
+    rewrite underneath the snapshot.
+
     Nothing used to say so, and twice running the model answered the gap the cheapest
     way available: it wrote a self-contained script that reproduced the solver it was
     meant to accelerate — 189 lines mirroring a 307-line package — and the ratchet
@@ -119,7 +133,8 @@ def _check_optimize_paths(paths: list[str], proxy_source_path: str) -> str | Non
         return ("optimize_paths is required: name the file(s) the ratchet may edit. "
                 "The proxy at proxy_source_path is a HARNESS — it runs the code and "
                 "prints metrics — and optimize_paths is the code it exercises, which "
-                "the harness should import rather than reproduce.")
+                "the harness should use rather than reproduce: import it, link it or "
+                "load it, in whatever language it is written.")
     src_real = os.path.realpath(os.path.abspath(proxy_source_path))
     seen: set[str] = set()
     for raw in paths:
@@ -131,10 +146,10 @@ def _check_optimize_paths(paths: list[str], proxy_source_path: str) -> str | Non
                     "The ratchet only edits code inside the workspace.")
         if p == src_real:
             return ("proxy_source_path cannot be one of optimize_paths. The harness "
-                    "must not be its own subject: optimising the script that measures "
+                    "must not be its own subject: optimising the program that measures "
                     "means optimising a copy, and the accuracy constraints then say "
                     "nothing about the code you ship. Point optimize_paths at the real "
-                    "module(s) and have the harness import them.")
+                    "source(s) and have the harness exercise them.")
         seen.add(p)
     return None
 
@@ -1083,6 +1098,25 @@ def results(proxy_name: str = "") -> dict:
     proxy_source = cfg.get("proxy_source_path", "")
     complete     = isinstance(final_metrics, dict) and "all_passed" in final_metrics
 
+    # A run stopped by its build has no metrics.json, which without this would be
+    # reported as "may still be in progress" — the one answer that hides the cause
+    # and invites a wait for a run that is already over.
+    bld = build.read_report(run_dir)
+    if not complete and bld and bld.get("status") not in (None, "ok"):
+        log_path = procs._build_log_path(run_dir)
+        return err(
+            build.failure_summary(bld) + " — no measurement was taken.",
+            hint="Fix the build and run again; nothing was accepted or recorded. "
+                 + build._SHELL_HINT,
+            run_dir=run_dir,
+            state="crashed",
+            build=bld,
+            build_log=log_path,
+            build_log_tail=procs._read_text_tail(log_path, 8192),
+            next_step="read build_log_tail, fix the build, then "
+                      "proxy_eval(op='run', confirm=True)",
+        )
+
     if not complete:
         # Run has not produced a summary yet — still in progress.
         return ok(_with_next({
@@ -1140,8 +1174,15 @@ def results(proxy_name: str = "") -> dict:
     if r.get("timing_warning"):
         recommendation += " WARNING: " + r["timing_warning"]
 
+    # Said only once the run has measured how long its own build takes: a constant
+    # cannot know whether this project compiles in two seconds or half an hour, and
+    # advising a detach on a two-second build would be noise on every reply.
+    build_s = (final_metrics or {}).get("build_s") or 0.0
+    recommendation += _long_build_note(build_s)
+
     return ok(_with_next({
         "run_dir":        run_dir,
+        **({"build_s": build_s} if build_s else {}),
         "state":          _run_state(run_dir)["state"],
         "cases":          cases,
         "summary":        summary,
@@ -1156,6 +1197,15 @@ def results(proxy_name: str = "") -> dict:
         "recommendation": recommendation,
         **({"timing_warning": r["timing_warning"]} if r.get("timing_warning") else {}),
     }, next_step))
+
+
+def _long_build_note(build_s: float) -> str:
+    """Advice to detach the next run, or "" when the build is not worth it."""
+    if not build_s or build_s < _LONG_BUILD_S:
+        return ""
+    return (f" This run spent {build_s:.0f}s building. Pass background=True to the "
+            "next run: it detaches immediately and you are resumed with the verdict, "
+            "so the wait is not yours to sit through.")
 
 
 def log(proxy_name: str = "", tail: int = 50) -> dict:

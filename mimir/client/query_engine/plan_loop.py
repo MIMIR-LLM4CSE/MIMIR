@@ -38,7 +38,7 @@ from ..guardrails.workflow import (
 from ..guardrails.nudges import drop_transient_reminders, inject_reminder
 from ..tool_execution.formatter import normalize_arguments
 from .streaming import _DraftHold, _note_truncated_turn, _stream_chat, _process_response, _to_dict
-from .dispatch import _dispatch_tool_calls
+from .dispatch import _dispatch_tool_calls, _post_dispatch_inject
 from .finalize import _finalize_answer
 from .readonly_guard import filter_readonly_tool_calls
 from .toollist import tools_for_plan_mode
@@ -490,6 +490,15 @@ async def _run_plan_mode(
             tool_calls = _pin_plan_title(tool_calls, agent, plan_title)
 
         await _dispatch_tool_calls(tool_calls, agent, messages, execution_context)
+        # The mid-loop correctives the agent loop has always run, which plan mode
+        # dispatched without: the repeated-failing-call alert is *staged* into the
+        # execution context by the dispatch above and only consumed here, so without
+        # this call it never reached the model in plan mode — and, worse, sat in the
+        # context until an approved plan handed the run to the agent loop, which then
+        # fired it about a call made several turns earlier.
+        await _post_dispatch_inject(
+            agent, messages, execution_context, active_mode="plan",
+        )
         # Whether a plan exists is the execution context's call, never a second
         # derivation from tool names here: ``observations._observe_todo_flags`` tells
         # the two TASK_PLANNING forms apart by the `plan_steps` arg-role and records

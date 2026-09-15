@@ -37,6 +37,9 @@ def _pid_starttime_path(run_dir: str) -> str:
 def _slurm_id_path(run_dir: str) -> str:
     return os.path.join(run_dir, "slurm_job_id")
 
+def _build_log_path(run_dir: str) -> str:
+    return os.path.join(run_dir, "build.log")
+
 
 def _read_int_file(path: str) -> int | None:
     if os.path.isfile(path):
@@ -55,16 +58,39 @@ def _read_slurm_id(run_dir: str) -> int | None:
     return _read_int_file(_slurm_id_path(run_dir))
 
 
-def _read_log(run_dir: str, max_bytes: int = _MAX_LOG) -> str:
-    """Return up to *max_bytes* of the run's stdout.log ('' if unreadable)."""
-    lp = _log_path(run_dir)
-    if os.path.isfile(lp):
+def _read_text_head(path: str, max_bytes: int = _MAX_LOG) -> str:
+    """Return up to *max_bytes* from the start of *path* ('' if unreadable)."""
+    if os.path.isfile(path):
         try:
-            with open(lp, errors="replace") as fh:
+            with open(path, errors="replace") as fh:
                 return fh.read(max_bytes)
         except OSError:
             pass
     return ""
+
+
+def _read_text_tail(path: str, max_bytes: int = _MAX_LOG) -> str:
+    """Return up to *max_bytes* from the END of *path* ('' if unreadable).
+
+    A build log is read to find out why a build failed, and a compiler puts the
+    error last: the head of a 200 MB ``make`` log is the banner, not the answer.
+    """
+    if not os.path.isfile(path):
+        return ""
+    try:
+        size = os.path.getsize(path)
+        with open(path, "rb") as fh:
+            if size > max_bytes:
+                fh.seek(size - max_bytes)
+            data = fh.read()
+    except OSError:
+        return ""
+    return data.decode(errors="replace")
+
+
+def _read_log(run_dir: str, max_bytes: int = _MAX_LOG) -> str:
+    """Return up to *max_bytes* of the run's stdout.log ('' if unreadable)."""
+    return _read_text_head(_log_path(run_dir), max_bytes)
 
 
 # ── process state ─────────────────────────────────────────────────────────────

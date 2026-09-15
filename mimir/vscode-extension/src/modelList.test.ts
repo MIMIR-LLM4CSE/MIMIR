@@ -1,5 +1,7 @@
 import { describe, it, expect } from "vitest";
-import { modelsUrl, parseModels } from "./modelList";
+import * as http from "http";
+import type { AddressInfo } from "net";
+import { fetchModels, modelsUrl, parseModels } from "./modelList";
 
 describe("modelsUrl", () => {
   it("builds the OpenAI models path for vLLM", () => {
@@ -48,5 +50,61 @@ describe("parseModels", () => {
     expect(parseModels("vllm", { error: "not found" })).toEqual([]);
     expect(parseModels("ollama", null)).toEqual([]);
     expect(parseModels("vllm", "plain text")).toEqual([]);
+  });
+});
+
+describe("fetchModels always settles", () => {
+  /** Start a server running *handler*, and return its base URL. */
+  async function serving(
+    handler: http.RequestListener,
+  ): Promise<{ url: string; close: () => Promise<void> }> {
+    const server = http.createServer(handler);
+    await new Promise<void>(done => server.listen(0, "127.0.0.1", done));
+    const { port } = server.address() as AddressInfo;
+    return {
+      url: `http://127.0.0.1:${port}`,
+      close: () => new Promise<void>(done => { server.closeAllConnections?.(); server.close(() => done()); }),
+    };
+  }
+
+  it("rejects an endpoint that accepts the connection and never answers", async () => {
+    // The form waits on this promise. A request that neither resolves nor rejects
+    // leaves it saying "asking…" forever, with no cause to show — the failure the
+    // deadline exists to prevent.
+    const { url, close } = await serving(() => { /* deliberately no response */ });
+    try {
+      await expect(fetchModels("vllm", url, true, 150)).rejects.toThrow(/timed out/);
+    } finally {
+      await close();
+    }
+  });
+
+  it("names the phase the request reached, so a hang points somewhere", async () => {
+    const { url, close } = await serving(() => {});
+    try {
+      // Connected and silent is the endpoint's fault; never getting a socket would
+      // be the route's or the proxy's. The message has to tell those apart.
+      await expect(fetchModels("vllm", url, true, 150)).rejects.toThrow(/waiting for a response/);
+    } finally {
+      await close();
+    }
+  });
+
+  it("reads the list when the endpoint answers", async () => {
+    const { url, close } = await serving((_req, res) => {
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({ object: "list", data: [{ id: "a" }, { id: "b" }] }));
+    });
+    try {
+      await expect(fetchModels("vllm", url, true, 2000)).resolves.toEqual(["a", "b"]);
+    } finally {
+      await close();
+    }
+  });
+
+  it("reports a refusal rather than waiting out the deadline", async () => {
+    const { url, close } = await serving(() => {});
+    await close();  // nothing is listening on that port any more
+    await expect(fetchModels("vllm", url, true, 2000)).rejects.toThrow(/ECONNREFUSED/);
   });
 });

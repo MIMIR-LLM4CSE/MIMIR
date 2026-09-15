@@ -566,9 +566,28 @@ def _validate_path_args(argv: list[str], cwd: str) -> dict | None:
 
 
 def _validate_command(command: str, cwd: str) -> dict:
-    # Segmentation comes from shell_paths.parse_segments, shared with the client's
-    # gate. What is left here is the *policy*: the denylist, per-command flag rules and
-    # path confinement. Everything else runs — the approval prompt is the barrier.
+    """Decide whether this command may run at all, before any shell is opened.
+
+    Segmentation comes from shell_paths.parse_segments, shared with the client's gate.
+    What is left here is the *policy*: the denylist, per-command flag rules and path
+    confinement. Everything else runs — the approval prompt is the barrier.
+
+    Every rejection carries ``refused``. The client cannot otherwise tell one apart from
+    a command that ran and exited non-zero, and the two mean opposite things: a red exit
+    is a finding about the change, while a rejection never reached a shell and is
+    evidence of nothing. Read as a plain error, a refused heredoc was entered in the run
+    ledger as red — charging the repair budget and printing its whole body into the
+    user's chat as an unresolved run.
+    """
+    return _refused(_validate(command, cwd))
+
+
+def _refused(result: dict) -> dict:
+    """Stamp a validation answer that rejected the command."""
+    return result if result["status"] == "ok" else {**result, "refused": True}
+
+
+def _validate(command: str, cwd: str) -> dict:
     try:
         segments = _parse_segments(command)
     except _ShellParseError as e:

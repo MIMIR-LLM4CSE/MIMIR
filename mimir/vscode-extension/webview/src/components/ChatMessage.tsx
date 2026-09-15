@@ -6,7 +6,9 @@ import { countDiffLines } from "./diffUtils";
 import { ToolActivityList } from "./ToolActivityList";
 import { CommandResult } from "./CommandResult";
 import { ThinkingPanel } from "./ThinkingPanel";
+import { CompletionReport } from "./CompletionReport";
 import { VerificationLedger } from "./VerificationLedger";
+import { splitAnswerCompletion } from "./completionUtils";
 import { splitAnswerLedger } from "./ledgerUtils";
 import { vscodePostMessage } from "../hooks/useWebSocket";
 
@@ -119,9 +121,12 @@ const ChatMessageInner: React.FC<Props> = ({ message, onApprovalResponse, onRetr
   }
 
   const isUser = message.role === "user";
-  // The verification ledger rides at the end of the answer text (history keeps it for
-  // the model); the bubble shows the prose and hands the ledger to its own panel.
-  const { body: answerBody, ledger } = splitAnswerLedger(message.text ?? "");
+  // The verification ledger and the completion report both ride at the end of the
+  // answer text (history keeps them for the model); the bubble shows the prose and
+  // hands each block to its own collapsed panel. Order matters: the ledger is appended
+  // last, so it comes off first and the report is the tail of what is left.
+  const { body: withReport, ledger } = splitAnswerLedger(message.text ?? "");
+  const { body: answerBody, report } = splitAnswerCompletion(withReport);
 
   return (
     <div className={`chat-message ${isUser ? "user" : "agent"}`}>
@@ -145,6 +150,7 @@ const ChatMessageInner: React.FC<Props> = ({ message, onApprovalResponse, onRetr
             {/* Reasoning is rendered in-stream via kind="thinking" panels, so it
                 is intentionally NOT duplicated on the answer bubble here. */}
             <MarkdownContent text={answerBody} />
+            {report && <CompletionReport block={report} />}
             {ledger && <VerificationLedger block={ledger} />}
             {(message.diffs ?? []).length > 0 && (
               <div className="diff-list">

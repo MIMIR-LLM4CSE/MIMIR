@@ -4,11 +4,12 @@
   procs.py    — process & run state, launch/sbatch/cancel lifecycle, log access
   metrics.py  — metrics parsing, numerical invariants, requirement evaluation
   command.py  — param-file rendering and run/sbatch command building
+  build.py    — building a registered proxy before a run measures it
   report.py   — roofline, result rows, run-dir diffs
   execute.py  — synchronous case runs, reference sealing, detached-run finalize
   ratchet.py  — the optimization ratchet (verdicts, best-so-far, ledger)
 
-Dependency direction: store <- procs/metrics/command/report <- execute/ratchet.
+Dependency direction: store <- procs/metrics/command/build/report <- execute/ratchet.
 """
 
 import os

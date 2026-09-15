@@ -544,3 +544,162 @@ describe("background-job wake", () => {
     expect(state.busy).toBe(true);
   });
 });
+
+describe("a turn parked on a question", () => {
+  const plan = { type: "user_question" as const, id: "q1", questions: [] };
+
+  it("commits the streamed plan and stops the turn", () => {
+    // The regression this exists for: the plan the user is being asked to approve
+    // lived in `draft` alone — not in the transcript, not on the server, not on
+    // disk — for as long as the card was up, so a reload in that window lost it.
+    const state = run([
+      { type: "submit_query", text: "plan it" },
+      { type: "token", text: "Here is the plan." },
+      plan,
+    ]);
+
+    expect(state.draft).toBe("");
+    expect(state.busy).toBe(false);   // what hands the transcript back to the server
+    const last = state.messages[state.messages.length - 1];
+    expect(last.text).toBe("Here is the plan.");
+    expect(last.provisional).toBe(true);
+  });
+
+  it("lets the answer that repeats it take its place", () => {
+    // Nobody answered the card (no front-end, or it was dismissed): the loop
+    // delivers the same prose as the answer, which must not appear twice.
+    const state = run([
+      { type: "submit_query", text: "plan it" },
+      { type: "token", text: "Here is the plan." },
+      plan,
+      { type: "answer", text: "Here is the plan.\n\n— verification ledger —" },
+    ]);
+
+    const prose = state.messages.filter((m) => m.kind === "text" && m.role === "agent");
+    expect(prose).toHaveLength(1);
+    expect(prose[0].text).toContain("ledger");
+  });
+
+  it("keeps it when the answer is something else — an approved plan, or a refused one", () => {
+    // Accepting runs the plan and answers with the report of doing so; rejecting
+    // answers with the refusal. Neither repeats the plan, and dropping it would
+    // take it out of a transcript the user watched it arrive in.
+    const state = run([
+      { type: "submit_query", text: "plan it" },
+      { type: "token", text: "Here is the plan." },
+      plan,
+      { type: "answer", text: "Executed it: three files changed." },
+    ]);
+
+    expect(state.messages.map((m) => m.text)).toEqual([
+      "plan it", "Here is the plan.", "Executed it: three files changed.",
+    ]);
+  });
+
+  it("does not reach back into an older turn that was interrupted", () => {
+    // A provisional bubble is only ever the current turn's. Left by a run that
+    // never landed, it is the sole record of it — a later answer must not delete it.
+    const state = run([
+      { type: "submit_query", text: "plan it" },
+      { type: "token", text: "Here is the plan." },
+      plan,
+      { type: "submit_query", text: "never mind, do this instead" },
+      { type: "answer", text: "Here is the plan." },
+    ]);
+
+    expect(state.messages.filter((m) => m.text === "Here is the plan.")).toHaveLength(2);
+    expect(state.messages.some((m) => m.provisional)).toBe(false);
+  });
+
+  it("goes back to work when the card is answered", () => {
+    // Parking is not the end of the turn: the loop resumes on the answer, and
+    // `busy` is what offers the stop button and makes that end observable — which
+    // is when the finished transcript is handed back to be saved.
+    const state = run([
+      { type: "submit_query", text: "plan it" },
+      { type: "token", text: "Here is the plan." },
+      plan,
+      { type: "prompt_answered", resumes: true },
+    ]);
+
+    expect(state.busy).toBe(true);
+  });
+
+  it("stays stopped when the answer ends the run", () => {
+    const state = run([
+      { type: "submit_query", text: "go" },
+      { type: "continue_prompt", id: "c1", summary: "3 steps left" },
+      { type: "prompt_answered", resumes: false },
+    ]);
+
+    expect(state.busy).toBe(false);
+  });
+
+  it("adopts a turn that outlived the connection, then parks on its card", () => {
+    // What a reconnect replays: the restore clears the turn state this window
+    // arrives with, the server says a turn is still running, and the card it is
+    // parked on lands last.
+    expect(run([
+      { type: "session_loaded_messages", messages: [] },
+      { type: "turn_resumed" },
+    ]).busy).toBe(true);
+
+    expect(run([
+      { type: "session_loaded_messages", messages: [] },
+      { type: "turn_resumed" },
+      plan,
+    ]).busy).toBe(false);
+  });
+
+  it("parks the same way on the continue prompt", () => {
+    const state = run([
+      { type: "submit_query", text: "go" },
+      { type: "token", text: "Step one done." },
+      { type: "continue_prompt", id: "c1", summary: "3 steps left" },
+    ]);
+
+    expect(state.busy).toBe(false);
+    expect(state.messages[state.messages.length - 1].provisional).toBe(true);
+  });
+
+  it("freezes the tool cards of the step it parked on", () => {
+    const state = run([
+      { type: "submit_query", text: "plan it" },
+      { type: "tool_call", id: "t1", name: "grep" },
+      { type: "tool_result", id: "t1", ok: true, summary: "4 hits" },
+      plan,
+    ]);
+
+    expect(state.liveToolCalls).toHaveLength(0);
+    expect(state.messages.some((m) => m.kind === "tools")).toBe(true);
+  });
+});
+
+describe("a turn cut off by the connection", () => {
+  it("keeps the prose that had arrived, provisionally", () => {
+    const state = run([
+      { type: "submit_query", text: "go" },
+      { type: "token", text: "I started by reading" },
+      { type: "connection_lost" },
+    ]);
+
+    const last = state.messages[state.messages.length - 1];
+    expect(last.text).toBe("I started by reading");
+    expect(last.provisional).toBe(true);
+  });
+
+  it("is replaced, not repeated, by the answer a reconnect brings", () => {
+    // The worker keeps running through a dropped socket, so the turn can still
+    // finish: the partial is a prefix of the answer, and only one of them is real.
+    const state = run([
+      { type: "submit_query", text: "go" },
+      { type: "token", text: "I started by reading" },
+      { type: "connection_lost" },
+      { type: "answer", text: "I started by reading the loop, then fixed it." },
+    ]);
+
+    const prose = state.messages.filter((m) => m.role === "agent");
+    expect(prose).toHaveLength(1);
+    expect(prose[0].text).toBe("I started by reading the loop, then fixed it.");
+  });
+});

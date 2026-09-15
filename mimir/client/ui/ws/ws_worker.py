@@ -12,6 +12,7 @@ from __future__ import annotations
 # Import the shared runtime FIRST so its cwd bootstrap runs before config.constants
 # (and the backend factory) capture the workspace root at import time.
 from ._ws_runtime import (
+    _ORIGINAL_STDOUT,
     _ROUTER,
     _todo_file_for_session,
     augment_query_with_resources,
@@ -105,6 +106,9 @@ class _AgentWorker:
         self._question_q: _queue.Queue[dict] = _queue.Queue()  # WS → question shim
         self._query_q: _queue.Queue[dict | None] = _queue.Queue()  # WS → query loop
         self._steer_q: _queue.Queue[str] = _queue.Queue()  # WS → running agent (mid-run steering)
+        # The card a parked turn is waiting on, set for exactly as long as it waits.
+        # Read by a connection that arrives while the wait is on (see _emit_prompt).
+        self._pending_prompt: dict | None = None
         # Event signalled whenever a new item is placed on _query_q so the
         # background loop wakes up immediately instead of waiting out the poll interval.
         self._query_event = threading.Event()
@@ -147,20 +151,36 @@ class _AgentWorker:
             loop.close()
 
     async def _wait_for_backend(self) -> None:
-        """Poll the LLM backend health endpoint until it responds or we time out.
+        """Poll the LLM backend until it answers, or fail fast when it never will.
 
-        Supports:
-        - Ollama: GET {OLLAMA_BASE_URL}/api/tags  → 200
-        - vLLM:   GET {VLLM_BASE_URL}/health      → 200
-        - Ray:    GET {RAY_BASE_URL}/v1/models    → 200
+        The request is the one the agent actually depends on — the model list for
+        every OpenAI-compatible endpoint (``/v1/models``), ``/api/tags`` for Ollama —
+        asked with the same client, proxy posture and TLS policy the backends
+        themselves use. A probe that asks a different question of a different client
+        than the chat path can fail where the chat path succeeds, which is exactly
+        what a readiness check must never do.
 
-        Emits ``{"type": "output", "text": "..."}`` progress messages every
-        10 s so the client can show a spinner during slow vLLM cold-starts.
+        ``/health`` is kept as a fallback for a local vLLM: it answers while the
+        engine is still loading weights, before ``/v1/models`` does. It is only a
+        fallback because it lives at the server root, which an ingress route in front
+        of the endpoint usually does not expose.
+
+        Not every failure is worth waiting on. A refused certificate or a route that
+        is not there answers identically on the first attempt and on the hundredth,
+        so those stop the wait immediately, naming the URL and the reason, instead of
+        spending the full timeout on a verdict already known.
+
+        Progress goes to the client *and* to stdout: during startup the WS server has
+        not bound its port yet, so the client that would show the spinner does not
+        exist, and an attempt reported only there is an attempt reported to no one.
+
         Controlled by env vars:
         - MIMIR_BACKEND_TIMEOUT  (seconds, default 600)
         - MIMIR_BACKEND_POLL_INTERVAL (seconds, default 5)
         """
-        import urllib.error as _uerr
+        import httpx
+
+        from ....servers._shared.embed import verify_ssl
 
         try:
             from ...config.models import LLM_BACKEND, RAY_BASE_URL, VLLM_BASE_URL
@@ -169,19 +189,24 @@ class _AgentWorker:
             VLLM_BASE_URL = os.environ.get("VLLM_BASE_URL", "http://127.0.0.1:8000")
             RAY_BASE_URL = os.environ.get("RAY_BASE_URL", "http://127.0.0.1:8000")
 
-        if LLM_BACKEND == "vllm":
-            base = os.environ.get("VLLM_BASE_URL", VLLM_BASE_URL).rstrip("/")
-            health_url = f"{base}/health"
-        elif LLM_BACKEND == "ray":
-            # /health is the vLLM server's endpoint, not the Serve router's, and
-            # /-/healthz answers for the proxy rather than the app — behind an
-            # ingress route neither is reliably reachable. The model list is the
-            # request that proves the thing we actually need is up.
-            base = os.environ.get("RAY_BASE_URL", RAY_BASE_URL).rstrip("/")
+        # Env first, like the base URLs below: ``--backend`` writes LLM_BACKEND into
+        # the environment after this module was imported, so the constant captured at
+        # import time is the *shell's* backend, not the one this server was launched
+        # for. Reading it would probe one endpoint while the agent talks to another.
+        backend = os.environ.get("LLM_BACKEND", LLM_BACKEND)
+
+        if backend in ("vllm", "ray"):
+            env_var = "VLLM_BASE_URL" if backend == "vllm" else "RAY_BASE_URL"
+            default = VLLM_BASE_URL if backend == "vllm" else RAY_BASE_URL
+            base = os.environ.get(env_var, default).rstrip("/")
             health_url = base + ("/models" if base.endswith("/v1") else "/v1/models")
+            # Only a local vLLM serves this; behind a route it 404s, which the
+            # fallback treats as "no answer here" rather than as a failure.
+            fallback_url = f"{base}/health" if backend == "vllm" else ""
         else:
             base = os.environ.get("OLLAMA_BASE_URL", "http://127.0.0.1:11434").rstrip("/")
             health_url = f"{base}/api/tags"
+            fallback_url = ""
 
         timeout = int(os.environ.get("MIMIR_BACKEND_TIMEOUT", "600"))
         poll = float(os.environ.get("MIMIR_BACKEND_POLL_INTERVAL", "5"))
@@ -190,23 +215,58 @@ class _AgentWorker:
         last_progress = loop.time()
         progress_interval = 10.0
 
-        def _check() -> bool:
-            try:
-                with _direct_opener().open(health_url, timeout=4) as r:
-                    return r.status == 200
-            except _uerr.HTTPError as e:
-                # 403/401 means server is up but requires auth — treat as ready
-                return e.code in (401, 403)
-            except (_uerr.URLError, OSError):
-                return False
+        def _say(text: str) -> None:
+            self.out_q.put({"type": "output", "text": text})
+            print(text.rstrip("\n"), file=_ORIGINAL_STDOUT, flush=True)
 
-        self.out_q.put({"type": "output", "text": f"⏳ Waiting for LLM backend ({LLM_BACKEND}) at {health_url} …\n"})
+        def _get(url: str) -> tuple[bool, str]:
+            """(ready, permanent failure reason) for one GET. Empty reason: retry."""
+            try:
+                # trust_env=False: a corporate proxy has no route to the cluster and
+                # swallows the request instead of refusing it. verify_ssl(): the same
+                # switch the chat and embedding clients read, so the probe trusts
+                # exactly what they trust.
+                with httpx.Client(trust_env=False, timeout=4.0, verify=verify_ssl()) as client:
+                    resp = client.get(url)
+            except httpx.ConnectError as exc:
+                # A refused certificate is the one connection failure that will not
+                # resolve itself: waiting cannot add a CA to the trust store.
+                if "CERTIFICATE_VERIFY_FAILED" in str(exc) or "SSLCertVerificationError" in str(exc):
+                    return False, (
+                        f"the certificate at {url} was refused ({exc}). Set "
+                        f"VLLM_VERIFY_SSL=0 (the extension's mimir.vllmVerifySsl "
+                        f"checkbox) if it is an internal route behind a private CA."
+                    )
+                return False, ""
+            except Exception:
+                return False, ""
+            if resp.status_code == 200:
+                return True, ""
+            # Up, but guarding the endpoint: the agent's own request carries the key.
+            if resp.status_code in (401, 403):
+                return True, ""
+            if resp.status_code == 404:
+                return False, f"404 — nothing is served at {url}"
+            return False, ""
+
+        def _check() -> tuple[bool, str]:
+            ready, reason = _get(health_url)
+            if ready or not fallback_url:
+                return ready, reason
+            # The engine may still be loading, when /health answers and /v1/models
+            # does not. A fallback that answers outranks the primary's 404.
+            alt_ready, _ = _get(fallback_url)
+            return alt_ready, "" if alt_ready else reason
+
+        _say(f"⏳ Waiting for LLM backend ({backend}) at {health_url} …\n")
 
         while True:
-            ready = await loop.run_in_executor(None, _check)
+            ready, permanent = await loop.run_in_executor(None, _check)
             if ready:
-                self.out_q.put({"type": "output", "text": "✅ LLM backend is ready.\n"})
+                _say("✅ LLM backend is ready.\n")
                 return
+            if permanent:
+                raise RuntimeError(f"LLM backend unreachable: {permanent}")
 
             now = loop.time()
             if now >= deadline:
@@ -216,7 +276,7 @@ class _AgentWorker:
                 )
             if now - last_progress >= progress_interval:
                 elapsed = int(now - (deadline - timeout))
-                self.out_q.put({"type": "output", "text": f"⏳ Still waiting for LLM backend … ({elapsed}s elapsed)\n"})
+                _say(f"⏳ Still waiting for LLM backend … ({elapsed}s elapsed)\n")
                 last_progress = now
 
             await asyncio.sleep(poll)
@@ -471,6 +531,36 @@ class _AgentWorker:
 
     # ── Approval shim (called sync from agent's async call chain) ─────────────
 
+    def _emit_prompt(self, payload: dict) -> None:
+        """Send a card the turn is about to park on, and remember it while it waits.
+
+        One worker serves every connection, and it outlives them: a socket that drops
+        while the agent is parked leaves the card on a client that no longer exists,
+        and the turn waiting on an answer nobody can give any more. Every later query
+        queues behind that wait — the query loop is serial — so the session reads as
+        hung, with nothing on screen to explain it. Kept here, the card can be put
+        back in front of whoever reconnects (``_Session._resend_parked_prompt``).
+        """
+        self._pending_prompt = dict(payload)
+        self.out_q.put(payload)
+
+    def pending_prompt(self) -> dict | None:
+        """The card the parked turn is waiting on, once it is nobody's to deliver.
+
+        None while the card is still queued: the drain loop will hand it to whoever is
+        connected, and returning it here as well would put the same card on screen
+        twice. That is not merely cosmetic — an approval renders as one card carrying
+        both ids and is then answered twice, leaving a spare answer on the queue for
+        the *next* prompt to consume, which is the exact failure ``flush_prompts``
+        exists to prevent.
+        """
+        prompt = self._pending_prompt
+        if prompt is None:
+            return None
+        with self.out_q.mutex:
+            queued = [ev.get("id") for ev in self.out_q.queue if isinstance(ev, dict)]
+        return None if prompt.get("id") in queued else prompt
+
     def _await_response(self, q: "_queue.Queue[dict]") -> dict | None:
         """Block until a WS response lands on ``q`` — with no wall-clock timeout.
 
@@ -484,15 +574,20 @@ class _AgentWorker:
         continue, question) blocks on, so it is where the wait is marked as *human*
         time — excluded from the tool-call timeout budget it sits inside.
         """
-        with human_pause.human_pause():
-            while True:
-                agent = self._agent
-                if agent is not None and agent._cancel_flag.is_set():
-                    return None
-                try:
-                    return q.get(timeout=0.25)
-                except _queue.Empty:
-                    continue
+        try:
+            with human_pause.human_pause():
+                while True:
+                    agent = self._agent
+                    if agent is not None and agent._cancel_flag.is_set():
+                        return None
+                    try:
+                        return q.get(timeout=0.25)
+                    except _queue.Empty:
+                        continue
+        finally:
+            # Answered, cancelled or raised through: the turn is not parked any more,
+            # and a card resent past this point would be one nothing is waiting on.
+            self._pending_prompt = None
 
     def _approval_shim(
         self, tool_name: str, arguments: dict, max_attempts: int = 3
@@ -544,7 +639,7 @@ class _AgentWorker:
             "scope": scope_label,
             "label": f"{self._detached_prefix()}{label}" if label else label,
         }
-        self.out_q.put(payload)
+        self._emit_prompt(payload)
 
         # Block background thread (not WS event loop) until the client responds.
         # No timeout: an unanswered prompt keeps the agent parked (Stop cancels).
@@ -587,7 +682,7 @@ class _AgentWorker:
         scope = (f"this path ({os.path.basename(paths[0])})" if len(paths) == 1
                  else f"these {len(paths)} paths")
         req_id = str(uuid.uuid4())
-        self.out_q.put({
+        self._emit_prompt({
             "type": "approval",
             "id": req_id,
             "tool": tool_name,
@@ -631,7 +726,7 @@ class _AgentWorker:
         ``continue_response`` arrives. A timeout or a non-"y" choice stops the run.
         """
         req_id = str(uuid.uuid4())
-        self.out_q.put({
+        self._emit_prompt({
             "type": "continue_prompt",
             "id": req_id,
             "summary": f"{self._detached_prefix()}{summary}",
@@ -652,7 +747,7 @@ class _AgentWorker:
         returns no answers so the agent proceeds with its best judgment.
         """
         req_id = str(uuid.uuid4())
-        self.out_q.put({
+        self._emit_prompt({
             "type": "user_question",
             "id": req_id,
             "questions": _labelled_questions(list(questions), self._detached_prefix()),
@@ -762,6 +857,7 @@ class _AgentWorker:
         queued answer left behind would be handed to the *next* turn's prompt,
         approving something the user never saw.
         """
+        self._pending_prompt = None
         for q in (self._approval_q, self._continue_q, self._question_q):
             while True:
                 try:
@@ -965,6 +1061,20 @@ class _AgentWorker:
             self._agent.set_mode(mode)
         except ValueError as exc:
             return str(exc)
+        return ""
+
+    def set_model(self, model: str) -> str:
+        """Switch the served model, returning "" on success or the reason it failed.
+
+        Also updates ``self.model`` so ``ready``/profile reads report the new model.
+        """
+        if self._agent is None:
+            return "Agent is not ready yet."
+        try:
+            self._agent.set_model(model)
+        except ValueError as exc:
+            return str(exc)
+        self.model = model
         return ""
 
     def set_batch(self, enabled: bool) -> None:

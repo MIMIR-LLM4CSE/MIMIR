@@ -112,6 +112,75 @@ def _relative_spread(replicates: list[dict], metric: str) -> float | None:
     return abs(max(numeric) - min(numeric)) / abs(mid)
 
 
+def _build_phase(build_mod, tree_snapshot, reg: dict, suite: dict,
+                 proxy_name: str, entry: dict, run_dir: str, cfg: dict) -> bool:
+    """Build every proxy this suite measures. False means the run must stop.
+
+    A failed build must not reach the ratchet at all: the caller exits before
+    metrics.json is written, so there is no verdict, no ledger entry, and the
+    baseline slot is not spent on a run that measured nothing.
+    """
+    builds = build_mod.builds_for(reg, suite, proxy_name, entry)
+    if not builds:
+        return True
+
+    records = []
+    for name, ent in builds:
+        _log(f"[proxy_runner] build proxy={name} cmd={ent.get('build_cmd')}")
+        rec = build_mod.run_build(ent, run_dir, proxy=name)
+        records.append(rec)
+        _log(f"[proxy_runner] build proxy={name} status={rec['status']} "
+             f"returncode={rec.get('returncode')} duration_s={rec.get('duration_s')}")
+        if rec["status"] not in ("ok", "skipped"):
+            _log(f"[proxy_runner] ERROR: {rec.get('error', rec['status'])}")
+            build_mod.write_report(run_dir, records)
+            return False
+
+        # A build that reports success but leaves no executable has not built the
+        # thing that was registered, and every later error would point elsewhere.
+        exe = ent.get("executable_path", "")
+        if exe and not os.path.isfile(exe):
+            rec["status"] = "failed"
+            rec["error"] = (f"build succeeded but executable_path is still missing: "
+                            f"{exe}. The build does not produce the file registered "
+                            f"for proxy '{name}'.")
+            _log(f"[proxy_runner] ERROR: {rec['error']}")
+            build_mod.write_report(run_dir, records)
+            return False
+
+    # A build that rewrites a tracked source (a code generator, a formatter in the
+    # Makefile, a generated header listed in optimize_paths) leaves the measured
+    # tree different from the one snapshotted at launch, so the run would be
+    # recorded against code that is not what ran.
+    launch = _read_json_quiet(os.path.join(run_dir, "tree_at_launch.json"))
+    opt_paths = (cfg.get("optimize_paths") or launch.get("paths") or [])
+    expected = launch.get("fingerprint", "")
+    if expected and opt_paths:
+        root = os.environ.get("MCP_FILES_ROOT") or os.getcwd()
+        current = tree_snapshot.fingerprint(os.path.realpath(root), opt_paths)
+        if current != expected:
+            msg = ("the build modified a file listed in optimize_paths, so the tree "
+                   "measured would not be the tree snapshotted at launch. Keep "
+                   "generated files out of optimize_paths.")
+            _log(f"[proxy_runner] ERROR: {msg}")
+            records.append({"proxy": proxy_name, "status": "failed",
+                            "error": msg, "duration_s": 0.0})
+            build_mod.write_report(run_dir, records)
+            return False
+
+    build_mod.write_report(run_dir, records)
+    return True
+
+
+def _read_json_quiet(path: str) -> dict:
+    try:
+        with open(path) as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Proxy optimization runner")
     parser.add_argument(
@@ -147,6 +216,8 @@ def main() -> None:
         sys.path.insert(0, _shared_dir)
 
     try:
+        from _lib import build as build_mod
+        from _lib import tree_snapshot
         from _lib.execute import _run_benchmark_case
         from _lib.metrics import _evaluate_requirements, _convergence_order
         from _lib.ratchet import _select_best_case
@@ -177,7 +248,16 @@ def main() -> None:
     cases = suite.get("cases", [])
     _log(f"[proxy_runner] suite_cases={len(cases)}")
 
+    # ── build what this suite is about to measure ────────────────────────────
+    # Before any case, and once per run rather than once per replicate: a repeat
+    # of 3 pays for one build. Nothing here runs on an edit — the loop is edit
+    # freely, then run, and the run builds.
+    if not _build_phase(build_mod, tree_snapshot, reg, suite, proxy_name, entry,
+                        run_dir, cfg):
+        sys.exit(2)
+
     # ── iterate suite ────────────────────────────────────────────────────────
+    # The budget starts after the build, so compiling never eats measurement time.
     deadline    = time.monotonic() + cfg.get("deadline_s", 86400.0)  # default 24 h
     per_case_timeout_s = cfg.get("per_case_timeout_s") or None
     # How many times each case is measured before its metrics are believed.
@@ -330,6 +410,9 @@ def main() -> None:
         "best_case":     best_case,
         "best_time_s":   best_time,
         "convergence_order": convergence_order,
+        # Run-level, never folded into a case's metrics: a requirement must not be
+        # able to gate on how long a compiler took.
+        "build_s":       (build_mod.read_report(run_dir) or {}).get("total_duration_s", 0.0),
         "results":       all_results,
         "completed_at":  datetime.now(timezone.utc).isoformat(),
     }

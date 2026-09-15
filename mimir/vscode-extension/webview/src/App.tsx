@@ -39,7 +39,7 @@ import { ContextBar } from "./components/ContextBar";
 import type { ContextUsage } from "./components/ContextBar";
 import { BatchReviewBar } from "./components/BatchReviewBar";
 import { MimirIntro } from "./components/MimirIntro";
-import { pruneForStorage } from "./components/transcriptUtils";
+import { chooseRestoredMessages, pruneForStorage } from "./components/transcriptUtils";
 import { MentionAutocomplete } from "./components/MentionAutocomplete";
 import { SlashAutocomplete } from "./components/SlashAutocomplete";
 import {
@@ -68,6 +68,9 @@ function getWsUrl(): string {
 function makeId(): string {
   return crypto.randomUUID();
 }
+
+/** How often the rendered transcript is checkpointed to the server mid-turn. */
+const TRANSCRIPT_CHECKPOINT_MS = 5000;
 
 function modelDisplayName(value: string): string {
   const trimmed = value.trim();
@@ -112,6 +115,8 @@ export const App: React.FC = () => {
   // Models the endpoint reports it serves — the connect form's dropdown.
   const [endpointModels, setEndpointModels] = useState<string[]>([]);
   const [modelsError, setModelsError] = useState<string | null>(null);
+  // Whether the endpoint has answered the model-list question at all.
+  const [modelsProbed, setModelsProbed] = useState(false);
   const [input, setInput] = useState("");
   // ── @-mention autocomplete (attach MCP resources) ─────────────────────────
   const [resources, setResources] = useState<ResourceItem[]>([]);
@@ -162,6 +167,9 @@ export const App: React.FC = () => {
   const [sessionLoading, setSessionLoading] = useState(false);
   // Last submitted query text, so an error card can offer a one-click Retry.
   const lastQueryRef = useRef<string>("");
+  // Bumped whenever the rendered transcript must reach the server now rather than at
+  // the next end of turn (currently: a reconnect that kept the richer copy).
+  const [transcriptPush, setTranscriptPush] = useState(0);
 
   // ── Session state ─────────────────────────────────────────────────────────
   const [sessions, setSessions] = useState<SessionMeta[]>([]);
@@ -282,6 +290,18 @@ export const App: React.FC = () => {
       case "models":
         setEndpointModels(msg.models);
         setModelsError(msg.error ?? null);
+        // An answer arrived, whatever it says. Without this, an empty list looks
+        // exactly like a list never asked for, and the form has nothing to tell
+        // the user apart from silence.
+        setModelsProbed(true);
+        return;
+
+      case "model_changed":
+        // The served model switched mid-session — follow the status bar, and
+        // re-sync the model-derived controls (thinking profile, enforcement).
+        setModel(msg.model);
+        if (msg.thinking) setThinkingProfile(msg.thinking);
+        if (msg.enforcement) setEnforcement(msg.enforcement);
         return;
 
       case "todo":
@@ -342,8 +362,13 @@ export const App: React.FC = () => {
         setStreaming(msg.enabled);
         return;
 
+      // Both park the agent on a person: the card is local state, and the reducer
+      // is told the turn stopped producing (see parkOnPrompt) — which is also what
+      // hands the transcript, plan included, back to the server.
       case "continue_prompt":
         setContinuePrompt({ id: msg.id, summary: msg.summary });
+        dispatch(msg);
+        scrollToBottom();
         return;
 
       case "user_question":
@@ -351,6 +376,8 @@ export const App: React.FC = () => {
           id: msg.id,
           questions: msg.questions,
         });
+        dispatch(msg);
+        scrollToBottom();
         return;
 
       case "context_usage":
@@ -370,18 +397,19 @@ export const App: React.FC = () => {
         activeSessionIdRef.current = msg.session_id;
         setActiveSessionId(msg.session_id);
         const prevMessages = chatStateRef.current.messages;
-        let nextMessages: ChatMessage[];
-        if (msg.display_messages && msg.display_messages.length > 0)
-          // Server sent saved messages → always use them.
-          nextMessages = msg.display_messages;
-        else if (prevSessionId === msg.session_id && prevMessages.length > 0)
-          // Same session reconnecting (in-memory only) → preserve chat so a
-          // transient WS drop doesn't wipe the conversation.
-          nextMessages = prevMessages;
-        else
-          // Genuinely new / different session with no messages → clear.
-          nextMessages = [];
-        dispatch({ type: "session_loaded_messages", messages: nextMessages });
+        // Reconnecting to the session already on screen is the case that used to
+        // lose a turn: the stored copy is whatever the server had assembled by
+        // itself, and taking it over a live transcript it is behind is how a drop
+        // mid-run came back as the questions alone. See chooseRestoredMessages.
+        const restore = chooseRestoredMessages(
+          msg.display_messages, prevMessages, prevSessionId === msg.session_id,
+        );
+        dispatch({ type: "session_loaded_messages", messages: restore.messages });
+        // After the restore, which resets the turn state this window arrives with.
+        if (msg.turn_running) dispatch({ type: "turn_resumed" });
+        // Hand the richer copy straight back rather than waiting for the next turn
+        // to end — the reconnect may be the last thing that happens in this session.
+        if (restore.push) setTranscriptPush((n) => n + 1);
         setTodos(msg.todos ?? []);
         if (prevSessionId !== msg.session_id) {
           // Pending prompts belong to the turn of the session we just left — the
@@ -503,23 +531,54 @@ export const App: React.FC = () => {
   //
   // The server only ever recorded the text bubbles: tool rows, reasoning panels and
   // diff cards are assembled by the reducer and live nowhere else, which is why a
-  // reconnect used to come back stripped to prose. Sending happens when a turn ends —
-  // `busy` going false — and never mid-stream, so a turn costs one frame rather than
-  // one per token. The delay lets the last few events (a trailing verdict, the batch
-  // status) land in the transcript before it is sent.
+  // reconnect used to come back stripped to prose.
+  //
+  // Sending is skipped when the list is the one already sent, so the checkpoint below
+  // costs nothing on a quiet turn. The reducer never mutates, so identity is the whole
+  // test: a changed transcript is always a new array.
+  const lastSentMessagesRef = useRef<ChatMessage[] | null>(null);
+  const sendTranscript = useCallback((force = false) => {
+    const sessionId = activeSessionIdRef.current;
+    const messages = chatStateRef.current.messages;
+    if (!sessionId || messages.length === 0) return;
+    if (!force && messages === lastSentMessagesRef.current) return;
+    lastSentMessagesRef.current = messages;
+    send({ type: "transcript", session_id: sessionId, messages: pruneForStorage(messages) });
+  }, [send]);
+
+  // At the end of the turn. The delay lets the last few events (a trailing verdict,
+  // the batch status) land in the transcript before it is sent.
   const wasBusyRef = useRef(false);
   useEffect(() => {
     const wasBusy = wasBusyRef.current;
     wasBusyRef.current = chatState.busy;
     if (chatState.busy || !wasBusy) return;
-    const timer = setTimeout(() => {
-      const sessionId = activeSessionIdRef.current;
-      const messages = chatStateRef.current.messages;
-      if (!sessionId || messages.length === 0) return;
-      send({ type: "transcript", session_id: sessionId, messages: pruneForStorage(messages) });
-    }, 1000);
+    const timer = setTimeout(sendTranscript, 1000);
     return () => clearTimeout(timer);
-  }, [chatState.busy, send]);
+  }, [chatState.busy, sendTranscript]);
+
+  // And during it. The end of the turn used to be the only handover, which made every
+  // long run a window where the work on screen existed nowhere else: a dropped
+  // connection, a reloaded window or a VS Code restart inside it came back to a
+  // conversation holding the questions and nothing that was done about them. A turn
+  // can run for many minutes, so that window was most of the session.
+  //
+  // Streaming prose is not in `messages` — it is held in `draft` until the loop accepts
+  // it — so this fires at step boundaries (a tool card frozen, a card answered) rather
+  // than per token: a few frames per turn, not one per word.
+  useEffect(() => {
+    if (!chatState.busy) return;
+    const timer = setInterval(sendTranscript, TRANSCRIPT_CHECKPOINT_MS);
+    return () => clearInterval(timer);
+  }, [chatState.busy, sendTranscript]);
+
+  // A push asked for out of band (a reconnect that kept the richer copy). Forced:
+  // the list may be the very one the last send was handed, and that send is exactly
+  // what the closed socket swallowed — which is why the server is behind at all.
+  useEffect(() => {
+    if (transcriptPush === 0) return;
+    sendTranscript(true);
+  }, [transcriptPush, sendTranscript]);
 
   // ── User actions ──────────────────────────────────────────────────────────
 
@@ -581,9 +640,11 @@ export const App: React.FC = () => {
       if (be === "anthropic") {
         setEndpointModels([]);
         setModelsError(null);
+        setModelsProbed(false);
         return;
       }
       setModelsError(null);
+      setModelsProbed(false);
       fetchModels(be, baseUrl);
     },
     [fetchModels],
@@ -857,6 +918,7 @@ export const App: React.FC = () => {
           summary={continuePrompt.summary}
           onChoice={(cont) => {
             send({ type: "continue_response", id: continuePrompt.id, choice: cont ? "y" : "n" });
+            dispatch({ type: "prompt_answered", resumes: cont });
             setContinuePrompt(null);
           }}
         />
@@ -914,7 +976,28 @@ export const App: React.FC = () => {
           >
             ●
           </span>
-          <span className="model-name">{modelDisplayName(model)}</span>
+          {/* Model name — a picker when the endpoint reported a real choice, a
+              static label otherwise. The current model is always an option even
+              if the probe missed it (auto-selected, or probe failed). */}
+          {(() => {
+            const options = Array.from(new Set([...endpointModels, model].filter(Boolean)));
+            if (options.length > 1) {
+              return (
+                <select
+                  className="model-picker"
+                  value={model}
+                  title="Switch model"
+                  aria-label="Switch model"
+                  onChange={(e) => send({ type: "set_model", model: e.target.value })}
+                >
+                  {options.map((name) => (
+                    <option key={name} value={name}>{modelDisplayName(name)}</option>
+                  ))}
+                </select>
+              );
+            }
+            return <span className="model-name">{modelDisplayName(model)}</span>;
+          })()}
           {connection === "connected" && (
             <button
               className="disconnect-btn"
@@ -956,6 +1039,7 @@ export const App: React.FC = () => {
                   anthropicModels={anthropicModels}
                   models={endpointModels}
                   modelsError={modelsError}
+                  modelsProbed={modelsProbed}
                   remembered={remembered}
                   onFetchModels={handleFetchModels}
                   onConnect={handleConnect}
@@ -996,6 +1080,7 @@ export const App: React.FC = () => {
               anthropicModels={anthropicModels}
               models={endpointModels}
               modelsError={modelsError}
+              modelsProbed={modelsProbed}
               remembered={remembered}
               onFetchModels={handleFetchModels}
               onConnect={handleConnect}
@@ -1055,6 +1140,9 @@ export const App: React.FC = () => {
                 id: userQuestion.id,
                 answers,
               });
+              // Whatever was chosen, the agent goes back to work: even a rejected
+              // plan is the loop resuming to write the answer that says so.
+              dispatch({ type: "prompt_answered", resumes: true });
               setUserQuestion(null);
             }}
           />
