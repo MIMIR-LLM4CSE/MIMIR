@@ -717,26 +717,94 @@ has no business in what the user reads, and there is no grammar left to get wron
 model learns *when* one is due without any tool name in the prompt — from the tool's own
 docstring and from a `VERDICT_DUE` line appended to the run's result.
 
-| Verdict | Effect | Reach |
-|---|---|---|
-| `pass` | recorded on the run. Validates no file | only what it addresses: the run named by `verdict_scope`, or the most recent outstanding run |
-| `fail` | the same ladder a non-zero exit drives: failure count, attempt log, back to `edit`, released to `conclude` past the budget | every outstanding run at once |
-| `unknown` | recorded; the run stays outstanding, and the advisory axis closes | every outstanding run at once |
+There are **five** verdicts. Which set a verdict addresses, and how widely, is the whole
+design:
 
-The asymmetry is deliberate. Withholding credit from a run the statement did not mean is
-never the unsafe direction, and costs a re-judgement at worst. Granting it is. A scope
-naming nothing outstanding settles nothing, which beats guessing. **A model may lower its
-own credit, never raise it.**
+| Verdict | Means | Addresses | Reach | Charges the repair budget |
+|---|---|---|---|---|
+| `pass` | the output shows it worked | outstanding runs | **narrow** | no |
+| `rejected` | it measured cleanly and lost | outstanding runs | **narrow** | no |
+| `fail` | the run is broken | outstanding runs | **wide** | yes |
+| `unknown` | the output settles nothing | outstanding runs | **wide** | no |
+| `blocked` | it failed on a wall outside the change | **failed** runs | **wide** | returns it |
+
+*Outstanding* (`unsettled_runs`) means a run that **completed** and carries no verdict, or
+carries `unknown`. *Failed* (`failed_runs`) means a run that did not complete, or that the
+model judged `fail`, and is not already blocked. The two sets are **disjoint**, which is
+why `blocked` cannot collide with the other four.
+
+**Narrow versus wide is the safety asymmetry.** Withholding credit from a run the
+statement did not mean costs a re-judgement at worst, so `fail` and `unknown` address
+everything outstanding at once. Granting it is the unsafe direction, so `pass` and
+`rejected` settle only what they actually address. **A model may lower its own credit,
+never raise it.**
+
+`rejected` exists so that `fail` is not borrowed for a losing candidate. An optimisation
+loop rejects most of what it tries; that is the search working, not a defect. Spending
+`fail` on it would both charge a repair budget and withhold credit from every other run
+awaiting one.
+
+`unknown` addresses a run without closing it: `unsettled_runs` keeps a run carrying
+`unknown`, so it can be re-judged later, and it is reported unresolved at the end. It is a
+complete answer that counts against nothing.
+
+`blocked` does not argue with a red exit, it **re-imputes** it. The run keeps
+`completed=False`, so nothing is raised past what the machine saw; what changes is who is
+charged. Its failure count is reset to zero and it leaves `failed_runs`, so the repair
+ladder stops treating it as a defect to fix. It must be claimed — an unclaimed red exit
+drives the ladder exactly as before.
+
+Both `unknown` and `blocked` close the build-it/run-it recommendation for the query
+(`exercise_advice_closed`): one says the output cannot be read, the other that the
+environment will not produce one. Asking again after either is asking for a different
+answer to a question already answered.
+
+#### How a scope is matched
+
+`verdict_scope` names the run being judged, as its command or a recognisable fragment.
+Matching is a case-insensitive substring, tried **both ways round**, against the ledger key
+**and** the command as typed:
+
+1. the scope inside the key or command — the ordinary case;
+2. the key or command inside the scope — because the ledger key drops flags and pipelines,
+   so it is usually *shorter* than anything the model would write.
+
+The second direction was added after a session in which every scope matched nothing: told
+`run="proxy_eval"`, the model wrote the more informative `proxy_eval(op='run') OMP=64`, so
+the key sat inside the scope rather than the other way round. **The more exactly the model
+named its run, the wider the damage** — thirteen runs were wrongly failed.
+
+**An unmatched scope is read as no scope at all, never discarded.** Dropping it silently
+was the worse failure: nothing recorded, nothing emitted, and a reminder asking for the
+statement the model had just made — which a model answers by making it again, unchanged.
+The asymmetry survives the fallback, because the direction is what matters:
+
+- `fail` / `unknown` fall back to **every** outstanding run — and for `fail`, a status line
+  says the scope matched nothing and lists what it could have named, so the model can learn
+  the difference;
+- `pass` / `rejected` fall back to **exactly one**, the most recent outstanding run — which
+  is what a model stating a verdict right after reading an output is speaking about.
+
+A scoped `pass` that *does* match settles **every run it matched**, which may be more than
+one.
 
 Other rules on this axis:
 
 - **A verdict is recommended for every execution**, whether or not it names an edited file,
   whether or not anything was written. An analysis-only session — "does the suite pass?",
   "why does this blow up?" — is precisely the one whose whole answer rests on a run's
-  output. Nothing blocks on it and nothing is charged for its absence.
+  output. Nothing blocks on it and nothing is charged for its absence. A check, a lint or a
+  type run needs none: an exit code is the whole finding there.
 - **A run that did not complete owes nothing.** Its non-zero exit is the finding, in the
   one direction an exit code is trustworthy. It goes straight onto the repair ladder.
   Asking the model to judge output that never came would be asking for a guess.
+- **`fail` routes through the same ladder a non-zero exit drives** —
+  `_register_run_failure`: the run's failure count, its attempt log, and a return to
+  `edit`. There is no second mechanism. The return to `edit` happens only if code was
+  actually mutated this query, so a discovery-only session is not pushed into an edit
+  state. Once every failed run has spent `VALIDATION_RETRY_BUDGET` attempts and nothing
+  else owes a check, the workflow is released to `conclude` rather than wedged: the run is
+  reported unresolved with what was tried, and the answer carries the residual risk.
 - **A declared verdict outranks the exit code, one way only.** A check that evaluates its
   own criteria, prints that they were not met, and returns 0 anyway is a green exit over a
   red result — observed: a boundary test reported "significant reflection may be present",
@@ -746,9 +814,11 @@ Other rules on this axis:
   spec naming the payload field that identifies the run, plus the conditions under which
   the server saw it crash or fail. **One way only** — there is no `passed_when` form,
   because no server may grant itself a passing verdict on its own output. The one positive
-  form, `measured_when`, credits the check axis and never the run's verdict. An
-  optimisation run that measured correctly without beating the incumbent is deliberately
-  not charged: a ratchet reject is the ordinary outcome of an experiment.
+  form, `measured_when`, credits the check axis and never the run's verdict. The floor
+  withholds credit only for what the server actually saw go wrong — a crash, or measured
+  metrics that miss the session's stated requirements. A candidate that measured cleanly
+  and merely failed to beat the incumbent is **not** charged: that is the ordinary outcome
+  of an experiment, and it is what the model's own `rejected` verdict is for.
 - **A run is keyed by the run, not the tool.** Twenty optimisation iterations are twenty
   entries, and the tool that *launches* a run and the tool that later *reports* it settle
   the same entry. Keying by tool name gave them separate rows, leaving the machine outcome
