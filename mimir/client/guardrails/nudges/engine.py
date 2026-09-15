@@ -34,7 +34,6 @@ from ...context.execution_context import (
     backfill_execution_context,
     declared_edit_set_complete,
     failed_runs,
-    has_discovery_evidence,
     idle_steps,
     known_existing_files,
     nudge_count,
@@ -46,7 +45,6 @@ from ...context.capabilities import CODE_EXEC, names_with_cap
 from ...event_sink import emit
 from ...config.constants import (
     CUSTOM_NUDGE_MAX_PER_QUERY,
-    DISCOVERY_EVIDENCE_MIN_DISTINCT,
     EXERCISE_BUDGET,
     NUDGE_MAX_BLAST_RADIUS,
     NUDGE_MAX_CREATION,
@@ -256,16 +254,6 @@ def _all_pending_budget_exhausted(execution_context: dict[str, Any]) -> bool:
         or int(fail_counts.get(f, 0)) >= VALIDATION_RETRY_BUDGET
         for f in dirty
     )
-
-
-def _has_local_discovery_evidence(execution_context: dict[str, Any]) -> bool:
-    """True once the model has done real exploration of its own.
-
-    Requires TWO distinct evidence signals so a single stray search/read no longer
-    clears the gate. The signal set and the seeded-``inspected_dirs`` exclusion are
-    defined once in context.execution_context (has_discovery_evidence).
-    """
-    return has_discovery_evidence(execution_context, min_distinct=DISCOVERY_EVIDENCE_MIN_DISTINCT)
 
 
 def _has_declared_write_target(execution_context: dict[str, Any]) -> bool:

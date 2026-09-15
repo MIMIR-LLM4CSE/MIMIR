@@ -2074,19 +2074,26 @@ class ClientHelperTests(unittest.TestCase):
         )
 
     def test_discovery_evidence_requires_two_distinct_signals(self) -> None:
+        """The bar the policy engine's discover-state gate holds evidence to.
+
+        Asserted against the shared predicate, which is now its only consumer: the
+        nudge engine carried a one-line alias over it for the discovery nudge, and
+        that nudge is gone.
+        """
         import importlib
-        nudge_logic = importlib.import_module("mimir.client.guardrails.nudges.engine")
-        # A single weak signal no longer clears the gate (so the nudge still drives).
-        self.assertFalse(nudge_logic._has_local_discovery_evidence({"searched": True}))
+        ec = importlib.import_module("mimir.client.context.execution_context")
+        from mimir.client.config.constants import DISCOVERY_EVIDENCE_MIN_DISTINCT as BAR
+
+        def cleared(ctx):
+            return ec.has_discovery_evidence(ctx, min_distinct=BAR)
+
+        # A single weak signal does not clear the gate.
+        self.assertFalse(cleared({"searched": True}))
         # Two distinct signals count as real exploration.
-        self.assertTrue(nudge_logic._has_local_discovery_evidence(
-            {"searched": True, "read_files": {"a.py"}}
-        ))
+        self.assertTrue(cleared({"searched": True, "read_files": {"a.py"}}))
         # A directory the model inspected itself counts, as a second signal —
         # structural discovery is real exploration, not a lesser kind of it.
-        self.assertTrue(nudge_logic._has_local_discovery_evidence(
-            {"inspected_dirs": {"mimir/servers"}, "searched": True}
-        ))
+        self.assertTrue(cleared({"inspected_dirs": {"mimir/servers"}, "searched": True}))
 
     # ── single discovery-evidence owner (Move A) ──────────────────────────────
 

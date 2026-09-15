@@ -34,7 +34,7 @@ babysit reasoning and are tuned by the dial.
 | Nudge | Layer | Fires on | `strict` | `light` | `off` |
 |---|---|---|:--:|:--:|:--:|
 | `denial` | verification | a refused action still blocks completion | ✅ | ✅ | ✅ |
-| `error_recovery` | verification | repeated failed edits on one file | ✅ | ✅ | ✅ |
+| `error_recovery` | verification | an edit to a file failed and the file is still failing | ✅ | ✅ | ✅ |
 | `stuck_repair` | verification | one command keeps failing (2 then 4 times) | ✅ | ✅ | ✅ |
 | `validation` | verification | the built-in check rejected a file | ✅ | ✅ | ✅ |
 | `regression` | verification | an edited source has a test on disk, never run | ✅ | ✅ | ✅ |
@@ -43,7 +43,7 @@ babysit reasoning and are tuned by the dial.
 | `blast_radius` | guidance | about to change an **existing** target, callers never searched | ✅ | ✅ | ❌ |
 | `env_cleanup` | guidance | the environment was mutated, the run is concluding | ✅ | ✅ | ❌ |
 | `env_resolution` | guidance | a run failed on a missing module, envs never listed | ✅ | ❌ | ❌ |
-| `doc` | guidance | code changed, nothing pending, no docs touched | ✅ | ❌ | ❌ |
+| `doc` | guidance | a non-`.md` file changed, nothing pending, workflow at validate/conclude | ✅ | ❌ | ❌ |
 | `state` | guidance | editing paused after validation, not concluded | ✅ | ❌ | ❌ |
 | `creation` | guidance | a target declared that does **not** exist yet, nothing written | ✅ | ❌ | ❌ |
 | `todo` | guidance | multi-step work underway, no checklist written | ✅ | ❌ | ❌ |
@@ -73,11 +73,12 @@ Every nudge has a per-query cap (`NUDGE_MAX_*` in `config/constants.py`), mostly
 `regression` and `unexercised` share one budget: they are two phrasings of "does anything
 show this works?", and separate budgets turned one conclusion into several re-prompts.
 
-Two reminders are delivered **mid-loop** rather than at the end of a step, because their
-subject is recovery rather than completion: `env_resolution` (fired right after the call
-that failed, where the steps it saves are still ahead) and `todo_tick` (after a
-successful write, offering to tick the step off). Both honour the same caps and the same
-enforcement gate as the table rows.
+Some reminders are delivered **mid-loop** instead, because their subject is recovery
+rather than completion — see [Loop-control correctives](#loop-control-correctives).
+`env_resolution` is the one table row among them: fired right after the call that failed,
+where the steps it would save are still ahead, under the **same** enforcement gate, toggle
+and budget as its row, so whichever fires first spends the budget. The others are not table
+rows and carry **no enforcement gate at all** — they fire at every level, `off` included.
 
 ### Policy gates by approval mode
 
@@ -112,7 +113,7 @@ has to be chosen for the session it applies to.
 
 | | `agent` | `plan` | `ask` |
 |---|---|---|---|
-| Tools offered | all | read-only (`PLAN_BLOCKED` hidden) | read-only |
+| Tools offered | all | read-only; the **checklist** tool is hidden too | read-only; **every** planning tool hidden |
 | Dual-use shell | full | read-only commands only | read-only commands only |
 | Can edit files | yes | no | no |
 | Guidance nudges | per the table above | `strict` only | none |
@@ -120,6 +121,15 @@ has to be chosen for the session it applies to.
 
 Plan and ask are the `READONLY_MODES`. Gating is by capability, never by tool name, so a
 new server is covered without a client edit.
+
+The planning surface differs between the two read-only modes, which the `PLAN_BLOCKED` line
+does not capture. **Ask** records nothing, so every `TASK_PLANNING` writer is hidden.
+**Plan** records the prose document only: the tool carrying the ordered checklist is hidden
+there, because the checklist is written *after* the user approves, at the start of
+execution. Withdrawing a tool is what lets the prompt drop the matching "do not write a
+checklist" prohibition — a tool the model cannot see needs no rule, no nudge and no prompt
+tokens. During plan mode's explore phase the document tool is withheld as well, which is
+the phase's whole mechanism.
 
 ---
 
@@ -312,18 +322,31 @@ taken back. The cost is that an at-risk turn lands at once rather than token by 
 
 ### Loop-control correctives
 
-Separate from the nudge layers, the agent loop fires correctives mid-tool-loop when a
-call repeats:
+Separate from the nudge layers, `_post_dispatch_inject` fires reminders **mid-tool-loop**,
+after every dispatch step. This is the channel the nudge table cannot reach: the table only
+runs when the model stops calling tools, and a model that is retrying against the wrong
+interpreter, chasing a moving test, or has been told to hand back is by definition still
+calling tools.
 
-- **failing call** — an identical *failed* non-write call is corrected, then hard-blocked.
-- **hand-back stop** — once refusals reach the end of the denial ladder, fired once,
-  mid-loop, because a model told to hand back and still calling tools is out of reach of
-  any end-of-step nudge.
-- **repeated success** — annotated, never guarded. `IDENTICAL_REPEAT` is appended once a
-  call returns the same digest `IDENTICAL_REPEAT_THRESHOLD` times. Two guards for this
-  were built and both removed: a line-coverage ledger and a result-hashing blocker. Each
-  cost more than the repetition it caught, and withholding content just sent the model to
-  `bash` to read the same file another way.
+| Corrective | Fires when | Capped |
+|---|---|---|
+| `todo_tick` | a write succeeded and a checklist exists — offers to tick the step off | `NUDGE_MAX_TODO_TICK`, and never twice about the same file |
+| `repeat_call` | an identical *failed* non-write call — corrected once, then hard-blocked | once |
+| `moving_test` | a test file whose *failing set* keeps changing between runs | once |
+| handback stop | refusals reached the end of the denial ladder | once |
+| `env_resolution` | a call just failed on a missing module | shares its table row's budget |
+
+Only `env_resolution` is also a nudge-table row, and it alone carries the enforcement gate
+and toggle. **The other four have none** — they fire at every enforcement level, `off`
+included. That is deliberate for the correctives, which are reality checks, and is worth
+knowing for `todo_tick`, which is the one piece of checklist hygiene the dial cannot turn
+down.
+
+A repeated *successful* call is **annotated, never guarded**. `IDENTICAL_REPEAT` is appended
+once a call returns the same digest `IDENTICAL_REPEAT_THRESHOLD` times. Two guards for it
+were built and both removed — a line-coverage ledger and a result-hashing blocker. Each cost
+more than the repetition it caught, and withholding content just sent the model to `bash` to
+read the same file another way.
 
 The firing decision lives in the loop; the message text lives with the other copy in
 `guardrails/workflow.py`, so wording stays consistent.
@@ -441,9 +464,14 @@ trait (`searched`, `read_files`, `delegated_read_files`, `checked_paths`,
 `inspected_dirs`), plus `has_discovery_evidence(ctx, *, min_distinct)`. Presence is the
 whole test.
 
-The plan-mode explore phase and `engine._missing_evidence` both read that one definition,
-at the same `DISCOVERY_EVIDENCE_MIN_DISTINCT` bar. They used to disagree — one took the
-default of 1 while the other asked 2 — so "one definition" still had two answers.
+`engine._missing_evidence` holds the `discover`-state gate to
+`DISCOVERY_EVIDENCE_MIN_DISTINCT`, and is its only consumer. The plan-mode explore phase
+reads the same signal set through `plan_evidence_ready`, but against its own knob
+(`DISCOVERY_EVIDENCE_MIN_DISTINCT_PLAN`, the same value today) **plus** a floor on how many
+files were actually read: distinct signal kinds alone do not express its bar, since listing
+a directory and running a find scores two while grounding nothing. Two consumers of one
+definition used to disagree on the count itself — one took a default of 1 while the other
+asked 2 — which is what made the knob explicit.
 
 **Delegated reading counts here, and only here.** `delegated_read_files` holds what a
 sub-agent opened and reported back. These gates ask whether the model has *facts about the
@@ -499,7 +527,9 @@ read is a loop-control concern, handled where the other repeats are.
 Writes are guarded harder than reads, but the policy is built to stay usable during a real
 refactor.
 
-1. `write_file` is blocked on a known existing file unless `overwrite=true` is explicit.
+1. `write_file` is blocked on an existing file unless `overwrite=true` is explicit. This
+   one is enforced by the **file server**, not by `check_write_policy` — the tool refuses
+   it before the client rule below is ever consulted.
 2. `write_file` with `overwrite=true` requires the file to have been read first. A read of
    any extent counts — demanding the whole file would ask for the one thing the read
    policy forbids.
@@ -1488,13 +1518,22 @@ nudges are suppressed and the finalizer describes the residual risk instead.
 
 ## Violation payload metadata
 
-JSON violations are enriched in the policy engine with:
+JSON violations are enriched in the policy engine. Four fields are always set:
 
 - `policy_stage` — e.g. `registry`, `state_guard`, `write_policy`, `approval`
-- `state` — the workflow state, when available
-- `missing_evidence` — discovery gaps inferred from the execution context
-- `suggested_next_tool_class` — the next action category for recovery
 - `tool` — the tool that triggered it
+- `suggested_next_tool_class` — the next action category for recovery
+- `state` — the workflow state (defaults to `discover`)
+- `status` — `blocked` for the state guard, `error` for everything else
+
+`missing_evidence` is **conditional**, and the three conditions are all about not nagging:
+
+1. it is attached only at the `write_policy` and `approval` stages, where naming a gap is
+   actionable;
+2. it is then removed in the `discover` state — the model is exploring, which is what the
+   field would ask it to do;
+3. and removed again once the denial nudge has already fired twice, since by then the gap
+   has been named enough.
 
 Non-JSON violations pass through unchanged.
 
