@@ -101,7 +101,7 @@ control's rungs. The rungs are the served family's own (a token ladder for
 sent back is always a `THINKING_DEPTH` index, so the rest of the protocol is
 unchanged.
 
-There are two emission paths into the WS layer. Messages originated by `ws_server.py` itself (session lifecycle, errors, todos, context-usage) are sent directly via `await self.ws.send(...)` or placed on `out_q`. Structured events originated by the **engine** (`status` / `tool_call` / `tool_result` / `diff` / `file_access`, plus streamed `token` / `thinking`) flow through callbacks instead of stdout: `_run_query()` binds an `event_callback` (and the token callbacks) that put the event dict straight onto `out_q`, which the drain loop forwards to the WebSocket. The engine calls `emit()` (`event_sink.py`); when no callback is bound — e.g. the CLI front-end — `emit()` prints the event as a JSON line, preserving the original behaviour. The legacy `sys.stdout` router is retained only as a defensive catch-all for stray prints.
+There are two emission paths into the WS layer. Messages originated by `ws_server.py` itself (session lifecycle, errors, todos, context-usage) are sent directly via `await self.ws.send(...)` or placed on `out_q`. Structured events originated by the **engine** (`status` / `tool_call` / `tool_result` / `diff`, plus streamed `token` / `thinking`) flow through callbacks instead of stdout: `_run_query()` binds an `event_callback` (and the token callbacks) that put the event dict straight onto `out_q`, which the drain loop forwards to the WebSocket. The engine calls `emit()` (`event_sink.py`); when no callback is bound — e.g. the CLI front-end — `emit()` prints the event as a JSON line, preserving the original behaviour. The legacy `sys.stdout` router is retained only as a defensive catch-all for stray prints.
 
 ---
 
@@ -109,44 +109,58 @@ There are two emission paths into the WS layer. Messages originated by `ws_serve
 
 ```
 webview/src/
+├── index.tsx                 ← React entry point
 ├── types.ts                  ← ALL shared TypeScript types (ServerMessage, ChatMessage, …)
 ├── hooks/
-│   └── useWebSocket.ts       ← postMessage bridge; send(), connect(), createSession(), …
-├── App.tsx                   ← Root component: all React state, handleServerMessage()
+│   ├── useWebSocket.ts       ← postMessage bridge; send(), connect(), createSession(), …
+│   └── useElapsed.ts         ← ticking elapsed-time counter for a running turn
+├── state/
+│   └── chatReducer.ts        ← the chat state machine: every message, tool row and
+│                               thinking block the transcript holds. The reducer never
+│                               mutates, which is what makes identity a valid change test
+├── App.tsx                   ← root component: state wiring and handleServerMessage()
 └── components/
-    ├── ChatMessage.tsx        ← Renders one ChatMessage (text/thinking/approval/editing/tools/error)
-    ├── InlineDiffApproval.tsx ← Per-file diff accept/discard card inside an approval message
-    ├── BatchReviewBar.tsx     ← Sticky bar showing accumulated file changes after a turn
-    ├── FileDiff.tsx           ← Unified-diff renderer (syntax-highlighted patch)
-    ├── LiveThinkingBlock.tsx  ← Collapsible "Thinking…" / "Working…" block
-    ├── MarkdownContent.tsx    ← Markdown renderer (used inside ChatMessage)
-    ├── VerificationLedger.tsx ← Collapsed evidence panel under an answer (see below)
-    ├── ledgerUtils.ts         ← Pure ledger split/parse helpers (unit-tested)
-    ├── TodoSidebar.tsx        ← Todo / plan items panel
-    ├── PlanBar.tsx            ← Plan-mode progress bar shown above the input
-    ├── ApprovalPrompt.tsx     ← Simple yes/no approval card (non-diff tools)
-    ├── GlobalApprovalBar.tsx  ← Approval banner (allow / always / deny) — sensitive-tool and out-of-workspace path prompts (one card per call, listing every outside path it names)
-    ├── SessionsPanel.tsx      ← Session list (switch / rename / delete — the ＋ lives in the status bar);
-    │                            each row shows a model-generated one-sentence description of the session
-    │                            (a hand-picked rename wins over it), and selecting a row opens it and
-    │                            closes the panel
-    ├── ConnectForm.tsx        ← Connection form (backend · address · model)
-    ├── ModeSwitcher.tsx       ← Standalone mode button + picker (agent/plan/ask, each with a
-    │                            description); the active mode colours the chat — blue agent,
-    │                            red plan, green ask (`data-mode` on `.app` → `--mode-accent`)
-    ├── ApprovalSwitcher.tsx   ← Approval-mode button + picker (manual / auto / all), stacked
-    │                            directly above the send button rather than inside the settings
-    │                            popover, since an auto mode answers cards for the user and is
-    │                            switched mid-run — icon-only to keep the column narrow, and it
-    │                            warms to the warning colour when it stops asking
-    ├── AgentSettings.tsx      ← Context memory, enforcement, thinking depth, streaming
-    ├── ContextBar.tsx         ← Context-window usage indicator
-    ├── ResumePlanPrompt.tsx   ← "Resume previous plan?" dialog
-    ├── MentionAutocomplete.tsx ← "@" dropdown to attach MCP resources / files (see below)
-    ├── mentionUtils.ts        ← Pure caret/token helpers for the "@" autocomplete (unit-tested)
-    ├── SlashAutocomplete.tsx  ← "/" dropdown to run a skill as a slash command (see below)
-    └── slashUtils.ts          ← Pure caret/token helpers for the "/" autocomplete (unit-tested)
+    ├── ChatThread.tsx         ← the scrolling transcript
+    ├── ChatMessage.tsx        ← one message (text / thinking / approval / tools / error)
+    ├── MarkdownContent.tsx    ← markdown renderer used inside a message
+    ├── mathDelimiters.ts      ← normalises LaTeX delimiters for remark-math
+    ├── ThinkingPanel.tsx      ← collapsible reasoning block
+    ├── StreamingStatus.tsx    ← the live "working…" indicator
+    ├── ToolActivityList.tsx   ← the tool rows under a turn
+    ├── CommandResult.tsx      ← terminal-style in/out panel for an exec-shaped result
+    ├── FileDiff.tsx           ← unified-diff renderer
+    ├── diffUtils.ts           ← diff parsing helpers
+    ├── VerificationLedger.tsx ← the collapsed evidence panel under an answer
+    ├── ledgerUtils.ts         ← ledger split/parse helpers (unit-tested)
+    ├── CompletionReport.tsx   ← the collapsed completion report
+    ├── completionUtils.ts     ← its split/parse helpers — mirrors guardrails/workflow.py
+    ├── GlobalApprovalBar.tsx  ← approval banner (allow / always / deny), for sensitive
+    │                            tools and out-of-workspace paths: one card per call,
+    │                            listing every outside path it names
+    ├── BatchReviewBar.tsx     ← sticky bar of accumulated file changes after a turn
+    ├── ApprovalSwitcher.tsx   ← approval-mode picker (manual / auto / all), stacked above
+    │                            the send button rather than in the settings popover,
+    │                            since an auto mode answers cards for the user
+    ├── ModeSwitcher.tsx       ← mode button and picker; the active mode colours the chat
+    ├── ContinuePrompt.tsx     ← the "keep going?" card at the step budget
+    ├── UserQuestion.tsx       ← a structured question the agent asked (elicitation)
+    ├── PlanBar.tsx            ← plan-mode progress bar above the input
+    ├── ResumePlanPrompt.tsx   ← offers to resume an unfinished checklist on reopen
+    ├── TodoSidebar.tsx        ← todo / plan items panel
+    ├── SessionsPanel.tsx      ← session list (switch / rename / delete); each row shows a
+    │                            model-generated one-sentence description, and a hand-picked
+    │                            rename wins over it
+    ├── TogglesPanel.tsx       ← server / skill / nudge toggles
+    ├── AgentSettings.tsx      ← the settings popover
+    ├── ConnectForm.tsx        ← connection form (backend · address · model)
+    ├── ContextBar.tsx         ← context-window usage
+    ├── MentionAutocomplete.tsx / mentionUtils.ts   ← the `@` attach dropdown
+    ├── SlashAutocomplete.tsx  / slashUtils.ts      ← the `/` command dropdown
+    ├── subAgentUtils.ts       ← sub-agent row grouping
+    ├── transcriptUtils.ts     ← the transcript handed back to the server
+    └── MimirIntro.tsx / MimirMark.tsx              ← brand assets injected by the host
 ```
+
 
 ### Chat input autocomplete ("@" and "/")
 
@@ -184,7 +198,7 @@ vitest (`mentionUtils.test.ts`, `slashUtils.test.ts`).
 | `todos` | `TodoItem[]` | Current todo/plan items |
 | `sessions` | `SessionMeta[]` | Session list from the server |
 | `activeSessionId` | `string \| null` | Currently active session |
-| `endpointModels` | `string[]` | Models the endpoint reports it serves; fills the connect dropdown (with `modelsLoading` / `modelsError`) |
+| `endpointModels` | `string[]` | Models the endpoint reports it serves; fills the connect dropdown. Local `App.tsx` state, not a shared type |
 | `thinkingProfile` | `ThinkingProfile \| undefined` | How the served model switches reasoning, from `ready`; decides which rungs the depth control offers |
 
 ---
@@ -364,7 +378,8 @@ const [expanded, setExpanded] = useState(true);
 
 ### Example 2 — Add an emoji icon for a new tool category in "Working…" blocks
 
-`App.tsx`, inside `toolIcon()`:
+`state/chatReducer.ts`, inside `iconForTool()` — the reducer assigns each tool row its
+icon, so the glyph is chosen once where the row is built rather than at render time:
 ```typescript
 // Add before the fallback return:
 if (t.startsWith("benchmarking")) return "⏱️";
@@ -385,7 +400,8 @@ if (
 
 ### Example 4 — Add a badge to the approval card showing the affected file count
 
-`InlineDiffApproval.tsx`, inside the header `<div>`:
+`GlobalApprovalBar.tsx`, inside the header `<div>` (the per-file card it replaced,
+`InlineDiffApproval.tsx`, is gone — one banner now carries the whole call):
 ```tsx
 {diffs.length > 0 && (
   <span className="ida-file-count">{diffs.length} file{diffs.length > 1 ? "s" : ""}</span>
