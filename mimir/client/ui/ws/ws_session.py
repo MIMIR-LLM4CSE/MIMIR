@@ -134,17 +134,31 @@ class _Session:
         # how many jobs there even were.
         self._pending_wakes: dict[str, list[dict]] = {}
 
+    def _greeting(self) -> dict:
+        """The ``ready`` sent the moment the socket is accepted.
+
+        Its ``agent_ready`` is the part worth stating rather than leaving to be
+        inferred. This is sent well before the agent exists — the worker is still
+        waiting on the LLM backend, minutes of it on a cold vLLM — and the worker
+        sends a second greeting, spelled "ready" too, once it really is up. The two
+        were indistinguishable to the client, so the chat invited the user to type
+        into an agent that could not answer. The worker's own says True; this one
+        says what is actually so.
+        """
+        return {
+            "type": "ready",
+            "model": self.worker.model,
+            "context_mode": self.worker.get_context_mode(),
+            "enforcement": self.worker.get_enforcement(),
+            "approval_mode": self.worker.get_approval_mode(),
+            "thinking": self.worker.get_thinking_profile(),
+            "agent_ready": self.worker.agent_ready(),
+        }
+
     async def run(self) -> None:
         # Send ready immediately so the webview transitions out of "connecting".
         try:
-            await self.ws.send(json.dumps({
-                "type": "ready",
-                "model": self.worker.model,
-                "context_mode": self.worker.get_context_mode(),
-                "enforcement": self.worker.get_enforcement(),
-                "approval_mode": self.worker.get_approval_mode(),
-                "thinking": self.worker.get_thinking_profile(),
-            }))
+            await self.ws.send(json.dumps(self._greeting()))
         except Exception:
             return
 

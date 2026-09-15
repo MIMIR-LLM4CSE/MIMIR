@@ -386,6 +386,19 @@ class MimirAgentViewProvider implements vscode.WebviewViewProvider {
    */
   private _pendingAutoConnect: RememberedEndpoint | undefined;
   /**
+   * The model list the auto-connect probe already received, kept for the webview.
+   *
+   * The probe asks the endpoint what it serves and used to weigh only whether it
+   * answered at all. But the status bar's model picker appears when the endpoint
+   * reported a real choice, and on an auto-connect nothing else ever asks: the
+   * connect form is the only other caller and it is never shown. So a remembered
+   * endpoint came up connected with the list already fetched, thrown away, and the
+   * model rendered as a static label — no way to switch, on a server serving
+   * several. Replayed on `get_config` rather than posted once, because the React
+   * app usually does not exist yet when the probe answers.
+   */
+  private _autoConnectModels: { backend: string; models: string[] } | undefined;
+  /**
    * Address of the server this window talks to, learned from the server's own
    * "Listening on ws://…" line (it binds an OS-assigned port, so each VS Code
    * window gets its own) or copied from the `mimir.wsUrl` override. Every
@@ -456,7 +469,9 @@ class MimirAgentViewProvider implements vscode.WebviewViewProvider {
     const verifySsl = vscode.workspace.getConfiguration("mimir").get<boolean>("vllmVerifySsl", true);
     this._autoConnectProbing = true;
     try {
-      await fetchModels(saved.backend as DiscoverableBackend, saved.baseUrl, verifySsl, 5000);
+      const models = await fetchModels(
+        saved.backend as DiscoverableBackend, saved.baseUrl, verifySsl, 5000);
+      this._autoConnectModels = { backend: saved.backend, models };
     } catch {
       // Endpoint not up — leave the user on the connect form. The attempt is not
       // marked as started, so opening the chat panel later probes once more: at
@@ -474,8 +489,18 @@ class MimirAgentViewProvider implements vscode.WebviewViewProvider {
     // React app may not be listening yet (or may not exist at all).
     this._pendingAutoConnect = saved;
     this._announceAutoConnect();
+    // Both here and on `get_config`, because neither alone covers it: the webview
+    // may not exist yet when the probe answers, and the probe may not have answered
+    // yet when the webview mounts. Posting the list twice costs a state set.
+    this._announceModels();
     // Startup connect: don't pop the server log over whatever the user opened.
     this._startServerAndConnect(saved.model, saved.backend, saved.baseUrl, "", { silent: true });
+  }
+
+  /** Hand the webview the model list the auto-connect probe already has. */
+  private _announceModels(): void {
+    if (!this._view || !this._autoConnectModels) return;
+    this._view.webview.postMessage({ type: "models", ...this._autoConnectModels });
   }
 
   /** Tell the webview, if there is one, which endpoint we are connecting to. */
@@ -865,8 +890,10 @@ class MimirAgentViewProvider implements vscode.WebviewViewProvider {
       clearTimeout(startupTimer);
       outputChannel.appendLine(`\nServer exited (code ${code})`);
       serverProcess = undefined;
-      // Nothing left to catch a webview up on — don't replay "connecting".
+      // Nothing left to catch a webview up on — don't replay "connecting", and
+      // don't offer the models of an endpoint that is no longer being served.
       this._pendingAutoConnect = undefined;
+      this._autoConnectModels = undefined;
       this._view?.webview.postMessage({ type: "ws_closed" });
     });
   }
@@ -1047,6 +1074,7 @@ class MimirAgentViewProvider implements vscode.WebviewViewProvider {
       // The webview's mount handshake: the one point where it is certainly
       // listening, so it is also where a connect it missed is replayed.
       this._sendConfig();
+      this._announceModels();
       this._resumeAutoConnect();
       return;
     }
@@ -1085,7 +1113,9 @@ class MimirAgentViewProvider implements vscode.WebviewViewProvider {
       }
 
       // A hand-typed connect supersedes any auto-connect still being replayed.
+      // The form ran its own probe, so the webview already holds that list.
       this._pendingAutoConnect = undefined;
+      this._autoConnectModels = undefined;
       this._autoConnectStarted = true;
       this._startServerAndConnect(model, backend, baseUrl, anthropicApiKey);
       return;

@@ -30,23 +30,37 @@ def _relpath(path: str) -> str:
 
 
 def shorten_display_args(name: str, args: dict, tool_caps=None) -> dict:
-    """*args* with declared path arguments reduced to their file name, for display.
+    """*args* with path arguments reduced to their file name, for display.
 
-    Capability-driven: the ``path`` arg-role names which arguments are paths, so
-    this needs no tool-name list and covers new tools automatically. Returns the
-    original dict untouched when the tool declares no path role.
+    Capability-driven first: the ``path`` arg-role names which arguments are paths,
+    so this needs no tool-name list and covers new tools automatically.
+
+    File tools do not all declare that role, though — the read tool does and every
+    write, edit and delete tool does not — so a declared role alone left exactly the
+    rows the user reads most showing an absolute path: "Editing file:" carried the
+    whole thing while "Reading file:" carried the name. The generic argument-name
+    fallback is the same convention ``file_preview.build_preview_diffs`` and
+    ``guardrails.observations`` already apply for the same reason, and these are
+    argument names, never tool identities.
+
+    The fallback shortens only values that are absolute, since that is the whole of
+    the problem it exists for. An argument named ``path`` that holds a path relative
+    to somewhere else — a repository path on a remote-fetch tool — is already short,
+    and is the one its label means.
     """
     if not isinstance(args, dict):
         return args
     from ..context.capabilities import arg_role
-    keys = arg_role(name, "path", tool_caps) or ()
-    if not keys:
-        return args
+    declared = arg_role(name, "path", tool_caps) or ()
+    keys = declared or _PATH_KEYS
     shortened = dict(args)
     for key in keys:
         val = shortened.get(key)
-        if isinstance(val, str) and val.strip():
-            shortened[key] = _relpath(val.strip())
+        if not isinstance(val, str) or not val.strip():
+            continue
+        val = val.strip()
+        if declared or os.path.isabs(val):
+            shortened[key] = _relpath(val)
     return shortened
 
 

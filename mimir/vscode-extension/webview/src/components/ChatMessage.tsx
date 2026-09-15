@@ -64,6 +64,11 @@ const ChatMessageInner: React.FC<Props> = ({ message, onApprovalResponse, onRetr
         {diffs.map((d, i) => {
           const { adds, dels } = countDiffLines(d.patch ?? "");
           const name = d.file.split("/").pop() || d.file;
+          // The directory alone, never the path again: the row already shows the
+          // file name beside it, so rendering the whole path repeated the name and
+          // pushed the part that actually disambiguates off the end of the line.
+          // Empty for a file at the root, where there is nothing to disambiguate.
+          const dir = d.file.slice(0, d.file.length - name.length).replace(/\/$/, "");
           const isNew = d.is_new;
           const isDelete = d.is_delete;
           const open = !!openDiffs[d.file];
@@ -100,7 +105,7 @@ const ChatMessageInner: React.FC<Props> = ({ message, onApprovalResponse, onRetr
                 >
                   {name}
                 </button>
-                <span className="edit-file-path">{d.file}</span>
+                {dir && <span className="edit-file-path" title={d.file}>{dir}</span>}
                 {!message.live && (
                   <>
                     <span className="edit-stat edit-stat--add">+{adds}</span>

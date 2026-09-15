@@ -320,7 +320,7 @@ class _AgentWorker:
             agent._watched_background_jobs = self._watched_bg_jobs
 
             self._agent = agent
-            self.out_q.put({"type": "ready", "model": self.model})
+            self.out_q.put({"type": "ready", "model": self.model, "agent_ready": True})
         except Exception as exc:
             self._error = exc
         finally:
@@ -833,6 +833,16 @@ class _AgentWorker:
     def submit_steer(self, text: str) -> None:
         """Queue a message to inject into the RUNNING agent at its next step boundary."""
         self._steer_q.put(text)
+
+    def agent_ready(self) -> bool:
+        """Whether the agent exists yet.
+
+        The socket is bound long before this is true: the worker waits on the LLM
+        backend first, which on a cold vLLM is minutes. The same test ``set_model``
+        applies, and the honest one — ``_ready`` is set in a ``finally`` and is
+        therefore also set when construction raised.
+        """
+        return self._agent is not None
 
     def is_busy(self) -> bool:
         """True while a query task is in flight (used to route steer vs. new query)."""

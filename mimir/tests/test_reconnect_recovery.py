@@ -114,3 +114,56 @@ class ReconnectTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AgentReadinessTests(unittest.TestCase):
+    """The socket opens long before the agent exists, and both greetings say "ready".
+
+    ``_Session.run`` sends one the moment the socket is accepted, so the webview can
+    leave "connecting"; the worker sends its own only after the LLM backend answers
+    and the agent is constructed, which on a cold vLLM is minutes later. Nothing in
+    either payload told them apart, so the chat showed "Type a message to start" over
+    an agent that could not yet answer one. The flag is what the greeting states.
+    """
+
+    def test_a_worker_without_an_agent_is_not_ready(self):
+        w = _bare_worker()
+        w._agent = None
+        self.assertFalse(w.agent_ready())
+
+    def test_a_worker_with_an_agent_is_ready(self):
+        w = _bare_worker()
+        w._agent = object()
+        self.assertTrue(w.agent_ready())
+
+
+class GreetingTests(unittest.IsolatedAsyncioTestCase):
+    """The greeting the socket sends, built by the code that really sends it."""
+
+    def _session(self, agent):
+        w = _bare_worker()
+        w._agent = agent
+        w.model = "m"
+        w.get_context_mode = lambda: "compact"
+        w.get_enforcement = lambda: "strict"
+        w.get_approval_mode = lambda: "normal"
+        w.get_thinking_profile = lambda: {}
+        return SessionFencingTests._session(self, w)
+
+    def test_the_socket_greeting_admits_the_agent_is_not_up(self):
+        self.assertFalse(self._session(None)._greeting()["agent_ready"])
+
+    def test_the_socket_greeting_reports_a_live_agent(self):
+        self.assertTrue(self._session(object())._greeting()["agent_ready"])
+
+    async def test_run_sends_that_greeting_verbatim(self):
+        """Guards the seam: a greeting built correctly and sent as something else."""
+        sess = self._session(None)
+
+        async def _stop(_payload):
+            sess.ws.sent.append(_payload)
+            raise ConnectionResetError("caller went away")
+
+        sess.ws.send = _stop
+        await sess.run()
+        self.assertFalse(json.loads(sess.ws.sent[0])["agent_ready"])

@@ -18,6 +18,10 @@ export interface ThinkingProfile {
 export interface ReadyMessage {
   type: "ready";
   model: string;
+  /** Whether the agent itself exists yet. The socket greeting is sent first and
+   *  says false; the worker's own greeting, after the LLM backend answers, says
+   *  true. Absent from an older server, which the client reads as ready. */
+  agent_ready?: boolean;
   context_mode?: "compact" | "full";
   enforcement?: "strict" | "light" | "off";
   approval_mode?: ApprovalMode;

@@ -94,6 +94,10 @@ export const App: React.FC = () => {
 
   const [todos, setTodos] = useState<TodoItem[]>([]);
   const [connection, setConnection] = useState<ConnectionState>("disconnected");
+  // Whether the agent behind the socket exists yet. The socket opens first and the
+  // worker then waits on the LLM backend — minutes, on a cold vLLM — so "connected"
+  // on its own was inviting the user to type into something that could not answer.
+  const [agentReady, setAgentReady] = useState(false);
   const [model, setModel] = useState("");
   const [anthropicModels, setAnthropicModels] = useState<string[]>([]);
   const [backend, setBackend] = useState("vllm");
@@ -246,6 +250,10 @@ export const App: React.FC = () => {
       case "ready":
         setModel(msg.model);
         setConnection("connected");
+        // Defaulting to ready when the field is absent: an older server sends no
+        // such flag, and leaving the UI stuck on "starting" would be worse than
+        // the invitation being early.
+        setAgentReady(msg.agent_ready !== false);
         if (msg.context_mode) setContextMode(msg.context_mode);
         if (msg.enforcement) setEnforcement(msg.enforcement);
         if (msg.approval_mode) setApprovalMode(msg.approval_mode);
@@ -285,6 +293,10 @@ export const App: React.FC = () => {
         // the connecting state, and let Reconnect replay the same arguments.
         lastConnectArgsRef.current = [msg.model, msg.backend, msg.baseUrl, undefined, true];
         setConnection("connecting");
+        // Reset on every transition away from a live agent, so a reconnect starts
+        // pessimistic and waits to be told again rather than inheriting the last
+        // session's answer.
+        setAgentReady(false);
         return;
 
       case "models":
@@ -475,6 +487,7 @@ export const App: React.FC = () => {
     setActiveSessionId(null);
     setSessions([]);
     setConnection("disconnected");
+    setAgentReady(false);
   };
 
   const { send, getConfig, connect, fetchModels, disconnect, createSession, switchSession, deleteSession, renameSession } = useWebSocket({
@@ -485,11 +498,13 @@ export const App: React.FC = () => {
       // chat history survives a transient drop (e.g. during batch-revert I/O).
       dispatch({ type: "connection_lost" });
       setConnection("disconnected");
+      setAgentReady(false);
     },
     onError: () => {
       // Surface the error state; ws_closed follows and drives reconnect UI.
       dispatch({ type: "connection_lost" });
       setConnection("error");
+      setAgentReady(false);
     },
   });
 
@@ -628,6 +643,7 @@ export const App: React.FC = () => {
       lastConnectArgsRef.current = [mdl, be, baseUrl, anthropicApiKey, remember];
       setRemembered(remember ? { backend: be, baseUrl, model: mdl } : null);
       setConnection("connecting");
+      setAgentReady(false);
       connect(mdl, be, baseUrl, anthropicApiKey, remember);
     },
     [connect],
@@ -653,6 +669,7 @@ export const App: React.FC = () => {
     const args = lastConnectArgsRef.current;
     if (!args) return;
     setConnection("connecting");
+    setAgentReady(false);
     connect(...args);
   }, [connect]);
 
@@ -661,6 +678,7 @@ export const App: React.FC = () => {
   const handleCancelConnect = useCallback(() => {
     disconnect();
     setConnection("disconnected");
+    setAgentReady(false);
   }, [disconnect]);
 
   // Recompute the @-mention query from the textarea's current value + caret.
@@ -1050,7 +1068,11 @@ export const App: React.FC = () => {
                 <MimirIntro loop={connection === "connecting"} />
                 <div className="empty-text">MIMIR</div>
                 <div className="empty-hint">
-                  {connection === "connecting" ? "Connecting to agent…" : "Type a message to start"}
+                  {connection === "connecting"
+                    ? "Connecting to agent…"
+                    : agentReady
+                      ? "Type a message to start"
+                      : "Starting the agent — waiting for the model backend…"}
                 </div>
                 {connection === "connecting" && (
                   <button className="connect-btn cancel-connect-btn" onClick={handleCancelConnect}>

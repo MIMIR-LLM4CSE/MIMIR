@@ -248,10 +248,39 @@ class RowPathsAreShortenedTests(unittest.TestCase):
         short = shorten_display_args("t", {"path": self.ABS, "old_text": "a/b/c"}, reg)
         self.assertEqual(short["old_text"], "a/b/c")
 
-    def test_tool_without_a_path_role_is_passed_through(self):
+    def test_tool_without_a_path_role_still_gets_its_path_shortened(self):
+        """The gap that left every write row showing an absolute path.
+
+        The read tool declares a ``path`` role and the write, edit and delete tools
+        do not, so a declared role alone shortened "Reading file:" and left "Editing
+        file:" carrying the whole thing — the rows the user reads most.
+        """
+        reg = {"t": ToolCaps(name="t")}
+        short = shorten_display_args("t", {"path": self.ABS}, reg)
+        self.assertEqual(short["path"], "observations.py")
+
+    def test_fallback_leaves_a_relative_path_alone(self):
+        """An argument named `path` is not always a filesystem path.
+
+        A remote-fetch tool's repository path is already short, and is the one its
+        label means. Only an absolute value is the problem the fallback exists for.
+        """
+        reg = {"t": ToolCaps(name="t")}
+        short = shorten_display_args("t", {"path": "src/solver/core.cpp"}, reg)
+        self.assertEqual(short["path"], "src/solver/core.cpp")
+
+    def test_fallback_does_not_mutate_the_arguments_sent(self):
         reg = {"t": ToolCaps(name="t")}
         args = {"path": self.ABS}
-        self.assertIs(shorten_display_args("t", args, reg), args)
+        shorten_display_args("t", args, reg)
+        self.assertEqual(args["path"], self.ABS)
+
+    def test_declared_role_still_wins_over_the_generic_keys(self):
+        """A declared role names the arguments; the key heuristic is only a fallback."""
+        reg = {"t": ToolCaps(name="t", arg_roles={"path": ("target",)})}
+        short = shorten_display_args("t", {"target": self.ABS, "path": self.ABS}, reg)
+        self.assertEqual(short["target"], "observations.py")
+        self.assertEqual(short["path"], self.ABS)
 
     def test_preview_also_shows_the_file_name(self):
         self.assertEqual(tool_arg_preview("t", {"path": self.ABS}), "observations.py")
