@@ -167,14 +167,19 @@ def enforcement_level(model: str) -> str:
     """How much reasoning babysitting to apply, from the model's vLLM profile.
 
     Governs ONLY the **guidance** nudge layer (env resolution/cleanup, discovery, doc,
-    state, blast-radius, creation, todo, validation) plus the plan-mode explore phase —
-    never safety, approval, write-policy or verification guards, which run at every
-    level. Which categories survive per level and mode is the single table
+    state, blast-radius, creation, todo) plus the plan-mode explore phase — never
+    safety, approval, write-policy or verification guards, which run at every level.
+    Which categories survive per level and mode is the single table
     ``_GUIDANCE_BY_LEVEL_MODE`` in ``guardrails/nudges/engine.py``:
       - "strict": every guidance category.
       - "light":  only the ones guarding a costly, hard-to-detect, non-self-correcting
-                  mistake — blast-radius, env cleanup, validation.
+                  mistake — blast-radius and env cleanup.
       - "off":    no guidance at all.
+
+    ``validation`` is deliberately absent from that list: checking a file one just
+    modified is a reality check, not a reasoning shim, so it moved to the verification
+    layer and now runs at every level. This docstring said otherwise long after the
+    move.
 
     **Default "light"**, with "strict" available as an explicit opt-in. The `light` set
     is already defined by the right criterion — a mistake that is expensive, hard to

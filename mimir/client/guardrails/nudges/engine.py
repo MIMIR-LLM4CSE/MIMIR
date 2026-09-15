@@ -625,9 +625,7 @@ def _first_failing_edit_path(execution_context: dict[str, Any]) -> str | None:
 
 # ── Verification-layer predicates (reality checks; run at every enforcement level) ──
 
-def _should_nudge_validation(
-    execution_context: dict[str, Any], *, level: str, active_mode: str,
-) -> bool:
+def _should_nudge_validation(execution_context: dict[str, Any]) -> bool:
     """The built-in check rejected a file, and there is budget left to repair it.
 
     Verification-layer, at every enforcement level: whether a file one just modified
@@ -1133,7 +1131,7 @@ _CORE_NUDGES: tuple[_CoreNudge, ...] = (
     ),
     _CoreNudge(
         "validation", "verification",
-        lambda agent, query, mode, ec, level: _should_nudge_validation(ec, level=level, active_mode=mode),
+        lambda agent, query, mode, ec, level: _should_nudge_validation(ec),
         lambda agent, ec: _validation_nudge_content(agent, ec),
     ),
     _CoreNudge(

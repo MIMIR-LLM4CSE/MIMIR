@@ -2066,11 +2066,11 @@ class ClientHelperTests(unittest.TestCase):
             "nudge_counts": {},
         }
         self.assertTrue(
-            nudge_logic._should_nudge_validation(ctx, level="strict", active_mode="agent")
+            nudge_logic._should_nudge_validation(ctx)
         )
         ctx["validated_files"] = {"solver.py"}
         self.assertFalse(
-            nudge_logic._should_nudge_validation(ctx, level="strict", active_mode="agent")
+            nudge_logic._should_nudge_validation(ctx)
         )
 
     def test_discovery_evidence_requires_two_distinct_signals(self) -> None:
