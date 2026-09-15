@@ -18,7 +18,6 @@ from .messages import (
     blast_radius_nudge_message,
     creation_nudge_message,
     denial_nudge_message,
-    discovery_nudge_message,
     documentation_nudge_message,
     env_cleanup_nudge_message,
     env_resolution_nudge_message,
@@ -52,7 +51,6 @@ from ...config.constants import (
     NUDGE_MAX_BLAST_RADIUS,
     NUDGE_MAX_CREATION,
     NUDGE_MAX_DENIAL,
-    NUDGE_MAX_DISCOVERY,
     NUDGE_MAX_DOC,
     NUDGE_MAX_ENV_CLEANUP,
     NUDGE_MAX_ENV_RESOLUTION,
@@ -67,12 +65,6 @@ from ...config.constants import (
     STUCK_REPAIR_CONSTRAIN_AFTER,
     TODO_NUDGE_MULTIFILE_THRESHOLD,
     TODO_NUDGE_OP_THRESHOLD,
-)
-from ...context.signals import (
-    query_is_informational,
-    query_requires_repo_discovery,
-    query_prefers_new_file_creation,
-    query_prefers_existing_file_edits,
 )
 from .plugins import NudgeRegistry, rule_tier_enabled
 
@@ -186,7 +178,7 @@ def drop_transient_reminders(
 # Category strings match the labels passed to _fire_nudge (e.g. the documentation
 # nudge's category is "doc", not "documentation").
 _ALL_GUIDANCE = frozenset({
-    "discovery", "env_resolution", "doc", "state",
+    "env_resolution", "doc", "state",
     "blast_radius", "creation", "todo", "env_cleanup",
 })
 _GUIDANCE_BY_LEVEL_MODE: dict[tuple[str, str], frozenset[str]] = {
@@ -295,6 +287,29 @@ def _has_declared_write_target(execution_context: dict[str, Any]) -> bool:
     return bool(
         execution_context.get("todo_written") or execution_context.get("plan_written")
     )
+
+
+def _declared_targets_already_existing(execution_context: dict[str, Any]) -> bool:
+    """True when a path this turn committed to writing is a file that already exists.
+
+    What tells "I am about to change something" from "I am about to create something",
+    asked of recorded state. The two nudges that need the distinction — blast-radius
+    ("who calls this?") and creation ("you have enough context, write it") — describe
+    the same situation otherwise, and used to be separated by whether the user's query
+    contained an edit verb or a create verb. That is a guess about a request; this is a
+    fact about the workspace, and it is the fact the guess was standing in for.
+
+    Both declaration fields are read: ``planned_edit_targets`` (a path already written
+    this turn) and ``declared_edit_set`` (paths named in the checklist). A turn that
+    committed only to *new* files, or that named no path at all, is not about to break
+    a caller — so blast-radius stays silent and creation is free to speak.
+    """
+    declared = set(execution_context.get("planned_edit_targets") or ()) | set(
+        execution_context.get("declared_edit_set") or ()
+    )
+    if not declared:
+        return False
+    return bool(declared & _known_existing_files(execution_context))
 
 
 def _retryable_pending_validation_exists(execution_context: dict[str, Any]) -> bool:
@@ -449,7 +464,7 @@ def maybe_append_nudge(
     # the model's enforcement level is "off". This gate applies to core AND
     # application guidance nudges alike.
     if level == "off":
-        _log_no_nudge(query, execution_context, level=level, active_mode=active_mode)
+        _log_no_nudge(execution_context, level=level, active_mode=active_mode)
         return False
 
     if _append_core_nudge(
@@ -465,7 +480,7 @@ def maybe_append_nudge(
         execution_context=execution_context, messages=messages, layer="guidance",
     )
     if not fired:
-        _log_no_nudge(query, execution_context, level=level, active_mode=active_mode)
+        _log_no_nudge(execution_context, level=level, active_mode=active_mode)
     return fired
 
 
@@ -510,7 +525,6 @@ def nudge_pending(
 
 
 def _log_no_nudge(
-    query: str,
     execution_context: dict[str, Any],
     *,
     level: str,
@@ -519,21 +533,22 @@ def _log_no_nudge(
     """Record why no nudge was injected on a turn that asked for one.
 
     The counterpart to the fire-time log in :func:`_fire_nudge`. Suppression used to be
-    invisible: a mis-classified query silently disarmed the guidance layer with nothing
-    in the trace to explain it. Debug-level and lazily formatted, so it costs nothing
-    when the logger is off; the intent/veto booleans are what make a false negative
-    diagnosable after the fact.
+    invisible, and the fields logged here are what make a false negative diagnosable
+    after the fact. They are now the state the predicates actually read — a declared
+    target, the workflow state, whether an edit happened, and the spent budgets. It used
+    to log three query-intent classifications instead, which is what the predicates read
+    back when a mis-classified query could disarm the layer; nothing classifies a query
+    any more, so there is nothing to second-guess and the real gates are the useful
+    trace. Debug-level and lazily formatted, so it costs nothing when the logger is off.
     """
     if not logger.isEnabledFor(logging.DEBUG):
         return
     logger.debug(
-        "no nudge: level=%s mode=%s informational=%s create=%s edit=%s "
-        "declared_target=%s counts=%s",
+        "no nudge: level=%s mode=%s state=%s mutated=%s declared_target=%s counts=%s",
         level,
         active_mode,
-        query_is_informational(query),
-        query_prefers_new_file_creation(query),
-        query_prefers_existing_file_edits(query),
+        execution_context.get("workflow_state"),
+        bool(execution_context.get("code_mutation_started")),
         _has_declared_write_target(execution_context),
         execution_context.get("nudge_counts", {}),
     )
@@ -960,23 +975,17 @@ def _should_nudge_env_cleanup(
     )
 
 
-def _should_nudge_discovery(
-    query: str, execution_context: dict[str, Any], *, level: str, active_mode: str
-) -> bool:
-    """Repo discovery is expected but the model has almost no local evidence yet."""
-    return (
-        active_mode == "agent"
-        and _guidance_enabled("discovery", enforcement=level, active_mode=active_mode)
-        and query_requires_repo_discovery(query)
-        and nudge_count(execution_context, "discovery") < NUDGE_MAX_DISCOVERY
-        and not _has_local_discovery_evidence(execution_context)
-    )
-
-
 def _should_nudge_doc(
-    query: str, execution_context: dict[str, Any], *, level: str, active_mode: str
+    execution_context: dict[str, Any], *, level: str, active_mode: str
 ) -> bool:
-    """Code changes are done, nothing pending — a gentle documentation reminder."""
+    """Code changes are done, nothing pending — a gentle documentation reminder.
+
+    Every condition is a recorded fact: a code file was edited, the workflow reached
+    validate/conclude, no file still owes a check, and at least one of the edits was not
+    itself documentation. The query-keyword test that used to sit on top guessed whether
+    the user had *asked* for a change — a question this state already answers, and
+    answers from what happened rather than from how the request was worded.
+    """
     return (
         active_mode == "agent"
         and _guidance_enabled("doc", enforcement=level, active_mode=active_mode)
@@ -984,7 +993,6 @@ def _should_nudge_doc(
         and execution_context.get("workflow_state") in ("validate", "conclude")
         and not has_pending_validation(execution_context)
         and _has_non_doc_code_changes(execution_context)
-        and (query_prefers_new_file_creation(query) or query_prefers_existing_file_edits(query))
         and nudge_count(execution_context, "doc") < NUDGE_MAX_DOC
     )
 
@@ -1007,20 +1015,25 @@ def _should_nudge_state(
 
 
 def _should_nudge_blast_radius(
-    query: str, execution_context: dict[str, Any], *, level: str, active_mode: str
+    execution_context: dict[str, Any], *, level: str, active_mode: str
 ) -> bool:
-    """Edit intent, a declared target, nothing written yet, usages not searched.
+    """An EXISTING declared target, nothing written yet, files read, usages never searched.
 
-    Asking about callers is only meaningful once the model has named the definition it
-    intends to change — hence the declared-target gate on top of the keyword intent.
+    Asking about callers is meaningful once the model has named a definition it intends
+    to change and has read around it without ever looking for who calls it. That is what
+    these conditions say, from recorded state. The keyword test on the query that used to
+    lead them was doing one useful thing under the guessing — telling this row apart from
+    ``creation``, which otherwise describes the same situation — and
+    ``_declared_targets_already_existing`` now does that from the workspace instead: a
+    file that does not exist yet has no callers to break.
     """
     return (
         active_mode == "agent"
         and _guidance_enabled("blast_radius", enforcement=level, active_mode=active_mode)
-        and query_prefers_existing_file_edits(query)
         and execution_context.get("workflow_state") == "edit"
         and not execution_context.get("code_mutation_started")
         and _has_declared_write_target(execution_context)
+        and _declared_targets_already_existing(execution_context)
         and nudge_count(execution_context, "blast_radius") < NUDGE_MAX_BLAST_RADIUS
         and bool(execution_context.get("read_files"))
         and int(execution_context.get("search_tool_calls", 0)) < 1
@@ -1028,21 +1041,28 @@ def _should_nudge_blast_radius(
 
 
 def _should_nudge_creation(
-    query: str, execution_context: dict[str, Any], *, level: str, active_mode: str
+    execution_context: dict[str, Any], *, level: str, active_mode: str
 ) -> bool:
-    """Create intent, a declared write target, context gathered, still nothing written.
+    """A declared write target that is not an existing file, context gathered, nothing written.
 
     ``read_files`` alone used to stand in for "the model is mid-task", but reading is
-    what answering a question looks like too. The declared-target gate is what keeps a
-    keyword match from turning an answer into an unrequested file.
+    what answering a question looks like too. ``_has_declared_write_target`` is what
+    carries the distinction, and it carries it from the model's own recorded
+    commitment — which is why the create-keyword test that sat beside it could go:
+    a declared target IS the intent, observed rather than guessed. The message keeps
+    its own exit for the case where the answer was all that was wanted.
+
+    Mutually exclusive with ``blast_radius`` by the same fact that row reads: this one
+    owns the turn where nothing named exists yet, so "start writing" cannot land on a
+    change that should first have looked for its callers.
     """
     return (
         active_mode == "agent"
         and _guidance_enabled("creation", enforcement=level, active_mode=active_mode)
-        and query_prefers_new_file_creation(query)
         and not execution_context.get("code_mutation_started")
         and execution_context.get("workflow_state") in ("edit", "discover")
         and _has_declared_write_target(execution_context)
+        and not _declared_targets_already_existing(execution_context)
         and bool(execution_context.get("read_files"))
         and nudge_count(execution_context, "creation") < NUDGE_MAX_CREATION
     )
@@ -1166,13 +1186,8 @@ _CORE_NUDGES: tuple[_CoreNudge, ...] = (
         lambda agent, ec: env_cleanup_nudge_message(ec),
     ),
     _CoreNudge(
-        "discovery", "guidance",
-        lambda agent, query, mode, ec, level: _should_nudge_discovery(query, ec, level=level, active_mode=mode),
-        lambda agent, ec: discovery_nudge_message(),
-    ),
-    _CoreNudge(
         "doc", "guidance",
-        lambda agent, query, mode, ec, level: _should_nudge_doc(query, ec, level=level, active_mode=mode),
+        lambda agent, query, mode, ec, level: _should_nudge_doc(ec, level=level, active_mode=mode),
         lambda agent, ec: documentation_nudge_message(ec),
     ),
     _CoreNudge(
@@ -1182,12 +1197,12 @@ _CORE_NUDGES: tuple[_CoreNudge, ...] = (
     ),
     _CoreNudge(
         "blast_radius", "guidance",
-        lambda agent, query, mode, ec, level: _should_nudge_blast_radius(query, ec, level=level, active_mode=mode),
+        lambda agent, query, mode, ec, level: _should_nudge_blast_radius(ec, level=level, active_mode=mode),
         lambda agent, ec: blast_radius_nudge_message(ec),
     ),
     _CoreNudge(
         "creation", "guidance",
-        lambda agent, query, mode, ec, level: _should_nudge_creation(query, ec, level=level, active_mode=mode),
+        lambda agent, query, mode, ec, level: _should_nudge_creation(ec, level=level, active_mode=mode),
         lambda agent, ec: creation_nudge_message(ec),
     ),
     _CoreNudge(

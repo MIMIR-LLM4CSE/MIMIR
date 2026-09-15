@@ -134,7 +134,7 @@ Tests: `_golden_caps.py` (golden sets + `build_declared_registry()` which AST-pa
 
 #### `signals.py`
 
-Query-intent vocabularies used to route discovery / edit / HPC / science behaviour.
+Query-signal vocabularies. Only one predicate still reads them — `query_requires_repo_discovery`, the plan-mode explore phase's coarse exit filter. The `query_prefers_*` / `query_is_informational` classifiers were removed along with the nudge conditions that consumed them: a keyword match over a natural-language request guesses at intent, and a nudge has to rest on something checkable. The edit/create tuples survive only as ingredients of `QUERY_DISCOVERY_SIGNALS`.
 
 - `QUERY_EDIT_SIGNALS`, `QUERY_CREATE_SIGNALS`, `QUERY_HPC_SIGNALS`, `QUERY_SCIENCE_SIGNALS`, `QUERY_DISCOVERY_SIGNALS`.
 - `SOURCE_FILE_EXTENSIONS` — every spelling of every language MIMIR may write (Python, C/C++, CUDA, Fortran incl. `.f03`/`.f08`/`.for`, JVM, JS/TS, Go/Rust/Swift, the shells, Julia/R/MATLAB, HDL). Independent of what this environment has installed: the mandatory check runs in-process (`guardrails/builtin_check.py`), so every extension here is checkable, and this tuple decides only whether an edit is *recorded as produced work* at all. It also carries the structured-data extensions the floor holds a real parser for (`.json`, `.toml`, `.ini`, `.cfg`, `.xml` and dialects) — an exact check that costs nothing — and deliberately not YAML, which has no stdlib parser. It used to be paired with a per-language table of external checker commands — `.f03` was in that table and missing from this tuple, so a Fortran 2003 edit was never even recorded as modified; both the table and the `shutil.which` probe over it are gone.
@@ -234,7 +234,7 @@ Workflow-state constants, transitions, and completion/validation messaging — s
 
 The hard write-policy gate (authoritative rule list in [`POLICY.md`](POLICY.md)).
 
-- `check_write_policy()`, `has_delete_context()`, `write_policy_violation()` — read-before-overwrite, delete evidence, and the anti-thrashing limit on repeated identical failed edits. Query-intent classifiers it used to host (`query_prefers_existing_file_edits()` etc.) now live in `context/signals.py` (shared with nudges + toollist).
+- `check_write_policy()`, `has_delete_context()`, `write_policy_violation()` — read-before-overwrite, delete evidence, and the anti-thrashing limit on repeated identical failed edits. Query-intent classifiers it used to host (`query_prefers_existing_file_edits()` etc.) were removed entirely: the nudge layer was their last consumer and it went back to reading recorded state.
 
 #### `observations.py` (at the `guardrails/` root)
 

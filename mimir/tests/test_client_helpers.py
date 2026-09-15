@@ -2088,33 +2088,6 @@ class ClientHelperTests(unittest.TestCase):
             {"inspected_dirs": {"mimir/servers"}, "searched": True}
         ))
 
-    def test_discovery_nudge_fires_with_only_one_signal(self) -> None:
-        import importlib
-        nudge_logic = importlib.import_module("mimir.client.guardrails.nudges.engine")
-        execution_context = {
-            "workflow_state": "discover",
-            "searched": True,  # only one signal → gate not cleared
-            "denied_tool_calls": [],
-            "dirty_written_files": set(),
-            "validated_files": set(),
-        }
-        messages: list = []
-
-        class _FakeAgent:
-            # These nudges live in the guidance layer, which `light` (the default)
-            # drops — the test is about the nudge, so it states the level it needs.
-            enforcement = "strict"
-
-        fired = nudge_logic.maybe_append_nudge(
-            agent=_FakeAgent(),
-            query="refactor the solver module in the repository",
-            active_mode="agent",
-            execution_context=execution_context,
-            messages=messages,
-        )
-        self.assertTrue(fired)
-        self.assertEqual(execution_context["nudge_counts"]["discovery"], 1)
-
     # ── single discovery-evidence owner (Move A) ──────────────────────────────
 
     def test_has_discovery_evidence_shared_predicate(self) -> None:
@@ -2218,8 +2191,10 @@ class ClientHelperTests(unittest.TestCase):
                 self.enforcement = enforcement
 
         def _fresh_ctx() -> dict:
-            # Two discovery signals (searched + read_files) so the discovery branch is
-            # cleared and the creation branch is the one under test.
+            # `helper.py` is declared but never registered as an existing path, so it
+            # reads as a file still to be created — which is what keeps `blast_radius`
+            # (whose subject is an existing definition's callers) off this turn and
+            # leaves `creation` as the branch under test.
             return {
                 "workflow_state": "edit",
                 "searched": True,
@@ -2258,6 +2233,57 @@ class ClientHelperTests(unittest.TestCase):
         self.assertFalse(fired, "guidance nudge must be suppressed at enforcement=off")
         self.assertEqual(messages, [])
 
+    def test_blast_radius_and_creation_split_on_whether_the_target_exists(self) -> None:
+        """The two rows describe one state; an existing target is what tells them apart.
+
+        Both fire on "a target was declared, files were read, nothing written yet", and
+        they give opposite advice — look for callers first, versus start writing. A
+        keyword on the query used to arbitrate, which meant the wrong one spoke whenever
+        the request was worded unexpectedly. The arbiter is now the workspace.
+        """
+        import importlib
+        nudge_logic = importlib.import_module("mimir.client.guardrails.nudges.engine")
+
+        class _Agent:
+            model = "big-model"
+            enforcement = "strict"
+
+        def _ctx(*, exists: bool) -> dict:
+            # Reading a file is itself proof that it exists (``read_files`` carries the
+            # KNOWN_FILE trait), so the two cases differ in the declared target, not in
+            # a flag: `mod.py` was read and is therefore a definition with possible
+            # callers; `brand_new.py` was only ever named.
+            return {
+                "workflow_state": "edit",
+                "read_files": {"mod.py"},
+                "search_tool_calls": 0,
+                "denied_tool_calls": [],
+                "dirty_written_files": set(),
+                "validated_files": set(),
+                "planned_edit_targets": {"mod.py"} if exists else {"brand_new.py"},
+                "code_mutation_started": False,
+                "nudge_counts": {},
+            }
+
+        # Same query both times: the wording is no longer what decides.
+        query = "sors moi une version propre de ce module"
+
+        existing = _ctx(exists=True)
+        self.assertTrue(nudge_logic.maybe_append_nudge(
+            agent=_Agent(), query=query, active_mode="agent",
+            execution_context=existing, messages=[],
+        ))
+        self.assertEqual(existing["nudge_counts"].get("blast_radius"), 1)
+        self.assertIsNone(existing["nudge_counts"].get("creation"))
+
+        brand_new = _ctx(exists=False)
+        self.assertTrue(nudge_logic.maybe_append_nudge(
+            agent=_Agent(), query=query, active_mode="agent",
+            execution_context=brand_new, messages=[],
+        ))
+        self.assertEqual(brand_new["nudge_counts"].get("creation"), 1)
+        self.assertIsNone(brand_new["nudge_counts"].get("blast_radius"))
+
     def test_light_subset_drops_procedural_guidance_but_keeps_blast_radius(self) -> None:
         # The deliberate "light" line (agent mode): procedural nudges (creation/state/
         # todo/doc) are dropped, while blast_radius (and env_cleanup) survive.
@@ -2290,11 +2316,13 @@ class ClientHelperTests(unittest.TestCase):
         self.assertFalse(fired, "creation (procedural) must NOT fire at light")
         self.assertIsNone(creation_ctx["nudge_counts"].get("creation"))
 
-        # blast_radius IS in the light subset: edit intent, a declared target, files
-        # read, no search yet.
+        # blast_radius IS in the light subset: a declared target that already exists,
+        # files read, no search yet. `existing_paths` is what makes `mod.py` a
+        # definition with possible callers rather than a file about to be created.
         blast_ctx = {
             "workflow_state": "edit",
             "read_files": {"mod.py"},
+            "existing_paths": {"mod.py"},
             "search_tool_calls": 0,
             "denied_tool_calls": [],
             "dirty_written_files": set(),

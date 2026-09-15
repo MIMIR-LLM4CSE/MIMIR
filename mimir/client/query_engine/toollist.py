@@ -80,9 +80,9 @@ def blocked_tools_for_context(
     # `policy.write.check_write_policy` refuses an OVERWRITE-capable tool aimed at a file
     # that is known to exist and was never read. That gate tells rewriting a file from
     # creating one by FACT rather than by keyword, which is the distinction that was
-    # wanted. `query_prefers_existing_file_edits` keeps its place in the nudge layer,
-    # where "prefer a surgical edit" is advice the model can weigh, rather than a
-    # capability taken away from it.
+    # wanted. The keyword predicate itself is gone now: the nudge layer that kept using
+    # it was the last consumer, and it too went back to reading recorded state rather
+    # than the wording of the request.
     #
     # Kept as a function, and still called, so the seam is here if a genuinely
     # query-stable block is ever needed. Anything state-dependent belongs in

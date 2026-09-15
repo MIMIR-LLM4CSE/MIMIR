@@ -47,8 +47,6 @@ from .signals import (
     QUERY_HPC_SIGNALS,
     QUERY_SCIENCE_SIGNALS,
     SOURCE_FILE_EXTENSIONS,
-    query_has_unnegated_match,
-    query_is_informational,
     query_matches_any,
 )
 # NOTE: the workflow state model + nudge message copy moved to
@@ -64,8 +62,6 @@ __all__ = [
     "QUERY_HPC_SIGNALS",
     "QUERY_SCIENCE_SIGNALS",
     "SOURCE_FILE_EXTENSIONS",
-    "query_has_unnegated_match",
-    "query_is_informational",
     "query_matches_any",
     "bootstrap_runtime_context",
     "bootstrap_state_context",

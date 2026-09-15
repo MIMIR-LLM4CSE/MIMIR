@@ -210,7 +210,6 @@ NUDGE_MAX_UNFINISHED_PLAN: int = 1
 NUDGE_MAX_EXERCISE: int = 1
 # The ``nudge_counts`` key those two rows share.
 EXERCISE_BUDGET: str = "exercise"
-NUDGE_MAX_DISCOVERY: int = 3
 NUDGE_MAX_ENV_RESOLUTION: int = 1
 NUDGE_MAX_ENV_CLEANUP: int = 1
 NUDGE_MAX_DOC: int = 1

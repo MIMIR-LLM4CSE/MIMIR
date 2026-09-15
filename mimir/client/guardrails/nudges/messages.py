@@ -42,13 +42,6 @@ def shell_tool_name(agent: Any) -> str:
 	return names[0] if names else "the shell"
 
 
-_DISCOVERY_NUDGE: str = (
-	"Ground this in evidence before answering. Do the relevant subset now: search for the "
-	"files this task touches and read the section that matters; derive a mathematical claim "
-	"with the symbolic-math tools rather than asserting it; consult a reference for a "
-	"factual one. Then proceed from what you found."
-)
-
 # A refusal is an instruction, not an error to report and retry. The three readings
 # below are stated in priority order and mirror the tool-result hint the model got
 # mid-loop (agent_core._denied_tool_result) and the Non-negotiables line in the system
@@ -75,10 +68,6 @@ _DENIAL_HANDBACK: str = (
 	"here. Make no further tool calls toward it: end your turn with what you completed, what the "
 	"refusal leaves undone, and what you need from the user to go further."
 )
-
-
-def discovery_nudge_message() -> str:
-	return _DISCOVERY_NUDGE
 
 
 def state_nudge_message(agent: Any, execution_context: dict) -> str:

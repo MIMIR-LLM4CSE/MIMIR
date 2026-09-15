@@ -250,8 +250,11 @@ class NudgeCoverageTests(unittest.TestCase):
     # nudge category -> a phrase in the prompt carrying the same obligation.
     # `validation` is absent because it is no longer guidance: it is a verification
     # row that fires at every enforcement level, so the prompt is not its only carrier.
+    # `discovery` is absent because the row was removed: its only intent condition was a
+    # keyword match on the query, which is a guess, and the prompt keeps the rule ("Grep
+    # first, read second") along with the policy engine's own discover-state evidence
+    # gate. That is the removal working as intended, not an obligation going missing.
     _EXPECTED = {
-        "discovery": "Grep first, read second",
         "state": "discover (gather evidence)",
         "doc": "Update documentation when a change affects",
         "todo": "record the concrete steps as a todo list",

@@ -145,6 +145,24 @@ Each row is `(name, layer, should_fire, render)`; a row's own predicate carries 
 per-query frequency cap and (for guidance) the `(enforcement, mode)` gate, so the
 runner just walks the table.
 
+**Every predicate reads recorded state, never the wording of the request.** A nudge
+interrupts the model's own reasoning, so what triggers it has to be something the code
+can check: a file on disk, an exit status, a counter. Four guidance rows used to open on
+a keyword match over the user's query — `discovery`, `doc`, `blast_radius` and
+`creation` — which is a guess about intent dressed as a test, and in a French session it
+mostly guessed wrong. The conditions that remain were already doing the work.
+`discovery` had nothing else and was removed outright; the rule it carried is still
+stated in the system prompt ("Grep first, read second") and still enforced by the
+`discover`-state evidence gate in `policy/engine.py`.
+
+The keyword *was* earning one thing, and it is worth naming because removing it without
+a replacement would have been a regression: it told `blast_radius` from `creation`. Those
+two rows describe the same situation — a target declared, files read, nothing written —
+and give opposite advice. What actually separates them is whether the declared target
+**already exists**, which `_declared_targets_already_existing` reads from the workspace: a
+file that does not exist yet has no callers to break. That is the fact the verb list was
+standing in for, asked directly.
+
 ---
 
 ## Enforcement Modules
@@ -158,7 +176,7 @@ runner just walks the table.
   - the `execution_context` blackboard writer: `record_tool_observation` + the ordered `_observe_*` handlers
   - path evidence tracking, repeated-edit retry tracking, workflow transition recording after tool execution
   - `_observe_command`: a shell-command tool (`bash_run`, keyed off the `command_prefix` scope) is classified by `policy/bash_classify.py` and credited to the same fields as the dedicated tools, so a bash `cat`/`grep`/`sed -i` feeds discovery/edit/action state (`read_files`, `searched`, `inspected_dirs`, `dirty_written_files`, `action_op_count`) like the file/search tools would
-  - (query-intent classifiers `query_prefers_*` / `query_requires_repo_discovery` moved to `context/signals.py`)
+  - (the only surviving query-intent classifier, `query_requires_repo_discovery`, lives in `context/signals.py`; the `query_prefers_*` / `query_is_informational` family was removed with the nudge conditions that read it — a keyword over a natural-language request is a guess about intent, and a nudge must rest on a fact)
 
 - `mimir/client/guardrails/policy/state_machine.py`
   - the workflow-state guard (`check_state_machine_guard`) + validation-retry-budget enforcement
@@ -204,7 +222,7 @@ runner just walks the table.
 
 - `mimir/client/guardrails/nudges/engine.py` — `maybe_append_nudge` appends **at most one** reminder per agent step. Built-in nudges are a single ordered table, `_CORE_NUDGES` (each row: `name`, `layer`, a `should_fire` predicate, a `render`), walked by the generic runner `_append_core_nudge`; application packs add more through the `NudgeRegistry` (`_append_custom_nudge`). Both share the same shape, so a built-in and a pack nudge are described identically. There are two layers:
   - **Verification layer** (`layer="verification"`) — reality checks that run at **every** enforcement level: denial, error-recovery, the **validation** nudge (a file you modified was never checked — the one axis the conclude gate blocks on), the **regression** nudge (you edited a source file whose associated test exists on disk but was never run this query — `tests_run` vs. the discovered `test_<stem>.py`/`<stem>_test.py`), the **unexercised** nudge (everything checked, nothing ever run), the **unfinished-plan** nudge (code was written while the model's own checklist still has open non-optional steps), and the **output-verdict** nudge. These point at facts about disk/process state and output honesty that no amount of model capability removes. `test_nudge_table.py` asserts the verification set is disjoint from `_ALL_GUIDANCE`, so a verification row can never be silently switched off by enforcement.
-  - **Guidance layer** (`layer="guidance"`) — reasoning babysitting that is **skipped entirely when `enforcement_level == "off"`**: env_resolution, env_cleanup, discovery, documentation, state, blast-radius, creation, and todo. Which categories survive at each `(enforcement, mode)` is the single table `_GUIDANCE_BY_LEVEL_MODE` (consulted via `_guidance_enabled`, **inside each guidance predicate**): `strict` permits all; `light` keeps only `blast_radius` + `env_cleanup` (agent mode). See Enforcement Levels for the full table — it is the authority, and this line is a summary of it.
+  - **Guidance layer** (`layer="guidance"`) — reasoning babysitting that is **skipped entirely when `enforcement_level == "off"`**: env_resolution, env_cleanup, documentation, state, blast-radius, creation, and todo. Which categories survive at each `(enforcement, mode)` is the single table `_GUIDANCE_BY_LEVEL_MODE` (consulted via `_guidance_enabled`, **inside each guidance predicate**): `strict` permits all; `light` keeps only `blast_radius` + `env_cleanup` (agent mode). See Enforcement Levels for the full table — it is the authority, and this line is a summary of it.
 
   Order per step: **core verification → pack verification → (stop if `off`) → core guidance → pack guidance**; the first row whose `should_fire` is true fires and wins. Each nudge's per-query frequency cap (`nudge_count(ec, category) < NUDGE_MAX_*`) lives inside its own predicate. Nudge and prompt text refers to tools by **capability/category**, never by literal MCP tool name (the plan output via "the plan/todo tool"). Validation names nothing at all any more: the check it used to steer toward is performed in-process (`guardrails/builtin_check.py`), so its nudge carries a finding rather than a command.
 
@@ -222,17 +240,17 @@ runner just walks the table.
 
 ## Enforcement Levels (model-tiered)
 
-`config.models.enforcement_level(model)` resolves a per-model knob from the vLLM profile: `"strict"` | `"light"` (**default**) | `"off"`. It governs **only the reasoning-babysitting layer** — the guidance nudges (env resolution/cleanup, discovery, doc, state, blast-radius, creation, todo) and the plan-mode explore phase. Which guidance categories survive at each `(enforcement, mode)` is the single declarative table `_GUIDANCE_BY_LEVEL_MODE` in `guardrails/nudges/engine.py` (consulted via `_guidance_enabled`); each nudge then layers its own `active_mode`/situational conditions on top:
+`config.models.enforcement_level(model)` resolves a per-model knob from the vLLM profile: `"strict"` | `"light"` (**default**) | `"off"`. It governs **only the reasoning-babysitting layer** — the guidance nudges (env resolution/cleanup, doc, state, blast-radius, creation, todo) and the plan-mode explore phase. Which guidance categories survive at each `(enforcement, mode)` is the single declarative table `_GUIDANCE_BY_LEVEL_MODE` in `guardrails/nudges/engine.py` (consulted via `_guidance_enabled`); each nudge then layers its own `active_mode`/situational conditions on top:
 
 | level  | agent-mode guidance nudges                                                         | plan-mode guidance nudges          | plan-mode explore phase |
 |--------|-----------------------------------------------------------------------------------|------------------------------------|-------------------------|
-| strict | **all** (env_resolution, env_cleanup, discovery, doc, state, blast_radius, creation, todo) | all (branch `active_mode` gates still apply) | on |
+| strict | **all** (env_resolution, env_cleanup, doc, state, blast_radius, creation, todo) | all (branch `active_mode` gates still apply) | on |
 | **light** *(default)* | **`blast_radius`, `env_cleanup` only**                              | none                               | on                      |
 | off    | none                                                                               | none                               | off                     |
 
 The plan-mode explore phase **withholds the plan-document tool** until the model has actually read code (`plan_evidence_ready`), so a plan written over nothing is unreachable rather than flagged after the fact; `off` disables the phase entirely and offers the tool from turn 1. It still never leaves the run without a plan: its trigger (`query_requires_repo_discovery`) is a deliberately broad exit filter that fires just as readily for greenfield work outside the repo, where no exploration could satisfy it, so `PLAN_EXPLORE_MAX_TURNS` unlocks the tool regardless and the plan states its own gaps.
 
-`light` is the **default**, and the reason is that its membership rule is the only one stated as a criterion rather than as a list: keep the nudges guarding a mistake that is **costly, hard to detect, and non-self-correcting** — `blast_radius` (changing a definition without checking callers) and `env_cleanup` (a package install / created env that persists outside the session). Concluding on code that was never checked used to be on this list; it is no longer guidance at all, because it is not a reasoning shim to dial down — `validation` is a verification row now, and fires at `off` too. Everything `light` drops (discovery, env_resolution, doc, state, creation, todo) is procedural hand-holding a capable model does unprompted, and it is not free: each nudge is a message injected into the model's own reasoning stream mid-plan, priced in tokens and in interruption. Having that as the opt-*down* put the burden of proof on the wrong side.
+`light` is the **default**, and the reason is that its membership rule is the only one stated as a criterion rather than as a list: keep the nudges guarding a mistake that is **costly, hard to detect, and non-self-correcting** — `blast_radius` (changing a definition without checking callers) and `env_cleanup` (a package install / created env that persists outside the session). Concluding on code that was never checked used to be on this list; it is no longer guidance at all, because it is not a reasoning shim to dial down — `validation` is a verification row now, and fires at `off` too. Everything `light` drops (env_resolution, doc, state, creation, todo) is procedural hand-holding a capable model does unprompted, and it is not free: each nudge is a message injected into the model's own reasoning stream mid-plan, priced in tokens and in interruption. Having that as the opt-*down* put the burden of proof on the wrong side.
 
 `strict` permits every guidance branch and is now the **opt-in**, declared per model with `"enforcement": "strict"` in `vllm_model_profiles.json`. The branches' own `active_mode == "agent"` gates mean agent-only nudges still don't leak into plan mode, so `strict` does not strip guidance by mode. `off` cuts the whole guidance layer. Ask mode is empty at every level — it neither plans nor edits, so nothing in the guidance layer applies. The line is per-mode, so adding (say) a plan-mode `light` nudge later is a one-line table edit.
 
@@ -250,7 +268,7 @@ Which models opt back in: the marker is **empirical, not a guess about model fam
 
 That is the fix for a bug worth recording, because it was invisible in both directions. A structural snapshot used to pre-fill `inspected_dirs`, and a discount (`BASELINE_SEEDED_DIRS`) was written into `_signal_present` to subtract it back out. The discount worked only for consumers that went through the shared helper; `_check_external_fetch` read the field raw, so on any repo-touching query it was satisfied before the model acted and never fired — while on a bibliography query, where no snapshot was built, it was the one thing that *did* fire. A guard that is a no-op exactly where it was meant to bite, and bites exactly where the prompt says not to explore. Deleting the seeding removed the need for the discount and the class of bug with it.
 
-The agent-mode discovery nudge, the plan-mode explore phase (via `plan_evidence_ready`, which adds a floor on `read_files` — locating files is not reading them), and `engine._missing_evidence` all read this one definition instead of hand-picking field subsets, and all at the same `DISCOVERY_EVIDENCE_MIN_DISTINCT` bar — `_missing_evidence` used to take the default of 1 while the nudge asked 2, so two consumers of "one definition" still disagreed on how much cleared it.
+The plan-mode explore phase (via `plan_evidence_ready`, which adds a floor on `read_files` — locating files is not reading them) and `engine._missing_evidence` both read this one definition instead of hand-picking field subsets, and all at the same `DISCOVERY_EVIDENCE_MIN_DISTINCT` bar — `_missing_evidence` used to take the default of 1 while the nudge asked 2, so two consumers of "one definition" still disagreed on how much cleared it.
 
 **Delegated reading counts here, and only here.** `delegated_read_files` holds what a sub-agent opened and reported back (credited by `_observe_delegated_exploration`, keyed on the `DELEGATE` capability). These gates ask whether the model has *facts about the code* or is working off file names, and a finding that came back into its conversation is such a fact — `plan_evidence_ready` therefore counts it toward its read floor, or plan mode would punish the fan-out its own prompt asks for and drain the explore budget. It stays out of `read_files`, which answers a second and stricter question — *does this agent hold the lines it is about to edit* — that only a read of its own can settle. Two questions, two fields.
 
@@ -328,7 +346,7 @@ Rationale:
 Discovery is required when the query implies repository work.
 
 Current rule:
-- `query_requires_repo_discovery(query)` decides whether discovery is expected. It matches edit/create/HPC and repo-oriented terms but **not** pure-theory/bibliography terms (`derive`, `prove`, `integrate`, `cite`, `theorem`), so a math or literature query is not forced to scan the repository.
+- `query_requires_repo_discovery(query)` decides whether the plan-mode explore phase applies. It matches edit/create/HPC and repo-oriented terms but **not** pure-theory/bibliography terms (`derive`, `prove`, `integrate`, `cite`, `theorem`), so a math or literature query is not forced to scan the repository. It is the last query-keyword predicate in the client, and is read only as a coarse exit filter — never to tell one coding task from another, and never by a nudge.
 - The hard requirement is enforced at write time: `check_write_policy` / the workflow state guard demand direct target context (`has_direct_target_context`) and, for deletes, existence evidence (`has_delete_context`) before a mutation is allowed.
 - nudges are intentionally softer than hard guards:
   - local discovery evidence may include:
@@ -685,7 +703,7 @@ The current nudge layer is intentionally softer than the write/state guards.
 
 Nudges are split into two layers (see Enforcement Modules / Enforcement Levels):
 - **Verification nudges** (denial, error_recovery, validation, regression, unexercised, unfinished_plan) check *reality* and run at every enforcement level.
-- **Guidance nudges** (env_resolution, env_cleanup, discovery, documentation, state, blast-radius, creation, todo) babysit *reasoning* and are skipped entirely at `enforcement == "off"`; at `"light"` only `blast_radius` + `env_cleanup` survive (agent mode) per the `_GUIDANCE_BY_LEVEL_MODE` table — see Enforcement Levels for the authoritative table.
+- **Guidance nudges** (env_resolution, env_cleanup, documentation, state, blast-radius, creation, todo) babysit *reasoning* and are skipped entirely at `enforcement == "off"`; at `"light"` only `blast_radius` + `env_cleanup` survive (agent mode) per the `_GUIDANCE_BY_LEVEL_MODE` table — see Enforcement Levels for the authoritative table.
 
 Verification is evaluated first, so a pending verification reminder always preempts a guidance reminder. Within verification, the required axis speaks before the recommended one: `validation` precedes the three rows sharing `EXERCISE_BUDGET`.
 
