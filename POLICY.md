@@ -733,6 +733,30 @@ carries `unknown`. *Failed* (`failed_runs`) means a run that did not complete, o
 model judged `fail`, and is not already blocked. The two sets are **disjoint**, which is
 why `blocked` cannot collide with the other four.
 
+**A verdict never overwrites a settled one.** "Wide" means *every outstanding run*, and
+outstanding is a narrow set: a run already judged `pass`, `fail` or `rejected` has left it,
+and so has a run that never completed. So a late `fail` cannot retract an earlier `pass`,
+and cannot reach a run that crashed.
+
+| A run currently… | `pass` / `rejected` / `fail` / `unknown` | `blocked` |
+|---|---|---|
+| unjudged, completed | can settle it | — |
+| judged `unknown` | **can overwrite it** (it is still outstanding) | — |
+| judged `pass` or `rejected` | untouched | — |
+| judged `fail` | untouched | **can re-impute it** |
+| never completed | untouched | **can re-impute it** |
+| already `blocked` | untouched | untouched |
+
+The two exceptions are both deliberate. `unknown` is not a settlement — "I cannot tell"
+stays open so it can be judged properly later. And `blocked` exists precisely to re-impute
+a red run, which is why it addresses the failed set instead.
+
+One sharp edge follows from this: **scoping a verdict at a run that is already settled
+matches nothing**, and an unmatched scope falls back to the whole set. Aiming a `fail` at a
+run judged `pass` an hour ago therefore leaves that run alone and fails every *other*
+outstanding run instead. That is what the warning on an unmatched `fail` scope is for — it
+names what the scope could have matched.
+
 **Narrow versus wide is the safety asymmetry.** Withholding credit from a run the
 statement did not mean costs a re-judgement at worst, so `fail` and `unknown` address
 everything outstanding at once. Granting it is the unsafe direction, so `pass` and
