@@ -45,7 +45,6 @@ from .signals import (
     QUERY_DISCOVERY_SIGNALS,
     QUERY_EDIT_SIGNALS,
     QUERY_HPC_SIGNALS,
-    QUERY_SCIENCE_SIGNALS,
     SOURCE_FILE_EXTENSIONS,
     query_matches_any,
 )
@@ -60,7 +59,6 @@ __all__ = [
     "QUERY_DISCOVERY_SIGNALS",
     "QUERY_EDIT_SIGNALS",
     "QUERY_HPC_SIGNALS",
-    "QUERY_SCIENCE_SIGNALS",
     "SOURCE_FILE_EXTENSIONS",
     "query_matches_any",
     "bootstrap_runtime_context",

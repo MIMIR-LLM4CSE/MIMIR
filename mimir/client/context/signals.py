@@ -19,9 +19,8 @@ QUERY_CREATE_SIGNALS: tuple[str, ...] = (
     "scaffold", "generate",
 )
 
-# HPC / performance / hardware intents. A query matching one of these benefits from
-# hardware-aware context (the cached platform profile) during plan discovery. This is a
-# narrower set than QUERY_SCIENCE_SIGNALS — performance and architecture, not theory.
+# HPC / performance / hardware intents: performance and architecture, not theory. Like
+# the two sets above, these are ingredients of QUERY_DISCOVERY_SIGNALS and nothing else.
 QUERY_HPC_SIGNALS: tuple[str, ...] = (
     "benchmark", "profile", "profiling",
     "optimize", "optimise", "optimization", "optimisation",
@@ -33,23 +32,6 @@ QUERY_HPC_SIGNALS: tuple[str, ...] = (
     "slurm", "hpc", "cluster", "compiler", "scaling", "performance", "perf",
 )
 
-
-# Scientific-computing intents ("From Math, to HPC"): theory/derivation, performance,
-# and bibliography. These trigger evidence gathering just like code-discovery terms.
-QUERY_SCIENCE_SIGNALS: tuple[str, ...] = (
-    "derive", "derivation", "dérive", "prove", "proof", "prouve",
-    "theorem", "théorème", "lemma",
-    "integrate", "integral", "intègre",
-    "differentiate", "derivative", "dérivée", "simplify", "solve", "résous",
-    "benchmark", "profile", "profiling",
-    "optimize", "optimise", "optimisation", "optimization",
-    "speed up", "accelerate", "accélère",
-    "parallelize", "parallelise", "parallélise", "vectorize", "vectorise",
-    "simd", "openmp", "mpi", "gpu", "cuda", "flops",
-    "complexity", "complexité",
-    "reference", "référence", "cite", "citation",
-    "paper", "article", "bibliography", "bibliographie",
-)
 
 # Discovery-only terms (file/repo orientation) not already implied by edit/create/science.
 _QUERY_DISCOVERY_ONLY: tuple[str, ...] = (
@@ -72,9 +54,9 @@ _QUERY_DISCOVERY_ONLY: tuple[str, ...] = (
 # consumer (the plan-mode explore phase) must not read a positive as more than "this
 # query plausibly touches the workspace".
 #
-# Hence QUERY_SCIENCE_SIGNALS (derive/prove/cite/theorem…) is excluded: a derivation or
-# literature query needs no *repository* discovery. QUERY_HPC_SIGNALS
-# (optimize/benchmark/parallelize…) does touch code, so it stays in.
+# Pure-theory terms (derive, prove, cite, theorem) are absent by construction: a
+# derivation or a literature question needs no *repository* discovery. Performance terms
+# (optimize, benchmark, parallelize) do touch code, so QUERY_HPC_SIGNALS is in.
 QUERY_DISCOVERY_SIGNALS: tuple[str, ...] = tuple(
     dict.fromkeys(
         QUERY_EDIT_SIGNALS
