@@ -313,13 +313,13 @@ def _collect_completion_issues(
 	# real one — a file unchecked, a run failing or unjudged, a step never started —
 	# has its own line here.
 
-	# The plan-vs-implementation check, obtained from state that already exists:
-	# declared_edit_set is scraped from the checklist's own step text and until now
-	# only fed a state transition. Reporting the difference is what makes a step
-	# that was planned and then quietly skipped visible at completion time.
-	unwritten = unwritten_declared_files(execution_context)
-	if unwritten:
-		issues.append("Declared but never written: " + ", ".join(unwritten[:5]))
+	# There is deliberately no plan-vs-implementation issue here. Reporting the files
+	# the checklist named and no write honoured looks like the same kind of fact as the
+	# lines around it, and is not: those read a checker, a run or the disk, while this
+	# one read prose the model wrote earlier and may since have thought better of. A plan
+	# revised mid-course — two files dropped because the work turned out not to need
+	# them — is indistinguishable at completion time from two files skipped, and the
+	# declared set has no way to retract. It charged the honest revision as a gap.
 
 	# The reminder budget stops asking after two tries; what it must not do is let a run
 	# disappear. Every run still open at completion is named here, with what was tried.
@@ -580,9 +580,6 @@ def finalize_incomplete_answer(
 	# Only treat unvalidated source-code files as high-risk; unvalidated non-code
 	# files (e.g. .md, .txt) that never go through a code validator are low-risk.
 	_pending_code = [p for p in pending if any(p.endswith(ext) for ext in SOURCE_FILE_EXTENSIONS)]
-	# Something the model said it would change and then didn't is a silent gap, not
-	# a failure — medium, not high, but never "low".
-	_unwritten = unwritten_declared_files(execution_context)
 	# A refusal the run stopped on stays high risk — work was cut short. A refusal the
 	# run absorbed and continued past is a known, named gap: medium, never "low".
 	#
@@ -594,10 +591,10 @@ def finalize_incomplete_answer(
 	# recommendation, and charging its absence is the trade POLICY already refused.
 	_failed_runs = failed_runs(execution_context)
 	# An optimisation source that was checked but never measured is a named gap, not a
-	# defect: medium, never "low", on the same footing as a declared-but-unwritten file.
+	# defect: medium, never "low".
 	risk_level = (
 		"high" if _pending_code or handback
-		else ("medium" if pending or _unwritten or denied_calls or _failed_runs or unmeasured
+		else ("medium" if pending or denied_calls or _failed_runs or unmeasured
 		      else "low")
 	)
 	sections.append(f"Residual risk: {risk_level}.")

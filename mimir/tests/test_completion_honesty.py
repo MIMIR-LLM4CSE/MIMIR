@@ -145,37 +145,16 @@ class VerificationLedgerTests(_ChecklistFixture):
         self.assertNotIn("says nothing about whether the answer is right", out)
         self.assertIn("`pytest -q` — ran; verdict: pass — l2_rel=3e-4", out)
 
-    def test_declared_but_never_written_is_reported(self):
+    def test_a_declared_but_unwritten_file_is_not_a_ledger_row(self):
+        # The ledger reports what a check, a run or the disk established. A file the
+        # checklist named and no write honoured is neither: the declared set is scraped
+        # from plan prose, so at completion time a plan the model revised on purpose is
+        # indistinguishable from a step it skipped, and charging it read as a defect.
         ec = _written({"a.py"}, tier="static")
         ec["declared_edit_set"] = {"a.py", "b.py"}
         out = _annotate_answer_with_changes("Done.", ec)
-        self.assertIn("**Declared but never written:** `b.py`", out)
-
-    def test_declared_target_written_under_another_spelling_is_not_reported(self):
-        # The two sides are spelled differently by construction: a write outside the
-        # workspace records an absolute path, while the checklist prose names the file
-        # bare ("write wave_solver_2d.py in ../other/") or relative to the root. All
-        # three spellings are the same promise, kept.
-        import mimir.client.config.constants as constants
-        import os
-        root = constants.WORKSPACE_ROOT
-        outside = os.path.abspath(os.path.join(root, "../other/wave_solver_2d.py"))
-        for declared in ("wave_solver_2d.py", "../other/wave_solver_2d.py", outside):
-            ec = _written({outside}, tier="static")
-            ec["declared_edit_set"] = {declared}
-            out = _annotate_answer_with_changes("Done.", ec)
-            self.assertNotIn("Declared but never written", out, declared)
-
-    def test_declared_elsewhere_is_still_reported(self):
-        # Basename matching is only for a *bare* mention, which carried no location.
-        # A declared path that names a directory must still resolve to the same file.
-        import mimir.client.config.constants as constants
-        import os
-        root = constants.WORKSPACE_ROOT
-        ec = _written({os.path.abspath(os.path.join(root, "src/solver.py"))}, tier="static")
-        ec["declared_edit_set"] = {"tests/solver.py"}
-        out = _annotate_answer_with_changes("Done.", ec)
-        self.assertIn("**Declared but never written:** `tests/solver.py`", out)
+        self.assertNotIn("Declared but never written", out)
+        self.assertNotIn("declared, never written", out)
 
     def test_unchecked_steps_are_reported_with_a_preview(self):
         ec = _written({"a.py"}, tier="static")
@@ -538,11 +517,13 @@ class CompletionIssueTests(_ChecklistFixture):
         issues, _ = _collect_completion_issues(ec)
         self.assertFalse(any("Checklist incomplete" in i for i in issues))
 
-    def test_declared_but_unwritten_becomes_an_issue(self):
+    def test_declared_but_unwritten_is_not_a_completion_issue(self):
+        # Same reason as the ledger row it used to mirror: an issue is something the
+        # run left broken, and a plan revised mid-course is not that.
         ec = _written({"a.py"}, tier="static")
         ec["declared_edit_set"] = {"a.py", "b.py"}
         issues, _ = _collect_completion_issues(ec)
-        self.assertTrue(any("Declared but never written" in i for i in issues))
+        self.assertFalse(any("Declared but never written" in i for i in issues))
 
 
 class IncompleteFinalizationTests(_ChecklistFixture):
@@ -676,11 +657,13 @@ class RefusedActionReportTests(_ChecklistFixture):
         self.assertIn("Residual risk: high.", out)
 
     def test_a_refusal_alongside_a_real_blocker_stays_incomplete(self):
+        # The refusal alone reads as "complete, except what you refused"; a file the
+        # run modified and never checked is a blocker of its own, and it wins.
         ec = self._refused()
-        ec["declared_edit_set"] = {"a.py", "b.py"}  # promised and never written
+        ec["dirty_written_files"].add("b.py")  # written, never validated
         out = finalize_incomplete_answer("Done.", ec)
         self.assertEqual(self._headline(out), HEADLINE_INCOMPLETE)
-        self.assertIn("Declared but never written", out)
+        self.assertIn("b.py", out)
 
     def test_a_refused_run_is_never_labelled_with_an_unknown_blocker(self):
         # The fallback issue exists for a run with no identifiable problem; a refusal

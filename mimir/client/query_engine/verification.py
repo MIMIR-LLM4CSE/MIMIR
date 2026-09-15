@@ -14,7 +14,6 @@ from __future__ import annotations
 import re
 
 from ..context import (
-    unwritten_declared_files,
     validation_tier,
     weakest_validation_tier,
 )
@@ -124,9 +123,16 @@ def build_ledger(execution_context: dict) -> dict | None:
     """The ledger for this run, or None when nothing happened worth recording.
 
     Returns ``{"status": ok|note|warn, "files": int, "summary": str, "rows": [markdown]}``.
-    ``status`` separates a clean run from soft caveats and from hard gaps (unvalidated or
-    unwritten files, unjudged runs, open checklist steps) — it is what a front-end colours
-    the panel by.
+    ``status`` separates a clean run from soft caveats and from hard gaps (unvalidated
+    files, unjudged runs, open checklist steps) — it is what a front-end colours the
+    panel by.
+
+    Every row reports what a check, a run or a file on disk established. A row for a file
+    the plan *named* and never wrote used to sit among them, and it is gone: the declared
+    set is scraped from checklist prose, so the gap it measured was as often a plan the
+    model had revised — correctly — as work it had skipped, and at completion time there
+    is no way to tell the two apart. What the model owes at the end is what it changed
+    and never checked; what it decided not to build along the way is not a defect.
 
     Two kinds of row, kept apart on purpose. A **file** row says what a checker
     established: it parses, it lints, nothing more. A **run** row says what happened when
@@ -136,14 +142,13 @@ def build_ledger(execution_context: dict) -> dict | None:
     written = sorted(execution_context.get("dirty_written_files", set()))
     validated = execution_context.get("validated_files", set())
     unchecked = unchecked_checklist_items(execution_context)
-    unwritten = unwritten_declared_files(execution_context)
     runs = execution_context.get("runs") or {}
     required = [it for it in unchecked if not it.get("optional")]
     optional = [it for it in unchecked if it.get("optional")]
 
     # A run nobody judged is worth reporting even when no file was touched: an
     # analysis-only session is exactly the one whose whole answer rests on that output.
-    if not written and not unchecked and not unwritten and not runs:
+    if not written and not unchecked and not runs:
         return None
 
     rows: list[str] = []
@@ -192,8 +197,6 @@ def build_ledger(execution_context: dict) -> dict | None:
     rows.extend(notes)
 
     # Bold marks the rows a reader has to act on — it is what the webview tints rows by.
-    if unwritten:
-        rows.append("**Declared but never written:** " + ", ".join(f"`{f}`" for f in unwritten))
     if required:
         preview = "; ".join(it["text"] for it in required[:2])
         more = f" (+{len(required) - 2} more)" if len(required) > 2 else ""
@@ -211,8 +214,6 @@ def build_ledger(execution_context: dict) -> dict | None:
             chips.append(f"{len(unvalidated)} not checked")
         else:
             chips.append(f"checked: {weakest_validation_tier(execution_context, written) or 'static'}")
-    if unwritten:
-        chips.append(f"{len(unwritten)} declared, never written")
     if runs:
         chips.append(_plural(len(runs), "run"))
         if open_runs:
@@ -226,7 +227,7 @@ def build_ledger(execution_context: dict) -> dict | None:
     if optional:
         chips.append(f"{_plural(len(optional), 'optional step')} left")
 
-    if unvalidated or unwritten or required or open_runs or failed:
+    if unvalidated or required or open_runs or failed:
         status = "warn"
     elif notes or optional or blocked:
         status = "note"

@@ -539,11 +539,17 @@ def _declared_target_written(declared: str, written: set[str], root: str) -> boo
 def unwritten_declared_files(execution_context: dict[str, Any]) -> list[str]:
     """Declared edit targets that no write this query honoured, sorted.
 
-    The single definition of "promised and then skipped", read by the completion
-    issues, the residual-risk level, the verification ledger and the validation
-    nudge. Matching is by resolved path, not by string (see
-    :func:`_declared_target_written`) — a raw set difference reported a file as
-    never written whenever the plan spelled it differently from the write.
+    Read while the work is still going — the edit→validate transition, the empty-turn
+    corrective, the missing-evidence text — and no longer at completion time. The end-of
+    -run readers (completion issues, residual risk, the ledger) were dropped: the
+    declared set is scraped from checklist prose and replaced only when a new checklist
+    is written, so what it reports is "named earlier, not written yet", which is useful
+    guidance mid-run and an accusation at the end, where a revised plan is
+    indistinguishable from a skipped step.
+
+    Matching is by resolved path, not by string (see :func:`_declared_target_written`) —
+    a raw set difference reported a file as never written whenever the plan spelled it
+    differently from the write.
     """
     declared = execution_context.get("declared_edit_set", set()) or set()
     if not declared:

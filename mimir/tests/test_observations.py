@@ -28,9 +28,11 @@ from mimir.client.guardrails.runner_output import (
 from mimir.client.config.constants import VALIDATION_RETRY_BUDGET
 from mimir.client.context.execution_context import (
     build_execution_context,
+    declared_edit_set_complete,
     record_run,
     run_ledger_key,
     unsettled_runs,
+    unwritten_declared_files,
 )
 from mimir.client.guardrails.observations import _register_run_failure
 
@@ -1372,6 +1374,79 @@ class MissingCommandImputationTests(unittest.TestCase):
         ec = self._red("make", absent=("make",))
         self.assertTrue(ec["exercise_advice_closed"])
         self.assertEqual(ec["exercise_blocked_reason"], "make is not installed here")
+
+
+class DeclaredEditSetTests(unittest.TestCase):
+    """The checklist declares the edit targets, and a later checklist replaces them.
+
+    The set is only ever read while the work is going — the edit→validate transition,
+    the empty-turn corrective — so what matters is that it tracks the *current* plan.
+    It used to only accumulate, which meant a declaration could never be taken back.
+    """
+
+    def _agent(self):
+        from mimir.client.context.capabilities import TASK_PLANNING, ToolCaps
+        return types.SimpleNamespace(
+            _parse_tool_payload=lambda result: {},
+            _normalize_workspace_path=lambda p: p or "",
+            tool_caps={
+                "todo_write": ToolCaps(
+                    name="todo_write",
+                    capabilities=frozenset({TASK_PLANNING}),
+                    arg_roles={"plan_steps": ("steps",)},
+                ),
+            },
+        )
+
+    def _declare(self, ec, steps):
+        runtime._observe_declared_edit_set(
+            self._agent(), "todo_write", {"steps": steps}, "ok", ec,
+        )
+
+    def test_a_checklist_declares_the_paths_it_names(self):
+        ec = build_execution_context()
+        self._declare(ec, ["edit solver.py", "then update helper.py"])
+        self.assertEqual(ec["declared_edit_set"], {"solver.py", "helper.py"})
+
+    def test_a_revised_checklist_retracts_what_it_no_longer_names(self):
+        # The case this exists for: the model plans three files, finds out mid-course
+        # that one of them has no reason to change, and writes a corrected checklist.
+        # The dropped file must stop counting as promised — `todo_write` replaces the
+        # whole list, so the declaration derived from it has to replace too.
+        ec = build_execution_context()
+        self._declare(ec, ["edit solver.py", "edit helper.py", "edit legacy.py"])
+        self._declare(ec, ["edit solver.py", "edit helper.py"])
+        self.assertEqual(ec["declared_edit_set"], {"solver.py", "helper.py"})
+        ec["dirty_written_files"] = {"solver.py", "helper.py"}
+        self.assertEqual(unwritten_declared_files(ec), [])
+        self.assertTrue(declared_edit_set_complete(ec))
+
+    def test_a_checklist_naming_no_file_declares_nothing(self):
+        ec = build_execution_context()
+        self._declare(ec, ["edit solver.py"])
+        self._declare(ec, ["think about it some more"])
+        self.assertEqual(ec["declared_edit_set"], set())
+
+    def test_a_declared_target_written_under_another_spelling_counts_as_kept(self):
+        # A write outside the workspace records an absolute path while the checklist
+        # names the file bare or relative to the root. All three are the same promise.
+        import mimir.client.config.constants as constants
+        root = constants.WORKSPACE_ROOT
+        outside = os.path.abspath(os.path.join(root, "../other/wave_solver_2d.py"))
+        for declared in ("wave_solver_2d.py", "../other/wave_solver_2d.py", outside):
+            ec = build_execution_context()
+            ec["declared_edit_set"] = {declared}
+            ec["dirty_written_files"] = {outside}
+            self.assertEqual(unwritten_declared_files(ec), [], declared)
+
+    def test_a_declared_path_elsewhere_is_a_different_file(self):
+        # Basename matching is only for a *bare* mention, which carried no location.
+        import mimir.client.config.constants as constants
+        root = constants.WORKSPACE_ROOT
+        ec = build_execution_context()
+        ec["declared_edit_set"] = {"tests/solver.py"}
+        ec["dirty_written_files"] = {os.path.abspath(os.path.join(root, "src/solver.py"))}
+        self.assertEqual(unwritten_declared_files(ec), ["tests/solver.py"])
 
 
 if __name__ == "__main__":

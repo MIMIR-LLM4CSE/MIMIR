@@ -604,10 +604,22 @@ def _observe_delegated_exploration(
 def _observe_declared_edit_set(
     agent: Any, tool_name: str, arguments: dict, status: Any, execution_context: dict[str, Any],
 ) -> None:
-    """Extract source-file paths named in a task-checklist declaration into the declared edit set.
+    """Record the source-file paths named in a task-checklist declaration.
 
     The checklist tool is the planning tool that declares a ``plan_steps`` arg-role (the
     ordered steps); the prose-rationale tool carries no steps and is skipped.
+
+    The set is **replaced**, not added to, because that is the checklist tool's own
+    contract: it replaces the entire list of steps. Accumulating instead meant a
+    declaration could never be taken back — a model that wrote a plan, discovered
+    mid-course that two of the files it had named had no reason to exist, and wrote a
+    corrected plan, stayed on the hook for the two it had dropped for the rest of the
+    query. Nothing cleared them, so "promised and then skipped" reported files nobody
+    had promised since, and the edit→validate transition waited on writes that were
+    never going to come.
+
+    A revised checklist that names no file therefore empties the set, which is the same
+    statement: this plan declares no file targets.
     """
     if status != "ok":
         return
@@ -617,10 +629,14 @@ def _observe_declared_edit_set(
     raw_steps = next((arguments.get(a) for a in step_args if arguments.get(a)), "")
     if isinstance(raw_steps, list):
         raw_steps = " ".join(str(s) for s in raw_steps)
-    for match in _SOURCE_FILE_PATH_RE.finditer(str(raw_steps)):
-        candidate = agent._normalize_workspace_path(match.group(0))
-        if candidate:
-            execution_context["declared_edit_set"].add(candidate)
+    declared = {
+        candidate
+        for match in _SOURCE_FILE_PATH_RE.finditer(str(raw_steps))
+        if (candidate := agent._normalize_workspace_path(match.group(0)))
+    }
+    # Mutated in place: other modules hold a reference to this set.
+    execution_context["declared_edit_set"].clear()
+    execution_context["declared_edit_set"].update(declared)
 
 
 def _observe_action_op(
