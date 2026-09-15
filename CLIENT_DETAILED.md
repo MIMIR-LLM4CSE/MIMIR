@@ -2,573 +2,947 @@
 
 > **MIMIR docs** — [Overview](README.md) · [Architecture](ARCHITECTURE.md) · [Setup](SETUP.md) · [Policy](POLICY.md) · [Client internals](CLIENT_DETAILED.md) · [Servers](SERVERS_DETAILED.md) · [Extension](EXTENSION_DETAILED.md) · [Plugins](PLUGINS_DETAILED.md)
 
-The authoritative reference for the client's internal architecture and execution flow —
-where each responsibility lives under `mimir/client/`, the main entry points, and the
-headless run engine. The VS Code extension frontend is documented separately in
+Where each responsibility lives under `mimir/client/`, how a query runs, and what the
+headless engine does. Behavioural *rules* live in [`POLICY.md`](POLICY.md); this file is
+about structure and flow. The VS Code frontend has its own file,
 [`EXTENSION_DETAILED.md`](EXTENSION_DETAILED.md).
-
-## Canonical Layout
-
-The client code is organized by responsibility under `mimir/client/`.
-
-### Canonical packages
-- `mimir/client/config/`: static configuration, model/mode constants, and the toggle preferences store
-- `mimir/client/context/`: foundational data substrate — execution-context schema, signals, capabilities, and `@`-mention resource attach
-- `mimir/client/prompt/`: system-prompt builders
-- `mimir/client/integration/`: server lifecycle (spawn, tool discovery)
-- `mimir/client/extensions/`: the single home for workspace-`.mimir/` user extensions — `servers.py` (`.mimir/servers/`), `skills.py` (`.mimir/skills/`), `plugins.py` (`.mimir/plugins/` policy/nudge packs) — plus the plugin-pack authoring surface. Path primitives stay in `config/constants`.
-- `mimir/client/guardrails/`: agent-behavior governance — the shared `workflow.py` (state model + predicates + agent-loop copy) and `observations.py` (the execution_context writer), plus two subpackages: `policy/` (hard/blocking preconditions, the state-machine guard + approval) and `nudges/` (soft/advisory reminders + their message copy)
-- `mimir/client/query_engine/`: the per-query run loop, decomposed into cohesive modules — `agent_loop.py` (orchestrator; also runs ask mode), `plan_loop.py` (plan mode), `readonly_guard.py` (the call-time write/exec guard shared by the read-only modes), `dispatch.py` (tool-call dispatch + spin/dedup guards), `history.py` (context budgeting), `streaming.py` (model round-trip), `background.py` (detached jobs), `finalize.py` (end-of-query), `toollist.py` (tool-list construction), `backends/`
-- `mimir/client/tool_execution/`: tool argument normalization, path rewriting, and post-write validation
-- `mimir/client/agent_core.py`: the **`MimirAgent` core** — the central class every frontend, the runner, and the sub-agent server drive (it is *not* UI; it's the engine the UIs pilot)
-- `mimir/client/human_pause.py`: the shared blocking-prompt seam (approvals, continue-the-run, plan approval, elicitation), so a frontend wires one hook and a headless run neutralises them all at once
-- `mimir/client/ui/`: the **frontends** that drive `MimirAgent`, split into two independent subpackages — `ui/cli/` (`main.py` entrypoint + `chat_session.py` + `chat_commands.py`) and `ui/ws/` (the WebSocket/VS Code bridge: `ws_server.py` / `ws_worker.py` / `ws_session.py` / `_ws_runtime.py` / `session_store.py` / `session_summary.py` (the one-sentence session description shown in the history panel — regenerated after every answered turn, in an executor so it never blocks the event loop nor competes with the query the user is waiting on; a failed generation stores the first user query as a *provisional* description, shown in the panel but always regenerated at the next turn) + the `file_preview.py` render helper). The two share nothing.
-- `mimir/client/event_sink.py`: injectable structured-event sink (`emit()`) that decouples the engine from stdout — events route to a bound callback (WS) or print as JSON (CLI / default)
-- `mimir/runner/`: headless run engine — the agent's "batch mode" (sibling of `client/`, not under it) — see **Headless Run Engine** below
 
 ---
 
-## Main Entry Points
+## Quick reference
 
-### Canonical class
-- `mimir/client/agent_core.py`: concrete `MimirAgent` implementation
+### Where things live
 
-### Canonical CLI entrypoint
-- `mimir/client/ui/cli/main.py`: async `main()` that builds the agent, connects all servers, starts the chat loop, and cleans up
+| Package | Owns |
+|---|---|
+| `config/` | constants, per-model and per-mode resolution, the toggle preferences store |
+| `context/` | the execution-context schema, tool capabilities, query signals, `@`-mention attach |
+| `prompt/` | system-prompt construction |
+| `extensions/` | everything the user drops in the workspace `.mimir/` — servers, skills, plugin packs |
+| `integration/` | server lifecycle: spawn, tool discovery |
+| `guardrails/` | behaviour governance — `policy/` blocks, `nudges/` advises, the root holds what both read |
+| `query_engine/` | the per-query loop, plus `backends/` for the LLM adapters |
+| `tool_execution/` | argument normalization, path rewriting, post-write checks, result formatting |
+| `ui/` | the frontends — `ui/cli/` and `ui/ws/`, which share nothing |
+| `agent_core.py` | **`MimirAgent`**, the engine every frontend pilots. Not UI |
+| `human_pause.py` | the one blocking-prompt seam (approvals, continue, plan approval, elicitation) |
+| `event_sink.py` | `emit()` — structured events to a bound callback (WS) or JSON on stdout (CLI) |
+| `mimir/runner/` | the headless batch engine. A sibling of `client/`, not under it |
+
+### The per-query loop
+
+One orchestrator plus focused siblings, all under `query_engine/`:
+
+| Module | Owns |
+|---|---|
+| `agent_loop.py` | orchestrator: `run_agent_query`, `_run_agent_loop`, `_advertised_tools`, `_drain_steer`, `_sync_checklist`, `_checkpoint_summary` |
+| `plan_loop.py` | `_run_plan_mode`, `_request_plan_decision`, the `_PLAN_*` labels. Tail-calls `_run_agent_loop` (lazy import — the only cycle point) |
+| `readonly_guard.py` | `filter_readonly_tool_calls` — the call-time write/exec guard the read-only modes share |
+| `dispatch.py` | `_dispatch_tool_calls`, `_post_dispatch_inject`, the spin and dedup guards |
+| `history.py` | context budgeting: trim → compact → force-fit → repair, plus the compaction marker |
+| `streaming.py` | `_stream_chat` (retry/backoff), `_process_response`, the single `get_backend` handle |
+| `toollist.py` | per-query tool-list construction |
+| `background.py` | detached jobs: detect, register, await, `open_editor` |
+| `finalize.py` | `_finalize_answer` / `_persist_answer` / `_annotate_answer_with_changes` |
+| `verification.py` | the verification ledger: `build_ledger` / `render_ledger` / `split_answer_ledger` |
+
+### Slash commands
+
+The CLI table is `ui/cli/chat_commands.handle_chat_command`. The webview has its own,
+separate handler.
+
+| Command | Does |
+|---|---|
+| `/help`, `/status` | usage; current model, mode, depth, approvals, trusted tools |
+| `/mode [agent\|plan\|ask]` | switch session mode |
+| `/think <depth>` | `off` · `auto` · `quick` · `medium` · `deep` · `max` |
+| `/enforcement strict\|light\|off` | the guidance-nudge dial ([POLICY.md](POLICY.md#nudges-by-enforcement-level)) |
+| `/approvals manual\|auto\|all` | who answers the approval cards ([POLICY.md](POLICY.md#policy-gates-by-approval-mode)) |
+| `/batch on\|off` | queue write approvals until the end of the turn |
+| `/trust <tool>`, `/untrust <tool>` | session-wide trust for one tool |
+| `/context compact\|full`, `/compact` | window policy, and compact now |
+| `/ledger` | expand the last answer's verification ledger |
+| `/undo` | revert the last write |
+| `/memory` | the memory store |
+| `/servers`, `/skills`, `/nudges` | list or toggle, persisted in `preferences.json` |
+| `/resources` | what `@`-mention can attach |
+| `/modules` | module-catalogue status, `refresh`, or a search term. Status never builds |
+| `/proxy clean <name>` | delete a proxy's runs, state and snapshots, and say what it removed |
+| `/stream` | toggle token streaming |
+
+### Key constants
+
+All in `config/constants.py` unless noted.
+
+| Constant | Value | Bounds |
+|---|---|---|
+| `MAX_AGENT_STEPS` | 100 | the fixed ceiling for a non-interactive caller |
+| `AGENT_STEP_SOFT_BUDGET` | 50 | where an interactive front-end asks to continue |
+| `AGENT_STEP_EXTENSION` / `AGENT_STEP_HARD_CEILING` | 50 / 200 | one extension, and the wall |
+| `TOOL_CALL_TIMEOUT_SECS` | 120 | default per-call wall; a tool may declare its own |
+| `TOOL_CALL_TIMEOUT_MAX_SECS` | 1200 | the clamp on a tool-declared wall |
+| `VALIDATION_RETRY_BUDGET` | 5 | failures of one file, or one command, before release |
+| `REPEATED_EDIT_FAILURE_LIMIT` | 2 | identical failed edits before the write gate refuses |
+| `IDENTICAL_REPEAT_THRESHOLD` | 3 | identical successful results before `IDENTICAL_REPEAT` |
+| `DISCOVERY_EVIDENCE_MIN_DISTINCT` | 2 | distinct signals clearing the `discover` gate |
+| `PLAN_EVIDENCE_MIN_FILES_READ` | 1 | files read before plan mode offers the document tool |
+| `PLAN_EXPLORE_MAX_TURNS` | 8 | after which the document tool unlocks regardless |
+| `LLM_RETRY_ATTEMPTS` | 3 | transient backend failures retried with backoff |
 
 ---
 
 ## Purpose
 
 The client orchestrates the local MCP stack:
-1. starts MCP servers as child processes over stdio
-2. discovers tools and JSON schemas dynamically
-3. exposes tools to the selected LLM backend (vLLM, Ray Serve, Ollama or Anthropic)
-4. routes each tool call to the right server
-5. enforces sensitive-tool approval
-6. enforces repository discovery and write safety policies
-7. enforces workflow-state progression for code edits
-8. supports both `agent` and `plan` modes
 
-Behavioral rules remain defined in `POLICY.md`. This file describes structure and execution flow.
+1. starts MCP servers as child processes over stdio;
+2. discovers their tools and JSON schemas at connect time;
+3. exposes those tools to the selected backend (vLLM, Ray Serve, Ollama, Anthropic);
+4. routes each call to the owning server;
+5. applies the policy gates and the nudge cascade;
+6. runs in `agent`, `plan` or `ask` mode.
 
 ---
 
-## Package Responsibilities
+## config
 
-Each sub-package under `mimir/client/` owns one responsibility. Behavioral rules stay in
-[`POLICY.md`](POLICY.md); this section maps structure and the key functions per file.
+Constants and per-model resolution. No logic.
 
-### config
+### `constants.py`
 
-Static configuration and tuning knobs — no logic, only constants and per-model / per-mode resolution.
+The tuning knobs and the bundled server registry. Exports `DEFAULT_MODEL`, `LLM_BACKEND`,
+the vLLM endpoint settings, `SERVERS`, `SERVER_DESCRIPTIONS`, `VALID_MODES`,
+`READONLY_MODES`, `SERVER_BASE`, `STATE_DIR`, plus the step, timeout, history and nudge
+constants listed [above](#key-constants).
 
-#### `constants.py`
+**The thinking-depth ladder.** `THINKING_DEPTH_LABELS` is `off · auto · quick · medium ·
+deep · max`, with budgets `(-1, -1, 512, 4096, 16384, -1)` where `-1` means no token
+budget. The default is **`auto`**: thinking is on, uncapped, and self-calibrated — a prompt
+directive asks the model to keep the block short on a trivial turn and spend a long chain
+only where the task is genuinely uncertain, rather than a classifier deciding for it. The
+fixed rungs impose a budget instead, which the loop's per-phase scaling then modulates;
+`max` is on and unbudgeted *without* the calibration directive.
 
-Tunable knobs and the server registry.
+The depth is **live**: it travels in the backend payload and is read per step, so `/think`
+mid-run lands on the very next one. `agent_loop._sync_thinking_directive()` rebuilds
+`messages[0]` only when the run enters or leaves the `auto` rung, since that is the only
+rung whose directive lives in the system prompt — one deliberate prefix-cache miss on an
+explicit user action, and a single comparison in steady state. `on` stays accepted as an
+alias for `auto`, so a legacy `/think on` keeps working. Sub-agents run at depth 0.
 
-- Exports `DEFAULT_MODEL`, `LLM_BACKEND`, `VLLM_BASE_URL`, `VLLM_API_KEY`, `VLLM_MODEL_PROFILES`, `SERVERS`, `SERVER_DESCRIPTIONS`, `VALID_MODES`, `READONLY_MODES`, `SERVER_BASE`, `STATE_DIR`.
-- Holds the step / timeout / history / context-budget constants consumed by the agent loop, plus nudge knobs such as `TODO_NUDGE_OP_THRESHOLD` (min successful substantive actions before the todo nudge's op-count trigger fires).
-- **Thinking-depth ladder** — `THINKING_DEPTH_LABELS` = `off` · `auto` · `quick` · `medium` · `deep` · `max`, with `THINKING_DEPTH_BUDGETS` = `(-1, -1, 512, 4096, 16384, -1)` (`-1` = no token budget). The default is **`auto`** (`DEFAULT_THINKING_DEPTH = THINKING_DEPTH_AUTO`): thinking is on but *uncapped and self-calibrated* — a prompt directive asks the model to keep the block short on trivial turns and spend a long chain only where the task is genuinely uncertain, rather than a classifier deciding for it. The fixed rungs impose a token budget instead, which the agent loop's per-phase scaling then modulates; `max` is thinking-on and unbudgeted **without** the calibration directive. `clamp_thinking_depth()` / `thinking_depth_from_label()` resolve a level (`on` stays accepted as an alias for `auto`, so the legacy `/think on` keeps working and now means "let the model calibrate"). The depth is **live**: it travels in the backend payload and is picked up per step, so `/think` mid-run lands on the very next one — and `agent_loop._sync_thinking_directive()` rebuilds `messages[0]` only when the run *enters or leaves* the `auto` rung, since that is the only rung whose calibration directive lives in the system prompt (one deliberate prefix-cache miss on an explicit user action, a single comparison in steady state). Sub-agents call `set_thinking_depth(0)`.
+### `models.py`
 
-#### `models.py`
+Per-model and per-mode resolution, read from the matched vLLM profile.
 
-Per-model and per-mode resolution, read from the matched vLLM profile via `profile_for_model(model)`.
+`enforcement_level(model)` → `strict` | `light` (**default**) | `off`. It governs **only**
+the guidance nudge layer and the plan-mode explore phase — never the verification nudges,
+and never the approval, write or state guards. Which categories survive at each
+`(enforcement, mode)` is the `_GUIDANCE_BY_LEVEL_MODE` table in `guardrails/nudges/engine.py`;
+[POLICY.md](POLICY.md#nudges-by-enforcement-level) reproduces it with the reasoning.
 
-- `enforcement_level(model)` → `"strict"` | `"light"` (**default**) | `"off"` — governs **only** the guidance nudge layer (validation, env_resolution, env_cleanup, discovery, doc, state, blast-radius, creation, todo) and the plan-mode explore phase; never the verification nudges or the safety/approval/state guards. `light` is the default because its membership rule is a criterion rather than a list (costly, hard to detect, non-self-correcting); `strict` is the per-model opt-in for models observed to need the rails. Resolved **once** at construction into `self.enforcement` (the model is immutable per agent), read via `resolve_enforcement(agent)`, overridable per model (`"enforcement"` in `vllm_model_profiles.json`) or at runtime via `/enforcement` (`MimirAgent.set_enforcement`). The surviving categories per `(enforcement, mode)` live in the `_GUIDANCE_BY_LEVEL_MODE` table in `guardrails/nudges/engine.py`.
+Resolved **once** at construction into `self.enforcement` — the model is immutable for an
+agent's life — and read through `resolve_enforcement(agent)`. A profile opts up with
+`"enforcement": "strict"`; `/enforcement` overrides at runtime.
 
-#### `preferences.py`
+### `preferences.py`
 
-- Load/save of the soft-hide toggles — the disabled server / skill / nudge names, persisted (sorted, atomic) to `<STATE_DIR>/preferences.json`. Only *disabled* names are written, so a new server or skill is visible by default. It is agent **state**, not a user extension, which is why it lives under the central state dir and not in the workspace `.mimir/`.
+Load and save of the soft-hide toggles: the disabled server, skill and nudge names,
+written sorted and atomically to `<STATE_DIR>/preferences.json`. Only *disabled* names are
+stored, so a newly added server or skill is visible by default. It is agent **state**, not
+a user extension, which is why it lives under the state dir rather than the workspace
+`.mimir/`.
 
-> **Workspace-`.mimir/` user extensions** (servers / skills / plugins) are **not** in `config/` — they moved to `mimir/client/extensions/` (see below). `config/constants.py` keeps only the path primitives (`MIMIR_DIR`, `resolve_extension_dir`, the `*_DIRNAME`/`*_DIR_ENV` constants).
+---
 
-### extensions
+## extensions
 
-The single home for everything the user drops into the workspace `.mimir/` — env-overridable and fail-open, one module per extension type. Consumed via `from ..extensions import …` (the connect sites `cli.py` / `ws_worker.py` / `runner/engine.py` / `server_spawn_agent.py`, and `agent_core`).
+The single home for everything the user drops into the workspace `.mimir/`. One module per
+extension type, env-overridable, fail-open. `config/constants.py` keeps only the path
+primitives (`MIMIR_DIR`, `resolve_extension_dir`, the `*_DIRNAME` / `*_DIR_ENV` constants).
 
-#### `servers.py`
-
-- `all_servers()` — bundled `SERVERS` merged with `discover_user_servers()` (scans `.mimir/servers/server_<name>.py|.js`, env `MIMIR_SERVERS_DIR`; a name colliding with a bundled server is skipped so the core is protected).
-- `all_server_descriptions()` — same, for the toggle panel. Kept import-light (only `os` + config constants).
-
-#### `skills.py`
-
-- `resolve_skills_dir()` — `.mimir/skills/` (env `MIMIR_SKILLS_DIR`); the loading itself is `MimirAgent.load_skills(..., merge=True)` (a same-named user skill overrides the bundled one).
-
-#### `plugins.py`
-
-- `load_plugins()` / `resolve_plugins_dir()` — dir-scans `.mimir/plugins/` (env `MIMIR_PLUGINS_DIR`) and imports each pack; a pack self-registers via `register_policy_check` / `register_nudge` as an import side effect. `__init__.py` re-exports the authoring surface (`PolicyCheck` / `NudgeRule` / `register_*`, from `guardrails/`).
-
-Nothing is auto-created in the workspace `.mimir/` — it is the user's alone. Copy-to-customize examples for every extension type live only in [`mimir/examples/`](mimir/examples/) (one `README.md` per type). Tests: `test_user_registry.py`, `test_extensions.py`.
-
-### context
-
-The per-query state schema plus the vocabularies that classify tools and queries — the shared facts every policy and nudge reads.
-
-#### `execution_context.py`
-
-The `ExecutionContext` schema and its per-query lifecycle. Single source of truth: the module-level `_FIELD_SPECS` registry of `(name, default_factory, accepted_types)` tuples generates both the template and the validator; the TypedDict is the static-typing surface (contract test `test_field_specs_match_typeddict_annotations` asserts the two key sets match).
-
-- `ExecutionContext` — the TypedDict (44 fields).
-- `execution_context_template()` / `build_execution_context()` / `validate_execution_context()` / `ensure_execution_context()` — create and validate a context.
-- `loop_control(ctx)` — lazily attaches a `LoopControlState` dataclass (private `_loop_control` key) holding the five tool-dispatch dedup/spin fields (`write_calls`, `call_fails`, `repeat_warned`, `call_results`, `repeat_noted`), kept out of the schema contract so it stays about *semantic* discovery/edit/validation state, not loop plumbing.
-- `VALIDATION_TIERS` + `validation_tier()` / `raise_validation_tier()` / `weakest_validation_tier()` / `files_below_tier()` — the **strength** of a check, on the ladder `structural` < `syntax` < `static` < `compiled` < `measured`. `validated_files` answers "was this file checked?"; `validation_tier_by_file` answers "with what?". Both are about **checkers** only — a parse, a structural scan, an import resolution, a lint, a compile, whose output *is* a list of problems. `structural` is the bottom rung and the one every checked file starts at: the built-in floor (`guardrails/builtin_check.py`) established that the file parses — or, for a language with no stdlib parser, that it is not truncated — with nothing installed, which is why the mandatory axis can no longer be waived for want of a binary. `compiled` is the top rung and the one nothing demands: it needs a toolchain the environment may not have, and a compiler asked for `-fsyntax-only` drops back to `syntax`. Everything above `structural` comes from a checker the model chose to run. Running the code is almost never on this ladder: an execution is a run, judged on its own axis. The one exception is the top rung, `measured`, which a server reaches by running the file itself *and recording which file it ran* — attribution is what normally keeps runs off this axis, and a proxy optimisation session is the one place where it is not a guess. It credits evidence, never correctness. Raised monotonically, retracted wherever `validated_files` is (re-edit, failed check). **Report-only** — it gates nothing and fires no nudge. Only a file that is not readable as text (binary, not UTF-8) is recorded in `unverifiable_files` instead and reported, never demanded. See `POLICY.md` → Validation Policy.
-- `VERDICTS` + `record_run()` / `unsettled_runs()` / `failed_runs()` — the other axis. One `runs` entry per execution, holding `completed` (the machine's half: did it reach its end), `verdict` + `reason` (the model's half: what the output showed), and `failures` + `attempts` (the repair history the budget and the hand-back read). A run credits no file and a file's check says nothing about a run, which is the whole point: "it compiles" and "it is right" are different claims, and one word for both is what let a green `pytest` be reported as a verified solver. See `guardrails/verdict.py`.
-- `_FIELD_SPECS` rows are `(name, factory, types, traits)`. The `traits` frozenset (`CARRY` / `FILE_PATH` / `KNOWN_FILE` / `DISCOVERY`) declares what a field *is*, next to the field; `fields_with(*traits)` derives every list that used to be hand-maintained (carry merge, session serialisation, delete purge, discovery signals, `known_existing_files`). `backfill_execution_context()` is the single spec-derived seeder that replaced four `bootstrap_*` helpers. `was_read()` / `is_known_to_exist()` / `was_checked_for()` name the distinctions POLICY.md states, so a call site cannot reach for the wrong set. `was_read()` answers "was it read" and deliberately **not** "was it read whole": reads are capped and targeted, so a window that stopped at the cap is the normal case, and a gate demanding the whole file would ask for the one thing the read policy tells the model not to do.
-- `has_discovery_evidence(ctx, *, min_distinct)` / `discovery_signal_count()` — the **single owner of "what counts as discovery evidence"**, backed by `DISCOVERY_EVIDENCE_SIGNALS` (derived from the `DISCOVERY` trait: `searched` / `read_files` / `checked_paths` / `inspected_dirs` / `delegated_read_files`). Presence is the whole test: nothing seeds these fields, so a fresh context carries zero evidence and every gate measures the model's own work. (There used to be a discount subtracting the dirs a structural snapshot pre-filled; removing the seeding removed the need for it, and with it the risk that a consumer read the field raw and never applied it — which is exactly what the external-fetch gate did.) The discovery nudge, `plan_evidence_ready()` (the plan-mode explore phase, which adds a floor on `read_files`: locating files is not reading them), and `engine._missing_evidence` all read this one definition, at the same `DISCOVERY_EVIDENCE_MIN_DISTINCT` bar.
-
-A module-level **state producer → consumer map** documents each field group's single writer and its readers. Notable fields: `steps_since_last_edit` (reset to 0 on each successful edit, incremented every step) and `declared_edit_set` (paths declared via the plan/todo tool, used to defer validation nudges until the plan is fully written). Two fields feed guidance from the substantive-action stream: `action_op_count` (count of successful `PLAN_BLOCKED` calls — writes/exec/mutations — the alternate op-count trigger for the todo nudge, so a many-operation/few-files task like an optimization loop is still recognised as multi-step) and `edit_fail_streak_by_file` (per-path consecutive edit failures *regardless of patch*, which re-arms the `error_recovery` reminder budget once the streak clears; it deliberately does **not** evict the file from the read sets — a wrong anchor is not missing content). A field-usage census removed four dead fields (`query_id`, `inspected_dir_siblings`, `analysis_announced`, `search_tools_used`).
-
-#### `capabilities.py`
-
-The **single source of truth for tool *semantics***: **no hardcoded classification lists** — each server declares its tools' caps via `@mcp.tool(**tool_caps(...))` and the client builds the per-agent live registry `agent.tool_caps` in `connect_server`.
-
-- **25 capability flags**, grouped by the policy that consumes each: `READ`, `SEARCH`, `SEARCH_WITH_PATH`, `CANDIDATE_SEARCH`, `INSPECT_DIR`, `CHECK_EXISTENCE`, `CODE_NAV`, `ENV_DISCOVERY`, `CACHEABLE`, `EDIT`, `CONTENT_WRITE`, `OVERWRITE`, `REMOVE`, `REPLACEMENT_TRACK`, `VALIDATE`, `TASK_PLANNING`, `EXTERNAL_FETCH`, `CLUSTER_SUBMIT`, `ENV_MUTATE`, `CODE_EXEC`, `BACKGROUNDABLE`, `SENSITIVE`, `NON_BATCH`, `PLAN_BLOCKED`, `PLAN_READONLY` (each is described in the [capability table in `PLUGINS_DETAILED.md`](PLUGINS_DETAILED.md#tool-capabilities), which is the authoritative list — do not re-enumerate it elsewhere). `VALIDATE` stays declarable for plugin validators, but the first-party stack validates through the `bash` server (no first-party tool carries it). The three reversibility **levels** (`REVERSIBLE` / `RECOVERABLE` / `IRREVERSIBLE`) are a separate vocabulary, not flags: `SENSITIVE` is derived from them.
-- `ToolCaps` — the descriptor: capabilities + `arg_roles` + `fallbacks` + status `label`.
-- `is_write()` (= `EDIT`∪`CONTENT_WRITE`∪`REMOVE`) / `clears_edit_loop()` (= `READ`∪`VALIDATE`) — derived **helpers, not declared caps**, so a server can't declare write/read caps yet forget the umbrella.
-- `infer_tool_caps(tool)` — resolves caps with **3-layer precedence**: `tool.meta["mimir"]` (our descriptor) › `tool.annotations` (standard `readOnlyHint`/`destructiveHint`, the coarse path for foreign servers) › conservative default (empty caps + path-arg inference from the input schema).
-- Query helpers — `names_with_cap`, `has_cap`, `path_args`, `arg_role`, `fallbacks`, `validate_tools_ordered`, `label_for`, `unannotated_live_tools`, `readonly_servers()` — take the per-agent registry; **with no registry they resolve to empty (no static fallback)**. `unannotated_live_tools(registry)` powers the connect-time consistency report in `agent_core.py`.
-
-Tests: `_golden_caps.py` (golden sets + `build_declared_registry()` which AST-parses the server decorators), `test_phase_b_servers.py` (declared registry reproduces the golden), `test_capabilities.py` (`infer_tool_caps` precedence + `tool_caps` round-trip), and `test_capability_consumers.py` (drift guard — fails if a declared capability has no live consumer). NB: `config/constants.py` no longer imports this module (avoids a circular import).
-
-#### `signals.py`
-
-Query-signal vocabularies. Only one predicate still reads them — `query_requires_repo_discovery`, the plan-mode explore phase's coarse exit filter. The `query_prefers_*` / `query_is_informational` classifiers were removed along with the nudge conditions that consumed them: a keyword match over a natural-language request guesses at intent, and a nudge has to rest on something checkable. The edit/create tuples survive only as ingredients of `QUERY_DISCOVERY_SIGNALS`.
-
-- `QUERY_EDIT_SIGNALS`, `QUERY_CREATE_SIGNALS`, `QUERY_HPC_SIGNALS`, `QUERY_SCIENCE_SIGNALS`, `QUERY_DISCOVERY_SIGNALS`.
-- `SOURCE_FILE_EXTENSIONS` — every spelling of every language MIMIR may write (Python, C/C++, CUDA, Fortran incl. `.f03`/`.f08`/`.for`, JVM, JS/TS, Go/Rust/Swift, the shells, Julia/R/MATLAB, HDL). Independent of what this environment has installed: the mandatory check runs in-process (`guardrails/builtin_check.py`), so every extension here is checkable, and this tuple decides only whether an edit is *recorded as produced work* at all. It also carries the structured-data extensions the floor holds a real parser for (`.json`, `.toml`, `.ini`, `.cfg`, `.xml` and dialects) — an exact check that costs nothing — and deliberately not YAML, which has no stdlib parser. It used to be paired with a per-language table of external checker commands — `.f03` was in that table and missing from this tuple, so a Fortran 2003 edit was never even recorded as modified; both the table and the `shutil.which` probe over it are gone.
-
-`QUERY_DISCOVERY_SIGNALS` is **composed** from the edit/create/HPC sets plus discovery-only terms, deliberately excluding the pure-theory `QUERY_SCIENCE_SIGNALS` (derive/prove/integrate/cite/theorem) so a math/bibliography query doesn't trigger repository discovery. Signal sets include French tokens alongside English (`améliore`, `modifie`, `fichier`, `arbo`, `conseil`). (The former `FILE_SEARCH_TOOLS`/`CODE_EDIT_TOOLS`/`CODE_VALIDATION_TOOLS` sets are gone — consumers query the live registry.)
-
-#### `resource_context.py`
-
-User-attached context via `@`-mention (Claude/Copilot-style) — **context, not model-invokable tools**. Frontend-agnostic: both the CLI and the WebSocket server call `augment_query_with_resources` to expand a raw user message into an effective query with the referenced content prepended.
-
-- Two attach kinds: **MCP resources** (read-only, URI-addressed data a server exposes — `@memory://all` or the `@memory` name shorthand; registry lives on `agent.resources`, populated at connect time by `integration/server_manager`, reads dispatch via `agent.read_resource`) and **workspace files** (`@src/foo.py`, or a slice `@src/foo.py:10-20` / `@src/foo.py:10`, read locally against the workspace root — no server needed).
-- A mention is `@` + a run of non-whitespace (`_MENTION_RE = (?<!\S)@(\S+)`), resolved against the registry then the filesystem; **unknown `@x` tokens are left untouched** so ordinary prose uses of `@` (emails, handles) are never swallowed.
-- Whole-file attaches are soft-capped (`_WHOLE_FILE_CHAR_CAP = 20_000`) to protect the context window; an explicit line range is never capped.
-
-The webview mirrors this with an `@` autocomplete dropdown (see [EXTENSION_DETAILED.md](EXTENSION_DETAILED.md)).
-
-### prompt
-
-System-prompt construction. (The package is `mimir/client/prompt/`; there is no `discovery/` package — the deterministic pre-plan discovery pipeline that gave it that name was removed.)
-
-#### `system_prompt.py`
-
-Builds the system prompt and the dynamic blocks appended to it (paths, memory, todo, plan, mode).
-
-- `build_base_system_content()` — the system prompt, assembled as **doctrine + core**. A resolved `.mimir/system_prompt.md` replaces `_DEFAULT_DOCTRINE_CONTENT` (identity, style, scope, workflow, reasoning) and nothing else; `_CORE_SYSTEM_CONTENT` (non-negotiables, latitude, tool results, discovery, editing, validation, running, planning) is appended after it either way, with no opt-out — a section is core when it states a mechanical fact about MIMIR's own tools, or an obligation the loop checks at runtime, which is why `CoreNudgeCoverageTests` maps every verification-layer nudge to a phrase inside it. It carries one exemption, `unfinished_plan`: the rule it used to map to (*never mark a step done before its output exists*) was cut as too strict for a checklist that tracks progress rather than binding a contract, and the nudge that remains offers both endings — finish the step, or say you are not going to — so it asks for nothing the model must have been told in advance, which is the only thing the invariant protects. `## Planning & todo` sits in core for exactly that reason: `needs_incomplete_finalization` refuses to conclude while a non-optional checklist step is open, so an application prompt that dropped the section would leave the loop blocking on a contract the model was never given. The override goes first so its identity opens the prompt and the hard rules keep the recency slot. Default persona is a **scientific-computing / research engineer** ("From Math, to HPC") with a correctness-then-performance validation hierarchy. `## Validation` splits Tier 1 into **1a — executability** (CHECK, settled by the loop itself and named as such so the model never claims to have run it; then BUILD and RUN, both optional and both stated by capability rather than by binary) and **1b — correctness**, required when an edit changes what the code computes: compare against something independent of the code under test, assert the property that defines the requirement rather than a weaker proxy, report results as `key=value` lines so they are recorded rather than claimed, and — the required escape hatch — say so plainly when no oracle is available instead of inventing one. Deliberately kept general; the per-domain technique lives in the on-demand `write-tests` skill so the permanent prompt stays short (`test_context_file.py` guards both the length ceiling and the one-instruction-per-line shape).
-- `build_system_content(...)` — assembles the memory/todo/plan sections (via `_section()`; `_render_checklist()` renders todo lines) on top of the base prompt. The one **unconditional** block is a pair of absolute paths, and nothing else foundational: the **workspace root** (`_workspace_root_for_prompt`, `SEARCH_ROOT` or the cwd) and the **scratchpad** (`_scratch_dir_for_prompt` → the session-scoped `scratch_dir`, not the home the standing grant covers), followed by the two rules that follow from scratch not counting as produced work — nothing throwaway in the workspace, and what runs once does not become a file at all. Neither path touches the disk to resolve, so the prefix stays byte-stable and cacheable.
-
-  The root is a **prerequisite**, not a safeguard: file tools reject relative paths (`server_files._require_abs`), so the model needs it to construct any in-workspace destination — it is there to be *joined*, not reasoned about. It began as a safeguard and failed twice in that role, which is worth recording. A run asked to create files "outside the codes directory" wrote them into the workspace root and reported the constraint satisfied; adding the `Workspace root (absolute):` line to the repo-structure block left the tree rendered as `codes/ (6 dirs, 18 files)`, and the next run failed the same way — its plan reading "a new directory at the workspace root … outside the existing `codes/` directory", because a bare-name root is indistinguishable from a subdirectory. The lesson recorded in `SERVERS_DETAILED.md` is the general one: no prompt phrasing makes an inferred root reliable, so the inference was removed instead. What remains of that history is the line itself, now unconditional — the block that used to carry it was built only for a query classified as repo-touching, leaving the root unstated on exactly the greenfield runs where a misplaced file is least visible.
-- The **live task checklist** is rendered into `messages[0]` by `build_system_content` (agent mode only — the plan-mode prompt has no checklist section) and refreshed there by `_sync_checklist` (agent_loop) whenever the todo file's mtime moves *and* the rebuilt prompt actually differs. **The invariant: a block of STATE never occupies the last position of the prompt.** Every chat template appends its generation prompt after the last message, so whatever sits there is what the model is asked to respond to or continue; a checklist has nothing to answer. The symptom is template-dependent and the failure is not — one template continued the block's own text until the step budget ran out, another emitted a short reasoning block then EOS. Measured on one backend (**37 empty turns / 108 draws** with the block in the tail, **0 / 84** without, **0/40** with the same text in `messages[0]`); the numbers say where it was quantified, not where it applies. The corollary is the sorting rule: **pilotage** (nudges, reminders, the empty-turn retry) belongs last — that is its function, and it measured harmless there (0/40) — **state** does not. The placement is unconditional; nothing tests the model or the template. It *removes* a per-model workaround: the block was a tail `user` turn specifically because a tail `system` turn broke one template's generation prompt, a distinction that measured irrelevant to the real failure (7/40 vs 8/40). The block used to also carry discovery evidence (`read_files`, `existing_paths`, `planned_edit_targets`, `dirty_written_files`, and the previous query's writes). That was removed: the paths are already in the transcript, and repeating a bare list of them is a pattern the model **copies** rather than uses. Its removal also retired `prev_query_written_files` and `_pin_path`.
-- `_rebuild_system_content(agent, active_mode, execution_context)` — the single answer to "what must `messages[0]` be after a rebuild": the mode's prompt plus the folded skill block (`_skill_suffix`). Five sites rebuild it — mode switch, thinking-rung change, plan→agent handoff, checklist refresh, and the initial build — and before this the skill block was silently dropped by every one of them but the last. One function, so the rule cannot be half-applied.
-- `auto_store_memory()`, `build_tool_catalog_for_planning()`, `summarize_search_matches()`.
-
-The deterministic pre-plan `plan_discovery.py` pipeline (and the `/plan-depth` knob) were **removed**; plan mode now drives its own exploration.
-
-### integration
-
-The bridge to the MCP servers — spawning them and discovering their tools.
-
-#### `server_manager.py`
-
-- `connect_server()` — spawns the MCP server subprocess, initializes `ClientSession`, discovers tools, registers them in `agent.tool_owner` / `agent.tools`, and builds `agent.tool_caps[name] = infer_tool_caps(tool)` (the per-session capability registry the policy/approval/execution layers consult).
-
-### query_engine.backends
-
-The pluggable LLM backends (Ollama, vLLM, Ray Serve, Anthropic) behind one common interface, plus token counting.
-
-#### `base.py`
-
-Shared `LLMBackend` interface (`chat(...) -> dict`) used by the agent loop, plus token counting.
-
-- `count_text_tokens()`, `message_token_counts()`, `count_messages_tokens()` — per-content cache + an `allow_network` flag (so async loops can avoid blocking tokenize calls). The default `_tokenize_text()` is the chars-per-token heuristic (`chars_per_token_for()`), which subclasses may override with an exact tokenizer.
-- `served_models()` — model ids the endpoint reports, `[]` for backends that cannot enumerate themselves. It is what lets `ws_server` resolve an unspecified model without testing which backend is active.
-
-#### `factory.py`
-
-- `get_backend()` — backend selector singleton: reads `LLM_BACKEND` (`vllm`/`ray`/`anthropic`/`ollama`) and returns the adapter. Note the `else` arm is Ollama, so an unrecognised name resolves there rather than raising. Shared process-wide, so token counts cached in the worker thread are reused by front-end budget checks.
-
-#### `ollama_backend.py`
-
-Ollama adapter (`ollama.chat(...)`) with streaming text/thinking/tool-call collection. Uses the base heuristic for token counts (Ollama exposes no tokenize endpoint); tune per model via `CHARS_PER_TOKEN_BY_MODEL`.
-
-#### `vllm_backend.py`
-
-vLLM OpenAI-compatible adapter: strict OpenAI message normalization for replayed tool-call history, per-model `extra_body` from `VLLM_MODEL_PROFILES` (including `top_k`), and streaming tool-call delta merge by index. Overrides `_tokenize_text()` with an exact count from vLLM's `/tokenize` endpoint (sibling of `/v1`), falling back to the heuristic on any error.
-
-The endpoint is read through one overridable seam, `_config() -> (base_url, api_key)`; the module helpers (`_fetch_models`, `list_served_models`, `served_model_len`) all take that pair as an argument, and `_MODEL_LEN_CACHE` is keyed by `(endpoint, model)` so two servers offering the same model name do not share a window.
-
-#### `ray_backend.py`
-
-Ray Serve LLM adapter — `RayBackend(VllmBackend)` pointed at `RAY_BASE_URL` / `RAY_API_KEY`. Ray Serve orchestrates the GPUs (placement, replicas, autoscaling, several models behind one router) and drives vLLM engines, so the request shaping, reasoning profiles and tool-call handling are inherited unchanged. What it overrides is what the *router* may not serve: `_fetch_context_window()` honours `MIMIR_RAY_MAX_MODEL_LEN` first (the plain OpenAI `/v1/models` shape has no `max_model_len`), and `_tokenize_text()` latches after the first failure so a router without `/tokenize` costs one round-trip rather than one per count. The `ray` package is not a client dependency — it runs on the cluster.
-
-### guardrails
-
-Agent-behavior governance: the shared workflow state model and the execution-context writer at the package root, plus two subpackages — `policy/` (hard, blocking preconditions + the approval gate) and `nudges/` (soft, advisory reminders + their message copy). File paths below are given relative to `mimir/client/guardrails/`.
-
-#### `workflow.py` (at the `guardrails/` root)
-
-Workflow-state constants, transitions, and completion/validation messaging — shared by policy **and** nudges, which is why it sits at the root rather than inside either subpackage.
-
-- `WORKFLOW_STATES`, `VALIDATION_RETRY_BUDGET`.
-- `set_workflow_state()`, `pending_validation_paths()`, `has_pending_validation()`, `has_blocking_denials()`.
-- the **denial ladder**: `denial_stage(ctx, scope)` / `worst_denial_stage(ctx)` / `handback_required(ctx)` / `handback_scopes(ctx)` / `approval_is_settled(ctx, scope)`. A refusal carries one of three meanings (wrong means → another route; unnecessary step → drop it and continue; stop → hand back), and these stages take the earlier readings off the table as refusals accumulate on one approval scope, so a wrong first guess cannot become a loop. Counted from `denial_history`, which is append-only *precisely because* `denied_tool_calls` gets cleared when an action later succeeds. `approval_is_settled` is the one predicate `policy/engine.py` consults to decline re-prompting: from the second refusal of a scope, or once the query-wide hand-back is reached. Thresholds: `DENIAL_SCOPE_DROP_AFTER` / `DENIAL_SCOPE_HANDBACK_AFTER` / `DENIAL_QUERY_HANDBACK_TOTAL` in `config/constants.py`. See POLICY.md → *If approval is refused*.
-- `unchecked_checklist_items(ctx)` — the single reader of live checklist state outside the prompt builder, shared by the completion issues, `needs_incomplete_finalization`, and the unfinished-plan nudge. **Fails closed to `[]`** on a missing/unreadable `todo_file_path`, so a run without a checklist — the majority — behaves exactly as before rather than having an obligation invented for it. Optional steps are tagged, not filtered; callers that must not block on them filter on `item["optional"]`.
-- the agent-loop / plan-loop copy, including the loop-control correctives (`repeat_corrective_message()` / `handback_corrective_message()`) whose *firing* decision lives in `agent_loop.py` / `dispatch.py`.
-- `finalize_incomplete_answer(answer, ctx, termination)` returns the model's prose followed by the report as a **marked block** (`render_completion_report` → `COMPLETION_MARKER`), the same contract the verification ledger uses: the front-ends lift it off and render it collapsed — headline and residual risk in view, sections one click away (`CompletionReport.tsx`, `completionUtils.ts`; the CLI prints the same one line via `format_completion_summary`). It used to be bare prose concatenated ahead of the answer, which no front-end could separate, so the whole report rendered as body text with the model's words underneath it. Only the presentation changed: the block is still in the answer text, so history keeps it verbatim. It picks one of three headlines — `Stopped at your request.` (hand-back, risk high), `Task complete, except for what you refused.` (refusal absorbed, everything else done; risk medium, skipped actions listed under *Not performed*), or `Task is incomplete.` (some other blocker). `is_incomplete_answer()` is the predicate for the first two, used by the CLI re-plan offer and the sub-agent `completed` flag — it reads the `status` the marker states, having matched the headline as a literal prefix while the report was the head of the answer; a refusal alone no longer forces the incomplete verdict, since "that step was unnecessary" is a finished task with a named omission, not a failure. `_collect_completion_issues()` splits pending validation into three buckets: budget-exhausted, failing-but-unresolved, and fresh-unvalidated, and adds two plan-adherence issues: unchecked checklist steps, and paths declared in the plan but never written. What it deliberately does **not** collect is a missing verdict: a run nobody judged and a run judged `unknown` go to `unjudged_run_lines()` and print under their own heading, *Ran, with no verdict on record*, exactly as `blocked_run_lines()` does — reported, never counted. They were issue lines once, which let a recommended axis set the `Task is incomplete.` headline and taught the model to produce a label for every command it ran. Residual risk also reads the **run ledger** (`failed_runs()`): a run left red lifts it to medium, while a `blocked` run — a prerequisite this box lacks — does not, since that is a limitation of the environment and never a defect of the change. Its "all validated" line is **tier-qualified** (`All modified files validated (weakest evidence: executed)`, governed by the weakest tier across the change) — the bare form was what a model read back as licence to report the work as verified, and the label used to say "highest" while printing the floor.
-- **The report speaks only in the past tense.** `TERMINATION_ANSWERED` / `TERMINATION_STEP_LIMIT` / `TERMINATION_USER_STOPPED` is computed where the loop exits and passed in, instead of being inferred downstream from a retry budget: budget-with-room-left means "the loop would try again" only while the loop runs, and read from the final report it became a promise nobody was going to keep (`Checks failing (will retry)` on the last line of a finished run). It also stops a user stop at the step checkpoint being reported as a step limit.
-- `evidence_handback_message(ctx)` — once per query (`evidence_handback_used`), before the report is assembled, the ledger is injected as a user turn so the model rewrites its summary having *seen* it. "Successfully implemented, complete and correct" printed above "Modified files never checked" is a missing fact at the moment the prose is written, not a rhetoric problem to police afterwards; the answer then stands as the body of the message, with the machine record folded behind it under a panel that says on its face that it is machine-recorded and not model-authored.
-
-#### `policy/engine.py`
-
-- `evaluate_tool_preconditions()` — the single call-time entry / orchestrator: registry → cluster-submit guard → proxy-exec guard → state guard → write policy → out-of-workspace guard → approval. Wires the module-level guards directly and pulls application `PolicyCheck`s from `PolicyRegistry.active_checks()` (no dependency-injection seam — that plus the former thin `manager.py` facade were folded into this one function).
-- built-in gates live in `gates.py`: `_check_cluster_submit()`, `_check_proxy_exec()`, `_check_out_of_workspace_access()` (capability-driven, no hardcoded names).
-- `_trusted_read_roots()` — the client mirror of the read roots the servers admit silently (proxy/HPC caches + the central state dir); reads under them never prompt. It shares `servers._shared.trusted_read_roots` with the servers, **plus `constants.STATE_DIR` appended explicitly**: the shared helper resolves the state dir from `MIMIR_STATE_DIR`, and `server_manager` only ever places that variable in the *server subprocesses'* env, so the client process does not carry it. Without the explicit append the agent could not read back its own plans/sessions without a prompt, while the servers — which do see the variable — would have allowed it.
-- `_enrich_violation_payload()` — adds `policy_stage`, `state`, `missing_evidence`, `suggested_next_tool_class`. (Per-query tool-list construction — `tools_for_context` — is **not** here; it lives in `query_engine/toollist.py`, and withholds nothing but what the mode forbids.)
-
-#### `policy/write.py`
-
-The hard write-policy gate (authoritative rule list in [`POLICY.md`](POLICY.md)).
-
-- `check_write_policy()`, `has_delete_context()`, `write_policy_violation()` — read-before-overwrite, delete evidence, and the anti-thrashing limit on repeated identical failed edits. Query-intent classifiers it used to host (`query_prefers_existing_file_edits()` etc.) were removed entirely: the nudge layer was their last consumer and it went back to reading recorded state.
-
-#### `observations.py` (at the `guardrails/` root)
-
-The writer of the `execution_context` blackboard, shared by policy **and** nudges — hoisted out of the old `runtime.py` to the guardrails root because it is not itself a gate.
-
-- `record_tool_observation()` — decomposed into ordered `_observe_*` handlers dispatched in a fixed, load-bearing order (pinned by `test_observations.py`). `_observe_edit_outcome` merges edit success + repeated-failure tracking; `_observe_command` classifies each bash segment (`bash_classify`) and credits the blackboard (read/search/inspect/write/env) on success; `_observe_bash_validation` runs status-agnostically and drives **two axes from one command, never mixed** — neither of them the mandatory one, which no command performs any more (`guardrails/builtin_check.py`). A *checker* (`py_compile` → syntax; `ruff`/`mypy`/a compiler → static; but not a *reformat* — `ruff format`, a bare `black` — which rewrites the file and exits 0 regardless) on a dirty file it names marks it **validated** on exit 0 and charges its retry budget on a non-zero one: the tool's output is a list of problems and an empty one is the finding, so nothing is left for anyone to read. An *execution* (`pytest`, `python solver.py`, `./solver`, `python -c …`) validates **no file at all** — `_record_run_outcome` registers it in `runs`, where a non-zero exit is a failure the machine already judged (straight onto the repair ladder via `_register_run_failure`) and a green one owes the model a reading of what it printed. Which file a run exercised is never asked: `python main.py` exercises `mesh.py` without naming it, and every rule for guessing that was a guess. A green run whose stdout declares its own failing verdict (`check=fail`, `_shared/numerics.observed_failure_verdict`) is treated as the non-zero case. A leading `cd` rebases the relative operands of later segments in the chain, and test files are recorded in `tests_run` either way. `_observe_tool_run` is the counterpart for execution tools that are *not* bash (`CODE_EXEC` without a `command_prefix` scope): the call *is* the execution, so it registers a run and nothing else.
-
-#### `verdict.py` (at the `guardrails/` root)
-
-The model's reading of what a run's output showed — the only place a model-authored claim enters the blackboard, and it is labelled as one everywhere it surfaces.
-
-- `apply_verdict()` — the single entry point, called by `_observe_verdict_tool` when the model calls the tool carrying the `judge` capability. The verdict, its reason and the run it names are read through that tool's **declared arg-roles**, so neither the tool's name nor its parameter names appear client-side. Mimir never reads the *program's* output for a pass/fail — output is unbounded and belongs to whoever wrote the code — and the model's own statement now arrives structured, so nothing is parsed at all. Routes through the *existing* entry points: `pass` → `_mark_file_validated`, `fail` → `_register_validation_failure(..., arms_red_green=False)`, `unknown` → recorded, still pending, and the run **stays outstanding** carrying the verdict so the ledger reports it as unresolved rather than as never judged. There is no second repair ladder, and the red→green opt-out is what stops a self-declared `fail`→`pass` from forging discrimination. An `unknown` verdict closes the advisory axis (`exercise_advice_closed`); no other verdict touches a nudge budget, because nothing asks for a verdict any more (see below) and the budget it used to hand back belongs to the recommendation to *run* something. Returns the runs it settled so their rows can be badged in the UI (each run carries the `call_id` it was displayed under). Scope resolution is `_latest`: an unnamed `pass` credits the most recent run, full stop; the rest stay outstanding and are asked about on their own.
-- The model is *told when* a verdict is due in two places, neither of them a hardcoded tool name in the prompt: the tool's own docstring (it says when to call it), and the `VERDICT_DUE` line the executor appends to the result of a run that just opened one (`_build_verdict_due_hint`, tool name resolved from the registry). There is deliberately **no turn-end nudge** for it — see *nudges/engine.py* below.
-
-#### `policy/state_machine.py`
-
-- `check_state_machine_guard()` — one guard: in `edit`, a file that exhausted its validation retry budget is refused further broad edits. The `validate`-phase branch was removed (see POLICY.md → *Workflow State Machine*); the states still drive nudges and the conclude gate, they just no longer gate edits.
-- the validation-retry-budget accounting. The nudge **message builders** it used to host (`validation_nudge_message()`, `denial_nudge_message()`) now live in `nudges/messages.py`, and `finalize_incomplete_answer()` in `guardrails/workflow.py`.
-
-#### `policy/approval.py`
-
-- `ApprovalManager` — `is_sensitive()`, `request()`, `flush_pending_review()`, `record_snapshot()`, `render_prompt()`; supports `batch_mode` (auto-approve + defer to end-of-turn review) and `approval_mode` / `auto_tools()` / `auto_paths()` (`manual` | `auto` | `auto_all`, session-scoped — see POLICY.md "Approval mode").
-
-#### `policy/plugins.py`
-
-**Pluggable policy registry.**
-
-- `PolicyCheck(name, check, stage, order)` descriptor + process-global `PolicyRegistry` + `register_policy_check()`. Application checks run at a fixed slot (`pre_mutation` after registry / `pre_approval` after write policy) via `engine._run_extra_checks()`; they can only ADD constraints (a `None` return never relaxes a core gate) and are **locked** (no toggle). See `mimir/client/extensions/`, the examples in `mimir/examples/`, and the authoring guide [`PLUGINS_DETAILED.md`](PLUGINS_DETAILED.md).
-
-#### `nudges/engine.py`
-
-At most one reminder per step. `maybe_append_nudge()` walks the built-in table `_CORE_NUDGES` via the generic runner `_append_core_nudge()` (packs add more via `_append_custom_nudge()`), each fired through the shared `_fire_nudge()` helper (increments the counter, appends the message). Every row is `(name, layer, should_fire, render, budget_key)`; `budget_key` defaults to the name and is what lets several rows ration one counter.
-
-- **Verification layer** (runs at every enforcement level): denial (2×, but **uncapped at the `handback` stage** — a reminder to stop that is itself rationed leaves the model going), error_recovery (2×), **validation** (2× — a modified file that was never checked; the one axis `needs_incomplete_finalization` blocks on, hence its place here and ahead of the advisory rows), then the advisory axis sharing **one** budget (`EXERCISE_BUDGET`, `NUDGE_MAX_EXERCISE = 1`): regression (edited source whose `test_<stem>.py`/`<stem>_test.py` is in the discovered paths but absent from `tests_run`), unexercised (everything checked, nothing ever run). unfinished_plan (1×) keeps its own budget. `test_nudge_table.py` asserts this set is disjoint from `_ALL_GUIDANCE`, so a verification row can never be silently switched off by enforcement.
-- **The advisory axis is recommended, never required.** Building and running are the two things the environment can refuse — no toolchain, no queue, no dataset, no GPU — so the two rows above ask **once between them**, stay silent when running is visibly out of reach (`_exercise_route`: an unresolved import, no `CODE_EXEC` tool, or no direct command to be found), and go quiet for good once `exercise_advice_closed` is set, which an `unknown` **or `blocked`** verdict does. Separate budgets used to turn one conclusion into several re-prompts. **Silent is not invisible**: the gate records why in `exercise_blocked_reason`, and `build_ledger` prints it beside "nothing here was built or run" — suppressing the ask and suppressing the fact are different things, and only the first was ever wanted.
-- **The gate names the route, and the gate is now symmetric.** `_exercise_route` returns the one direct command it can find, ordered by what it proves — a Python test that already covers the edit, a file this box starts directly (runner asked of PATH, never assumed), a suite **already registered** (`CTestTestfile.cmake` + `ctest`, which is what "the test already exists" means for a compiled language: pairing `test_solver.f90` to `solver.f90` would name something that still has to be built), or a build **already configured** (`Makefile`/`CMakeCache.txt` seen this session; `CMakeLists.txt` alone is not a route, because configuring is a step of its own). The suite outranks the build for the reason the tier ladder gives: a build says the code is well formed, only a run produces a result. That last branch used to be refused by category via a `.py`/`.sh` suffix test, which left every compiled change with no recommendation at all — the "judges badly whether to build" half of the problem. Outbound, the gate used to be hard where it was soft inbound: any red exit from a run the model attempted anyway charged `VALIDATION_RETRY_BUDGET`, forced `workflow_state="edit"` and surfaced through `_collect_completion_issues` as `Build failing, unresolved: …`, so trying a *recommended* step and hitting `gcc: command not found` turned a finished task into `Task is incomplete.` — precisely the incentive to force a green run at any cost. A red exit now owes an **imputation**: `blocked` (claimed by the model, or set by the machine for a command that is not installed) charges nothing, steers nothing, and is reported by `blocked_run_lines` as a named limitation.
-- **No row asks for a verdict.** `output_verdict` was one and was withdrawn. Its condition — a completed run nobody judged — holds on the ordinary *successful* session, so it fired after the final answer had streamed, discarded it (the webview drops the draft on `nudge_injected`), and typically sent the model back to re-run the command to recover output it no longer had in context, all for a label the ledger already prints. A recommendation must not be able to reject a finished answer; the demand lives in-band on the run's result instead, and the gap is reported by the ledger and the completion report.
-- **Guidance layer** (skipped entirely when `enforcement_level == "off"`): env_resolution, env_cleanup, discovery (max 3×), doc, state, blast_radius, creation, todo (each max 1× unless noted).
-- **`env_resolution` fires mid-loop, not at the end.** Every other row answers *"is the work done?"*, which is worth asking once the model stops calling tools; this one answers *"why did that just fail?"*, and a step ceiling away from the failure the answer is worth much less — the model has already spent its steps retrying against the interpreter that could never resolve the module, and the generic repeat guard only catches that when the retries are byte-identical. `maybe_inject_env_resolution()` is called from `_post_dispatch_inject()` right after the failing dispatch, with the **same gate and the same single budget** as the table row that still backs it up: whichever fires first spends `nudge_counts["env_resolution"]` and the other stays silent. Only the moment changed, not the policy.
-- **Order per step**: core verification → pack verification → (stop if `off`) → core guidance → pack guidance; the first row whose `should_fire` predicate holds wins.
-- `_GUIDANCE_BY_LEVEL_MODE` — the declarative `(enforcement, mode)` table (via `_guidance_enabled`): `strict` permits every category, `light` only `{blast_radius, env_cleanup}` in agent mode and nothing in plan mode. **Ask mode permits nothing at any level**: it neither plans nor edits, so no guidance category has anything to guard. The same table is reproduced in `POLICY.md` → Enforcement Levels, which is the authority for *why* each level has that membership.
-- `needs_incomplete_finalization()` — blocks on **the check axis and denials only**. **Open non-optional checklist steps are checked first**, ahead of the budget-exhausted shortcut: that shortcut concludes from validation alone, which is no evidence about steps the model never started (validating the two files it wrote says nothing about the three it did not). It reads `workflow_state` nowhere: that condition made the *recommended* axes mandatory, since a failed run or a `fail` verdict sends the state machine back to `edit` and every answer then came back "Task is incomplete" until the run had failed `VALIDATION_RETRY_BUDGET` times. Validation/state nudges are deferred while `steps_since_last_edit < 2` or while `declared_edit_set` isn't yet covered by `dirty_written_files`.
-
-Nudge/prompt text refers to tools by **capability/category**, never by literal MCP tool name (the plan/todo tool generically). Validation names nothing either, since the mandatory check no longer runs on the machine: its nudge reports what `guardrails/builtin_check.py` found.
-
-#### `nudges/messages.py`
-
-The nudge **message copy** — the `render` text for every built-in nudge plus the stateful `validation_nudge_message()` / `denial_nudge_message()` builders. It lives inside the nudges subpackage because only it consumes them.
-
-#### `nudges/plugins.py`
-
-**Pluggable nudge registry.**
-
-- `NudgeRule(name, layer, predicate, render, priority, tiers)` descriptor + process-global `NudgeRegistry` + `register_nudge()`. Consulted via `_append_custom_nudge()` after each core layer (order: core-verification → custom-verification → core-guidance → custom-guidance), preserving at-most-one-per-call. Guidance rules are tier-gated by `rule_tier_enabled()` (default strict-both), suppressed when their name is in `agent.disabled_nudges` (**toggleable** via `/nudges`, persisted in `<STATE_DIR>/preferences.json`), and capped per query. Fires through the shared `_fire_nudge()`.
-
-### query_engine
-
-The heart of a query — the step loop that calls the model, dispatches tools, trims history, and injects nudges.
-
-The per-query loop was split from one ~1750-line module into an orchestrator plus six focused siblings; the behavioral description below is unchanged, only relocated:
-
-| Module | Owns |
+| Module | Provides |
 |---|---|
-| `agent_loop.py` | orchestrator: `run_agent_query`, `_run_agent_loop`, `_advertised_tools`, `_drain_steer`, `_sync_checklist`, `_checkpoint_summary` |
-| `plan_loop.py` | `_run_plan_mode`, `_request_plan_decision`, `_PLAN_*` labels — tail-calls `_run_agent_loop` (lazy import; the only agent_loop↔plan_loop cycle point) |
-| `dispatch.py` | `_dispatch_tool_calls`, `_post_dispatch_inject`, the spin/dedup guards + thresholds; the per-call wall comes from `capabilities.timeout_for` (the tool's declared `timeout_secs`, else the global default) rather than one flat constant |
-| `history.py` | context-window budgeting (trim → compact → force-fit → repair), `served_compaction_instruction`, the compaction marker (`compaction_summary_message` / `carries_compaction_summary` / `compacted_exchanges`), `ContextOverflowError` |
-| `streaming.py` | `_stream_chat` (retry/backoff), `_process_response`, `_to_dict`, and the single `get_backend` handle |
-| `background.py` | detached-job detect / register / await + `open_editor` |
-| `finalize.py` | `_finalize_answer` / `_persist_answer` / `_annotate_answer_with_changes` (the **verification ledger** — see below) |
-| `verification.py` | the ledger itself: `build_ledger` (structured rows + `status`/`files`/`summary`) / `render_ledger` (marker + markdown rows) / `split_answer_ledger` + `parse_ledger_block` (the front-end seam) |
+| `servers.py` | `all_servers()` — bundled `SERVERS` merged with `discover_user_servers()` (scans `.mimir/servers/server_<name>.py\|.js`, env `MIMIR_SERVERS_DIR`). A name colliding with a bundled server is skipped, so the core is protected. `all_server_descriptions()` does the same for the toggle panel |
+| `skills.py` | `resolve_skills_dir()` — `.mimir/skills/`, env `MIMIR_SKILLS_DIR`. Loading itself is `MimirAgent.load_skills(..., merge=True)`, where a same-named user skill overrides the bundled one |
+| `plugins.py` | `load_plugins()` / `resolve_plugins_dir()` — scans `.mimir/plugins/`, env `MIMIR_PLUGINS_DIR`, and imports each pack. A pack self-registers through `register_policy_check` / `register_nudge` as an import side effect |
 
-#### `agent_loop.py`
+Nothing is auto-created in `.mimir/` — it is the user's alone. Copy-to-customize examples
+live in [`mimir/examples/`](mimir/examples/), one `README.md` per type.
 
-The per-query loop. `run_agent_query()` is a thin orchestrator: shared setup, then **dispatch** to `_run_plan_mode()` (in `plan_loop.py`) or `_run_agent_loop()`; every exit path routes end-of-query bookkeeping through `_finalize_answer()` (in `finalize.py`: annotate answer → persist memory → save carry context → stash full messages).
+---
 
-Completion itself is `if not tool_calls:` — the model emitted no tool call. There is no goal check, so the honesty surface is the **verification ledger** `_annotate_answer_with_changes` appends to every answer: two kinds of row kept apart — files with the check they passed (`checked: static`, or `**not checked**`), and runs with what happened when the code was executed and what the model read in the output — plus a domain-neutral line saying a checker proves nothing about the answer when nothing was ever run, and unchecked checklist steps. It is machine-recorded and lands *after* the model stops acting, so it cannot loop and cannot be argued with — previously the closing prose and the recorded evidence sat side by side with nothing reconciling them. The block (built in `verification.py`) opens with a `<!--mimir:ledger status=… files=… summary=…-->` marker so a front-end can lift it off the answer and show it **collapsed** — a status line in the webview's `VerificationLedger` panel, a one-liner plus `/ledger` in the CLI — while history keeps the full text for the model. Full format in `POLICY.md` → Final Answer Gating.
+## context
 
-- **Setup** — resets `_tool_cache`; fresh `ExecutionContext` per query; `_apply_carry_context()`; system-prompt assembly.
-- `_stream_chat()` — iterative streaming backend calls (bounded by the step budget below: `MAX_AGENT_STEPS=100` for non-interactive callers, `AGENT_STEP_SOFT_BUDGET=50` before an interactive front-end asks to continue), retrying transient failures with exponential backoff + jitter (`LLM_RETRY_ATTEMPTS`, cancel-aware). Thinking blocks stream for live display but are **excluded from history** (reasoning is never re-fed; the vLLM non-streaming path routes assistant `content` through the same `<think>` parser). UI events (`status` / `thinking` / `tool_call` / `tool_result` / `diff`) go through `emit()` (see `event_sink.py`).
-- `_dispatch_tool_calls()` — dedups `(name, args)` within a step (and across steps for writes), runs reads concurrently via `asyncio.gather` but serializes writes so two edits to the same file (or a read racing a write) can't interleave, wraps each call in `asyncio.wait_for(_TOOL_TIMEOUT_SECS=120)`, and records file targets in `execution_context['tool_msg_files']`.
-- **Three cross-step repeat mechanisms** (all keyed on `(name, _make_hashable(args))`): (a) **write dedup** collapses an identical write; (b) the **failing-call guard** corrects an identical *failed* non-write call after `SOFT_REPEAT_THRESHOLD=2` and hard-blocks it after `HARD_REPEAT_LIMIT=3` (`LoopControlState.call_fails`), returning a synthetic error so the model gets feedback instead of spinning to the step ceiling. The corrective is staged (`_repeat_alert`) and injected next turn by `_post_dispatch_inject()` via `repeat_corrective_message()`; the loop keeps running after a block. (c) the **identical-success annotation** — see below.
-- **`_post_dispatch_inject()` is the mid-tool-loop channel**, and carries the four reminders the end-of-turn nudge table cannot reach because it only fires once the model *stops* calling tools: the todo-completion tick after a successful edit, the repeat corrective above, the `handback` stop once refusals ran the denial ladder out, and `maybe_inject_env_resolution()` — the environment cascade, fired at the call that failed on a missing module rather than a step ceiling later. A model retrying against the wrong interpreter, like one that has been told to hand back, is by definition still calling tools.
-- **A repeated *successful* call is annotated, never guarded.** There was a redundant-success guard — result hashing, a soft corrective, a hard block, and `_strip_redundant_history()` rewriting the conversation to keep one copy — and it is gone, along with the cross-query `_persistent_call_fails` counter. A repeated read is now answered by the per-query cache: no round trip, no refusal, no history surgery. The cost it does not spare is context, which the tool-history budget reclaims. What replaced the guard is upstream: a read says what it served and where to resume, so the second identical read has less reason to happen. What the guard could never do without blocking, `IDENTICAL_REPEAT` does: once a call has come back with the *same digest* `IDENTICAL_REPEAT_THRESHOLD` (3) times, the result carries a line saying so (`LoopControlState.call_results` / `repeat_noted`, counted in `_dispatch_tool_calls` beside the failure counter that skips successes). Said once per call key, appended to the real result — the objection that retired the guard was that refusing content sends the model to fetch the same thing another way, and nothing is refused here. It exists because the spin it catches is invisible to everything else in the loop: the failing-call guard counts only failures, and a nudge fires only once the model stops calling tools, which a spinning model never does.
-- **Step budget** — a graceful checkpoint nudge 2 steps before the boundary; interactive front-ends (which set `allow_continue_prompt`) run to `AGENT_STEP_SOFT_BUDGET` then call `agent._request_continue(summary)` to extend by `AGENT_STEP_EXTENSION` (up to `AGENT_STEP_HARD_CEILING`), stopping gracefully on decline; non-interactive callers (sub-agents, tests) keep a fixed budget == `max_steps`.
-- **Plan-mode "is a plan recorded"** — `_run_plan_mode` reads `plan_written` (prose document) straight from the execution context, where `observations._observe_todo_flags` sets it by telling the two `TASK_PLANNING` forms apart via the `plan_steps` arg-role. The prose document is the **only** form plan mode produces: the ordered checklist is written after the user approves, at the start of the execution. Which plan-writing tools a read-only mode exposes is decided once, by capability, in `toollist.hidden_planning_tools()` — **ask** hides both `TASK_PLANNING` writers (a question records nothing), **plan** hides the `plan_steps`-carrying checklist tool, plus the `plan_title`-carrying document tool while `exploring` — and the same set is re-applied at call time by `filter_readonly_tool_calls`, so a hallucinated call is answered rather than executed. Hiding the tool is what lets both prompts drop the matching "do not write a plan / a checklist" prohibitions: an absent tool needs no rule and no prompt tokens. `PLAN_APPROVED_EXECUTE` carries the instruction to record the checklist at the hand-off; the generic `todo` guidance nudge remains the backstop if the model starts working without one. The loop used to re-derive "is a plan recorded" locally from tool names, counting the checklist alone — a plan recorded in prose was invisible, so it kept telling a model whose plan was on disk that it had "not yet recorded a plan", the model answered by rewriting that document, and the run spun to `max_steps` delivering nothing. `_clear_recorded_plan()` resets both flags on *Rework* / *Other* so a discarded plan cannot be counted as its own replacement.
-- **Plan-mode explore phase** — plan mode runs in two phases, and the plan-document tool does not exist during the first. On a repo-touching query (`query_requires_repo_discovery`, skipped when `enforcement_level` is `off`) `tools_for_plan_mode(..., exploring=True)` also hides the `plan_title`-carrying document tool, and the no-plan nudge is `PLAN_EXPLORE_FIRST` — asking for the exploration, not for the plan. The phase flips the moment `plan_evidence_ready(ctx)` holds (`PLAN_EVIDENCE_MIN_FILES_READ` files actually **read**, plus `DISCOVERY_EVIDENCE_MIN_DISTINCT_PLAN` distinct signal kinds): the tool list is rebuilt once — a sanctioned prefix-cache break, paid for by the tool the phase unlocks — and the normal record → approve path resumes. This replaces the old after-the-fact advisory gate, which fired *after* the plan was written, needed one distinct signal (a lone `find` cleared it), and only appended `PLAN_EVIDENCE_NUDGE`: it never stood between the model and a plan written over file names. A plan mode that offers the document from turn 1, under a nudge calling the plan mandatory, makes a plan *to explore* the cheapest way out — so the fix withholds the tool rather than policing the plan's wording. Because the arming signal is a broad exit filter that fires for greenfield work no exploration could ground, `PLAN_EXPLORE_MAX_TURNS` unlocks the tool regardless and `PLAN_EXPLORE_BUDGET_SPENT` tells the model to state its gaps: plan mode always reaches a plan. Where a `DELEGATE` capability is connected, phase 1 is a **fan-out**: `PLAN_EXPLORE_DELEGATE` is appended to the nudge and `_DELEGATION_CLAUSE` to the mode's prompt block, both asking for one to three read-only sub-agents issued in a *single* response (issued one per turn they do not run in parallel — the dispatcher gathers what one step emits). What they read comes back as `files_read` and is credited to `delegated_read_files`, which `plan_evidence_ready` counts: otherwise the phase would punish the fan-out it just asked for.
-- **Plan-mode anti-parroting guard** — a turn that calls tools never reaches the delivery/approval branch, so a model that keeps re-reading or re-writing the recorded plan (and echoing its text back) would loop to `max_steps` and the user would never be asked to approve. After the plan is recorded the model gets `_PLAN_POST_RECORD_TOOL_TURNS` (2) further tool-calling turns; past that its calls are dropped by `_reject_stalled_calls()` (one `role="tool"` reply each, same convention as `filter_readonly_tool_calls`) and the turn falls through to delivery + approval using the prose gathered so far. The drop is **not** conditioned on prose having been emitted — a model stuck in this loop typically emits tool calls and nothing else, which is exactly the shape the guard exists for. The repeated deliver nudge also escalates (`PLAN_DELIVER_ANSWER` → `PLAN_DELIVER_ANSWER_FIRM`) rather than being re-sent verbatim, since the verbatim repeat is part of what the model echoes. Both counters reset on *Rework* / *Other*.
-- **Plan approval → agent hand-off** — once a plan is recorded and presented, `_run_plan_mode` calls `_request_plan_decision()` (which reuses the interactive `_request_user_question` prompt: *Accept & start* / *Reject* / *Rework*, plus the front-end's always-present free-text *Other*). **Accept** rewrites `messages[0]` with the agent-mode system prompt, appends `PLAN_APPROVED_EXECUTE`, and hands off to `_run_agent_loop()` in the *same* query so the approved plan runs to completion. **Reject** is a hard stop: `PLAN_REJECTED_STOP` is recorded in history, nothing is executed, and the query returns `PLAN_REJECTED_ANSWER`. **Rework** re-plans from scratch (`PLAN_REWORK_NUDGE`); **Other** folds the free-text feedback in via `plan_revision_nudge()` and re-presents — both loop back to step 1. With no interactive front-end (default shim / sub-agents / tests) the prompt returns an empty selection and plan mode simply delivers the plan as before.
-- **Mid-run mode switching** — the mode is a live setting, re-read at the top of every step by `_live_mode()` (in both loops), not a per-query constant. What triggers a switch is a *change* to `agent.mode` since the last observation (tracked in `execution_context['_observed_agent_mode']`, seeded in `run_agent_query`), so an explicit per-query `mode=` override — as passed by sub-agents and the runner — never reads as one. On a change, `_apply_mode_switch()` rebuilds `messages[0]` for the new mode and emits a `status` + `mode` event (the front-end toggle follows), and `_mode_tools()` rebuilds the tool list so a read-only mode's write/exec surface is revoked — or restored — from that step on. This costs the prefix cache for the rest of the query: a deliberate, user-triggered break, and the only one the agent loop still takes. Because plan mode is a different loop shape, switching **into** plan from the agent loop tail-calls `_run_plan_mode()` and switching **out of** plan tail-calls `_run_agent_loop()`, both carrying the conversation and the evidence gathered so far.
-- **Background jobs** — a result from a `BACKGROUNDABLE` tool that carries a `background_job` descriptor is detected by `_detect_background_job()`. On a front-end with a persistent worker (`agent._register_background_job` set by the WS worker), `_maybe_register_background_job()` hands the descriptor to a completion watcher that polls the run's `status_op` off the critical path, then notifies the user and auto-resumes the agent with the `summary_op` result — the model is told to end its turn instead of polling. The CLI, with no worker loop, instead awaits it in-turn via `_await_background_job()`. Both paths are best-effort and name no tool literally (the descriptor carries the read-only ops the watcher calls generically), and both poll with `record_observations=False`: a watcher tick is the client asking a question on its own account, not a step the model took.
-  - **A watched run is not asked whether it is done.** The note is delivered once, at
-    launch, and is long buried by the time a model disregards it — so two refusals sit in
-    the dispatch, both reading one deterministic fact (the set of watchers alive, via the
-    optional `agent._watched_background_jobs` hook; the CLI sets none and both abstain).
-    `_asks_whether_a_watched_run_is_done` matches a call against the descriptor's own
-    `status_op` by **containment**, so spelling out an op the descriptor left implicit does
-    not slip past, and clears `summary_op` first: reading a run's output mid-flight is
-    progress the watcher does not report until the end, and stays allowed.
-    `_waits_by_blocking_the_turn` refuses a command whose *leading* segment is `sleep`,
-    since blocking the turn also delays the completion notice it waits for. Both live in
-    the dispatch rather than a policy gate because the dispatch is the *model's* path: a
-    gate would also see the watcher's own probes and refuse the mechanism it protects. They
-    are refusals, not nudges — the fact is a lookup, not a judgement. What made them
-    necessary: one session spent 292 status polls on a single build, 29% of its context, in
-    runs of 93 back to back, and the `IDENTICAL_REPEAT` annotation could not see it because
-    that guard keys on a digest of the whole result and a poll's `elapsed_s` changes every
-    call.
-  - **The `[background]` note is the promise, and the only one.** It is appended *after* a watcher was actually registered, so its presence in a result is the one proof a resume is coming; the launching server states what it started and no more. `_maybe_register_background_job` returns `(result, registered)` rather than the text alone, because whether a watcher is *holding* the run is the one thing the caller cannot read off the result — and branching on the hook's mere existence left the WS front-end with no fallback at all: it installs the hook unconditionally, so a registration that declined produced no watcher, no in-turn await and no note, and the model, told nothing, polled the job by hand until the step limit. A declined or raising registration now falls back to `_await_background_job` and says so in the log. Both the descriptor and the note are read through `parse_tool_payload`, not `json.loads`: a result is an envelope followed by its text blocks and then whatever the executor appended, so a bare parse stopped detecting a launched run the moment a post-tool annotation appeared. The reverse — a server guaranteeing the resume — is what produced a session where five detached builds finished into silence while the model, reading a server note, ended each turn announcing an auto-resume no watcher was holding.
-  - **The wake text is generic, by construction.** `_Session._wake_text` (see *The WS bridge* below) knows nothing about what a job *does*: it states the fact, relays a `next_step` **the server wrote**, else passes the job's own recorded summary through, cut to a budget. The single tool name it may use is the descriptor's own `status_op`, and only for a job that recorded no summary — that is registry data travelling on the descriptor, not the client picking an op. It used to name `proxy_eval_status` and `sacct` directly, which told a finished two-hour compile to go review proxy results and continue an optimization loop that did not exist.
-  - **A probe that stops answering ends the watch.** A payload with no state anyone can act on — a policy violation, a dead server, a renamed op — is not "still running": after `_UNREADABLE_POLL_LIMIT` consecutive such ticks the watcher reports `unknown` with the reason. A watcher that kept polling one would leave the agent waiting forever on a wake that can never come, and say nothing while it did.
-- **After each dispatch** — `_trim_tool_history()` evicts the oldest tool results once over the **token** budget (`TOOL_HISTORY_TOKEN_BUDGET`, char fallback; never drops system/user/assistant; protects files in `dirty_written_files | declared_edit_set`; evicting a read invalidates its `read_files` entry so the policy forces a re-read); `_maybe_compact_intra_query()` summarises the middle over `INTRA_QUERY_COMPACT_TOKENS`. The task checklist lives in `messages[0]`, which neither touches; `_sync_checklist` rewrites it only when the file behind it changed, so the prefix-cache break is paid per checklist change (a handful per session) rather than per step.
-- **The newest tool results are exempt from eviction** — those answering the *last* assistant turn that made calls. Eviction is oldest-first, which is right until they are the only tool messages in the window: a sub-agent's entire answer arrives as one tool result, and it was being replaced by the `EVICTED_TOOL_RESULT` stub at the very step that produced it, with nothing older left to drop instead. They can still be shrunk by the force-fit pass below, whose truncation keeps a head and a tail rather than nothing.
-- **When nothing fits, the loop says so** — `_force_fit_to_window()` returns whether it succeeded, and `_enforce_context_budget()` raises `ContextOverflowError` when it did not: the irreducible core (`messages[0]` + the current query, both protected from reduction) exceeds `total − reserved − tools-schema`. That verdict used to be discarded — the oversized prompt went to the backend anyway and came back as an opaque provider 400 (vLLM's `max_tokens must be at least 1, got -N`), after a status line claiming the history had been trimmed *to fit*. The raise carries the numbers behind it and reaches the user through each front-end's existing error path (CLI `except`, WS `{"type":"error"}` event, `[sub-agent error]` for a child run). `reconcile_tool_pairs` still runs first, so the history left behind is coherent.
+The per-query state schema, the tool vocabulary, and the `@`-mention attach.
 
-### tool_execution
+### `execution_context.py`
 
-Everything around a single tool call — argument normalization, the execution pipeline, per-query caching, post-write validation, and UI status text.
+The `ExecutionContext` schema and its lifecycle. One source of truth: the module-level
+`_FIELD_SPECS` registry of `(name, factory, types, traits)` rows generates both the
+template and the validator, and the TypedDict is the static-typing surface. A contract test
+asserts the two key sets match. **47 fields** today.
 
-#### `executor.py`
+- `execution_context_template()` / `build_execution_context()` / `validate_execution_context()`
+  / `ensure_execution_context()` — create and validate.
+- `backfill_execution_context()` — the single spec-derived seeder. It replaced four
+  `bootstrap_*` helpers that each seeded their own module's subset, one of which defaulted
+  `steps_since_last_edit` to `99` where everything else used `0`, so an absent field meant
+  "maximally idle" to one reader and "just edited" to another.
+- `loop_control(ctx)` — lazily attaches a `LoopControlState` dataclass under a private key,
+  holding the five dispatch dedup/spin fields. Kept out of the schema so the contract stays
+  about *semantic* state, not loop plumbing.
 
-- `execute_tool_call()` — the full pipeline: precondition check → per-query cache lookup (read-only tools) → snapshot → MCP call → observation update → cache store → write-invalidates cached reads for the written path → continuation/outline hints → verdict/fork hints → shell-effect report → auto-validation. Cache-eligibility (`has_cap(name, CACHEABLE, agent.tool_caps)`) and the read-display event query the per-agent live registry.
-- **Nothing tracks which lines are held.** There was a line-coverage ledger that narrowed a partly-covered read down to the stretch it was missing, credited `grep` hits and lookup excerpts as lines served, and renumbered itself after every edit. It is gone. It duplicated the redundant-success guard in a second, harsher form; it short-circuited that guard, since a read the client answered never reached the result-hash counter; it depended on a shell-command scope parser to know which lines a search had printed; and the one thing it bought — a slid window costing only the lines it added — did not pay for four context fields, an mtime stamp, a diff re-indexer and a crediting path per tool. (The guard it duplicated was itself removed afterwards.) What replaces it is stated at the source instead of inferred at the client: the read tool caps and reports its own window, so the model is told what it got.
-- **Continuation and orientation hints** — `_build_continuation_hint()` reads the server's own payload (`truncated` / `total_lines` / `next_start_line` / `line_cap`), not the arguments: reads are clamped by a default window and a per-call cap, so the range asked for is not the range served, and a caller not told the difference cannot tell "this is the file" from "this is its first page". `_build_outline_hint()` adds an `OUTLINE:` symbol map (`name:start-end`) for a truncated read of a code file, obtained through a `CODE_NAV` tool once per file per query and **without** an `execution_context` — the machine's call must not clear a discovery gate on the model's behalf. The **end** of each span is the load-bearing half: with start lines alone the model has no way to ask for "the block around line N" and crawls toward its end a few lines at a time.
-- **What a shell command changed** (`tool_execution/bash_effect.py`) — an edit through the file tools returns a diff and the prompt says to check it; a `sed -i` returns an empty line, so the one actor that could catch a bad edit has nothing to look at. `capture()` runs before the dispatch and `report()` after, appending `BASH_EFFECT` with the per-file `+N/-M` and a capped diff body. The trigger is `bash_command_is_readonly` being **false**, not the classified kind: `git checkout -- f.py` and `patch -p1` classify as `unknown` with no operands, and `python fix.py` classifies as `exec` crediting the script rather than what it rewrites. Detection is a `git status`/`git diff --numstat` delta, or a bounded `os.scandir` outside a repo — never a parse of the command, which is the guess the module exists to avoid. `DUPLICATION_SUSPECTED` tests the added lines for a **period**; `created_paths()` feeds the existing `FORK_SUSPECTED`/`PROBE_PLACEMENT` rules, so a `cp x.py x.py.bak` reaches them without a new rule. See POLICY.md → *What a Shell Command Changed*.
-- `_path_stamp()` — the `(mtime_ns, size)` every cache entry is stamped with, so a hit can tell "unchanged" from "a `sed -i` moved it under us". The only place a file's identity is checked outside the edit tools.
+**Field traits.** The `traits` frozenset on each row declares what a field *is* — `CARRY`,
+`FILE_PATH`, `KNOWN_FILE`, `DISCOVERY` — and `fields_with(*traits)` derives every list that
+used to be hand-maintained: the carry merge, session serialisation, the delete purge, the
+discovery signals, `known_existing_files`. Eight such lists lived across four modules and
+had already drifted apart.
 
-#### `formatter.py`
+**Named predicates, not bare set membership.** `was_read()` / `is_known_to_exist()` /
+`was_checked_for()` name the distinctions [POLICY.md](POLICY.md#what-each-field-means)
+states, so a call site cannot reach for the wrong set. `was_read()` answers "was it read"
+and deliberately *not* "was it read whole": reads are capped and targeted, so a window that
+stopped at the cap is the normal case.
 
-- `normalize_arguments()`, `normalize_tool_content()`, `truncate_text()`, `json_error_payload()`, `parse_tool_payload()`.
+**Two axes, never mixed.**
 
-#### `normalizer.py`
+- `validated_files` + `validation_tier_by_file` — the **check** axis. The tier ladder is
+  `structural` < `syntax` < `static` < `compiled` < `measured`, raised monotonically and
+  retracted wherever `validated_files` is, since evidence is about one revision. Every
+  checked file starts at `structural`, which the in-process floor establishes with nothing
+  installed — that is why the mandatory axis can no longer be waived for want of a binary.
+  `compiled` needs a toolchain and is demanded nowhere; `measured` has one route, a server
+  that ran the file *and recorded which file it ran*. Report-only: it gates nothing and
+  fires no nudge. A file not readable as text lands in `unverifiable_files` instead.
+- `runs` + `VERDICTS` — the **run** axis, with `record_run()` / `unsettled_runs()` /
+  `failed_runs()`. One entry per execution holding `completed` (the machine's half),
+  `verdict` + `reason` (the model's half) and `failures` + `attempts` (the repair history).
+  A run credits no file, and a file's check says nothing about a run. See
+  [POLICY.md → Verdicts](POLICY.md#verdicts) for what each verdict reaches.
 
-- `normalize_tool_arguments()` — path normalization for all known path args.
-- `rewrite_tool_for_context()` — heals the `read_file` alias to `read_file_lines`, and fills in the line range a bare read left out, so every read says what it asks for (the coverage ledger, the repeat guards and the cache key all read the arguments).
-- `normalize_workspace_path()`.
+**Discovery evidence.** `has_discovery_evidence(ctx, *, min_distinct)` /
+`discovery_signal_count()` own the definition, backed by `DISCOVERY_EVIDENCE_SIGNALS`
+(derived from the `DISCOVERY` trait: `searched`, `inspected_dirs`, `checked_paths`,
+`read_files`, `delegated_read_files`). Presence is the whole test — nothing seeds these
+fields, so a fresh context carries zero evidence.
 
-#### `validation.py`
+Two consumers, two bars. `engine._missing_evidence` holds the `discover`-state gate to
+`DISCOVERY_EVIDENCE_MIN_DISTINCT`. `plan_evidence_ready()` reads the same signal set
+against `DISCOVERY_EVIDENCE_MIN_DISTINCT_PLAN` **plus** a floor on files actually read,
+because distinct signal *kinds* do not express its bar: listing a directory and running a
+find scores two while grounding nothing.
 
-- `scratch_roots()` / `is_scratch_path(path)` — the client's view of the agent scratchpad (`servers/_shared/state_paths.standing_roots`, i.e. the scratchpad **home** under `<TMPDIR or /tmp>`, taken from `MIMIR_SCRATCH_DIR`; `constants.STATE_DIR` is still passed but only to resolve the active-session subdirectory, because `MIMIR_STATE_DIR` reaches only the server subprocesses). One definition, read by the out-of-workspace gate (scratch never prompts) and by `observations._record_code_edit` (scratch writes never enter `dirty_written_files`). Scratch files are working material, not deliverables — without the second exclusion the scratchpad would trade workspace clutter for ledger clutter and spurious validation obligations.
-- `auto_validate_written_file()` — the post-write hook. The deterministic syntax→imports→lint→typecheck→tests **validator ladder was removed**, and the mandatory check that replaced it does not live here either: it is one sweep at the conclusion gate (`guardrails/builtin_check.sweep_builtin_checks`), so a file edited back and forth is read once rather than once per write. What remains are the two *completeness* checks with no bash equivalent: the replacement-completeness grep (leftover `old_text` after a replace) and the cross-file reference check (stale callers after a workspace-wide rename).
+**Notable fields.** `steps_since_last_edit` (reset on each successful edit, incremented
+every step). `declared_edit_set` (paths scraped from the checklist's own step text;
+**replaced** by each new checklist, never accumulated, so a revised plan retracts what it
+dropped). `action_op_count` (successful `PLAN_BLOCKED` calls — the op-count trigger that
+lets a many-operations/few-files task still read as multi-step). `edit_fail_streak_by_file`
+(per-path consecutive edit failures *regardless of patch*, which drives the
+`error_recovery` reminder; it deliberately does not evict the file from the read sets — a
+wrong anchor is not missing content).
 
-#### `tool_status_messages.py`
+A module-level **producer → consumer map** documents each field group's single writer and
+its readers.
 
-- `tool_status_message()` — a human-readable status derived generically from the tool *name* (e.g. "Reading file", "Running proxy benchmark", not "Performing agent action…"). No per-tool table: `_humanize_tool_name` locates an action verb from the reusable `_VERBS` lexicon, renders its gerund via `_gerund` (English `-ing` rules + a small irregular map), and appends the remaining name tokens; names with no known verb are plain-humanized.
-- `tool_arg_preview` — surfaces the salient argument (the UI `detail` field). Servers wanting exact wording declare a `tool_caps(label=…)` template that `label_for` renders ahead of this fallback.
-- `shorten_display_args(name, args, tool_caps)` — a copy of *args* with declared path arguments reduced to their **file name**, for display. Capability-driven off the `path` arg-role, so it needs no tool-name list. Applied to the activity row (`dispatch.py`) and to approval-card headers; the original arguments sent to the tool are never mutated.
+### `capabilities.py`
 
-  Why: tools carry absolute paths now, which is right for the model and unreadable for a person — a row reading `Reading file: /shared/data1/Projects/.../guardrails/observations.py` buries the one token the user is scanning for. It becomes `Reading file: observations.py`.
+The single source of truth for tool *semantics*, and there are **no hardcoded
+classification lists**: each server declares its tools' caps with
+`@mcp.tool(**tool_caps(...))`, and `connect_server` builds the per-agent registry
+`agent.tool_caps`.
 
-  **Never applied where the path is the decision.** An out-of-workspace approval asks the user to authorise *locations*, so the card carries `oow_paths` verbatim (the webview renders one "outside workspace" row per path) and the CLI prompt prints each absolute path on its own line under the shortened header. Readability wins in the activity log; precision wins in a consent prompt. `test_tool_row_display.py` pins both halves.
+**27 capability flags** today. The authoritative list with one line each is the
+[capability table in `PLUGINS_DETAILED.md`](PLUGINS_DETAILED.md#tool-capabilities) — it is
+deliberately not re-enumerated here, because two copies drift. Separate from the flags, the
+three **reversibility levels** (`REVERSIBLE` / `RECOVERABLE` / `IRREVERSIBLE`) are their own
+vocabulary; `SENSITIVE` is derived from them rather than declared beside them.
 
-### client root (`agent_core.py`, `human_pause.py`, `event_sink.py`)
+- `ToolCaps` — the descriptor. Besides `name` and `capabilities` it carries `arg_roles`,
+  `fallbacks`, the status `label`, the approval `scope` spec, `risk_note`, `preview`,
+  `reversibility`, `timeout_secs`, `readonly_when` and `run_outcome`. The last four are
+  what let the loop read a per-tool decision instead of holding a name-keyed table.
+- `is_write()` (= `EDIT` ∪ `CONTENT_WRITE` ∪ `REMOVE`) and `clears_edit_loop()` (= `READ` ∪
+  `VALIDATE`) are derived **helpers, not declared caps**, so a server cannot declare the
+  parts and forget the umbrella.
+- `infer_tool_caps(tool)` resolves with three-layer precedence: our descriptor in
+  `tool.meta["mimir"]`, then the standard `annotations` (`readOnlyHint` / `destructiveHint`,
+  the coarse path for a foreign server), then a conservative default of empty caps plus
+  path-arg inference from the input schema.
+- Query helpers — `names_with_cap`, `has_cap`, `path_args`, `arg_role`, `fallbacks`,
+  `label_for`, `timeout_for`, `scope_spec`, `name_for_cap`, `unannotated_live_tools` — all
+  take the per-agent registry, and **with no registry they resolve to empty**. There is no
+  static fallback, deliberately.
 
-The orchestrator and the two seams it hands to a frontend. `agent_core.py` is deliberately **not** under `ui/`: it is the engine the frontends pilot, not a frontend.
+The registry is strictly per-agent, because `spawn_agent` runs sub-agents concurrently with
+a subset of servers.
 
-#### `agent_core.py`
+### `signals.py`
 
-The `MimirAgent` central class: server lifecycle, mode/settings management, static helper wrappers, `run()`, `cleanup()`, and the per-session capability registry `tool_caps: dict[str, ToolCaps]` (populated by `connect_server`).
+Query-signal vocabularies. **One predicate still reads them**:
+`query_requires_repo_discovery`, the plan-mode explore phase's coarse exit filter. The
+`query_prefers_*` and `query_is_informational` classifiers were removed with the nudge
+conditions that consumed them — a keyword match over a natural-language request guesses at
+intent, and a nudge has to rest on something checkable.
 
-- `seed_classification_from_caps()` — called once after all servers connect (from `cli.py`, `ws_server.py`, `server_spawn_agent.py`): re-seeds the `ApprovalManager`'s `sensitive_tools` / `non_batch_tools` / `fallback_tools` **in place** from `self.tool_caps` (the manager is empty pre-connect; in-place mutation preserves the `session_approved_scopes` alias), then `report_capability_consistency()` warns (`unannotated_live_tools`) about connected tools that declared no caps.
-- `_is_write_tool()` / `get_tool_file_targets()` — consult the registry.
-- `_apply_carry_context()` / `_update_carry_context()` — merge prior-session discovery sets into each new `ExecutionContext` (evicting stale `read_files` via mtime) and save fields back after each query, recording per-file read mtimes (both iterate the shared `_CARRY_SET_FIELDS`).
-- `_discard_carry_path()` — removes a deleted path from all carry sets. `_tool_cache` holds per-query read-only results (reset at query start).
-- `compact_history()` / `compact_messages()` / `detect_skill_implicit()` — the model calls MIMIR makes on **its own behalf** rather than for the user. All three go through `get_backend()`; the first two used to call `ollama.chat` directly, which broke them under every other backend. Each passes `token_callback=_discard_token`, because `LLMBackend.chat` streams to stdout whenever no callback is given — that default belongs to the CLI answer path, and without a sink a compaction summary or the classifier's JSON is printed into the middle of the session. Each degrades quietly (`""` / input unchanged / `None`) when the endpoint is down, so an unreachable backend costs a summary, not the turn.
+- `QUERY_EDIT_SIGNALS`, `QUERY_CREATE_SIGNALS`, `QUERY_HPC_SIGNALS` survive **only** as
+  ingredients of `QUERY_DISCOVERY_SIGNALS`, which is composed from all three plus
+  discovery-only terms. Pure-theory terms (`derive`, `prove`, `cite`, `theorem`) are absent
+  by construction, so a maths or bibliography query is not forced to scan the repository.
+  Signal sets carry French tokens alongside English (`améliore`, `fichier`, `arbo`).
+- `SOURCE_FILE_EXTENSIONS` — every spelling of every language MIMIR may write, independent
+  of what this machine has installed, because the mandatory check runs in-process. This
+  tuple decides only whether an edit is *recorded as produced work*. It also carries the
+  structured-data extensions the floor holds a real parser for (`.json`, `.toml`, `.ini`,
+  `.cfg`, `.xml` and dialects), and deliberately not YAML, which has no stdlib parser. It
+  used to be paired with a per-language table of external checker commands — `.f03` was in
+  that table and missing from this tuple, so a Fortran 2003 edit was never even recorded as
+  modified.
 
-#### `human_pause.py` (client root)
+### `resource_context.py`
 
-The blocking-prompt seam every "ask the human and wait" path shares (approval prompts, the continue-the-run question, plan approval, tool elicitation), so a frontend wires one hook instead of four and a headless run can neutralise all of them at once.
+User-attached context via `@`-mention — **context, not model-invokable tools**. Both
+frontends call `augment_query_with_resources` to expand a raw message into an effective
+query with the referenced content prepended.
 
-### ui
+- Two attach kinds: **MCP resources** (read-only, URI-addressed data a server exposes —
+  `@memory://all`, or the `@memory` shorthand; the registry is populated at connect time)
+  and **workspace files** (`@src/foo.py`, or a slice `@src/foo.py:10-20`, read locally — no
+  server needed).
+- A mention is `@` plus a run of non-whitespace, resolved against the registry then the
+  filesystem. **Unknown `@x` tokens are left untouched**, so ordinary prose uses of `@` are
+  never swallowed.
+- Whole-file attaches are soft-capped to protect the window; an explicit line range never is.
 
-The **frontends** that drive `MimirAgent` — two independent subpackages, `ui/cli/` and `ui/ws/`, which share nothing.
+---
 
-#### `ui/cli/main.py`
+## prompt
 
-- `main()` — reads `MIMIR_DEFAULT_MODEL` / `--model`, creates `MimirAgent`, connects all servers, runs the chat session, cleans up. `main_sync()` wraps it for the `mimir` console script; the module also carries an `if __name__ == "__main__"` guard, so `python -m mimir.client.ui.cli.main` works from the repo root without installing the package.
+### `system_prompt.py`
 
-#### `ui/cli/chat_session.py`
+Builds the system prompt and the dynamic blocks appended to it.
 
-- `run_chat_session()` — async REPL, slash-command dispatch, `history` maintenance. Nothing is probed or scanned at startup: the REPL is ready as soon as the servers are connected.
-- `format_ledger_summary()` / `format_ledger_full()` — the verification ledger in a terminal: the answer's ledger block is split off (it stays in `history` for the model) and printed as one status line, expanded on `/ledger`. The same split also drives the write-triggered auto-compact, which used to test for a marker the ledger stopped emitting.
+**`build_base_system_content()` — doctrine + core.** A resolved `.mimir/system_prompt.md`
+replaces `_DEFAULT_DOCTRINE_CONTENT` (identity, style, scope, workflow, reasoning) and
+nothing else. `_CORE_SYSTEM_CONTENT` is appended after it either way, with no opt-out. A
+section is core when it states a mechanical fact about MIMIR's own tools, or an obligation
+the loop checks at runtime — which is why `CoreNudgeCoverageTests` maps every
+verification-layer nudge to a phrase inside it.
 
-#### `ui/cli/chat_commands.py`
+The override goes first so its identity opens the prompt and the hard rules keep the
+recency slot. `## Planning & todo` is core for a concrete reason: the loop refuses to
+conclude while a non-optional checklist step is open, so an application prompt that dropped
+that section would leave the loop blocking on a contract the model was never given.
 
-- `handle_chat_command()` — the slash-command table: `/help`, `/status` (shows session-trusted tools), `/mode`, `/think <depth>`, `/batch`, `/stream`, `/context compact|full`, `/compact`, `/enforcement strict|light|off`, `/nudges`, `/servers`, `/skills`, `/resources`, `/modules` (module-catalogue status, `refresh` to rebuild, or a term to search it directly — status never triggers a build), `/ledger` (expand the last answer's verification ledger), `/undo`, `/proxy clean <name>` (delete a proxy's runs, optimisation state and tree snapshots, and print what it left behind — housekeeping the person running the session should not have to ask the model for; the same op the model reaches as `proxy_manage(op='clean')`, and mirrored in the WebSocket UI's own command handler, which is a separate table), `/trust <tool>` (`approvals.trust_tool()` — session-wide trust), `/untrust <tool>` (`approvals.untrust_tool()` — revoke). (`/plan-depth` was removed with the deterministic plan-discovery pipeline.)
+The default persona is a scientific-computing / research engineer, with a
+correctness-then-performance validation hierarchy. `## Validation` splits tier 1 into
+**1a — executability** (the check, settled by the loop itself and named as such so the model
+never claims to have run it; then build and run, both optional, both stated by capability
+rather than by binary) and **1b — correctness**, required when an edit changes what the code
+computes: compare against something independent of the code under test, assert the property
+that defines the requirement rather than a weaker proxy, report results as `key=value` lines
+so they are recorded rather than claimed, and — the required escape hatch — say so plainly
+when no oracle is available instead of inventing one. Kept deliberately general; per-domain
+technique lives in the on-demand `write-tests` skill so the permanent prompt stays short.
+`test_context_file.py` guards both the length ceiling and the one-instruction-per-line shape.
 
-#### `ui/ws/`
+**`build_system_content(...)`** assembles the memory, todo and plan sections on top of the
+base. The one unconditional block is a pair of absolute paths — the **workspace root** and
+the **scratchpad** — followed by the two rules that follow from scratch not counting as
+produced work: nothing throwaway in the workspace, and what runs once does not become a file
+at all. Neither path touches the disk to resolve, so the prefix stays byte-stable and
+cacheable.
 
-The WebSocket / VS Code bridge — `ws_server.py`, `ws_worker.py`, `ws_session.py`, `_ws_runtime.py`, `session_store.py`, `session_summary.py`, `file_preview.py`. The message protocol and the React frontend it serves are documented in [`EXTENSION_DETAILED.md`](EXTENSION_DETAILED.md).
+The root is a **prerequisite, not a safeguard**: file tools reject relative paths, so the
+model needs it to construct any in-workspace destination. It is there to be *joined*, not
+reasoned about. It began as a safeguard and failed twice in that role. A run asked to create
+files "outside the codes directory" wrote them into the workspace root and reported the
+constraint satisfied; adding a `Workspace root (absolute):` line left the tree still
+rendered as `codes/`, and the next run failed the same way, its plan reading "a new
+directory at the workspace root … outside the existing `codes/` directory" — a bare-name
+root is indistinguishable from a subdirectory. The general lesson: no phrasing makes an
+inferred root reliable, so the inference was removed instead.
 
-**A background-job wake belongs to the session that launched it.** A two-hour build
-outlives the conversation on screen, so `_register_bg_job` records the session at launch
-and the `job_complete` event carries it back. When it names the active session the wake
-lands in the live history as any turn would; when it does not, `_resume_detached_session`
-appends it to *that* session's stored history and submits the turn against it
-(`submit_query(..., session_id=…)`, which the query loop stamps its events with).
-Those events are then foreign to this socket by construction, so `_is_foreign_event`
-keeps them off the screen and `_persist_detached_answer` writes the answer back into its
-own session file — without it the turn would run, spend its tokens and vanish. Three
-consequences worth knowing: the interaction events (`approval`, `continue_prompt`,
-`user_question`) are **exempt** from the foreign filter, because each one parks the turn
-until answered and filtering it would park it forever — they carry a marker naming the
-conversation that is asking; a message typed while a detached turn runs is queued as a
-query rather than steered into it (`_running_turn_is_ours`); and a session switch still
-cancels whatever turn is in flight, detached ones included.
+**The live checklist, and where state may not sit.** `build_system_content` renders the
+checklist into `messages[0]` (agent mode only) and `_sync_checklist` refreshes it there
+whenever the todo file's mtime moves *and* the rebuilt prompt actually differs.
 
-**The pre-query window check** (`_Session._handle_query`) mirrors the CLI's, with one constraint the CLI does not have: summarizing is an LLM call and the WS event loop must never block on one. So `_Session._compact_history()` schedules it on the worker (`_AgentWorker.compact_middle` → `run_coroutine_threadsafe` → executor, since `compact_messages` blocks on the backend) and only awaits the future; it keeps the opening user message and the last two exchanges, replaces the middle with one summary, and re-runs `reconcile_tool_pairs` because that slice can strand a tool call. Front-trimming the oldest turns is the **fallback**, taken when the middle is too short to be worth a call, when summarization fails (`compact_messages` returns its input unchanged), or when the summary still does not fit — it used to be the only behaviour, so the window was amputated where it could have been summarized. `history_full` is untouched by either path: it stays the one complete account of the session, and the transcript records what the window lost (`context_compact` / `context_trim`). Counting here is `allow_network=False` (heuristic where the token cache misses), so an underestimate can still start a turn over budget — the loop's `ContextOverflowError` is what catches that case.
+> **The invariant: a block of STATE never occupies the last position of the prompt.**
+
+Every chat template appends its generation prompt after the last message, so whatever sits
+there is what the model is asked to respond to or continue — and a checklist has nothing to
+answer. The symptom is template-dependent and the failure is not: one template continued the
+block's own text until the step budget ran out, another emitted a short reasoning block then
+EOS. Measured on one backend: **37 empty turns / 108 draws** with the block in the tail,
+**0 / 84** without, **0 / 40** with the same text in `messages[0]`. The numbers say where it
+was quantified, not where it applies.
+
+The corollary is the sorting rule: **pilotage** — nudges, reminders, the empty-turn retry —
+belongs last, because that is its function, and it measured harmless there. **State** does
+not. The placement is unconditional; nothing tests the model or the template. It *removes* a
+per-model workaround: the block was a tail `user` turn specifically because a tail `system`
+turn broke one template's generation prompt, a distinction that measured irrelevant to the
+real failure (7/40 vs 8/40).
+
+The block used to also carry discovery evidence — read files, existing paths, planned
+targets. That was removed: the paths are already in the transcript, and repeating a bare
+list of them is a pattern the model **copies** rather than uses.
+
+**`_rebuild_system_content(agent, active_mode, execution_context)`** is the single answer to
+"what must `messages[0]` be after a rebuild": the mode's prompt plus the folded skill block.
+Five sites rebuild it — mode switch, thinking-rung change, plan→agent handoff, checklist
+refresh, initial build — and before this existed the skill block was silently dropped by
+every one of them but the last.
+
+---
+
+## integration
+
+### `server_manager.py`
+
+`connect_server()` spawns the MCP server subprocess, initialises the `ClientSession`,
+discovers its tools, registers them in `agent.tool_owner` / `agent.tools`, and builds
+`agent.tool_caps[name] = infer_tool_caps(tool)` — the per-session registry every other layer
+queries.
+
+---
+
+## query_engine.backends
+
+The pluggable LLM backends behind one interface, plus token counting.
+
+| Module | Is |
+|---|---|
+| `base.py` | the `LLMBackend` interface (`chat(...) -> dict`) and token counting |
+| `factory.py` | `get_backend()` — the process-wide selector singleton |
+| `ollama_backend.py` | Ollama adapter with streaming text / thinking / tool-call collection |
+| `vllm_backend.py` | vLLM OpenAI-compatible adapter |
+| `ray_backend.py` | `RayBackend(VllmBackend)` pointed at the Ray Serve router |
+
+- **Token counting** (`base.py`): `count_text_tokens()`, `message_token_counts()`,
+  `count_messages_tokens()`, with a per-content cache and an `allow_network` flag so an
+  async loop can avoid a blocking tokenize call. The default `_tokenize_text()` is a
+  chars-per-token heuristic that a subclass may override with an exact tokenizer.
+- `served_models()` reports the model ids an endpoint exposes, `[]` where a backend cannot
+  enumerate itself. It is what lets the WS server resolve an unspecified model without
+  testing which backend is active.
+- `get_backend()` reads `LLM_BACKEND` (`vllm` / `ray` / `anthropic` / `ollama`). Note the
+  `else` arm is Ollama, so an unrecognised name resolves there rather than raising. Shared
+  process-wide, so token counts cached in the worker thread are reused by front-end budget
+  checks.
+- **vLLM** does strict OpenAI message normalization for replayed tool-call history,
+  per-model `extra_body` from the profiles, and streaming tool-call delta merge by index.
+  It overrides `_tokenize_text()` with an exact count from vLLM's `/tokenize` endpoint,
+  falling back to the heuristic on any error. The endpoint is read through one overridable
+  seam, `_config() -> (base_url, api_key)`, and the model-length cache is keyed by
+  `(endpoint, model)` so two servers offering the same model name do not share a window.
+- **Ray** inherits the request shaping, reasoning profiles and tool-call handling unchanged —
+  Ray Serve orchestrates GPUs and drives vLLM engines behind the same API. What it overrides
+  is what the *router* may not serve: `_fetch_context_window()` honours
+  `MIMIR_RAY_MAX_MODEL_LEN` first, since the plain `/v1/models` shape carries no
+  `max_model_len`, and `_tokenize_text()` latches after the first failure so a router
+  without `/tokenize` costs one round trip rather than one per count. The `ray` package is
+  not a client dependency — it runs on the cluster.
+
+---
+
+## guardrails
+
+Behaviour governance. The root holds what both halves read; `policy/` blocks and `nudges/`
+advises. Rules live in [`POLICY.md`](POLICY.md) — this section says where the code is.
+Paths below are relative to `mimir/client/guardrails/`.
+
+### `workflow.py` (root)
+
+The workflow state model and the completion report — shared by policy **and** nudges, which
+is why it sits at the root.
+
+- `WORKFLOW_STATES`, `VALIDATION_RETRY_BUDGET`, `set_workflow_state()`,
+  `pending_validation_paths()`, `has_pending_validation()`, `has_blocking_denials()`.
+- **The denial ladder**: `denial_stage(ctx, scope)` / `worst_denial_stage(ctx)` /
+  `handback_required(ctx)` / `handback_scopes(ctx)` / `approval_is_settled(ctx, scope)`.
+  Counted from `denial_history`, which is append-only *precisely because*
+  `denied_tool_calls` is cleared when an action later succeeds. `approval_is_settled` is the
+  one predicate the policy engine consults to decline re-prompting. Thresholds in
+  `config/constants.py`. See [POLICY.md](POLICY.md#if-approval-is-refused).
+- `turn_made_commitments(ctx)` / `unhonoured_commitments(ctx)` — did this turn commit to
+  producing something, and is some of it still undone? Three signals, all per-query: an edit
+  happened, a set of target files was declared, or a checklist was written. The completeness
+  guards used to ask `code_mutation_started` instead, which read a turn that declared eight
+  files and wrote none as pure discovery — the exact case they exist for.
+- `unchecked_checklist_items(ctx)` — the single reader of live checklist state outside the
+  prompt builder. **Fails closed to `[]`** on a missing or unreadable file, so a run without
+  a checklist behaves exactly as before rather than having an obligation invented for it.
+  Optional steps are tagged, not filtered.
+- The agent-loop and plan-loop copy, including the loop-control correctives, whose *firing*
+  decision lives in `agent_loop.py` / `dispatch.py`.
+- `finalize_incomplete_answer(answer, ctx, termination)` returns the model's prose followed
+  by the report as a **marked block**, the same contract the ledger uses: the front-ends lift
+  it off and render it collapsed. It picks one of three headlines — see
+  [POLICY.md](POLICY.md#if-approval-is-refused). `is_incomplete_answer()` is the predicate
+  the CLI's re-plan offer and the sub-agent `completed` flag read, off the marker's `status`.
+- `_collect_completion_issues()` splits pending validation into three buckets —
+  budget-exhausted, failing-but-retryable, fresh-unvalidated — and adds open checklist steps.
+  It deliberately does **not** collect a missing verdict, nor a file the plan named and never
+  wrote: both print under their own headings, reported and charged at nothing. Its
+  "all validated" line is tier-qualified and governed by the **weakest** tier across the
+  change; the label once said "highest" while printing the floor.
+- **The report speaks only in the past tense.** The termination reason is computed where the
+  loop exits and passed in, rather than inferred downstream from a retry budget:
+  budget-with-room-left means "the loop would try again" only while the loop runs, and read
+  from a final report it became a promise nobody was going to keep. It also stops a user stop
+  at the step checkpoint being reported as a step limit.
+- `evidence_handback_message(ctx)` — once per query, before the report is assembled, the
+  ledger is injected as a user turn so the model rewrites its summary having *seen* it.
+  "Successfully implemented, complete and correct" printed above "Modified files never
+  checked" is a missing fact at the moment the prose is written, not a rhetoric problem to
+  police afterwards.
+
+### `observations.py` (root)
+
+The writer of the `execution_context` blackboard, shared by policy and nudges.
+`record_tool_observation()` is decomposed into ordered `_observe_*` handlers dispatched in a
+fixed, load-bearing order pinned by `test_observations.py`.
+
+- `_observe_edit_outcome` merges edit success and repeated-failure tracking.
+- `_observe_command` classifies each bash segment and credits the blackboard on success.
+- `_observe_bash_validation` runs status-agnostically and drives **two axes from one
+  command, never mixed** — neither of them the mandatory one, which no command performs any
+  more. A *checker* on a dirty file it names marks it validated on exit 0 and charges its
+  retry budget on a non-zero one. A *reformat* credits nothing: it rewrites the file and
+  exits 0 whether or not the code is correct. An *execution* validates no file at all.
+- `_observe_declared_edit_set` scrapes source paths out of the checklist's step text and
+  **replaces** the declared set, mirroring the checklist tool's own contract.
+- `_observe_run_outcome` reads a server's declared `run_outcome` spec — the floor under a
+  model's stated verdict, which withholds credit and never grants it.
+- `_register_run_failure` charges a run's failure against the repair budget and steers back
+  to `edit`, but only where code was actually mutated. Past the budget it releases to
+  `conclude` rather than wedging.
+
+### `verdict.py` (root)
+
+`apply_verdict()` — the model's stated reading of a run's output, applied to the runs it
+addresses. Five verdicts, two target sets, and a deliberate reach asymmetry; the full rules
+are in [POLICY.md → Verdicts](POLICY.md#verdicts).
+
+### `builtin_check.py` (root)
+
+The in-process check every modified file owes: a stdlib parser where one exists, a
+structural scan otherwise. `sweep_builtin_checks()` runs it as **one sweep** where the loop
+asks whether it may conclude, never after each write, so a file edited ten times is read
+once — on the revision it will ship at.
+
+### `policy/`
+
+| Module | Holds |
+|---|---|
+| `engine.py` | `evaluate_tool_preconditions()` — the gate order, the two pack slots, violation enrichment |
+| `gates.py` | `_check_cluster_submit()`, `_check_proxy_exec()`, `_check_out_of_workspace_access()` |
+| `write.py` | `check_write_policy()`, `has_delete_context()`, `write_policy_violation()` |
+| `state_machine.py` | `check_state_machine_guard()` and the retry budget |
+| `approval.py` | `ApprovalManager`: prompts, `always` grants, batch queue, snapshots, revert |
+| `bash_classify.py` | `classify_bash_command()` / `bash_command_is_readonly()` |
+| `readonly_exempt.py` | the read-only dual-use waiver, in any mode |
+| `plugins.py` | `PolicyCheck` descriptor + `PolicyRegistry` + `register_policy_check()` |
+
+Two details worth stating here:
+
+- `_trusted_read_roots()` is the client mirror of the roots the servers admit silently. It
+  shares `servers._shared.trusted_read_roots` with them, **plus `constants.STATE_DIR`
+  appended explicitly**: the shared helper resolves the state dir from `MIMIR_STATE_DIR`,
+  and `server_manager` places that variable only in the *server subprocesses'* env. Without
+  the explicit append the agent could not read back its own plans without a prompt, while
+  the servers — which do see the variable — would have allowed it.
+- `_enrich_violation_payload()` always sets `policy_stage`, `tool`,
+  `suggested_next_tool_class`, `state` and `status`. `missing_evidence` is **conditional**:
+  attached only at the `write_policy` and `approval` stages, then dropped in the `discover`
+  state, and dropped again once the denial nudge has fired twice.
+
+Per-query tool-list construction is **not** here — it lives in `query_engine/toollist.py`,
+and withholds nothing but what the mode forbids.
+
+### `nudges/`
+
+At most one reminder per step. `maybe_append_nudge()` walks the built-in table
+`_CORE_NUDGES` through the generic runner `_append_core_nudge()`; packs add rows through
+`_append_custom_nudge()`. Every row is `(name, layer, should_fire, render, budget_key)`,
+where `budget_key` defaults to the name and is what lets several rows ration one counter.
+
+The full per-nudge table, with what each fires on and which survive at each level, is in
+[POLICY.md](POLICY.md#nudges-by-enforcement-level). What belongs here is the shape:
+
+- **Verification layer** — runs at every enforcement level: `denial`, `error_recovery`,
+  `stuck_repair`, `validation`, `regression`, `unexercised`, `unfinished_plan`.
+  `test_nudge_table.py` asserts this set is disjoint from `_ALL_GUIDANCE`, so a verification
+  row can never be silently switched off by enforcement.
+- **Guidance layer** — skipped entirely at `off`: `env_resolution`, `env_cleanup`, `doc`,
+  `state`, `blast_radius`, `creation`, `todo`.
+- **Order per step**: core verification → pack verification → *(stop if `off`)* → core
+  guidance → pack guidance. The first row whose predicate holds wins.
+- `_GUIDANCE_BY_LEVEL_MODE` is the declarative `(enforcement, mode)` table, consulted
+  through `_guidance_enabled` inside each guidance predicate.
+- `needs_incomplete_finalization()` blocks on the check axis, denials, and open non-optional
+  checklist steps — the last checked **first**, because the other two conclude from
+  validation alone, which is no evidence about steps the model never started. It reads
+  `workflow_state` nowhere: that condition made the *recommended* axes mandatory, since a
+  failed run sends the state machine back to `edit`.
+
+**Every predicate reads recorded state, never the wording of the request.** Four guidance
+rows used to open on a keyword match over the query; that is a guess about intent dressed as
+a test. What replaced the one thing the keyword earned — telling `blast_radius` from
+`creation` — is whether the declared target already exists on disk.
+
+`nudges/messages.py` holds the message copy for every built-in row. `nudges/plugins.py`
+holds the `NudgeRule` descriptor, the process-global `NudgeRegistry` and `register_nudge()`;
+pack guidance rules are tier-gated by `rule_tier_enabled()`, suppressed when their name is in
+`agent.disabled_nudges` (toggleable via `/nudges`), and capped per query.
+
+---
+
+## query_engine
+
+The step loop: call the model, dispatch tools, trim history, inject reminders. The module
+split is [above](#the-per-query-loop).
+
+### `agent_loop.py`
+
+`run_agent_query()` is a thin orchestrator — shared setup, then dispatch to
+`_run_plan_mode()` or `_run_agent_loop()`. Every exit path routes end-of-query bookkeeping
+through `_finalize_answer()`: annotate the answer, persist memory, save carry context, stash
+the full messages.
+
+**Completion is `if not tool_calls:`** — the model emitted no tool call. There is no goal
+check, so the honesty surface is the verification ledger appended to every answer. Full
+format in [POLICY.md](POLICY.md#verification-ledger).
+
+- **Setup** — reset the per-query tool cache, build a fresh `ExecutionContext`, apply the
+  carry context, assemble the system prompt.
+- **`_stream_chat()`** — iterative streaming backend calls, bounded by the step budget,
+  retrying transient failures with exponential backoff and jitter, cancel-aware. Thinking
+  blocks stream for live display but are **excluded from history**: reasoning is never
+  re-fed. UI events go through `emit()`.
+- **`_dispatch_tool_calls()`** — dedups `(name, args)` within a step, and across steps for
+  writes. Reads run concurrently through `asyncio.gather`; **writes are serialized**, so two
+  edits to one file, or a read racing a write, cannot interleave. Each call is wrapped in
+  `asyncio.wait_for` with the wall `capabilities.timeout_for` resolves — the tool's own
+  `timeout_secs` if it declared one, else `TOOL_CALL_TIMEOUT_SECS`, clamped by
+  `TOOL_CALL_TIMEOUT_MAX_SECS`.
+- **Step budget** — a checkpoint nudge two steps before the boundary. An interactive
+  front-end runs to `AGENT_STEP_SOFT_BUDGET`, then asks to extend by `AGENT_STEP_EXTENSION`
+  up to `AGENT_STEP_HARD_CEILING`, stopping gracefully on decline. A non-interactive caller
+  keeps a fixed budget.
+
+**Three cross-step repeat mechanisms**, all keyed on the call and its arguments:
+
+| Mechanism | On | Does |
+|---|---|---|
+| write dedup | an identical write | collapses it |
+| failing-call guard | an identical **failed** non-write call | corrects it at `SOFT_REPEAT_THRESHOLD`, hard-blocks at `HARD_REPEAT_LIMIT`, returning a synthetic error so the model gets feedback instead of spinning to the ceiling |
+| identical-success annotation | the same result digest `IDENTICAL_REPEAT_THRESHOLD` times | appends `IDENTICAL_REPEAT`. Nothing is withheld |
+
+**A repeated *successful* call is annotated, never guarded.** There was a redundant-success
+guard — result hashing, a soft corrective, a hard block, and history surgery to keep one
+copy — and it is gone. A repeated read is answered by the per-query cache: no round trip, no
+refusal, no rewriting. What replaced it is upstream: a read says what it served and where to
+resume, so the second identical read has less reason to happen. The annotation exists
+because the spin it catches is invisible to everything else — the failing-call guard counts
+only failures, and a nudge fires only once the model stops calling tools, which a spinning
+model never does.
+
+**`_post_dispatch_inject()` is the mid-tool-loop channel**, carrying the five reminders the
+end-of-turn table cannot reach, because that table only fires once the model *stops* calling
+tools — and a model retrying against the wrong interpreter, chasing a moving test, or told
+to hand back is by definition still calling tools. The five, and the fact that only
+`env_resolution` carries an enforcement gate, are tabulated in
+[POLICY.md](POLICY.md#loop-control-correctives).
+
+### `plan_loop.py`
+
+- **"Is a plan recorded"** is read from `plan_written` in the execution context, where
+  `_observe_todo_flags` sets it by telling the two `TASK_PLANNING` forms apart via the
+  `plan_steps` arg-role. The prose document is the **only** form plan mode produces: the
+  ordered checklist is written after the user approves, at the start of execution.
+  `toollist.hidden_planning_tools()` decides by capability which writers a read-only mode
+  exposes — **ask** hides both, **plan** hides the checklist tool, plus the document tool
+  while exploring — and `filter_readonly_tool_calls` re-applies the same set at call time,
+  so a hallucinated call is answered rather than executed. Hiding a tool is what lets both
+  prompts drop the matching prohibition: an absent tool needs no rule and no prompt tokens.
+
+  The loop used to re-derive this locally from tool names, counting the checklist alone — so
+  a plan recorded in prose was invisible, the loop kept telling a model whose plan was on
+  disk that it had not recorded one, the model answered by rewriting the document, and the
+  run spun to the ceiling delivering nothing.
+- **The explore phase.** Plan mode runs in two phases and the plan-document tool does not
+  exist during the first. On a repo-touching query the document tool is hidden and the nudge
+  asks for the exploration rather than for the plan. The phase flips the moment
+  `plan_evidence_ready(ctx)` holds — `PLAN_EVIDENCE_MIN_FILES_READ` files actually **read**,
+  plus the distinct-signal bar — and the tool list is rebuilt once, a sanctioned
+  prefix-cache break paid for by the tool it unlocks.
+
+  This replaced an after-the-fact advisory gate that fired *after* the plan was written and
+  only appended a nudge: it never stood between the model and a plan written over file
+  names. A plan mode that offers the document from turn 1, under a nudge calling the plan
+  mandatory, makes a plan *to explore* the cheapest way out — so the fix withholds the tool
+  rather than policing the plan's wording. Because the arming signal is a broad filter that
+  fires for greenfield work no exploration could ground, `PLAN_EXPLORE_MAX_TURNS` unlocks
+  the tool regardless and the model is told to state its gaps: plan mode always reaches a
+  plan.
+
+  Where a `DELEGATE` tool is connected, phase 1 is a **fan-out**: the nudge and the mode's
+  prompt block ask for one to three read-only sub-agents in a *single* response. What they
+  read comes back and is credited to `delegated_read_files`, which `plan_evidence_ready`
+  counts — otherwise the phase would punish the fan-out it just asked for.
+- **The anti-parroting guard.** A turn that calls tools never reaches the delivery branch,
+  so a model that keeps re-reading or rewriting the recorded plan would loop to the ceiling
+  and the user would never be asked to approve. After the plan is recorded the model gets
+  `_PLAN_POST_RECORD_TOOL_TURNS` (2) further tool-calling turns; past that its calls are
+  dropped and the turn falls through to delivery and approval on the prose gathered so far.
+  The drop is **not** conditioned on prose having been emitted — a model stuck in this loop
+  typically emits tool calls and nothing else, which is exactly the shape it exists for.
+
+### `history.py`
+
+Context budgeting: trim → compact → force-fit → repair. `_enforce_context_budget` rewrites
+`messages` **in place while the turn runs**, so a position the front-end measured before
+submitting stops meaning what it meant. The loop records the message the turn opens on and
+resolves it back to an index by **identity**, not equality, so two byte-identical job wakes
+are not confused. A stale boundary re-archives whatever the rewrite shifted past, drops
+whatever it shifted over, and cuts through an assistant↔tool pair on the way.
+
+**The compaction marker's count is cumulative.** `compacted_exchanges()` reads the count out
+of the summary a second pass is about to swallow and adds to it, rather than counting that
+message as one exchange. It is what the model reads to judge how much of its own past it
+can no longer see, and per-pass counting made every pass announce less than the one before.
+A second compaction feeds the previous summary back through the summariser, so the window is
+always `[system, task, exactly one summary, last two exchanges]` and never a stack of them.
+
+---
+
+## tool_execution
+
+### `executor.py`
+
+- **Continuation and orientation hints.** `_build_continuation_hint()` reads the server's
+  own payload (`truncated`, `total_lines`, `next_start_line`, `line_cap`), **not** the
+  arguments: reads are clamped by a default window and a per-call cap, so the range asked
+  for is not the range served, and a caller not told the difference cannot tell "this is the
+  file" from "this is its first page". `_build_outline_hint()` adds an `OUTLINE:` symbol map
+  for a truncated read of a code file, obtained through a `CODE_NAV` tool once per file per
+  query and **without** an execution context — the machine's own call must not clear a
+  discovery gate on the model's behalf. The **end** of each span is the load-bearing half:
+  with start lines alone the model cannot ask for "the block around line N" and crawls
+  toward its end a few lines at a time.
+- **Nothing tracks which lines are held.** A line-coverage ledger existed and is gone. It
+  duplicated the redundant-success guard in a harsher form, short-circuited it (a read the
+  client answered never reached the result-hash counter), depended on a shell parser to know
+  which lines a search had printed, and bought only a slid window — for four context fields,
+  an mtime stamp, a diff re-indexer and a crediting path per tool. What replaces it is
+  stated at the source instead of inferred at the client.
+- `_path_stamp()` — the `(mtime_ns, size)` every cache entry carries, so a hit can tell
+  "unchanged" from "a `sed -i` moved it under us". The only place a file's identity is
+  checked outside the edit tools.
+
+### `bash_effect.py`
+
+What a shell command changed, appended as `BASH_EFFECT`. `capture()` runs before the
+dispatch and `report()` after. The trigger is `bash_command_is_readonly` being **false**,
+never the classified kind. Detection is a git delta, or a bounded scan outside a repo —
+never a parse of the command, which is the guess the module exists to avoid. See
+[POLICY.md](POLICY.md#what-a-shell-command-changed).
+
+### `validation.py`
+
+- `scratch_roots()` / `is_scratch_path(path)` — the client's view of the scratchpad, one
+  definition read by the out-of-workspace gate (scratch never prompts) and by
+  `observations._record_code_edit` (scratch writes never enter `dirty_written_files`).
+  Without the second exclusion the scratchpad would trade workspace clutter for ledger
+  clutter and spurious validation obligations.
+- `auto_validate_written_file()` — the post-write hook. The deterministic
+  syntax→imports→lint→typecheck→tests ladder was removed, and the mandatory check that
+  replaced it does not live here either. What remains are the two *completeness* checks with
+  no bash equivalent: the replacement-completeness grep for leftover text after a replace,
+  and the cross-file reference check for stale callers after a rename.
+
+### `normalizer.py`, `formatter.py`, `tool_status_messages.py`
+
+- `normalizer.py` — `normalize_tool_arguments()`, `normalize_workspace_path()`, and
+  `rewrite_tool_for_context()`, which heals the `read_file` alias to `read_file_lines` and
+  fills in the line range a bare read left out, so every read says what it asks for.
+- `formatter.py` — `normalize_arguments()`, `normalize_tool_content()`, `truncate_text()`,
+  `json_error_payload()`, `parse_tool_payload()`.
+- `tool_status_messages.py` — `tool_status_message()` derives a human-readable status from
+  the tool *name*, with no per-tool table: a verb is located in a reusable lexicon, rendered
+  as a gerund, and the remaining tokens appended. `shorten_display_args()` reduces declared
+  path arguments to their **file name** for display, capability-driven off the `path`
+  arg-role. A row reading `Reading file: /shared/data1/Projects/.../observations.py` buries
+  the one token the user is scanning for; it becomes `Reading file: observations.py`.
+
+  **Never applied where the path is the decision.** An out-of-workspace approval asks the
+  user to authorise *locations*, so the card carries the paths verbatim and the CLI prints
+  each absolute path on its own line. Readability wins in the activity log; precision wins
+  in a consent prompt.
+
+---
+
+## Client root
+
+### `agent_core.py`
+
+`MimirAgent`: server lifecycle, mode and settings management, `run()`, `cleanup()`, and the
+per-session registry `tool_caps`. Deliberately **not** under `ui/` — it is the engine the
+frontends pilot, not a frontend.
+
+- `seed_classification_from_caps()` — called once after all servers connect. Re-seeds the
+  approval manager's sensitive / non-batch / fallback sets **in place** from `tool_caps`
+  (in-place mutation preserves an alias), then reports connected tools that declared no caps.
+- `_apply_carry_context()` / `_update_carry_context()` — merge prior-session discovery sets
+  into each new context, evicting stale reads by mtime, and save fields back after each
+  query. Both iterate the trait-derived carry list.
+- `compact_history()` / `compact_messages()` / `detect_skill_implicit()` — the model calls
+  MIMIR makes on **its own behalf**. All three go through `get_backend()`; two used to call
+  Ollama directly, which broke them under every other backend. Each passes a discarding
+  token callback, because `chat` streams to stdout when given none — that default belongs to
+  the CLI answer path, and without a sink a compaction summary is printed into the middle of
+  the session. Each degrades quietly when the endpoint is down, so an unreachable backend
+  costs a summary, not the turn.
+
+### `human_pause.py`
+
+The blocking-prompt seam every "ask the human and wait" path shares — approvals, the
+continue question, plan approval, tool elicitation — so a frontend wires one hook instead of
+four, and a headless run neutralises them all at once.
+
+---
+
+## ui
+
+Two independent frontends that share nothing.
+
+### `ui/cli/`
+
+`main.py` builds the agent, connects servers, runs the session, cleans up; `main_sync()`
+wraps it for the `mimir` console script. `chat_session.py` is the async REPL — nothing is
+probed or scanned at startup, so it is ready as soon as the servers connect. It also splits
+the ledger block off the answer for a one-line summary, expanded on `/ledger`, while the
+block stays in history for the model. `chat_commands.py` is the slash-command table
+[above](#slash-commands).
+
+### `ui/ws/`
+
+The WebSocket / VS Code bridge: `ws_server.py`, `ws_worker.py`, `ws_session.py`,
+`_ws_runtime.py`, `session_store.py`, `session_summary.py`, `transcript_log.py`,
+`file_preview.py`. The message protocol and the React frontend are documented in
+[`EXTENSION_DETAILED.md`](EXTENSION_DETAILED.md). What belongs here are the invariants that
+are not obvious from the protocol:
 
 **Three lists, three audiences.** `display_messages` is the chat: never trimmed, never
-compacted, and what both `session_loaded` branches send back in full — the person reading
-always sees the whole conversation. `llm_history_full` is the record: raw turns only, and
-it carries **no** summary, so it stays the one account nothing was inferred from.
-`llm_history` is the model's window, and the only one a compaction touches.
+compacted, and sent back in full on load — the person reading always sees the whole
+conversation. `llm_history_full` is the record: raw turns only, carrying **no** summary, so
+it stays the one account nothing was inferred from. `llm_history` is the model's window, and
+the only one a compaction touches.
 
-**What a resume restores** (`_Session._load_session`) follows from that split. A window
-that already carries a compaction summary *is* the conversation — the handoff note stands
-in for everything cut, at a fraction of the tokens — so that is what the model resumes on,
-recognised by `carries_compaction_summary`. Absent a summary the window is only the tail a
-front-trim left, its prefix summarised nowhere, and the record is then the faithful resume.
+**What a resume restores** follows from that split. A window that already carries a
+compaction summary *is* the conversation — the handoff note stands in for everything cut, at
+a fraction of the tokens — so that is what the model resumes on. Absent a summary, the
+window is only the tail a front-trim left, and the record is then the faithful resume.
 Reloading the record over a compacted window is what handed the model a context that was
-full before the user had typed: a session came back at its pre-compaction size and the
-first turn re-compacted what was already compacted.
+full before the user had typed.
 
-**Where the turn's own messages end** is the loop's answer, not the caller's arithmetic.
-`_enforce_context_budget` rewrites `messages` in place *while the turn runs* — evicting old
-tool results, replacing the middle with a summary, then repairing the pairing those break —
-so a position the front-end measured before submitting stops meaning what it meant. The
-loop records the message the turn opens on (`agent._turn_opening_message`), `_finalize_answer`
-resolves it back to an index by **identity** (`_turn_start_index` → `_last_turn_start`,
-`None` when compaction swallowed the opening message), and `_Session._turn_messages` slices
-on that, falling back to the submitted length and then to the answer alone. The same lesson
-`drop_transient_reminders` already applies to nudge removal. A stale boundary re-archives
-whatever the rewrite shifted past, drops whatever it shifted over, and cuts through an
-assistant↔tool pair on the way — which is how a record whose source cannot contain an orphan
-tool result ended up holding five.
+**Compaction never blocks the event loop.** Summarising is an LLM call, so the session
+schedules it on the worker and awaits the future. It keeps the opening user message and the
+last two exchanges, replaces the middle with one summary, and re-runs the tool-pair
+reconciliation because that slice can strand a tool call. Front-trimming the oldest turns is
+the **fallback** — taken when the middle is too short to be worth a call, when summarisation
+fails, or when the summary still does not fit. It used to be the only behaviour, so the
+window was amputated where it could have been summarised.
 
-**Who owns the rendered chat.** `display_messages` as the server assembles it is text
-bubbles and nothing else; the tool rows, reasoning panels and diff cards are built by the
-webview's reducer and exist nowhere else, so the client hands its rendered copy back
-(`transcript` → `_handle_transcript`, guarded: it must name the active session and must not
-hold fewer text bubbles than what is stored). That handover used to happen once, when `busy`
-fell at the end of the turn — which made every long run a window in which the work on screen
-existed in one place, a browser tab. Inside it, a dropped socket, a reloaded window or a
-VS Code restart came back to a session holding the queries and nothing that was done about
-them. Three things close it: the client **checkpoints** mid-turn
-(`TRANSCRIPT_CHECKPOINT_MS`, skipped when the list is the one already sent — the reducer
-never mutates, so identity is the whole test); a turn **parking on a question** is a fall of
-`busy` like any other (`parkOnPrompt`), which matters most in plan mode, where the plan under
-review lived in the reducer's `draft` — not in `messages`, not on the server — for as long as
-the approval card was up; and a **reconnect keeps the richer copy** rather than the stored one
-(`chooseRestoredMessages`, the same text-bubble test read from the client's side) and pushes
-it back. Prose committed out of `draft` by an interruption is marked `provisional`, kept
-through storage, and dropped again by the `answer` it turns out to be a prefix of — never by
-an answer that says something else, which is what an approved plan's execution report is.
+**A background-job wake belongs to the session that launched it.** A two-hour build outlives
+the conversation on screen, so the job records its session at launch and the completion event
+carries it back. When it names the active session the wake lands in the live history as any
+turn would; otherwise it is appended to *that* session's stored history and submitted there.
 
-**A connection that drops does not end the turn.** One `_AgentWorker` serves the whole
-server and outlives every `_Session`, so a socket that dies mid-run leaves a turn working
-with nobody reading it. The next connection therefore only drains `out_q` when the worker is
-**idle** (`_drop_stale_events`): what is queued under a busy worker is that turn's own output,
-not debris. And a turn parked on a person — an approval, a clarification, a plan awaiting
-approval — records the card it is waiting on (`_emit_prompt` → `pending_prompt()`, cleared in
-`_await_response`'s `finally`), which the next connection puts back
-(`_resend_parked_prompt`). Without that, the wait had no timeout by design and no card left to
-end it: the query loop is serial, so every later query queued behind a wait nobody could
-answer, and the session read as hung with nothing on screen to explain it. `session_loaded`
-carries `turn_running` so the reconnected client shows the run as live — and knows a turn is
-open, which is what makes its end observable and the finished transcript saveable.
+**A connection that drops does not end the turn.** One worker serves the whole server and
+outlives every session, so a socket that dies mid-run leaves a turn working with nobody
+reading it. The next connection therefore only drains the event queue when the worker is
+**idle**: what is queued under a busy worker is that turn's own output, not debris. A turn
+parked on a person records the card it is waiting on, which the next connection puts back —
+without that, the wait had no timeout by design and no card left to end it, so every later
+query queued behind a wait nobody could answer and the session read as hung.
 
-**The marker's count is cumulative.** `compacted_exchanges()` reads the count out of the
-summary a second pass is about to swallow and adds it, rather than counting that one message
-as a single exchange. It is what the model reads to judge how much of its own past it can no
-longer see, and per-pass counting made every pass announce less than the one before — a
-window holding hundreds of collapsed exchanges eventually claimed four. A second compaction
-feeds the previous summary back through the summariser, so the window is always
-`[system, task, exactly one summary, last two exchanges]` and never a stack of them; the
-`len(messages) < 8` guard is what stops a pass from firing again on what it just produced.
+**Who owns the rendered chat.** `display_messages` as the server assembles it is text bubbles
+and nothing else; the tool rows, reasoning panels and diff cards are built by the webview's
+reducer and exist nowhere else, so the client hands its rendered copy back under guard. That
+handover used to happen once, when the turn ended — which made every long run a window in
+which the work on screen existed in one place, a browser tab. Three things close it: the
+client checkpoints mid-turn, a turn **parking on a question** counts as a fall of `busy`
+like any other, and a reconnect keeps the **richer** copy rather than the stored one.
 
 ---
 
-## Headless Run Engine
+## Headless run engine
 
-`mimir/runner/` is the agent's **batch mode**: a library that drives the **non-interactive**
-`MimirAgent.run` path (`allow_continue_prompt=False` → fixed `max_steps`, no human prompt) over a list of
-tasks and returns a JSON summary. It does **no scoring of its own** — a benchmark supplies the tasks
-*and* grades the result. It is architecture-agnostic: servers are spawned with `sys.executable` via
-`connect_server`, so it runs under whichever interpreter/arch launches it (ARM or x86).
+`mimir/runner/` is the agent's **batch mode**: a library that drives the non-interactive
+`MimirAgent.run` path over a list of tasks and returns a JSON summary. It does **no scoring
+of its own** — a benchmark supplies the tasks *and* grades the result. Servers are spawned
+with `sys.executable`, so it runs under whichever interpreter launches it, ARM or x86.
 
-It is a **library, not a CLI**, and ships **no benchmarks or adapters**. An external integration package
-(outside this repo) imports `mimir.runner`, implements the `BenchmarkAdapter` contract over its
-benchmark, and calls `run_benchmark(...)`. The two seams an adapter implements: `BenchTask.setup(workspace)`
-materialises the task workspace (seed files, or a repo checkout), and `BenchmarkAdapter.score(task, answer,
-ctx)` grades the run by inspecting `ctx.workspace` (e.g. compiling/running the solution, or running the
-instance's test suite) — never `ctx.agent`. So **`mimir` imports neither the benchmark nor the
-integration**; only the integration knows both, keeping the agent decoupled from any benchmark.
+It is a **library, not a CLI**, and ships no benchmarks or adapters. An external package
+imports `mimir.runner`, implements the `BenchmarkAdapter` contract, and calls
+`run_benchmark(...)`. Two seams: `BenchTask.setup(workspace)` materialises the task
+workspace, and `BenchmarkAdapter.score(task, answer, ctx)` grades the run by inspecting
+`ctx.workspace` — never `ctx.agent`. So **`mimir` imports neither the benchmark nor the
+integration**; only the integration knows both.
 
-#### `types.py`
-
-`BenchTask` (`id`, `query`, `mode`, `max_steps`, `servers`, `setup`, `requires`, `meta`), `CheckContext` (workspace + live agent), and the `BenchmarkAdapter` Protocol (`name`, `load_tasks(limit)`, async `score(task, answer, ctx)`).
-
-#### `engine.py`
-
-The engine:
-- `run_one(task, adapter, model, get_backend_override, enforcement)`: skips up front if any `task.requires` executable is missing (`shutil.which`); else `tempfile.mkdtemp()`s a workspace, runs `task.setup`, `chdir`s into it (the `files`/`search` servers root at `os.getcwd()` at spawn — see `integration/server_manager.connect_server`), spins up a **fresh** `MimirAgent` (so `_carry_context`/`_tool_cache`/history never leak between tasks); when `enforcement` is passed it overrides the model-profile default via `agent.set_enforcement(...)` so the whole run is graded at one fixed nudge level (`strict`/`light`/`off`) regardless of which model is served, else each model keeps its profile default. Then installs `_install_auto_approve`, connects the task's server set, runs `agent.run(...)` capturing structured events, scores via the adapter, then always `cleanup()` + restores cwd. A per-task crash is recorded as a failed `RunResult` (with traceback) rather than aborting the suite.
-- `run_benchmark(adapter, *, model, backend="vllm", report_path, limit, get_backend_override, enforcement)`: sets `LLM_BACKEND` and clears the factory singleton, runs every task the adapter yields, and builds the JSON summary (`benchmark`, `model`, `backend`, `enforcement`, `total`, `passed`, `skipped`, `pass_rate`, `elapsed_secs`, `results`). `pass_rate` is over **non-skipped** tasks. `get_backend_override` injects a backend factory (e.g. `ScriptedBackend`) for a model-free CI mode. `enforcement` (`strict`/`light`/`off`, default `None`) pins every task to one nudge level so a whole run is graded at a fixed level — the summary records it as `enforcement` (or `"model-default"` when `None`).
-- **Unattended approval:** `_install_auto_approve(agent)` replaces `agent._request_tool_approval` with an always-approve shim and sets `allow_continue_prompt=False`. Batch mode already auto-approves write/edit tools, but `non_batch_tools` (code execution / shell) would otherwise block on `input()`; the shim approves *every* tool. **This runs every tool without confirmation — only point the engine at trusted workloads in a sandbox.**
-- **Skip support:** `BenchTask.requires: tuple[str,...]` lets a benchmark gate a task on its toolchain; a missing prereq is recorded `RunResult(skipped=True)` without spending an agent run, and `pass_rate` ignores skips — so a behavioral suite is arch-portable (e.g. CUDA tasks skip where `nvcc` is absent).
-
----
-
-## Test Coverage
-
-Every test is written with **`unittest` + `asyncio.run`** — no pytest-only constructs, no
-`conftest.py` — so either runner works on the same files. `pytest` is the documented
-command (it is what `pyproject.toml` configures via `[tool.pytest.ini_options]`,
-`testpaths = ["mimir/tests"]`, and what [`CONTRIBUTING.md`](CONTRIBUTING.md) asks for
-before a PR); `python -m unittest discover mimir/tests` remains available when the `dev`
-extra is not installed. Key modules:
-- `mimir/tests/_fake_backend.py` — `ScriptedBackend(LLMBackend)`: a deterministic backend that replays canned `chat()` response dicts (one per call), drives the streaming callbacks (thinking → content tokens), records per-call inputs, and supports a custom tokenizer. Shared by the agent-loop tests and the run-engine tests. Pure-Python / dependency-light, so it (and the loop tests below) run on both ARM and x86.
-- `mimir/tests/test_agent_loop.py` — direct coverage for the previously-untested loop functions: `_maybe_compact_intra_query` (compacts the middle when over budget; no-ops under budget / too few messages / no compact_fn), `_post_dispatch_inject` (todo-completion reminder after a successful edit), `_finalize_answer` (file-change annotation + memory persist + carry save + `_last_full_messages`, plus `_turn_start_index`: the boundary survives an in-turn rewrite of the prefix, is `None` once compaction swallows the opening message, and matches on identity rather than equality so two byte-identical job wakes are not confused), `_run_plan_mode` (todo_write → deliver-answer flow; `test_replaying_the_plan_forever_is_cut_short` covers the post-record parroting cut-off), and the non-interactive `run_agent_query` path (driven through the real `_stream_chat` → `get_backend()` wrapper with a `ScriptedBackend`, asserting the final answer and that the continue-prompt is never invoked). `RepeatedFailingCallGuardTests` covers the failing-call guard: soft-warn on the second identical failure, hard block on the third, and the synthetic error payload the blocked call returns; `IdenticalSuccessRepeatTests` covers its counterpart on the success side — annotated on the third identical digest, said once, silent when the result varies or the arguments differ, and never withholding the call.
-- `mimir/tests/test_runner.py` — covers the headless run engine (`mimir.runner`) model-free via `ScriptedBackend` with a server-less test adapter: `run_benchmark` report shape / counts / `limit`, the `_install_auto_approve` hook (approves any tool incl. non-batch, disables the continue prompt), per-task isolation (distinct workspace + fresh agent per task, no seed-file leakage, cwd restored), and the skip path (a `BenchTask` with an unavailable `requires` is recorded `skipped` without running and never scored).
-- `mimir/tests/test_completion_honesty.py` — the end-of-run honesty surface: the verification ledger (per-file check tier, the four run states plus the one for a run that never completed, the caveat line plus the guard that it stays domain-neutral, the conditions that suppress it, that a file declared and never written is NOT a row, unchecked and optional steps, and that the ledger never replaces the model's own answer), the marker contract the front-ends collapse it on (`LedgerMarkerTests`: prose survives the split intact, header fields round-trip, `status` separates clean runs from soft caveats from gaps, and bold marks exactly the rows needing action), the tier-qualified completion sentence and weakest-tier rule, `needs_incomplete_finalization` with and without a checklist, the `unfinished_plan` nudge (firing conditions, cap, both valid exits in the copy), and the checklist reader's fail-closed behaviour + optional-prefix recognition (`optionally sneaky` must **not** parse as optional).
-- `mimir/tests/test_absolute_paths.py` — the absolute-path precondition on file tools: every mutating tool rejects a relative path, the rejection **names the workspace-resolved candidate** so it is self-correcting, nothing is written on rejection, absolute paths still round-trip through every tool, the check does not weaken the sandbox (outside paths still refused, scratchpad still writable), and the internal `list_files` helper is unaffected.
-- `mimir/tests/test_scratchpad.py` — home resolution (`MIMIR_SCRATCH_DIR` wins, else under `TMPDIR` scoped by uid + workspace id, no directory creation from a sandbox check), the session subdirectory vs the fallback, the standing grant being the home (so a session switch cannot revoke a path), `ensure_scratch_home` on a world-writable `/tmp` (creates `0700`, tightens loose modes, idempotent, refuses a symlink / non-directory / foreign owner / uncreatable parent), the sandbox grant (scratch admitted, workspace admitted, arbitrary outside paths and `<scratch>_evil` siblings still refused, relative paths still workspace-relative), and that scratch writes stay out of `dirty_written_files` and out of the ledger.
-- Extended: `test_observations.py` (`ValidationTierTests` — per-validator tiers, red→green promotion, prose/placeholder rejection, monotonicity, retraction on re-edit and on failure, whole-project stamping; `RedGreenDiscriminationTests` — promotion on the whole-suite repair loop, no retry budget charged for an unattributable failure, no promotion when green on the first run or at the syntax tier, and the record surviving the very edit that earns it), `test_bash_coverage.py` (corpus-measured credit rate of the bash→blackboard pipeline plus the frozen blind surface), `test_bash_classify.py` (`NestedCommandParsingTests` — `find -exec` segmentation, terminator handling, the derived `READONLY_NESTED_COMMANDS`, and a **tokenization-invariance guard** over a corpus of `-exec`-free commands, since `parse_segments` is shared by the bash server, the classifier and the out-of-workspace gate), `test_server_contracts.py` (`-exec` policy: read-only nested commands allowed, writes/execs/`-ok`/`-delete`/`-fprint` still refused, nested operands still confined), `test_prefix_cache.py` (the checklist is pinnable alone and still nets to zero), `test_out_of_workspace.py` (scratch never prompts; the grant does not widen to its parent), `test_nudge_table.py` (verification set disjoint from `_ALL_GUIDANCE`), `test_env_resolution.py` (`MidLoopEnvResolutionTests` — the cascade fires at the failing call, spends the budget the end-of-turn row shares, and respects enforcement; `ResolvedEnvironmentRearmsExerciseTests` — a successful execution retracts `unresolved_modules`, so one transient `ModuleNotFoundError` no longer buries the run/verdict advice for the rest of the query).
-- `mimir/tests/test_internal_model_calls.py` — the two model calls MIMIR makes on its own behalf (history compaction, implicit skill classification): each goes through the *configured* backend rather than a hard-coded provider client, each supplies a token sink so its output never reaches the terminal, and each degrades to "no summary" / "no skill" when the endpoint is down.
-- Existing suites: `test_capabilities.py` / `test_phase_b_servers.py` (`_golden_caps`), `test_policy_manager.py`, `test_approval.py`, `test_client_helpers.py` (now sources `ScriptedBackend` for its token-counting tests; also covers the eviction exemption for the newest tool results and the `ContextOverflowError` raise), `test_session_persistence.py` (the window/record split, the WS pre-query compaction and its front-trim fallback, which of the two a resume restores, the record's turn boundary — both directions of a stale one — and the cumulative marker count), `test_server_contracts.py`, `test_proxy_helpers.py`.
+- `types.py` — `BenchTask` (`id`, `query`, `mode`, `max_steps`, `servers`, `setup`,
+  `requires`, `meta`), `CheckContext` (workspace + live agent), and the `BenchmarkAdapter`
+  protocol (`name`, `load_tasks(limit)`, async `score(...)`).
+- `run_one(...)` — skips up front if any `task.requires` executable is missing; else creates
+  a temp workspace, runs `setup`, `chdir`s into it (the file and search servers root at the
+  cwd at spawn), and spins up a **fresh** `MimirAgent` so carry context, tool cache and
+  history never leak between tasks. An `enforcement` argument overrides the model-profile
+  default so a whole run is graded at one fixed nudge level. A per-task crash is recorded as
+  a failed result with its traceback rather than aborting the suite.
+- `run_benchmark(...)` — sets the backend, clears the factory singleton, runs every task,
+  and builds the JSON summary. `pass_rate` is over **non-skipped** tasks.
+  `get_backend_override` injects a backend factory for a model-free CI mode.
+- **Unattended approval**: `_install_auto_approve(agent)` replaces the approval hook with an
+  always-approve shim and disables the continue prompt. Batch mode already auto-approves
+  writes, but non-batch tools (execution, shell) would otherwise block on input, so the shim
+  approves *every* tool. **This runs every tool without confirmation — point the engine only
+  at trusted workloads, in a sandbox.**
 
 ---
 
-## VS Code Extension Frontend
+## Test coverage
 
-The VS Code extension frontend (its layers, the WebSocket message contract, the React
-file map, and recipes for extending the UI) now lives in its own reference:
-[`EXTENSION_DETAILED.md`](EXTENSION_DETAILED.md). On the Python side, the WebSocket
-emission paths are `emit()` / `event_sink.py` and the `out_q` drain loop in `ws_server.py`
-(see **Package Responsibilities → ui** above).
+Every test is **`unittest` + `asyncio.run`** — no pytest-only constructs, no `conftest.py` —
+so either runner works on the same files. `pytest` is the documented command;
+`python -m unittest discover mimir/tests` remains available when the `dev` extra is not
+installed.
+
+| Suite | Covers |
+|---|---|
+| `_fake_backend.py` | `ScriptedBackend`: a deterministic backend replaying canned responses, driving the streaming callbacks and recording per-call inputs. Shared by the loop and runner tests; dependency-light, so it runs on ARM and x86 |
+| `test_agent_loop.py` | the loop functions — intra-query compaction, `_post_dispatch_inject`, `_finalize_answer` (including the turn boundary surviving an in-turn rewrite, and matching on identity so two byte-identical job wakes are not confused), plan mode, and the non-interactive path. Plus the failing-call guard and the identical-success annotation |
+| `test_completion_honesty.py` | the end-of-run honesty surface: the ledger's rows and statuses, the marker contract, the tier-qualified completion sentence, `needs_incomplete_finalization`, the `unfinished_plan` nudge, and the checklist reader's fail-closed behaviour |
+| `test_observations.py` | the observer dispatch order, bash classification and credit, run-ledger keying, verdict grammar, exit attribution, `ValidationTierTests` (per-checker tiers, an execution earning none however green, a printed invariant earning nothing, monotonicity, retraction), and `DeclaredEditSetTests` (a revised checklist retracts what it dropped) |
+| `test_policy_manager.py` | the gates and the state guard |
+| `test_client_helpers.py` | the nudge predicates, token counting, eviction and `ContextOverflowError` |
+| `test_capabilities.py` / `test_phase_b_servers.py` | `infer_tool_caps` precedence and the golden declared registry (`_golden_caps.py` AST-parses the server decorators) |
+| `test_capability_consumers.py` | drift guard — fails if a declared capability has no live consumer |
+| `test_session_persistence.py` | the window/record split, WS compaction and its front-trim fallback, which one a resume restores, the turn boundary in both stale directions, and the cumulative marker count |
+| `test_scratchpad.py` | home resolution, the standing grant being the home, `ensure_scratch_home` refusing a symlink / foreign owner, and scratch writes staying out of `dirty_written_files` |
+| `test_absolute_paths.py` | every mutating tool rejects a relative path, names the resolved candidate, and writes nothing on rejection |
+| `test_bash_classify.py` / `test_bash_coverage.py` / `test_server_contracts.py` | segmentation and the tokenization-invariance guard, the corpus-measured credit rate, and the `-exec` policy |
+| `test_nudge_table.py` | the verification set is disjoint from the guidance set |
+| `test_env_resolution.py` | the mid-loop cascade fires at the failing call, shares the row's budget, respects enforcement — and a successful execution retracts `unresolved_modules` |
+| `test_internal_model_calls.py` | the two calls MIMIR makes on its own behalf go through the configured backend, supply a token sink, and degrade quietly |
+| `test_runner.py` | the headless engine model-free: report shape, the auto-approve hook, per-task isolation, and the skip path |
+| `test_builtin_check.py` | the in-process floor, run over every file this repository tracks |
+
+---
+
+## VS Code extension frontend
+
+Documented in its own reference: [`EXTENSION_DETAILED.md`](EXTENSION_DETAILED.md). On the
+Python side the emission paths are `emit()` / `event_sink.py` and the drain loop in
+`ws_server.py`.
