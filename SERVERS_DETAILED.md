@@ -20,6 +20,39 @@ Servers are organized into domain-based subdirectories:
 | `proxy/` | Scientific proxy optimization | `server_proxy` (7 op-dispatched tools: registry, refs, runs, suites, eval loop, Slurm) |
 | `ml/` | Machine learning workflows | `server_finetune` |
 
+## Tool catalogue
+
+Every `@mcp.tool` the bundled servers expose — 80 tools
+across 20 servers, all registered by default. Each server has its own section
+below with the arguments and the behaviour.
+
+| Server | Tools |
+|---|---|
+| `workspace/server_bash.py` | `bash_run`, `bash_job`, `bash_job_stop`, `report_verdict` |
+| `workspace/server_code_intel.py` | `find_definition`, `find_references`, `symbol_outline`, `hover` |
+| `workspace/server_files.py` | `write_file`, `append_file`, `delete_file`, `replace_in_file`, `replace_lines`, `replace_all_in_file` |
+| `workspace/server_search.py` | `read_file_lines`, `list_directory`, `tree_summary` |
+| `agent_state/server_memory.py` | `memory_add`, `memory_search`, `memory_list_all`, `memory_update`, `memory_delete`, `memory_clear` |
+| `agent_state/server_spawn_agent.py` | `spawn_agent` |
+| `agent_state/server_todo.py` | `todo_set_plan`, `todo_read_plan`, `todo_list_plans`, `todo_delete_plan`, `todo_write`, `todo_read`, `todo_read_ready`, `todo_update` |
+| `interaction/server_interaction.py` | `ask_user_question` |
+| `utilities/server_datetime.py` | `date_op` |
+| `utilities/server_math.py` | `evaluate` |
+| `utilities/server_strings.py` | `string_op` |
+| `utilities/server_symbolic_math.py` | `symbolic` |
+| `external/server_github.py` | `github_repo_info`, `github_list_branches`, `github_list_issues`, `github_get_file`, `github_search_repositories` |
+| `external/server_system.py` | `system` |
+| `external/server_web.py` | `http_get`, `http_post`, `parse_json`, `json_extract` |
+| `hpc/server_env.py` | `env_pip_install`, `env_pip_uninstall`, `env_create`, `env_delete` |
+| `hpc/server_hpc.py` | `slurm_partitions`, `slurm_nodes`, `slurm_queue`, `salloc_submit`, `slurm_job_status`, `sbatch_submit` |
+| `hpc/server_platform.py` | `platform_probe`, `platform_get_profile`, `platform_search`, `platform_catalogue_status` |
+| `proxy/server_proxy.py` | `proxy_get`, `proxy_runs`, `proxy_eval_status`, `proxy_manage`, `proxy_exec`, `proxy_eval`, `proxy_slurm` |
+| `ml/server_finetune.py` | `ft_config_get`, `ft_config_set`, `ft_data_inspect`, `ft_run`, `ft_run_slurm`, `ft_status`, `ft_stop`, `ft_runner_promote`, `ft_log_read`, `ft_metrics_parse`, `ft_runs_list`, `ft_runs_diff` |
+
+What a tool *may do* is not listed here: capabilities are declared per tool and the
+authoritative table is in
+[PLUGINS_DETAILED.md](PLUGINS_DETAILED.md#tool-capabilities).
+
 Response contract:
 - success payload: `{"status": "ok", ...}`
 - error payload: `{"status": "error", "error": "...", "hint"?: "..."}`
@@ -77,30 +110,6 @@ Any successful write to a path invalidates cached reads for that path. Each entr
 stamped with the file's `(mtime_ns, size)`, so a write that went around the edit tools
 (a `sed -i`, a script, the user's editor) drops the entry instead of being answered from
 a copy that is now wrong.
-
-## Registered-by-default servers
-
-The client currently registers these servers by default:
-- `workspace/server_bash.py`
-- `workspace/server_files.py`
-- `workspace/server_search.py`
-- `workspace/server_code_intel.py`
-- `utilities/server_math.py`
-- `utilities/server_strings.py`
-- `utilities/server_datetime.py`
-- `utilities/server_symbolic_math.py`
-- `agent_state/server_memory.py`
-- `agent_state/server_todo.py`
-- `agent_state/server_spawn_agent.py`
-- `interaction/server_interaction.py`
-- `external/server_github.py`
-- `external/server_web.py`
-- `external/server_system.py`
-- `hpc/server_hpc.py`
-- `hpc/server_platform.py`
-- `hpc/server_env.py`
-- `ml/server_finetune.py`
-- `proxy/server_proxy.py`
 
 ## utilities/server_math.py
 
@@ -187,7 +196,7 @@ plan, indexed by `PLANS.md`, with a `.active` pointer). The active session is re
 fall back to the shared legacy `todo_list.md`.
 
 Tools:
-- `todo_set_plan` — write a named plan (approach/rationale) and make it active. Declares two arg-roles so client-side consumers find its arguments without knowing its name: `plan_title` (the plan loop pins it so a revision overwrites in place) and `plan_document` (the plan-shape guard reads the body, and refuses a plan whose axes under *Approach* are exploration steps — see POLICY.md → *Plan-Shape Guard*)
+- `todo_set_plan` — write a named plan (approach/rationale) and make it active. Declares two arg-roles so client-side consumers find its arguments without knowing its name: `plan_title` (the plan loop pins it so a revision overwrites in place) and `plan_document` (the prose body). A client-side guard used to read that body and refuse a plan whose axes were exploration steps; it was removed — see [POLICY.md](POLICY.md#why-there-is-no-plan-shape-guard) for why a verb list is the wrong instrument for a refusal
 - `todo_write` — replace the entire checklist with new steps. Takes an optional `depends_on` (one list of prerequisite indices per step), so a plan whose steps are genuinely partially ordered is recorded as the DAG it is instead of being flattened into a line
 - `todo_read` — return the current checklist (index, text, done)
 - `todo_read_ready` — split the open steps into `ready` and `blocked` against that DAG (a step is ready once every step it depends on is done)
@@ -664,12 +673,32 @@ gating are already right for it, and its operand is credited as *validated* by
 | `sed -i` / `--in-place` / `-i.bak` / `-ni`, `sort -o FILE` | `read` → **write** (approval, blocked in plan mode) |
 | `> f` or `>> f` on any side-effect-free command | → **write**, operand = the target |
 | `< f`, `2>&1`, `2>/dev/null` | nothing — kind unchanged, still plan-safe |
-| `module load|add` vs `avail|list|show|…` | mutation vs query |
+| `module load` / `add` vs `avail` / `list` / `show` / … | mutation vs query |
 | pip/conda `list show freeze check inspect info help` vs anything else | query vs mutation (the network queries `search`/`index`/`download` count as mutation: a plan is drafted without reaching the network) |
 | an unknown `module`/pip/conda sub-command | assumed to mutate (the server refuses it anyway) |
 | **chain rule** | one non-read-only segment makes the *whole* call non-read-only |
 
 ### Refusals that are not re-categorisations
+
+Refused whatever category the head belongs to:
+
+| Refused | Because |
+|---|---|
+| shell interpreters — `bash`, `sh`, `eval`, `sudo`, `.` | they nest a command the validator never sees |
+| unreachable write/exec flags — `find -ok/-delete/-fprint*`, `rg --pre/--search-zip/-f`, `grep -f` | the operand walk cannot reach the target. A write flag whose target *is* visible is confined instead |
+| a nested `-exec CMD` whose head is not read-only | its operands include `{}`, whose expansion nobody can resolve |
+| TeX shell-escape / `write18`, every spelling | it runs a command out of a document |
+| env managers' `run` / `execute` | they nest an arbitrary command. Install, create and remove run under the approval prompt instead |
+| a path, write-flag value or redirect target outside the workspace and unapproved | the sandbox boundary |
+| `$VAR` in path or redirect position, heredocs, backgrounding, substitution, subshells | the path checked would not be the path used |
+
+Each rejection **names the route that replaces it** and never points at a tool to call:
+the payload answers a *shell* call, so any "call X instead" pointer reads as one more
+shell command to try — which is how an agent ends up running the name of an MCP tool.
+`test_every_denied_command_names_the_route_that_replaces_it` holds every denied name to a
+non-empty hint.
+
+The detail behind each row:
 
 - flags whose write/exec target the operand walk cannot reach: `find
   -ok/-okdir/-delete/-fprint*/-fls`, `rg --pre/--pre-glob/--search-zip/-f`,
@@ -712,11 +741,6 @@ auto-approves everything.
   `./build.sh` — and unlike it, it sets the environment the rest of the chain runs in
   (`source venv/bin/activate && pytest`), which no other command can do. Only the
   readable spelling is offered: the `.` form stays refused.
-- A rejection **names the route that replaces it** and never points at a tool to call:
-  the payload is the reply to a *shell* call, so any "call X to find out" pointer reads
-  as one more shell command to try — which is how an agent ends up running the name of
-  an MCP tool and failing again on it. `test_every_denied_command_names_the_route_that_replaces_it`
-  holds every denied name to a non-empty hint.
 - **No-ops** (`true`, `false`, `:`) are classified `neutral` so the capability probe
   `which pdflatex 2>/dev/null || true` is expressible; without them the chain is
   rejected on its last segment and the agent has no way to ask "is X available?".
