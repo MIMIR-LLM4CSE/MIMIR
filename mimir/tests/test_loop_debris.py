@@ -15,6 +15,7 @@ from unittest.mock import patch
 
 from mimir.client.config.constants import AGENT_EMPTY_TURN_RETRIES
 from mimir.client.guardrails.nudges import drop_transient_reminders, inject_reminder
+from mimir.client.guardrails.workflow import EMPTY_TURN_OPENING
 from mimir.client.query_engine import agent_loop as agent_loop_module
 from mimir.client.query_engine import finalize as finalize_module
 from mimir.client.query_engine import streaming as streaming_module
@@ -69,7 +70,7 @@ class EmptyTurnDebrisTests(_LoopRunner):
         self.assertEqual([m for m in history if _is_empty_assistant(m)], [])
         self.assertEqual(
             [m for m in history
-             if agent_loop_module.EMPTY_TURN_OPENING in str(m.get("content", ""))],
+             if EMPTY_TURN_OPENING in str(m.get("content", ""))],
             [],
         )
 
@@ -96,7 +97,7 @@ class EmptyTurnDebrisTests(_LoopRunner):
         asks = []
         for call in backend.calls[1:]:  # the first call carries no reminder yet
             reminders = [m["content"] for m in call["messages"]
-                         if agent_loop_module.EMPTY_TURN_OPENING in str(m.get("content", ""))]
+                         if EMPTY_TURN_OPENING in str(m.get("content", ""))]
             self.assertEqual(len(reminders), 1)  # one at a time, never accumulated
             asks.append(reminders[0])
         self.assertEqual(len(asks), AGENT_EMPTY_TURN_RETRIES)
@@ -127,9 +128,9 @@ class TransientReminderTests(_LoopRunner):
     def test_a_reminder_reaches_the_call_it_was_injected_for(self) -> None:
         _, backend, _, history = self._run([{"content": ""}, {"content": "the answer"}])
         retry = backend.calls[1]["messages"]
-        self.assertIn(agent_loop_module.EMPTY_TURN_OPENING, retry[-1]["content"])
+        self.assertIn(EMPTY_TURN_OPENING, retry[-1]["content"])
         # …and is gone from what the session keeps.
-        self.assertNotIn(agent_loop_module.EMPTY_TURN_OPENING,
+        self.assertNotIn(EMPTY_TURN_OPENING,
                          [m.get("content") for m in history])
 
     def test_the_event_survives_the_removal(self) -> None:
@@ -320,7 +321,7 @@ class PlanModeEmptyTurnTests(unittest.TestCase):
         asks = []
         for call in backend.calls[1:]:
             asks += [m["content"] for m in call["messages"]
-                     if agent_loop_module.EMPTY_TURN_OPENING in str(m.get("content", ""))]
+                     if EMPTY_TURN_OPENING in str(m.get("content", ""))]
         self.assertEqual(len(asks), AGENT_EMPTY_TURN_RETRIES)
         self.assertEqual(len(set(asks)), len(asks))
 

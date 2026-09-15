@@ -24,7 +24,6 @@ from ..guardrails.builtin_check import sweep_builtin_checks
 from ..guardrails.workflow import (
     evidence_handback_message,
     finalize_incomplete_answer,
-    EMPTY_TURN_OPENING,
     empty_turn_retry_message,
     STEP_LIMIT_NUDGE,
     TERMINATION_STEP_LIMIT,

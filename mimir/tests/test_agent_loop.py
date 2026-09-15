@@ -1616,7 +1616,8 @@ class EmptyTurnTests(unittest.TestCase):
         # The empty turn is gone from history and the retry is announced.
         retry = backend.calls[1]["messages"]
         self.assertTrue(all(m.get("content") != "" for m in retry if m["role"] == "assistant"))
-        self.assertIn(agent_loop_module.EMPTY_TURN_OPENING, retry[-1]["content"])
+        from mimir.client.guardrails.workflow import EMPTY_TURN_OPENING
+        self.assertIn(EMPTY_TURN_OPENING, retry[-1]["content"])
         self.assertTrue(any(
             e["type"] == "status" and "Empty turn" in e.get("text", "") for e in emitted
         ))
