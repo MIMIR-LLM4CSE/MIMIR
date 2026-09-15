@@ -6,8 +6,8 @@ summary. It does **no scoring of its own** — scoring is the adapter/benchmark'
 
 For each task (``run_one``): materialise its workspace (``task.setup``), point the
 MCP file/search servers at that workspace (they read ``os.getcwd()`` at spawn — see
-``integration/server_manager.connect_server``), drive the agent's non-interactive
-path (``allow_continue_prompt`` left False → fixed ``max_steps``, no human prompt),
+``integration/server_manager.connect_server``), drive the agent
+with a fixed ``max_steps`` (the only place a run is bounded),
 then hand the answer to the adapter's scorer.
 
 Two things make a run unattended:
@@ -57,7 +57,6 @@ class RunResult:
 
 def _install_auto_approve(agent: MimirAgent) -> None:
     """Make the agent approve every tool without prompting (unattended mode)."""
-    agent.allow_continue_prompt = False  # stop at max_steps; no human continue prompt
     agent._request_tool_approval = (
         lambda name, arguments, max_attempts=3: (True, "benchmark-auto-approve")
     )

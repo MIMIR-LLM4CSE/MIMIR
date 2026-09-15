@@ -35,7 +35,6 @@ Protocol — all messages are JSON objects, one per send/recv:
                                                                 # report state instead
     {"type": "approval",       "id": "...", "tool": "...", "server": "...",
                                "args": {}, "risk": "...", "scope": "..."}
-    {"type": "continue_prompt","id": "...", "summary": "..."}
     {"type": "user_question",  "id": "...", "questions": [
                                {"question": "...", "header": "...", "multiSelect": false,
                                 "options": [{"label": "...", "description": "..."}]}]}
@@ -60,7 +59,6 @@ Protocol — all messages are JSON objects, one per send/recv:
                                   # session's display messages (see _handle_transcript)
     {"type": "list_resources"}                     # request the attachable-resource list
     {"type": "approval_response", "id": "...", "choice": "y"|"n"|"a"}
-    {"type": "continue_response", "id": "...", "choice": "y"|"n"}
     {"type": "user_question_response", "id": "...", "answers": [
                                {"selected": ["..."], "otherText": "..."}]}
     {"type": "divert_to_background", "id": "..."}   # detach the shell run now blocking

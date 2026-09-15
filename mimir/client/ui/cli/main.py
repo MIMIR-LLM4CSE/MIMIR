@@ -32,10 +32,6 @@ async def main() -> None:
     print(f"Using model: {model} ({os.environ.get('LLM_BACKEND', 'vllm')})")
     agent = MimirAgent(model=model)
 
-    # Interactive CLI: let a long run ask the user whether to keep going past
-    # the soft step budget instead of stopping silently.
-    agent.allow_continue_prompt = True
-    agent._request_continue = _cli_request_continue
     agent._request_user_question = _cli_request_question
 
     for server_name, script_path in all_servers().items():
@@ -44,18 +40,6 @@ async def main() -> None:
 
     await run_chat_session(agent)
     await agent.cleanup()
-
-
-def _cli_request_continue(summary: str) -> bool:
-    """Prompt the user at a soft step-budget checkpoint. Returns True to continue."""
-    print("\n⏸  Step budget reached.")
-    if summary:
-        print(f"   {summary}")
-    try:
-        choice = input("   Continue working? [y]es / [n]o: ").strip().lower()
-    except EOFError:
-        return False
-    return choice in {"y", "yes"}
 
 
 def _cli_ask_one(
@@ -136,7 +120,7 @@ def _cli_ask_one(
 def _cli_request_question(questions: list) -> dict:
     """Ask the user one or more clarifying questions sequentially via stdin.
 
-    Mirrors :func:`_cli_request_continue`. Each item is a ``{header, question,
+    Each item is a ``{header, question,
     multiSelect, options}`` spec; questions are asked one at a time and the answers
     are collected in order. Returns ``{"answers": [{"selected": [...], "other_text":
     ...}, ...]}``; an all-empty result means the user declined and the agent should

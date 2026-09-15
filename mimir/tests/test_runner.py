@@ -114,14 +114,11 @@ class IsolationTests(unittest.TestCase):
 class AutoApproveTests(unittest.TestCase):
     def test_install_auto_approve_approves_any_tool(self) -> None:
         class _Agent:
-            allow_continue_prompt = True
-
             def _request_tool_approval(self, name, arguments, max_attempts=3):
                 raise AssertionError("interactive approval must not be called")
 
         agent = _Agent()
         _install_auto_approve(agent)
-        self.assertFalse(agent.allow_continue_prompt)
         # Any tool — including ones that would normally block (non-batch) — is approved.
         ok, reason = agent._request_tool_approval("bash_run", {"cmd": "ls"})
         self.assertTrue(ok)

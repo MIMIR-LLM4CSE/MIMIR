@@ -370,12 +370,6 @@ export interface StreamingStateMessage {
   enabled: boolean;
 }
 
-export interface ContinuePromptMessage {
-  type: "continue_prompt";
-  id: string;
-  summary: string;
-}
-
 export interface JobCompleteMessage {
   type: "job_complete";
   job_key: string;
@@ -515,7 +509,6 @@ export type ServerMessage =
   | ThinkingDepthMessage
   | StreamingStateMessage
   | ContextUsageMessage
-  | ContinuePromptMessage
   | JobCompleteMessage
   | TogglesListMessage
   | ResourcesMessage
@@ -560,12 +553,6 @@ export interface ApprovalResponseMessage {
   id: string;
   choice: "y" | "n" | "a";
   approved_files?: string[];
-}
-
-export interface ContinueResponseMessage {
-  type: "continue_response";
-  id: string;
-  choice: "y" | "n";
 }
 
 export interface UserQuestionResponseMessage {
@@ -656,7 +643,6 @@ export type ClientMessage =
   | SteerMessage
   | DivertToBackgroundMessage
   | ApprovalResponseMessage
-  | ContinueResponseMessage
   | UserQuestionResponseMessage
   | CommandMessage
   | CreateSessionMessage
@@ -701,6 +687,11 @@ export interface ToolActivity {
   verdict?: "pass" | "fail" | "unknown";
   /** Epoch ms when the call started — drives the live elapsed timer. */
   startedAt: number;
+  /** Arrival stamp, used to place the row among this step's prose and reasoning
+   *  (see orderLiveStream). A sub-agent's row inherits its parent's stamp so the
+   *  family stays one group. Absent on rows restored from a saved session, which
+   *  are already frozen in order. */
+  seq?: number;
   /** Set on rows produced by a sub-agent: the id of the call that spawned it. */
   parentId?: string;
   /** Which sub-agent this row came from, e.g. "explore #2" — several run at once. */

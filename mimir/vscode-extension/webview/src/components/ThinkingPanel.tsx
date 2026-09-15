@@ -1,5 +1,6 @@
-import React, { useEffect, useRef } from "react";
+import React, { useLayoutEffect } from "react";
 import { useElapsed, formatDuration } from "../hooks/useElapsed";
+import { useStickToBottom } from "../hooks/useStickToBottom";
 import { StreamingStatus } from "./StreamingStatus";
 
 interface Props {
@@ -30,29 +31,15 @@ function formatTokens(n: number): string {
  */
 export const ThinkingPanel: React.FC<Props> = ({ text, live, startedAt, durationMs, tokens }) => {
   const elapsed = useElapsed(startedAt ?? Date.now(), live);
-  const contentRef = useRef<HTMLPreElement>(null);
-  // Whether to keep the stream pinned to the bottom. Starts true, and is only
-  // updated by a *user* scroll (onScroll below) — never recomputed after new
-  // text lands. The old code measured "am I at the bottom?" AFTER appending the
-  // token, so any chunk taller than the 24px threshold made the panel look
-  // scrolled-up and it stopped following. Capturing the intent at scroll time
-  // instead keeps it glued to the bottom no matter how large the next chunk is.
-  const stickRef = useRef(true);
+  // The reasoning stream follows its own bottom as tokens land, and lets go when
+  // the reader scrolls up to re-read. Only a gesture stops the follow: measuring
+  // the position when the scroll event arrives is what used to stop it on its own,
+  // since by then the tokens that fired it have already made the pane taller.
+  const { ref: contentRef, scrollToBottom, onScroll } = useStickToBottom<HTMLPreElement>(24);
 
-  const handleScroll = () => {
-    const el = contentRef.current;
-    if (!el) return;
-    stickRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
-  };
-
-  // Auto-scroll the live reasoning stream to the bottom as new tokens arrive,
-  // unless the user has scrolled up to read earlier reasoning (stickRef=false).
-  useEffect(() => {
-    if (!live) return;
-    const el = contentRef.current;
-    if (!el || !stickRef.current) return;
-    el.scrollTop = el.scrollHeight;
-  }, [text, live]);
+  useLayoutEffect(() => {
+    if (live) scrollToBottom();
+  }, [text, live, scrollToBottom]);
 
   if (live) {
     return (
@@ -62,7 +49,7 @@ export const ThinkingPanel: React.FC<Props> = ({ text, live, startedAt, duration
           <StreamingStatus showDots={false} />
           <span className="thinking-duration">· {formatDuration(elapsed)}</span>
         </div>
-        <pre className="thinking-content" ref={contentRef} onScroll={handleScroll}>{text}</pre>
+        <pre className="thinking-content" ref={contentRef} onScroll={onScroll}>{text}</pre>
       </div>
     );
   }

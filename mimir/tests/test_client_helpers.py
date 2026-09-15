@@ -980,29 +980,25 @@ class ClientHelperTests(unittest.TestCase):
             with self.subTest(signal=signal):
                 self.assertFalse(execution_context.get(signal))
 
-    # ── soft step budget + continue checkpoint ─────────────────────────────────
+    # ── step budget ───────────────────────────────────────────────────────────
 
-    def _run_loop_with_budget(self, *, allow_continue, continue_returns, max_steps,
-                              soft=2, ext=2, ceiling=6):
-        """Drive _run_agent_loop with a _stream_chat that always emits a tool call.
+    def _run_loop_with_budget(self, *, max_steps, answer_after=None):
+        """Drive _run_agent_loop with a _stream_chat that emits a tool call every step.
 
-        Returns (stream_call_count, continue_call_count). Heavy per-step helpers
-        are patched to no-ops so the loop's budget/checkpoint arithmetic is the
+        ``answer_after`` makes the model deliver a final answer on that step instead,
+        which is the only way an unbounded run ends. Returns the step count. Heavy
+        per-step helpers are patched to no-ops so the loop's own arithmetic is the
         only thing under test.
         """
         stream_calls = {"n": 0}
-        continue_calls = {"n": 0}
 
         def _fake_stream(*a, **k):
             stream_calls["n"] += 1
+            if answer_after is not None and stream_calls["n"] > answer_after:
+                return {"content": "final answer", "tool_calls": []}
             return {"content": "working", "tool_calls": [
                 {"id": "1", "function": {"name": "x", "arguments": "{}"}}
             ]}
-
-        def _fake_continue(summary):
-            i = continue_calls["n"]
-            continue_calls["n"] += 1
-            return continue_returns[i] if i < len(continue_returns) else False
 
         async def _noop_async(*a, **k):
             return None
@@ -1015,17 +1011,12 @@ class ClientHelperTests(unittest.TestCase):
             tools=[],
             tool_caps={},
             thinking_budget=-1,
-            allow_continue_prompt=allow_continue,
-            _request_continue=_fake_continue,
             _update_carry_context=lambda ec: None,
             approvals=types.SimpleNamespace(flush_pending_review=lambda: None),
         )
 
         m = agent_loop_module
-        with patch.object(m, "AGENT_STEP_SOFT_BUDGET", soft), \
-             patch.object(m, "AGENT_STEP_EXTENSION", ext), \
-             patch.object(m, "AGENT_STEP_HARD_CEILING", ceiling), \
-             patch.object(m, "_stream_chat", _fake_stream), \
+        with patch.object(m, "_stream_chat", _fake_stream), \
              patch.object(m, "_process_response", lambda *a, **k: None), \
              patch.object(agent_loop_module, "_dispatch_tool_calls", _noop_async), \
              patch.object(agent_loop_module, "_post_dispatch_inject", _noop_async), \
@@ -1047,30 +1038,16 @@ class ClientHelperTests(unittest.TestCase):
                 logger=None,
                 cb={"think_token_callback": None},
             ))
-        return stream_calls["n"], continue_calls["n"]
+        return stream_calls["n"]
 
-    def test_non_interactive_stops_at_max_steps_without_prompt(self) -> None:
-        # allow_continue_prompt False → budget == max_steps, never asks the user.
-        steps, prompts = self._run_loop_with_budget(
-            allow_continue=False, continue_returns=[], max_steps=3)
-        self.assertEqual(steps, 3)
-        self.assertEqual(prompts, 0)
+    def test_a_caller_supplied_budget_still_bounds_the_run(self) -> None:
+        # The runner and sub-agents pass a positive max_steps; that one is honoured.
+        self.assertEqual(self._run_loop_with_budget(max_steps=3), 3)
 
-    def test_interactive_stops_when_user_declines(self) -> None:
-        # Soft budget 2; user says no at the first checkpoint → run halts at 2.
-        steps, prompts = self._run_loop_with_budget(
-            allow_continue=True, continue_returns=[False], max_steps=50)
-        self.assertEqual(steps, 2)
-        self.assertEqual(prompts, 1)
-
-    def test_interactive_extends_until_hard_ceiling(self) -> None:
-        # User keeps saying yes: budget 2→4→6 (ceiling), prompted twice.
-        steps, prompts = self._run_loop_with_budget(
-            allow_continue=True, continue_returns=[True, True, True], max_steps=50)
-        self.assertEqual(steps, 6)
-        self.assertEqual(prompts, 2)
-
-
+    def test_no_budget_means_the_run_ends_with_the_work(self) -> None:
+        # max_steps == 0: nothing counts the steps, so the run lasts exactly as long
+        # as the model keeps calling tools — here, until it answers on step 8.
+        self.assertEqual(self._run_loop_with_budget(max_steps=0, answer_after=7), 8)
 
     def _counting_backend(self):
         calls = {"n": 0}

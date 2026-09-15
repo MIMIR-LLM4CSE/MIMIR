@@ -249,11 +249,9 @@ def _plural_runs(n: int) -> str:
 # stopped speaking at all.
 TERMINATION_ANSWERED: str = "answered"        # the model produced a final answer
 TERMINATION_STEP_LIMIT: str = "step_limit"   # the step budget ran out
-TERMINATION_USER_STOPPED: str = "user_stopped"  # the user declined to continue
 
 _TERMINATION_ISSUE: dict[str, str] = {
 	TERMINATION_STEP_LIMIT: "Stopped: the step budget ran out before the work was finished.",
-	TERMINATION_USER_STOPPED: "Stopped: you declined to continue at the step checkpoint.",
 }
 
 

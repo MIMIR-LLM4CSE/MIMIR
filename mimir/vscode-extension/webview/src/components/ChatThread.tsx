@@ -7,6 +7,7 @@ import { ToolActivityList } from "./ToolActivityList";
 import { ThinkingPanel } from "./ThinkingPanel";
 import { GlobalApprovalBar } from "./GlobalApprovalBar";
 import { StreamingStatus } from "./StreamingStatus";
+import { orderLiveStream } from "./liveStreamUtils";
 
 interface Props {
   messages: ChatMessage[];
@@ -15,6 +16,9 @@ interface Props {
    *  the loop may still send the model back to work, and a draft that lived in
    *  the transcript would then have to be deleted out of it. */
   draft?: string;
+  /** Arrival stamp of the draft's first token — places the prose among this
+   *  step's cards. Null while there is no prose. */
+  draftSeq?: number | null;
   /** Tool calls for the current (in-flight) step, not yet frozen into a message. */
   liveToolCalls?: ToolActivity[];
   /** Reasoning blocks for the current (in-flight) step, not yet frozen. */
@@ -48,6 +52,7 @@ export const ChatThread: React.FC<Props> = ({
   messages,
   busy,
   draft = "",
+  draftSeq = null,
   liveToolCalls = [],
   liveThinkingBlocks = [],
   emptyState,
@@ -65,6 +70,12 @@ export const ChatThread: React.FC<Props> = ({
   const visible = messages;
 
   const lastIdx = visible.length - 1;
+
+  const liveEntries = orderLiveStream({
+    thinking: liveThinkingBlocks.filter((b) => b.text.trim().length > 0),
+    tools: liveToolCalls,
+    draftSeq: draft.trim().length > 0 ? draftSeq ?? 0 : null,
+  });
 
   // One animated status line, always at the bottom of the thread — while
   // waiting AND while the answer streams. Hidden when live tool rows or a
@@ -127,31 +138,48 @@ export const ChatThread: React.FC<Props> = ({
         <>
           {visible.map(renderMessage)}
 
-          {/* Live reasoning for the in-flight step (streams, then freezes). */}
-          {liveThinkingBlocks
-            .filter((b) => b.text.trim().length > 0)
-            .map((b) => (
-              <ThinkingPanel key={b.id} text={b.text} live startedAt={b.startedAt} />
-            ))}
-
-          {/* Live tool calls for the in-flight step (not yet frozen). */}
-          {liveToolCalls.length > 0 && (
-            <ToolActivityList tools={liveToolCalls} onDivert={onDivert} />
-          )}
-
-          {/* The turn in flight. It joins the transcript only once the loop
-              accepts it; until then it lives here, where clearing it reads as
-              "still working" rather than as an answer being taken away. */}
-          {draft.trim().length > 0 && (
-            <div className="chat-message agent chat-draft">
-              <div className="message-body">
-                <MarkdownContent text={draft} />
-                <div className="chat-draft__status">
-                  <StreamingStatus />
+          {/* The step in flight, in the order it arrived: prose, reasoning and
+              tool rows are three separate streams, and orderLiveStream reads
+              their arrival stamps back into one list. The freeze goes through
+              the same function, so nothing moves when the step ends. */}
+          {liveEntries.map((entry, i) => {
+            if (entry.kind === "thinking") {
+              return (
+                <ThinkingPanel
+                  key={entry.block.id}
+                  text={entry.block.text}
+                  live
+                  startedAt={entry.block.startedAt}
+                />
+              );
+            }
+            if (entry.kind === "tools") {
+              return (
+                <ToolActivityList
+                  key={`tools-${entry.seq}`}
+                  tools={entry.tools}
+                  onDivert={onDivert}
+                />
+              );
+            }
+            // The turn in flight. It joins the transcript only once the loop
+            // accepts it; until then it lives here, where clearing it reads as
+            // "still working" rather than as an answer being taken away.
+            return (
+              <div className="chat-message agent chat-draft" key="draft">
+                <div className="message-body">
+                  <MarkdownContent text={draft} />
+                  {/* Only when nothing came after it — otherwise the cards below
+                      carry the motion and two indicators would compete. */}
+                  {i === liveEntries.length - 1 && (
+                    <div className="chat-draft__status">
+                      <StreamingStatus />
+                    </div>
+                  )}
                 </div>
               </div>
-            </div>
-          )}
+            );
+          })}
 
           {/* Animated status line — shown while the agent is busy */}
           {showStatusLine && (

@@ -157,7 +157,7 @@ def _stream_chat(model: str,
                  think_end_callback: Any = None) -> dict:
     """Run one model round-trip, retrying transient backend failures.
 
-    A single step of a long (up to MAX_AGENT_STEPS) loop should not discard the
+    A single step of a long loop should not discard the
     whole query because of one flaky connection / 5xx / rate-limit. We retry the
     call with exponential backoff + jitter. User cancellation raises
     asyncio.CancelledError, which subclasses BaseException (not Exception) and so

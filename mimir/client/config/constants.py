@@ -111,18 +111,12 @@ TOOL_HISTORY_CHAR_BUDGET: int = 600_000
 # before the hard tool-history budget kicks in.
 INTRA_QUERY_COMPACT_CHARS: int = 480_000
 
-# Maximum agent steps (model ↔ tool round-trips) per query before the loop stops.
-# Kept as the default ceiling for non-interactive callers (sub-agents, tests)
-# that never prompt to continue.
-MAX_AGENT_STEPS: int = 100
-
-# Adaptive step budgeting for interactive front-ends. The loop runs up to the
-# SOFT budget, then asks the user whether to continue; each "yes" grants another
-# EXTENSION block, never exceeding the HARD ceiling. Non-interactive callers
-# ignore these and simply stop at their fixed MAX_AGENT_STEPS.
-AGENT_STEP_SOFT_BUDGET: int = 50
-AGENT_STEP_EXTENSION: int = 50
-AGENT_STEP_HARD_CEILING: int = 200
+# There is no step ceiling. A query runs for as many model ↔ tool round-trips as
+# the work takes: it ends when the model delivers an answer, when a guard stops it
+# (empty turns, validation budget), or when the user interrupts. A ceiling only ever
+# cut runs off mid-work and then asked the user to re-authorise the same work in
+# blocks; callers that do want a bound (the runner, sub-agents, tests) pass their own
+# ``max_steps``, and 0 means unbounded.
 
 # Consecutive turns that come back with neither prose nor a tool call before the
 # loop gives up retrying and ends the run (see agent_loop's empty-turn guard).
@@ -179,8 +173,8 @@ def thinking_depth_from_label(label: str) -> int | None:
         return None
 
 
-# Transient backend-call resilience. A single model call (one step of up to
-# MAX_AGENT_STEPS) should survive a flaky connection / 5xx / rate-limit rather
+# Transient backend-call resilience. A single model call (one step of a run that
+# has no step ceiling) should survive a flaky connection / 5xx / rate-limit rather
 # than discarding the whole query. Total attempts = 1 + LLM_RETRY_ATTEMPTS.
 # Backoff is exponential with jitter: LLM_RETRY_BASE_DELAY_SECS * 2**(n-1).
 LLM_RETRY_ATTEMPTS: int = 3

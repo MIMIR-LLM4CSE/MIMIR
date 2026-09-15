@@ -2,6 +2,7 @@ import type { ChatMessage, DiffEntry, ServerMessage, ToolActivity } from "../typ
 import {
   insertAfterFamily, relabelOrigins, settleFamily,
 } from "../components/subAgentUtils";
+import { orderLiveStream } from "../components/liveStreamUtils";
 
 // A reasoning block — reasoning TEXT only. Tool calls are tracked separately
 // (see `liveToolCalls`); thinking and tools are fully decorrelated.
@@ -12,6 +13,9 @@ export type ThinkingBlock = {
   collapsed: boolean;
   /** Epoch ms when this block opened — drives the live timer and frozen duration. */
   startedAt: number;
+  /** Arrival stamp, used to place the block among this step's prose and tool
+   *  rows (see orderLiveStream). */
+  seq: number;
   /** Reasoning tokens reported by the server as the block closed. Accumulated,
    *  since a block that reopens (reasoning resumed before the answer) is fed by
    *  more than one `thinking_end`. */
@@ -39,6 +43,12 @@ export interface ChatState {
   pendingDiffs: DiffEntry[];
   /** Thinking text accumulated for the current turn. */
   pendingThinking: string;
+  /** Next arrival stamp. Handed to each live item — the draft, a reasoning
+   *  block, a tool row — so the order they came in survives being collected
+   *  into three separate streams. Monotonic for the life of the window. */
+  nextSeq: number;
+  /** Stamp of the draft's first token; null whenever the draft is empty. */
+  draftSeq: number | null;
 }
 
 export const initialChatState: ChatState = {
@@ -50,6 +60,8 @@ export const initialChatState: ChatState = {
   toolCallAfterToken: false,
   pendingDiffs: [],
   pendingThinking: "",
+  nextSeq: 1,
+  draftSeq: null,
 };
 
 // Server messages the reducer acts on are a subset of ServerMessage; the rest
@@ -102,7 +114,7 @@ export function iconForTool(name: string): string {
  * A row lives in `liveToolCalls` during its step, then gets baked into a
  * `kind:"tools"` message. Late-arriving news about it (its result, a verdict, a
  * sub-agent step) can land on either side of that boundary — showing an approval
- * card mid-flight runs freezePending on a still-running row — so every patch has to
+ * card mid-flight runs flushLive on a still-running row — so every patch has to
  * look in both places. Returns null when the row is nowhere: an event for a turn the
  * user has already cleared is dropped, not applied to a stranger.
  */
@@ -138,50 +150,90 @@ function patchToolById(
 }
 
 /**
- * Bake the current turn's live state into the message stream and clear it.
- * Thinking and tools are baked as SEPARATE, decorrelated messages:
- *   - each non-empty reasoning block → a `kind:"thinking"` message (text only);
- *   - the accumulated tool calls → one `kind:"tools"` message.
+ * Bake the turn's live state into the transcript and clear it, in arrival order.
+ *
+ * Prose, reasoning blocks and tool rows are collected in three separate streams,
+ * so the order has to be reconstructed from the stamps they were handed
+ * (orderLiveStream). The live view reads the same stamps through the same
+ * function: a card the user watched arrive under a paragraph stays under it once
+ * the step ends, instead of jumping above it as the freeze regrouped by kind.
+ *
+ * Reasoning and tools stay decorrelated — each non-empty block is its own
+ * `kind:"thinking"` message, and each run of consecutive tool rows one
+ * `kind:"tools"` message.
+ *
+ * *provisional* flags the committed prose for the two cases where the turn was
+ * not accepted and the draft is nonetheless the only copy of it anywhere: it
+ * parked on a question, or the connection dropped under it. See commitDraft.
  */
-function freezePending(state: ChatState, makeId: () => string): ChatState {
-  const blocksToFreeze = state.liveThinkingBlocks.filter((b) => b.text.trim().length > 0);
+function flushLive(
+  state: ChatState, makeId: () => string, provisional = false,
+): ChatState {
+  const blocks = state.liveThinkingBlocks.filter((b) => b.text.trim().length > 0);
   const tools = state.liveToolCalls;
-  if (blocksToFreeze.length === 0 && tools.length === 0) {
-    if (state.liveThinkingBlocks.length === 0 && state.liveToolCalls.length === 0) return state;
-    return { ...state, liveThinkingBlocks: [], liveToolCalls: [] };
+  const hasDraft = state.draft.trim().length > 0;
+  if (!hasDraft && blocks.length === 0 && tools.length === 0) {
+    // Nothing worth keeping — but a whitespace-only draft and empty reasoning
+    // blocks still have to go, or they outlive the step that opened them.
+    if (
+      state.draft === "" &&
+      state.liveThinkingBlocks.length === 0 &&
+      state.liveToolCalls.length === 0
+    ) return state;
+    return { ...state, draft: "", draftSeq: null, liveThinkingBlocks: [], liveToolCalls: [] };
   }
-  let messages = state.messages;
-  if (blocksToFreeze.length > 0) {
-    const frozenAt = Date.now();
-    messages = [
-      ...messages,
-      ...blocksToFreeze.map((b) => ({
-        id: b.id,
+
+  const frozenAt = Date.now();
+  // A draft with no stamp cannot happen through `token`, but placing it first is
+  // the safe reading of one: prose is never lost, only possibly placed early.
+  const entries = orderLiveStream({
+    thinking: blocks,
+    tools,
+    draftSeq: hasDraft ? state.draftSeq ?? 0 : null,
+  });
+
+  const frozen: ChatMessage[] = entries.map((e) => {
+    if (e.kind === "draft") {
+      return {
+        id: makeId(), role: "agent" as const, kind: "text" as const, text: state.draft,
+        ...(provisional ? { provisional: true } : {}),
+      };
+    }
+    if (e.kind === "thinking") {
+      return {
+        id: e.block.id,
         role: "agent" as const,
         kind: "thinking" as const,
-        text: b.text,
+        text: e.block.text,
         live: false, // start collapsed — user can click to expand
-        thinkingDurationMs: Math.max(0, frozenAt - b.startedAt),
-        thinkingTokens: b.tokens,
-      })),
-    ];
-  }
-  if (tools.length > 0) {
+        thinkingDurationMs: Math.max(0, frozenAt - e.block.startedAt),
+        thinkingTokens: e.block.tokens,
+      };
+    }
     // Any tool still "running" at freeze time never received a result; stamp a
     // final duration and mark it done so its live timer stops ticking instead
     // of counting up forever in the frozen card.
-    const frozenAt = Date.now();
-    const frozenTools = tools.map((t) =>
-      t.status === "running"
-        ? { ...t, status: "ok" as const, durationMs: t.durationMs ?? Math.max(0, frozenAt - t.startedAt) }
-        : t
-    );
-    messages = [
-      ...messages,
-      { id: makeId(), role: "agent" as const, kind: "tools" as const, tools: frozenTools, live: false },
-    ];
-  }
-  return { ...state, messages, liveThinkingBlocks: [], liveToolCalls: [] };
+    return {
+      id: makeId(),
+      role: "agent" as const,
+      kind: "tools" as const,
+      live: false,
+      tools: e.tools.map((t) =>
+        t.status === "running"
+          ? { ...t, status: "ok" as const, durationMs: t.durationMs ?? Math.max(0, frozenAt - t.startedAt) }
+          : t
+      ),
+    };
+  });
+
+  return {
+    ...state,
+    draft: "",
+    draftSeq: null,
+    liveThinkingBlocks: [],
+    liveToolCalls: [],
+    messages: [...state.messages, ...frozen],
+  };
 }
 
 /**
@@ -201,10 +253,13 @@ function freezePending(state: ChatState, makeId: () => string): ChatState {
 function commitDraft(
   state: ChatState, makeId: () => string, provisional = false,
 ): ChatState {
-  if (!state.draft.trim()) return state.draft ? { ...state, draft: "" } : state;
+  if (!state.draft.trim()) {
+    return state.draft ? { ...state, draft: "", draftSeq: null } : state;
+  }
   return {
     ...state,
     draft: "",
+    draftSeq: null,
     messages: [
       ...state.messages,
       { id: makeId(), role: "agent", kind: "text", text: state.draft,
@@ -242,14 +297,14 @@ function clearProvisional(messages: ChatMessage[]): ChatMessage[] {
 /**
  * Commit the draft and stop the turn's live state, for a turn parked on a question.
  *
- * A plan approval, a clarification batch and a continue prompt all park the worker
- * thread indefinitely: the agent is waiting on a person, and until they answer there
+ * A plan approval and a clarification batch both park the worker thread
+ * indefinitely: the agent is waiting on a person, and until they answer there
  * is no `answer` event, so nothing else marks this moment. That matters beyond the
  * spinner — the transcript only travels back to the server when `busy` falls, and the
  * plan the user is being asked to approve lives, until this runs, in `draft` alone.
  */
 function parkOnPrompt(state: ChatState, makeId: () => string): ChatState {
-  const s = freezePending(commitDraft(state, makeId, true), makeId);
+  const s = flushLive(state, makeId, true);
   return { ...s, busy: false, toolCallAfterToken: false };
 }
 
@@ -311,7 +366,7 @@ export function createChatReducer(makeId: () => string) {
       // Nothing disappears from the transcript here: a provisional turn never
       // entered it, which is the whole point of holding it in `draft`.
       case "nudge_injected":
-        return state.draft ? { ...state, draft: "" } : state;
+        return state.draft ? { ...state, draft: "", draftSeq: null } : state;
 
       case "reset":
         return initialChatState;
@@ -325,11 +380,10 @@ export function createChatReducer(makeId: () => string) {
         return { ...s, busy: false, liveThinkingBlocks: [], liveToolCalls: [] };
       }
 
-      // The turn parked on a question for the user: a plan awaiting approval, a
-      // clarification batch, or the continue prompt. Rendering the card is App's
-      // business; what belongs here is that the turn stopped producing.
+      // The turn parked on a question for the user: a plan awaiting approval or a
+      // clarification batch. Rendering the card is App's business; what belongs
+      // here is that the turn stopped producing.
       case "user_question":
-      case "continue_prompt":
         return parkOnPrompt(state, makeId);
 
       case "session_loaded_messages":
@@ -337,6 +391,7 @@ export function createChatReducer(makeId: () => string) {
           ...state,
           messages: action.messages,
           draft: "",
+          draftSeq: null,
           liveThinkingBlocks: [],
           liveToolCalls: [],
           busy: false,
@@ -355,8 +410,8 @@ export function createChatReducer(makeId: () => string) {
       // the same tail as `approval_response`, and the same reason: `busy` is what
       // offers the stop button, and what makes the end of the turn observable at
       // all, which is when the finished transcript is handed back for saving.
-      // `resumes` is false for the answer that ends the run instead (a declined
-      // continue prompt), where claiming a live turn would strand the composer.
+      // `resumes` is false for an answer that ends the run instead, where claiming
+      // a live turn would strand the composer.
       case "prompt_answered":
         return action.resumes ? { ...state, busy: true } : state;
 
@@ -531,11 +586,14 @@ export function createChatReducer(makeId: () => string) {
             s.liveToolCalls.length > 0 ||
             s.liveThinkingBlocks.some((b) => b.text.trim().length > 0);
           if (hasCards) {
-            s = freezePending(commitDraft(s, makeId), makeId);
+            s = flushLive(s, makeId);
           } else if (s.draft && !/\s$/.test(s.draft) && !/^\s/.test(delta)) {
             s = { ...s, draft: s.draft + "\n\n" };
           }
         }
+        // The stamp of the first token is what later places this prose among the
+        // step's cards; it is cleared with the draft, so a flush re-stamps.
+        if (s.draftSeq === null) s = { ...s, draftSeq: s.nextSeq, nextSeq: s.nextSeq + 1 };
         return { ...s, draft: s.draft + delta };
       }
 
@@ -567,7 +625,7 @@ export function createChatReducer(makeId: () => string) {
       }
 
       case "approval": {
-        let s = freezePending(commitDraft({ ...state, toolCallAfterToken: false }, makeId), makeId);
+        let s = flushLive({ ...state, toolCallAfterToken: false }, makeId);
         s = { ...s, busy: false, pendingDiffs: [] };
         const base = s.messages.map((m) =>
           m.kind === "editing" && m.live ? { ...m, live: false } : m
@@ -605,9 +663,10 @@ export function createChatReducer(makeId: () => string) {
         if (last && !last.done) return s; // reuse active block
         return {
           ...s,
+          nextSeq: s.nextSeq + 1,
           liveThinkingBlocks: [
             ...s.liveThinkingBlocks,
-            { id: makeId(), text: "", done: false, collapsed: false, startedAt: Date.now() },
+            { id: makeId(), text: "", done: false, collapsed: false, startedAt: Date.now(), seq: s.nextSeq },
           ],
         };
       }
@@ -618,7 +677,8 @@ export function createChatReducer(makeId: () => string) {
         if (s.liveThinkingBlocks.length === 0) {
           return {
             ...s,
-            liveThinkingBlocks: [{ id: makeId(), text: thinkChunk, done: false, collapsed: false, startedAt: Date.now() }],
+            nextSeq: s.nextSeq + 1,
+            liveThinkingBlocks: [{ id: makeId(), text: thinkChunk, done: false, collapsed: false, startedAt: Date.now(), seq: s.nextSeq }],
           };
         }
         const lastIdx = s.liveThinkingBlocks.length - 1;
@@ -635,9 +695,10 @@ export function createChatReducer(makeId: () => string) {
         }
         return {
           ...s,
+          nextSeq: s.nextSeq + 1,
           liveThinkingBlocks: [
             ...s.liveThinkingBlocks,
-            { id: makeId(), text: thinkChunk, done: false, collapsed: false, startedAt: Date.now() },
+            { id: makeId(), text: thinkChunk, done: false, collapsed: false, startedAt: Date.now(), seq: s.nextSeq },
           ],
         };
       }
@@ -667,10 +728,12 @@ export function createChatReducer(makeId: () => string) {
           status: "running",
           divertible: action.divertible,
           startedAt: Date.now(),
+          seq: state.nextSeq,
         };
         // A tool ran → the next token opens a fresh streaming bubble.
         return {
           ...state,
+          nextSeq: state.nextSeq + 1,
           liveToolCalls: [...state.liveToolCalls, activity],
           toolCallAfterToken: true,
         };
@@ -724,6 +787,11 @@ export function createChatReducer(makeId: () => string) {
         if (action.kind === "tool_call") {
           return (
             patchToolById(state, parentId, (tools) => {
+              // The child inherits its parent's stamp: it is spliced in under the
+              // call that spawned it, and a stamp of its own could put a reasoning
+              // block that arrived meanwhile between the two, splitting the family
+              // across two cards.
+              const parentSeq = tools.find((t) => t.id === parentId)?.seq;
               const child: ToolActivity = {
                 id: action.id ?? `${parentId}:?`,
                 name: action.name ?? "",
@@ -733,6 +801,7 @@ export function createChatReducer(makeId: () => string) {
                 status: "running",
                 startedAt: Date.now(),
                 parentId,
+                seq: parentSeq,
               };
               // A step of its own supersedes the heartbeat: the row now says what
               // the child is actually doing.
@@ -826,7 +895,7 @@ export function createChatReducer(makeId: () => string) {
       case "answer": {
         // The draft is discarded rather than committed: `action.text` is the same
         // turn, authoritative and complete (it carries the verification ledger).
-        let s = freezePending({ ...state, draft: "", toolCallAfterToken: false }, makeId);
+        let s = flushLive({ ...state, draft: "", draftSeq: null, toolCallAfterToken: false }, makeId);
         const diffs = [...s.pendingDiffs];
         const thinkingText = s.pendingThinking;
         s = { ...s, pendingDiffs: [], pendingThinking: "", busy: false };
@@ -863,7 +932,7 @@ export function createChatReducer(makeId: () => string) {
       }
 
       case "error": {
-        const s = freezePending(commitDraft({ ...state, toolCallAfterToken: false }, makeId), makeId);
+        const s = flushLive({ ...state, toolCallAfterToken: false }, makeId);
         const messages: ChatMessage[] = [
           ...s.messages.map((m) =>
             m.kind === "editing" && m.live ? { ...m, live: false } : m

@@ -49,6 +49,47 @@ describe("chatReducer", () => {
     expect(state.draft).toBe("Found it.");
   });
 
+  it("freezes reasoning that arrived after the prose below it, not above it", () => {
+    // The live view and the freeze both read the arrival stamps, so a block the
+    // user watched appear under a paragraph stays under it. Freezing by kind used
+    // to lift the prose above everything, which moved the card at step end.
+    const state = run([
+      { type: "token", text: "Here is one way." },
+      { type: "thinking", text: "though maybe not" },
+      { type: "error", text: "boom" },
+    ]);
+
+    expect(state.messages.map((m) => m.kind)).toEqual(["text", "thinking", "error"]);
+  });
+
+  it("freezes prose that arrived after a reasoning block below it", () => {
+    // Reasoning chunks with no thinking_start do not flag a step boundary, so
+    // the prose that follows them lands in the same freeze — after them.
+    const state = run([
+      { type: "thinking", text: "let me think" },
+      { type: "token", text: "Done." },
+      { type: "error", text: "boom" },
+    ]);
+
+    expect(state.messages.map((m) => m.kind)).toEqual(["thinking", "text", "error"]);
+  });
+
+  it("re-stamps the draft after a freeze, so the next step orders on its own", () => {
+    const state = run([
+      { type: "token", text: "First." },
+      { type: "tool_call", id: "t1", name: "bash_run" },
+      { type: "token", text: "Second." },
+      { type: "tool_call", id: "t2", name: "bash_run" },
+    ]);
+
+    // "First." was committed above t1 when the second token opened a new step;
+    // "Second." is still in flight and stamped before t2.
+    expect(state.messages.map((m) => m.kind)).toEqual(["text", "tools"]);
+    expect(state.draft).toBe("Second.");
+    expect(state.draftSeq).not.toBeNull();
+    expect(state.draftSeq!).toBeLessThan(state.liveToolCalls[0].seq!);
+  });
+
   it("drops the draft when a guardrail nudge sends the model back to work", () => {
     // The symptom this exists for: a finished-looking answer appearing in the
     // transcript and then being taken out of it again.
@@ -628,7 +669,7 @@ describe("a turn parked on a question", () => {
   it("stays stopped when the answer ends the run", () => {
     const state = run([
       { type: "submit_query", text: "go" },
-      { type: "continue_prompt", id: "c1", summary: "3 steps left" },
+      plan,
       { type: "prompt_answered", resumes: false },
     ]);
 
@@ -651,11 +692,11 @@ describe("a turn parked on a question", () => {
     ]).busy).toBe(false);
   });
 
-  it("parks the same way on the continue prompt", () => {
+  it("parks the same way on a second card", () => {
     const state = run([
       { type: "submit_query", text: "go" },
       { type: "token", text: "Step one done." },
-      { type: "continue_prompt", id: "c1", summary: "3 steps left" },
+      plan,
     ]);
 
     expect(state.busy).toBe(false);

@@ -14,10 +14,6 @@ from .dispatch import _dispatch_tool_calls, _post_dispatch_inject
 from .readonly_guard import filter_readonly_tool_calls
 from .plan_loop import _run_plan_mode
 from ..config.constants import (
-    MAX_AGENT_STEPS,
-    AGENT_STEP_SOFT_BUDGET,
-    AGENT_STEP_EXTENSION,
-    AGENT_STEP_HARD_CEILING,
     AGENT_EMPTY_TURN_RETRIES,
     NUDGE_MAX_CONSECUTIVE_NOOP,
     THINKING_DEPTH_AUTO,
@@ -32,7 +28,6 @@ from ..guardrails.workflow import (
     empty_turn_retry_message,
     STEP_LIMIT_NUDGE,
     TERMINATION_STEP_LIMIT,
-    TERMINATION_USER_STOPPED,
 )
 from ..guardrails.nudges import (
     drop_transient_reminders,
@@ -335,22 +330,6 @@ def _turn_may_be_rejected(
     )
 
 
-def _checkpoint_summary(messages: list[dict], execution_context: dict, step: int) -> str:
-    """Build a short progress blurb shown to the user at a soft-budget checkpoint."""
-    last_assistant = ""
-    for m in reversed(messages):
-        if m.get("role") == "assistant" and m.get("content"):
-            last_assistant = str(m["content"]).strip()
-            break
-    parts = [f"Reached {step} steps."]
-    dirty = sorted(execution_context.get("dirty_written_files", set()) or set())
-    if dirty:
-        parts.append("Modified: " + ", ".join(os.path.basename(p) for p in dirty[:8]))
-    if last_assistant:
-        parts.append(last_assistant[:400])
-    return "  ".join(parts)
-
-
 # Plan-approval choice labels. Shared with the user-question prompt so the loop
 # can map the selection back to an action.
 
@@ -371,17 +350,11 @@ async def _run_agent_loop(
 ) -> str:
     """Agent-mode step loop with policy guardrails, nudges, and history budgeting."""
     step = 0
-    # Interactive front-ends (CLI, WebSocket) let the user extend a long run.
-    # The loop runs up to a soft budget, then asks whether to continue, granting
-    # another extension block each time up to a hard ceiling. Non-interactive
-    # callers (sub-agents, tests) keep a fixed budget == ceiling.
-    interactive = bool(getattr(agent, "allow_continue_prompt", False))
-    if interactive:
-        budget = AGENT_STEP_SOFT_BUDGET
-        hard = AGENT_STEP_HARD_CEILING
-    else:
-        budget = max_steps
-        hard = max_steps
+    # ``max_steps`` <= 0 means no ceiling: the run ends when the model delivers an
+    # answer, when a guard stops it, or when the user interrupts — never because a
+    # counter ran out mid-work. Callers that want a bound (runner, sub-agents, tests)
+    # pass a positive one.
+    budget = max_steps if max_steps > 0 else 0
     options = {'temperature': 0.3}
     # A sub-agent caps its own answer: left to the backend default it gets the whole
     # answer reserve (tens of thousands of tokens), and a step that runs away is
@@ -410,11 +383,11 @@ async def _run_agent_loop(
     # Consecutive turns that returned neither prose nor a tool call (see the guard
     # in the loop body).
     empty_turns = 0
-    # Only the two exits below reach the post-loop report; a final answer returns
-    # from inside the loop.
+    # Only a caller-supplied budget running out reaches the post-loop report; every
+    # other exit (a final answer, a guard) returns from inside the loop.
     termination = TERMINATION_STEP_LIMIT
 
-    while step < hard:
+    while budget == 0 or step < budget:
         # Pick up anything the user typed mid-run (chat-while-busy steering) and
         # inject it as the next user turn before this step's model call.
         _drain_steer(agent, messages)
@@ -448,7 +421,7 @@ async def _run_agent_loop(
         # Two steps before the current budget boundary, nudge the model to
         # summarise what's done and what remains so the handoff (user checkpoint
         # or final answer) is meaningful rather than a bare "reached limit".
-        if budget - 3 <= step < budget - 1:
+        if budget and budget - 3 <= step < budget - 1:
             inject_reminder(messages, STEP_LIMIT_NUDGE, category="step_limit", tagged=False,
                             execution_context=execution_context, step=step)
 
@@ -669,24 +642,7 @@ async def _run_agent_loop(
         )
         step += 1
 
-        # Soft-budget checkpoint: the interactive budget is spent but the hard
-        # ceiling is not yet reached — ask the user whether to keep going. A
-        # "yes" grants another extension block; a "no" ends the run gracefully.
-        if interactive and step >= budget and budget < hard:
-            summary = _checkpoint_summary(messages, execution_context, step)
-            if bool(agent._request_continue(summary)):
-                budget = min(budget + AGENT_STEP_EXTENSION, hard)
-                emit({"type": "status", "text": f"  ▸ Continuing — extended to {budget} steps."})
-            else:
-                emit({"type": "status", "text": "  ▸ Stopping at user request."})
-                termination = TERMINATION_USER_STOPPED
-                break
-
-    answer = (
-        "Stopped at the step checkpoint, at your request."
-        if termination == TERMINATION_USER_STOPPED
-        else "Reached the maximum number of steps without a final answer."
-    )
+    answer = "Reached the maximum number of steps without a final answer."
     sweep_builtin_checks(execution_context)
     if needs_incomplete_finalization(execution_context):
         # A run that ran out of steps is unfinished whatever else the ledger says —
@@ -722,7 +678,7 @@ async def run_agent_query(
     *,
     agent: Any,
     query: str,
-    max_steps: int = MAX_AGENT_STEPS,
+    max_steps: int = 0,
     history: list[dict] | None = None,
     mode: str | None = None,
     thinking: bool = False,

@@ -15,7 +15,6 @@ from .config import (
     DEFAULT_THINKING_DEPTH,
     THINKING_DEPTH_BUDGETS,
     clamp_thinking_depth,
-    MAX_AGENT_STEPS,
     STATE_DIR,
     SERVER_BASE,
     SKILL_BASE,
@@ -174,11 +173,6 @@ class MimirAgent:
         # immutable for the agent's lifetime, so there is nothing to re-resolve per
         # turn. Overridable at runtime via set_enforcement / the /enforcement command.
         self.enforcement: str = enforcement_level(model)
-        # When True, an interactive front-end (CLI / WebSocket) has wired up a
-        # continue-prompt handler, so the agent loop may ask the user to extend a
-        # long run past the soft step budget. Off by default (sub-agents/tests).
-        self.allow_continue_prompt = False
-
         self.sessions: dict[str, ClientSession] = {}
         self.tool_owner: dict[str, str] = {}
         self.tools: list[dict] = []
@@ -666,15 +660,6 @@ class MimirAgent:
         if reply in ("y", "yes", "once"):
             return (True, False)
         return (False, False)
-
-    def _request_continue(self, summary: str) -> bool:
-        """Ask whether to continue past the soft step budget.
-
-        Default (non-interactive) behaviour returns False so the run stops at the
-        budget. Interactive front-ends replace this with a handler that prompts
-        the user (CLI ``input()`` or a WebSocket continue card).
-        """
-        return False
 
     def _request_user_question(self, questions: list) -> dict:
         """Ask the user one or more clarifying questions (``ask_user_question`` tool).
@@ -1198,7 +1183,7 @@ class MimirAgent:
     async def run(
         self,
         query: str,
-        max_steps: int = MAX_AGENT_STEPS,
+        max_steps: int = 0,  # 0 = no ceiling; the run ends when the work does
         history: list[dict] | None = None,
         mode: str | None = None,
         thinking: bool = False,

@@ -102,7 +102,6 @@ class _AgentWorker:
         # Queues for cross-thread communication.
         self.out_q: _queue.Queue[dict] = _queue.Queue()   # agent → WS
         self._approval_q: _queue.Queue[dict] = _queue.Queue()  # WS → approval shim
-        self._continue_q: _queue.Queue[dict] = _queue.Queue()  # WS → continue shim
         self._question_q: _queue.Queue[dict] = _queue.Queue()  # WS → question shim
         self._query_q: _queue.Queue[dict | None] = _queue.Queue()  # WS → query loop
         self._steer_q: _queue.Queue[str] = _queue.Queue()  # WS → running agent (mid-run steering)
@@ -300,10 +299,6 @@ class _AgentWorker:
 
             # Patch approval to route through WS.
             agent._request_tool_approval = self._approval_shim
-            # Allow the agent loop to ask the user to extend a long run, routed
-            # through the same WS request/response shim pattern as approvals.
-            agent.allow_continue_prompt = True
-            agent._request_continue = self._continue_shim
             # Route agent clarification questions (the ``ask_user_question`` tool,
             # delivered via MCP elicitation) through the same WS shim pattern.
             agent._request_user_question = self._question_shim
@@ -564,14 +559,14 @@ class _AgentWorker:
     def _await_response(self, q: "_queue.Queue[dict]") -> dict | None:
         """Block until a WS response lands on ``q`` — with no wall-clock timeout.
 
-        An unanswered approval/continue/question must keep the agent *parked*: it
+        An unanswered approval/question must keep the agent *parked*: it
         must never silently proceed just because the user was slow to respond.
         So we wait indefinitely instead of timing out. To stay responsive to the
         Stop button, we poll in short slices and bail the moment the agent's
         cancel flag is set (from the WS thread), returning ``None`` for cancelled.
 
         This is the single seam every WS prompt (approval, out-of-workspace path,
-        continue, question) blocks on, so it is where the wait is marked as *human*
+        question) blocks on, so it is where the wait is marked as *human*
         time — excluded from the tool-call timeout budget it sits inside.
         """
         try:
@@ -718,29 +713,10 @@ class _AgentWorker:
             return (True, False)
         return (False, False)
 
-    def _continue_shim(self, summary: str) -> bool:
-        """Sync continue-prompt — blocks the background thread until the WS client responds.
-
-        Mirrors ``_approval_shim``: emits a ``continue_prompt`` card to the client
-        and blocks the agent worker thread (not the WS event loop) until a
-        ``continue_response`` arrives. A timeout or a non-"y" choice stops the run.
-        """
-        req_id = str(uuid.uuid4())
-        self._emit_prompt({
-            "type": "continue_prompt",
-            "id": req_id,
-            "summary": f"{self._detached_prefix()}{summary}",
-        })
-        # No timeout: keep the agent parked until answered (Stop cancels).
-        response = self._await_response(self._continue_q)
-        if response is None:
-            return False
-        return response.get("choice", "n") == "y"
-
     def _question_shim(self, questions: list) -> dict:
         """Sync clarification questions — blocks the worker thread until answered.
 
-        Mirrors ``_continue_shim``: emits a ``user_question`` card carrying the whole
+        Mirrors ``_approval_shim``: emits a ``user_question`` card carrying the whole
         batch of questions to the client and blocks the agent worker thread (not the
         WS event loop) until a ``user_question_response`` arrives. The frontend shows
         the questions one at a time and returns all ``answers`` together. A cancel
@@ -868,7 +844,7 @@ class _AgentWorker:
         approving something the user never saw.
         """
         self._pending_prompt = None
-        for q in (self._approval_q, self._continue_q, self._question_q):
+        for q in (self._approval_q, self._question_q):
             while True:
                 try:
                     q.get_nowait()
@@ -1052,9 +1028,6 @@ class _AgentWorker:
 
     def resolve_approval(self, choice: str, approved_files: list | None = None) -> None:
         self._approval_q.put({"choice": choice, "approved_files": approved_files})
-
-    def resolve_continue(self, choice: str) -> None:
-        self._continue_q.put({"choice": choice})
 
     def resolve_question(self, answers: list | None) -> None:
         self._question_q.put({"answers": answers or []})

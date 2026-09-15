@@ -65,7 +65,7 @@ The README is an overview; the authoritative detail lives in dedicated docs:
 | [`PLUGINS_DETAILED.md`](PLUGINS_DETAILED.md) | Authoring skills, servers, policies, nudges, base prompt |
 | [`CONTRIBUTING.md`](CONTRIBUTING.md) | Dev environment, running the tests, opening a PR |
 
-Tunable thresholds (timeouts, history/compaction budgets, step limit, context sizes) are
+Tunable thresholds (timeouts, history/compaction budgets, context sizes) are
 centralized in [`client/config/constants.py`](mimir/client/config/constants.py).
 
 ## Quick start
@@ -220,21 +220,19 @@ flowchart TD
     MODE -->|plan| PLAN["🧭 Plan only<br/><small>gather evidence → write the answer</small>"]
     MODE -->|act| STEER
 
-    subgraph LOOP ["&nbsp;🔁 Work loop &nbsp;·&nbsp; repeats until done or the step limit&nbsp;"]
+    subgraph LOOP ["&nbsp;🔁 Work loop &nbsp;·&nbsp; repeats until the work is done&nbsp;"]
         direction TB
-        STEER["📥 Pick up anything you typed mid-run<br/><small>+ warn when near the step limit</small>"] --> BUDGET["✂️ Keep the conversation within memory limits"]
+        STEER["📥 Pick up anything you typed mid-run"] --> BUDGET["✂️ Keep the conversation within memory limits"]
         BUDGET --> PIN["📌 Remind the model what's been found so far"] --> CALL["🛰️ Ask the AI model<br/><small>vLLM / Ray / Ollama</small>"]
         CALL --> RESP["🧠 Read the model's reply"]
         RESP --> TC{"Did it ask to<br/>use tools?"}
         TC -->|yes| DISP["🛠️ Run the requested tools<br/><small>reads at once · writes one by one<br/>skip duplicates · avoid loops · time-limited</small>"]
         DISP --> INJ["➕ Feed the results back to the model"]
-        INJ --> CHK{"Long run —<br/>keep going?"}
-        CHK -->|continue| STEER
+        INJ --> STEER
         TC -->|no| NUDGE{"Needs a nudge<br/>to finish properly?"}
         NUDGE -->|"yes"| STEER
     end
 
-    CHK -->|stop| DONE
     NUDGE -->|no| DONE["✅ Wrap up<br/><small>save what was learned · apply pending changes</small>"]
     PLAN --> DONE
     DONE --> A(["💬 Answer"])
@@ -249,7 +247,7 @@ flowchart TD
     class Q,A entry;
     class CTX,SYS,PLAN prep;
     class STEER,BUDGET,PIN,CALL,RESP,INJ step;
-    class MODE,TC,CHK,NUDGE decision;
+    class MODE,TC,NUDGE decision;
     class DISP action;
     class DONE done;
 ```

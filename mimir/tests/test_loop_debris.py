@@ -38,7 +38,7 @@ class _LoopRunner(unittest.TestCase):
     """Drives the real agent loop against a scripted backend."""
 
     def _run(self, script, *, max_steps=8):
-        agent = RunAgentQueryNonInteractiveTests._query_agent(self, {"n": 0})
+        agent = RunAgentQueryNonInteractiveTests._query_agent(self)
         backend = ScriptedBackend(script)
         emitted: list[dict] = []
 
@@ -177,7 +177,7 @@ class SkillContextTests(unittest.TestCase):
     """The skill block belongs in the system message, not appended after the query."""
 
     def _messages_for(self, history):
-        agent = RunAgentQueryNonInteractiveTests._query_agent(self, {"n": 0})
+        agent = RunAgentQueryNonInteractiveTests._query_agent(self)
         agent.skills = {"refactor": {"content": "METHOD."}}
         agent.detect_skill_implicit = None
         seen: dict = {}

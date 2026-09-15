@@ -145,7 +145,6 @@ class _LoopAgent:
     tool_owner: dict = {}
     tool_caps: dict = {}
     thinking_budget = -1
-    allow_continue_prompt = False
     _cancel_flag = None
     approvals = types.SimpleNamespace(flush_pending_review=lambda: None)
 

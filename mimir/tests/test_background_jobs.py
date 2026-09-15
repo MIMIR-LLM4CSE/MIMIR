@@ -921,7 +921,7 @@ class DetachedSessionResumeTests(unittest.TestCase):
     def test_a_prompt_from_a_detached_turn_still_reaches_the_user(self) -> None:
         # An approval or a question parks the turn until it is answered. Filtered as
         # foreign — which it is — it would park that turn forever.
-        for kind in ("approval", "continue_prompt", "user_question"):
+        for kind in ("approval", "user_question"):
             with self.subTest(kind=kind):
                 self.assertFalse(
                     self.session._is_foreign_event({"type": kind, "session_id": self.a.id}))

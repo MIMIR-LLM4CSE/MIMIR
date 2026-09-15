@@ -706,10 +706,6 @@ class MimirAgentViewProvider implements vscode.WebviewViewProvider {
         title = "MIMIR attend votre approbation.";
         kind = "warn";
         break;
-      case "continue_prompt":
-        title = "MIMIR attend votre confirmation pour continuer.";
-        kind = "warn";
-        break;
       case "todo_prompt":
         title = "MIMIR a besoin de votre intervention.";
         kind = "warn";

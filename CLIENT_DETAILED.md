@@ -25,7 +25,7 @@ about structure and flow. The VS Code frontend has its own file,
 | `tool_execution/` | argument normalization, path rewriting, post-write checks, result formatting |
 | `ui/` | the frontends — `ui/cli/` and `ui/ws/`, which share nothing |
 | `agent_core.py` | **`MimirAgent`**, the engine every frontend pilots. Not UI |
-| `human_pause.py` | the one blocking-prompt seam (approvals, continue, plan approval, elicitation) |
+| `human_pause.py` | the one blocking-prompt seam (approvals, plan approval, elicitation) |
 | `event_sink.py` | `emit()` — structured events to a bound callback (WS) or JSON on stdout (CLI) |
 | `mimir/runner/` | the headless batch engine. A sibling of `client/`, not under it |
 
@@ -35,7 +35,7 @@ One orchestrator plus focused siblings, all under `query_engine/`:
 
 | Module | Owns |
 |---|---|
-| `agent_loop.py` | orchestrator: `run_agent_query`, `_run_agent_loop`, `_advertised_tools`, `_drain_steer`, `_sync_checklist`, `_checkpoint_summary` |
+| `agent_loop.py` | orchestrator: `run_agent_query`, `_run_agent_loop`, `_advertised_tools`, `_drain_steer`, `_sync_checklist` |
 | `plan_loop.py` | `_run_plan_mode`, `_request_plan_decision`, the `_PLAN_*` labels. Tail-calls `_run_agent_loop` (lazy import — the only cycle point) |
 | `readonly_guard.py` | `filter_readonly_tool_calls` — the call-time write/exec guard the read-only modes share |
 | `dispatch.py` | `_dispatch_tool_calls`, `_post_dispatch_inject`, the spin and dedup guards |
@@ -76,9 +76,6 @@ All in `config/constants.py` unless noted.
 
 | Constant | Value | Bounds |
 |---|---|---|
-| `MAX_AGENT_STEPS` | 100 | the fixed ceiling for a non-interactive caller |
-| `AGENT_STEP_SOFT_BUDGET` | 50 | where an interactive front-end asks to continue |
-| `AGENT_STEP_EXTENSION` / `AGENT_STEP_HARD_CEILING` | 50 / 200 | one extension, and the wall |
 | `TOOL_CALL_TIMEOUT_SECS` | 120 | default per-call wall; a tool may declare its own |
 | `TOOL_CALL_TIMEOUT_MAX_SECS` | 1200 | the clamp on a tool-declared wall |
 | `VALIDATION_RETRY_BUDGET` | 5 | failures of one file, or one command, before release |
@@ -371,7 +368,7 @@ whenever the todo file's mtime moves *and* the rebuilt prompt actually differs.
 Every chat template appends its generation prompt after the last message, so whatever sits
 there is what the model is asked to respond to or continue — and a checklist has nothing to
 answer. The symptom is template-dependent and the failure is not: one template continued the
-block's own text until the step budget ran out, another emitted a short reasoning block then
+block's own text until the run was stopped, another emitted a short reasoning block then
 EOS. Measured on one backend: **37 empty turns / 108 draws** with the block in the tail,
 **0 / 84** without, **0 / 40** with the same text in `messages[0]`. The numbers say where it
 was quantified, not where it applies.
@@ -489,8 +486,7 @@ is why it sits at the root.
 - **The report speaks only in the past tense.** The termination reason is computed where the
   loop exits and passed in, rather than inferred downstream from a retry budget:
   budget-with-room-left means "the loop would try again" only while the loop runs, and read
-  from a final report it became a promise nobody was going to keep. It also stops a user stop
-  at the step checkpoint being reported as a step limit.
+  from a final report it became a promise nobody was going to keep.
 - `evidence_handback_message(ctx)` — once per query, before the report is assembled, the
   ledger is injected as a user turn so the model rewrites its summary having *seen* it.
   "Successfully implemented, complete and correct" printed above "Modified files never
@@ -616,8 +612,7 @@ format in [POLICY.md](POLICY.md#verification-ledger).
 
 - **Setup** — reset the per-query tool cache, build a fresh `ExecutionContext`, apply the
   carry context, assemble the system prompt.
-- **`_stream_chat()`** — iterative streaming backend calls, bounded by the step budget,
-  retrying transient failures with exponential backoff and jitter, cancel-aware. Thinking
+- **`_stream_chat()`** — iterative streaming backend calls, retrying transient failures with exponential backoff and jitter, cancel-aware. Thinking
   blocks stream for live display but are **excluded from history**: reasoning is never
   re-fed. UI events go through `emit()`.
 - **`_dispatch_tool_calls()`** — dedups `(name, args)` within a step, and across steps for
@@ -626,10 +621,12 @@ format in [POLICY.md](POLICY.md#verification-ledger).
   `asyncio.wait_for` with the wall `capabilities.timeout_for` resolves — the tool's own
   `timeout_secs` if it declared one, else `TOOL_CALL_TIMEOUT_SECS`, clamped by
   `TOOL_CALL_TIMEOUT_MAX_SECS`.
-- **Step budget** — a checkpoint nudge two steps before the boundary. An interactive
-  front-end runs to `AGENT_STEP_SOFT_BUDGET`, then asks to extend by `AGENT_STEP_EXTENSION`
-  up to `AGENT_STEP_HARD_CEILING`, stopping gracefully on decline. A non-interactive caller
-  keeps a fixed budget.
+- **Step budget** — there is none. A query runs for as many steps as the work takes: it
+  ends when the model delivers an answer, when a guard stops it (empty turns, validation
+  budget), or when the user interrupts. Only a caller that asks for a bound gets one —
+  the runner and `spawn_agent` pass their own `max_steps` (30), and the loop nudges the
+  model to summarise two steps before that boundary. `max_steps` 0, the default, means
+  no ceiling.
 
 **Three cross-step repeat mechanisms**, all keyed on the call and its arguments:
 
@@ -807,9 +804,9 @@ frontends pilot, not a frontend.
 
 ### `human_pause.py`
 
-The blocking-prompt seam every "ask the human and wait" path shares — approvals, the
-continue question, plan approval, tool elicitation — so a frontend wires one hook instead of
-four, and a headless run neutralises them all at once.
+The blocking-prompt seam every "ask the human and wait" path shares — approvals, plan
+approval, tool elicitation — so a frontend wires one hook instead of three, and a headless
+run neutralises them all at once.
 
 ---
 
@@ -905,7 +902,7 @@ integration**; only the integration knows both.
   and builds the JSON summary. `pass_rate` is over **non-skipped** tasks.
   `get_backend_override` injects a backend factory for a model-free CI mode.
 - **Unattended approval**: `_install_auto_approve(agent)` replaces the approval hook with an
-  always-approve shim and disables the continue prompt. Batch mode already auto-approves
+  always-approve shim. Batch mode already auto-approves
   writes, but non-batch tools (execution, shell) would otherwise block on input, so the shim
   approves *every* tool. **This runs every tool without confirmation — point the engine only
   at trusted workloads, in a sandbox.**

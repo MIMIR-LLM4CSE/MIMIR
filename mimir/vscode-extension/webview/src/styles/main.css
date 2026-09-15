@@ -3172,11 +3172,12 @@ body.vscode-light .hljs-deletion, body.vscode-high-contrast-light .hljs-deletion
   box-sizing: border-box;
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  justify-content: center;
   flex-shrink: 0;
-  padding: 2px 8px;
+  width: 20px;
+  height: 20px;
   border: 1px solid var(--accent);
-  border-radius: 10px;
+  border-radius: 50%;
   color: var(--accent-fg, var(--fg));
   background: var(--accent);
   font-size: 0.85em;

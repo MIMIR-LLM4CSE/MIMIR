@@ -43,7 +43,6 @@ from mimir.client.guardrails.workflow import (
     HEADLINE_INCOMPLETE,
     HEADLINE_REFUSED_ONLY,
     TERMINATION_STEP_LIMIT,
-    TERMINATION_USER_STOPPED,
     _collect_completion_issues,
     finalize_incomplete_answer,
     COMPLETION_MARKER,
@@ -682,15 +681,6 @@ class RefusedActionReportTests(_ChecklistFixture):
         self.assertEqual(self._headline(out), HEADLINE_INCOMPLETE)
         self.assertIn("Not performed (you refused these", out)
         self.assertIn("the step budget ran out", out)
-
-    def test_a_user_stop_is_not_reported_as_a_step_limit(self):
-        out = finalize_incomplete_answer(
-            "Stopped at the step checkpoint, at your request.",
-            self._refused(),
-            TERMINATION_USER_STOPPED,
-        )
-        self.assertIn("you declined to continue", out)
-        self.assertNotIn("step budget ran out", out)
 
     def test_only_a_hand_back_counts_as_an_unfinished_answer(self):
         self.assertTrue(is_incomplete_answer(

@@ -1039,7 +1039,7 @@ class RunPlanModeTests(unittest.TestCase):
 
 
 class RunAgentQueryNonInteractiveTests(unittest.TestCase):
-    def _query_agent(self, continue_calls):
+    def _query_agent(self):
         class _QueryAgent:
             mode = "agent"
             model = "dummy"
@@ -1047,7 +1047,6 @@ class RunAgentQueryNonInteractiveTests(unittest.TestCase):
             tool_owner = {}
             tool_caps = {}
             thinking_budget = -1
-            allow_continue_prompt = False
             _cancel_flag = None
 
             @staticmethod
@@ -1084,15 +1083,10 @@ class RunAgentQueryNonInteractiveTests(unittest.TestCase):
             def _update_carry_context(self, execution_context):
                 pass
 
-            def _request_continue(self, summary):
-                continue_calls["n"] += 1
-                return False
-
         return _QueryAgent()
 
     def test_two_step_script_returns_final_answer_without_prompting(self) -> None:
-        continue_calls = {"n": 0}
-        agent = self._query_agent(continue_calls)
+        agent = self._query_agent()
 
         backend = ScriptedBackend([
             {"content": "working", "tool_calls": [_tool_call("noop")]},
@@ -1116,7 +1110,6 @@ class RunAgentQueryNonInteractiveTests(unittest.TestCase):
             )
 
         self.assertEqual(result, "final answer")
-        self.assertEqual(continue_calls["n"], 0)   # non-interactive: never prompts
         self.assertEqual(len(backend.calls), 2)     # tool-call step, then final answer
 
 
@@ -1128,7 +1121,7 @@ class LiveMessagesExposureTests(RunAgentQueryNonInteractiveTests):
     """
 
     def test_live_messages_track_the_run_then_clear(self) -> None:
-        agent = self._query_agent({"n": 0})
+        agent = self._query_agent()
         seen: list[int] = []
 
         backend = ScriptedBackend([
@@ -1193,8 +1186,7 @@ class SteerInjectionInLoopTests(RunAgentQueryNonInteractiveTests):
     """The steer is injected at the next step boundary of the real agent loop."""
 
     def test_steer_reaches_the_next_model_call(self) -> None:
-        continue_calls = {"n": 0}
-        agent = self._query_agent(continue_calls)
+        agent = self._query_agent()
         # Simulate a steer that arrives WHILE step 1 runs: the first drain (top of
         # step 1) sees nothing; the message is queued and picked up at step 2's drain.
         drains = {"n": 0}
@@ -1245,8 +1237,7 @@ class SteerInjectionInLoopTests(RunAgentQueryNonInteractiveTests):
         The checklist now lives in messages[0], so a steer stays last.
         """
         import tempfile
-        continue_calls = {"n": 0}
-        agent = self._query_agent(continue_calls)
+        agent = self._query_agent()
 
         # A live checklist, so this test exercises the shape that used to bury steers.
         d = tempfile.mkdtemp()
@@ -1311,8 +1302,7 @@ class EvidenceHandbackTests(RunAgentQueryNonInteractiveTests):
     """
 
     def _run_two_answers(self, ec_holder):
-        continue_calls = {"n": 0}
-        agent = self._query_agent(continue_calls)
+        agent = self._query_agent()
         backend = ScriptedBackend([
             {"content": "All done, complete and correct."},
             {"content": "Edited solver.f90; it was never checked."},
@@ -1375,7 +1365,7 @@ class AskModeInLoopTests(RunAgentQueryNonInteractiveTests):
     """
 
     def _ask_agent(self):
-        agent = self._query_agent({"n": 0})
+        agent = self._query_agent()
         agent.mode = "ask"
         agent._normalize_mode = staticmethod(lambda mode: "ask")
         # The shared stub's _normalize_arguments is an identity; the guard needs the
@@ -1464,7 +1454,7 @@ class MidQueryModeSwitchTests(RunAgentQueryNonInteractiveTests):
     }
 
     def _agent(self, start_mode="agent"):
-        agent = self._query_agent({"n": 0})
+        agent = self._query_agent()
         agent.mode = start_mode
         agent._normalize_mode = staticmethod(lambda mode: mode)
         agent._normalize_arguments = staticmethod(MimirAgent._normalize_arguments)
@@ -1603,7 +1593,7 @@ class EmptyTurnTests(unittest.TestCase):
 
     def _run(self, script):
         # Same non-interactive stub the step-budget tests drive the loop with.
-        agent = RunAgentQueryNonInteractiveTests._query_agent(self, {"n": 0})
+        agent = RunAgentQueryNonInteractiveTests._query_agent(self)
         backend = ScriptedBackend(script)
         emitted: list[dict] = []
 
@@ -1946,7 +1936,7 @@ class HeldDraftTests(RunAgentQueryNonInteractiveTests):
     """
 
     def _run(self, responses, *, pending, nudge_fires):
-        agent = self._query_agent({"n": 0})
+        agent = self._query_agent()
         backend = ScriptedBackend(responses)
         streamed: list[str] = []
         fired = {"n": 0}

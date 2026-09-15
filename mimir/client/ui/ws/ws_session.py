@@ -54,7 +54,7 @@ _WAKE_SUMMARY_LIMIT = 2000
 # during a background-job wake in another session) would leave the turn waiting on an
 # answer the user was never shown. They carry their ``session_id``, so the client can
 # say which conversation is asking.
-_INTERACTION_EVENTS = frozenset({"approval", "continue_prompt", "user_question"})
+_INTERACTION_EVENTS = frozenset({"approval", "user_question"})
 
 
 def _compact_summary(payload: dict) -> str:
@@ -157,8 +157,9 @@ class _Session:
 
     async def run(self) -> None:
         # Send ready immediately so the webview transitions out of "connecting".
+        greeting = self._greeting()
         try:
-            await self.ws.send(json.dumps(self._greeting()))
+            await self.ws.send(json.dumps(greeting))
         except Exception:
             return
 
@@ -182,6 +183,19 @@ class _Session:
 
         # Last, so the card lands under a chat that is already on screen.
         await self._resend_parked_prompt()
+
+        # The greeting above may have said "not ready" and the worker may have come
+        # up since. It announces that once, by queueing a second ``ready`` on out_q —
+        # and ``_drop_stale_events`` empties that queue when the worker is idle, which
+        # is exactly what an agent that just finished starting is. The announcement
+        # fell into that gap and nothing ever replaced it, so the chat sat on
+        # "starting the agent" for the life of the socket with a working agent behind
+        # it. Asking the worker again, after the gap has closed, costs one message.
+        if not greeting["agent_ready"] and self.worker.agent_ready():
+            try:
+                await self.ws.send(json.dumps(self._greeting()))
+            except Exception:
+                return
 
         drain_task = asyncio.create_task(self._drain_loop())
         try:
@@ -841,7 +855,6 @@ class _Session:
         "steer": "_handle_steer",
         "divert_to_background": "_handle_divert_to_background",
         "approval_response": "_handle_approval_response",
-        "continue_response": "_handle_continue_response",
         "user_question_response": "_handle_user_question_response",
         "batch_review_accept": "_handle_batch_review_accept",
         "batch_review_revert": "_handle_batch_review_revert",
@@ -1344,9 +1357,6 @@ class _Session:
 
     async def _handle_approval_response(self, msg: dict) -> None:
         self.worker.resolve_approval(msg.get("choice", "n"), msg.get("approved_files"))
-
-    async def _handle_continue_response(self, msg: dict) -> None:
-        self.worker.resolve_continue(msg.get("choice", "n"))
 
     async def _handle_user_question_response(self, msg: dict) -> None:
         self.worker.resolve_question(msg.get("answers"))

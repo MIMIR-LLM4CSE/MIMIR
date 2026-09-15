@@ -113,7 +113,10 @@ webview/src/
 ├── types.ts                  ← ALL shared TypeScript types (ServerMessage, ChatMessage, …)
 ├── hooks/
 │   ├── useWebSocket.ts       ← postMessage bridge; send(), connect(), createSession(), …
-│   └── useElapsed.ts         ← ticking elapsed-time counter for a running turn
+│   ├── useElapsed.ts         ← ticking elapsed-time counter for a running turn
+│   └── useStickToBottom.ts   ← follow a pane's bottom while it streams, and let go when
+│                               the reader scrolls up. Used by the transcript and by the
+│                               live reasoning panel
 ├── state/
 │   └── chatReducer.ts        ← the chat state machine: every message, tool row and
 │                               thinking block the transcript holds. The reducer never
@@ -142,7 +145,6 @@ webview/src/
     │                            the send button rather than in the settings popover,
     │                            since an auto mode answers cards for the user
     ├── ModeSwitcher.tsx       ← mode button and picker; the active mode colours the chat
-    ├── ContinuePrompt.tsx     ← the "keep going?" card at the step budget
     ├── UserQuestion.tsx       ← a structured question the agent asked (elicitation)
     ├── PlanBar.tsx            ← plan-mode progress bar above the input
     ├── ResumePlanPrompt.tsx   ← offers to resume an unfinished checklist on reopen
@@ -157,6 +159,8 @@ webview/src/
     ├── MentionAutocomplete.tsx / mentionUtils.ts   ← the `@` attach dropdown
     ├── SlashAutocomplete.tsx  / slashUtils.ts      ← the `/` command dropdown
     ├── subAgentUtils.ts       ← sub-agent row grouping
+    ├── liveStreamUtils.ts     ← puts the turn in flight — prose, reasoning, tool rows —
+    │                            back in arrival order, for the live view and the freeze
     ├── transcriptUtils.ts     ← the transcript handed back to the server
     └── MimirIntro.tsx / MimirMark.tsx              ← brand assets injected by the host
 ```

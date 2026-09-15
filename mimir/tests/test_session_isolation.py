@@ -48,11 +48,10 @@ class WorkerStampTests(unittest.TestCase):
     def test_flush_prompts_drops_every_pending_answer(self):
         w = _bare_worker()
         w._approval_q.put({"choice": "y"})
-        w._continue_q.put({"choice": "y"})
         w._question_q.put({"answers": [{"selected": ["Accept & start"]}]})
         w._steer_q.put("hurry up")
         w.flush_prompts()
-        for q in (w._approval_q, w._continue_q, w._question_q, w._steer_q):
+        for q in (w._approval_q, w._question_q, w._steer_q):
             self.assertTrue(q.empty())
 
 

@@ -11,7 +11,7 @@ interface Props {
  *
  * Questions are shown one at a time: submitting an answer advances to the next
  * one, and the last submit returns all answers together. Mirrors
- * {@link ContinuePrompt} (same `resume-*` overlay/modal classes). In single-select
+ * the resume card (same `resume-*` overlay/modal classes). In single-select
  * mode a click on an option submits immediately; in multi-select mode options
  * toggle and a Submit button confirms. A free-text "Other" field is always
  * available. A progress indicator ("2 / 3") shows when there are several questions.

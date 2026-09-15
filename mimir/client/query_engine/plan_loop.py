@@ -8,6 +8,7 @@ from ``agent_loop.py``.
 from __future__ import annotations
 
 import asyncio
+import itertools
 import json
 from typing import Any
 
@@ -260,7 +261,9 @@ async def _run_plan_mode(
             return
         inject_reminder(
             messages,
-            PLAN_TODO_NUDGE_EARLY if step <= max_steps - 5 else PLAN_TODO_NUDGE_LATE,
+            PLAN_TODO_NUDGE_EARLY
+            if max_steps <= 0 or step <= max_steps - 5
+            else PLAN_TODO_NUDGE_LATE,
             category="plan_todo", tagged=False,
             execution_context=execution_context, step=step,
         )
@@ -268,7 +271,9 @@ async def _run_plan_mode(
     base_options = {'temperature': 0.2, 'top_k': 25}
     auto_active = getattr(agent, "thinking_depth", None) == THINKING_DEPTH_AUTO
 
-    for plan_nudges in range(max_steps):
+    # Unbounded when the caller set no ceiling (max_steps <= 0) — plan mode gathers
+    # evidence for as long as the question needs.
+    for plan_nudges in (itertools.count() if max_steps <= 0 else range(max_steps)):
         # Pick up mid-run steering (chat-while-busy) before each plan-mode call.
         _drain_steer(agent, messages)
 

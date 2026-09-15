@@ -167,3 +167,99 @@ class GreetingTests(unittest.IsolatedAsyncioTestCase):
         sess.ws.send = _stop
         await sess.run()
         self.assertFalse(json.loads(sess.ws.sent[0])["agent_ready"])
+
+
+class _NoSessions:
+    """A store with nothing archived, so ``run`` takes the new-session path."""
+
+    @staticmethod
+    def list_sessions():
+        return []
+
+
+class _ClosedWS(_FakeWS):
+    """A socket that accepts sends and carries no inbound messages."""
+
+    def __aiter__(self):
+        async def _empty():
+            return
+            yield  # pragma: no cover - makes this an async generator
+
+        return _empty()
+
+
+class ReadinessAnnouncementTests(unittest.IsolatedAsyncioTestCase):
+    """The agent came up while the socket was being set up, and nobody was told.
+
+    The worker announces its readiness exactly once, by queueing a second ``ready``
+    on ``out_q``. ``run`` empties that queue right after greeting the client, on the
+    grounds that an idle worker's queue is debris — and an agent that has just
+    finished starting is idle. The announcement fell in that gap, the client kept the
+    ``agent_ready: False`` it was greeted with, and the chat offered "starting the
+    agent — waiting for the model backend" over an agent that was already up. It
+    stayed there as long as the socket lived: nothing repeats the announcement.
+    """
+
+    def _session(self, worker):
+        sess = SessionFencingTests._session(self, worker)
+        sess.ws = _ClosedWS()
+        # The session init between the greeting and the listen loop is not what is
+        # under test; what matters is that the readiness question is asked after it.
+        sess._purge_empty_sessions = lambda: None
+
+        async def _noop(*_a, **_kw):
+            return None
+
+        sess._send_sessions_list = _noop
+        sess._send_toggles = _noop
+        sess._create_new_session = _noop
+        sess._resend_parked_prompt = _noop
+        sess._drain_loop = _noop
+        sess._summary_task = None
+        sess.store = _NoSessions()
+        return sess
+
+    def _worker(self, agent):
+        w = _bare_worker()
+        w._agent = agent
+        w.model = "m"
+        w.is_busy = lambda: False
+        w.get_context_mode = lambda: "full"
+        w.get_enforcement = lambda: "light"
+        w.get_approval_mode = lambda: "manual"
+        w.get_thinking_profile = lambda: {}
+        return w
+
+    async def test_an_agent_that_comes_up_during_setup_is_announced(self):
+        w = self._worker(None)
+        sess = self._session(w)
+        # The gap itself: the worker finishes starting, queues its one announcement,
+        # and the stale-event purge throws it away.
+        original = sess._drop_stale_events
+
+        def _ready_then_purge():
+            w._agent = object()
+            w.out_q.put({"type": "ready", "model": "m", "agent_ready": True})
+            original()
+
+        sess._drop_stale_events = _ready_then_purge
+
+        await sess.run()
+
+        greetings = [json.loads(p) for p in sess.ws.sent if json.loads(p)["type"] == "ready"]
+        self.assertFalse(greetings[0]["agent_ready"])   # true when the socket opened
+        self.assertTrue(greetings[-1]["agent_ready"])   # true by the time it listens
+
+    async def test_an_agent_still_starting_is_not_announced_as_ready(self):
+        sess = self._session(self._worker(None))
+        await sess.run()
+        greetings = [json.loads(p) for p in sess.ws.sent if json.loads(p)["type"] == "ready"]
+        self.assertEqual(len(greetings), 1)
+        self.assertFalse(greetings[0]["agent_ready"])
+
+    async def test_an_agent_up_before_the_socket_is_greeted_once(self):
+        sess = self._session(self._worker(object()))
+        await sess.run()
+        greetings = [json.loads(p) for p in sess.ws.sent if json.loads(p)["type"] == "ready"]
+        self.assertEqual(len(greetings), 1)
+        self.assertTrue(greetings[0]["agent_ready"])

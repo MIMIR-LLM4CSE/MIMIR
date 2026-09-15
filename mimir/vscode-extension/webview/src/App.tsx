@@ -24,6 +24,7 @@ import type {
 } from "./types";
 import { createChatReducer, initialChatState } from "./state/chatReducer";
 import { useWebSocket, vscodePostMessage } from "./hooks/useWebSocket";
+import { useStickToBottom } from "./hooks/useStickToBottom";
 import { ChatThread } from "./components/ChatThread";
 import { PlanBar } from "./components/PlanBar";
 import { AgentSettings } from "./components/AgentSettings";
@@ -32,7 +33,6 @@ import { ModeSwitcher } from "./components/ModeSwitcher";
 import { TogglesPanel } from "./components/TogglesPanel";
 import { ConnectForm } from "./components/ConnectForm";
 import { ResumePlanPrompt } from "./components/ResumePlanPrompt";
-import { ContinuePrompt } from "./components/ContinuePrompt";
 import { UserQuestion } from "./components/UserQuestion";
 import { SessionsPanel } from "./components/SessionsPanel";
 import { ContextBar } from "./components/ContextBar";
@@ -86,7 +86,7 @@ export const App: React.FC = () => {
   // there are no stale-closure refs and the logic is unit-testable.
   const chatReducer = useMemo(() => createChatReducer(makeId), []);
   const [chatState, dispatch] = useReducer(chatReducer, initialChatState);
-  const { messages, draft, busy, liveToolCalls, liveThinkingBlocks } = chatState;
+  const { messages, draft, draftSeq, busy, liveToolCalls, liveThinkingBlocks } = chatState;
   // Mirror of reducer state for reads inside event callbacks (approval lookup,
   // session-load message preservation) without stale closures.
   const chatStateRef = useRef(chatState);
@@ -160,7 +160,6 @@ export const App: React.FC = () => {
   );
   const slashOpen = slash !== null && slashItems.length > 0;
   const [pendingResumeItems, setPendingResumeItems] = useState<TodoItem[] | null>(null);
-  const [continuePrompt, setContinuePrompt] = useState<{ id: string; summary: string } | null>(null);
   const [userQuestion, setUserQuestion] = useState<{
     id: string;
     questions: QuestionSpec[];
@@ -184,29 +183,24 @@ export const App: React.FC = () => {
   const [showSessionsPanel, setShowSessionsPanel] = useState(false);
 
   const bottomRef = useRef<HTMLDivElement>(null);
-  const chatThreadRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
-  // True when the user has scrolled up — pause auto-scroll until back at bottom.
-  const userScrolledUpRef = useRef(false);
+  // The pane follows the bottom of the thread as it grows, and lets go when the
+  // reader scrolls up. The hook owns that decision — see useStickToBottom for why
+  // it cannot be taken from the scroll position alone.
+  const {
+    ref: chatThreadRef,
+    stickRef: followBottomRef,
+    scrollToBottom,
+    follow: forceFollowBottom,
+    onScroll: handleChatScroll,
+  } = useStickToBottom<HTMLDivElement>();
+
   // Ref to the last user message element so we can scroll it to the top.
   const lastUserMsgRef = useRef<HTMLDivElement>(null);
   // Set on submit so the bottom-follow effect yields the next commit to
   // scrollQueryToTop (which anchors the new question at the top instead).
   const pendingScrollToTopRef = useRef(false);
-
-  const scrollToBottom = useCallback(() => {
-    if (userScrolledUpRef.current) return;
-    const el = chatThreadRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
-  }, []);
-
-  const handleChatScroll = useCallback(() => {
-    const el = chatThreadRef.current;
-    if (!el) return;
-    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
-    userScrolledUpRef.current = !atBottom;
-  }, []);
 
   // Scroll the newly submitted user message to the top of the chat pane.
   const scrollQueryToTop = useCallback(() => {
@@ -222,7 +216,7 @@ export const App: React.FC = () => {
   // the DOM has committed (unlike the synchronous scrollToBottom() calls in the
   // message handler, which read a stale scrollHeight from before React rendered
   // the new content and therefore lag behind streaming tokens / tool rows). It
-  // honours userScrolledUpRef, so a user who scrolled up is left undisturbed.
+  // honours the follow flag, so a reader who scrolled up is left undisturbed.
   useLayoutEffect(() => {
     // A fresh submit anchors the new question at the top (scrollQueryToTop),
     // so skip the bottom-follow for that one commit to avoid a bottom→top jump.
@@ -236,11 +230,8 @@ export const App: React.FC = () => {
   // Force-scrolls to bottom when an approval arrives so the live editing card
   // is visible regardless of whether the user had scrolled up.
   const scrollToApproval = useCallback(() => {
-    setTimeout(() => {
-      userScrolledUpRef.current = false;
-      scrollToBottom();
-    }, 80);
-  }, [scrollToBottom]);
+    setTimeout(forceFollowBottom, 80);
+  }, [forceFollowBottom]);
 
   // ── WebSocket message handler ─────────────────────────────────────────────
   // Scalar/config message types update local React state directly; the
@@ -374,15 +365,9 @@ export const App: React.FC = () => {
         setStreaming(msg.enabled);
         return;
 
-      // Both park the agent on a person: the card is local state, and the reducer
-      // is told the turn stopped producing (see parkOnPrompt) — which is also what
+      // Parks the agent on a person: the card is local state, and the reducer is
+      // told the turn stopped producing (see parkOnPrompt) — which is also what
       // hands the transcript, plan included, back to the server.
-      case "continue_prompt":
-        setContinuePrompt({ id: msg.id, summary: msg.summary });
-        dispatch(msg);
-        scrollToBottom();
-        return;
-
       case "user_question":
         setUserQuestion({
           id: msg.id,
@@ -430,7 +415,6 @@ export const App: React.FC = () => {
           // A reconnect to the *same* session keeps its cards: the worker is
           // still parked on them and will never re-send them.
           setUserQuestion(null);
-          setContinuePrompt(null);
           setPendingResumeItems(null);
           setBatchFiles([]);
         }
@@ -482,7 +466,6 @@ export const App: React.FC = () => {
     setTodos([]);
     setModel("");
     setPendingResumeItems(null);
-    setContinuePrompt(null);
     setUserQuestion(null);
     setActiveSessionId(null);
     setSessions([]);
@@ -621,22 +604,22 @@ export const App: React.FC = () => {
     }
     lastQueryRef.current = text;
     dispatch({ type: "submit_query", text });
-    userScrolledUpRef.current = false; // reset scroll lock on new query
+    followBottomRef.current = true; // a new query resumes following the bottom
     pendingScrollToTopRef.current = true; // let scrollQueryToTop win this commit
     send({ type: "query", text });
     scrollQueryToTop();
-  }, [input, busy, send, scrollQueryToTop]);
+  }, [input, busy, send, scrollQueryToTop, followBottomRef]);
 
   // Re-run the most recent query — surfaced as Retry on the latest error card.
   const retryLastQuery = useCallback(() => {
     const text = lastQueryRef.current;
     if (!text || busy) return;
     dispatch({ type: "submit_query", text });
-    userScrolledUpRef.current = false;
+    followBottomRef.current = true;
     pendingScrollToTopRef.current = true; // let scrollQueryToTop win this commit
     send({ type: "query", text });
     scrollQueryToTop();
-  }, [busy, send, scrollQueryToTop]);
+  }, [busy, send, scrollQueryToTop, followBottomRef]);
 
   const handleConnect = useCallback(
     (mdl: string, be: string, baseUrl: string, anthropicApiKey?: string, remember?: boolean) => {
@@ -931,17 +914,6 @@ export const App: React.FC = () => {
         />
       )}
 
-      {continuePrompt && (
-        <ContinuePrompt
-          summary={continuePrompt.summary}
-          onChoice={(cont) => {
-            send({ type: "continue_response", id: continuePrompt.id, choice: cont ? "y" : "n" });
-            dispatch({ type: "prompt_answered", resumes: cont });
-            setContinuePrompt(null);
-          }}
-        />
-      )}
-
       {/* ── Sessions panel ───────────────────────────────────────────── */}
       {showSessionsPanel && connection === "connected" && (
         <SessionsPanel
@@ -1016,12 +988,19 @@ export const App: React.FC = () => {
             }
             return <span className="model-name">{modelDisplayName(model)}</span>;
           })()}
-          {connection === "connected" && (
+          {/* Also while connecting: a connection can hang for the whole backend
+              timeout — minutes on a cold vLLM, and forever if the endpoint is
+              simply wrong — and offering no way out until it succeeds left the
+              only escape a window reload. Cancelling drops the socket and returns
+              to the connect form, where the endpoint can be corrected. */}
+          {(connection === "connected" || connection === "connecting") && (
             <button
               className="disconnect-btn"
-              title="Disconnect agent"
-              aria-label="Disconnect agent"
-              onClick={() => { disconnect(); resetSession(); }}
+              title={connection === "connecting" ? "Cancel connection" : "Disconnect agent"}
+              aria-label={connection === "connecting" ? "Cancel connection" : "Disconnect agent"}
+              onClick={connection === "connecting"
+                ? handleCancelConnect
+                : () => { disconnect(); resetSession(); }}
             >
               ⏏
             </button>
@@ -1033,6 +1012,7 @@ export const App: React.FC = () => {
           messages={messages}
           busy={busy}
           draft={draft}
+          draftSeq={draftSeq}
           liveToolCalls={liveToolCalls}
           liveThinkingBlocks={liveThinkingBlocks}
           loading={sessionLoading}
