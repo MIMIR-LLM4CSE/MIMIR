@@ -211,6 +211,34 @@ class ReadsAreAsStrictAsWritesTests(unittest.TestCase):
                 ss.SEARCH_ROOT = old
 
 
+class ReadsReachWhereWritesReachTests(unittest.TestCase):
+    """A file the agent may write without approval must be readable back.
+
+    The scratchpad was writable but not readable: the first read of a file just
+    written there was refused, and the agent concluded the edit tools could not
+    work outside the workspace.
+    """
+
+    def test_every_read_server_admits_the_scratchpad(self):
+        import server_code_intel as ci
+        import server_search as ss
+        with tempfile.TemporaryDirectory() as home, \
+                tempfile.TemporaryDirectory() as ws, \
+                unittest.mock.patch.dict(os.environ, {"MIMIR_SCRATCH_DIR": home}):
+            target = os.path.join(home, "probe.cc")
+            with open(target, "w") as fh:
+                fh.write("int x;\n")
+            self.assertEqual(sf._safe(target), os.path.realpath(target))
+            for mod in (ss, ci):
+                old = mod.SEARCH_ROOT
+                mod.SEARCH_ROOT = ws
+                try:
+                    self.assertEqual(mod._safe_root(target), os.path.realpath(target))
+                finally:
+                    mod.SEARCH_ROOT = old
+            self.assertEqual(ss.read_file_lines(target)["status"], "ok")
+
+
 class PathRoundTripTests(unittest.TestCase):
     """Every path the model *reads* must be usable where it *writes*.
 

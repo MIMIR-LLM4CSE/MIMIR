@@ -227,10 +227,37 @@ def launch(command: str, cwd: str, env: dict, preamble: str = "",
             "job_dir": _job_dir(job_key), "proc": proc}
 
 
+# Share of a finished run's budget given to its beginning; the end gets the rest.
+_ENDS_HEAD_SHARE = 0.25
+
+
+def _clip_ends(fh, size: int, max_bytes: int) -> str:
+    """The beginning and the end of an open binary file, with the middle elided.
+
+    Cut on line boundaries, so neither half starts or stops mid-line, and the marker
+    says how much was left out.
+    """
+    head_bytes = int(max_bytes * _ENDS_HEAD_SHARE)
+    tail_bytes = max_bytes - head_bytes
+    head = fh.read(head_bytes)
+    head = head[:head.rfind(b"\n") + 1] or head
+    fh.seek(size - tail_bytes)
+    tail = fh.read()
+    newline = tail.find(b"\n")
+    if 0 <= newline < len(tail) - 1:
+        tail = tail[newline + 1:]
+    omitted = size - len(head) - len(tail)
+    marker = f"\n[... {omitted} bytes of output omitted ...]\n\n".encode()
+    return (head + marker + tail).decode("utf-8", errors="replace")
+
+
 def _clip(path: str, max_bytes: int, keep: str) -> tuple[str, bool]:
     """*path*'s content, clipped to *max_bytes* from whichever end matters."""
     try:
         size = os.path.getsize(path)
+        if size > max_bytes and keep == "ends":
+            with open(path, "rb") as fh:
+                return _clip_ends(fh, size, max_bytes), True
         with open(path, errors="replace") as fh:
             if size > max_bytes and keep == "tail":
                 fh.seek(size - max_bytes)
@@ -240,11 +267,12 @@ def _clip(path: str, max_bytes: int, keep: str) -> tuple[str, bool]:
         return "", False
 
 
-def streams(job_key: str, max_bytes: int, keep: str = "head") -> tuple[str, str, bool]:
+def streams(job_key: str, max_bytes: int, keep: str = "ends") -> tuple[str, str, bool]:
     """The job's stdout and stderr so far, and whether either was clipped.
 
-    *keep* is "head" for a run that finished — the first error is what explains the
-    rest — and "tail" for one still going, where the frontier is the whole point.
+    *keep* is "ends" for a run that finished — the first error explains the rest, and
+    the last lines say how it ended — and "tail" for one still going, where the
+    frontier is the whole point.
     """
     out, out_cut = _clip(log_path(job_key), max_bytes, keep)
     errs, err_cut = _clip(err_path(job_key), max_bytes, keep)

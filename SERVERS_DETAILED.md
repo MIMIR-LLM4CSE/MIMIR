@@ -242,9 +242,12 @@ the state dir: `scratch_home()` → `MIMIR_SCRATCH_DIR` if set, else
 `<TMPDIR or /tmp>/mimir-<uid>-<workspace-id>`; `scratch_dir()` appends the active session
 id (from the `active_session` sidecar — the *only* thing it still needs the state dir for),
 falling back to the home outside a session. `standing_roots()` exposes the **home** as a
-standing sandbox root, one entry covering both. Both `server_files._safe` and
-`server_bash._is_within_workspace` pass it as `extra_roots` alongside `approved_roots()`,
-so the agent can write there without a user prompt — see `POLICY.md` → Out-of-Workspace
+standing sandbox root, one entry covering both. `server_files._safe`,
+`server_bash._is_within_workspace` and the read servers (`server_search`,
+`server_code_intel`) all pass it as `extra_roots` alongside `approved_roots()`, so the
+agent can write there without a user prompt and read back what it wrote. A read server
+that lacked it refused a file the agent had just written, and the agent concluded the
+edit tools did not work outside the workspace — see `POLICY.md` → Out-of-Workspace
 Access Approval for why it is separate from the user-approval sidecar, why scratch writes
 are excluded from the change ledger, and how `ensure_scratch_home()` vets a world-writable
 `/tmp`. Resolution never creates directories: a sandbox check runs on every call and must
@@ -501,7 +504,13 @@ Every run goes through the launcher now, detached or not: a blocking call starts
 and waits on it, polling the handle it got back. What that buys is output on disk
 rather than in a pipe nobody is left to drain — so a run stopped at the cap still
 reports what it printed (it is stopped exactly as before; only the bytes are kept), and
-one the user detaches mid-flight keeps everything it has already done. A blocking run's
+one the user detaches mid-flight keeps everything it has already done.
+
+A long finished run comes back as its **beginning and its end**, cut on whole lines, with
+the middle replaced by a marker that gives the bytes left out. The beginning holds the
+first error; the end says how the run finished. With the beginning alone, the model piped
+every build into `tail`, and a pipe holds the output back until the build ends, which hid
+its progress from the user. A run still going returns its tail instead. A blocking run's
 job directory is a scratch buffer, marked `ephemeral` in its `meta.json` and deleted
 the moment the call returns; a detached one's is the handle itself and is never swept.
 
@@ -647,7 +656,7 @@ client's classifier reads to decide approval and plan-mode availability.
 
 | Category | Commands | Plan mode | Approval |
 |---|---|---|---|
-| `neutral` | `pwd` `echo` `which` `basename` `dirname` `realpath` `df` `true` `false` `:` `printenv` `export` | ✅ | ❌ |
+| `neutral` | `pwd` `echo` `printf` `which` `basename` `dirname` `realpath` `df` `true` `false` `:` `printenv` `export` | ✅ | ❌ |
 | `read` | `cat` `head` `tail` `nl` `sed`◆ `wc` `cut` `sort`◆ `uniq` `comm` `tr` `fold` `column` `cksum` `md5sum` `sha256sum` `stat` `file` | ✅ | ❌ |
 | `search` | `grep` `rg` | ✅ | ❌ |
 | `inspect` | `ls` `find` `du` | ✅ | ❌ |
@@ -822,7 +831,10 @@ auto-approves everything.
   `cat` does, so `python /tmp/evil.py`, `gcc /tmp/x.c -o /tmp/x.out` and `pytest /etc/`
   are refused for the same reason `cat /etc/passwd` is; a workspace-local binary's own
   operands (`./solver.out /etc/secrets`) are checked too. `tr` is exempt: it reads stdin
-  only and its args are character sets.
+  only and its args are character sets. The neutral words (`echo`, `printf`, `which`, …)
+  are exempt too: their args are text. A script written line by line with `printf` was
+  refused because a quoted line starting with `/` was judged as a path. A redirection
+  target is still confined, whatever the command.
 - **A flag value is confined when the flag *writes*, and only then** — `WRITE_VALUE_FLAGS_BY_CMD`
   in `shell_paths.py` (`gcc/g++/gfortran/nvcc -o`, `javac -d`, `sort -o/--output`,
   `ruff --output-file`, `pytest --junitxml`, `mypy --cache-dir`, `cmake -B`, the TeX

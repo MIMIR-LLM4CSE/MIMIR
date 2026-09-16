@@ -359,3 +359,44 @@ class BlockingRunTests(unittest.TestCase):
         result = server_bash.bash_run("echo hi; sleep 1", timeout=30)
         self.assertEqual(result["status"], "ok")
         self.assertNotIn("background_job", result)
+
+
+class FinishedOutputClipTests(unittest.TestCase):
+    """A long finished run keeps its beginning and its end, not just the beginning.
+
+    With the head alone, a build's last lines (the final error, the linked target) were
+    cut, and the model piped every build into ``tail`` to see them — which holds the
+    output back until the build ends and hides its progress from the user.
+    """
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.mkdtemp()
+        self.path = os.path.join(self.tmp, "run.log")
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _write(self, lines: int) -> None:
+        with open(self.path, "w") as fh:
+            for i in range(lines):
+                fh.write(f"[{i:5d}] Building CXX object obj{i}.o\n")
+
+    def test_a_long_output_keeps_its_first_and_last_lines(self) -> None:
+        self._write(5000)
+        text, cut = _bash_jobs._clip(self.path, 4096, "ends")
+        self.assertTrue(cut)
+        lines = text.splitlines()
+        self.assertEqual(lines[0], "[    0] Building CXX object obj0.o")
+        self.assertEqual(lines[-1], "[ 4999] Building CXX object obj4999.o")
+        self.assertIn("bytes of output omitted", text)
+        # Whole lines only on both sides of the marker.
+        for line in lines:
+            if line and "omitted" not in line:
+                self.assertRegex(line, r"^\[\s*\d+\] Building CXX object obj\d+\.o$")
+        self.assertLess(len(text), 4096 + 100)
+
+    def test_a_short_output_is_returned_whole(self) -> None:
+        self._write(10)
+        text, cut = _bash_jobs._clip(self.path, 4096, "ends")
+        self.assertFalse(cut)
+        self.assertEqual(len(text.splitlines()), 10)

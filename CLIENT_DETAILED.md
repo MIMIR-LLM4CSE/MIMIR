@@ -941,7 +941,7 @@ installed.
 | `test_capability_consumers.py` | drift guard — fails if a declared capability has no live consumer |
 | `test_session_persistence.py` | the window/record split, WS compaction and its front-trim fallback, which one a resume restores, the turn boundary in both stale directions, and the cumulative marker count |
 | `test_scratchpad.py` | home resolution, the standing grant being the home, `ensure_scratch_home` refusing a symlink / foreign owner, and scratch writes staying out of `dirty_written_files` |
-| `test_absolute_paths.py` | every mutating tool rejects a relative path, names the resolved candidate, and writes nothing on rejection |
+| `test_absolute_paths.py` | every mutating tool rejects a relative path, names the resolved candidate, and writes nothing on rejection; every read server admits the scratchpad |
 | `test_bash_classify.py` / `test_bash_coverage.py` / `test_server_contracts.py` | segmentation and the tokenization-invariance guard, the corpus-measured credit rate, and the `-exec` policy |
 | `test_nudge_table.py` | the verification set is disjoint from the guidance set |
 | `test_env_resolution.py` | the mid-loop cascade fires at the failing call, shares the row's budget, respects enforcement — and a successful execution retracts `unresolved_modules` |

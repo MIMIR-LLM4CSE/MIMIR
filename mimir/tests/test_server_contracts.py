@@ -1161,11 +1161,22 @@ class BashServerTests(unittest.TestCase):
         self.assertEqual(
             PATH_INSENSITIVE_COMMANDS,
             {"tr", "echo", "which", "pwd", "df", "basename", "dirname",
-             "true", "false", ":", "printenv", "export"},
+             "true", "false", ":", "printenv", "export", "printf"},
             "a command stopped being path-confined")
         for command in ("cat", "gcc", "python3", "cd", "module", "rm", "git",
                         "a-command-nobody-classified", "./a.out"):
             self.assertTrue(takes_path_operands(command), command)
+
+    def test_printf_arguments_are_text_but_its_redirection_is_confined(self) -> None:
+        # A script written line by line with printf had a quoted line starting with
+        # '/' judged as a path outside the workspace, and the call was refused.
+        cwd = server_bash._WORKSPACE_ROOT
+        cmd = ("printf '%s\\n' 'x = 1' '/ spectrum is band-limited' "
+               "'/etc/passwd' > gen.py")
+        self.assertEqual(server_bash._validate_command(cmd, cwd)["status"], "ok")
+        self.assertEqual(
+            server_bash._validate_command("printf 'x' > /etc/cron.d/x", cwd)["status"],
+            "error")
 
     def test_a_workspace_script_can_be_made_executable_and_run(self) -> None:
         # Running a workspace script by path is already supported, but a script

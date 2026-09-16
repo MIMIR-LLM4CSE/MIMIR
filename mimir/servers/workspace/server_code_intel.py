@@ -40,6 +40,7 @@ from capabilities import (
 from responses import err, ok
 from root_paths import require_absolute, resolve_path_in_root
 from approved_roots import approved_roots
+from state_paths import standing_roots
 from lsp_client import LSPPool, path_for
 
 SEARCH_ROOT = os.environ.get(
@@ -77,7 +78,7 @@ _index_cache: dict | None = None
 
 def _safe_root(path: str) -> str:
     return resolve_path_in_root(path, SEARCH_ROOT, "search root",
-                                extra_roots=approved_roots())
+                                extra_roots=list(approved_roots()) + standing_roots())
 
 
 def _out_path(path: str) -> str:

@@ -251,7 +251,10 @@ _MODULE_ARG_RE = re.compile(
 _PARSE_HINTS = {
     "empty": "Provide at least one command.",
     "separator": "Check for a leading or doubled ';', '&&', '||' or '|'.",
-    "substitution": "Remove $(...), backticks, ${...}, or process substitution.",
+    "substitution": "Remove $(...), backticks, ${...}, or process substitution. "
+                    "Double quotes do not protect them. To run a script that "
+                    "contains them, write it to a file with the file-write tool "
+                    "and run that file.",
     "operator": "Chaining (';', '&&', '||', '|') and redirection ('> out.txt', "
                 "'2>&1') are allowed; backgrounding ('&') and subshells are not.",
     "heredoc": "A heredoc body is not a command this can validate. Pass the text as "
@@ -991,7 +994,7 @@ def bash_run(command: str, timeout: int = _DEFAULT_TIMEOUT,
                                             # without its line number costs a read
         gcc solver.c -O3 -o solver.out -lm && ./solver.out
         python -m pytest tests/test_thing.py -q     # also ruff / mypy / py_compile
-        ./solver.out > run.log 2>&1 && tail -20 run.log
+        make -j8 2>&1                       # no `| tail`: see "Output" below
         module load cuda && nvcc kernel.cu -o kernel.out
         pip list | grep -i numpy            # then: pip install <pkg>
 
@@ -1014,6 +1017,12 @@ def bash_run(command: str, timeout: int = _DEFAULT_TIMEOUT,
     - 'cd sub && pytest t.py' to work in a subdirectory. Every call starts at the
       workspace root and is its own shell, so a 'cd' or a 'module load' holds for the
       rest of that command only.
+
+    Output: a long result comes back as its beginning and its end, with the middle
+    left out and marked, so the first error and the last lines are both there. Do not
+    pipe a command into `tail` or `head` to shorten it: a pipe holds the output back
+    until the command ends, which hides a build's progress from the user while it
+    runs. For the same reason, leave a build's output unfiltered.
 
     Limits worth knowing before you retry something:
     - every path — file operand, '-o' target, redirection target, 'cd' destination —

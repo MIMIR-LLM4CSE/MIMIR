@@ -1153,6 +1153,11 @@ consent and let a stale sidecar revoke the scratchpad. The grant covers the scra
 The grant is the scratchpad specifically, not "outside is fine now". The temp dir itself, a
 same-named sibling, and the state dir all still prompt; `/etc/passwd` is still refused.
 
+Every server that resolves a path admits the grant: the file tools, the shell, and the read
+and code-navigation tools. A file the agent may write must be readable back. When the read
+tools lacked the grant, a read of a file just written there was refused, and the agent
+concluded the edit tools did not work outside the workspace.
+
 ### Where a new file goes
 
 Handled at the **tool boundary, not by a gate**: file tools reject relative paths. There is

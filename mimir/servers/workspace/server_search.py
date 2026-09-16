@@ -24,6 +24,7 @@ from responses import err, ok
 from root_paths import require_absolute, resolve_path_in_root
 from approved_roots import approved_roots
 from trusted_read_roots import trusted_read_roots
+from state_paths import standing_roots
 
 # Sandbox root — restrict all operations to this tree
 SEARCH_ROOT = os.environ.get(
@@ -48,6 +49,9 @@ def _extra_read_roots() -> list[str]:
     roots.extend(p for p in extra.split(os.pathsep) if p.strip())
     # Out-of-workspace paths the user approved this session (read/write/run).
     roots.extend(approved_roots())
+    # The scratchpad: server_files lets the agent write there without approval, so a
+    # file it just wrote must be readable back, or the refusal reads as "can't edit".
+    roots.extend(standing_roots())
     return roots
 
 mcp = FastMCP(

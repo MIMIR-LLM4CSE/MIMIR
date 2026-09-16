@@ -156,6 +156,9 @@ WRITE_COMMANDS = frozenset({"mv", "cp", "mkdir", "chmod"})
 NEUTRAL_COMMANDS = frozenset({
     "pwd", "echo", "which", "basename", "dirname", "realpath", "df",
     "true", "false", ":",
+    # Prints its format and arguments, like ``echo``: they are text, and a script
+    # passed line by line would otherwise have every quoted line judged as a path.
+    "printf",
     # Read and set the environment. Their arguments are words (``VAR=value``), not
     # paths, and unlike ``env`` neither can run a command; an ``export`` holds only
     # for the rest of the one chain, which is fresh per call.
