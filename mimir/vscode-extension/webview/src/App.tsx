@@ -206,6 +206,7 @@ export const App: React.FC = () => {
     stickRef: followBottomRef,
     scrollToBottom,
     follow: forceFollowBottom,
+    release: releaseFollowBottom,
     onScroll: handleChatScroll,
   } = useStickToBottom<HTMLDivElement>();
 
@@ -229,8 +230,15 @@ export const App: React.FC = () => {
   );
   const focusRun = useCallback((id: string) => {
     const el = chatThreadRef.current?.querySelector(`[data-tool-id="${CSS.escape(id)}"]`);
-    el?.scrollIntoView({ behavior: "smooth", block: "center" });
-  }, [chatThreadRef]);
+    if (!el) return;
+    // Let go of the bottom first: the run is still reporting progress, and the next
+    // update would otherwise scroll the pane back down before the reader got there.
+    // Scrolling back to the bottom resumes the follow on its own.
+    // A jump, not a smooth scroll: the first frames of an animation are still near
+    // the bottom, and onScroll takes "near the bottom" as a reason to follow again.
+    releaseFollowBottom();
+    el.scrollIntoView({ behavior: "auto", block: "center" });
+  }, [chatThreadRef, releaseFollowBottom]);
 
   // Ref to the last user message element so we can scroll it to the top.
   const lastUserMsgRef = useRef<HTMLDivElement>(null);

@@ -1,7 +1,7 @@
 import React from "react";
-import type { CSSProperties } from "react";
 import type { ToolActivity } from "../types";
 import { useElapsed, formatDuration } from "../hooks/useElapsed";
+import { progressStyle } from "./ToolActivityList";
 
 interface Props {
   /** Runs still in flight whose row has scrolled out of the thread. */
@@ -24,7 +24,7 @@ function RunCard({ run, onFocus }: { run: ToolActivity; onFocus: (id: string) =>
       className="run-dock-card"
       onClick={() => onFocus(run.id)}
       title={`${run.label}${run.phase ? ` — ${run.phase}` : ""} · click to scroll to it`}
-      style={hasPercent ? ({ "--tool-progress": `${pct}%` } as CSSProperties) : undefined}
+      style={hasPercent ? progressStyle(pct) : undefined}
       role={hasPercent ? "progressbar" : undefined}
       aria-valuenow={hasPercent ? pct : undefined}
       aria-valuemin={hasPercent ? 0 : undefined}
@@ -44,6 +44,7 @@ function RunCard({ run, onFocus }: { run: ToolActivity; onFocus: (id: string) =>
           </span>
         )}
       </span>
+      {hasPercent && <span className="tool-percent">{Math.round(pct)}%</span>}
       <span className="run-dock-time">{formatDuration(elapsed)}</span>
     </button>
   );

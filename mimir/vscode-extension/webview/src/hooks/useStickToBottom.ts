@@ -40,6 +40,13 @@ export function useStickToBottom<T extends HTMLElement>(slack: number = DEFAULT_
     if (el) el.scrollTop = el.scrollHeight;
   }, []);
 
+  /** Stop following, for a scroll the app makes on the reader's behalf. Such a scroll
+   *  carries no gesture, so without this the next chunk pulls the pane straight back
+   *  to the bottom — which is what made a click on a docked run land nowhere. */
+  const release = useCallback(() => {
+    stickRef.current = false;
+  }, []);
+
   const onScroll = useCallback(() => {
     const el = ref.current;
     if (!el) return;
@@ -93,5 +100,5 @@ export function useStickToBottom<T extends HTMLElement>(slack: number = DEFAULT_
     return () => { mo.disconnect(); ro.disconnect(); };
   }, [scrollToBottom]);
 
-  return { ref, stickRef, scrollToBottom, follow, onScroll };
+  return { ref, stickRef, scrollToBottom, follow, release, onScroll };
 }

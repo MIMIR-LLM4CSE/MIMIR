@@ -183,6 +183,17 @@ interface RowProps {
   onDivert?: (id: string) => void;
 }
 
+/** The custom properties the progress fill is drawn from. The count is passed twice:
+ *  as a width, and as a bare number the stylesheet uses to stretch the MIMIR gradient
+ *  over the whole row, so the fill uncovers it as the run advances instead of
+ *  squeezing all of it into whatever width is done. Floored at 1 — it is a divisor. */
+export function progressStyle(pct: number): CSSProperties {
+  return {
+    "--tool-progress": `${pct}%`,
+    "--tool-progress-n": Math.max(1, pct),
+  } as CSSProperties;
+}
+
 const ToolRow: React.FC<RowProps> = ({ tool, childRows = [], onDivert }) => {
   const isError = tool.status === "error";
   const hasExec = tool.exec !== undefined;
@@ -233,9 +244,11 @@ const ToolRow: React.FC<RowProps> = ({ tool, childRows = [], onDivert }) => {
   // meantime invites a second click on a run already on its way out.
   const [diverting, setDiverting] = useState(false);
   const canDivert = running && !!tool.divertible && !!onDivert;
-  // A percentage is only meaningful while the row is running: a settled row's bar
-  // would describe a moment that has passed.
-  const hasProgress = running && typeof tool.percent === "number";
+  // A percentage is only meaningful while the run is going: a settled row's bar
+  // would describe a moment that has passed. A backgrounded row is settled for the
+  // turn but its run is not, and its watcher is what keeps the count current.
+  const hasProgress =
+    (running || tool.status === "background") && typeof tool.percent === "number";
   const pct = hasProgress ? Math.max(0, Math.min(100, tool.percent as number)) : 0;
   const elapsed = useElapsed(tool.startedAt, running);
   const duration = tool.durationMs ?? elapsed;
@@ -264,7 +277,7 @@ const ToolRow: React.FC<RowProps> = ({ tool, childRows = [], onDivert }) => {
         // whose hover paints its own background, so a bar *under* it would vanish on
         // hover and one beside it would cost the row a second line. The stylesheet
         // draws it as a translucent overlay from this one number.
-        style={hasProgress ? ({ "--tool-progress": `${pct}%` } as CSSProperties) : undefined}
+        style={hasProgress ? progressStyle(pct) : undefined}
         role={hasProgress ? "progressbar" : undefined}
         aria-valuenow={hasProgress ? pct : undefined}
         aria-valuemin={hasProgress ? 0 : undefined}
@@ -338,6 +351,7 @@ const ToolRow: React.FC<RowProps> = ({ tool, childRows = [], onDivert }) => {
           ) : null}
           {tailSummary && <span className="tool-summary">{tailSummary}</span>}
           {verdictBadge}
+          {hasProgress && <span className="tool-percent">{Math.round(pct)}%</span>}
           <span className="tool-duration">{formatDuration(duration)}</span>
           {canExpand && (
             <span className="tool-chevron" aria-hidden="true">

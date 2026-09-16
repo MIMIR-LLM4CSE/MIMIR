@@ -70,6 +70,21 @@
                       color-mix(in srgb, #f85149 40%, transparent));
   --diff-hunk-fg: var(--vscode-editorLineNumber-foreground, #388bfd);
   --diff-hunk-bg: color-mix(in srgb, var(--diff-hunk-fg) 12%, transparent);
+
+  /* ── MIMIR brand: the logo's ribbon, from its cyan foot to its coral one ──── */
+  --mimir-cyan: #33d6f2;
+  --mimir-blue: #1a5fd8;
+  --mimir-violet: #7a2c9e;
+  --mimir-crimson: #d8203c;
+  --mimir-coral: #f2663a;
+  --mimir-gradient: linear-gradient(90deg, var(--mimir-cyan), var(--mimir-blue) 30%,
+                    var(--mimir-violet) 52%, var(--mimir-crimson) 72%, var(--mimir-coral));
+  --mimir-gradient-soft: linear-gradient(90deg,
+                    color-mix(in srgb, var(--mimir-cyan) 26%, transparent),
+                    color-mix(in srgb, var(--mimir-blue) 26%, transparent) 30%,
+                    color-mix(in srgb, var(--mimir-violet) 26%, transparent) 52%,
+                    color-mix(in srgb, var(--mimir-crimson) 26%, transparent) 72%,
+                    color-mix(in srgb, var(--mimir-coral) 26%, transparent));
 }
 
 /* ── Agent-mode colour identity ───────────────────────────────────────────────
@@ -353,10 +368,31 @@ body {
   bottom: 0;
   left: 0;
   width: var(--tool-progress, 0);
-  background: color-mix(in srgb, var(--accent) 12%, transparent);
-  border-right: 1px solid var(--accent);
   pointer-events: none;
   transition: width 0.3s ease;
+}
+
+/* The fill both bars share, in the colours of the MIMIR logo: a translucent wash the
+   label reads through, and a solid 2px strip along the bottom so the position is
+   still exact. The gradient is sized to the whole row, not to the fill (100 / n of
+   the fill's own width), so the run uncovers it from cyan to coral as it advances. */
+.tool-row-line--progress::after,
+.run-dock-card::after {
+  background:
+    var(--mimir-gradient) left bottom / calc(100% * 100 / var(--tool-progress-n, 100)) 2px no-repeat,
+    var(--mimir-gradient-soft) left top / calc(100% * 100 / var(--tool-progress-n, 100)) 100% no-repeat;
+  border-right: 1px solid color-mix(in srgb, var(--fg) 45%, transparent);
+}
+
+/* The count itself, beside the elapsed time. Tabular figures so the row does not
+   jitter as the number changes. */
+.tool-percent {
+  font-family: var(--mono);
+  font-size: 0.85em;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--fg);
+  flex-shrink: 0;
 }
 
 .run-dock-body {
@@ -1270,8 +1306,6 @@ body {
   bottom: 0;
   left: 0;
   width: var(--tool-progress, 0);
-  background: color-mix(in srgb, var(--accent) 12%, transparent);
-  border-right: 1px solid var(--accent);
   border-radius: 4px;
   pointer-events: none;
   transition: width 0.3s ease;
