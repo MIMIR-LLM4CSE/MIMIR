@@ -379,6 +379,11 @@ def proxy_manage(
             build_cwd defaults to the workspace root, build_timeout_s to 7200.
             A proxy that declares a build may be registered before its
             executable exists — the build is what produces it.
+            The target and job count are fixed here: a run cannot override
+            them, so name them once, at registration. Changing build_cmd
+            changes the build for every later run: change it to fix it, never
+            to narrow one task's build — the build system already recompiles
+            only what changed.
         cases: For suite_define/suite_update: list of case dicts (see schema above).
         proxy_path: For 'scaffold': absolute path to the proxy source file.
         component_hint: For 'scaffold': function/subroutine/class name to target.
