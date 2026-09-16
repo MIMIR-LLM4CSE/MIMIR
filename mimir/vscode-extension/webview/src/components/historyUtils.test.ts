@@ -1,30 +1,11 @@
 import { describe, it, expect } from "vitest";
 import {
   HISTORY_IDLE,
-  caretOnFirstLine,
-  caretOnLastLine,
   pushHistory,
   stepHistory,
 } from "./historyUtils";
 
 const ENTRIES = ["first", "second", "third"];
-
-describe("caret position", () => {
-  it("is on the first line before any newline", () => {
-    expect(caretOnFirstLine("ab\ncd", 2, 2)).toBe(true);
-    expect(caretOnFirstLine("ab\ncd", 3, 3)).toBe(false);
-  });
-
-  it("is on the last line after every newline", () => {
-    expect(caretOnLastLine("ab\ncd", 3, 3)).toBe(true);
-    expect(caretOnLastLine("ab\ncd", 2, 2)).toBe(false);
-  });
-
-  it("does not count a selection", () => {
-    expect(caretOnFirstLine("abc", 0, 2)).toBe(false);
-    expect(caretOnLastLine("abc", 0, 2)).toBe(false);
-  });
-});
 
 describe("stepHistory", () => {
   it("walks back from the newest message", () => {

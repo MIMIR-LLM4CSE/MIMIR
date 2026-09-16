@@ -11,16 +11,6 @@ export interface HistoryState {
 
 export const HISTORY_IDLE: HistoryState = { index: null, draft: "" };
 
-/** Up recalls only from the first line, so a multi-line draft stays editable. */
-export function caretOnFirstLine(text: string, start: number, end: number): boolean {
-  return start === end && !text.slice(0, start).includes("\n");
-}
-
-/** Down walks forward only from the last line, for the same reason. */
-export function caretOnLastLine(text: string, start: number, end: number): boolean {
-  return start === end && !text.slice(end).includes("\n");
-}
-
 /**
  * One step through the history. Returns null when there is nowhere to go,
  * so the key keeps its ordinary behaviour.

@@ -61,12 +61,11 @@ import {
 } from "./components/slashUtils";
 import {
   HISTORY_IDLE,
-  caretOnFirstLine,
-  caretOnLastLine,
   pushHistory,
   stepHistory,
   type HistoryState,
 } from "./components/historyUtils";
+import { caretOnFirstVisualLine, caretOnLastVisualLine } from "./components/caretLine";
 
 // VS Code webview API (optional — only present inside a webview).
 
@@ -845,8 +844,8 @@ export const App: React.FC = () => {
         const el = e.currentTarget;
         const up = e.key === "ArrowUp";
         const atEdge = up
-          ? caretOnFirstLine(el.value, el.selectionStart, el.selectionEnd)
-          : caretOnLastLine(el.value, el.selectionStart, el.selectionEnd);
+          ? caretOnFirstVisualLine(el)
+          : caretOnLastVisualLine(el);
         const step = atEdge
           ? stepHistory(sentHistoryRef.current, historyStateRef.current, el.value, up ? "up" : "down")
           : null;
@@ -854,9 +853,14 @@ export const App: React.FC = () => {
           e.preventDefault();
           historyStateRef.current = step.state;
           setInput(step.text);
-          // A multi-line entry starts with the caret at the top, so the next Up keeps going.
-          const caret = step.text.includes("\n") && up ? 0 : step.text.length;
-          requestAnimationFrame(() => textareaRef.current?.setSelectionRange(caret, caret));
+          // The caret goes to the end, unless that is below the first displayed line
+          // while walking up: then it goes to the start, so the next Up keeps going.
+          requestAnimationFrame(() => {
+            const t = textareaRef.current;
+            if (!t) return;
+            t.setSelectionRange(t.value.length, t.value.length);
+            if (up && !caretOnFirstVisualLine(t)) t.setSelectionRange(0, 0);
+          });
           return;
         }
       }
