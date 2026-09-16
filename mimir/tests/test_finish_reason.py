@@ -50,6 +50,14 @@ class HistoryLeakTests(unittest.TestCase):
         self.assertNotIn("thinking", messages[0])
         self.assertEqual(messages[0]["content"], "hi")
 
+    def test_trailing_blank_lines_do_not_reach_history(self) -> None:
+        """Replayed, they grow by copy: a poll loop added two per step."""
+        messages: list[dict] = []
+        msg = {"role": "assistant", "content": "Je vérifie :\n\n\n\n", "tool_calls": []}
+        with patch("mimir.client.query_engine.streaming.emit"):
+            _process_response(msg, messages, thinking=False)
+        self.assertEqual(messages[0]["content"], "Je vérifie :")
+
     def test_the_caller_can_still_read_it_off_the_original(self) -> None:
         msg = {"role": "assistant", "content": "hi", "finish_reason": "length"}
         with patch("mimir.client.query_engine.streaming.emit"):

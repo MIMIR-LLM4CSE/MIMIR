@@ -91,6 +91,24 @@ class BashBackgroundTests(unittest.TestCase):
         self.assertIn("first", seen)
         self.assertEqual(payload["state"], "running")
 
+    def test_a_running_job_returns_a_short_tail_and_a_finished_one_the_full_log(self) -> None:
+        # A mid-run read is a progress check: re-sending the whole log on each one is
+        # what fed a copy loop. Once finished, the log is the result and comes back whole.
+        cap = server_bash._RUNNING_OUTPUT
+        result = server_bash.bash_run(
+            f"seq 1 {cap}; sleep 3", background=True)   # ~5 bytes a line
+        deadline = time.time() + 2.5
+        running: dict = {}
+        while time.time() < deadline and not running.get("truncated"):
+            time.sleep(0.1)
+            running = server_bash.bash_job(op="output", job_key=result["job_key"])
+        self.assertEqual(running["state"], "running")
+        self.assertTrue(running.get("truncated"))
+        self.assertLessEqual(len(running["output"]), cap)
+        _wait_terminal(result["job_key"])
+        done = server_bash.bash_job(op="output", job_key=result["job_key"])
+        self.assertGreater(len(done["output"]), 3 * cap)
+
     def test_exit_code_separates_done_from_crashed(self) -> None:
         for command, state, code in (
             ("echo ok", "done", 0),

@@ -180,6 +180,8 @@ _WORKSPACE_ROOT = os.path.realpath(
     os.path.abspath(os.environ.get("MCP_FILES_ROOT", os.getcwd()))
 )
 _MAX_OUTPUT = 64 * 1024
+# The tail a progress read of a running job gets (see _bash_jobs.output).
+_RUNNING_OUTPUT = 4 * 1024
 # Sized for the work this shell actually does now that it compiles and runs: a default
 # that survives an ordinary build or test suite, and a ceiling past which a run belongs
 # to the background-job route rather than to a call that blocks the turn. A run still
@@ -1094,7 +1096,8 @@ def bash_job(
         status  state of one job: running | done | crashed | unknown, with its
                 elapsed time and, once finished, its exit code.
         output  the tail of its log, with the same state. This is what to read when
-                a job finishes, and what to read for progress while it runs.
+                a job finishes, and what to read for progress while it runs. While
+                it runs, only the last few KB come back; the full log is at 'log'.
         list    every job this host knows about, newest first.
 
     You do not need to poll a job whose launch result said it is being watched: that
@@ -1118,7 +1121,7 @@ def bash_job(
                    hint="Use op='list' to see the jobs this host knows about.")
     if op == "status":
         return ok(_bash_jobs.state(job_key))
-    return ok(_bash_jobs.output(job_key, _MAX_OUTPUT))
+    return ok(_bash_jobs.output(job_key, _MAX_OUTPUT, running_max_bytes=_RUNNING_OUTPUT))
 
 
 @mcp.tool(**tool_caps(

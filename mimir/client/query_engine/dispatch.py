@@ -127,20 +127,48 @@ def _asks_whether_a_watched_run_is_done(
     the descriptor left implicit) is asking the same question. Equality would have let
     exactly that spelling through.
     """
-    def _matches(op: Any) -> bool:
-        if not isinstance(op, dict) or op.get("tool") != name:
-            return False
-        op_args = op.get("args")
-        if not isinstance(op_args, dict):
-            return False
-        return all(args.get(k) == v for k, v in op_args.items())
-
     for descriptor in _watched_jobs(agent):
-        if _matches(descriptor.get("summary_op")):
+        if _op_matches(descriptor.get("summary_op"), name, args):
             return None            # progress, not "are we there yet" — always allowed
-        if _matches(descriptor.get("status_op")):
+        if _op_matches(descriptor.get("status_op"), name, args):
             return str(descriptor.get("job_key") or "?")
     return None
+
+
+def _op_matches(op: Any, name: str, args: dict) -> bool:
+    """True when the call *name(args)* is the descriptor op *op*, by containment."""
+    if not isinstance(op, dict) or op.get("tool") != name:
+        return False
+    op_args = op.get("args")
+    if not isinstance(op_args, dict):
+        return False
+    return all(args.get(k) == v for k, v in op_args.items())
+
+
+def _reads_progress_of_a_watched_run(agent: Any, name: str, args: dict) -> str | None:
+    """The job_key whose output this call reads while a watcher holds it, else None.
+
+    The progress read stays allowed (see above), but it is the one door a poll loop
+    can still take: one session read a watched build's output 22 times in 40 seconds,
+    its reasoning concluding each time "explain and keep waiting" while the turn
+    copied the previous call. The launch note that says to end the turn was a query
+    behind by then. The read itself now carries that fact, at the moment of deciding.
+    """
+    for descriptor in _watched_jobs(agent):
+        if _op_matches(descriptor.get("summary_op"), name, args):
+            return str(descriptor.get("job_key") or "?")
+    return None
+
+
+def _watched_progress_note(job_key: str) -> str:
+    """Appended to a progress read of a watched run."""
+    return (
+        f"\n\n[background] Job '{job_key}' is still being watched: you will be resumed "
+        "automatically with its results when it finishes, and reading its output again "
+        "will not bring that sooner. If there is other useful work in this task, carry "
+        "on with it now. If the only thing left is waiting for this run, end your turn "
+        "and say what you are waiting for."
+    )
 
 
 def _waits_by_blocking_the_turn(agent: Any, name: str, args: dict) -> bool:
@@ -470,6 +498,10 @@ async def _dispatch_tool_calls(
                 math_info=extract_math_preview(result) if ok else None,
             )
             _maybe_emit_open_editor(result)
+            watched_key = (_reads_progress_of_a_watched_run(agent, name, args)
+                           if ok and isinstance(result, str) else None)
+            if watched_key:
+                result += _watched_progress_note(watched_key)
             descriptor = _detect_background_job(name, result, agent)
             if descriptor is not None:
                 # Branching on the hook's *existence* left the WS front-end with no

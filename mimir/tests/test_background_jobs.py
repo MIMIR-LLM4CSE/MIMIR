@@ -546,6 +546,43 @@ class WatchedRunPollGuardTests(unittest.TestCase):
         self.assertIsNone(self._asks(agent, "bash_job", {"job_key": "j1"}))
 
 
+class WatchedRunProgressNoteTests(unittest.TestCase):
+    """A progress read is allowed, and carries the fact that the run is watched."""
+
+    def _reads(self, agent, name, args):
+        from mimir.client.query_engine.dispatch import (
+            _reads_progress_of_a_watched_run)
+        return _reads_progress_of_a_watched_run(agent, name, args)
+
+    def test_output_of_a_watched_run_is_annotated(self) -> None:
+        agent = _GuardAgent([_descriptor()])
+        self.assertEqual(
+            self._reads(agent, "bash_job", {"op": "output", "job_key": "j1"}), "j1")
+
+    def test_state_question_is_not_a_progress_read(self) -> None:
+        agent = _GuardAgent([_descriptor()])
+        self.assertIsNone(self._reads(agent, "bash_job", {"job_key": "j1"}))
+
+    def test_an_unwatched_run_is_not_annotated(self) -> None:
+        agent = _GuardAgent([_descriptor("j1")])
+        self.assertIsNone(
+            self._reads(agent, "bash_job", {"op": "output", "job_key": "other"}))
+
+    def test_without_the_hook_nothing_is_annotated(self) -> None:
+        agent = _GuardAgent([_descriptor()], with_hook=False)
+        self.assertIsNone(
+            self._reads(agent, "bash_job", {"op": "output", "job_key": "j1"}))
+
+    def test_the_note_leaves_the_payload_readable(self) -> None:
+        """Appended after the JSON, like the launch note: the payload still parses."""
+        from mimir.client.query_engine.dispatch import _watched_progress_note
+        from mimir.client.tool_execution.formatter import parse_tool_payload
+        raw = json.dumps({"status": "ok", "state": "running", "job_key": "j1"})
+        note = _watched_progress_note("j1")
+        self.assertIn("end your turn", note)
+        self.assertEqual(parse_tool_payload(raw + note)["state"], "running")
+
+
 class BlockingWaitGuardTests(unittest.TestCase):
     def _waits(self, agent, command, name="bash_run"):
         from mimir.client.query_engine.dispatch import _waits_by_blocking_the_turn

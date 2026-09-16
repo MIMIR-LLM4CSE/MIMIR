@@ -49,6 +49,11 @@ def _process_response(msg: dict, messages: list[dict], thinking: bool, streamed_
     # rejected request. This is the single choke point for all four backends.
     msg_for_history = {k: v for k, v in msg.items()
                        if k not in ("thinking", "finish_reason")}
+    # Trailing blank lines carry nothing, and replayed they grow: in one poll loop each
+    # step copied the previous one and added two more newlines, 22 steps in a row. The
+    # history keeps the text, not the ramp.
+    if isinstance(msg_for_history.get("content"), str):
+        msg_for_history["content"] = msg_for_history["content"].rstrip()
     # The reasoning itself is part of the message, though. Interleaved-thinking models
     # (DeepSeek-V4 with tools, GLM, Qwen3 within a turn) render each earlier step as
     # `<think>{reasoning}</think>{content}{calls}`; stripped, every step showed an empty

@@ -385,11 +385,17 @@ def state(job_key: str) -> dict:
     return payload
 
 
-def output(job_key: str, max_bytes: int) -> dict:
+def output(job_key: str, max_bytes: int, running_max_bytes: int | None = None) -> dict:
     """The tail of the job's log, with its state.
 
     The tail rather than the head: a long build's interesting part — the error, the
     last target — is at the end, and the head is configure noise.
+
+    *running_max_bytes* caps the tail while the job is still running. A read mid-run
+    is a progress check, and the state already carries the build's own percent and
+    phase; returning the whole log each time filled one session with 22 near-identical
+    10 KB blocks, which is what a model copying its previous step feeds on. The full
+    log stays on disk at ``log``, and a finished job gets the full *max_bytes*.
 
     An empty log says nothing on its own: plenty of long jobs — an extraction, a copy,
     a quiet install — legitimately print nothing, and annotating those would put a
@@ -404,6 +410,8 @@ def output(job_key: str, max_bytes: int) -> dict:
     payload = state(job_key)
     if payload.get("error"):
         return payload
+    if running_max_bytes is not None and payload.get("state") == "running":
+        max_bytes = min(max_bytes, running_max_bytes)
     meta = _meta(job_key)
     log = log_path(job_key)
     try:
