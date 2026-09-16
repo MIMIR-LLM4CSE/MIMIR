@@ -1074,16 +1074,18 @@ export const App: React.FC = () => {
               </div>
             ) : (
               <div className="empty-state">
-                <MimirIntro loop={connection === "connecting"} />
+                <MimirIntro loop={connection === "connecting" || connection === "error"} />
                 <div className="empty-text">MIMIR</div>
                 <div className="empty-hint">
-                  {connection === "connecting"
+                  {/* "error" is a failed attempt the host is still retrying, not an
+                      agent coming up: ws_closed follows if the retries run out. */}
+                  {connection === "connecting" || connection === "error"
                     ? "Connecting to agent…"
                     : agentReady
                       ? "Type a message to start"
                       : "Starting the agent — waiting for the model backend…"}
                 </div>
-                {connection === "connecting" && (
+                {(connection === "connecting" || connection === "error") && (
                   <button className="connect-btn cancel-connect-btn" onClick={handleCancelConnect}>
                     Cancel connection
                   </button>

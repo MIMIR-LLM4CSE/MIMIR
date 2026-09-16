@@ -121,6 +121,21 @@ __all__ = ["serve", "main", "_AgentWorker", "_Session"]
 _MAX_FRAME_BYTES = 32 * 1024 * 1024
 
 
+def _announced_url(sockets: Any) -> str:
+    """The address a client must dial to reach the first bound socket.
+
+    ``localhost`` resolves to both 127.0.0.1 and ::1, so the server binds one socket
+    per family — and with ``--port 0`` each gets its own port. The order of the two
+    varies between launches. Announcing ``localhost`` with the port of the first
+    socket sent the client, which picks 127.0.0.1, to the IPv6 port about half the
+    time: refused, on every retry. The literal address of that socket removes the
+    guess.
+    """
+    addr, port = sockets[0].getsockname()[:2]
+    host = f"[{addr}]" if ":" in addr else addr
+    return f"ws://{host}:{port}"
+
+
 def _no_model_message() -> str:
     """Explain why no model could be resolved, naming the endpoint that was asked.
 
@@ -220,8 +235,7 @@ async def serve(
         # Read the port back off the socket rather than echoing the argument: with
         # --port 0 the argument is a placeholder, and this line is the contract the
         # VS Code extension parses to learn where to connect.
-        bound = server.sockets[0].getsockname()[1]
-        print(f"Listening on ws://{host}:{bound}", file=_ORIGINAL_STDOUT, flush=True)
+        print(f"Listening on {_announced_url(server.sockets)}", file=_ORIGINAL_STDOUT, flush=True)
         await asyncio.Future()  # run forever
 
 
