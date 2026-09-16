@@ -89,6 +89,13 @@ and is greeted with a fresh `ready`; `_connectToServer`'s close handler ignores 
 that is no longer `this._ws`, so the replaced one drives no retry. A startup connect also
 keeps the "MIMIR Server" output channel closed instead of popping it over the editor.
 
+The host starts the server with `--port 0` and reads the address from its
+`Listening on ws://…` line. With `localhost`, the server binds 127.0.0.1 and ::1 on two
+different ports. The line names the literal address of one socket, never `localhost`, so
+the host dials the port that socket owns. It names the IPv4 socket when there is one:
+`no_proxy` rarely lists `::1`, and a client that honours the proxy variables sent
+`ws://[::1]` to the corporate proxy, which closed the connection.
+
 `fetch_models` runs in the host rather than in React because the webview's CSP allows
 only `connect-src ws://localhost:*`; the fetch itself lives in `src/modelList.ts`
 (`modelsUrl` / `parseModels` are pure and unit-tested in `src/modelList.test.ts`).

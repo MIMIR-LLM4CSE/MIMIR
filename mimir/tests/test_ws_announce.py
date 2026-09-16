@@ -29,6 +29,11 @@ class AnnouncedUrlTests(unittest.TestCase):
     def test_ipv6_socket_is_bracketed(self):
         self.assertEqual(_announced_url([_Sock(("::1", 4242, 0, 0))]), "ws://[::1]:4242")
 
+    def test_ipv4_socket_is_named_whatever_the_order(self):
+        # A proxy rarely exempts ::1, so the IPv6 address is only a fallback.
+        sockets = [_Sock(("::1", 4243, 0, 0)), _Sock(("127.0.0.1", 4242))]
+        self.assertEqual(_announced_url(sockets), "ws://127.0.0.1:4242")
+
 
 class AnnouncedUrlAnswersTests(unittest.IsolatedAsyncioTestCase):
     async def test_the_announced_address_accepts_a_connection(self):
@@ -38,7 +43,10 @@ class AnnouncedUrlAnswersTests(unittest.IsolatedAsyncioTestCase):
         # Several launches: the socket order is what varies.
         for _ in range(6):
             async with websockets.serve(_hello, "localhost", 0) as server:
-                async with websockets.connect(_announced_url(server.sockets)) as ws:
+                # proxy=None: the proxy variables of the machine running the tests
+                # must not decide the outcome. The IPv4 preference is tested above.
+                url = _announced_url(server.sockets)
+                async with websockets.connect(url, proxy=None) as ws:
                     self.assertEqual(await asyncio.wait_for(ws.recv(), 5), "hi")
 
 

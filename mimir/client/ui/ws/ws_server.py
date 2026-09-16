@@ -122,16 +122,21 @@ _MAX_FRAME_BYTES = 32 * 1024 * 1024
 
 
 def _announced_url(sockets: Any) -> str:
-    """The address a client must dial to reach the first bound socket.
+    """The address a client must dial to reach the server.
 
     ``localhost`` resolves to both 127.0.0.1 and ::1, so the server binds one socket
     per family — and with ``--port 0`` each gets its own port. The order of the two
     varies between launches. Announcing ``localhost`` with the port of the first
     socket sent the client, which picks 127.0.0.1, to the IPv6 port about half the
-    time: refused, on every retry. The literal address of that socket removes the
+    time: refused, on every retry. The literal address of a socket removes the
     guess.
+
+    The IPv4 socket is named when there is one. ``no_proxy`` lists ``127.0.0.1`` and
+    ``localhost`` almost everywhere, but rarely ``::1``: a client that honours the
+    proxy variables sent ``ws://[::1]`` to the corporate proxy, which closed it.
     """
-    addr, port = sockets[0].getsockname()[:2]
+    names = [s.getsockname() for s in sockets]
+    addr, port = next((n for n in names if ":" not in n[0]), names[0])[:2]
     host = f"[{addr}]" if ":" in addr else addr
     return f"ws://{host}:{port}"
 
