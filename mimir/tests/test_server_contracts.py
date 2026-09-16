@@ -1210,6 +1210,17 @@ class BashServerTests(unittest.TestCase):
                     "grep -rn '$(x)' src"):
             self.assertEqual(server_bash._validate_command(cmd, cwd)["status"], "ok", cmd)
 
+    def test_double_quoted_process_substitution_is_literal(self) -> None:
+        # Bash expands $( ${ and ` inside double quotes, but not <( or >(. C++ passed
+        # inline carries them in every template call, and refusing it sent the model
+        # to write one throwaway patch script per edit.
+        cwd = server_bash._WORKSPACE_ROOT
+        for cmd in ('python3 -c "s = \'allocateArray2D<arrayReal>(1, n)\'"',
+                    'grep -n "vector<int>(n)" src/a.cc'):
+            self.assertEqual(server_bash._validate_command(cmd, cwd)["status"], "ok", cmd)
+        self.assertEqual(
+            server_bash._validate_command('echo "<(ls)" $(id)', cwd)["status"], "error")
+
     def test_substitution_the_shell_would_run_is_still_refused(self) -> None:
         # Double quotes do NOT make them literal, so those still count — as does
         # anything unquoted. This is the half that must not regress.

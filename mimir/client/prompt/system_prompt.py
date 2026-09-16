@@ -698,9 +698,11 @@ def build_system_content(
         "deliverable.\n"
         "So nothing throwaway goes in the user's tree, and no temporary directory of your own making: "
         "the path above already exists for that; a `/tmp/<name>` you invent is not yours, and asking "
-        "the user to approve one is asking them to decide something already decided. Rather than "
-        "write a second copy of a check you already have — a `_v2`, a `_fixed` — edit the one you "
-        "wrote. Deliverables go in the workspace, or wherever the user asked."
+        "the user to approve one is asking them to decide something already decided. A file there "
+        "is edited like any other, with the edit tools. A variation of a script you already have — "
+        "another parameter, scale or component, a fix — is an edit to it or an argument it takes, "
+        "not a second copy (a `_v2`, a `_fixed`, a `_3comp`). Never write a script whose only job "
+        "is to patch another file. Deliverables go in the workspace, or wherever the user asked."
     )
 
     if memory_context_file:

@@ -404,7 +404,9 @@ def unquoted_substitution_marker(command: str) -> str | None:
 
     Single quotes make everything literal, so markers inside them are text. Double
     quotes do **not** — ``"`cmd`"`` and ``"$(cmd)"`` both substitute — so those still
-    count, as does anything unquoted. A backslash-escaped marker outside single
+    count, as does anything unquoted. Process substitution is the exception: inside
+    double quotes ``<(`` and ``>(`` are text, and C++ passed inline to ``python -c``
+    is full of them (``std::vector<int>(n)``). A backslash-escaped marker outside single
     quotes is literal too, and is skipped the way the shell skips it.
     """
     i, n = 0, len(command)
@@ -424,6 +426,8 @@ def unquoted_substitution_marker(command: str) -> str | None:
             continue
         if not in_single:
             for marker in SUBSTITUTION_MARKERS:
+                if in_double and marker in _PROCESS_SUBSTITUTION:
+                    continue
                 if command.startswith(marker, i):
                     return marker
         i += 1
@@ -448,6 +452,8 @@ COMMAND_SEPARATORS = frozenset({";", "&&", "||", "|"})
 # Only where the shell would *act* on them: inside single quotes these are ordinary
 # text (a search pattern is the usual place). See :func:`unquoted_substitution_marker`.
 SUBSTITUTION_MARKERS = ("$(", "`", "${", "<(", ">(")
+# The two markers bash reads only outside any quotes.
+_PROCESS_SUBSTITUTION = frozenset({"<(", ">("})
 
 # Characters that make a token a bare shell operator rather than an argument.
 _OPERATOR_CHARS = "();<>|&"
