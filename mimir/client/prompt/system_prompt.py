@@ -97,7 +97,9 @@ _SECTION_TOOL_RESULTS = (
 
 _SECTION_STYLE = (
     "## Style\n"
-    "- Be concise.\n"
+    "- Write in the register of a scientific paper — in replies, documentation and articles alike: "
+    "precise, professional, concise. Short sentences and exact terms; no filler, no hype; "
+    "add complexity only where the content requires it.\n"
     "- Use structured output only when it improves clarity.\n"
 )
 
