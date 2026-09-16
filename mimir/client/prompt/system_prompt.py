@@ -193,6 +193,7 @@ _SECTION_VALIDATION = (
     "the only thing asked. Never claim a file passed a check you did not see reported.\n"
     "2. BUILD — OPTIONAL wherever the project's own build already works: drive it as it stands. "
     "Prefer parallel builds based on the number of available CPU cores and project size.\n"
+    "Only build what is necessary for the changes you made and the task at hand.\n"
     "Its exit code is the finding, so it needs no verdict of its own; it only ever adds to what "
     "step 1 established.\n"
     "3. RUN — OPTIONAL whenever anything here can be run, and RECOMMENDED when the project already "
