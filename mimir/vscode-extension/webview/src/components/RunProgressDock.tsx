@@ -30,7 +30,7 @@ function RunCard({ run, onFocus }: { run: ToolActivity; onFocus: (id: string) =>
       aria-valuemin={hasPercent ? 0 : undefined}
       aria-valuemax={hasPercent ? 100 : undefined}
     >
-      <span className="tb-spinner" aria-hidden="true" />
+      {!hasPercent && <span className="tb-spinner" aria-hidden="true" />}
       <span className="run-dock-body">
         <span className="run-dock-label">{run.label}</span>
         {run.phase && (

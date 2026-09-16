@@ -297,7 +297,9 @@ const ToolRow: React.FC<RowProps> = ({ tool, childRows = [], onDivert }) => {
             ✕
           </span>
         )}
-        {running ? (
+        {/* The bar already says the run is moving; a spinner on top of it only
+            adds motion. It stays for runs that report no count. */}
+        {running && !hasProgress ? (
           <span className="tb-spinner" aria-hidden="true" />
         ) : (
           <span className="tool-icon" aria-hidden="true">{tool.icon}</span>
