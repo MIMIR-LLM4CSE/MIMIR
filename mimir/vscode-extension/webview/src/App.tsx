@@ -59,6 +59,14 @@ import {
   applySlash,
   type SlashQuery,
 } from "./components/slashUtils";
+import {
+  HISTORY_IDLE,
+  caretOnFirstLine,
+  caretOnLastLine,
+  pushHistory,
+  stepHistory,
+  type HistoryState,
+} from "./components/historyUtils";
 
 // VS Code webview API (optional — only present inside a webview).
 
@@ -187,6 +195,9 @@ export const App: React.FC = () => {
 
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  // Messages sent from this input, oldest first, recalled with the arrow keys.
+  const sentHistoryRef = useRef<string[]>([]);
+  const historyStateRef = useRef<HistoryState>(HISTORY_IDLE);
 
   // The pane follows the bottom of the thread as it grows, and lets go when the
   // reader scrolls up. The hook owns that decision — see useStickToBottom for why
@@ -609,6 +620,8 @@ export const App: React.FC = () => {
   const submitQuery = useCallback(() => {
     const text = input.trim();
     if (!text) return;
+    sentHistoryRef.current = pushHistory(sentHistoryRef.current, text);
+    historyStateRef.current = HISTORY_IDLE;
     setInput("");
     setMention(null);
     setSlash(null);
@@ -823,6 +836,27 @@ export const App: React.FC = () => {
         if (e.key === "Escape") {
           e.preventDefault();
           setMention(null);
+          return;
+        }
+      }
+      // Up on the first line recalls the previous sent message; Down on the last
+      // line walks forward, and past the newest one gives back the draft.
+      if ((e.key === "ArrowUp" || e.key === "ArrowDown") && !e.shiftKey && !e.altKey && !e.ctrlKey && !e.metaKey) {
+        const el = e.currentTarget;
+        const up = e.key === "ArrowUp";
+        const atEdge = up
+          ? caretOnFirstLine(el.value, el.selectionStart, el.selectionEnd)
+          : caretOnLastLine(el.value, el.selectionStart, el.selectionEnd);
+        const step = atEdge
+          ? stepHistory(sentHistoryRef.current, historyStateRef.current, el.value, up ? "up" : "down")
+          : null;
+        if (step) {
+          e.preventDefault();
+          historyStateRef.current = step.state;
+          setInput(step.text);
+          // A multi-line entry starts with the caret at the top, so the next Up keeps going.
+          const caret = step.text.includes("\n") && up ? 0 : step.text.length;
+          requestAnimationFrame(() => textareaRef.current?.setSelectionRange(caret, caret));
           return;
         }
       }
@@ -1289,6 +1323,8 @@ export const App: React.FC = () => {
             value={input}
             disabled={connection !== "connected"}
             onChange={(e) => {
+              // Typing ends the browse: the edited text becomes the new draft.
+              historyStateRef.current = HISTORY_IDLE;
               setInput(e.target.value);
               syncMention(e.target);
               syncSlash(e.target);
