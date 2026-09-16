@@ -36,6 +36,8 @@ import subprocess
 import time
 from datetime import datetime, timezone
 
+import build_progress
+
 JOBS_ROOT = os.path.expanduser("~/.cache/mimir_bash/jobs")
 
 # A job key is used as a directory name and echoed back by the client watcher, so it is
@@ -330,6 +332,11 @@ def state(job_key: str) -> dict:
     }
     if alive and not rc_raw:
         payload["state"] = "running"
+        # The build's own count, when its output carries one — the client watcher
+        # passes phase/percent on without knowing what produced them.
+        progress = build_progress.from_file(log_path(job_key))
+        if progress:
+            payload["percent"], payload["phase"] = progress
         return payload
     if rc_raw.isdigit() or (rc_raw.startswith("-") and rc_raw[1:].isdigit()):
         rc = int(rc_raw)

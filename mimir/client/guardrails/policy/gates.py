@@ -18,7 +18,7 @@ import re
 import shlex
 from typing import Any
 
-from ....servers._shared.shell_paths import COMMAND_WRAPPERS
+from ....servers._shared.shell_paths import COMMAND_WRAPPERS, unwrap_argv
 
 from ...context.capabilities import (
     CLUSTER_SUBMIT, EDIT, PLAN_BLOCKED, READ,
@@ -307,10 +307,10 @@ def _check_cluster_submit(
 # proxy (command position), never read-only inspection of its source. Locked and
 # non-tiered — a correctness boundary, not guidance. Fail-open on internal error.
 
-# Leading tokens that wrap another command; we look past them (and their flags /
-# ``VAR=val`` assignments) to find the program actually executed. The shared set the
-# bash validator unwraps with, plus ``time``, which is a shell keyword rather than a
-# command and so never reaches that validator as a head.
+# Wrappers are unwrapped by the shared ``unwrap_argv`` — the one the bash validator
+# uses — so a wrapper's own arguments (``timeout 300``, ``srun -n 4``, ``mpirun -np 8``)
+# are never mistaken for the program. ``time`` is handled here: it is a shell keyword
+# rather than a command, so it never reaches that validator as a head.
 _EXEC_WRAPPERS = COMMAND_WRAPPERS | {"time"}
 # Interpreters that execute their first non-flag argument as the real program.
 _EXEC_INTERPRETERS = frozenset({
@@ -318,32 +318,39 @@ _EXEC_INTERPRETERS = frozenset({
     "node", "ruby", "perl",
 })
 _ENV_ASSIGN_RE = re.compile(r"^[A-Za-z_]\w*=")
+# Bounds the peel loop on adversarial input; no real call nests this deep.
+_MAX_PEEL = 8
 
 
 def _segment_program(argv: list[str]) -> str | None:
     """The program a single shell segment executes, or ``None``.
 
-    Skips leading ``VAR=val`` env assignments and known wrappers (``env``/``time``/
-    ``srun``…) with their flags, then returns the head — or, if the head is an
-    interpreter, its first non-flag argument (``python proxy.py`` runs proxy.py).
+    Peels leading ``VAR=val`` assignments, ``time`` and the shared wrappers
+    (``env``/``timeout``/``srun``/``mpirun``… with their flags and values), then
+    returns the head — or, if the head is an interpreter, its first non-flag argument
+    (``python proxy.py`` runs proxy.py). A wrapper with nothing inside it runs no
+    program of interest, and yields ``None``.
     """
-    i = 0
-    while i < len(argv):
-        tok = argv[i]
-        if _ENV_ASSIGN_RE.match(tok) and not tok.startswith("/"):
-            i += 1
+    current = list(argv)
+    for _ in range(_MAX_PEEL):
+        while current and _ENV_ASSIGN_RE.match(current[0]) and not current[0].startswith("/"):
+            current = current[1:]
+        if not current:
+            return None
+        if os.path.basename(current[0]) == "time":
+            current = current[1:]
+            while current and current[0].startswith("-"):
+                current = current[1:]
             continue
-        if os.path.basename(tok) in _EXEC_WRAPPERS:
-            i += 1
-            while i < len(argv) and argv[i].startswith("-"):
-                i += 1
-            continue
-        break
-    if i >= len(argv):
+        inner, wrappers = unwrap_argv(current)
+        if not wrappers:
+            break
+        current = inner
+    if not current or os.path.basename(current[0]) in _EXEC_WRAPPERS:
         return None
-    head = argv[i]
+    head = current[0]
     if os.path.basename(head) in _EXEC_INTERPRETERS:
-        return next((a for a in argv[i + 1:] if not a.startswith("-")), None)
+        return next((a for a in current[1:] if not a.startswith("-")), None)
     return head
 
 
@@ -485,7 +492,7 @@ def _check_proxy_exec(
             "A proxy optimization session is active. Run the proxy through "
             "proxy_eval(op='run') — executing it directly bypasses reference sealing, "
             "the numerical invariants and the ratchet, so a hand-run cannot be a valid "
-            "result. To run it directly again, end the session with proxy_eval(op='reset')."
+            "result. To run it directly again, end the session with proxy_eval(op='end')."
         ),
         tool=tool_name,
     )

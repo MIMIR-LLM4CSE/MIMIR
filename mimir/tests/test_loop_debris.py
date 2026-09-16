@@ -17,7 +17,6 @@ from mimir.client.config.constants import AGENT_EMPTY_TURN_RETRIES
 from mimir.client.guardrails.nudges import drop_transient_reminders, inject_reminder
 from mimir.client.guardrails.workflow import EMPTY_TURN_OPENING
 from mimir.client.query_engine import agent_loop as agent_loop_module
-from mimir.client.query_engine import finalize as finalize_module
 from mimir.client.query_engine import streaming as streaming_module
 from mimir.client.query_engine.history import merge_consecutive_user_messages
 from mimir.tests._fake_backend import ScriptedBackend
@@ -43,12 +42,8 @@ class _LoopRunner(unittest.TestCase):
         backend = ScriptedBackend(script)
         emitted: list[dict] = []
 
-        async def _noop_async(*a, **k):
-            return None
-
         m = agent_loop_module
         with patch.object(streaming_module, "get_backend", lambda: backend), \
-             patch.object(finalize_module, "auto_store_memory", new=_noop_async), \
              patch.object(m, "tools_for_context", lambda **k: k["tools"]), \
              patch.object(m, "emit", lambda ev: emitted.append(ev)), \
              patch.object(m, "needs_incomplete_finalization", lambda ec: False):
@@ -174,6 +169,108 @@ class TransientReminderTests(_LoopRunner):
         self.assertEqual(len(messages), 1)
 
 
+class _CancelsOnSecondCall(ScriptedBackend):
+    """Answers the first call with a tool call, then the user presses stop."""
+
+    def chat(self, *args, **kwargs):
+        if self.calls:
+            raise asyncio.CancelledError("Cancelled by user")
+        return super().chat(*args, **kwargs)
+
+
+class InterruptedTurnRecordTests(unittest.TestCase):
+    """A turn that never answers still owns the transcript the front-end reads back.
+
+    Session ``505d43a3``: after each stop + "continue", the model replayed the same
+    "Excellent résultat" message. The stopped turn had left the *previous* turn's
+    transcript in ``_last_full_messages``; the front-end rolled its history back to it,
+    archived that turn a second time, and "continue" resumed from before the work.
+    """
+
+    def _run_cancelled(self):
+        agent = RunAgentQueryNonInteractiveTests._query_agent(self)
+        # What the slot held from a turn of another session.
+        agent._last_full_messages = [{"role": "user", "content": "older task"},
+                                     {"role": "assistant", "content": "older answer"}]
+        agent._last_turn_start = 7
+        backend = _CancelsOnSecondCall([{"tool_calls": [_tool_call("read_file")]}])
+
+        async def _dispatch(tool_calls, agent, messages, execution_context):
+            messages.append({"role": "tool", "tool_call_id": "1", "content": "{}"})
+
+        m = agent_loop_module
+        with patch.object(streaming_module, "get_backend", lambda: backend), \
+             patch.object(m, "_dispatch_tool_calls", _dispatch), \
+             patch.object(m, "tools_for_context", lambda **k: k["tools"]), \
+             patch.object(m, "emit", lambda ev: None):
+            with self.assertRaises(asyncio.CancelledError):
+                asyncio.run(m.run_agent_query(
+                    agent=agent, query="this task",
+                    history=[{"role": "user", "content": "this task"}]))
+        return agent
+
+    def test_the_stopped_turn_is_what_is_recorded(self) -> None:
+        agent = self._run_cancelled()
+        contents = [m.get("content") for m in agent._last_full_messages]
+        self.assertNotIn("older task", contents)
+        self.assertEqual(agent._last_full_messages[0]["content"], "this task")
+        # The tool call it made and its result are kept, paired.
+        roles = [m["role"] for m in agent._last_full_messages]
+        self.assertEqual(roles, ["user", "assistant", "tool"])
+
+    def test_the_turn_boundary_points_past_its_opening(self) -> None:
+        agent = self._run_cancelled()
+        self.assertEqual(agent._last_turn_start, 1)
+
+
+class InterleavedReasoningTests(unittest.TestCase):
+    """A step's reasoning reaches the next step of the same turn, and no further.
+
+    Session ``7a598398`` (DeepSeek-V4): before each tool call the model restated
+    "GPU 7 is idle — the 3.7% spread is intrinsic noise…". Its template renders every
+    earlier step as ``<think>{reasoning}</think>``; with the reasoning stripped from
+    history each block was empty, so each step re-derived the same analysis.
+    """
+
+    def _run(self, history=None):
+        agent = RunAgentQueryNonInteractiveTests._query_agent(self)
+        backend = ScriptedBackend([
+            {"content": "", "thinking": "GPU 7 is idle",
+             "tool_calls": [_tool_call("read_file", call_id="a")]},
+            {"content": "done", "thinking": "wrap up"},
+        ])
+
+        async def _dispatch(tool_calls, agent, messages, execution_context):
+            for tc in tool_calls:
+                messages.append({"role": "tool", "tool_call_id": tc["id"], "content": "{}"})
+
+        m = agent_loop_module
+        with patch.object(streaming_module, "get_backend", lambda: backend), \
+             patch.object(m, "_dispatch_tool_calls", _dispatch), \
+             patch.object(m, "tools_for_context", lambda **k: k["tools"]), \
+             patch.object(m, "emit", lambda ev: None), \
+             patch.object(m, "needs_incomplete_finalization", lambda ec: False):
+            asyncio.run(m.run_agent_query(agent=agent, query="q", history=history or []))
+        return agent, backend
+
+    def test_the_next_step_sees_the_reasoning_of_the_last(self) -> None:
+        _, backend = self._run()
+        step = [x for x in backend.calls[1]["messages"] if x.get("tool_calls")]
+        self.assertEqual(step[0].get("reasoning"), "GPU 7 is idle")
+        self.assertNotIn("thinking", step[0])
+
+    def test_an_earlier_turn_keeps_no_reasoning(self) -> None:
+        earlier = [{"role": "user", "content": "before"},
+                   {"role": "assistant", "content": "old", "reasoning": "old thoughts"}]
+        agent, backend = self._run(history=earlier)
+        sent = backend.calls[0]["messages"]
+        self.assertNotIn("reasoning", [k for x in sent for k in x])
+        # The caller's own dicts are left as they were.
+        self.assertEqual(earlier[1]["reasoning"], "old thoughts")
+        kept = [x for x in agent._last_full_messages if x.get("reasoning")]
+        self.assertEqual([x["reasoning"] for x in kept], ["GPU 7 is idle", "wrap up"])
+
+
 class SkillContextTests(unittest.TestCase):
     """The skill block belongs in the system message, not appended after the query."""
 
@@ -184,12 +281,8 @@ class SkillContextTests(unittest.TestCase):
         seen: dict = {}
         backend = ScriptedBackend([{"content": "done"}])
 
-        async def _noop_async(*a, **k):
-            return None
-
         m = agent_loop_module
         with patch.object(streaming_module, "get_backend", lambda: backend), \
-             patch.object(finalize_module, "auto_store_memory", new=_noop_async), \
              patch.object(m, "tools_for_context", lambda **k: k["tools"]), \
              patch.object(m, "emit", lambda ev: None), \
              patch.object(m, "needs_incomplete_finalization", lambda ec: False):

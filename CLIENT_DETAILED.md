@@ -603,8 +603,8 @@ split is [above](#the-per-query-loop).
 
 `run_agent_query()` is a thin orchestrator — shared setup, then dispatch to
 `_run_plan_mode()` or `_run_agent_loop()`. Every exit path routes end-of-query bookkeeping
-through `_finalize_answer()`: annotate the answer, persist memory, save carry context, stash
-the full messages.
+through `_finalize_answer()`: annotate the answer, save carry context, stash
+the full messages. Nothing is written to memory there: that is the model's call, made during the run.
 
 **Completion is `if not tool_calls:`** — the model emitted no tool call. There is no goal
 check, so the honesty surface is the verification ledger appended to every answer. Full

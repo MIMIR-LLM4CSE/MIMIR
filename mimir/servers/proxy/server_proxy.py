@@ -570,6 +570,13 @@ async def proxy_eval(
     ratchet verdict and the per-case results, so there is nothing to poll.
     Every response includes a ``next_step`` field.
 
+    ``run`` is also the build: when the proxy declares a build_cmd, the server
+    runs it before the cases. So the loop has no build step of its own — do not
+    call make/cmake/ninja from the shell between edits, and do not launch the
+    binary by hand to check it. The run does both, and one done by hand only
+    builds the same target twice. A failed build comes back in the reply as
+    ``build_log_tail``: read the compiler error there, fix it, run again.
+
     The session minimizes (or maximizes) ``primary_metric`` subject to the
     ``requirements`` acting as pass/fail constraints.  A completed run that
     satisfies every constraint AND improves the primary metric is *accepted* and

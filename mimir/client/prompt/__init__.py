@@ -1,5 +1,4 @@
 from .system_prompt import (
-    auto_store_memory,
     build_base_system_content,
     build_system_content,
     build_tool_catalog_for_planning,
@@ -7,7 +6,6 @@ from .system_prompt import (
 )
 
 __all__ = [
-    "auto_store_memory",
     "build_base_system_content",
     "build_system_content",
     "build_tool_catalog_for_planning",

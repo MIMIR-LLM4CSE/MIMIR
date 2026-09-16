@@ -11,7 +11,6 @@ from unittest.mock import patch
 
 from mimir.tests._fake_backend import ScriptedBackend
 from mimir.client.query_engine import agent_loop as agent_loop_module
-from mimir.client.query_engine import finalize as finalize_module
 from mimir.client.query_engine import history as history_module
 from mimir.client.query_engine import streaming as streaming_module
 from mimir.client.config import (
@@ -206,7 +205,6 @@ class LiveRungChangeTests(unittest.TestCase):
 
         m = agent_loop_module
         with patch.object(streaming_module, "get_backend", lambda: backend), \
-             patch.object(finalize_module, "auto_store_memory", new=_noop_async), \
              patch.object(m, "_dispatch_tool_calls", _flip), \
              patch.object(m, "_post_dispatch_inject", _noop_async), \
              patch.object(history_module, "_trim_tool_history", lambda *a, **k: None), \

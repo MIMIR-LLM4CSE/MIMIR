@@ -19,7 +19,9 @@ Session JSON schema:
                               #   resume reloads instead; see _Session._load_session)
   "display_messages": [...],  # serialised UI ChatMessage objects
   "carry_context": {...},     # MimirAgent._carry_context
-  "todos": [{"text": "...", "done": false}]
+  "todos": [{"text": "...", "done": false}],
+  "pending_interaction": {...} | null  # the card a deferred turn waits on, and what
+                                       #   its answer resumes (query_engine.deferral)
 }
 """
 
@@ -86,6 +88,9 @@ class FullSession:
     carry_context: dict = field(default_factory=dict)
     todos: list[dict] = field(default_factory=list)
     todo_deps: list[list[int]] = field(default_factory=list)
+    # What a turn of this conversation was waiting on when the user left it: the
+    # card to put back and the calls its answer resumes (query_engine.deferral).
+    pending_interaction: dict | None = None
 
     def meta(self) -> SessionMeta:
         return SessionMeta(
@@ -120,6 +125,7 @@ class FullSession:
             carry_context=data.get("carry_context", {}),
             todos=data.get("todos", []),
             todo_deps=data.get("todo_deps", []),
+            pending_interaction=data.get("pending_interaction") or None,
         )
 
 

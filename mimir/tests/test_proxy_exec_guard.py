@@ -106,6 +106,26 @@ class ProxyExecGuardTests(unittest.TestCase):
         self._init_session()
         self._assert_blocked(self._check("bash_run", command=f"cd /tmp && python {self.src}"))
 
+    def test_wrapper_arguments_are_not_taken_for_the_program(self) -> None:
+        # 'timeout 300 ./bin' once resolved to the program '300', and the proxy ran
+        # by hand in the middle of a session.
+        self._init_session()
+        for prefix in ("timeout 300", "timeout -k 5 10m", "srun -n 4",
+                       "mpirun -np 8", "nice -n 5", "time", "time timeout 30",
+                       "OMP_NUM_THREADS=4 timeout 300", "env A=1 srun -N 1"):
+            with self.subTest(prefix=prefix):
+                self._assert_blocked(self._check(
+                    "bash_run",
+                    command=f"cd /tmp && printf 'n=1\\n' > p && {prefix} {self.exe} p "
+                            "2>&1 | tail -5"))
+
+    def test_the_hint_names_the_op_that_lifts_the_guard(self) -> None:
+        # 'reset' restores the baseline tree; only 'end' lifts the guard.
+        self._init_session()
+        hint = json.loads(self._check("bash_run", command=self.exe))["hint"]
+        self.assertIn("proxy_eval(op='end')", hint)
+        self.assertNotIn("op='reset'", hint)
+
     # -- allowed: inspection, unrelated targets, no session, non-exec tool -----
 
     def test_bash_cat_source_allowed(self) -> None:
@@ -115,6 +135,11 @@ class ProxyExecGuardTests(unittest.TestCase):
     def test_bash_grep_source_allowed(self) -> None:
         self._init_session()
         self.assertIsNone(self._check("bash_run", command=f"grep foo {self.src}"))
+
+    def test_a_bare_wrapper_runs_nothing_of_interest(self) -> None:
+        self._init_session()
+        self.assertIsNone(self._check("bash_run", command="env"))
+        self.assertIsNone(self._check("bash_run", command="timeout 5 ls /tmp"))
 
     def test_bash_other_program_allowed(self) -> None:
         self._init_session()

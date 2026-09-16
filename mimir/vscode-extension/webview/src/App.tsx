@@ -435,9 +435,9 @@ export const App: React.FC = () => {
         if (restore.push) setTranscriptPush((n) => n + 1);
         setTodos(msg.todos ?? []);
         if (prevSessionId !== msg.session_id) {
-          // Pending prompts belong to the turn of the session we just left — the
-          // server cancels that turn on a switch, so answering them here would
-          // reply to nothing (and a plan-approval card would linger forever).
+          // Pending prompts belong to the turn of the session we just left. The
+          // server sets that turn aside and keeps its card with that session: it is
+          // sent again, after this message, when the user comes back to it.
           // A reconnect to the *same* session keeps its cards: the worker is
           // still parked on them and will never re-send them.
           setUserQuestion(null);

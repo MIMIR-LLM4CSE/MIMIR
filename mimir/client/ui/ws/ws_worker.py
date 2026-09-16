@@ -122,6 +122,15 @@ class _AgentWorker:
         # detached run to completion. Registered by the agent loop via _register_bg_job
         # (below) and read back by _watched_bg_jobs, which the dispatch guard uses.
         self._bg_jobs: dict[str, _Watch] = {}
+        # Set by the front-end when the user leaves a conversation whose turn is parked
+        # on them: every wait of that turn returns at once instead (query_engine.deferral).
+        self._defer = threading.Event()
+        # The answer a resume turn carries, handed to the first prompt of its kind
+        # instead of putting the card up again: ``{"type", "response"}``.
+        self._preanswer: dict | None = None
+        # The raw questions of the pending question card — how a deferred question is
+        # matched to the call that asked it.
+        self._pending_questions: list | None = None
 
         self._thread = threading.Thread(target=self._main, name="mimir-worker", daemon=True)
         self._thread.start()
@@ -380,6 +389,15 @@ class _AgentWorker:
     async def _run_query(self, item: dict) -> None:
         query = item.get("text", "")
         history = item.get("history", [])
+        resume = item.get("resume")
+        mode = None
+        if resume is not None:
+            mode = resume.get("mode")
+            self._preanswer = {"type": resume.get("prompt", {}).get("type"),
+                               "response": item.get("answer") or {}}
+        if self._agent is not None:
+            self._agent._deferred_prompts = []
+            self._agent._deferred_turn = None
 
         # Clear cancel flag from any previous cancellation before starting.
         if self._agent is not None:
@@ -423,6 +441,8 @@ class _AgentWorker:
                 self._agent.run(
                     query=query,
                     history=history,
+                    mode=mode,
+                    resume=resume,
                     streaming=self._agent.streaming,
                     thinking=self._agent.thinking,
                     token_callback=_token_cb,
@@ -448,10 +468,28 @@ class _AgentWorker:
             # sends a new message before _run_query starts again).
             if self._agent is not None:
                 self._agent._cancel_flag.clear()
+            # Deferral is scoped to the turn it was asked for, like the cancel flag.
+            self._defer.clear()
+            self._preanswer = None
+
+        answer_ev: dict = {"type": "answer", "text": answer, "cancelled": cancelled,
+                           # Stamped here: the turn is over by the time the drain
+                           # loop reads this, and its session must not be guessed.
+                           "session_id": self._query_session_id}
+        # The turn's own transcript travels with its answer. Read later from the agent,
+        # it may already be the next turn's: a queued turn starts, and resets it, as
+        # soon as this one ends. Private keys — the session strips them before sending.
+        if self._agent is not None:
+            full = getattr(self._agent, "_last_full_messages", None)
+            answer_ev["_full"] = list(full) if full else None
+            answer_ev["_turn_start"] = getattr(self._agent, "_last_turn_start", None)
+        deferred = self._deferred_record()
+        if deferred is not None and not cancelled:
+            answer_ev["_deferred"] = deferred
 
         # Push current todo state.
         self._push_todos()
-        self.out_q.put({"type": "answer", "text": answer, "cancelled": cancelled})
+        self.out_q.put(answer_ev)
         # batch_status is sent from the drain loop's answer handler instead, so it
         # reflects the current snapshot — a batch_status queued here would lose the
         # race with an in-flight batch_review_accept.
@@ -526,7 +564,43 @@ class _AgentWorker:
 
     # ── Approval shim (called sync from agent's async call chain) ─────────────
 
-    def _emit_prompt(self, payload: dict) -> None:
+    def _deferred_record(self) -> dict | None:
+        """What the turn that just ended was set aside on, or None.
+
+        The loop's own record (which calls, which mode) plus the card to put back:
+        the first prompt deferred, whose id the answer will come back with.
+        """
+        agent = self._agent
+        turn = getattr(agent, "_deferred_turn", None) if agent is not None else None
+        prompts = getattr(agent, "_deferred_prompts", None) if agent is not None else None
+        if not turn or not prompts:
+            return None
+        return {**turn, "prompt": prompts[0]["prompt"]}
+
+    def defer(self) -> bool:
+        """Set the parked turn aside instead of cancelling it (see deferral).
+
+        True when a turn was parked on a prompt and is now unwinding; False when there
+        was nothing to set aside, and the caller should fall back to cancelling.
+        """
+        if self._pending_prompt is None or not self.is_busy():
+            return False
+        self._defer.set()
+        return True
+
+    def is_parked(self) -> bool:
+        """True while the running turn waits on the user."""
+        return self.is_busy() and self._pending_prompt is not None
+
+    def submit_resume(self, record: dict, answer: dict, history: list,
+                      session_id: str | None) -> None:
+        """Queue the turn that picks a deferred one up with the user's *answer*."""
+        self._query_q.put({"text": record.get("query", ""), "history": history,
+                           "session_id": session_id, "resume": record,
+                           "answer": answer})
+        self._query_event.set()
+
+    def _emit_prompt(self, payload: dict, questions: list | None = None) -> None:
         """Send a card the turn is about to park on, and remember it while it waits.
 
         One worker serves every connection, and it outlives them: a socket that drops
@@ -537,7 +611,22 @@ class _AgentWorker:
         back in front of whoever reconnects (``_Session._resend_parked_prompt``).
         """
         self._pending_prompt = dict(payload)
+        self._pending_questions = questions
+        # Nobody is there to read it (deferring), or the answer is already in hand
+        # (resuming): the wait below settles it without a card.
+        if self._deferring() or self._preanswer_for(payload) is not None:
+            return
         self.out_q.put(payload)
+
+    def _deferring(self) -> bool:
+        defer = getattr(self, "_defer", None)
+        return defer is not None and defer.is_set()
+
+    def _preanswer_for(self, payload: dict | None) -> dict | None:
+        pre = getattr(self, "_preanswer", None)
+        if pre is None or payload is None or pre.get("type") != payload.get("type"):
+            return None
+        return pre
 
     def pending_prompt(self) -> dict | None:
         """The card the parked turn is waiting on, once it is nobody's to deliver.
@@ -569,11 +658,20 @@ class _AgentWorker:
         question) blocks on, so it is where the wait is marked as *human*
         time — excluded from the tool-call timeout budget it sits inside.
         """
+        pre = self._preanswer_for(getattr(self, "_pending_prompt", None))
+        if pre is not None:
+            # One answer, one prompt: a second card in the resumed step is asked live.
+            self._preanswer = None
+            self._pending_prompt = None
+            return pre.get("response") or {}
         try:
             with human_pause.human_pause():
                 while True:
                     agent = self._agent
                     if agent is not None and agent._cancel_flag.is_set():
+                        return None
+                    if self._deferring():
+                        self._record_deferral()
                         return None
                     try:
                         return q.get(timeout=0.25)
@@ -583,6 +681,20 @@ class _AgentWorker:
             # Answered, cancelled or raised through: the turn is not parked any more,
             # and a card resent past this point would be one nothing is waiting on.
             self._pending_prompt = None
+            self._pending_questions = None
+
+    def _record_deferral(self) -> None:
+        """Note the prompt being set aside, and which call it holds up."""
+        from ...query_engine.deferral import CURRENT_CALL_ID
+
+        agent = self._agent
+        if agent is None or self._pending_prompt is None:
+            return
+        agent._deferred_prompts = [*(getattr(agent, "_deferred_prompts", None) or []), {
+            "call_id": CURRENT_CALL_ID.get(),
+            "prompt": dict(self._pending_prompt),
+            "questions": list(self._pending_questions or []),
+        }]
 
     def _approval_shim(
         self, tool_name: str, arguments: dict, max_attempts: int = 3
@@ -727,7 +839,7 @@ class _AgentWorker:
             "type": "user_question",
             "id": req_id,
             "questions": _labelled_questions(list(questions), self._detached_prefix()),
-        })
+        }, questions=list(questions))
         # No timeout: keep the agent parked until answered (Stop cancels).
         response = self._await_response(self._question_q)
         if response is None:
@@ -999,7 +1111,9 @@ class _AgentWorker:
                 percent = (payload or {}).get("percent")
                 if not isinstance(percent, (int, float)):
                     percent = None
-                if (phase, percent) != last_reported and (phase or percent is not None):
+                # Starts at ("", None), so a run that never reports is never sent,
+                # while one whose count disappears is — a retraction is news too.
+                if (phase, percent) != last_reported:
                     last_reported = (phase, percent)
                     self.out_q.put({
                         "type":       "job_progress",

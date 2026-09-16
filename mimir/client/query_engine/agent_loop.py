@@ -8,7 +8,11 @@ from ..event_sink import emit
 from .toollist import tools_for_context, tools_for_readonly_mode
 from .streaming import _DraftHold, _note_truncated_turn, _process_response, _stream_chat
 from .history import _enforce_context_budget, reconcile_tool_pairs
-from .finalize import _finalize_answer
+from .deferral import (
+    KIND_CALLS, KIND_PLAN_DECISION, end_deferred_calls, end_deferred_turn,
+    take_deferred_calls,
+)
+from .finalize import _finalize_answer, _record_turn
 from .verification import build_ledger
 from .dispatch import _dispatch_tool_calls, _post_dispatch_inject
 from .readonly_guard import filter_readonly_tool_calls
@@ -626,6 +630,11 @@ async def _run_agent_loop(
                 tool_calls, agent=agent, messages=messages, mode_label=active_mode,
             )
         await _dispatch_tool_calls(tool_calls, agent, messages, execution_context)
+        # The user left while a call waited on them: the step ends here, and its
+        # answer resumes it (see deferral).
+        if end_deferred_calls(agent, messages, tool_calls,
+                              query=query, mode=active_mode):
+            return end_deferred_turn(agent, execution_context)
         await _post_dispatch_inject(
             agent, messages, execution_context, active_mode=active_mode,
         )
@@ -687,8 +696,13 @@ async def run_agent_query(
     think_token_callback: Any = None,
     think_start_callback: Any = None,
     think_end_callback: Any = None,
+    resume: dict | None = None,
 ) -> str:
     """Run one user query through plan/agent modes with policy guardrails.
+
+    *resume* picks up a turn that was set aside while waiting on the user (see
+    ``deferral``): no new user message, the deferred calls run first with the answer
+    the front-end already holds, and the loop carries on from there.
 
     Builds the per-query execution context and system prompt, then dispatches to the
     plan-mode or agent-mode loop. The two loops (and every exit path) share
@@ -724,7 +738,7 @@ async def run_agent_query(
         },
         *hist,
     ]
-    if not (
+    if resume is None and not (
         hist
         and hist[-1].get("role") == "user"
         and hist[-1].get("content") == query
@@ -746,7 +760,15 @@ async def run_agent_query(
     # the one moment both are true together. A caller that slices on its own arithmetic
     # instead re-archives or drops whatever the rewrite shifted — and, because the
     # repair leaves no orphan behind, cuts straight through an assistant↔tool pair.
+    # Taken before the opening is fixed: the placeholders are not part of the record.
+    resume_calls = (
+        take_deferred_calls(messages, list(resume.get("call_ids") or []))
+        if resume is not None and resume.get("kind") == KIND_CALLS else []
+    )
     agent._turn_opening_message = messages[-1] if messages else None
+    # This turn owns the transcript slot from here on: an earlier turn's (or an earlier
+    # session's) must never be read back as this one's, whatever way this one ends.
+    _record_turn(agent, messages, repair=False)
 
     # Every loop below mutates this exact list in place, so handing the reference out
     # is enough for a front-end to read the in-flight context without polling the agent.
@@ -808,6 +830,11 @@ async def run_agent_query(
     }
 
     try:
+        if resume_calls:
+            await _dispatch_tool_calls(resume_calls, agent, messages, execution_context)
+            if end_deferred_calls(agent, messages, resume_calls,
+                                  query=query, mode=active_mode):
+                return end_deferred_turn(agent, execution_context)
         if active_mode == "plan":
             return await _run_plan_mode(
                 agent=agent,
@@ -819,6 +846,8 @@ async def run_agent_query(
                 streaming=streaming,
                 logger=logger,
                 cb=cb,
+                resume_decision=(resume is not None
+                                 and resume.get("kind") == KIND_PLAN_DECISION),
             )
         return await _run_agent_loop(
             agent=agent,
@@ -848,3 +877,6 @@ async def run_agent_query(
         raise
     finally:
         agent._live_messages = None
+        # A cancelled or failed turn never reaches _finalize_answer; record what it did
+        # so the front-end keeps its work instead of rolling back to the turn before.
+        _record_turn(agent, messages)

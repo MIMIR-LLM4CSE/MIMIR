@@ -10,6 +10,7 @@ import operator
 from mcp.server.fastmcp import FastMCP
 from responses import err, ok
 from capabilities import tool_caps
+from latex_display import numeric_latex
 
 mcp = FastMCP(
     "MathServer",
@@ -162,7 +163,12 @@ def evaluate(expression: str) -> dict:
         signal.alarm(_EVAL_TIMEOUT)
         result = _safe_eval_expr(expression, safe_ns)
         signal.alarm(0)
-        return ok({"result": float(result), "expression": f"{expression} = {result}"})
+        payload = {"result": float(result), "expression": f"{expression} = {result}"}
+        # Display copy for the chat, which renders the calculation as an equation.
+        latex = numeric_latex(expression, float(result))
+        if latex:
+            payload["latex"] = latex
+        return ok(payload)
     except ZeroDivisionError:
         return err(
             "Division by zero in expression.",

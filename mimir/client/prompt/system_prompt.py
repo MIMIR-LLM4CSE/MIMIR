@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import os
 import re
-from typing import Any, Awaitable, Callable
+from typing import Any
 
 # The user system-prompt override lives in ``.mimir/`` — its resolution belongs with
 # the other user-extension resolvers (servers/skills/plugins); building lives here.
@@ -11,18 +11,6 @@ from ..extensions.system_prompt import resolve_system_prompt_file
 from ..config.constants import THINKING_DEPTH_AUTO
 
 logger = logging.getLogger(__name__)
-
-# Phrases that signal the user explicitly wants something persisted. Kept
-# specific (multi-word where possible) so ordinary task verbs like "save the
-# figure" or "keep the loop" do NOT trip auto-storage. Memory is written only
-# when one of these appears in the user's query — see auto_store_memory.
-_MEMORY_RECALL_SIGNALS = {
-    "remember", "remember this", "remember that",
-    "don't forget", "do not forget",
-    "keep in mind", "memorize",
-    "make a note", "take a note",
-    "for future reference", "note that",
-}
 
 # Canonical, version-controlled examples for every extension type live in
 # `mimir/examples/` (the single source of truth). Nothing is written into the
@@ -330,6 +318,33 @@ _SECTION_SUBAGENTS = (
     "recomputation."
 )
 
+# Conditional — injected by build_system_content only when the memory server is
+# connected, ahead of the index it refers to.
+#
+# This section is the ONLY carrier of the behaviour. Nothing in the execution context
+# says whether a fact is worth keeping or already covered, so there is no nudge; the one
+# deterministic check (a near-verbatim duplicate) is the memory server's refusal. Writing
+# is the model's call alone: no memory is stored on its behalf at the end of a turn.
+_SECTION_MEMORY = (
+    "## Persistent memory\n"
+    "Memory is shared by every session of this workspace. It is a small set of facts, one per "
+    "file, and the index below lists all of them. Keep it that way.\n"
+    "- What belongs there: user preferences and corrections, project decisions and their "
+    "reason, conventions or constraints you could not find in the repository. What does not: "
+    "task summaries, progress, anything the code or git history already records, anything "
+    "that only matters to this conversation.\n"
+    "- Before writing, check the index (and search if in doubt). If a memory already covers "
+    "the subject, edit it in place — never add a second one. If a new fact contradicts a "
+    "memory, rewrite that memory to the current truth (or delete it); two memories must never "
+    "disagree.\n"
+    "- One fact per memory, with a description precise enough to recognise it from the index "
+    "alone.\n"
+    "- A memory is what was true when written. Verify on disk before acting on it, and when it "
+    "turns out to be wrong, fix or delete it right away.\n"
+    "- Write only when the user asks you to remember something, or when they correct or "
+    "confirm how you should work. Do not write at the end of a task by default."
+)
+
 # Conditional — injected by build_system_content only when the question channel is
 # actually connected, and only in the modes that can act on the answer. Same reason as
 # the sub-agent section above: an instruction naming a capability the model does not
@@ -428,98 +443,19 @@ def build_base_system_content(context_file: str = "") -> str:
     return doctrine + "\n\n" + _CORE_SYSTEM_CONTENT
 
 
-def _build_memory_summary(
-    query: str,
-    answer: str,
-    execution_context: dict[str, Any] | None,
-    truncate_text: Callable[[str, int], str],
-) -> str:
-    """Build a compact fact for persistent memory.
-
-    The note records the durable facts of the exchange — what was asked, which
-    files were produced, and a one-line outcome — not a transcript of the model's
-    deliberation. Process noise (files read, search patterns) and long answer dumps
-    are deliberately excluded.
-    """
-    parts: list[str] = []
-
-    # Task
-    parts.append(f"Task: {truncate_text(query.strip(), 300)}")
-
-    if execution_context:
-        # Files written — the durable artifact of the turn.
-        written = sorted(execution_context.get("dirty_written_files", set()))
-        if written:
-            parts.append(f"Files written: {', '.join(written)}")
-
-    # Outcome: the first sentence/line of the answer (what was decided), not the
-    # full deliberation. The verification ledger we append at return time is dropped —
-    # its file list is already captured above.
-    # Imported here, not at module scope: query_engine.finalize imports this module,
-    # so a top-level import would close the cycle.
-    from ..query_engine.verification import split_answer_ledger
-
-    answer_clean = split_answer_ledger(answer)[0].strip()
-    first_line = next((ln.strip() for ln in answer_clean.splitlines() if ln.strip()), "")
-    # Prefer the first sentence if the line runs long.
-    first_sentence = re.split(r'(?<=[.!?])\s', first_line, maxsplit=1)[0] if first_line else ""
-    outcome = truncate_text(first_sentence or first_line, 200)
-    if outcome:
-        parts.append(f"Outcome: {outcome}")
-
-    return "\n".join(parts)
-
-
-async def auto_store_memory(
-    *,
-    query: str,
-    answer: str,
-    tool_owner: dict[str, str],
-    run_tool: Callable[[str, dict[str, Any], dict[str, Any] | None], Awaitable[str]],
-    truncate_text: Callable[[str, int], str],
-    execution_context: dict[str, Any] | None = None,
-    logger: logging.Logger | None = None,
-) -> None:
-    """Persist a compact summary of the exchange.
-
-    Triggers ONLY when the user explicitly asked to remember something (a recall
-    signal in the query). Writing code files is the normal case for this agent and
-    is intentionally NOT a trigger — persisting every code-writing turn turns memory
-    into a transcript of low-value, near-duplicate entries.
-    """
-    if "memory_add" not in tool_owner:
-        return
-
-    query_lower = (query or "").lower()
-    explicit_recall = any(signal in query_lower for signal in _MEMORY_RECALL_SIGNALS)
-    if not explicit_recall:
-        return
-
-    summary = _build_memory_summary(query, answer, execution_context, truncate_text)
-    try:
-        await run_tool(
-            "memory_add",
-            {
-                "text": summary,
-                "tags": ["conversation", "auto"],
-            },
-            execution_context,
-        )
-    except Exception as exc:
-        # Memory persistence is best-effort and should not break responses.
-        if logger:
-            logger.debug("memory_add failed: %s", exc)
-        return
-
-
 # Index lines look like: ``- [<description>](<slug>.md) — <YYYY-MM-DD>``
 _INDEX_LINE_RE = re.compile(
     r'^-\s*\[(?P<desc>.*?)\]\((?P<slug>[^)]+?)\.md\)\s*(?:[—-]\s*(?P<date>\d{4}-\d{2}-\d{2}))?\s*$'
 )
 
 
-def _load_recent_memories(memory_file: str, max_entries: int = 10) -> list[dict]:
-    """Read the most recent memories from the MEMORY.md index (newest first)."""
+# The memory server's own cap on stored memories. The whole index is injected: a memory
+# the model cannot see is one it writes a second time, or contradicts.
+_MAX_INDEXED_MEMORIES = 50
+
+
+def _load_recent_memories(memory_file: str, max_entries: int = _MAX_INDEXED_MEMORIES) -> list[dict]:
+    """Read the memories listed in the MEMORY.md index (newest first)."""
     try:
         with open(memory_file, "r", encoding="utf-8") as f:
             content = f.read()
@@ -766,7 +702,7 @@ def build_system_content(
     )
 
     if memory_context_file:
-        entries = _load_recent_memories(memory_context_file, max_entries=10)
+        entries = _load_recent_memories(memory_context_file)
         if entries:
             lines = []
             for e in entries:
@@ -775,20 +711,22 @@ def build_system_content(
                 slug = e.get("slug", "")
                 suffix = f"  ({slug}.md)" if slug else ""
                 lines.append(f"[{ts}] {text}{suffix}")
-            system_content += _section(
-                "Memory index (one line per stored memory — historical context only; files listed "
-                "may have changed or been deleted since, so always verify on disk before assuming "
-                "something exists, and a memory saying a piece of work was done is not evidence "
-                "that it still is). Search or read the individual "
+            memory_block = (
+                "Memory index (every stored memory, one line each — historical context only; "
+                "files listed may have changed or been deleted since, so always verify on disk "
+                "before assuming something exists, and a memory saying a piece of work was done "
+                "is not evidence that it still is). Search or read the individual "
                 "memory file for the full note:\n"
                 + "\n".join(lines)
                 + "\n(Index at: " + memory_context_file + ")"
             )
         else:
-            system_content += _section(
-                "Persistent memories are stored under: " + os.path.dirname(memory_context_file) + "\n"
-                "Search them for relevant past context when useful."
+            memory_block = (
+                "No memory stored yet. Memories are stored under: "
+                + os.path.dirname(memory_context_file)
             )
+        # Leading blank line, as for the other headed sections: _section only prepends one.
+        system_content += _section("\n" + _SECTION_MEMORY + "\n\n" + memory_block)
 
     if active_mode == "agent":
         if todo_file:

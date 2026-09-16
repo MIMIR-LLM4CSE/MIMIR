@@ -40,6 +40,10 @@ from ..guardrails.nudges import drop_transient_reminders, inject_reminder
 from ..tool_execution.formatter import normalize_arguments
 from .streaming import _DraftHold, _note_truncated_turn, _stream_chat, _process_response, _to_dict
 from .dispatch import _dispatch_tool_calls, _post_dispatch_inject
+from .deferral import (
+    KIND_PLAN_DECISION, deferred_prompts, end_deferred_calls, end_deferred_turn,
+    mark_deferred,
+)
 from .finalize import _finalize_answer
 from .readonly_guard import filter_readonly_tool_calls
 from .toollist import tools_for_plan_mode
@@ -189,6 +193,7 @@ async def _run_plan_mode(
     streaming: bool,
     logger: Any,
     cb: dict,
+    resume_decision: bool = False,
 ) -> str:
     """Plan-mode loop: gather evidence with read-only tools, then record a plan via the plan/todo tool."""    # Lazy import: agent_loop imports this module (run_agent_query dispatch), so these
     # agent-loop helpers + the tail-called agent loop are fetched at call time.
@@ -268,12 +273,99 @@ async def _run_plan_mode(
             execution_context=execution_context, step=step,
         )
 
+    async def _decide() -> tuple[str, Any]:
+        """Ask for the plan decision and act on it: ``(outcome, value)``.
+
+        ``"return"`` ends the run with *value*, ``"continue"`` goes back to planning,
+        ``"break"`` delivers the plan as it stands. Shared by the normal path and a
+        turn resuming a decision the user left open.
+        """
+        nonlocal answer, plan_recorded, post_record_tool_turns, deliver_nudged
+        decision, feedback = await _request_plan_decision(agent)
+        # The user left while the question was up: the plan stands delivered, and the
+        # decision is asked again when they come back (query_engine.deferral).
+        if any(not d.get("call_id") for d in deferred_prompts(agent)):
+            mark_deferred(agent, kind=KIND_PLAN_DECISION, query=query, mode="plan")
+            return "break", None
+        if decision == "accept":
+            emit({"type": "status", "text": "  ✔ Plan approved — switching to agent mode"})
+            # Persist the switch so the in-session default flips to "agent" and the
+            # front-end toggle syncs via the "mode" event. Guarded for
+            # non-interactive callers that lack set_mode.
+            _set_mode = getattr(agent, "set_mode", None)
+            if callable(_set_mode):
+                try:
+                    _set_mode("agent")
+                except Exception:
+                    pass
+            emit({"type": "mode", "mode": "agent"})
+            # Through the shared rule: the agent-mode prompt renders the
+            # checklist this plan just wrote, and the skill block survives the
+            # handoff instead of being dropped on the way into agent mode.
+            agent_system = await _rebuild_system_content(
+                agent, "agent", execution_context,
+            )
+            messages[0]["content"] = agent_system
+            messages.append({"role": "user", "content": PLAN_APPROVED_EXECUTE})
+            # Seamlessly continue in agent mode, executing the approved plan to
+            # completion. _run_agent_loop finalises the answer itself.
+            return "return", await _run_agent_loop(
+                agent=agent,
+                query=query,
+                active_mode="agent",
+                messages=messages,
+                system_content=agent_system,
+                execution_context=execution_context,
+                max_steps=max_steps,
+                thinking=thinking,
+                streaming=streaming,
+                logger=logger,
+                cb=cb,
+            )
+        if decision == "revise":
+            emit({"type": "status", "text": "  ↻ Reworking the plan per your feedback"})
+            messages.append({"role": "user", "content": plan_revision_nudge(feedback)})
+            _clear_recorded_plan(execution_context)
+            plan_recorded = False
+            post_record_tool_turns = 0
+            deliver_nudged = False
+            return "continue", None
+        if decision == "rework":
+            emit({"type": "status", "text": "  ↺ Plan sent back — reworking from scratch"})
+            messages.append({"role": "user", "content": PLAN_REWORK_NUDGE})
+            _clear_recorded_plan(execution_context)
+            plan_recorded = False
+            post_record_tool_turns = 0
+            deliver_nudged = False
+            return "continue", None
+        if decision == "reject":
+            # Hard stop: the plan is dropped and nothing is executed. The denial is
+            # recorded in history so the next query knows this plan was turned down.
+            emit({"type": "status", "text": "  ✗ Plan denied — stopping here"})
+            messages.append({"role": "user", "content": PLAN_REJECTED_STOP})
+            answer = PLAN_REJECTED_ANSWER
+            return "break", None
+        # "none": no interactive front-end / dismissed — deliver the plan as-is.
+        return "break", None
+
     base_options = {'temperature': 0.2, 'top_k': 25}
     auto_active = getattr(agent, "thinking_depth", None) == THINKING_DEPTH_AUTO
 
     # Unbounded when the caller set no ceiling (max_steps <= 0) — plan mode gathers
     # evidence for as long as the question needs.
     for plan_nudges in (itertools.count() if max_steps <= 0 else range(max_steps)):
+        if resume_decision:
+            # The plan was delivered by the turn this one resumes; only the decision
+            # is still open, and the user has just given it.
+            resume_decision = False
+            plan_recorded = True
+            outcome, value = await _decide()
+            if outcome == "return":
+                return value
+            if outcome == "continue":
+                continue
+            break
+
         # Pick up mid-run steering (chat-while-busy) before each plan-mode call.
         _drain_steer(agent, messages)
 
@@ -422,66 +514,11 @@ async def _run_plan_mode(
 
             # The plan is recorded and has been presented to the user. Ask them to
             # approve it, reject it, or request changes before doing any work.
-            decision, feedback = await _request_plan_decision(agent)
-            if decision == "accept":
-                emit({"type": "status", "text": "  ✔ Plan approved — switching to agent mode"})
-                # Persist the switch so the in-session default flips to "agent" and the
-                # front-end toggle syncs via the "mode" event. Guarded for
-                # non-interactive callers that lack set_mode.
-                _set_mode = getattr(agent, "set_mode", None)
-                if callable(_set_mode):
-                    try:
-                        _set_mode("agent")
-                    except Exception:
-                        pass
-                emit({"type": "mode", "mode": "agent"})
-                # Through the shared rule: the agent-mode prompt renders the
-                # checklist this plan just wrote, and the skill block survives the
-                # handoff instead of being dropped on the way into agent mode.
-                agent_system = await _rebuild_system_content(
-                    agent, "agent", execution_context,
-                )
-                messages[0]["content"] = agent_system
-                messages.append({"role": "user", "content": PLAN_APPROVED_EXECUTE})
-                # Seamlessly continue in agent mode, executing the approved plan to
-                # completion. _run_agent_loop finalises the answer itself.
-                return await _run_agent_loop(
-                    agent=agent,
-                    query=query,
-                    active_mode="agent",
-                    messages=messages,
-                    system_content=agent_system,
-                    execution_context=execution_context,
-                    max_steps=max_steps,
-                    thinking=thinking,
-                    streaming=streaming,
-                    logger=logger,
-                    cb=cb,
-                )
-            if decision == "revise":
-                emit({"type": "status", "text": "  ↻ Reworking the plan per your feedback"})
-                messages.append({"role": "user", "content": plan_revision_nudge(feedback)})
-                _clear_recorded_plan(execution_context)
-                plan_recorded = False
-                post_record_tool_turns = 0
-                deliver_nudged = False
+            outcome, value = await _decide()
+            if outcome == "return":
+                return value
+            if outcome == "continue":
                 continue
-            if decision == "rework":
-                emit({"type": "status", "text": "  ↺ Plan sent back — reworking from scratch"})
-                messages.append({"role": "user", "content": PLAN_REWORK_NUDGE})
-                _clear_recorded_plan(execution_context)
-                plan_recorded = False
-                post_record_tool_turns = 0
-                deliver_nudged = False
-                continue
-            if decision == "reject":
-                # Hard stop: the plan is dropped and nothing is executed. The denial is
-                # recorded in history so the next query knows this plan was turned down.
-                emit({"type": "status", "text": "  ✗ Plan denied — stopping here"})
-                messages.append({"role": "user", "content": PLAN_REJECTED_STOP})
-                answer = PLAN_REJECTED_ANSWER
-                break
-            # "none": no interactive front-end / dismissed — deliver the plan as-is.
             break
 
         # Safety guard: drop any hallucinated calls to write/execution tools, restrict
@@ -495,6 +532,8 @@ async def _run_plan_mode(
             tool_calls = _pin_plan_title(tool_calls, agent, plan_title)
 
         await _dispatch_tool_calls(tool_calls, agent, messages, execution_context)
+        if end_deferred_calls(agent, messages, tool_calls, query=query, mode="plan"):
+            return end_deferred_turn(agent, execution_context)
         # The mid-loop correctives the agent loop has always run, which plan mode
         # dispatched without: the repeated-failing-call alert is *staged* into the
         # execution context by the dispatch above and only consumed here, so without

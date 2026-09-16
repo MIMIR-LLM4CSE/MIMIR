@@ -152,6 +152,7 @@ from capabilities import (
 from responses import err, ok
 from module_env import MODULE_ENV_PASSTHROUGH as _MODULE_ENV_PASSTHROUGH
 import _bash_jobs
+import build_progress
 import run_channel
 from shell_paths import (
     CLUSTER_SUBMIT_COMMANDS,
@@ -196,6 +197,9 @@ _TICK_MAX = 0.2
 # The divert sidecar is stat'ed at most this often, so a long wait does not turn into
 # a stat storm on the shared state dir.
 _DIVERT_POLL_S = 0.25
+# How often a blocking run's output is read for a build count. A build's count moves
+# over seconds, and each read is a seek and 8 KiB, so once a second is plenty.
+_PROGRESS_POLL_S = 1.0
 # Which run channel a blocking run publishes under. The channel is the blocking
 # tool's own registered name, so the client can address it off the tool row it is
 # diverting without either end spelling the other's name out.
@@ -846,6 +850,8 @@ def _run(
 
     try:
         next_divert_check = started + _DIVERT_POLL_S
+        next_progress_check = started + _PROGRESS_POLL_S
+        last_progress: tuple[float, str] | None = None
         while True:
             if proc.poll() is not None:
                 # proc.poll(), not the exit_code file: the trap that writes that file
@@ -880,6 +886,18 @@ def _run(
                     payload["truncated"] = True
                 _bash_jobs.discard(job_key)
                 return payload
+
+            if now >= next_progress_check:
+                next_progress_check = now + _PROGRESS_POLL_S
+                # From the output, not the command: a make buried in a chain still
+                # prints its count into this log. Only a change is written, and a
+                # count that disappears (the build ended, the next step began) is
+                # retracted rather than left standing.
+                progress = build_progress.from_file(_bash_jobs.log_path(job_key))
+                if progress != last_progress:
+                    last_progress = progress
+                    percent, phase = progress if progress else (None, "")
+                    run_channel.update(_DIVERT_CHANNEL, job_key, phase, percent)
 
             if now >= next_divert_check:
                 next_divert_check = now + _DIVERT_POLL_S

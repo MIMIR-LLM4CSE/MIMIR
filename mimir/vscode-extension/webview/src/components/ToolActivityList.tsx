@@ -1,6 +1,7 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties } from "react";
-import type { ExecResult, ToolActivity } from "../types";
+import katex from "katex";
+import type { ExecResult, MathResult, ToolActivity } from "../types";
 import { subAgentTail } from "./subAgentUtils";
 import { useElapsed, formatDuration } from "../hooks/useElapsed";
 
@@ -112,6 +113,29 @@ const ExecOutput: React.FC<{ exec: ExecResult; pending?: boolean }> = ({
   );
 };
 
+/** A calculation typeset as one display equation: what was computed and its result.
+ *  Built by the tool, so the row shows the work the way a reader writes it rather
+ *  than as the call's argument string. A formula KaTeX cannot parse falls back to
+ *  its source, never to an exception that would take the transcript down. */
+const MathOutput: React.FC<{ math: MathResult }> = ({ math }) => {
+  const html = useMemo(
+    () =>
+      katex.renderToString(math.latex, {
+        displayMode: true,
+        throwOnError: false,
+        output: "htmlAndMathml",
+      }),
+    [math.latex],
+  );
+  return (
+    <div
+      className="tool-math"
+      title={math.latex}
+      dangerouslySetInnerHTML={{ __html: html }}
+    />
+  );
+};
+
 /** Full-width panel carrying the error text of a failed tool call. The row tail
  *  can only show a cropped one-liner, so the real message lives here: wrapped
  *  over as many lines as it needs, scrolling past a bounded height.
@@ -164,10 +188,11 @@ const ToolRow: React.FC<RowProps> = ({ tool, childRows = [], onDivert }) => {
   const hasExec = tool.exec !== undefined;
   const hasError = isError && !!tool.error;
   const hasChildren = childRows.length > 0;
+  const hasMath = !isError && tool.math !== undefined;
   // Anything the row can reveal — exec panel, error text or a sub-agent's steps —
   // makes the head a working toggle. A failed row without exec used to be inert,
   // leaving its only explanation cropped in the tail.
-  const canExpand = hasExec || hasError || hasChildren;
+  const canExpand = hasExec || hasError || hasChildren || hasMath;
   // The tail is a narrow, single-line slot: an error there renders as a fragment
   // cropped mid-sentence. Failed rows keep it clear — the ✕ carries the status and
   // the full command/error is one click away.
@@ -185,10 +210,12 @@ const ToolRow: React.FC<RowProps> = ({ tool, childRows = [], onDivert }) => {
   // click is kept as an override, and until then the default is re-derived, so a
   // row the user has not touched is always shown at its natural size.
   const [toggled, setToggled] = useState<boolean | null>(null);
-  const expanded = toggled ?? (hasExec && !isError);
+  // A typeset calculation opens the same way: the equation is the result.
+  const openByDefault = (hasExec && !isError) || hasMath;
+  const expanded = toggled ?? openByDefault;
   const setExpanded = (next: boolean | ((prev: boolean) => boolean)) =>
     setToggled((prev) => {
-      const current = prev ?? (hasExec && !isError);
+      const current = prev ?? openByDefault;
       return typeof next === "function" ? next(current) : next;
     });
 
@@ -196,7 +223,9 @@ const ToolRow: React.FC<RowProps> = ({ tool, childRows = [], onDivert }) => {
   // IN pane below is open it says it twice — cropped up here, in full down there.
   // Dropped only while the panel is open: collapsed, the one-liner is the only
   // trace of what ran.
-  const showsCommandBelow = expanded && hasExec && !!tool.exec?.command;
+  // The same holds for a calculation: the equation below restates the expression.
+  const showsCommandBelow =
+    expanded && ((hasExec && !!tool.exec?.command) || hasMath);
 
   const running = tool.status === "running";
   // Latched locally rather than waiting for the row to change status: the request
@@ -345,6 +374,7 @@ const ToolRow: React.FC<RowProps> = ({ tool, childRows = [], onDivert }) => {
       {expanded && tool.exec && (
         <ExecOutput exec={tool.exec} pending={running} />
       )}
+      {expanded && hasMath && <MathOutput math={tool.math!} />}
       {expanded && hasError && (
         <ErrorOutput error={tool.error!} onCollapse={() => setExpanded(false)} />
       )}

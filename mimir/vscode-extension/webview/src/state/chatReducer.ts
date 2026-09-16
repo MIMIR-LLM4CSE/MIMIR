@@ -710,7 +710,9 @@ export function createChatReducer(makeId: () => string) {
           const existingIds = existing.approval!.ids ?? [existing.approval!.id];
           messages = base.map((m, i) =>
             i === existingIdx
-              ? { ...m, approval: { ...action, ids: [...existingIds, action.id] } }
+              // A card put back on return from another session can meet its own
+              // saved copy: the same id twice would answer it twice.
+              ? { ...m, approval: { ...action, ids: existingIds.includes(action.id) ? existingIds : [...existingIds, action.id] } }
               : m
           );
         } else {
@@ -813,7 +815,7 @@ export function createChatReducer(makeId: () => string) {
       }
 
       case "tool_result": {
-        const { id, ok, summary, error, exec, duration_ms } = action;
+        const { id, ok, summary, error, exec, math, duration_ms } = action;
         const patch = (t: ToolActivity): ToolActivity =>
           t.id === id
             ? {
@@ -833,6 +835,7 @@ export function createChatReducer(makeId: () => string) {
                 // not to be exec-shaped) must not erase the IN pane the call opened:
                 // the command that ran is the row's only trace of what was attempted.
                 exec: exec ?? t.exec,
+                math,
                 // The run is over, whatever it was last seen doing. Without this a
                 // detached row keeps "building…" and its bar for the rest of the
                 // session, describing a moment that has passed.

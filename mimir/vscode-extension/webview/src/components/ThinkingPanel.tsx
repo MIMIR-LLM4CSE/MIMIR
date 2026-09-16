@@ -1,7 +1,6 @@
 import React, { useLayoutEffect } from "react";
 import { useElapsed, formatDuration } from "../hooks/useElapsed";
 import { useStickToBottom } from "../hooks/useStickToBottom";
-import { StreamingStatus } from "./StreamingStatus";
 
 interface Props {
   /** Accumulated reasoning text. */
@@ -46,7 +45,7 @@ export const ThinkingPanel: React.FC<Props> = ({ text, live, startedAt, duration
       <div className="thinking-block thinking-block--live">
         <div className="thinking-summary">
           <span className="tb-spinner" aria-hidden="true" />
-          <StreamingStatus showDots={false} />
+          <span className="thinking-summary-label">Thinking…</span>
           <span className="thinking-duration">· {formatDuration(elapsed)}</span>
         </div>
         <pre className="thinking-content" ref={contentRef} onScroll={onScroll}>{text}</pre>

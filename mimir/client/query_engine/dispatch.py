@@ -30,6 +30,7 @@ from ..context.execution_context import loop_control, nudge_count
 from ..tool_execution.normalizer import _make_hashable
 from ..tool_execution.executor import run_post_tool_annotations
 from ..tool_execution.exec_preview import exec_input_preview, extract_exec_preview
+from ..tool_execution.math_preview import extract_math_preview
 from ..tool_execution.tool_status_messages import (
     tool_status_message,
     tool_arg_preview,
@@ -47,6 +48,7 @@ from ..guardrails.workflow import (
 )
 from ..guardrails.nudges import inject_reminder, maybe_inject_env_resolution
 from .streaming import _to_dict
+from .deferral import CURRENT_CALL_ID
 from .background import (
     _maybe_emit_open_editor,
     _detect_background_job,
@@ -343,6 +345,7 @@ async def _dispatch_tool_calls(
             summary: str,
             exec_info: dict | None = None,
             error: str | None = None,
+            math_info: dict | None = None,
         ) -> None:
             waited = human_pause.elapsed() - paused_at_start
             event = {
@@ -357,6 +360,9 @@ async def _dispatch_tool_calls(
             # display copy so the UI can render a terminal in/out panel.
             if exec_info is not None:
                 event["exec"] = exec_info
+            # A calculation typeset by the tool itself, shown as an equation.
+            if math_info is not None:
+                event["math"] = math_info
             # Failures carry the FULL error text (the summary is a clipped one-liner
             # that reads as truncated in the row); the UI shows it in an expandable
             # panel under the row.
@@ -389,15 +395,21 @@ async def _dispatch_tool_calls(
             # separately below under its own budget: it happens after the file is
             # already on disk, so a slow/hung validator must never be able to trip
             # this timeout and mark a successful edit as failed.
-            result = await _await_tool(
-                agent._run_tool(
-                    name, args,
-                    execution_context=execution_context,
-                    run_auto_validation=False,
-                    call_id=call_id,
-                ),
-                budget,
-            )
+            # Stamped on the call's own task (the future copies the context when it is
+            # created), so an approval or question raised inside it names this call.
+            call_token = CURRENT_CALL_ID.set(call_id)
+            try:
+                result = await _await_tool(
+                    agent._run_tool(
+                        name, args,
+                        execution_context=execution_context,
+                        run_auto_validation=False,
+                        call_id=call_id,
+                    ),
+                    budget,
+                )
+            finally:
+                CURRENT_CALL_ID.reset(call_token)
 
             ok, summary = summarize_tool_result(name, result, agent.tool_caps)
 
@@ -455,6 +467,7 @@ async def _dispatch_tool_calls(
             _emit_result(
                 ok, summary, extract_exec_preview(result, args),
                 error=None if ok else error_detail(result),
+                math_info=extract_math_preview(result) if ok else None,
             )
             _maybe_emit_open_editor(result)
             descriptor = _detect_background_job(name, result, agent)

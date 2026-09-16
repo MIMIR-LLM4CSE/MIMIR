@@ -79,6 +79,8 @@ class SessionFencingTests(unittest.IsolatedAsyncioTestCase):
         sess.store = _FakeStore(["s1", "s2"])
         sess._active_session_id = active
         sess._display_messages = []
+        sess._detached_turns = {}
+        sess._submitted_len = 0
         return sess
 
     def test_foreign_events_are_dropped_and_own_events_kept(self):

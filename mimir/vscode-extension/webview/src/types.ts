@@ -224,7 +224,14 @@ export interface ToolResultMessage {
   error?: string;
   /** Terminal panel data, present only for exec-shaped results. */
   exec?: ExecResult;
+  /** The calculation typeset by the tool, present only for math-shaped results. */
+  math?: MathResult;
   duration_ms: number;
+}
+
+/** A calculation and its result as one display-math LaTeX body (no `$` delimiters). */
+export interface MathResult {
+  latex: string;
 }
 
 /** What a blocking run is doing, pushed while its tool call is still open.
@@ -733,6 +740,8 @@ export interface ToolActivity {
   error?: string;
   /** Terminal in/out panel data, revealed when the row is expanded (exec tools only). */
   exec?: ExecResult;
+  /** Typeset calculation, shown open under the row (math-shaped results only). */
+  math?: MathResult;
   durationMs?: number;
   /** What the model said this run's output showed — set when a verdict settled it. */
   verdict?: "pass" | "fail" | "unknown";

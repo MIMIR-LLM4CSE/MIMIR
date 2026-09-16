@@ -64,7 +64,8 @@ def normalize_finish_reason(raw: Any) -> str | None:
 # also count local bookkeeping a backend never sees, so the wire form is spelled
 # out rather than inferred — an extra key added here later must be one the
 # provider receives.
-_WIRE_KEYS = ("role", "content", "name", "tool_call_id", "tool_calls", "thinking")
+_WIRE_KEYS = ("role", "content", "name", "tool_call_id", "tool_calls", "thinking",
+              "reasoning")
 
 
 def message_wire_form(message: dict) -> str:

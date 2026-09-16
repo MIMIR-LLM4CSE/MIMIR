@@ -21,6 +21,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'
 from mcp.server.fastmcp import FastMCP
 from responses import err, ok
 from capabilities import tool_caps
+from latex_display import sympy_latex
 
 mcp = FastMCP(
     "SymbolicMathServer",
@@ -109,58 +110,114 @@ def symbolic(
     try:
         import sympy as sp
 
-        if op == "simplify":
-            r = str(sp.simplify(sp.sympify(expression)))
-            return ok({"result": r, "input": expression, "simplified": r})
-        if op == "expand":
-            r = str(sp.expand(sp.sympify(expression)))
-            return ok({"result": r, "input": expression, "expanded": r})
-        if op == "factor":
-            r = str(sp.factor(sp.sympify(expression)))
-            return ok({"result": r, "input": expression, "factored": r})
+        def tex(obj) -> str:
+            return sp.latex(obj)
+
+        def done(fields: dict, build) -> dict:
+            # Display copy for the chat, which renders the calculation as an equation.
+            latex = sympy_latex(build)
+            if latex:
+                fields["latex"] = latex
+            return ok(fields)
+
+        def equation_tex(eq: str) -> str:
+            if "=" in eq and len(eq.split("=")) == 2:
+                lhs, rhs = eq.split("=")
+                return f"{tex(sp.sympify(lhs))} = {tex(sp.sympify(rhs))}"
+            return f"{tex(sp.sympify(eq))} = 0"
+
+        if op in ("simplify", "expand", "factor"):
+            expr = sp.sympify(expression)
+            value = {"simplify": sp.simplify, "expand": sp.expand, "factor": sp.factor}[op](expr)
+            r = str(value)
+            key = {"simplify": "simplified", "expand": "expanded", "factor": "factored"}[op]
+            return done({"result": r, "input": expression, key: r},
+                        lambda: f"{tex(expr)} = {tex(value)}")
         if op == "differentiate":
-            r = str(sp.diff(sp.sympify(expression), sp.Symbol(variable)))
-            return ok({"result": r, "input": expression, "variable": variable, "derivative": r})
+            expr, x = sp.sympify(expression), sp.Symbol(variable)
+            value = sp.diff(expr, x)
+            r = str(value)
+            return done({"result": r, "input": expression, "variable": variable, "derivative": r},
+                        lambda: rf"\frac{{d}}{{d{tex(x)}}}\left({tex(expr)}\right) = {tex(value)}")
         if op == "integrate":
-            r = str(sp.integrate(sp.sympify(expression), sp.Symbol(variable)))
-            return ok({"result": r, "input": expression, "variable": variable, "integral": r})
+            expr, x = sp.sympify(expression), sp.Symbol(variable)
+            value = sp.integrate(expr, x)
+            r = str(value)
+            return done({"result": r, "input": expression, "variable": variable, "integral": r},
+                        lambda: f"{tex(sp.Integral(expr, x))} = {tex(value)} + C")
         if op == "solve_equation":
-            sols = sp.solve(_equation_to_expr(sp, equation), sp.Symbol(variable))
+            x = sp.Symbol(variable)
+            sols = sp.solve(_equation_to_expr(sp, equation), x)
             r = [str(s) for s in sols]
-            return ok({"result": r, "equation": equation, "variable": variable, "solutions": r})
+
+            def build() -> str:
+                if not sols:
+                    found = r"\text{no solution}"
+                else:
+                    found = r",\quad ".join(f"{tex(x)} = {tex(v)}" for v in sols)
+                return rf"{equation_tex(equation)} \;\Longrightarrow\; {found}"
+            return done({"result": r, "equation": equation, "variable": variable, "solutions": r},
+                        build)
         if op == "compute_limit":
             x = sp.Symbol(variable)
             expr = sp.sympify(expression)
             if point in ("inf", "infinity"):
-                limit_val = sp.limit(expr, x, sp.oo)
+                pt = sp.oo
             elif point in ("-inf", "-infinity"):
-                limit_val = sp.limit(expr, x, -sp.oo)
+                pt = -sp.oo
             else:
-                limit_val = sp.limit(expr, x, float(point))
+                pt = float(point)
+            limit_val = sp.limit(expr, x, pt)
             r = str(limit_val)
-            return ok({"result": r, "expression": expression, "variable": variable,
-                       "point": str(point), "limit": r})
+            # The typed point, not its float: a limit at 0 reads "x → 0", not "x → 0.0".
+            shown_pt = pt if pt in (sp.oo, -sp.oo) else sp.nsimplify(point)
+            return done({"result": r, "expression": expression, "variable": variable,
+                         "point": str(point), "limit": r},
+                        lambda: f"{tex(sp.Limit(expr, x, shown_pt))} = {tex(limit_val)}")
         if op == "series_expansion":
             x = sp.Symbol(variable)
+            expr = sp.sympify(expression)
             pt = sp.oo if point in ("inf", "infinity") else (
                 -sp.oo if point in ("-inf", "-infinity") else float(point))
-            r = str(sp.series(sp.sympify(expression), x, pt, n))
-            return ok({"result": r, "expression": expression, "variable": variable,
-                       "point": str(point), "n": n, "series": r})
+            value = sp.series(expr, x, pt, n)
+            r = str(value)
+            return done({"result": r, "expression": expression, "variable": variable,
+                         "point": str(point), "n": n, "series": r},
+                        lambda: f"{tex(expr)} = {tex(value)}")
         if op == "create_matrix":
             sym_matrix, n_rows, n_cols = _parse_matrix(sp, matrix_str)
             r = str(sym_matrix)
-            return ok({"result": r, "matrix_str": matrix_str,
-                       "size": f"{n_rows}x{n_cols}", "matrix": r})
+            return done({"result": r, "matrix_str": matrix_str,
+                         "size": f"{n_rows}x{n_cols}", "matrix": r},
+                        lambda: tex(sym_matrix))
         if op == "matrix_determinant":
             sym_matrix, _, _ = _parse_matrix(sp, matrix_str)
-            det = str(sym_matrix.det())
-            return ok({"result": det, "matrix_str": matrix_str, "determinant": det})
+            det_val = sym_matrix.det()
+            det = str(det_val)
+            return done({"result": det, "matrix_str": matrix_str, "determinant": det},
+                        lambda: rf"\det {tex(sym_matrix)} = {tex(det_val)}")
         if op == "solve_system":
             sym_vars = [sp.Symbol(v) for v in (variables or [])]
             exprs = [_equation_to_expr(sp, eq) for eq in (equations or [])]
-            r = str(sp.solve(exprs, sym_vars))
-            return ok({"result": r, "equations": equations, "variables": variables, "solutions": r})
+            value = sp.solve(exprs, sym_vars)
+            r = str(value)
+
+            def build() -> str:
+                system = r" \\ ".join(equation_tex(eq) for eq in (equations or []))
+                if isinstance(value, dict):
+                    found = r",\quad ".join(f"{tex(k)} = {tex(v)}" for k, v in value.items())
+                elif not value:
+                    found = r"\text{no solution}"
+                elif all(isinstance(t, tuple) for t in value):
+                    names = ", ".join(tex(v) for v in sym_vars)
+                    found = r",\quad ".join(
+                        rf"\left({names}\right) = \left({', '.join(tex(c) for c in t)}\right)"
+                        for t in value)
+                else:
+                    found = tex(value)
+                return rf"\begin{{cases}} {system} \end{{cases}} \;\Longrightarrow\; {found}"
+            return done({"result": r, "equations": equations, "variables": variables, "solutions": r},
+                        build)
         return err(
             f"Unknown symbolic op '{op}'.",
             hint=f"Use one of: {', '.join(_SYMBOLIC_OPS)}.",

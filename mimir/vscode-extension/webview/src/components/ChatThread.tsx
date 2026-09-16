@@ -99,14 +99,10 @@ export const ChatThread: React.FC<Props> = ({
     messages: duringStep,
   });
 
-  // One animated status line, always at the bottom of the thread — while
-  // waiting AND while the answer streams. Hidden when live tool rows or a
-  // live thinking line already signal activity (they carry their own motion).
-  const showStatusLine =
-    busy &&
-    draft.trim().length === 0 &&
-    liveToolCalls.length === 0 &&
-    liveThinkingBlocks.length === 0;
+  // One animated status line, pinned to the bottom of the thread for as long as
+  // the agent is busy — whatever else is on screen. It is the only place the
+  // status word shows, so the draft and the live reasoning line carry none.
+  const showStatusLine = busy;
 
   // ── One message → one render path, dispatched by kind ──────────────────────
   const renderMessage = (msg: ChatMessage, idx: number) => {
@@ -164,7 +160,7 @@ export const ChatThread: React.FC<Props> = ({
               tool rows are three separate streams, and orderLiveStream reads
               their arrival stamps back into one list. The freeze goes through
               the same function, so nothing moves when the step ends. */}
-          {liveEntries.map((entry, i) => {
+          {liveEntries.map((entry) => {
             if (entry.kind === "message") {
               return renderMessage(entry.message, visible.indexOf(entry.message));
             }
@@ -194,19 +190,12 @@ export const ChatThread: React.FC<Props> = ({
               <div className="chat-message agent chat-draft" key="draft">
                 <div className="message-body">
                   <MarkdownContent text={draft} />
-                  {/* Only when nothing came after it — otherwise the cards below
-                      carry the motion and two indicators would compete. */}
-                  {i === liveEntries.length - 1 && (
-                    <div className="chat-draft__status">
-                      <StreamingStatus />
-                    </div>
-                  )}
                 </div>
               </div>
             );
           })}
 
-          {/* Animated status line — shown while the agent is busy */}
+          {/* Animated status line — pinned to the bottom while the agent is busy */}
           {showStatusLine && (
             <div className="agent-thinking">
               <StreamingStatus />

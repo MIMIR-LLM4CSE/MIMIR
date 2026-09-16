@@ -400,6 +400,7 @@ class MathServerTests(unittest.TestCase):
         payload = server_math.evaluate("3 + 4")
         self.assertEqual(payload["status"], "ok")
         self.assertEqual(payload["result"], 7.0)
+        self.assertEqual(payload["latex"], "3 + 4 = 7")
 
     def test_evaluate_subtraction(self) -> None:
         self.assertEqual(server_math.evaluate("10 - 3")["result"], 7.0)
@@ -593,6 +594,13 @@ class DatetimeServerTests(unittest.TestCase):
 @unittest.skipUnless(_HAS_SYMPY, "sympy not installed")
 class SymbolicMathServerTests(unittest.TestCase):
     """All SymPy ops are dispatched through the single `symbolic(op, ...)` tool."""
+
+    def test_calculation_is_typeset(self) -> None:
+        payload = server_symbolic_math.symbolic("solve_equation", equation="x**2 = 4")
+        self.assertEqual(payload["latex"],
+                         r"x^{2} = 4 \;\Longrightarrow\; x = -2,\quad x = 2")
+        payload = server_symbolic_math.symbolic("differentiate", expression="x**2")
+        self.assertEqual(payload["latex"], r"\frac{d}{dx}\left(x^{2}\right) = 2 x")
 
     def test_simplify(self) -> None:
         payload = server_symbolic_math.symbolic("simplify", expression="sin(x)**2 + cos(x)**2")

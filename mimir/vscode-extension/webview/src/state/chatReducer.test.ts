@@ -18,6 +18,16 @@ function run(actions: Parameters<ReturnType<typeof makeReducer>>[1][]): ChatStat
 }
 
 describe("chatReducer", () => {
+  it("does not answer a card twice when it is put back over its saved copy", () => {
+    // Coming back to a session whose turn was set aside: the saved transcript still
+    // holds the card, and the server sends it again with the same id.
+    const card = { type: "approval" as const, id: "a1", tool: "bash_run", server: "bash", args: { command: "echo hi" }, risk: "", scope: "" };
+    const state = run([card, card]);
+    const cards = state.messages.filter((m) => m.kind === "approval");
+    expect(cards).toHaveLength(1);
+    expect(cards[0].approval?.ids).toEqual(["a1"]);
+  });
+
   it("coalesces token text across an intervening status into one draft", () => {
     const state = run([
       { type: "token", text: "Hello" },
@@ -205,6 +215,15 @@ describe("chatReducer", () => {
     expect(tool.status).toBe("ok");
     expect(tool.summary).toBe("3 matches");
     expect(tool.durationMs).toBe(42);
+  });
+
+  it("keeps a typeset calculation from tool_result on the activity", () => {
+    const state = run([
+      { type: "tool_call", id: "c1", name: "calc", label: "Evaluating", detail: "2 ** 10" },
+      { type: "tool_result", id: "c1", name: "calc", ok: true, summary: "",
+        math: { latex: "{2}^{10} = 1024" }, duration_ms: 3 },
+    ]);
+    expect(state.liveToolCalls[0].math).toEqual({ latex: "{2}^{10} = 1024" });
   });
 
   it("marks a failed tool_result as error", () => {

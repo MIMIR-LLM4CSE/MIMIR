@@ -312,20 +312,16 @@ class FinalizeAnswerTests(unittest.TestCase):
         )
         return agent, carry
 
-    def test_annotates_persists_and_saves_carry(self) -> None:
+    def test_annotates_and_saves_carry(self) -> None:
         agent, carry = self._agent()
         ec = {"dirty_written_files": {"a.py", "b.cu"}}
         messages = [{"role": "system", "content": "S"}, {"role": "user", "content": "U"}]
 
-        async def _noop_store(**kwargs):
-            return None
-
-        with patch.object(finalize_module, "auto_store_memory", new=_noop_store):
-            result = asyncio.run(
-                agent_loop_module._finalize_answer(
-                    agent, "q", "Done.", ec, messages, logger=None,
-                )
+        result = asyncio.run(
+            agent_loop_module._finalize_answer(
+                agent, "q", "Done.", ec, messages, logger=None,
             )
+        )
 
         self.assertTrue(result.startswith("Done."))
         self.assertIn("Verification ledger", result)
@@ -388,18 +384,32 @@ class FinalizeAnswerTests(unittest.TestCase):
 
     def test_no_annotation_when_nothing_written(self) -> None:
         agent, _ = self._agent()
-
-        async def _noop_store(**kwargs):
-            return None
-
-        with patch.object(finalize_module, "auto_store_memory", new=_noop_store):
-            result = asyncio.run(
-                agent_loop_module._finalize_answer(
-                    agent, "q", "Nothing changed.", {"dirty_written_files": set()},
-                    [{"role": "system", "content": "S"}], logger=None,
-                )
+        result = asyncio.run(
+            agent_loop_module._finalize_answer(
+                agent, "q", "Nothing changed.", {"dirty_written_files": set()},
+                [{"role": "system", "content": "S"}], logger=None,
             )
+        )
         self.assertEqual(result, "Nothing changed.")
+
+    def test_no_memory_is_written_on_the_models_behalf(self) -> None:
+        """Writing memory is the model's call, made during the run.
+
+        A note stored at every exit where the query said "remember" doubled what the
+        model had already written, so the exit funnel calls no tool at all.
+        """
+        agent, _ = self._agent()
+        calls: list = []
+        agent.tool_owner = {"memory_add": "memory"}
+        agent._run_tool = lambda *a, **k: calls.append(a) or "{}"
+        asyncio.run(
+            agent_loop_module._finalize_answer(
+                agent, "remember that the project uses pytest", "Noted.",
+                {"dirty_written_files": {"a.py"}},
+                [{"role": "system", "content": "S"}], logger=None,
+            )
+        )
+        self.assertEqual(calls, [])
 
 
 class RunPlanModeTests(unittest.TestCase):
@@ -1098,7 +1108,6 @@ class RunAgentQueryNonInteractiveTests(unittest.TestCase):
 
         m = agent_loop_module
         with patch.object(streaming_module, "get_backend", lambda: backend), \
-             patch.object(finalize_module, "auto_store_memory", new=_noop_async), \
              patch.object(agent_loop_module, "_dispatch_tool_calls", _noop_async), \
              patch.object(agent_loop_module, "_post_dispatch_inject", _noop_async), \
              patch.object(history_module, "_trim_tool_history", lambda *a, **k: None), \
@@ -1137,7 +1146,6 @@ class LiveMessagesExposureTests(RunAgentQueryNonInteractiveTests):
 
         m = agent_loop_module
         with patch.object(streaming_module, "get_backend", lambda: backend), \
-             patch.object(finalize_module, "auto_store_memory", new=_noop_async), \
              patch.object(agent_loop_module, "_dispatch_tool_calls", _noop_async), \
              patch.object(agent_loop_module, "_post_dispatch_inject", _snapshot), \
              patch.object(history_module, "_trim_tool_history", lambda *a, **k: None), \
@@ -1207,7 +1215,6 @@ class SteerInjectionInLoopTests(RunAgentQueryNonInteractiveTests):
 
         m = agent_loop_module
         with patch.object(streaming_module, "get_backend", lambda: backend), \
-             patch.object(finalize_module, "auto_store_memory", new=_noop_async), \
              patch.object(agent_loop_module, "_dispatch_tool_calls", _noop_async), \
              patch.object(agent_loop_module, "_post_dispatch_inject", _noop_async), \
              patch.object(history_module, "_trim_tool_history", lambda *a, **k: None), \
@@ -1277,7 +1284,6 @@ class SteerInjectionInLoopTests(RunAgentQueryNonInteractiveTests):
 
         m = agent_loop_module
         with patch.object(streaming_module, "get_backend", lambda: backend), \
-             patch.object(finalize_module, "auto_store_memory", new=_noop_async), \
              patch.object(agent_loop_module, "_dispatch_tool_calls", _noop_async), \
              patch.object(agent_loop_module, "_post_dispatch_inject", _noop_async), \
              patch.object(history_module, "_trim_tool_history", lambda *a, **k: None), \
@@ -1313,7 +1319,6 @@ class EvidenceHandbackTests(RunAgentQueryNonInteractiveTests):
 
         m = agent_loop_module
         with patch.object(streaming_module, "get_backend", lambda: backend), \
-             patch.object(finalize_module, "auto_store_memory", new=_noop_async), \
              patch.object(agent_loop_module, "_dispatch_tool_calls", _noop_async), \
              patch.object(agent_loop_module, "_post_dispatch_inject", _noop_async), \
              patch.object(history_module, "_trim_tool_history", lambda *a, **k: None), \
@@ -1392,7 +1397,6 @@ class AskModeInLoopTests(RunAgentQueryNonInteractiveTests):
 
         m = agent_loop_module
         with patch.object(streaming_module, "get_backend", lambda: backend), \
-             patch.object(finalize_module, "auto_store_memory", new=_noop_async), \
              patch.object(agent_loop_module, "_dispatch_tool_calls", _dispatch), \
              patch.object(agent_loop_module, "_post_dispatch_inject", _noop_async), \
              patch.object(history_module, "_trim_tool_history", lambda *a, **k: None), \
@@ -1476,7 +1480,6 @@ class MidQueryModeSwitchTests(RunAgentQueryNonInteractiveTests):
         m = agent_loop_module
         patches = [
             patch.object(streaming_module, "get_backend", lambda: backend),
-            patch.object(finalize_module, "auto_store_memory", new=_noop_async),
             patch.object(agent_loop_module, "_dispatch_tool_calls", _dispatch),
             patch.object(agent_loop_module, "_post_dispatch_inject", _noop_async),
             patch.object(history_module, "_trim_tool_history", lambda *a, **k: None),
@@ -1574,7 +1577,6 @@ class MidQueryModeSwitchTests(RunAgentQueryNonInteractiveTests):
 
         m = agent_loop_module
         with patch.object(streaming_module, "get_backend", lambda: backend), \
-             patch.object(finalize_module, "auto_store_memory", new=_noop_async), \
              patch.object(m, "tools_for_context", lambda **k: k["tools"]), \
              patch.object(m, "emit", lambda ev: emitted.append(ev)), \
              patch.object(m, "needs_incomplete_finalization", lambda ec: False):
@@ -1602,7 +1604,6 @@ class EmptyTurnTests(unittest.TestCase):
 
         m = agent_loop_module
         with patch.object(streaming_module, "get_backend", lambda: backend), \
-             patch.object(finalize_module, "auto_store_memory", new=_noop_async), \
              patch.object(m, "tools_for_context", lambda **k: k["tools"]), \
              patch.object(m, "emit", lambda ev: emitted.append(ev)), \
              patch.object(m, "needs_incomplete_finalization", lambda ec: False):
@@ -1954,7 +1955,6 @@ class HeldDraftTests(RunAgentQueryNonInteractiveTests):
 
         m = agent_loop_module
         with patch.object(streaming_module, "get_backend", lambda: backend), \
-             patch.object(finalize_module, "auto_store_memory", new=_noop_async), \
              patch.object(agent_loop_module, "_dispatch_tool_calls", _noop_async), \
              patch.object(agent_loop_module, "_post_dispatch_inject", _noop_async), \
              patch.object(history_module, "_trim_tool_history", lambda *a, **k: None), \

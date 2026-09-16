@@ -16,6 +16,7 @@ import subprocess
 import time
 from datetime import datetime, timezone
 
+import build_progress
 from responses import err
 
 from _lib import store
@@ -164,34 +165,21 @@ def _squeue_state(job_id: int) -> str:
         return "unknown"
 
 
-# Build tools count their own progress; CMake and ninja both print it as "[ 42%]".
-# Parsed rather than tracked, because the only process that could track it — the
-# runner — is blocked inside the build for its whole duration.
-_BUILD_PCT = re.compile(r"\[\s*(\d{1,3})%\]")
-
-# How much of the build log a progress read looks at. Deliberately not _MAX_LOG:
-# that size is for *diagnosing* a failed build, and re-reading 256 KiB every couple
-# of seconds to find six bytes is the wrong shape. The last few lines always carry
-# the newest percentage.
-_PROGRESS_TAIL = 8 * 1024
-
-
-def _build_percent(run_dir: str, max_bytes: int = _PROGRESS_TAIL) -> float | None:
+def _build_percent(run_dir: str,
+                   max_bytes: int = build_progress.TAIL_BYTES) -> float | None:
     """The build's own most recent percentage, or None if it does not print one.
 
-    None is a real answer, not a failure: plenty of build commands say nothing about
-    how far along they are, and showing 0% for one of those would invent a fact.
+    Parsed rather than tracked, because the only process that could track it — the
+    runner — is blocked inside the build for its whole duration. None is a real
+    answer, not a failure: plenty of build commands say nothing about how far along
+    they are, and showing 0% for one of those would invent a fact.
+
+    A trailing 100% is kept: the runner's phase already says the build is the current
+    step, so it cannot be a finished build standing over later work.
     """
-    text = _read_text_tail(_build_log_path(run_dir), max_bytes)
-    if not text:
-        return None
-    matches = _BUILD_PCT.findall(text)
-    if not matches:
-        return None
-    try:
-        return float(max(0, min(100, int(matches[-1]))))
-    except ValueError:
-        return None
+    text = build_progress.read_tail(_build_log_path(run_dir), max_bytes)
+    found = build_progress.parse(text, drop_finished=False)
+    return found[0] if found else None
 
 
 def _run_progress(run_dir: str) -> dict:

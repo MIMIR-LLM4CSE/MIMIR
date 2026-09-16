@@ -87,6 +87,13 @@ class OllamaBackend(LLMBackend):
         # served model uses without ever being merged.
         from ..history import merge_consecutive_user_messages
         messages = merge_consecutive_user_messages(list(messages))
+        # History keeps an assistant step's reasoning under `reasoning`; Ollama's
+        # message schema names the same thing `thinking`.
+        messages = [
+            {**{k: v for k, v in m.items() if k != "reasoning"}, "thinking": m["reasoning"]}
+            if m.get("reasoning") else m
+            for m in messages
+        ]
 
         answer = ollama.chat(
             model=model,

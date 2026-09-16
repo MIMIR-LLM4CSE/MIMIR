@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import copy
 import json
 import os
@@ -141,8 +142,11 @@ def _make_elicitation_callback(agent: Any):
 
         loop = asyncio.get_running_loop()
         try:
+            # With the caller's context: the handler reads which tool call is asking
+            # (query_engine.deferral), and a bare executor thread starts from none.
             result = await loop.run_in_executor(
                 None,
+                contextvars.copy_context().run,
                 agent._request_user_question,
                 questions,
             )

@@ -1193,6 +1193,7 @@ class MimirAgent:
         think_start_callback: Any = None,
         think_end_callback: Any = None,
         event_callback: Any = None,
+        resume: dict | None = None,
     ) -> str:
         # Bind the structured-event sink for this run so emit() in the engine and
         # tool executor (and their gathered tasks) route events to event_callback
@@ -1213,6 +1214,7 @@ class MimirAgent:
                 think_token_callback=think_token_callback,
                 think_start_callback=think_start_callback,
                 think_end_callback=think_end_callback,
+                resume=resume,
             )
         finally:
             if token is not None:

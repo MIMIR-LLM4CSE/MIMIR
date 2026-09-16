@@ -49,6 +49,15 @@ def _process_response(msg: dict, messages: list[dict], thinking: bool, streamed_
     # rejected request. This is the single choke point for all four backends.
     msg_for_history = {k: v for k, v in msg.items()
                        if k not in ("thinking", "finish_reason")}
+    # The reasoning itself is part of the message, though. Interleaved-thinking models
+    # (DeepSeek-V4 with tools, GLM, Qwen3 within a turn) render each earlier step as
+    # `<think>{reasoning}</think>{content}{calls}`; stripped, every step showed an empty
+    # block, so the model re-derived the same analysis from the same tool results and
+    # restated it before each call. Kept under `reasoning`, the field vLLM reads back;
+    # the chat template decides what of it the prompt shows.
+    reasoning = (msg.get("thinking") or "").replace("<think>", "").replace("</think>", "").strip()
+    if reasoning:
+        msg_for_history["reasoning"] = reasoning
     messages.append(msg_for_history)
 
 

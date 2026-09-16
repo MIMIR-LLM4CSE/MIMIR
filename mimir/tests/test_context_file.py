@@ -85,7 +85,7 @@ class ResolveContextFileTests(unittest.TestCase):
         )
         self.assertTrue(out.startswith("BASE"))
         # The dynamic memory-pointer section is still appended on top of the base.
-        self.assertIn("Persistent memories are stored under:", out)
+        self.assertIn("## Persistent memory", out)
 
 
 class CoreSurvivesOverrideTests(unittest.TestCase):

@@ -23,7 +23,6 @@ import mimir.client.config as client_config_module
 import mimir.client.query_engine.agent_loop as agent_loop_module
 import mimir.client.query_engine.streaming as streaming_module
 import mimir.client.query_engine.history as history_module
-import mimir.client.query_engine.finalize as finalize_module
 import mimir.client.query_engine.dispatch as dispatch_module
 import mimir.client.human_pause as human_pause_module
 import mimir.client.prompt.system_prompt as context_builder_module
@@ -953,15 +952,14 @@ class ClientHelperTests(unittest.TestCase):
         # The LLM backend is reached via agent_loop._stream_chat, which returns a
         # single response dict ({"content": ..., "tool_calls": ...}).  No tool calls
         # means the content becomes the final answer.
-        with patch.object(finalize_module, "auto_store_memory", return_value=None):
-            with patch.object(agent_loop_module, "_stream_chat", return_value={"content": "done"}):
-                result = asyncio.run(
-                    agent_loop_module.run_agent_query(
-                        agent=fake_agent,
-                        query="  tighten policy gates  ",
-                        max_steps=1,
-                    )
+        with patch.object(agent_loop_module, "_stream_chat", return_value={"content": "done"}):
+            result = asyncio.run(
+                agent_loop_module.run_agent_query(
+                    agent=fake_agent,
+                    query="  tighten policy gates  ",
+                    max_steps=1,
                 )
+            )
 
         self.assertEqual(result, "done")
 
@@ -2412,121 +2410,6 @@ class ClientHelperTests(unittest.TestCase):
         self.assertFalse(fired, "regression nudge must stay silent once the test was run")
         self.assertEqual(messages, [])
 
-    def test_auto_store_memory_skips_readonly_turns(self) -> None:
-        stored: list[dict] = []
-
-        async def fake_run_tool(tool, args, ctx=None):
-            stored.append({"tool": tool, "args": args})
-            return '{"status": "ok"}'
-
-        execution_context = client_module.MimirAgent._new_execution_context()
-        # No files written — pure read-only turn.
-        asyncio.run(
-            context_builder_module.auto_store_memory(
-                query="what does the policy module do?",
-                answer="It enforces write and state guards.",
-                tool_owner={"memory_add": "MemoryServer"},
-                run_tool=fake_run_tool,
-                truncate_text=lambda t, n=600: t[:n],
-                execution_context=execution_context,
-            )
-        )
-        self.assertEqual(stored, [], "should not store on read-only turn")
-
-    def test_auto_store_memory_skips_code_write_without_recall_signal(self) -> None:
-        # Writing code files is the normal case and must NOT trigger auto-storage —
-        # only an explicit recall signal does. See auto_store_memory docstring.
-        stored: list[dict] = []
-
-        async def fake_run_tool(tool, args, ctx=None):
-            stored.append({"tool": tool, "args": args})
-            return '{"status": "ok"}'
-
-        execution_context = client_module.MimirAgent._new_execution_context()
-        execution_context["dirty_written_files"].add("mimir/servers/utilities/server_math.py")
-
-        asyncio.run(
-            context_builder_module.auto_store_memory(
-                query="add a square_root tool",
-                answer="Done — wrote server_math.py.",
-                tool_owner={"memory_add": "MemoryServer"},
-                run_tool=fake_run_tool,
-                truncate_text=lambda t, n=600: t[:n],
-                execution_context=execution_context,
-            )
-        )
-        self.assertEqual(stored, [], "writing code files alone must not trigger auto-storage")
-
-    def test_auto_store_memory_skips_common_task_verbs(self) -> None:
-        # Ordinary task verbs that used to be recall signals ("save"/"keep") must
-        # no longer trip auto-storage.
-        stored: list[dict] = []
-
-        async def fake_run_tool(tool, args, ctx=None):
-            stored.append({"tool": tool, "args": args})
-            return '{"status": "ok"}'
-
-        execution_context = client_module.MimirAgent._new_execution_context()
-        execution_context["dirty_written_files"].add("waveSolver/snap.py")
-
-        asyncio.run(
-            context_builder_module.auto_store_memory(
-                query="save the snapshot to png since I'm on hpc",
-                answer="Done.",
-                tool_owner={"memory_add": "MemoryServer"},
-                run_tool=fake_run_tool,
-                truncate_text=lambda t, n=600: t[:n],
-                execution_context=execution_context,
-            )
-        )
-        self.assertEqual(stored, [], "'save' is a task verb, not a recall signal")
-
-    def test_auto_store_memory_persists_on_explicit_recall_signal(self) -> None:
-        stored: list[dict] = []
-
-        async def fake_run_tool(tool, args, ctx=None):
-            stored.append({"tool": tool, "args": args})
-            return '{"status": "ok"}'
-
-        execution_context = client_module.MimirAgent._new_execution_context()
-        # No files written but query has a recall signal.
-        asyncio.run(
-            context_builder_module.auto_store_memory(
-                query="remember that we use qwen3 as default model",
-                answer="Noted.",
-                tool_owner={"memory_add": "MemoryServer"},
-                run_tool=fake_run_tool,
-                truncate_text=lambda t, n=600: t[:n],
-                execution_context=execution_context,
-            )
-        )
-        self.assertEqual(len(stored), 1)
-        self.assertEqual(stored[0]["tool"], "memory_add")
-
-    def test_build_memory_summary_is_compact_fact(self) -> None:
-        execution_context = client_module.MimirAgent._new_execution_context()
-        execution_context["dirty_written_files"].add("add.py")
-        execution_context["read_files"].add("README.md")
-
-        answer = (
-            "I implemented add.py with an add(a, b) function. "
-            "We need to also consider edge cases.\n"
-            "Then we should output a final answer summarizing what we did."
-        )
-        summary = context_builder_module._build_memory_summary(
-            "implement a+b",
-            answer,
-            execution_context,
-            truncate_text=lambda t, n: t[:n],
-        )
-        self.assertIn("Task: implement a+b", summary)
-        self.assertIn("Files written: add.py", summary)
-        # Outcome is the first sentence only — no deliberation, no process noise.
-        self.assertIn("Outcome: I implemented add.py with an add(a, b) function.", summary)
-        self.assertNotIn("we should output", summary)
-        self.assertNotIn("Files read", summary)
-        self.assertNotIn("Searches run", summary)
-
     def test_load_recent_memories_returns_last_n_entries(self) -> None:
         import tempfile
         # MEMORY.md index format, newest first.
@@ -2566,6 +2449,8 @@ class ClientHelperTests(unittest.TestCase):
                 sensitive_tools=set(),
                 memory_context_file=tmp_path,
             )
+            self.assertIn("## Persistent memory", content)
+            self.assertLess(content.index("## Persistent memory"), content.index("Memory index"))
             self.assertIn("Memory index", content)
             self.assertIn("user prefers qwen3 model", content)
             self.assertIn("project uses pytest for validation", content)
@@ -2585,10 +2470,41 @@ class ClientHelperTests(unittest.TestCase):
                 sensitive_tools=set(),
                 memory_context_file=tmp_path,
             )
-            self.assertIn("Persistent memories are stored under", content)
+            self.assertIn("## Persistent memory", content)
+            self.assertIn("No memory stored yet", content)
             self.assertNotIn("Memory index", content)
         finally:
             import os; os.unlink(tmp_path)
+
+    def test_build_system_content_injects_the_whole_index(self) -> None:
+        # A memory missing from the prompt is one the model writes a second time.
+        import tempfile
+        lines = ["# Memory Index", ""]
+        for i in range(30, 0, -1):
+            lines.append(f"- [fact number {i}](fact-{i}.md) — 2026-01-{i:02d}")
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".md", delete=False) as f:
+            f.write("\n".join(lines) + "\n")
+            tmp_path = f.name
+        try:
+            content = context_builder_module.build_system_content(
+                active_mode="agent",
+                tool_owner={},
+                sensitive_tools=set(),
+                memory_context_file=tmp_path,
+            )
+            for i in range(1, 31):
+                self.assertIn(f"fact number {i}  (fact-{i}.md)", content)
+        finally:
+            import os; os.unlink(tmp_path)
+
+    def test_no_memory_section_without_the_memory_server(self) -> None:
+        content = context_builder_module.build_system_content(
+            active_mode="agent",
+            tool_owner={},
+            sensitive_tools=set(),
+            memory_context_file="",
+        )
+        self.assertNotIn("## Persistent memory", content)
 
     # ── foundational context injection ────────────────────────────────────────
     #

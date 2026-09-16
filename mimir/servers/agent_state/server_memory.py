@@ -46,7 +46,6 @@ EMBEDDINGS_FILE = os.path.join(MEMORY_DIR, "embeddings.json")
 _MAX_MEMORY_TEXT_LEN = 2000  # characters
 _MAX_DESCRIPTION_LEN = 120   # characters (index stays scannable)
 _MAX_ENTRIES = 50            # oldest memories are pruned beyond this
-_DEDUP_WINDOW = 5            # compare against the N most recent memories
 _DEDUP_THRESHOLD = 0.70      # Jaccard word-overlap ratio above which entry is skipped
 
 mcp = FastMCP(
@@ -174,12 +173,16 @@ def _word_set(text: str) -> set[str]:
     return set(re.findall(r'[a-zA-Z0-9_]+', text.lower()))
 
 
-def _is_near_duplicate(text: str, recent_entries: list) -> str | None:
-    """Return the slug of a near-duplicate recent memory, or None."""
+def _is_near_duplicate(text: str, entries: list) -> str | None:
+    """Return the slug of a stored memory *text* nearly repeats, or None.
+
+    Every memory is compared, not only the recent ones: an old fact is the one most
+    likely to be written again, because it is the one least likely to be in mind.
+    """
     words = _word_set(text)
     if not words:
         return None
-    for entry in recent_entries[-_DEDUP_WINDOW:]:
+    for entry in entries:
         other = _word_set(entry.get("text", ""))
         if not other:
             continue
@@ -296,10 +299,12 @@ def memory_add(text: str, description: str = None, tags: list = None) -> dict:
     (name, description, date, tags) and indexed in MEMORY.md. Use this to remember
     user preferences, facts discovered during a task, or decisions worth recalling.
 
-    Keep entries concise (under 2000 characters) — store key facts, file paths,
-    and decisions, not raw conversation text.
+    Check the index first: if a memory already covers the subject, update it
+    instead of adding one. Keep entries concise (under 2000 characters) — store key
+    facts, file paths, and decisions, not raw conversation text.
 
-    Returns {"status": "ok", "name": <slug>, "stored": <text>}.
+    Returns {"status": "ok", "name": <slug>, "stored": <text>}. A text that nearly
+    repeats a stored memory is refused with an error naming that memory.
 
     Args:
         text: The fact or note to remember (max 2000 characters).
@@ -321,12 +326,11 @@ def memory_add(text: str, description: str = None, tags: list = None) -> dict:
 
     dup = _is_near_duplicate(text, memory)
     if dup is not None:
-        return ok({
-            "name": None,
-            "stored": text,
-            "note": "skipped: near-duplicate of a recent memory",
-            "similar_memory": dup,
-        })
+        return err(
+            f"Not stored: this nearly repeats the memory {dup!r}.",
+            hint=f"Update {dup!r} in place if the fact has changed; otherwise it is already stored.",
+            similar_memory=dup,
+        )
 
     desc = (description or "").strip() or _derive_description(text)
     if len(desc) > _MAX_DESCRIPTION_LEN:

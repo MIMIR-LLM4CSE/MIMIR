@@ -19,6 +19,7 @@ from ._ws_runtime import (
     get_backend,
 )
 from .transcript_log import TranscriptLog
+from ...query_engine.deferral import KIND_CALLS, take_deferred_calls
 from ...query_engine.history import (
     carries_compaction_summary, reconcile_tool_pairs,
 )
@@ -142,6 +143,12 @@ class _Session:
         # Last (phase, percent) pushed per call id, so a tick that learned nothing
         # sends nothing.
         self._sent_progress: dict[str, tuple] = {}
+        # The active session's deferred interaction (query_engine.deferral): the card
+        # to show and what answering it resumes. Mirrors the session file.
+        self._pending_interaction: dict | None = None
+        # Ids of deferred cards the user moved past without answering. Their card may
+        # still be on screen; an answer to one must not reach the next live prompt.
+        self._stale_prompt_ids: set[str] = set()
 
     def _greeting(self) -> dict:
         """The ``ready`` sent the moment the socket is accepted.
@@ -305,6 +312,7 @@ class _Session:
         self.history_full = []
         self._submitted_len = 0
         self._display_messages = []
+        self._pending_interaction = None
         self.transcript.bind(session.id)
         self.worker.load_agent_state({})
         self.worker.reset_session_guards()  # fresh session → drop grants + repeat guard
@@ -365,6 +373,7 @@ class _Session:
         self.history = _reconcile([dict(m) for m in resumed])
         self._submitted_len = len(self.history)
         self._display_messages = list(session.display_messages)
+        self._pending_interaction = session.pending_interaction
         self.transcript.bind(session.id)
         self.worker.load_agent_state({"carry_context": session.carry_context})
 
@@ -421,6 +430,7 @@ class _Session:
                 }))
             except Exception:
                 pass
+        await self._resend_deferred_prompt()
         self._last_context_usage = None  # client cleared its bar on session_loaded
         await self._emit_context_usage()
 
@@ -535,6 +545,7 @@ class _Session:
             session.display_messages = list(display_messages)
             session.carry_context = agent_state.get("carry_context", {})
             session.todos = self.worker._load_todos()
+            session.pending_interaction = getattr(self, "_pending_interaction", None)
             # Persist deps sidecar alongside todos.
             try:
                 import json as _json
@@ -630,7 +641,8 @@ class _Session:
         total, reserved, _, _ = context_budget_for(self.worker.model, mode)
         return total, reserved
 
-    def _turn_messages(self, full: list[dict], submitted: int | None = None) -> list[dict]:
+    def _turn_messages(self, full: list[dict], submitted: int | None = None,
+                       start: Any = None) -> list[dict]:
         """The slice of *full* this turn produced — what the archive has yet to record.
 
         The boundary comes from the loop, which is the only place it is knowable. Ours
@@ -647,8 +659,9 @@ class _Session:
         summarized away. Better a turn recorded by its answer than a record quietly
         interleaved with a copy of an older one.
         """
-        hook = getattr(self.worker, "last_turn_start", None)
-        start = hook() if hook else None
+        if start is None:
+            hook = getattr(self.worker, "last_turn_start", None)
+            start = hook() if hook else None
         if not isinstance(start, int):
             start = self._submitted_len if submitted is None else submitted
         added = full[start:] if len(full) > start else []
@@ -762,9 +775,10 @@ class _Session:
                 percent = run.get("percent")
                 if not isinstance(percent, (int, float)):
                     percent = None
-                if not phase and percent is None:
-                    continue
-                if self._sent_progress.get(call_id) == (phase, percent):
+                # Nothing-to-say is skipped only while nothing was said: once a bar
+                # is up, its retraction (the build ended, the command went on) is a
+                # change the row must hear about, or the bar stays frozen.
+                if self._sent_progress.get(call_id, ("", None)) == (phase, percent):
                     continue
                 self._sent_progress[call_id] = (phase, percent)
                 try:
@@ -778,6 +792,9 @@ class _Session:
         while True:
             events = self.worker.drain()
             for ev in events:
+                # The turn's transcript and deferral ride on its answer for the session
+                # layer only; they never go down the socket.
+                extras = self._pop_answer_extras(ev)
                 if ev.get("type") == "job_complete":
                     # Routed by the session that launched the job rather than the one
                     # on screen, so it is handled ahead of the foreign-event filter.
@@ -802,7 +819,7 @@ class _Session:
                     # A detached wake turn still has to leave its answer somewhere:
                     # its own session file, since it is not this conversation's.
                     if ev.get("type") == "answer":
-                        await self._persist_detached_answer(ev)
+                        await self._persist_detached_answer(ev, extras)
                     continue
                 # Unwrap embedded JSON events (e.g. diff) from output lines.
                 if ev.get("type") == "output":
@@ -876,8 +893,12 @@ class _Session:
                     # results + answer, chain-of-thought stripped) so the model recalls
                     # the tools it ran, matching the CLI chat loop. Falls back to the
                     # flattened answer otherwise.
-                    full = self.worker.full_history()
+                    full, start = self._answer_transcript(extras)
                     context_mode = getattr(self.worker._agent, "context_mode", "full")
+                    # Left and come back before it answered: it lands here after all.
+                    self._detached_turns.pop(self._active_session_id, None)
+                    if extras.get("_deferred"):
+                        self._pending_interaction = extras["_deferred"]
                     if full is not None and context_mode == "full":
                         # Keep only what the turn itself produced. The loop may have
                         # trimmed or compacted the prefix it inherited from us, and that
@@ -885,7 +906,7 @@ class _Session:
                         # so it must not be overwritten by the shortened copy. A turn
                         # whose own messages were compacted away still has its answer,
                         # which is the part worth keeping.
-                        added = self._turn_messages(full)
+                        added = self._turn_messages(full, start=start)
                         # Copied, for the same reason as the load path above: a later
                         # turn's budgeting rewrites `content` / `tool_calls` in place,
                         # and these dicts would otherwise be the archive's own.
@@ -895,12 +916,17 @@ class _Session:
                         answer_msg = {"role": "assistant", "content": ev.get("text", "")}
                         self.history.append(answer_msg)
                         self.history_full.append(dict(answer_msg))
-                    self._display_messages.append({
-                        "role": "agent",
-                        "kind": "text",
-                        "text": ev.get("text", ""),
-                    })
+                    if ev.get("text"):
+                        self._display_messages.append({
+                            "role": "agent",
+                            "kind": "text",
+                            "text": ev.get("text", ""),
+                        })
                     self._autosave_session(list(self._display_messages))
+                    # Set aside while this conversation was still on screen: the card
+                    # it was parked on comes straight back.
+                    if extras.get("_deferred"):
+                        await self._resend_deferred_prompt()
                     # Once the turn has landed, so the description says what was *done*
                     # rather than what was asked, and the model call no longer competes
                     # with the query the user is waiting on.
@@ -1192,7 +1218,20 @@ class _Session:
         except Exception:
             pass
 
-    async def _persist_detached_answer(self, ev: dict) -> None:
+    @staticmethod
+    def _pop_answer_extras(ev: dict) -> dict:
+        """Take the session-layer payload off an answer event (see ``_run_query``)."""
+        if ev.get("type") != "answer":
+            return {}
+        return {k: ev.pop(k) for k in ("_full", "_turn_start", "_deferred") if k in ev}
+
+    def _answer_transcript(self, extras: dict) -> tuple[list | None, Any]:
+        """The finished turn's transcript and boundary, from its answer when carried."""
+        if "_full" in extras:
+            return extras["_full"], extras.get("_turn_start")
+        return self.worker.full_history(), None
+
+    async def _persist_detached_answer(self, ev: dict, extras: dict | None = None) -> None:
         """Write a detached turn's answer into its own session file.
 
         The counterpart of :meth:`_resume_detached_session`. Without it the turn would
@@ -1208,24 +1247,31 @@ class _Session:
             session = self.store.load_session(session_id)
         except Exception:
             return
-        full = self.worker.full_history()
+        extras = extras or {}
+        full, start = self._answer_transcript(extras)
         context_mode = getattr(self.worker._agent, "context_mode", "full")
         if full is not None and context_mode == "full":
-            added = self._turn_messages(full, submitted)
+            added = self._turn_messages(full, submitted, start=start)
             session.llm_history_full.extend(dict(m) for m in added)
             session.llm_history = list(full)
         else:
             answer_msg = {"role": "assistant", "content": ev.get("text", "")}
             session.llm_history.append(answer_msg)
             session.llm_history_full.append(dict(answer_msg))
-        session.display_messages.append(
-            {"role": "agent", "kind": "text", "text": ev.get("text", "")})
+        if ev.get("text"):
+            session.display_messages.append(
+                {"role": "agent", "kind": "text", "text": ev.get("text", "")})
+        deferred = extras.get("_deferred")
+        if deferred:
+            session.pending_interaction = deferred
         try:
             self.store.save_session(session)
         except Exception:
             return
         self._detached_log(session_id).append(ev)
-        await self._notify(f"“{session.title or session_id}” finished its background turn.")
+        name = session.title or session_id
+        await self._notify(f"“{name}” is waiting for your decision." if deferred
+                           else f"“{name}” finished its background turn.")
         await self._send_sessions_list()
         # The detached twin of the flush after an active turn's answer: jobs that
         # finished into this conversation while it was answering leave together now,
@@ -1272,6 +1318,13 @@ class _Session:
         text = (msg.get("text") or "").strip()
         if not text:
             return
+        # Writing instead of answering moves past a deferred card: the call keeps its
+        # "not run" result, and a late answer to the card goes nowhere.
+        if self._pending_interaction is not None:
+            prompt_id = (self._pending_interaction.get("prompt") or {}).get("id")
+            if prompt_id:
+                self._stale_prompt_ids.add(prompt_id)
+            self._pending_interaction = None
 
         # Pre-query budget check: front-trim the oldest history so the new query fits.
         # Deliberately not compact_history — an LLM call from the event loop is unsafe
@@ -1444,10 +1497,52 @@ class _Session:
             }))
 
     async def _handle_approval_response(self, msg: dict) -> None:
-        self.worker.resolve_approval(msg.get("choice", "n"), msg.get("approved_files"))
+        answer = {"choice": msg.get("choice", "n"), "approved_files": msg.get("approved_files")}
+        if await self._answer_deferred(msg, answer):
+            return
+        self.worker.resolve_approval(answer["choice"], answer["approved_files"])
 
     async def _handle_user_question_response(self, msg: dict) -> None:
+        if await self._answer_deferred(msg, {"answers": msg.get("answers") or []}):
+            return
         self.worker.resolve_question(msg.get("answers"))
+
+    async def _resend_deferred_prompt(self) -> None:
+        """Put the card a deferred turn of this session waits on back on screen."""
+        prompt = (self._pending_interaction or {}).get("prompt")
+        if not prompt:
+            return
+        try:
+            await self.ws.send(json.dumps(prompt, default=str))
+        except Exception:
+            pass
+
+    async def _answer_deferred(self, msg: dict, answer: dict) -> bool:
+        """Route an answer to a deferred card into a resume turn. True when handled.
+
+        An answer to a card the user moved past is swallowed: handed to the worker, it
+        would sit on the queue and settle the next prompt the user never saw.
+        """
+        msg_id = msg.get("id")
+        if msg_id and msg_id in self._stale_prompt_ids:
+            return True
+        record = self._pending_interaction
+        if not record or not msg_id or msg_id != (record.get("prompt") or {}).get("id"):
+            return False
+        self._pending_interaction = None
+        # Answered once: a second answer to the same card (a copy of it on screen)
+        # must not settle the next live prompt either.
+        self._stale_prompt_ids.add(msg_id)
+        if record.get("kind") == KIND_CALLS:
+            # The placeholders leave the record here as they leave the working copy
+            # in the loop, so the real results land where they stood.
+            take_deferred_calls(self.history_full, record.get("call_ids") or [])
+            take_deferred_calls(self.history, record.get("call_ids") or [])
+        self._autosave_session(list(self._display_messages))
+        self._submitted_len = len(self.history)
+        self.worker.submit_resume(record, answer, list(self.history),
+                                  session_id=self._active_session_id)
+        return True
 
     async def _handle_batch_review_accept(self, msg: dict) -> None:
         # User accepted all pending file edits — keep them on disk, clear snapshots.
@@ -1552,8 +1647,15 @@ class _Session:
         ev_session = ev.get("session_id")
         return ev_session is not None and ev_session != self._active_session_id
 
-    async def _abandon_running_turn(self) -> bool:
-        """Cancel the in-flight turn, if any, and drop its pending prompts.
+    async def _abandon_running_turn(self) -> str | None:
+        """Set aside or cancel the in-flight turn before leaving its session.
+
+        Returns ``"deferred"`` when the turn was parked on the user: it is set aside,
+        not stopped (query_engine.deferral), and its card comes back with the session.
+        Returns ``"cancelled"`` for a turn that was working, ``None`` when idle.
+
+        Either way the turn's answer is written to the session it belongs to, which
+        is no longer the one on screen by the time it arrives.
 
         Leaving a session cuts the turn loose: the single shared worker cannot keep
         streaming it anywhere the user can see, and a parked approval/question would
@@ -1564,21 +1666,29 @@ class _Session:
         cannot land in the session we are about to make active.
         """
         if not self.worker.is_busy():
-            return False
+            return None
+        leaving = self._active_session_id
+        ours = leaving is not None and self._running_turn_is_ours()
+        if ours:
+            self._detached_turns[leaving] = getattr(self, "_submitted_len", 0)
+        # No await on this path: the session pointer must move before the drain loop
+        # can see the answer, or it would be applied to the conversation being left.
+        if ours and self.worker.defer():
+            return "deferred"
         self.worker.cancel()
         self.worker.flush_prompts()
         for _ in range(_CANCEL_SETTLE_TICKS):
             if not self.worker.is_busy():
                 break
             await asyncio.sleep(0.01)
-        return True
+        return "cancelled"
 
     async def _handle_create_session(self, msg: dict) -> None:
-        cancelled = await self._abandon_running_turn()
+        outcome = await self._abandon_running_turn()
         # Save current session before creating a new one.
         self._autosave_session(list(self._display_messages))
         await self._create_new_session()
-        if cancelled:
+        if outcome == "cancelled":
             await self._notify_turn_abandoned()
         await self._send_sessions_list()
 
@@ -1598,11 +1708,11 @@ class _Session:
             return
         if target_id == self._active_session_id:
             return
-        cancelled = await self._abandon_running_turn()
+        outcome = await self._abandon_running_turn()
         # Save current before switching.
         self._autosave_session(list(self._display_messages))
         await self._load_session(target_id)
-        if cancelled:
+        if outcome == "cancelled":
             await self._notify_turn_abandoned()
         await self._send_sessions_list()
 

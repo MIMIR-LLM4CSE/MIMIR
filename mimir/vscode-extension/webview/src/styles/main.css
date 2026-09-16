@@ -778,6 +778,26 @@ body {
   color: var(--fg-dim);
   user-select: none;
 }
+/* Rune glyph leading the status word (MimirSpinner): the rune's shape and its
+   gradient are animated in SVG; CSS adds the stroke style and a slow glow. */
+.mimir-spinner {
+  width: 1.1em;
+  height: 1.1em;
+  flex-shrink: 0;
+  overflow: visible;
+  animation: mimir-spinner-glow 2.7s ease-in-out infinite;
+}
+.mimir-spinner__rune {
+  stroke-width: 2.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+@keyframes mimir-spinner-glow {
+  0%, 100% { filter: drop-shadow(0 0 1px rgba(63, 160, 245, 0.3)); }
+  50%      { filter: drop-shadow(0 0 3px rgba(240, 69, 42, 0.5)); }
+}
+
 .streaming-status__word {
   display: inline-flex;
   white-space: pre;
@@ -826,6 +846,7 @@ body {
 @media (prefers-reduced-motion: reduce) {
   .streaming-dots span { animation: none; opacity: 0.5; }
   .streaming-status__letter { animation: none; opacity: 1; transform: none; }
+  .mimir-spinner { animation: none; }
   /* The bar still reaches its new width — it just gets there at once. */
   .tool-row-line--progress::after { transition: none; }
   .run-dock-card::after { transition: none; }
@@ -1548,6 +1569,27 @@ body {
 /* Same full-width dropdown geometry as the exec panel, so a failure reads BELOW
    the row — wrapped over as many lines as it needs — instead of being crushed
    into the narrow right-hand tail slot. */
+/* Typeset calculation under a math tool's row. A wide system or matrix scrolls
+   inside the panel instead of widening the sidebar. */
+.tool-math {
+  margin: 4px 6px 6px 6px;
+  padding: 2px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--code-bg);
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+.tool-math .katex-display {
+  margin: 6px 0;
+}
+.tool-math .katex { font-size: 1.05em; }
+.tool-math .katex-error {
+  font-family: var(--mono);
+  font-size: 0.9em;
+  overflow-wrap: anywhere;
+}
+
 .tool-error {
   margin: 4px 6px 6px 6px;
   border: 1px solid color-mix(in srgb, var(--danger) 45%, var(--border));
@@ -2999,10 +3041,17 @@ body {
 
 /* ── Animated status line at the bottom of the thread (StreamingStatus) ──────── */
 
+/* Sticks to the bottom of the visible area, so it stays in view even when the
+   reader has scrolled up. The negative offset covers the thread's padding. */
 .agent-thinking {
+  position: sticky;
+  bottom: -16px;
+  z-index: 2;
   display: flex;
-  padding: 6px 0;
   align-items: center;
+  margin-bottom: -16px;
+  padding: 6px 0 12px;
+  background: var(--bg);
 }
 
 /* ── The turn in flight ───────────────────────────────────────────────────────
@@ -3014,12 +3063,6 @@ body {
   opacity: 0.85;
   border-left: 2px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.35));
   padding-left: 8px;
-}
-
-.chat-draft__status {
-  display: flex;
-  padding-top: 4px;
-  align-items: center;
 }
 
 /* ── Reasoning ("thinking") — deliberately secondary: a dim one-liner, no box,
