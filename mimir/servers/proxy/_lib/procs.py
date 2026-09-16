@@ -40,6 +40,9 @@ def _slurm_id_path(run_dir: str) -> str:
 def _build_log_path(run_dir: str) -> str:
     return os.path.join(run_dir, "build.log")
 
+def _phase_path(run_dir: str) -> str:
+    return os.path.join(run_dir, "phase.json")
+
 
 def _read_int_file(path: str) -> int | None:
     if os.path.isfile(path):
@@ -161,6 +164,69 @@ def _squeue_state(job_id: int) -> str:
         return "unknown"
 
 
+# Build tools count their own progress; CMake and ninja both print it as "[ 42%]".
+# Parsed rather than tracked, because the only process that could track it — the
+# runner — is blocked inside the build for its whole duration.
+_BUILD_PCT = re.compile(r"\[\s*(\d{1,3})%\]")
+
+# How much of the build log a progress read looks at. Deliberately not _MAX_LOG:
+# that size is for *diagnosing* a failed build, and re-reading 256 KiB every couple
+# of seconds to find six bytes is the wrong shape. The last few lines always carry
+# the newest percentage.
+_PROGRESS_TAIL = 8 * 1024
+
+
+def _build_percent(run_dir: str, max_bytes: int = _PROGRESS_TAIL) -> float | None:
+    """The build's own most recent percentage, or None if it does not print one.
+
+    None is a real answer, not a failure: plenty of build commands say nothing about
+    how far along they are, and showing 0% for one of those would invent a fact.
+    """
+    text = _read_text_tail(_build_log_path(run_dir), max_bytes)
+    if not text:
+        return None
+    matches = _BUILD_PCT.findall(text)
+    if not matches:
+        return None
+    try:
+        return float(max(0, min(100, int(matches[-1]))))
+    except ValueError:
+        return None
+
+
+def _run_progress(run_dir: str) -> dict:
+    """What the run is doing right now: its phase, and a percentage when one exists.
+
+    The phase comes from the sidecar the runner writes at each of its own boundaries
+    — it alone knows how many builds and how many cases there are. The percentage is
+    read from the build log, and only while building: a measurement phase has no
+    percentage to report, and carrying the build's last one into it would leave a bar
+    frozen at 98% for the rest of the run.
+
+    Best-effort, like every other read here: an absent or corrupt sidecar means the
+    run simply does not say what it is doing.
+    """
+    try:
+        with open(_phase_path(run_dir), encoding="utf-8") as fh:
+            phase = json.load(fh)
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(phase, dict):
+        return {}
+    out: dict = {}
+    text = phase.get("text")
+    if isinstance(text, str) and text:
+        out["phase"] = text
+    kind = phase.get("kind")
+    if isinstance(kind, str) and kind:
+        out["phase_kind"] = kind
+    if kind == "build":
+        percent = _build_percent(run_dir)
+        if percent is not None:
+            out["percent"] = percent
+    return out
+
+
 def _run_state(run_dir: str) -> dict:
     """Return state dict with keys: state, pid, slurm_job_id, elapsed_s."""
     metrics_path = os.path.join(run_dir, "metrics.json")
@@ -193,11 +259,15 @@ def _run_state(run_dir: str) -> dict:
         except (ValueError, OSError):
             pass
 
+    # Merged here rather than left to each caller: the blocking wait, the status op
+    # and the detached watcher all read their run through this one function, so a
+    # progress fact added here reaches every one of them at once.
     return {
         "state":        state,
         "pid":          _read_pid(run_dir) if job_id is None else None,
         "slurm_job_id": job_id,
         "elapsed_s":    elapsed,
+        **_run_progress(run_dir),
     }
 
 

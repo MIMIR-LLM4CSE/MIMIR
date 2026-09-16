@@ -93,6 +93,9 @@ CLUSTER_SUBMIT = "cluster_submit"        # expensive cluster launch (Slurm submi
 ENV_MUTATE = "env_mutate"                # installs a package / creates an env (records a cleanup obligation)
 BACKGROUNDABLE = "backgroundable"        # launches a long detached run; result may carry a
                                          # background_job descriptor a client watcher polls to completion
+DIVERTIBLE = "divertible"                # publishes a run channel under its own name while it
+                                         # blocks, so the user can move the run it is waiting on
+                                         # to the background mid-flight (see _shared/run_channel.py)
 
 
 # ── Reversibility: how much of an action can be taken back ────────────────────
@@ -346,5 +349,5 @@ __all__ = [
     # Reversibility is the dimension a server *declares*; SENSITIVE is derived from it.
     "REVERSIBLE", "RECOVERABLE", "IRREVERSIBLE", "REVERSIBILITY_LEVELS",
     "CODE_NAV", "ENV_DISCOVERY", "EXTERNAL_FETCH", "CLUSTER_SUBMIT", "ENV_MUTATE",
-    "BACKGROUNDABLE", "REMOVE", "OVERWRITE", "TASK_PLANNING", "JUDGE",
+    "BACKGROUNDABLE", "DIVERTIBLE", "REMOVE", "OVERWRITE", "TASK_PLANNING", "JUDGE",
 ]

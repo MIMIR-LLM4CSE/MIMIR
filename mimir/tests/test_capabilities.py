@@ -106,7 +106,7 @@ class ServerDeclarationTest(unittest.TestCase):
             caps.REPLACEMENT_TRACK, caps.VALIDATE,
             caps.PLAN_BLOCKED, caps.PLAN_READONLY, caps.CODE_EXEC, caps.SENSITIVE, caps.NON_BATCH,
             caps.CODE_NAV, caps.ENV_DISCOVERY, caps.EXTERNAL_FETCH, caps.CLUSTER_SUBMIT,
-            caps.ENV_MUTATE, caps.BACKGROUNDABLE,
+            caps.ENV_MUTATE, caps.BACKGROUNDABLE, caps.DIVERTIBLE,
             caps.REMOVE, caps.OVERWRITE, caps.TASK_PLANNING, caps.JUDGE, caps.DELEGATE,
         }
         server_vocab = {
@@ -116,7 +116,7 @@ class ServerDeclarationTest(unittest.TestCase):
             srv.REPLACEMENT_TRACK, srv.VALIDATE,
             srv.PLAN_BLOCKED, srv.PLAN_READONLY, srv.CODE_EXEC, srv.SENSITIVE, srv.NON_BATCH,
             srv.CODE_NAV, srv.ENV_DISCOVERY, srv.EXTERNAL_FETCH, srv.CLUSTER_SUBMIT,
-            srv.ENV_MUTATE, srv.BACKGROUNDABLE,
+            srv.ENV_MUTATE, srv.BACKGROUNDABLE, srv.DIVERTIBLE,
             srv.REMOVE, srv.OVERWRITE, srv.TASK_PLANNING, srv.JUDGE, srv.DELEGATE,
         }
         self.assertEqual(client_vocab, server_vocab)

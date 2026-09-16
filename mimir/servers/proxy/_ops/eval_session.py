@@ -29,6 +29,7 @@ from _lib.ratchet import (
     _run_primary_value,
 )
 from _lib.report import _diff_run_pair
+import run_channel
 from _lib import build, procs, tree_snapshot
 from _lib.store import (
     cache_dir,
@@ -59,6 +60,10 @@ _TERMINAL_STATES = ("done", "crashed")
 # How often the wait re-reads the run dir. The run writes metrics.json once, at the
 # end, so polling faster buys nothing and only spins the server.
 _RUN_POLL_S = 2.0
+# Which run channel a waiting op='run' publishes under. The channel is the blocking
+# tool's own registered name, so the client can address it off the tool row it is
+# diverting without either end spelling the other's name out.
+_DIVERT_CHANNEL = "proxy_eval"
 # How long op='run' waits before handing the job to the client watcher instead.
 # Sits under the tool-call budget proxy_eval declares, leaving room for the ratchet
 # to settle and the results to be read in the same call. That budget is capped
@@ -632,22 +637,60 @@ def run(proxy_name: str = "", background: bool = False) -> dict:
     return ok(_with_next(payload, _NEXT_STATUS))
 
 
-async def _await_terminal_state(run_dir: str, wait_s: float) -> str | None:
-    """Poll *run_dir* until the run finishes; ``None`` if *wait_s* elapsed first.
+async def _await_terminal_state(
+    run_dir: str, wait_s: float, channel: str = "", job_key: str = "",
+    pid: int = 0,
+) -> tuple[str | None, str]:
+    """Poll *run_dir* until the run finishes, reporting what it is doing as it goes.
+
+    Returns ``(state, reason)``. A terminal state comes back with an empty reason;
+    ``None`` comes with the reason the wait ended anyway — ``"budget"`` when *wait_s*
+    ran out, ``"diverted"`` when the user asked for the run to be backgrounded. The
+    two look identical to the run, which carries on either way, but they read very
+    differently to the person who caused one of them.
 
     Async on purpose. FastMCP calls a synchronous tool directly on the server's
     event loop, so a blocking sleep here would stop this process answering
     anything for the whole wait — including the ``proxy_eval_status`` a watcher
     polls, which is exactly what the caller falls back to when the budget runs out.
+
+    While it waits it owns the run channel (see ``_shared/run_channel``): the phase
+    goes out on every tick, and a divert request left by the user is consumed on the
+    same one. This is the only place either can happen — the tool call itself cannot
+    answer until the run is over, which is precisely the problem.
     """
     deadline = time.monotonic() + max(0.0, wait_s)
-    while True:
-        state = _run_state(run_dir)["state"]
-        if state in _TERMINAL_STATES:
-            return state
-        if time.monotonic() >= deadline:
-            return None
-        await asyncio.sleep(_RUN_POLL_S)
+    if channel:
+        # The launcher's pid, passed in rather than read back: the caller has just
+        # started the process, and an extra state read here would be one more poll of
+        # the run dir for a fact already in hand.
+        run_channel.publish(channel, job_key, pid,
+                            f"optimization run {os.path.basename(run_dir)}",
+                            run_dir, wait_s)
+    try:
+        while True:
+            # One read serves both the terminal test and the phase: `_run_state`
+            # already folds in what the run says it is doing.
+            st = _run_state(run_dir)
+            state = st["state"]
+            if state in _TERMINAL_STATES:
+                return state, ""
+            if channel:
+                phase = st.get("phase") or ""
+                if state == "pending" and st.get("slurm_job_id"):
+                    # Queued, not started. Only this loop is in a position to say so:
+                    # the runner that writes the phase file has not begun.
+                    phase = f"queued (slurm {st['slurm_job_id']})"
+                run_channel.update(channel, job_key, phase=phase,
+                                   percent=st.get("percent"))
+                if run_channel.requested(channel, job_key):
+                    return None, "diverted"
+            if time.monotonic() >= deadline:
+                return None, "budget"
+            await asyncio.sleep(_RUN_POLL_S)
+    finally:
+        if channel:
+            run_channel.clear(channel, job_key)
 
 
 async def run_awaited(
@@ -673,13 +716,21 @@ async def run_awaited(
 
     run_dir = launched.get("run_dir", "")
     name    = launched.get("proxy_name", "")
-    state   = await _await_terminal_state(run_dir, wait_s)
+    state, reason = await _await_terminal_state(
+        run_dir, wait_s, _DIVERT_CHANNEL, os.path.basename(run_dir),
+        launched.get("pid") or 0)
 
     if state is None:
         # Still running. Detaching beats letting the tool call time out: a timeout
-        # would abandon a run that is alive and doing the work asked of it.
+        # would abandon a run that is alive and doing the work asked of it. The user
+        # asking for it and the budget running out reach the same place by design —
+        # one detached run, one watcher, one resume — so only the note differs.
         detached = {k: v for k, v in launched.items() if k not in ("status", "next_step")}
         detached["note"] = (
+            "The user moved this run to the background while it was still going. It "
+            "was not killed and it did not fail: it continues, and you are resumed "
+            "with its results when it ends."
+            if reason == "diverted" else
             f"Still running after {int(wait_s)}s — handed to the background watcher."
         )
         detached["background_job"] = _background_descriptor(name, run_dir)
@@ -1053,14 +1104,21 @@ def status(proxy_name: str = "") -> dict:
         "done":    _NEXT_RESULTS,
         "crashed": "proxy_eval_status(op='log', tail=100) to diagnose the failure",
     }.get(rs["state"], _NEXT_RESULTS)
-    return ok(_with_next({
+    payload = {
         "run_dir":        run_dir,
         "state":          rs["state"],
         "pid":            rs["pid"],
         "slurm_job_id":   rs["slurm_job_id"],
         "elapsed_s":      rs["elapsed_s"],
         "last_log_lines": last_lines,
-    }, next_step))
+    }
+    # What the run is doing, when it says. Carried here and not only on the blocking
+    # wait's own channel because this op is what a *detached* run is watched through:
+    # without it, a run moved to the background goes quiet the moment it is moved.
+    for key in ("phase", "percent"):
+        if rs.get(key) is not None:
+            payload[key] = rs[key]
+    return ok(_with_next(payload, next_step))
 
 
 def results(proxy_name: str = "") -> dict:

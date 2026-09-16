@@ -11,8 +11,10 @@ import json
 import unittest
 
 from mimir.client.tool_execution.exec_preview import (
+    _MAX_COMMAND_CHARS,
     _MAX_STREAM_CHARS,
     _MAX_STREAM_LINES,
+    exec_input_preview,
     extract_exec_preview,
 )
 
@@ -135,6 +137,23 @@ class StreamClipping(unittest.TestCase):
     def test_server_truncated_flag_passthrough(self):
         info = extract_exec_preview(_bash_ok(truncated=True), {})
         self.assertTrue(info["truncated"])
+
+class ExecInputPreviewTests(unittest.TestCase):
+    """The IN half, built from the call's arguments before the run produces output."""
+
+    def test_command_with_empty_streams(self):
+        info = exec_input_preview({"command": "make -j8"})
+        self.assertEqual(info, {"command": "make -j8", "stdout": "", "stderr": ""})
+
+    def test_no_command_in_arguments(self):
+        self.assertIsNone(exec_input_preview({"path": "a.py"}))
+        self.assertIsNone(exec_input_preview({"command": "   "}))
+        self.assertIsNone(exec_input_preview(None))
+
+    def test_command_clipped_to_wire_budget(self):
+        info = exec_input_preview({"command": "x" * (_MAX_COMMAND_CHARS + 100)})
+        self.assertEqual(len(info["command"]), _MAX_COMMAND_CHARS + 1)
+        self.assertTrue(info["command"].endswith("…"))
 
 
 if __name__ == "__main__":

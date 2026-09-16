@@ -68,5 +68,30 @@ export function useStickToBottom<T extends HTMLElement>(slack: number = DEFAULT_
     };
   }, []);
 
+  // Re-pin when the content grows after the commit that added it.
+  //
+  // Most late growth is avoidable and was fixed at the source, but some is not: a
+  // panel that has to measure the DOM to know whether it clips its own content can
+  // only add its control in a second commit, and that commit changes no state the
+  // pinning effect watches. The pane was then left pinned to the height the row had
+  // before it grew, with the new part below the fold.
+  //
+  // Children are (re)observed whenever the list changes, so the observation set
+  // follows the transcript without the rendering components knowing about any of it.
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(() => scrollToBottom());
+    const observeChildren = () => {
+      ro.disconnect();
+      for (const child of Array.from(el.children)) ro.observe(child);
+    };
+    observeChildren();
+    if (typeof MutationObserver === "undefined") return () => ro.disconnect();
+    const mo = new MutationObserver(observeChildren);
+    mo.observe(el, { childList: true });
+    return () => { mo.disconnect(); ro.disconnect(); };
+  }, [scrollToBottom]);
+
   return { ref, stickRef, scrollToBottom, follow, onScroll };
 }

@@ -26,7 +26,7 @@ for _p in [SERVERS_DIR / "_shared", SERVERS_DIR / "workspace"]:
     if str(_p) not in sys.path:
         sys.path.insert(0, str(_p))
 
-import _bash_divert  # noqa: E402
+import run_channel  # noqa: E402
 import _bash_jobs  # noqa: E402
 import server_bash  # noqa: E402
 
@@ -237,7 +237,7 @@ class BlockingRunTests(unittest.TestCase):
     def _await_current(self, timeout: float = 10.0) -> dict:
         """The run the server says it is waiting on, once it says so."""
         import json
-        path = os.path.join(_bash_divert._dir(), "current.json")
+        path = os.path.join(run_channel._dir("bash_run"), "current.json")
         deadline = time.time() + timeout
         while time.time() < deadline:
             try:
@@ -315,7 +315,7 @@ class BlockingRunTests(unittest.TestCase):
         # printed so far plus the ordinary handle, and the run carries on to its end.
         def divert() -> None:
             current = self._await_current()
-            with open(os.path.join(_bash_divert._dir(), "divert"), "w") as fh:
+            with open(os.path.join(run_channel._dir("bash_run"), "divert"), "w") as fh:
                 fh.write(current["job_key"])
 
         threading.Thread(target=divert, daemon=True).start()
@@ -341,7 +341,7 @@ class BlockingRunTests(unittest.TestCase):
     def test_a_diverted_run_keeps_its_job_directory(self) -> None:
         def divert() -> None:
             current = self._await_current()
-            with open(os.path.join(_bash_divert._dir(), "divert"), "w") as fh:
+            with open(os.path.join(run_channel._dir("bash_run"), "divert"), "w") as fh:
                 fh.write(current["job_key"])
 
         threading.Thread(target=divert, daemon=True).start()
@@ -352,7 +352,7 @@ class BlockingRunTests(unittest.TestCase):
         # Two clients share one state dir. A request must name the run it meant.
         def divert() -> None:
             self._await_current()
-            with open(os.path.join(_bash_divert._dir(), "divert"), "w") as fh:
+            with open(os.path.join(run_channel._dir("bash_run"), "divert"), "w") as fh:
                 fh.write("20200101T000000Z-dead")
 
         threading.Thread(target=divert, daemon=True).start()

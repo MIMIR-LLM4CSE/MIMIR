@@ -295,6 +295,107 @@ body {
 }
 /* ── Chat thread ────────────────────────────────────────────────────────────── */
 
+/* Holds the thread and the progress dock together, so the dock can be anchored to
+   the bottom of the *reading area* rather than of the pane. Anchored to the pane it
+   would sit over the composer, whose height changes as the user types. */
+.thread-area {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ── Progress dock: runs still going, whose rows have scrolled away ──────────── */
+
+.run-dock {
+  position: absolute;
+  left: 12px;
+  bottom: 12px;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--sp-3);
+  max-width: min(340px, calc(100% - 24px));
+  /* The dock floats over the thread; only its cards should intercept anything, so
+     the text behind the gaps stays selectable. */
+  pointer-events: none;
+}
+
+.run-dock-card {
+  all: unset;
+  pointer-events: auto;
+  cursor: pointer;
+  box-sizing: border-box;
+  position: relative;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  max-width: 100%;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface-1);
+  box-shadow: var(--shadow-2);
+  font-size: var(--chat-font-size);
+  animation: msg-in var(--motion-med, 0.2s) ease-out;
+}
+.run-dock-card:hover { border-color: var(--accent); }
+
+/* The same fill as the row it stands in for, drawn the same way and for the same
+   reason: a bar of its own would make the card taller than the one line it needs. */
+.run-dock-card::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: var(--tool-progress, 0);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  border-right: 1px solid var(--accent);
+  pointer-events: none;
+  transition: width 0.3s ease;
+}
+
+.run-dock-body {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+.run-dock-label {
+  color: var(--fg);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.run-dock-phase {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-family: var(--mono);
+  font-size: 0.85em;
+  color: var(--fg-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.run-dock-time {
+  margin-left: auto;
+  font-family: var(--mono);
+  font-size: 0.85em;
+  color: var(--fg-dim);
+  flex-shrink: 0;
+}
+.run-dock-more {
+  pointer-events: auto;
+  font-size: 0.85em;
+  color: var(--fg-dim);
+  padding-left: 2px;
+}
+
 .chat-thread {
   flex: 1;
   min-height: 0;   /* prevents flex child from overflowing its parent */
@@ -469,6 +570,18 @@ body {
      The size estimate keeps the scrollbar stable before a row is rendered. */
   content-visibility: auto;
   contain-intrinsic-size: auto 60px;
+}
+
+/* The tail of the thread is exempt. A row that lands below the fold has never
+   been laid out, so content-visibility answers with the 60px estimate above —
+   and pinning the pane to a scrollHeight built from that estimate is what left a
+   tall row (a bash call and its output) cut off at the bottom: the row got its
+   real height only once it had entered the viewport, by which time the pane was
+   no longer at the bottom. The history above keeps the optimisation, where the
+   estimate costs nothing and the scroll position does not depend on it. */
+.chat-thread > *:nth-last-child(-n + 8) .chat-message,
+.chat-thread > .chat-message:nth-last-child(-n + 8) {
+  content-visibility: visible;
 }
 
 @keyframes msg-in {
@@ -713,6 +826,10 @@ body {
 @media (prefers-reduced-motion: reduce) {
   .streaming-dots span { animation: none; opacity: 0.5; }
   .streaming-status__letter { animation: none; opacity: 1; transform: none; }
+  /* The bar still reaches its new width — it just gets there at once. */
+  .tool-row-line--progress::after { transition: none; }
+  .run-dock-card::after { transition: none; }
+  .run-dock-card { animation: none; }
 }
 
 /* ── Spinner (shared: editing card, inline spinner) ─────────────────────────── */
@@ -1114,6 +1231,49 @@ body {
   align-items: center;
   gap: 4px;
   min-width: 0;
+  /* Anchors the progress overlay below. */
+  position: relative;
+}
+
+/* How far a blocking run has got, drawn across the row itself.
+   An overlay rather than a background: the head is a button that paints its own
+   background on hover, in shorthand, so anything behind it disappears under the
+   cursor — and a bar on a line of its own would add height to every running row in
+   a list the user spends the whole session scrolling, then take it back at the
+   moment the run settles. Translucent enough to read the label straight through,
+   with a hard leading edge so the position is still exact. */
+.tool-row-line--progress::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: var(--tool-progress, 0);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  border-right: 1px solid var(--accent);
+  border-radius: 4px;
+  pointer-events: none;
+  transition: width 0.3s ease;
+}
+
+/* What the run is doing, beside the elapsed time. The dots carry the liveness: a
+   phase can hold still for minutes, and a label that never moves on a row that
+   never finishes is indistinguishable from one that has hung. */
+.tool-phase {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex-shrink: 1;
+  min-width: 0;
+}
+.tool-phase-text {
+  font-family: var(--mono);
+  font-size: 0.85em;
+  color: var(--fg-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 220px;
 }
 
 .tool-row-head {
@@ -1329,6 +1489,13 @@ body {
   margin-right: 7px;
 }
 .tool-exec-stdout { color: var(--fg); }
+/* The OUT pane of a run still in flight: the command is on screen from the start,
+   and this holds the pane's place until its output arrives. */
+.tool-exec-waiting {
+  color: var(--fg-dim);
+  font-style: italic;
+  opacity: 0.75;
+}
 /* Neutral by default — routine stderr is not an error. It only turns red when
    the command actually failed (non-zero exit), via `.tool-exec--failed`. */
 .tool-exec-stderr {

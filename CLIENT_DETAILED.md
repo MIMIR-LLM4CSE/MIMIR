@@ -844,6 +844,19 @@ window is only the tail a front-trim left, and the record is then the faithful r
 Reloading the record over a compacted window is what handed the model a context that was
 full before the user had typed.
 
+**Progress is pushed, never recorded.** A tool call that blocks the turn cannot report
+on itself, so the session polls the blocking run's channel once a second
+(`_tick_run_channels`, reading `tool_execution/run_channel.py`) and pushes a
+`tool_progress` for the row; once the run is detached, the watcher's own status poll
+sends `job_progress` instead. Neither reaches `transcript` or any of the three lists
+above: they describe a moment, and a watcher ticking for an hour would otherwise fill
+the record with "still building". How a run actually ended is `job_complete`'s job.
+
+**A divert names a row, not a tool.** `divert_to_background` carries the call id; the
+session resolves it through `_live_rows` (call id → tool name, kept only for rows the
+registry marked divertible) and writes the request to that tool's channel. The webview
+therefore never learns a tool name, and one tool's request cannot reach another's run.
+
 **Compaction never blocks the event loop.** Summarising is an LLM call, so the session
 schedules it on the worker and awaits the future. It keeps the opening user message and the
 last two exchanges, replaces the middle with one summary, and re-runs the tool-pair

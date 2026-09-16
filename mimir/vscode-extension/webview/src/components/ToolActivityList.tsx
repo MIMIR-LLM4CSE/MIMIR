@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
+import type { CSSProperties } from "react";
 import type { ExecResult, ToolActivity } from "../types";
 import { subAgentTail } from "./subAgentUtils";
 import { useElapsed, formatDuration } from "../hooks/useElapsed";
@@ -9,8 +10,16 @@ import { useElapsed, formatDuration } from "../hooks/useElapsed";
  *  push the output off-panel — IN and OUT are both always in view. Both caps are
  *  restricted by default and grow on demand; stderr is shown in a neutral tone
  *  and only turns red when the command actually failed (non-zero exit), so
- *  routine stderr chatter doesn't read as an error. */
-const ExecOutput: React.FC<{ exec: ExecResult }> = ({ exec }) => {
+ *  routine stderr chatter doesn't read as an error.
+ *
+ *  While the row is still running the panel is half-built: the command is known
+ *  from the call, the output does not exist yet. `pending` is what tells the two
+ *  apart — an empty OUT under a finished run is the fact "(no output)", under a
+ *  live one it is simply not in yet, and saying "(no output)" there is wrong. */
+const ExecOutput: React.FC<{ exec: ExecResult; pending?: boolean }> = ({
+  exec,
+  pending,
+}) => {
   const [full, setFull] = useState(false);
   const inRef = useRef<HTMLPreElement>(null);
   const outRef = useRef<HTMLDivElement>(null);
@@ -18,10 +27,12 @@ const ExecOutput: React.FC<{ exec: ExecResult }> = ({ exec }) => {
 
   const commandLines = (exec.command ?? "").split("\n");
   const noOutput = !exec.stdout && !exec.stderr;
+  const awaitingOutput = !!pending && noOutput;
   // A detached run carries no exit code: without the first clause every diverted
   // run would read as a failure, since `undefined !== 0`.
   const failed = exec.returncode !== undefined && exec.returncode !== 0;
-  const showNotes = failed || !!exec.truncated || noOutput || !!exec.running;
+  const showNotes =
+    failed || !!exec.truncated || (noOutput && !pending) || !!exec.running;
 
   // Detect whether *either* pane clips its content, so the expand control only
   // appears when it would actually do something (or to collapse back).
@@ -58,12 +69,17 @@ const ExecOutput: React.FC<{ exec: ExecResult }> = ({ exec }) => {
             </pre>
           </div>
         )}
-        {!noOutput && (
+        {(!noOutput || awaitingOutput) && (
           <div className="tool-exec-section">
             <span className="tool-exec-tag tool-exec-tag--out">OUT</span>
             <div className="tool-exec-out tool-exec-body-col" ref={outRef}>
               {exec.stdout && <pre className="tool-exec-stdout">{exec.stdout}</pre>}
               {exec.stderr && <pre className="tool-exec-stderr">{exec.stderr}</pre>}
+              {/* The pane is kept, empty, rather than left out: dropping it would
+                  reflow the panel the moment the output lands. */}
+              {awaitingOutput && (
+                <pre className="tool-exec-waiting">running…</pre>
+              )}
             </div>
           </div>
         )}
@@ -160,15 +176,21 @@ const ToolRow: React.FC<RowProps> = ({ tool, childRows = [], onDivert }) => {
   // default, so the terminal IN/OUT panel is visible without a click. Failed or
   // blocked rows stay collapsed — the explanation is a dropdown the user opens on
   // demand — and non-exec rows have nothing to reveal.
-  const [expanded, setExpanded] = useState(hasExec && !isError);
-  // Auto-reveal the terminal panel when exec output arrives on a row that did NOT
-  // fail. A live row mounts as "running" with no exec (so the initial state above
-  // is false); the exec payload lands later on tool_result. This fires once on
-  // that transition — the user can still collapse it afterwards. Failed rows are
-  // intentionally excluded so their explanation is not shown until requested.
-  useEffect(() => {
-    if (hasExec && !isError) setExpanded(true);
-  }, [hasExec, isError]);
+  // A live row mounts as "running" with no exec and the payload lands later, on
+  // tool_result, so the panel has to open on that transition. Derived during
+  // render rather than set from an effect: an effect opens it in a SECOND commit,
+  // and the transcript is pinned to its bottom in the first one — so the pane was
+  // pinned to the height of the collapsed row and the terminal panel unrolled
+  // below the fold, which is how a bash call came out cut off at the bottom. A
+  // click is kept as an override, and until then the default is re-derived, so a
+  // row the user has not touched is always shown at its natural size.
+  const [toggled, setToggled] = useState<boolean | null>(null);
+  const expanded = toggled ?? (hasExec && !isError);
+  const setExpanded = (next: boolean | ((prev: boolean) => boolean)) =>
+    setToggled((prev) => {
+      const current = prev ?? (hasExec && !isError);
+      return typeof next === "function" ? next(current) : next;
+    });
 
   // The row's arg preview IS the command line for an exec-shaped row, so while the
   // IN pane below is open it says it twice — cropped up here, in full down there.
@@ -182,6 +204,10 @@ const ToolRow: React.FC<RowProps> = ({ tool, childRows = [], onDivert }) => {
   // meantime invites a second click on a run already on its way out.
   const [diverting, setDiverting] = useState(false);
   const canDivert = running && !!tool.divertible && !!onDivert;
+  // A percentage is only meaningful while the row is running: a settled row's bar
+  // would describe a moment that has passed.
+  const hasProgress = running && typeof tool.percent === "number";
+  const pct = hasProgress ? Math.max(0, Math.min(100, tool.percent as number)) : 0;
   const elapsed = useElapsed(tool.startedAt, running);
   const duration = tool.durationMs ?? elapsed;
 
@@ -199,8 +225,23 @@ const ToolRow: React.FC<RowProps> = ({ tool, childRows = [], onDivert }) => {
   return (
     <div
       className={`tool-row tool-row--${tool.status}${tool.parentId ? " tool-row--child" : ""}`}
+      // How anything outside this list finds the row again: the progress dock
+      // watches it to know whether it has scrolled away, and scrolls back to it.
+      data-tool-id={tool.id}
     >
-      <div className="tool-row-line">
+      <div
+        className={`tool-row-line${hasProgress ? " tool-row-line--progress" : ""}`}
+        // The fill is a custom property rather than an element: the row is a button
+        // whose hover paints its own background, so a bar *under* it would vanish on
+        // hover and one beside it would cost the row a second line. The stylesheet
+        // draws it as a translucent overlay from this one number.
+        style={hasProgress ? ({ "--tool-progress": `${pct}%` } as CSSProperties) : undefined}
+        role={hasProgress ? "progressbar" : undefined}
+        aria-valuenow={hasProgress ? pct : undefined}
+        aria-valuemin={hasProgress ? 0 : undefined}
+        aria-valuemax={hasProgress ? 100 : undefined}
+        aria-label={hasProgress ? tool.phase || tool.label : undefined}
+      >
       <button
         className="tool-row-head"
         onClick={() => canExpand && setExpanded((e) => !e)}
@@ -232,6 +273,21 @@ const ToolRow: React.FC<RowProps> = ({ tool, childRows = [], onDivert }) => {
           <span className="tool-detail">{tool.detail}</span>
         )}
         <span className="tool-row-tail">
+          {/* What the run is doing. The dots are what say it is still doing it: a
+              phase that only changes every few minutes would otherwise read as a
+              frozen label on a row that has stopped. */}
+          {tool.phase && running && (
+            <span className="tool-phase" title={tool.phase}>
+              {/* The text truncates on its own so the dots are never the part that
+                  gets clipped — they are the half that says the run is still alive. */}
+              <span className="tool-phase-text">{tool.phase}</span>
+              <span className="streaming-dots" aria-hidden="true">
+                <span />
+                <span />
+                <span />
+              </span>
+            </span>
+          )}
           {tool.waiting && tool.status === "running" && (
             <span
               className="tool-summary"
@@ -286,7 +342,9 @@ const ToolRow: React.FC<RowProps> = ({ tool, childRows = [], onDivert }) => {
         </button>
       )}
       </div>
-      {expanded && tool.exec && <ExecOutput exec={tool.exec} />}
+      {expanded && tool.exec && (
+        <ExecOutput exec={tool.exec} pending={running} />
+      )}
       {expanded && hasError && (
         <ErrorOutput error={tool.error!} onCollapse={() => setExpanded(false)} />
       )}

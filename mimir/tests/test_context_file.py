@@ -222,7 +222,12 @@ class DefaultBaseShapeTests(unittest.TestCase):
         # deliberating when the next action is already settled. The domain-semantics
         # line is the one worth the tokens on its own: an assumed convention runs,
         # passes every check in ## Validation, and is still wrong. Base sat at 14052.
-        self.assertLess(len(cb._DEFAULT_BASE_SYSTEM_CONTENT), 14500)
+        # Raised 14500 -> 15000 for two rules with no other carrier: that the agent
+        # never goes looking through its own source, and that a build it drives should
+        # be parallel to the machine it runs on. The first is a boundary nothing else
+        # states; the second is worth its 85 chars on any real project, where a serial
+        # build is the single longest thing a run waits for. Base sat at 14614.
+        self.assertLess(len(cb._DEFAULT_BASE_SYSTEM_CONTENT), 15000)
 
     def test_env_resolution_cascade_lives_in_the_nudges_not_the_prompt(self) -> None:
         # The 5-step cascade is covered by env_resolution/env_cleanup nudges, which
@@ -342,7 +347,11 @@ class CoreNudgeCoverageTests(unittest.TestCase):
         # enforces. The move costs core ~700 chars and the base nothing.
         # Raised 10500 -> 11000 for the share of the post-pin rules that landed in core
         # (see the base budget above for why they were written). Core sat at 10707.
-        self.assertLess(len(cb._CORE_SYSTEM_CONTENT), 11000)
+        # Raised 11000 -> 11500 by the same two rules as the base ceiling above: both
+        # land in sections core carries, so core pays the whole 151 chars. Moved with
+        # the base rather than alone, so the two ceilings keep the same headroom and a
+        # later trim is measured against one story. Core sat at 11135.
+        self.assertLess(len(cb._CORE_SYSTEM_CONTENT), 11500)
 
 
 class SubAgentSectionGateTests(unittest.TestCase):

@@ -150,6 +150,31 @@ function patchToolById(
 }
 
 /**
+ * Append *msg* to the transcript, keeping stamped messages in arrival order.
+ *
+ * Anything that can land while a step is still in flight is stamped — a steer
+ * bubble, an edit card, a session-command reply — and so is everything that step
+ * freezes. The tail of the transcript is therefore a run of stamped messages in
+ * stamp order, and a new one is inserted into that run instead of being dropped at
+ * the end. Which is what a steer needs in both directions: the bubble goes under
+ * the cards that were already there, and the prose that was in flight when it
+ * arrived is later committed back above it.
+ *
+ * An unstamped message (a query, an answer, an error) goes last and closes the run.
+ */
+function appendStamped(messages: ChatMessage[], msg: ChatMessage): ChatMessage[] {
+  const seq = msg.seq;
+  if (seq === undefined) return [...messages, msg];
+  let at = messages.length;
+  while (at > 0) {
+    const prev = messages[at - 1].seq;
+    if (prev === undefined || prev <= seq) break;
+    at--;
+  }
+  return [...messages.slice(0, at), msg, ...messages.slice(at)];
+}
+
+/**
  * Bake the turn's live state into the transcript and clear it, in arrival order.
  *
  * Prose, reasoning blocks and tool rows are collected in three separate streams,
@@ -193,15 +218,20 @@ function flushLive(
   });
 
   const frozen: ChatMessage[] = entries.map((e) => {
+    // orderLiveStream also places messages that landed mid-step; the transcript
+    // already holds those, and appendStamped below is what keeps them in order.
+    if (e.kind === "message") return e.message;
     if (e.kind === "draft") {
       return {
-        id: makeId(), role: "agent" as const, kind: "text" as const, text: state.draft,
+        id: makeId(), seq: e.seq,
+        role: "agent" as const, kind: "text" as const, text: state.draft,
         ...(provisional ? { provisional: true } : {}),
       };
     }
     if (e.kind === "thinking") {
       return {
         id: e.block.id,
+        seq: e.seq,
         role: "agent" as const,
         kind: "thinking" as const,
         text: e.block.text,
@@ -215,6 +245,7 @@ function flushLive(
     // of counting up forever in the frozen card.
     return {
       id: makeId(),
+      seq: e.seq,
       role: "agent" as const,
       kind: "tools" as const,
       live: false,
@@ -232,7 +263,9 @@ function flushLive(
     draftSeq: null,
     liveThinkingBlocks: [],
     liveToolCalls: [],
-    messages: [...state.messages, ...frozen],
+    // Inserted rather than appended: a steer bubble may already sit at the tail,
+    // and the prose and cards of the step it interrupted belong above it.
+    messages: frozen.reduce(appendStamped, state.messages),
   };
 }
 
@@ -260,11 +293,11 @@ function commitDraft(
     ...state,
     draft: "",
     draftSeq: null,
-    messages: [
-      ...state.messages,
-      { id: makeId(), role: "agent", kind: "text", text: state.draft,
-        ...(provisional ? { provisional: true } : {}) },
-    ],
+    messages: appendStamped(state.messages, {
+      id: makeId(), seq: state.draftSeq ?? undefined,
+      role: "agent", kind: "text", text: state.draft,
+      ...(provisional ? { provisional: true } : {}),
+    }),
   };
 }
 
@@ -336,10 +369,19 @@ export function createChatReducer(makeId: () => string) {
       // tagged "queued" (awaiting injection) without disturbing the running
       // turn's live state — busy stays true; the run never stopped.
       case "steer_query": {
+        // Stamped: it arrives in the middle of a step, and the prose and cards
+        // already on screen came before it. Without a stamp the bubble was drawn
+        // above the whole step in flight, which read as if the agent had answered
+        // a message the user had not sent yet.
         const userMsg: ChatMessage = {
-          id: makeId(), role: "user", kind: "text", text: action.text, queued: true,
+          id: makeId(), seq: state.nextSeq,
+          role: "user", kind: "text", text: action.text, queued: true,
         };
-        return { ...state, messages: [...state.messages, userMsg] };
+        return {
+          ...state,
+          nextSeq: state.nextSeq + 1,
+          messages: appendStamped(state.messages, userMsg),
+        };
       }
 
       // Server confirmed a queued steer reached the running agent. Clear the
@@ -389,7 +431,15 @@ export function createChatReducer(makeId: () => string) {
       case "session_loaded_messages":
         return {
           ...state,
-          messages: action.messages,
+          // What a run was doing is not worth restoring: it described a moment, and
+          // the watcher that could have refreshed it may have died with the process
+          // that wrote the file. Left in place, a row saved mid-build would come back
+          // claiming to be building, and its dock card would never leave.
+          messages: action.messages.map((m) =>
+            m.tools?.some((t) => t.phase !== undefined || t.percent !== undefined)
+              ? { ...m, tools: m.tools.map((t) => ({ ...t, phase: undefined, percent: undefined })) }
+              : m
+          ),
           draft: "",
           draftSeq: null,
           liveThinkingBlocks: [],
@@ -475,12 +525,19 @@ export function createChatReducer(makeId: () => string) {
         // this is the only message that ever says how the run actually ended. Done
         // before the branch below clears liveToolCalls, since the row may still be
         // there.
+        // Either handle finds the row: a shell run detached mid-flight is known by
+        // the job key on its terminal panel, while a run with no output to preview —
+        // an optimization run — carries the key on the row itself. Before the second
+        // one existed, such a row settled as an ordinary success and its ending
+        // landed nowhere.
+        const isThisJob = (t: ToolActivity) =>
+          t.exec?.job_key === action.job_key || t.jobKey === action.job_key;
         const settled = patchToolWhere(
           state,
-          (t) => t.exec?.job_key === action.job_key,
+          isThisJob,
           (tools) =>
             tools.map((t) =>
-              t.exec?.job_key === action.job_key
+              isThisJob(t)
                 ? {
                     ...t,
                     status:
@@ -488,24 +545,35 @@ export function createChatReducer(makeId: () => string) {
                         ? ("ok" as const)
                         : ("error" as const),
                     summary: `background run ${action.state}`,
-                    exec: {
-                      ...t.exec!,
-                      running: undefined,
-                      returncode:
-                        typeof action.summary?.returncode === "number"
-                          ? (action.summary.returncode as number)
-                          : t.exec!.returncode,
-                      // The job's own log, which already carries stderr under its
-                      // marker — so the partial stderr is replaced, not doubled.
-                      stdout:
-                        typeof action.summary?.output === "string"
-                          ? (action.summary.output as string)
-                          : t.exec!.stdout,
-                      stderr:
-                        typeof action.summary?.output === "string"
-                          ? ""
-                          : t.exec!.stderr,
-                    },
+                    // The run is over: whatever it was last seen doing is no longer
+                    // what it is doing, and nothing is watching it any more.
+                    phase: undefined,
+                    percent: undefined,
+                    jobKey: undefined,
+                    // Only a row that had a terminal panel gets one back. A result
+                    // that never produced output has no pane to fill, and inventing
+                    // one would show an empty terminal for a run that printed
+                    // nothing to it.
+                    exec: t.exec
+                      ? {
+                          ...t.exec,
+                          running: undefined,
+                          returncode:
+                            typeof action.summary?.returncode === "number"
+                              ? (action.summary.returncode as number)
+                              : t.exec.returncode,
+                          // The job's own log, which already carries stderr under its
+                          // marker — so the partial stderr is replaced, not doubled.
+                          stdout:
+                            typeof action.summary?.output === "string"
+                              ? (action.summary.output as string)
+                              : t.exec.stdout,
+                          stderr:
+                            typeof action.summary?.output === "string"
+                              ? ""
+                              : t.exec.stderr,
+                        }
+                      : undefined,
                   }
                 : t
             )
@@ -551,10 +619,10 @@ export function createChatReducer(makeId: () => string) {
         const s = commitDraft(state, makeId);
         return {
           ...s,
-          messages: [
-            ...s.messages,
-            {
+          nextSeq: s.nextSeq + 1,
+          messages: appendStamped(s.messages, {
               id: makeId(),
+              seq: s.nextSeq,
               role: "agent",
               kind: "command",
               // Carried whole rather than flattened to a line: the card decides how
@@ -567,8 +635,7 @@ export function createChatReducer(makeId: () => string) {
                 note: (action.note ?? "").trim(),
                 tone: action.tone ?? "ok",
               },
-            },
-          ],
+          }),
         };
       }
 
@@ -616,10 +683,13 @@ export function createChatReducer(makeId: () => string) {
             return { ...m, diffs: merged };
           });
         } else {
-          messages = [
-            ...s0.messages,
-            { id: makeId(), role: "agent", kind: "editing", live: true, diffs: progressDiffs },
-          ];
+          // Stamped: the write that produced these diffs is a tool row of the step
+          // in flight, and the card belongs under it rather than above the step.
+          messages = appendStamped(s0.messages, {
+            id: makeId(), seq: s0.nextSeq,
+            role: "agent", kind: "editing", live: true, diffs: progressDiffs,
+          });
+          return { ...s0, nextSeq: s0.nextSeq + 1, messages };
         }
         return { ...s0, messages };
       }
@@ -727,6 +797,9 @@ export function createChatReducer(makeId: () => string) {
           detail: action.detail,
           status: "running",
           divertible: action.divertible,
+          // Present for an exec-shaped call: the command, with no output yet. It
+          // opens the terminal panel on IN alone, and tool_result completes it.
+          exec: action.exec,
           startedAt: Date.now(),
           seq: state.nextSeq,
         };
@@ -756,7 +829,15 @@ export function createChatReducer(makeId: () => string) {
                 // Fall back to the (clipped) summary so a failed row is always
                 // expandable, even when the server sent no full error body.
                 error: ok ? undefined : error || summary || "The tool call failed.",
-                exec,
+                // A result with no exec payload (a failure, or a tool that turned out
+                // not to be exec-shaped) must not erase the IN pane the call opened:
+                // the command that ran is the row's only trace of what was attempted.
+                exec: exec ?? t.exec,
+                // The run is over, whatever it was last seen doing. Without this a
+                // detached row keeps "building…" and its bar for the rest of the
+                // session, describing a moment that has passed.
+                phase: undefined,
+                percent: undefined,
                 durationMs: duration_ms,
               }
             : t;
@@ -775,6 +856,59 @@ export function createChatReducer(makeId: () => string) {
         return (
           patchToolById(state, vId, (tools) =>
             tools.map((t) => (t.id === vId ? { ...t, verdict } : t))
+          ) ?? state
+        );
+      }
+
+      case "tool_progress": {
+        // What the run is doing, while it is still doing it. Only a running row can
+        // be mid-anything: a settled one has an outcome, and relabelling it
+        // "building…" would describe work that is over.
+        const { id: pId, phase, percent } = action;
+        return (
+          patchToolById(state, pId, (tools) =>
+            tools.map((t) =>
+              t.id === pId && t.status === "running"
+                ? { ...t, phase, percent: typeof percent === "number" ? percent : undefined }
+                : t
+            )
+          ) ?? state
+        );
+      }
+
+      case "tool_backgrounded": {
+        // The row is done, the work is not. Marked here rather than inferred from the
+        // result, because only the client knows whether a watcher actually took the
+        // job — and a row that claimed to be tracked by one that declined would wait
+        // for an ending nobody was going to report.
+        const { id: bId, job_key } = action;
+        return (
+          patchToolById(state, bId, (tools) =>
+            tools.map((t) =>
+              t.id === bId
+                ? { ...t, jobKey: job_key, status: "background" as const,
+                    summary: t.summary || "moved to background" }
+                : t
+            )
+          ) ?? state
+        );
+      }
+
+      case "job_progress": {
+        // Same fact as tool_progress, from the other side of the hand-off: by now the
+        // row has settled, so the job key is what finds it.
+        const { job_key: jKey, phase: jPhase, percent: jPercent } = action;
+        return (
+          patchToolWhere(
+            state,
+            (t) => t.jobKey === jKey || t.exec?.job_key === jKey,
+            (tools) =>
+              tools.map((t) =>
+                t.jobKey === jKey || t.exec?.job_key === jKey
+                  ? { ...t, phase: jPhase,
+                      percent: typeof jPercent === "number" ? jPercent : undefined }
+                  : t
+              )
           ) ?? state
         );
       }
@@ -878,16 +1012,15 @@ export function createChatReducer(makeId: () => string) {
             return { ...m, diffs };
           });
         } else {
-          messages = [
-            ...s.messages,
-            {
-              id: makeId(),
-              role: "agent",
-              kind: "editing",
-              live: true,
-              diffs: [{ file: dFile, patch: dPatch, is_new: isNewFile }],
-            },
-          ];
+          messages = appendStamped(s.messages, {
+            id: makeId(),
+            seq: s.nextSeq,
+            role: "agent",
+            kind: "editing",
+            live: true,
+            diffs: [{ file: dFile, patch: dPatch, is_new: isNewFile }],
+          });
+          return { ...s, nextSeq: s.nextSeq + 1, messages };
         }
         return { ...s, messages };
       }

@@ -11,6 +11,9 @@ Run:
 """
 
 import asyncio
+import os
+import shutil
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -106,6 +109,111 @@ class RunAwaitedTests(unittest.TestCase):
 
         self.assertEqual(states.calls, 0)
         self.assertEqual(res["status"], "error")
+
+
+class DivertedWaitTests(unittest.TestCase):
+    """The user can end the wait without ending the run.
+
+    Both exits from the wait reach the same place by design — one detached run, one
+    watcher, one resume. What differs is the note, because "you asked for this" and
+    "it outlived the budget" are not the same thing to the person reading it.
+    """
+
+    def setUp(self) -> None:
+        self._state = tempfile.mkdtemp(prefix="mimir-eval-divert-")
+        self._orig = os.environ.get("MIMIR_STATE_DIR")
+        os.environ["MIMIR_STATE_DIR"] = self._state
+
+    def tearDown(self) -> None:
+        if self._orig is None:
+            os.environ.pop("MIMIR_STATE_DIR", None)
+        else:
+            os.environ["MIMIR_STATE_DIR"] = self._orig
+        shutil.rmtree(self._state, ignore_errors=True)
+
+    def _divert(self) -> None:
+        """Stand in for the click: name the run in the channel's request file."""
+        base = eval_session.run_channel._dir(eval_session._DIVERT_CHANNEL)
+        os.makedirs(base, exist_ok=True)
+        with open(os.path.join(base, "divert"), "w") as fh:
+            fh.write(os.path.basename(_LAUNCHED["run_dir"]))
+
+    def test_a_divert_request_ends_the_wait_and_keeps_the_run(self) -> None:
+        states = _StateSequence(["running"])
+
+        def _state_then_divert(run_dir):
+            # The click lands while the run is going, which is the only moment it can.
+            out = states(run_dir)
+            self._divert()
+            return out
+
+        with patch.object(eval_session, "run", return_value=dict(_LAUNCHED)), \
+             patch.object(eval_session, "_run_state", _state_then_divert), \
+             patch.object(eval_session, "results") as results, \
+             patch.object(eval_session, "_RUN_POLL_S", 0.01):
+            res = asyncio.run(eval_session.run_awaited("tiny", wait_s=30.0))
+
+        # It stopped waiting long before the budget, and settled nothing: the run is
+        # still going, so there is no verdict to read.
+        results.assert_not_called()
+        self.assertEqual(res["status"], "ok")
+        self.assertEqual(res["background_job"]["run_dir"], _LAUNCHED["run_dir"])
+        self.assertIn("moved this run to the background", res["note"])
+        self.assertNotIn("Still running after", res["note"])
+
+    def test_the_wait_publishes_the_run_for_the_client_to_find(self) -> None:
+        # Nothing can be diverted that was never announced.
+        seen = {}
+
+        def _capture(run_dir):
+            seen["run"] = eval_session.run_channel._read_current(
+                eval_session._DIVERT_CHANNEL)
+            return {"state": "done", "pid": 1, "slurm_job_id": None, "elapsed_s": 1.0}
+
+        with patch.object(eval_session, "run", return_value=dict(_LAUNCHED)), \
+             patch.object(eval_session, "_run_state", _capture), \
+             patch.object(eval_session, "results", return_value=dict(_RESULTS)), \
+             patch.object(eval_session, "_RUN_POLL_S", 0.01):
+            asyncio.run(eval_session.run_awaited("tiny"))
+
+        self.assertIsNotNone(seen["run"])
+        self.assertEqual(seen["run"]["job_key"], os.path.basename(_LAUNCHED["run_dir"]))
+        self.assertEqual(seen["run"]["pid"], _LAUNCHED["pid"])
+
+    def test_the_announcement_is_retracted_when_the_wait_ends(self) -> None:
+        # A stale announcement would let a later click detach whatever ran next.
+        with patch.object(eval_session, "run", return_value=dict(_LAUNCHED)), \
+             patch.object(eval_session, "_run_state", _StateSequence(["done"])), \
+             patch.object(eval_session, "results", return_value=dict(_RESULTS)), \
+             patch.object(eval_session, "_RUN_POLL_S", 0.01):
+            asyncio.run(eval_session.run_awaited("tiny"))
+
+        self.assertIsNone(eval_session.run_channel._read_current(
+            eval_session._DIVERT_CHANNEL))
+
+    def test_the_phase_is_republished_for_the_client(self) -> None:
+        phases = iter([
+            {"state": "running", "pid": 1, "slurm_job_id": None, "elapsed_s": 1.0,
+             "phase": "building tiny", "percent": 42.0},
+            {"state": "done", "pid": 1, "slurm_job_id": None, "elapsed_s": 2.0},
+        ])
+        seen = []
+
+        def _next(run_dir):
+            st = next(phases)
+            seen.append(eval_session.run_channel._read_current(
+                eval_session._DIVERT_CHANNEL))
+            return st
+
+        with patch.object(eval_session, "run", return_value=dict(_LAUNCHED)), \
+             patch.object(eval_session, "_run_state", _next), \
+             patch.object(eval_session, "results", return_value=dict(_RESULTS)), \
+             patch.object(eval_session, "_RUN_POLL_S", 0.01):
+            asyncio.run(eval_session.run_awaited("tiny"))
+
+        # The second read happens after the first tick published what it learned.
+        self.assertEqual(seen[1]["phase"], "building tiny")
+        self.assertEqual(seen[1]["percent"], 42.0)
 
 
 class ToolDispatchTests(unittest.TestCase):

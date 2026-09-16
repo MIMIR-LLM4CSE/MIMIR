@@ -12,8 +12,8 @@ function tool(id: string, seq: number, parentId?: string): ToolActivity {
 const block = (seq: number) => ({ id: `b${seq}`, seq });
 
 /** Compact shape of the result: the kind of each entry, in order. */
-const shape = (entries: ReturnType<typeof orderLiveStream>[number][]) =>
-  entries.map((e) => (e.kind === "tools" ? `tools(${e.tools.map((t) => t.id).join(",")})` : e.kind));
+const shape = (entries: { kind: string; tools?: ToolActivity[] }[]) =>
+  entries.map((e) => (e.kind === "tools" ? `tools(${e.tools!.map((t) => t.id).join(",")})` : e.kind));
 
 describe("orderLiveStream", () => {
   it("keeps prose above a tool row that arrived after it", () => {
@@ -71,6 +71,24 @@ describe("orderLiveStream", () => {
       thinking: [block(1)], tools: [unstamped as ToolActivity], draftSeq: null,
     });
     expect(shape(entries)).toEqual(["tools(old)", "thinking"]);
+  });
+
+  it("places a message that landed mid-step where it arrived", () => {
+    // A steer bubble: it came after the prose and after the tool row, and belongs
+    // under both rather than above the whole step.
+    const entries = orderLiveStream({
+      thinking: [], tools: [tool("t1", 4)], draftSeq: 2,
+      messages: [{ seq: 6 }],
+    });
+    expect(shape(entries)).toEqual(["draft", "tools(t1)", "message"]);
+  });
+
+  it("keeps a mid-step message above what arrived after it", () => {
+    const entries = orderLiveStream({
+      thinking: [], tools: [tool("t1", 8)], draftSeq: 6,
+      messages: [{ seq: 4 }],
+    });
+    expect(shape(entries)).toEqual(["message", "draft", "tools(t1)"]);
   });
 
   it("returns nothing when the step produced nothing", () => {

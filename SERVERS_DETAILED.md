@@ -505,18 +505,37 @@ one the user detaches mid-flight keeps everything it has already done. A blockin
 job directory is a scratch buffer, marked `ephemeral` in its `meta.json` and deleted
 the moment the call returns; a detached one's is the handle itself and is never swept.
 
-**Diverting a run in flight.** The user can move a still-running blocking command to
-the background from the tool row in the UI. It cannot travel through the model — the
-agent is parked awaiting this very call, and a steer is only drained at a step boundary
-— nor through MCP, since the synchronous tool body holds the bash server's event loop.
-So it goes through the shared state dir, like the approved-paths allowlist:
-`servers/workspace/_bash_divert.py` announces the run being waited on in
-`<state_dir>/bash_run/current.json`, and `client/tool_execution/bash_divert.py` names
-it back in a `divert` file the wait loop consumes on its next tick. The process is left
-running, the result carries the output so far plus the ordinary `background_job`
-descriptor, and the existing watcher takes it from there. It carries **no**
-`returncode`: the run has not produced one. This is the only promotion there is — an
-explicit human act, never the clock.
+**Diverting a run in flight.** The user can move a still-running blocking call to the
+background from its tool row in the UI. It cannot travel through the model — the agent
+is parked awaiting this very call, and a steer is only drained at a step boundary — nor
+through MCP, since the call itself is what the server is busy with. So it goes through
+the shared state dir, like the approved-paths allowlist.
+
+`servers/_shared/run_channel.py` is that channel, and it is generic. A tool that blocks
+publishes the run it is waiting on in `<state_dir>/runs/<channel>/current.json`;
+`client/tool_execution/run_channel.py` names it back in a `divert` file the wait loop
+consumes on its next tick. The channel is the blocking tool's own registered name, so
+the client addresses it straight off the row being diverted — neither end spells the
+other's name out, and one tool's request can never reach another's run. Two tools
+publish today: `bash_run`, and `proxy_eval` for `op='run'`. Both declare the
+`divertible` capability, which is what puts the control on the row; a tool that returns
+as soon as it has submitted (`proxy_slurm`, `sbatch_submit`) declares it and gets no
+control, because there is no wait of its own to divert.
+
+The process is left running, the result carries the work done so far plus the ordinary
+`background_job` descriptor, and the existing watcher takes it from there. A shell
+run's result carries **no** `returncode`: it has not produced one. This is the only
+promotion there is — an explicit human act, never the clock.
+
+**Saying what a run is doing.** `current.json` also carries a `phase` and, when the
+work counts itself, a `percent`; the wait loop republishes both on every tick and the
+client relays them to the row. For `proxy_eval` the phase comes from `phase.json`,
+which the detached runner writes at the boundaries only it knows (which build of how
+many, which case of how many, which replicate), and the percentage is read straight out
+of `build.log` — the compiler prints it, and the runner is blocked inside the build for
+its whole duration and is in no position to count anything. `procs._run_state` merges
+both, so the blocking wait, `proxy_eval_status` and the detached watcher all learn it
+from one place.
 
 Backgrounding is a parameter on a command that has passed the same path checks and
 denylists, which is why the `&` operator stays refused: detaching is the server's job,

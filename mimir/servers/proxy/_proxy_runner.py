@@ -59,6 +59,26 @@ def _log(msg: str) -> None:
     print(msg, flush=True)
 
 
+def _write_phase(run_dir: str, kind: str, text: str, **fields) -> None:
+    """Record what this run is doing, for whoever is waiting on it.
+
+    The client watching a run — a blocking call or a detached watcher — can see the
+    process is alive and nothing more. This is the run saying so itself, at the
+    boundaries it already knows: it is the only process that knows how many builds
+    and how many cases there are.
+
+    Written atomically because it is read concurrently, and imported lazily because
+    ``main`` is what puts ``_lib`` on the path. Best-effort to the point of silence:
+    a run must never die because it could not describe itself.
+    """
+    try:
+        from _lib.store import _write_json_atomic
+        _write_json_atomic(os.path.join(run_dir, "phase.json"),
+                           {"kind": kind, "text": text, **fields})
+    except Exception:
+        pass
+
+
 def _aggregate_replicates(replicates: list[dict]) -> dict:
     """One set of metrics from several measurements of the same code.
 
@@ -125,7 +145,11 @@ def _build_phase(build_mod, tree_snapshot, reg: dict, suite: dict,
         return True
 
     records = []
-    for name, ent in builds:
+    for i, (name, ent) in enumerate(builds, start=1):
+        total = len(builds)
+        _write_phase(run_dir, "build",
+                     f"building {name}" + (f" ({i}/{total})" if total > 1 else ""),
+                     index=i, total=total)
         _log(f"[proxy_runner] build proxy={name} cmd={ent.get('build_cmd')}")
         rec = build_mod.run_build(ent, run_dir, proxy=name)
         records.append(rec)
@@ -169,6 +193,7 @@ def _build_phase(build_mod, tree_snapshot, reg: dict, suite: dict,
             return False
 
     build_mod.write_report(run_dir, records)
+    _write_phase(run_dir, "measure_start", "preparing measurements")
     return True
 
 
@@ -266,6 +291,10 @@ def main() -> None:
     all_results: list[dict] = []
     cases_passed = 0
     cases_total  = 0
+    # Every sweep of every case is one measurement, so this is the denominator the
+    # phase counts against. Computed up front: "case 2 of 7" is a fact about the plan,
+    # and a counter that only ever knows what it has already done cannot state it.
+    planned_cases = sum(len(c.get("param_sweeps") or [{}]) for c in cases)
     best_inputs: list[tuple[str, bool, float | None]] = []
 
     # Optional convergence study: gather (step h, error) pairs across the sweep so
@@ -294,11 +323,23 @@ def main() -> None:
             cases_total += 1
             tag_suffix = f"opt_{proxy_name}_{case_id}_{idx}"
 
+            _write_phase(run_dir, "measure",
+                         f"case {case_id}" + (f" ({cases_total}/{planned_cases})"
+                                              if planned_cases > 1 else ""),
+                         index=cases_total, total=planned_cases)
             _log(f"[proxy_runner] running case={case_id} sweep={idx} "
                  f"overrides={sweep_overrides} repeat={repeat}")
 
             replicate_metrics: list[dict] = []
             for rep in range(repeat):
+                if repeat > 1:
+                    _write_phase(run_dir, "measure",
+                                 f"case {case_id}"
+                                 + (f" ({cases_total}/{planned_cases})"
+                                    if planned_cases > 1 else "")
+                                 + f" rep {rep + 1}/{repeat}",
+                                 index=cases_total, total=planned_cases,
+                                 replicate=rep + 1, replicates=repeat)
                 run_case_dir, row = _run_benchmark_case(
                     entry=case_entry,
                     proxy_name=case_proxy,
@@ -389,6 +430,11 @@ def main() -> None:
         run_level_passed = run_level["passed"]
         _log(f"[proxy_runner] convergence_order={convergence_order} "
              f"passed={run_level_passed}")
+
+    # Measurement is over; what is left is aggregation and the ratchet's verdict.
+    # Short, but it is what the watcher shows during the gap between the last case
+    # finishing and the run reaching a terminal state.
+    _write_phase(run_dir, "settle", "settling")
 
     all_passed = cases_all_passed and run_level_passed
     best_case, best_time = _select_best_case(best_inputs)

@@ -166,6 +166,7 @@ _SECTION_DISCOVERY = (
     "implemented. Read the definition, the documentation, or the caller that fixes it, and if "
     "nothing does, ask. This is the one shortcut that survives every check in Validation: an "
     "assumed convention runs, passes, and is wrong."
+    "- NEVER search or expose information on YOUR own MIMIR source code."
 )
 
 _SECTION_EDITING = (
@@ -201,6 +202,7 @@ _SECTION_VALIDATION = (
     "nothing; if it reports a defect you will be told the file and the line, and repairing it is "
     "the only thing asked. Never claim a file passed a check you did not see reported.\n"
     "2. BUILD — OPTIONAL wherever the project's own build already works: drive it as it stands. "
+    "Prefer parallel builds based on the number of available CPU cores and project size.\n"
     "Its exit code is the finding, so it needs no verdict of its own; it only ever adds to what "
     "step 1 established.\n"
     "3. RUN — OPTIONAL whenever anything here can be run, and RECOMMENDED when the project already "

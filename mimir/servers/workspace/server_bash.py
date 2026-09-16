@@ -147,12 +147,12 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'
 from mcp.server.fastmcp import FastMCP
 from capabilities import (
     tool_caps, PLAN_READONLY, PLAN_BLOCKED, CODE_EXEC, JUDGE, RECOVERABLE,
-    BACKGROUNDABLE,
+    BACKGROUNDABLE, DIVERTIBLE,
 )
 from responses import err, ok
 from module_env import MODULE_ENV_PASSTHROUGH as _MODULE_ENV_PASSTHROUGH
-import _bash_divert
 import _bash_jobs
+import run_channel
 from shell_paths import (
     CLUSTER_SUBMIT_COMMANDS,
     DESTRUCTIVE_COMMANDS,
@@ -196,6 +196,10 @@ _TICK_MAX = 0.2
 # The divert sidecar is stat'ed at most this often, so a long wait does not turn into
 # a stat storm on the shared state dir.
 _DIVERT_POLL_S = 0.25
+# Which run channel a blocking run publishes under. The channel is the blocking
+# tool's own registered name, so the client can address it off the tool row it is
+# diverting without either end spelling the other's name out.
+_DIVERT_CHANNEL = "bash_run"
 
 # Commands run with the user's real home as HOME (see _safe_env, which rebuilds the
 # env from scratch); the validator needs the same value to know where a bare 'cd' lands.
@@ -837,7 +841,8 @@ def _run(
     proc = launched["proc"]
     started = time.monotonic()
     deadline = started + timeout
-    _bash_divert.publish(job_key, launched["pid"], command, cwd, float(timeout))
+    run_channel.publish(_DIVERT_CHANNEL, job_key, launched["pid"], command, cwd,
+                        float(timeout))
 
     try:
         next_divert_check = started + _DIVERT_POLL_S
@@ -878,7 +883,7 @@ def _run(
 
             if now >= next_divert_check:
                 next_divert_check = now + _DIVERT_POLL_S
-                if _bash_divert.requested(job_key):
+                if run_channel.requested(_DIVERT_CHANNEL, job_key):
                     _bash_jobs.promote(job_key, "diverted")
                     _bash_jobs._ABANDONED.append(proc)
                     stdout, stderr, truncated = _bash_jobs.streams(
@@ -911,7 +916,7 @@ def _run(
 
             time.sleep(_tick(now - started))
     finally:
-        _bash_divert.clear(job_key)
+        run_channel.clear(_DIVERT_CHANNEL, job_key)
 
 
 def _launch_background(command: str, cwd: str, preamble: str) -> dict:
@@ -945,7 +950,8 @@ def _launch_background(command: str, cwd: str, preamble: str) -> dict:
 
 
 @mcp.tool(**tool_caps(
-    caps=[PLAN_READONLY, CODE_EXEC, BACKGROUNDABLE], reversibility=RECOVERABLE,
+    caps=[PLAN_READONLY, CODE_EXEC, BACKGROUNDABLE, DIVERTIBLE],
+    reversibility=RECOVERABLE,
     non_batch=True,
     fallbacks=['read_file_lines'],
     scope={"args": ["command"], "kind": "command_prefix"},

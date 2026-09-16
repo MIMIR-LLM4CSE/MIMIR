@@ -114,9 +114,11 @@ webview/src/
 ├── hooks/
 │   ├── useWebSocket.ts       ← postMessage bridge; send(), connect(), createSession(), …
 │   ├── useElapsed.ts         ← ticking elapsed-time counter for a running turn
-│   └── useStickToBottom.ts   ← follow a pane's bottom while it streams, and let go when
-│                               the reader scrolls up. Used by the transcript and by the
-│                               live reasoning panel
+│   ├── useStickToBottom.ts   ← follow a pane's bottom while it streams, and let go when
+│   │                           the reader scrolls up. Used by the transcript and by the
+│   │                           live reasoning panel
+│   └── useOffscreenRows.ts   ← which tool rows have scrolled out of the thread, found by
+│                               `data-tool-id`; what decides when the progress dock shows
 ├── state/
 │   └── chatReducer.ts        ← the chat state machine: every message, tool row and
 │                               thinking block the transcript holds. The reducer never
@@ -159,7 +161,12 @@ webview/src/
     ├── MentionAutocomplete.tsx / mentionUtils.ts   ← the `@` attach dropdown
     ├── SlashAutocomplete.tsx  / slashUtils.ts      ← the `/` command dropdown
     ├── subAgentUtils.ts       ← sub-agent row grouping
-    ├── liveStreamUtils.ts     ← puts the turn in flight — prose, reasoning, tool rows —
+    ├── RunProgressDock.tsx    ← runs still going whose rows have scrolled away, as small
+    │                            cards at the bottom-left of the thread
+    ├── runDockUtils.ts        ← which runs are still in flight, across the live step and
+    │                            the frozen transcript (unit-tested)
+    ├── liveStreamUtils.ts     ← puts the turn in flight — prose, reasoning, tool rows,
+    │                            and a message that landed mid-step such as a steer —
     │                            back in arrival order, for the live view and the freeze
     ├── transcriptUtils.ts     ← the transcript handed back to the server
     └── MimirIntro.tsx / MimirMark.tsx              ← brand assets injected by the host
@@ -304,27 +311,93 @@ reloaded from disk splits again on the stored answer text. The CLI applies the s
 
 ---
 
+## The terminal panel of a running command
+
+| Event | What it carries | What the row shows |
+| --- | --- | --- |
+| `tool_call` | `exec: {command, stdout: "", stderr: ""}` | IN, with OUT waiting |
+| `tool_result` | the full `exec` | IN and OUT |
+
+A command's output only exists once it has finished. Building the panel from the
+result alone therefore put the whole thing on screen at the end, and until then the
+user watched a spinner that never said what was running. So `dispatch.py` sends the
+IN half on the `tool_call` event: the command, with empty streams. The reducer stores
+it on the row like any other `exec`, the row opens on it, and the result replaces it
+with the complete panel.
+
+Which calls get one is read off the registry, not off a tool name: the capability is
+`CODE_EXEC`. The result preview can recognise an exec by the shape of its payload,
+but at call time there is no payload yet, and a non-exec tool carrying a
+`command`-ish argument would otherwise grow a terminal panel of its own.
+
+Two details follow from a panel that exists before its output. `ExecOutput` takes a
+`pending` flag — empty output under a finished run is the fact "(no output)", under a
+live one it is simply not in yet — and a `tool_result` with no `exec` of its own (a
+failure, say) keeps the command already on the row rather than erasing it.
+
+---
+
 ## Moving a running command to the background
 
 A tool row in `ToolActivityList.tsx` carries one control that talks to the server:
-while a row is `running` and the server marked it `divertible` (read off the tool
-registry in `dispatch.py` — the webview never learns which tool is a shell), an icon
-appears beside the head on hover or focus. It sends
+while a row is `running` and the server marked it `divertible` (the `divertible`
+capability, read off the tool registry in `dispatch.py` — the webview never learns
+which tool is a shell), an icon appears beside the head on hover or focus. It sends
 `{type: "divert_to_background", id}`; the sentence lives in the tooltip, since the row
 is already a dense line.
 
 The click deliberately does **not** reach the model. The agent thread is parked
 awaiting that very tool call, and a steer is only drained at a step boundary, so an
 instruction routed that way would arrive after the run it meant to divert had ended.
-`_handle_divert_to_background` serves it on the WS loop and writes a request into the
-shared state dir, which the bash server's wait loop consumes on its next tick
-(`SERVERS_DETAILED.md` → *Detached runs*). The process is left running.
+`_handle_divert_to_background` serves it on the WS loop: it resolves the id to the
+row's tool name, which is the run channel that tool's server publishes under, and
+writes a request there for the wait loop to consume on its next tick
+(`SERVERS_DETAILED.md` → *Detached runs*). The name is resolved on the client for the
+same reason the webview never sees one — it sends the row, not a tool.
 
-What comes back is an ordinary `tool_result` whose `exec` carries `running: true`, a
-`job_key`, and the output produced so far — but no `returncode`, because the run has
-not produced one. The reducer marks the row `background`; the existing `job_complete`
-message later finds the row by `exec.job_key` and settles it with how the run really
-ended, live or already frozen into a `kind:"tools"` message.
+What comes back is an ordinary `tool_result`. A shell run's carries an `exec` with
+`running: true`, a `job_key` and the output so far, but no `returncode`, because the
+run has not produced one. A run with nothing to preview — an optimization run prints
+to no terminal pane — carries none of that, so a separate `tool_backgrounded` follows
+with the `job_key`, sent only once a watcher has actually taken the job. Either way the
+reducer marks the row `background`, and `job_complete` later finds it by `exec.job_key`
+**or** `jobKey` and settles it with how the run really ended, live or already frozen
+into a `kind:"tools"` message.
+
+---
+
+## Showing what a long run is doing
+
+A call that blocks the turn for twenty minutes cannot report on itself: it does not
+answer until it is over. Two events fill the gap, and they are the two halves of one
+run's life. While the call blocks, `ws_session` polls the run channel once a second and
+sends `tool_progress {id, phase, percent}`. Once the run is detached, the watcher's own
+status poll is the only thing still asking, and it sends `job_progress {job_key, phase,
+percent}`. Neither is written to the transcript — they describe a moment, and a watcher
+ticking for an hour would otherwise fill the record with "still building".
+
+The phase text is authored server-side and rendered without being interpreted, like a
+tool's `label` template. `percent` is present only when the work counts itself (a
+compiler's own output); absent means *this phase does not say*, never zero — so the bar
+disappears at the end of the build rather than freezing at 98% for the rest of the run.
+
+The row shows the phase beside the elapsed time, with the shared `.streaming-dots` to
+say it is still going, and draws the percentage as a translucent overlay across
+`.tool-row-line`. An overlay, because the head is a button that paints its own hover
+background in shorthand — anything behind it would vanish under the cursor — and
+because a bar on a line of its own would add height to every running row and take it
+back at the moment the run settles.
+
+When such a row scrolls out of the thread, `RunProgressDock` puts it back as a small
+card at the bottom-left, over the thread and clear of the composer. `useOffscreenRows`
+decides that with an `IntersectionObserver` rooted on `.chat-thread`, finding rows by
+`data-tool-id` — an attribute rather than a ref, because a row moves from the live list
+into a frozen message mid-run and that replaces its element. A card needs a *live*
+phase, not just a `background` status: a reloaded session brings back rows whose
+watchers died with the process that wrote the file, and requiring evidence means such a
+row shows a card only once something reports on it again. Clicking a card scrolls back
+to its row; there is no close button, because a card is there only while both facts
+hold and leaves when either stops.
 
 ---
 

@@ -964,6 +964,8 @@ class _AgentWorker:
         state = "running"
         reason = ""
         unreadable = 0
+        # Last (phase, percent) announced, so a poll that learned nothing says nothing.
+        last_reported: tuple = ("", None)
         try:
             while True:
                 await asyncio.sleep(interval)
@@ -984,9 +986,28 @@ class _AgentWorker:
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:
+                    payload = {}
                     state, reason = "", f"'{status_tool}' raised {type(exc).__name__}"
                 if state in terminal:
                     break
+                # What the run is doing, for as long as it is doing it. The blocking
+                # wait had its own channel into the run; once detached, this poll is
+                # the only thing still asking, so it is the only thing that can say.
+                # Shape-driven like everything else here: whatever the status op
+                # chose to report, passed on without being understood.
+                phase = str((payload or {}).get("phase") or "")
+                percent = (payload or {}).get("percent")
+                if not isinstance(percent, (int, float)):
+                    percent = None
+                if (phase, percent) != last_reported and (phase or percent is not None):
+                    last_reported = (phase, percent)
+                    self.out_q.put({
+                        "type":       "job_progress",
+                        "job_key":    job_key,
+                        "phase":      phase,
+                        "percent":    percent,
+                        "session_id": session_id,
+                    })
                 if state:
                     unreadable = 0   # 'running', or any state the descriptor's op owns
                     continue

@@ -24,12 +24,12 @@ from ..config.constants import (
 from ..event_sink import emit
 from .. import human_pause
 from ..context.capabilities import (
-    BACKGROUNDABLE, EDIT, has_cap, label_for, scope_spec, timeout_for,
+    CODE_EXEC, DIVERTIBLE, EDIT, has_cap, label_for, scope_spec, timeout_for,
 )
 from ..context.execution_context import loop_control, nudge_count
 from ..tool_execution.normalizer import _make_hashable
 from ..tool_execution.executor import run_post_tool_annotations
-from ..tool_execution.exec_preview import extract_exec_preview
+from ..tool_execution.exec_preview import exec_input_preview, extract_exec_preview
 from ..tool_execution.tool_status_messages import (
     tool_status_message,
     tool_arg_preview,
@@ -298,7 +298,7 @@ async def _dispatch_tool_calls(
         # label already shows the full path) — see dedup_row_detail.
         row_detail = dedup_row_detail(
             row_label, tool_arg_preview(display_name, row_args))
-        emit({
+        call_event = {
             "type": "tool_call",
             "id": call_id,
             "name": display_name,
@@ -306,9 +306,25 @@ async def _dispatch_tool_calls(
             "detail": row_detail,
             # Whether the front-end may offer to detach this row while it runs. Read
             # off the registry, like every other row property: the UI must not learn
-            # which tool happens to be a shell.
-            "divertible": has_cap(display_name, BACKGROUNDABLE, agent.tool_caps),
-        })
+            # which tool happens to be a shell. DIVERTIBLE, not BACKGROUNDABLE: the
+            # question is whether this call publishes a channel while it blocks, not
+            # whether the tool can launch something detached. Read the second way, the
+            # button also appeared on tools that return the instant they have
+            # submitted — where the click had nothing to reach, and said so wrongly.
+            "divertible": has_cap(display_name, DIVERTIBLE, agent.tool_caps),
+        }
+        # A run's input is known now; its output only exists when it ends. Sending the
+        # IN half here puts the command on screen for the whole run instead of landing
+        # the finished IN/OUT panel at the end, after a spinner that said nothing about
+        # what was running. Gated on the registry's CODE_EXEC capability — the result
+        # preview can detect an exec by the shape of its payload, but at call time
+        # there is no payload yet, and a non-exec tool with a `command`-ish argument
+        # would otherwise grow a terminal panel.
+        if has_cap(display_name, CODE_EXEC, agent.tool_caps):
+            pending = exec_input_preview(args)
+            if pending is not None:
+                call_event["exec"] = pending
+        emit(call_event)
 
     
     async def _run_with_timeout(name: str, args: dict, call_id: str) -> str:
@@ -451,6 +467,18 @@ async def _dispatch_tool_calls(
                 # holding the run.
                 result, registered = _maybe_register_background_job(
                     name, result, agent, descriptor)
+                if registered:
+                    # Tie the row to the run that outlived it. Without this a row
+                    # whose result is not exec-shaped — an optimization run has no
+                    # stdout to preview — settles as an ordinary success, and nothing
+                    # downstream can tell that the work it names is still going, nor
+                    # match the watcher's progress to it.
+                    emit({
+                        "type":    "tool_backgrounded",
+                        "id":      call_id,
+                        "job_key": str(descriptor.get("job_key")
+                                       or descriptor.get("run_dir") or ""),
+                    })
                 if not registered:
                     # No watcher (CLI, or a registration that declined): wait it out
                     # efficiently in-turn. Costs zero model calls either way.

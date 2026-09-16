@@ -42,7 +42,7 @@ class SpecTests(_TmpStorageTest):
     def test_defaults_are_filled_and_the_timeout_is_bounded(self) -> None:
         sp = build.spec({"build_cmd": "make"})
         self.assertEqual(sp["cmd"], "make")
-        self.assertEqual(sp["timeout_s"], 1800.0)
+        self.assertEqual(sp["timeout_s"], build._DEFAULT_TIMEOUT_S)
         huge = build.spec({"build_cmd": "make", "build_timeout_s": 10 ** 9})
         self.assertLessEqual(huge["timeout_s"], 6 * 3600.0)
 

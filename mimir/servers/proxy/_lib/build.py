@@ -43,8 +43,12 @@ import proc_run
 from _lib import procs
 
 # Long enough for a real project's first build, bounded so a wedged build cannot
-# hold a run for the whole 24 h measurement budget.
-_DEFAULT_TIMEOUT_S = 1800.0
+# hold a run for the whole 24 h measurement budget. Half an hour was not: a GPU
+# project's full rebuild after one touched header reached 50% of its targets in
+# exactly that, so the default cut off every clean build it was meant to cover and
+# reported it as a failure. A build is incremental, so the cost of a generous
+# ceiling is a wedged build noticed later, not work redone.
+_DEFAULT_TIMEOUT_S = 7200.0
 _MAX_TIMEOUT_S = 6 * 3600.0
 
 # Tokens that only mean anything to a shell. Passing them to execvp() would hand

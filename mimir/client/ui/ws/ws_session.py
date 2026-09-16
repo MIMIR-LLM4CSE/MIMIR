@@ -23,7 +23,7 @@ from ...query_engine.history import (
     carries_compaction_summary, reconcile_tool_pairs,
 )
 from .ws_worker import _AgentWorker
-from ...tool_execution import bash_divert
+from ...tool_execution import run_channel
 from ...config import THINKING_DEPTH_LABELS, thinking_depth_from_label
 
 import asyncio
@@ -133,6 +133,15 @@ class _Session:
         # and three near-identical final answers, one of them contradicting the last on
         # how many jobs there even were.
         self._pending_wakes: dict[str, list[dict]] = {}
+        # Tool rows of the running turn that publish a run channel, as
+        # {call id: tool name}. The name IS the channel (see run_channel), so this is
+        # what lets a divert click name the run the user is actually looking at, and
+        # what the progress poller walks. Registry data passing through: nothing here
+        # compares a name against a literal.
+        self._live_rows: dict[str, str] = {}
+        # Last (phase, percent) pushed per call id, so a tick that learned nothing
+        # sends nothing.
+        self._sent_progress: dict[str, tuple] = {}
 
     def _greeting(self) -> dict:
         """The ``ready`` sent the moment the socket is accepted.
@@ -719,6 +728,53 @@ class _Session:
             _last_ctx_tick = now
             await self._emit_context_usage()
 
+        _last_progress_tick = 0.0
+
+        async def _tick_run_channels() -> None:
+            """Push what each blocking run is doing, at most once a second.
+
+            A run that blocks the turn for twenty minutes shows a spinner and nothing
+            else; the server publishes its phase on the run channel precisely because
+            the tool call it belongs to cannot answer until it is over. Transient, so
+            deliberately not appended to the transcript — like the context bar, it
+            describes a moment rather than recording one.
+            """
+            nonlocal _last_progress_tick
+            if not self._live_rows:
+                return
+            now = time.monotonic()
+            if now - _last_progress_tick < 1.0:
+                return
+            _last_progress_tick = now
+            # A name serving two running rows cannot be attributed to either of them.
+            # Both publishers are non_batch, so this is insurance, not a live case.
+            names = list(self._live_rows.values())
+            for call_id, name in list(self._live_rows.items()):
+                if names.count(name) > 1:
+                    continue
+                try:
+                    run = run_channel.current_run(name)
+                except Exception:
+                    continue
+                if not run:
+                    continue
+                phase = str(run.get("phase") or "")
+                percent = run.get("percent")
+                if not isinstance(percent, (int, float)):
+                    percent = None
+                if not phase and percent is None:
+                    continue
+                if self._sent_progress.get(call_id) == (phase, percent):
+                    continue
+                self._sent_progress[call_id] = (phase, percent)
+                try:
+                    await self.ws.send(json.dumps({
+                        "type": "tool_progress", "id": call_id,
+                        "phase": phase, "percent": percent,
+                    }))
+                except Exception:
+                    return
+
         while True:
             events = self.worker.drain()
             for ev in events:
@@ -760,15 +816,29 @@ class _Session:
                             pass
                 # Logged before the send: an event the client never received still
                 # happened, and the log is the record of the run, not of the socket.
-                self.transcript.append(ev)
+                # Progress is the exception: a watcher ticks for the whole life of a
+                # long run, and a transcript that recorded every "still building"
+                # would be mostly that. It describes a moment; only the moment needs
+                # it, and `job_complete` is what records how the run actually ended.
+                if ev.get("type") != "job_progress":
+                    self.transcript.append(ev)
                 try:
                     await self.ws.send(json.dumps(ev, default=str))
                 except Exception:
                     return
+                if ev.get("type") == "tool_call" and ev.get("divertible"):
+                    # Only divertible rows: they are exactly the ones a channel can
+                    # answer for, and the map is what both the divert click and the
+                    # progress poller resolve through.
+                    self._live_rows[str(ev.get("id") or "")] = str(ev.get("name") or "")
+                elif ev.get("type") == "tool_result":
+                    self._forget_row(str(ev.get("id") or ""))
                 if ev.get("type") == "error":
                     # A turn failed (often a context-overflow 400) and no `answer`
                     # event follows, so refresh the context bar here or it keeps
                     # showing pre-failure usage and never reflects the overflow.
+                    self._live_rows.clear()
+                    self._sent_progress.clear()
                     await self._emit_context_usage()
                 if ev.get("type") == "file_progress":
                     # Push accumulated batch_status for any files already written
@@ -798,6 +868,10 @@ class _Session:
                     # carried by the catch-up turn below.
                     self._drop_injected_wakes(str(ev.get("text") or ""))
                 if ev.get("type") == "answer":
+                    # The turn is over: no row of it is still running, so nothing is
+                    # left for a channel to report on.
+                    self._live_rows.clear()
+                    self._sent_progress.clear()
                     # In full-context mode keep the structured transcript (tool_calls +
                     # results + answer, chain-of-thought stripped) so the model recalls
                     # the tools it ran, matching the CLI chat loop. Falls back to the
@@ -846,6 +920,7 @@ class _Session:
             await asyncio.sleep(0.005)
             await _check_and_push_todos()
             await _tick_context_usage()
+            await _tick_run_channels()
 
     # Maps an inbound WS message "type" to the _Session handler method that serves it.
     # Replaces the former 13-branch ``if mtype == …`` chain in _handle.
@@ -1335,24 +1410,37 @@ class _Session:
         self._autosave_session(list(self._display_messages))
         self.worker.submit_steer(text)
 
+    def _forget_row(self, call_id: str) -> None:
+        """Drop a finished row from the divert/progress bookkeeping."""
+        self._live_rows.pop(call_id, None)
+        self._sent_progress.pop(call_id, None)
+
     async def _handle_divert_to_background(self, msg: dict) -> None:
-        """Move the shell run currently blocking the turn into the background.
+        """Move the run the user pointed at into the background.
 
         Served here, on the WS loop, and deliberately never through the model: the
         worker thread is parked awaiting the tool result for the whole call, and the
         steer queue is drained only at a step boundary, so an instruction routed that
         way could not arrive until after the run it was meant to divert had ended.
-        Writing the request to the shared state dir is what reaches a bash server
-        whose event loop the synchronous tool body is holding.
+        Writing the request to the shared state dir is what reaches a server whose
+        event loop that very call is holding.
+
+        Which run is decided by the row the user clicked: the message carries the call
+        id, and the row's tool name is the channel the owning server publishes under.
+        Resolved here rather than shipped by the webview, which has no business
+        knowing a tool name. Before this the request went to the shell's channel
+        whatever had been clicked, so a proxy run reported "nothing to move" while a
+        perfectly innocent shell command was the one that got detached.
 
         Nothing worker- or agent-side is touched: the confirmation the user sees is
-        the tool result that lands a moment later, carrying the output produced so far
-        and the job handle. Saying anything more here would be predicting it.
+        the tool result that lands a moment later, carrying the work done so far and
+        the job handle. Saying anything more here would be predicting it.
         """
-        if bash_divert.request_divert() is None:
+        channel = self._live_rows.get(str(msg.get("id") or ""))
+        if channel is None or run_channel.request_divert(channel) is None:
             await self.ws.send(json.dumps({
                 "type": "status",
-                "text": "  ⓘ Nothing to move — the command had already finished.",
+                "text": "  ⓘ Nothing to move — that run had already finished.",
             }))
 
     async def _handle_approval_response(self, msg: dict) -> None:

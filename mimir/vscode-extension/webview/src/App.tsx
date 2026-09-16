@@ -36,6 +36,9 @@ import { ResumePlanPrompt } from "./components/ResumePlanPrompt";
 import { UserQuestion } from "./components/UserQuestion";
 import { SessionsPanel } from "./components/SessionsPanel";
 import { ContextBar } from "./components/ContextBar";
+import { RunProgressDock } from "./components/RunProgressDock";
+import { runsInFlight } from "./components/runDockUtils";
+import { useOffscreenRows } from "./hooks/useOffscreenRows";
 import type { ContextUsage } from "./components/ContextBar";
 import { BatchReviewBar } from "./components/BatchReviewBar";
 import { MimirIntro } from "./components/MimirIntro";
@@ -195,6 +198,29 @@ export const App: React.FC = () => {
     follow: forceFollowBottom,
     onScroll: handleChatScroll,
   } = useStickToBottom<HTMLDivElement>();
+
+  // Runs still going, and which of their rows have scrolled out of sight. A run can
+  // outlast the part of the conversation that started it — the agent carries on and
+  // the thread grows past it — so the dock keeps the ones the reader can no longer
+  // see. `messages.length` re-runs the search when a live row freezes into a message,
+  // which replaces its element.
+  const inFlightRuns = useMemo(
+    () => runsInFlight(messages, liveToolCalls),
+    [messages, liveToolCalls],
+  );
+  const offscreenRuns = useOffscreenRows(
+    useMemo(() => inFlightRuns.map((r) => r.id), [inFlightRuns]),
+    chatThreadRef,
+    messages.length,
+  );
+  const dockedRuns = useMemo(
+    () => inFlightRuns.filter((r) => offscreenRuns.has(r.id)),
+    [inFlightRuns, offscreenRuns],
+  );
+  const focusRun = useCallback((id: string) => {
+    const el = chatThreadRef.current?.querySelector(`[data-tool-id="${CSS.escape(id)}"]`);
+    el?.scrollIntoView({ behavior: "smooth", block: "center" });
+  }, [chatThreadRef]);
 
   // Ref to the last user message element so we can scroll it to the top.
   const lastUserMsgRef = useRef<HTMLDivElement>(null);
@@ -1007,7 +1033,10 @@ export const App: React.FC = () => {
           )}
         </div>
 
-        {/* Chat thread */}
+        {/* Chat thread, with the progress dock anchored to its bottom-left. The
+            wrapper exists for the anchor: absolute inside `.main` would put the
+            dock over the composer, whose height changes as the user types. */}
+        <div className="thread-area">
         <ChatThread
           messages={messages}
           busy={busy}
@@ -1063,6 +1092,8 @@ export const App: React.FC = () => {
             )
           }
         />
+        <RunProgressDock runs={dockedRuns} onFocus={focusRun} />
+        </div>
 
         {/* Reconnect panel — shown when disconnected with existing history */}
         {connection === "disconnected" && messages.length > 0 && (

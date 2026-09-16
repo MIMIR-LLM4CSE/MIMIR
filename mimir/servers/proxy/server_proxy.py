@@ -95,7 +95,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from mcp.server.fastmcp import FastMCP
-from capabilities import tool_caps, CODE_EXEC, PLAN_BLOCKED, CLUSTER_SUBMIT, BACKGROUNDABLE, IRREVERSIBLE, RECOVERABLE
+from capabilities import (tool_caps, CODE_EXEC, PLAN_BLOCKED, CLUSTER_SUBMIT,
+                          BACKGROUNDABLE, DIVERTIBLE, IRREVERSIBLE, RECOVERABLE)
 from responses import err
 from _lib.execute import _DEFAULT_MAX_OUTPUT_MB, _REF_RUN_TIMEOUT
 from _lib.procs import _validate_slurm_args
@@ -375,7 +376,7 @@ def proxy_manage(
             is always the one the current sources produce. It is argv, never a
             shell line ('make -C <dir> <target>' is fine; a sequence, a module
             load or a redirect belongs in a wrapper script named here).
-            build_cwd defaults to the workspace root, build_timeout_s to 1800.
+            build_cwd defaults to the workspace root, build_timeout_s to 7200.
             A proxy that declares a build may be registered before its
             executable exists — the build is what produces it.
         cases: For suite_define/suite_update: list of case dicts (see schema above).
@@ -537,7 +538,8 @@ _EVAL_OPS = ("init", "configure", "run", "stop", "reset", "reset_to_best",
 _EVAL_RUN_TIMEOUT = 1800
 
 
-@mcp.tool(**tool_caps(caps=[PLAN_BLOCKED, CODE_EXEC, BACKGROUNDABLE], reversibility=RECOVERABLE, non_batch=True,
+@mcp.tool(**tool_caps(caps=[PLAN_BLOCKED, CODE_EXEC, BACKGROUNDABLE, DIVERTIBLE],
+                      reversibility=RECOVERABLE, non_batch=True,
                       label="Proxy eval: {op}", run_outcome=_RUN_OUTCOME,
                       timeout_secs=_EVAL_RUN_TIMEOUT))
 async def proxy_eval(

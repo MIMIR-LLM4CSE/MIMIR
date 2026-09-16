@@ -186,6 +186,10 @@ export interface ToolCallMessage {
   /** Whether this row may be detached to the background while it runs. Decided by
    *  the server from the tool registry — the UI never learns which tool is a shell. */
   divertible?: boolean;
+  /** The IN half of the terminal panel, for a run whose output is still to come:
+   *  the command, with empty streams. Present only for exec-shaped calls (the
+   *  server decides from the registry). Replaced by the full panel on tool_result. */
+  exec?: ExecResult;
 }
 
 /** Terminal in/out of an exec-shaped tool result (shell / code runner / compiler).
@@ -221,6 +225,50 @@ export interface ToolResultMessage {
   /** Terminal panel data, present only for exec-shaped results. */
   exec?: ExecResult;
   duration_ms: number;
+}
+
+/** What a blocking run is doing, pushed while its tool call is still open.
+ *
+ *  A run that holds the turn for twenty minutes cannot report on itself: the call
+ *  does not answer until it is over. The server publishes its phase on a side channel
+ *  and the client relays it here, so the row shows the work instead of a mute spinner.
+ *  Transient by nature — never persisted into a session's display messages. */
+export interface ToolProgressMessage {
+  type: "tool_progress";
+  /** Correlation id matching an earlier tool_call. */
+  id: string;
+  /** Human phase text, authored server-side (e.g. "building solver (1/2)"). The UI
+   *  renders it without interpreting it, the way it does a tool's label template. */
+  phase?: string;
+  /** 0-100, present only while a phase actually counts itself — a compiler's own
+   *  progress. Absent means "this phase does not say", never "0". */
+  percent?: number;
+}
+
+/** A tool call whose work outlived it: a watcher now holds the run.
+ *
+ *  Sent only once a watcher has actually taken the job, so a row never claims to be
+ *  tracked by something that declined it. It is what ties a settled row to a run
+ *  still going — `exec` cannot, since a result with no output (an optimization run)
+ *  has no terminal panel to hang a job key on. */
+export interface ToolBackgroundedMessage {
+  type: "tool_backgrounded";
+  /** Correlation id matching an earlier tool_call. */
+  id: string;
+  /** The watcher's handle on the run, matched by later job events. */
+  job_key: string;
+}
+
+/** What a detached run is doing, from the watcher that polls it.
+ *
+ *  The counterpart of `tool_progress`: while the call blocks, the server publishes on
+ *  its run channel; once detached, the watcher's own poll is the only thing still
+ *  asking. Keyed by job, because by now the row that launched it has settled. */
+export interface JobProgressMessage {
+  type: "job_progress";
+  job_key: string;
+  phase?: string;
+  percent?: number;
 }
 
 /** One step of a sub-agent's run, reported while its parent tool call is still open.
@@ -488,6 +536,9 @@ export type ServerMessage =
   | ThinkingEndMessage
   | ToolCallMessage
   | ToolResultMessage
+  | ToolProgressMessage
+  | ToolBackgroundedMessage
+  | JobProgressMessage
   | VerdictMessage
   | SubAgentEventMessage
   | ErrorMessage
@@ -700,6 +751,16 @@ export interface ToolActivity {
   childrenDropped?: number;
   /** On a delegating row: the child is mid-model-turn, with nothing to show yet. */
   waiting?: string;
+  /** What a blocking run is doing right now, e.g. "building solver (1/2)". Live-only,
+   *  like `waiting`: it describes a moment, and a settled row has none. */
+  phase?: string;
+  /** How far the current phase has got, 0-100 — set only when the phase counts
+   *  itself. Live-only, and cleared when the row settles. */
+  percent?: number;
+  /** Set once a watcher holds this call's run: the work continues after the row has
+   *  settled, and this is what later job events match against. Cleared by the
+   *  `job_complete` that says how it ended. */
+  jobKey?: string;
 }
 
 export interface DiffEntry {
@@ -715,6 +776,13 @@ export interface DiffEntry {
 
 export interface ChatMessage {
   id: string;
+  /** Arrival stamp, set on every message that can land while a step is still in
+   *  flight — a steer bubble, an edit card, a session-command reply — and on
+   *  everything that step freezes. Stamped messages are kept in stamp order, so a
+   *  card stays under the tool row that was still running above it. Absent on
+   *  messages that end or precede a step (a query, an answer, an error), which
+   *  simply go last. See orderLiveStream and appendStamped. */
+  seq?: number;
   role: MessageRole;
   kind: MessageKind;
   text?: string;

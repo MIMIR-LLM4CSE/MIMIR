@@ -73,6 +73,14 @@ BACKGROUNDABLE_TOOLS = {
     "bash_run", "proxy_eval", "proxy_slurm", "sbatch_submit",
 }
 
+# Tools that publish a run channel while they block, so the user can move the run
+# they are waiting on to the background mid-flight. A strict subset of the above:
+# proxy_slurm and sbatch_submit return the moment they have submitted, so there is
+# never a wait of theirs to divert.
+DIVERTIBLE_TOOLS = {
+    "bash_run", "proxy_eval",
+}
+
 # Dual-use tools kept available in a read-only mode for read-only invocations only:
 # the shell (judged per command), and the sub-agent spawn (judged per role).
 PLAN_READONLY_TOOLS = {"bash_run", "spawn_agent"}
@@ -212,6 +220,7 @@ GOLDEN = {
     "non_batch": NON_BATCH_TOOLS,
     "cluster_submit": CLUSTER_SUBMIT_TOOLS,
     "backgroundable": BACKGROUNDABLE_TOOLS,
+    "divertible": DIVERTIBLE_TOOLS,
     "search": SEARCH_TOOLS,
     "edit": EDIT_TOOLS,
     "content_write": CONTENT_WRITE_TOOLS,

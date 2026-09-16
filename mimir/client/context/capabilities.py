@@ -109,6 +109,9 @@ CLUSTER_SUBMIT = "cluster_submit"      # expensive cluster launch (Slurm submit 
 ENV_MUTATE = "env_mutate"              # _observe_env_mutation -> conclude-phase cleanup-offer nudge
 BACKGROUNDABLE = "backgroundable"      # launches a long detached run; result may carry a
                                        # background_job descriptor a watcher polls to completion
+DIVERTIBLE = "divertible"              # publishes a run channel under its own name while it
+                                       # blocks, so the user can move the run it is waiting on
+                                       # to the background mid-flight (see _shared/run_channel.py)
 
 
 
@@ -566,5 +569,6 @@ __all__ = [
     "REPLACEMENT_TRACK", "VALIDATE",
     "PLAN_BLOCKED", "PLAN_READONLY", "SENSITIVE", "NON_BATCH",
     "CODE_NAV", "ENV_DISCOVERY", "EXTERNAL_FETCH", "CLUSTER_SUBMIT", "ENV_MUTATE",
-    "BACKGROUNDABLE", "REMOVE", "OVERWRITE", "TASK_PLANNING", "JUDGE", "DELEGATE",
+    "BACKGROUNDABLE", "DIVERTIBLE", "REMOVE", "OVERWRITE", "TASK_PLANNING", "JUDGE",
+    "DELEGATE",
 ]

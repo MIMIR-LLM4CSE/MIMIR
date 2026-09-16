@@ -90,6 +90,42 @@ describe("chatReducer", () => {
     expect(state.draftSeq!).toBeLessThan(state.liveToolCalls[0].seq!);
   });
 
+  it("puts a steer bubble under the prose and cards it interrupted", () => {
+    const state = run([
+      { type: "submit_query", text: "go" },
+      { type: "token", text: "Looking into it." },
+      { type: "tool_call", id: "t1", name: "bash_run" },
+      { type: "steer_query", text: "also check the tests" },
+      { type: "error", text: "boom" },
+    ]);
+
+    // The bubble arrived after the prose and after the tool row, and stays under
+    // both — including once the step is frozen, which is what used to lift the
+    // prose back above it.
+    expect(state.messages.map((m) => [m.role, m.kind])).toEqual([
+      ["user", "text"],    // the query
+      ["agent", "text"],   // "Looking into it."
+      ["agent", "tools"],  // t1
+      ["user", "text"],    // the steer
+      ["agent", "error"],
+    ]);
+    expect(state.messages[3].text).toBe("also check the tests");
+    expect(state.messages[3].queued).toBe(true);
+  });
+
+  it("keeps a steer bubble above the prose that started after it", () => {
+    const state = run([
+      { type: "submit_query", text: "go" },
+      { type: "steer_query", text: "one more thing" },
+      { type: "token", text: "Right, both then." },
+      { type: "error", text: "boom" },
+    ]);
+
+    expect(state.messages.map((m) => m.text)).toEqual([
+      "go", "one more thing", "Right, both then.", "boom",
+    ]);
+  });
+
   it("drops the draft when a guardrail nudge sends the model back to work", () => {
     // The symptom this exists for: a finished-looking answer appearing in the
     // transcript and then being taken out of it again.
@@ -187,6 +223,35 @@ describe("chatReducer", () => {
     expect(state.liveToolCalls[0].output).toBe("a.ts:1\nb.ts:2");
   });
 
+  it("opens the terminal panel on the call, before any output exists", () => {
+    // Otherwise the command a run is executing is invisible for as long as it runs.
+    const state = run([
+      {
+        type: "tool_call", id: "c1", name: "bash_run", label: "Running shell command",
+        detail: "make -j8", exec: { command: "make -j8", stdout: "", stderr: "" },
+      },
+    ]);
+    expect(state.liveToolCalls[0].status).toBe("running");
+    expect(state.liveToolCalls[0].exec?.command).toBe("make -j8");
+  });
+
+  it("keeps the command on a result that carries no exec of its own", () => {
+    // A failure sends no exec payload; erasing the IN pane would leave the row with
+    // no trace of what was attempted.
+    const state = run([
+      {
+        type: "tool_call", id: "c1", name: "bash_run", label: "Running shell command",
+        detail: "make -j8", exec: { command: "make -j8", stdout: "", stderr: "" },
+      },
+      {
+        type: "tool_result", id: "c1", name: "bash_run", ok: false,
+        summary: "tool call failed", error: "server unreachable", duration_ms: 12,
+      },
+    ]);
+    expect(state.liveToolCalls[0].status).toBe("error");
+    expect(state.liveToolCalls[0].exec?.command).toBe("make -j8");
+  });
+
   it("marks a run the user detached as background, not as finished", () => {
     const state = run([
       { type: "tool_call", id: "c1", name: "bash_run", label: "Running shell command", detail: "make -j8", divertible: true },
@@ -242,6 +307,131 @@ describe("chatReducer", () => {
     ]);
     const frozen = state.messages.find((m) => m.kind === "tools");
     expect(frozen?.tools![0].verdict).toBe("pass");
+  });
+
+  it("shows what a blocking run is doing while it is still running", () => {
+    const state = run([
+      { type: "tool_call", id: "c1", name: "proxy_eval", label: "Proxy eval: run", detail: "" },
+      { type: "tool_progress", id: "c1", phase: "building solver (1/2)", percent: 34 },
+    ]);
+    expect(state.liveToolCalls[0].phase).toBe("building solver (1/2)");
+    expect(state.liveToolCalls[0].percent).toBe(34);
+  });
+
+  it("drops a percentage the next phase no longer reports", () => {
+    // Build ends, measurement begins. A bar left at the compiler's last number would
+    // describe work that finished minutes ago.
+    const state = run([
+      { type: "tool_call", id: "c1", name: "proxy_eval", label: "Proxy eval: run", detail: "" },
+      { type: "tool_progress", id: "c1", phase: "building solver", percent: 98 },
+      { type: "tool_progress", id: "c1", phase: "case shock (1/3)" },
+    ]);
+    expect(state.liveToolCalls[0].phase).toBe("case shock (1/3)");
+    expect(state.liveToolCalls[0].percent).toBeUndefined();
+  });
+
+  it("clears the phase when the row settles", () => {
+    // The run's own ending is the last thing the row should say, not whatever it was
+    // caught doing a moment before.
+    const state = run([
+      { type: "tool_call", id: "c1", name: "proxy_eval", label: "Proxy eval: run", detail: "" },
+      { type: "tool_progress", id: "c1", phase: "building solver", percent: 60 },
+      { type: "tool_result", id: "c1", name: "proxy_eval", ok: true, summary: "accepted", duration_ms: 12 },
+    ]);
+    expect(state.liveToolCalls[0].phase).toBeUndefined();
+    expect(state.liveToolCalls[0].percent).toBeUndefined();
+  });
+
+  it("ignores progress for a row that has already settled", () => {
+    // A tick can be in flight when the call answers. Reviving a finished row would
+    // put a spinner's worth of state back on something with an outcome.
+    const state = run([
+      { type: "tool_call", id: "c1", name: "proxy_eval", label: "Proxy eval: run", detail: "" },
+      { type: "tool_result", id: "c1", name: "proxy_eval", ok: true, summary: "accepted", duration_ms: 12 },
+      { type: "tool_progress", id: "c1", phase: "building solver", percent: 60 },
+    ]);
+    expect(state.liveToolCalls[0].phase).toBeUndefined();
+    expect(state.liveToolCalls[0].status).toBe("ok");
+  });
+
+  it("ignores progress for a row it has never heard of", () => {
+    const state = run([
+      { type: "tool_call", id: "c1", name: "proxy_eval", label: "Proxy eval: run", detail: "" },
+      { type: "tool_progress", id: "nobody", phase: "building", percent: 10 },
+    ]);
+    expect(state.liveToolCalls[0].phase).toBeUndefined();
+  });
+
+  it("ties a settled row to the run that outlived it", () => {
+    const state = run([
+      { type: "tool_call", id: "c1", name: "proxy_eval", label: "Proxy eval: run", detail: "" },
+      { type: "tool_result", id: "c1", name: "proxy_eval", ok: true, summary: "detached", duration_ms: 9 },
+      { type: "tool_backgrounded", id: "c1", job_key: "J1" },
+    ]);
+    expect(state.liveToolCalls[0].jobKey).toBe("J1");
+    expect(state.liveToolCalls[0].status).toBe("background");
+  });
+
+  it("keeps reporting a detached run through its job key", () => {
+    // The row has settled by now, so the call id is no longer what finds it.
+    const state = run([
+      { type: "tool_call", id: "c1", name: "proxy_eval", label: "Proxy eval: run", detail: "" },
+      { type: "tool_result", id: "c1", name: "proxy_eval", ok: true, summary: "detached", duration_ms: 9 },
+      { type: "tool_backgrounded", id: "c1", job_key: "J1" },
+      { type: "job_progress", job_key: "J1", phase: "case shock (2/3)", percent: 66 },
+    ]);
+    expect(state.liveToolCalls[0].phase).toBe("case shock (2/3)");
+    expect(state.liveToolCalls[0].percent).toBe(66);
+  });
+
+  it("settles a detached row with no terminal panel without inventing one", () => {
+    // An optimization run prints nothing to a terminal pane. Before the row carried
+    // its own job key, its ending landed nowhere at all.
+    const state = run([
+      { type: "tool_call", id: "c1", name: "proxy_eval", label: "Proxy eval: run", detail: "" },
+      { type: "tool_result", id: "c1", name: "proxy_eval", ok: true, summary: "detached", duration_ms: 9 },
+      { type: "tool_backgrounded", id: "c1", job_key: "J1" },
+      { type: "job_progress", job_key: "J1", phase: "building", percent: 20 },
+      { type: "job_complete", job_key: "J1", state: "done" },
+    ]);
+    const row = state.liveToolCalls[0];
+    expect(row.status).toBe("ok");
+    expect(row.summary).toBe("background run done");
+    expect(row.exec).toBeUndefined();
+    // Nothing is watching it any more, so it has nothing left to report.
+    expect(row.phase).toBeUndefined();
+    expect(row.percent).toBeUndefined();
+    expect(row.jobKey).toBeUndefined();
+  });
+
+  it("does not restore what a run was doing when the session is reloaded", () => {
+    // The phase described a moment, and the watcher that could refresh it may have
+    // died with the process that wrote the file.
+    const state = run([
+      {
+        type: "session_loaded_messages",
+        messages: [
+          {
+            id: "m1",
+            role: "agent",
+            kind: "tools",
+            tools: [
+              {
+                id: "c1", name: "proxy_eval", icon: "x", label: "Proxy eval: run",
+                detail: "", status: "background", startedAt: 0,
+                jobKey: "J1", phase: "building", percent: 40,
+              },
+            ],
+          },
+        ],
+      } as Parameters<ReturnType<typeof makeReducer>>[1],
+    ]);
+    const restored = state.messages[0].tools![0];
+    expect(restored.phase).toBeUndefined();
+    expect(restored.percent).toBeUndefined();
+    // The job key survives: a watcher of this same client is still entitled to
+    // report on it.
+    expect(restored.jobKey).toBe("J1");
   });
 
   it("renders an activity for an unknown tool (icon fallback)", () => {

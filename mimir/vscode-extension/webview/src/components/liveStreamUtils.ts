@@ -8,10 +8,13 @@ import type { ToolActivity } from "../types";
  * above it. Each carries an arrival stamp (`seq`) instead, and this module reads
  * those stamps back into a single ordered list.
  */
-export type LiveEntry<B> =
+export type LiveEntry<B, M = never> =
   | { kind: "thinking"; seq: number; block: B }
   | { kind: "draft"; seq: number }
-  | { kind: "tools"; seq: number; tools: ToolActivity[] };
+  | { kind: "tools"; seq: number; tools: ToolActivity[] }
+  /** A transcript message that landed mid-step: a steer bubble, an edit card, a
+   *  session-command reply. It belongs where it arrived, not above the whole step. */
+  | { kind: "message"; seq: number; message: M };
 
 /**
  * Order the live streams of one step by arrival.
@@ -30,19 +33,27 @@ export type LiveEntry<B> =
  * agreeing: a card cannot sit below the prose while it streams and above it once
  * the step ends.
  */
-export function orderLiveStream<B extends { seq: number }>(input: {
+export function orderLiveStream<
+  B extends { seq: number },
+  M extends { seq?: number } = never,
+>(input: {
   thinking: B[];
   tools: ToolActivity[];
   /** Stamp of the draft's first token, or null when there is no prose to place. */
   draftSeq: number | null;
-}): LiveEntry<B>[] {
-  const { thinking, tools, draftSeq } = input;
+  /** Messages that landed during this step, in the order the transcript holds them. */
+  messages?: M[];
+}): LiveEntry<B, M>[] {
+  const { thinking, tools, draftSeq, messages = [] } = input;
 
   // Everything that is not a tool row, in arrival order. These are the dividers:
   // a tool group belongs between the two of them its stamp falls between.
-  const marks: LiveEntry<B>[] = thinking.map((block) => ({
+  const marks: LiveEntry<B, M>[] = thinking.map((block) => ({
     kind: "thinking" as const, seq: block.seq, block,
   }));
+  for (const message of messages) {
+    marks.push({ kind: "message", seq: message.seq ?? 0, message });
+  }
   if (draftSeq !== null) marks.push({ kind: "draft", seq: draftSeq });
   marks.sort((a, b) => a.seq - b.seq);
 
@@ -56,7 +67,7 @@ export function orderLiveStream<B extends { seq: number }>(input: {
     buckets[bucket].push(tool);
   }
 
-  const out: LiveEntry<B>[] = [];
+  const out: LiveEntry<B, M>[] = [];
   for (let i = 0; i <= marks.length; i++) {
     if (buckets[i].length > 0) {
       out.push({ kind: "tools", seq: buckets[i][0].seq ?? 0, tools: buckets[i] });

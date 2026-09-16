@@ -71,10 +71,32 @@ export const ChatThread: React.FC<Props> = ({
 
   const lastIdx = visible.length - 1;
 
+  const liveBlocks = liveThinkingBlocks.filter((b) => b.text.trim().length > 0);
+  const liveDraftSeq = draft.trim().length > 0 ? draftSeq ?? 0 : null;
+
+  // A message can land while the step is still in flight — a steer bubble, an edit
+  // card, a session-command reply. It sits at the tail of the transcript, stamped,
+  // and is drawn inside the live area at its stamp: rendering the whole transcript
+  // above the live area put a steer bubble above the prose it interrupted.
+  const liveFloor = Math.min(
+    liveDraftSeq ?? Infinity,
+    ...liveBlocks.map((b) => b.seq),
+    ...liveToolCalls.map((t) => t.seq ?? Infinity),
+  );
+  let settledCount = visible.length;
+  while (settledCount > 0) {
+    const seq = visible[settledCount - 1].seq;
+    if (seq === undefined || seq <= liveFloor) break;
+    settledCount--;
+  }
+  const settled = visible.slice(0, settledCount);
+  const duringStep = visible.slice(settledCount);
+
   const liveEntries = orderLiveStream({
-    thinking: liveThinkingBlocks.filter((b) => b.text.trim().length > 0),
+    thinking: liveBlocks,
     tools: liveToolCalls,
-    draftSeq: draft.trim().length > 0 ? draftSeq ?? 0 : null,
+    draftSeq: liveDraftSeq,
+    messages: duringStep,
   });
 
   // One animated status line, always at the bottom of the thread — while
@@ -136,13 +158,16 @@ export const ChatThread: React.FC<Props> = ({
         </div>
       ) : (
         <>
-          {visible.map(renderMessage)}
+          {settled.map(renderMessage)}
 
           {/* The step in flight, in the order it arrived: prose, reasoning and
               tool rows are three separate streams, and orderLiveStream reads
               their arrival stamps back into one list. The freeze goes through
               the same function, so nothing moves when the step ends. */}
           {liveEntries.map((entry, i) => {
+            if (entry.kind === "message") {
+              return renderMessage(entry.message, visible.indexOf(entry.message));
+            }
             if (entry.kind === "thinking") {
               return (
                 <ThinkingPanel

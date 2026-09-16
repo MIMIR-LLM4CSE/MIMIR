@@ -53,6 +53,43 @@ def _clip_stream(text: str, keep: str) -> tuple[str, bool]:
     return text, clipped
 
 
+def _command_from_args(arguments: dict | None) -> str | None:
+    """The command body, from whichever argument carries it.
+
+    Same key priority as the ``tool_call`` ``detail`` preview, but the full text:
+    the panel shows real input, clipped only at the wire budget.
+    """
+    if not isinstance(arguments, dict):
+        return None
+    for key in _COMMAND_KEYS:
+        val = arguments.get(key)
+        if isinstance(val, str) and val.strip():
+            command = val.strip()
+            if len(command) > _MAX_COMMAND_CHARS:
+                command = command[:_MAX_COMMAND_CHARS] + "…"
+            return command
+    return None
+
+
+def exec_input_preview(arguments: dict | None) -> dict[str, Any] | None:
+    """The IN half of the terminal panel, known before the run starts.
+
+    A command's output only exists once it has finished, so a panel built solely
+    from the result appears whole, late — the user watches an unexplained spinner
+    for as long as the run takes. This carries the input on the ``tool_call``
+    event instead, so IN is on screen while OUT is still being produced; the
+    result then replaces this preview with the complete one.
+
+    Empty streams rather than absent ones: the shape is the same ``exec`` object,
+    so the panel has one renderer and the pending state is just a row still
+    running. Returns ``None`` when the arguments carry no command to show.
+    """
+    command = _command_from_args(arguments)
+    if not command:
+        return None
+    return {"command": command, "stdout": "", "stderr": ""}
+
+
 def extract_exec_preview(result_text: str, arguments: dict | None) -> dict[str, Any] | None:
     """Build the ``exec`` display object for an exec-shaped tool result.
 
@@ -99,17 +136,9 @@ def extract_exec_preview(result_text: str, arguments: dict | None) -> dict[str, 
         if isinstance(job_key, str) and job_key:
             info["job_key"] = job_key
 
-    # The command body, from whichever arg carries it (same key priority as the
-    # tool_call `detail` preview, but the full text — the panel shows real input).
-    if isinstance(arguments, dict):
-        for key in _COMMAND_KEYS:
-            val = arguments.get(key)
-            if isinstance(val, str) and val.strip():
-                command = val.strip()
-                if len(command) > _MAX_COMMAND_CHARS:
-                    command = command[:_MAX_COMMAND_CHARS] + "…"
-                info["command"] = command
-                break
+    command = _command_from_args(arguments)
+    if command:
+        info["command"] = command
 
     cwd = payload.get("cwd")
     if isinstance(cwd, str) and cwd:

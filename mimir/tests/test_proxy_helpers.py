@@ -818,3 +818,89 @@ class StorageContractTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RunProgressTests(unittest.TestCase):
+    """What a run says it is doing, read off the run dir while it is still going.
+
+    A blocking call cannot report on itself — it does not answer until the run is
+    over. Both halves of the answer are therefore read from disk: the phase from the
+    sidecar the runner writes at its own boundaries, and the percentage from the
+    build's own output, because the runner is blocked inside the build for its whole
+    duration and is in no position to count it.
+    """
+
+    def setUp(self) -> None:
+        self.run_dir = tempfile.mkdtemp(prefix="mimir-progress-")
+
+    def _write_phase(self, **fields) -> None:
+        with open(procs._phase_path(self.run_dir), "w") as fh:
+            json.dump(fields, fh)
+
+    def _write_build_log(self, text: str) -> None:
+        with open(procs._build_log_path(self.run_dir), "w") as fh:
+            fh.write(text)
+
+    # ── the build's own percentage ────────────────────────────────────────────
+    def test_the_newest_percentage_wins(self) -> None:
+        self._write_build_log("[  6%] Building A\n[ 50%] Building B\n[ 13%] Building C\n")
+        # Not the largest: a suite of several builds restarts the count, and the run
+        # is wherever the compiler last said it was.
+        self.assertEqual(procs._build_percent(self.run_dir), 13.0)
+
+    def test_padding_and_three_digits_are_read(self) -> None:
+        self._write_build_log("[  7%] a\n")
+        self.assertEqual(procs._build_percent(self.run_dir), 7.0)
+        self._write_build_log("[100%] a\n")
+        self.assertEqual(procs._build_percent(self.run_dir), 100.0)
+
+    def test_a_build_that_counts_nothing_reports_nothing(self) -> None:
+        # None is a real answer. Showing 0% for a build that never says how far
+        # along it is would invent a fact about it.
+        self._write_build_log("compiling everything, quietly\n")
+        self.assertIsNone(procs._build_percent(self.run_dir))
+
+    def test_an_absent_build_log_reports_nothing(self) -> None:
+        self.assertIsNone(procs._build_percent(self.run_dir))
+
+    def test_a_token_cut_in_half_by_the_tail_is_not_read(self) -> None:
+        # The tail starts mid-line on any real build log. A partial "[ 1" must not
+        # become a percentage.
+        self._write_build_log("x" * 4096 + "[ 42%] done\n")
+        self.assertEqual(procs._build_percent(self.run_dir, max_bytes=8), None)
+
+    # ── the phase sidecar ─────────────────────────────────────────────────────
+    def test_no_sidecar_means_the_run_says_nothing(self) -> None:
+        self.assertEqual(procs._run_progress(self.run_dir), {})
+
+    def test_a_corrupt_sidecar_is_silent(self) -> None:
+        with open(procs._phase_path(self.run_dir), "w") as fh:
+            fh.write("{not json")
+        self.assertEqual(procs._run_progress(self.run_dir), {})
+
+    def test_a_build_phase_carries_the_percentage(self) -> None:
+        self._write_phase(kind="build", text="building tiny (1/2)")
+        self._write_build_log("[ 34%] Building A\n")
+        out = procs._run_progress(self.run_dir)
+        self.assertEqual(out["phase"], "building tiny (1/2)")
+        self.assertEqual(out["percent"], 34.0)
+
+    def test_a_measurement_phase_carries_no_percentage(self) -> None:
+        # The build log still holds the last thing the compiler said. Carrying it
+        # into the measurement would leave a bar frozen at 98% for the rest of the
+        # run, describing work that finished long ago.
+        self._write_phase(kind="measure", text="case shock (2/3)")
+        self._write_build_log("[ 98%] Building Z\n")
+        out = procs._run_progress(self.run_dir)
+        self.assertEqual(out["phase"], "case shock (2/3)")
+        self.assertNotIn("percent", out)
+
+    def test_the_phase_reaches_run_state(self) -> None:
+        # One merge point, so the blocking wait, the status op and the detached
+        # watcher all learn it at once.
+        self._write_phase(kind="build", text="building tiny")
+        self._write_build_log("[ 12%] a\n")
+        st = procs._run_state(self.run_dir)
+        self.assertEqual(st["phase"], "building tiny")
+        self.assertEqual(st["percent"], 12.0)
+        self.assertIn("state", st)

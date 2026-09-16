@@ -38,6 +38,19 @@ Protocol — all messages are JSON objects, one per send/recv:
     {"type": "user_question",  "id": "...", "questions": [
                                {"question": "...", "header": "...", "multiSelect": false,
                                 "options": [{"label": "...", "description": "..."}]}]}
+    {"type": "tool_progress",  "id": "...", "phase": "...", "percent": 0.0}
+                                                       # what a blocking run is doing,
+                                                       # read off its run channel once a
+                                                       # second. Transient: never
+                                                       # recorded in the transcript.
+    {"type": "tool_backgrounded", "id": "...", "job_key": "..."}
+                                                       # a watcher took this call's run;
+                                                       # the row settles but the work
+                                                       # goes on under that key
+    {"type": "job_progress",   "job_key": "...", "phase": "...", "percent": 0.0}
+                                                       # the same, for a run already
+                                                       # detached — from the watcher
+                                                       # that polls it
     {"type": "answer",         "text": "..."}          # final answer for a query
     {"type": "todo",           "items": [{"text": "...", "done": false}]}
     {"type": "error",          "text": "..."}
@@ -61,10 +74,12 @@ Protocol — all messages are JSON objects, one per send/recv:
     {"type": "approval_response", "id": "...", "choice": "y"|"n"|"a"}
     {"type": "user_question_response", "id": "...", "answers": [
                                {"selected": ["..."], "otherText": "..."}]}
-    {"type": "divert_to_background", "id": "..."}   # detach the shell run now blocking
-                                  # the turn, keeping what it has already done. Served on
-                                  # the WS loop, never through the model: the agent is
-                                  # parked awaiting that very call.
+    {"type": "divert_to_background", "id": "..."}   # detach the run now blocking the
+                                  # turn, keeping what it has already done. The id names
+                                  # the row, whose tool name is the run channel its
+                                  # server publishes under. Served on the WS loop, never
+                                  # through the model: the agent is parked awaiting that
+                                  # very call.
     {"type": "command",           "text": "/mode agent|plan|ask"}
     {"type": "create_session"}
     {"type": "switch_session",    "session_id": "..."}
