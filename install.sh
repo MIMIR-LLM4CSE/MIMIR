@@ -36,6 +36,7 @@ if [ ! -d "$venv" ]; then
   echo "==> Creating virtualenv at $venv"
   "$py" -m venv "$venv"
 fi
+venv="$(cd "$venv" && pwd)"
 # shellcheck disable=SC1091
 source "$venv/bin/activate"
 
@@ -48,21 +49,12 @@ else
   pip install "$here"
 fi
 
-# --- Smoke test -------------------------------------------------------------
-echo "==> Verifying installation"
-mimir --help >/dev/null 2>&1 || true   # CLI may need a backend; just confirm it resolves
-python - <<'PYEOF'
-import importlib, os
-import mimir.client.config.constants as c
-missing = [n for n, p in c.SERVERS.items() if not os.path.exists(p)]
-assert not missing, f"missing server scripts: {missing}"
-print("   all %d MCP server scripts resolve" % len(c.SERVERS))
-PYEOF
-
 # --- Record the interpreter for the VS Code extension ------------------------
 # The extension spawns the WS server through `bash -c`, which sources no profile,
 # so `python3` from its PATH is rarely this venv. Leaving the path here means the
-# extension finds it on its own and the user configures nothing.
+# extension finds it on its own and the user configures nothing. Written before
+# the smoke test, so an interrupted check does not leave the extension on the
+# system Python.
 state_home="${MIMIR_STATE_HOME:-$HOME/.mimir}"
 if mkdir -p "$state_home" 2>/dev/null; then
   printf '%s\n' "$venv/bin/python" > "$state_home/python"
@@ -71,6 +63,19 @@ else
   echo "warning: could not write $state_home/python — set MIMIR_PYTHON or" >&2
   echo "         mimir.pythonPath if the extension picks the wrong interpreter." >&2
 fi
+
+# --- Smoke test -------------------------------------------------------------
+echo "==> Verifying installation"
+# `mimir` has no --help: any invocation opens a chat session that waits on the
+# terminal, so only check that the console script is on PATH.
+command -v mimir >/dev/null || { echo "error: the 'mimir' command was not installed." >&2; exit 1; }
+python - <<'PYEOF'
+import importlib, os
+import mimir.client.config.constants as c
+missing = [n for n, p in c.SERVERS.items() if not os.path.exists(p)]
+assert not missing, f"missing server scripts: {missing}"
+print("   all %d MCP server scripts resolve" % len(c.SERVERS))
+PYEOF
 
 # --- Dev tooling ------------------------------------------------------------
 # Named only when the extra was requested: pointing at `pytest`/`ruff` when they
