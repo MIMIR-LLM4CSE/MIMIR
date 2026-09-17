@@ -97,7 +97,6 @@ export function iconForTool(name: string): string {
   if (name.includes("bash") || name.includes("shell") || name.includes("terminal")) return "💻";
   if (name.startsWith("code_")) return "⚡";
   if (name.startsWith("db_")) return "🗄️";
-  if (name.startsWith("ft_")) return "🧪";
   if (name.startsWith("proxy_") || name.startsWith("platform_")) return "🖥️";
   if (name.startsWith("salloc") || name.startsWith("slurm") || name.startsWith("hpc_")) return "🏗️";
   if (name.includes("task") || name.includes("todo")) return "📋";

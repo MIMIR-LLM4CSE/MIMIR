@@ -114,9 +114,9 @@ class TogglesStateTests(unittest.TestCase):
     def test_state_shape_and_enabled_flags(self) -> None:
         fake = _fake_agent(
             disabled_servers={"strings"},
-            disabled_skills={"finetune"},
+            disabled_skills={"deploy"},
             skills={"fix-bug": {"description": "Fix a bug"},
-                    "finetune": {"description": "Train a model"}},
+                    "deploy": {"description": "Deploy a build"}},
         )
         state = MimirAgent.toggles_state(fake)
         self.assertIn("servers", state)
@@ -131,7 +131,7 @@ class TogglesStateTests(unittest.TestCase):
 
         skills = {s["name"]: s for s in state["skills"]}
         self.assertTrue(skills["fix-bug"]["enabled"])
-        self.assertFalse(skills["finetune"]["enabled"])
+        self.assertFalse(skills["deploy"]["enabled"])
 
 
 class SetEnabledPersistsTests(unittest.TestCase):

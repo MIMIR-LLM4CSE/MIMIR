@@ -18,12 +18,11 @@ Servers are organized into domain-based subdirectories:
 | `external/` | Network & remote APIs | `server_github`, `server_web`, `server_system` |
 | `hpc/` | HPC & platform profiling | `server_hpc`, `server_platform`, `server_env` |
 | `proxy/` | Scientific proxy optimization | `server_proxy` (7 op-dispatched tools: registry, refs, runs, suites, eval loop, Slurm) |
-| `ml/` | Machine learning workflows | `server_finetune` |
 
 ## Tool catalogue
 
-Every `@mcp.tool` the bundled servers expose — 80 tools
-across 20 servers, all registered by default. Each server has its own section
+Every `@mcp.tool` the bundled servers expose — 68 tools
+across 19 servers, all registered by default. Each server has its own section
 below with the arguments and the behaviour.
 
 | Server | Tools |
@@ -47,7 +46,6 @@ below with the arguments and the behaviour.
 | `hpc/server_hpc.py` | `slurm_partitions`, `slurm_nodes`, `slurm_queue`, `salloc_submit`, `slurm_job_status`, `sbatch_submit` |
 | `hpc/server_platform.py` | `platform_probe`, `platform_get_profile`, `platform_search`, `platform_catalogue_status` |
 | `proxy/server_proxy.py` | `proxy_get`, `proxy_runs`, `proxy_eval_status`, `proxy_manage`, `proxy_exec`, `proxy_eval`, `proxy_slurm` |
-| `ml/server_finetune.py` | `ft_config_get`, `ft_config_set`, `ft_data_inspect`, `ft_run`, `ft_run_slurm`, `ft_status`, `ft_stop`, `ft_runner_promote`, `ft_log_read`, `ft_metrics_parse`, `ft_runs_list`, `ft_runs_diff` |
 
 What a tool *may do* is not listed here: capabilities are declared per tool and the
 authoritative table is in
@@ -406,7 +404,7 @@ Tools:
 - `sbatch_submit` — non-blocking Slurm **batch** submission (unlike synchronous `salloc_submit`): returns a `job_id` immediately plus a `background_job` descriptor (`BACKGROUNDABLE`), so the run is watched off the critical path and auto-resumes the agent on completion. Writes the script/log under `state_dir()/hpc_jobs/<ts>/` (env `MIMIR_HPC_JOBS_DIR`).
 - `slurm_job_status(job_id)` — normalized per-job state (running|pending|done|crashed|unknown) via squeue (active) + sacct (terminal); the poll target the background-job watcher uses.
 
-> `salloc_submit` / `sbatch_submit` declare the `CLUSTER_SUBMIT` capability (shared with `ft_run_slurm` and `proxy_slurm`). The client's pre-submission guard holds the first such call each query until something has been validated locally, then lets the retry through (see `POLICY.md` → Cluster-Submission Guard). `sbatch_submit`, `proxy_eval(op='run')`, and `proxy_slurm(op='eval')` additionally declare `BACKGROUNDABLE` (see the background-jobs note under `proxy_eval`).
+> `salloc_submit` / `sbatch_submit` declare the `CLUSTER_SUBMIT` capability (shared with `proxy_slurm`). The client's pre-submission guard holds the first such call each query until something has been validated locally, then lets the retry through (see `POLICY.md` → Cluster-Submission Guard). `sbatch_submit`, `proxy_eval(op='run')`, and `proxy_slurm(op='eval')` additionally declare `BACKGROUNDABLE` (see the background-jobs note under `proxy_eval`).
 
 ## hpc/server_platform.py
 
@@ -991,7 +989,7 @@ These are two different "pause and involve the user" mechanisms; don't conflate 
 
 | Need | Mechanism | Examples |
 |---|---|---|
-| "Is the agent *allowed* to do this risky/irreversible action?" | **Approval system** (`mimir/client/guardrails/policy/` + the WS `_approval_shim`) — risk/scope classification, yes / no / **always**, pre-write diffs, batch revert | bash commands, file writes/deletes, `ft_run`, proxy run/eval tools |
+| "Is the agent *allowed* to do this risky/irreversible action?" | **Approval system** (`mimir/client/guardrails/policy/` + the WS `_approval_shim`) — risk/scope classification, yes / no / **always**, pre-write diffs, batch revert | bash commands, file writes/deletes, proxy run/eval tools |
 | "I don't know what the user *wants*; the answer changes what I do" | **Elicitation** (`ask_user_question` / `ctx.session.elicit_form`) — a structured form prompt | architectural forks ("Postgres or SQLite?"), ambiguous requirements, disambiguating an under-specified argument |
 
 Guidance:
@@ -1001,117 +999,6 @@ Guidance:
 - Use elicitation only to **gather missing intent**, not to grant permission.
 - A single tool action should not trigger *both* an approval prompt and an elicitation for the
   same decision — pick the one that matches the question being asked.
-
-## ml/server_finetune.py
-
-Purpose: manage LoRA fine-tuning runs for HuggingFace causal language models,
-with built-in support for agent-driven iterative optimization.
-
-All state is stored under `~/.cache/ft_llm/`: a shared `config.json` and one
-timestamped run directory per launch (containing `config.json`, `run.log`,
-`pid` or `slurm_job_id`, `metrics.json`, and `model/`). A `runs/active` symlink
-tracks the most-recently-launched run. The heavy training work is delegated to
-the companion `_ft_runner.py` script (same directory).
-
-Two execution backends:
-- **local** (`ft_run`): launches `_ft_runner.py` as a detached `Popen` subprocess.
-- **Slurm** (`ft_run_slurm`): generates an `sbatch` script and submits it;
-  requires Slurm on the host.
-
-Both backends write to the same `run.log`, so `ft_log_read()`, `ft_metrics_parse()`,
-and `ft_runs_list()` are backend-agnostic. `ft_status()` and `ft_stop()` detect
-the backend from the presence of a `pid` or `slurm_job_id` file.
-
-Safety model:
-- Read-only tools have no side effects.
-- `ft_config_set`, `ft_run`, `ft_run_slurm`, `ft_stop`, and `ft_runner_promote` are approval-gated. `ft_run_slurm` is declared **irreversible** (it spends allocation hours); the rest are `recoverable`.
-- Both run tools are non-blocking and return immediately after launch/submission.
-- Only one run may be active at a time; both tools reject if a live PID / active
-  Slurm job is detected.
-
-Session reset:
-- At server startup (i.e. at the start of every new agent session),
-  `_ft_runner.py` is automatically restored from the canonical copy in
-  `~/.cache/ft_llm/_ft_runner.canonical.py`.
-- Any modifications made by the agent during the previous session are discarded.
-- The canonical lives **outside** `MCP_FILES_ROOT` so server_files write tools
-  cannot overwrite it.
-- On first launch, the canonical is seeded from the package-shipped
-  `_ft_runner.canonical.py` (in `mimir/servers/`) and then stored in
-  `~/.cache/ft_llm/` for all subsequent sessions.
-- Use `ft_runner_promote` to intentionally update the canonical after the
-  agent has verified improvements across multiple runs.
-
-Agent optimization loop:
-- The `ft_run` and `ft_metrics_parse` docstrings contain explicit guidance
-  instructing the agent to use the observe→modify→re-run loop.
-- After calling `ft_metrics_parse()`, if results do not meet user constraints,
-  the agent may: (a) call `ft_config_set` for hyperparameter changes, or
-  (b) read `_ft_runner.py` via `read_file_lines`/`search` tools and edit it freely
-  via `replace_in_file` to change any aspect of the training implementation
-  (architecture, optimizer, data preprocessing, dtype, etc.), then re-run.
-- The session reset guarantees that these modifications never leak to the
-  next session.
-
-Tools:
-- `ft_config_get` — return current configuration (file values merged with defaults)
-- `ft_config_set` — write `~/.cache/ft_llm/config.json` (sensitive)
-- `ft_data_inspect` — check training/validation file existence, line count, 3-line sample
-- `ft_run` — launch `_ft_runner.py` locally as a detached subprocess (sensitive, confirm-gated)
-- `ft_run_slurm` — generate an sbatch script and submit via Slurm (sensitive, confirm-gated)
-- `ft_status` — PID / squeue alive-check, elapsed time, last 3 log lines
-- `ft_stop` — SIGTERM (local) or `scancel` (Slurm), confirm-gated
-- `ft_runner_promote` — persist current `_ft_runner.py` as the new canonical (sensitive, confirm-gated)
-- `ft_log_read` — tail the last N lines of `run.log` from the active/last run
-- `ft_metrics_parse` — extract per-step loss/epoch/lr, per-epoch memory snapshots,
-  and a final structured summary (peak_vram_mb, cpu_ram_mb, throughput_sps,
-  train_runtime_s, precision, trainable_params, total_params, train_loss, eval_loss)
-- `ft_runs_list` — list all run directories, state, and final metrics
-- `ft_runs_diff` — compare config and metrics between two runs (config diff + numeric metric deltas)
-
-Companion script:
-- `_ft_runner.py` — standalone script (no MCP); reads `--run-dir/<config.json>`,
-  runs the full HuggingFace `Trainer` + `peft` LoRA loop, writes `metrics.json`
-  and saves adapter weights to `model/`. Invoked by both `ft_run` and `ft_run_slurm`.
-  The agent may edit this file freely between runs to experiment with the training
-  implementation.
-- `_ft_runner.canonical.py` (in `mimir/servers/ml/`) — seed copy shipped with the package.
-  Copied to `~/.cache/ft_llm/_ft_runner.canonical.py` on first server startup.
-- `~/.cache/ft_llm/_ft_runner.canonical.py` — live canonical; restored over
-  `_ft_runner.py` at every session start. Updated only by `ft_runner_promote`.
-
-Structured log lines emitted by `_ft_runner.py` (parseable by `ft_metrics_parse`):
-```
-[ft_runner] epoch=<n> peak_vram_mb=<n> cpu_ram_mb=<n>
-[ft_runner] summary peak_vram_mb=<n> cpu_ram_mb=<n> throughput_sps=<n>
-    train_runtime_s=<n> trainable_params=<n> total_params=<n>
-    precision=<str> train_loss=<n> eval_loss=<n>
-```
-
-Required Python packages for `_ft_runner.py`: `torch`, `transformers`, `peft`, `datasets`.
-Optional: `psutil` (CPU RAM tracking), `bitsandbytes` (required for `precision=int8`;
-if missing and `precision=int8` is set, the runner exits immediately with a clear error message).
-
-Configuration fields (set via `ft_config_set`):
-
-| Field | Default | Description |
-|---|---|---|
-| `model_id` | `distilgpt2` | HuggingFace model identifier |
-| `train_data` | `""` | Absolute path to training `.txt` file |
-| `val_data` | `""` | Absolute path to validation `.txt` file (optional) |
-| `lora_r` | `8` | LoRA rank |
-| `lora_alpha` | `16` | LoRA alpha scaling factor |
-| `target_modules` | `["c_attn", "c_proj"]` | Modules to inject LoRA into |
-| `lora_dropout` | `0.05` | Dropout probability inside LoRA layers |
-| `batch_size` | `8` | Per-device training batch size |
-| `lr` | `2e-4` | Learning rate |
-| `epochs` | `3` | Number of training epochs |
-| `max_length` | `256` | Max token sequence length |
-| `output_dir` | `<run_dir>/model` | Where to save adapter checkpoints |
-| `precision` | `auto` | Floating-point precision: `auto`\|`fp16`\|`bf16`\|`fp32`\|`int8` |
-| `python_executable` | `""` | Absolute path to Python interpreter for `_ft_runner.py`. Defaults to the server's own interpreter. Useful when Slurm compute nodes use a different environment. |
-
----
 
 ## proxy/_lib/ — shared helper library
 
@@ -1262,7 +1149,7 @@ declare surfaces instead of silently losing its policy/approval/caching semantic
 
 **Status:** every classified first-party tool (across `files`, `search`, `code_intel`,
 `bash`, `web`, `memory`, `todo`, `hpc`,
-`finetune`, `proxy`) self-declares via
+`proxy`) self-declares via
 `@mcp.tool(**tool_caps(...))`. Pure tools (math, string, datetime ops, read-only
 queries/advisors) declare nothing — they correctly carry no capability.
 The expected classification is the golden oracle in `mimir/tests/_golden_caps.py`;

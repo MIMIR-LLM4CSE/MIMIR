@@ -36,7 +36,6 @@ SENSITIVE_TOOLS = {
     "delete_file", "bash_run", "bash_job_stop", "http_post",
     "salloc_submit", "sbatch_submit", "memory_delete",
     "memory_clear", "todo_delete_plan",
-    "ft_config_set", "ft_run", "ft_run_slurm", "ft_stop", "ft_runner_promote",
     "proxy_manage", "proxy_exec", "proxy_eval", "proxy_slurm",
     "env_pip_install", "env_pip_uninstall", "env_create", "env_delete",
 }
@@ -47,8 +46,6 @@ PLAN_BLOCKED_TOOLS = {
     "append_file", "bash_job_stop", "delete_file", "replace_in_file",
     "replace_all_in_file", "replace_lines", "write_file", "salloc_submit",
     "http_post", "memory_delete", "memory_clear",
-    "ft_config_set", "ft_run", "ft_run_slurm", "ft_stop",
-    "ft_runner_promote",
     "proxy_manage", "proxy_exec", "proxy_eval", "proxy_slurm",
     "salloc_submit", "sbatch_submit",
     "env_pip_install", "env_pip_uninstall", "env_create", "env_delete",
@@ -57,15 +54,14 @@ PLAN_BLOCKED_TOOLS = {
 NON_BATCH_TOOLS = {
     "bash_job_stop",
     "proxy_manage", "proxy_exec", "proxy_eval", "proxy_slurm",
-    "salloc_submit", "sbatch_submit", "ft_run", "ft_run_slurm", "ft_stop",
-    "ft_runner_promote",
+    "salloc_submit", "sbatch_submit",
     "bash_run", "http_post", "memory_delete",
     "memory_clear", "todo_delete_plan",
     "env_pip_install", "env_pip_uninstall", "env_create", "env_delete",
 }
 
 CLUSTER_SUBMIT_TOOLS = {
-    "salloc_submit", "sbatch_submit", "ft_run_slurm", "proxy_slurm",
+    "salloc_submit", "sbatch_submit", "proxy_slurm",
 }
 
 # Launchers of long detached runs a client watcher can track to completion.

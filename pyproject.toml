@@ -44,16 +44,6 @@ vllm = ["openai>=1.0.0"]
 # name so `pip install .[ray]` reads as the setup it belongs to.
 ray = ["openai>=1.0.0"]
 
-# Fine-tuning stack — only needed for the ml/ servers (server_finetune.py).
-finetune = [
-    "torch>=2.0.0",
-    "transformers>=4.40.0",
-    "peft>=0.10.0",
-    "datasets>=2.18.0",
-    "trl>=0.8.0",
-    "bitsandbytes>=0.43.0",
-]
-
 # Development / test tooling.
 dev = [
     "pytest>=8.0.0",

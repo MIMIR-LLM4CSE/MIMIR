@@ -122,8 +122,7 @@ cd /path/to/your/project && mimir
 does **not** register the `mimir` / `mimir-server` commands; from a bare repo checkout the
 CLI is then `python -m mimir.client.ui.cli.main`. See [`SETUP.md`](SETUP.md) §2.
 
-Optional extras: `pip install ".[finetune]"` for the LoRA stack (torch / transformers /
-peft / datasets / trl); `sudo apt-get install gfortran` for Fortran compilation;
+Optional extras: `sudo apt-get install gfortran` for Fortran compilation;
 `GITHUB_TOKEN` to raise GitHub API limits.
 
 ### Configuration
@@ -182,12 +181,12 @@ is documented in [`SETUP.md`](SETUP.md).
 │  │ system            │     │ env               │                             │
 │  └───────────────────┘     └───────────────────┘                             │
 │                                                                             │
-│  ml/                       proxy/                                            │
-│  ┌───────────────────┐     ┌───────────────────────────────────────────┐     │
-│  │ finetune          │     │ proxy  (7 op-dispatched tools: registry,  │     │
-│  │ (LoRA / HF)       │     │  refs, runs, suites, eval loop, Slurm)    │     │
-│  │ _ft_runner.py     │     │  _ops/ (op bodies) + _lib/ (helpers)        │     │
-│  └───────────────────┘     └───────────────────────────────────────────┘     │
+│  proxy/                                                                     │
+│  ┌───────────────────────────────────────────┐                               │
+│  │ proxy  (7 op-dispatched tools: registry,  │                               │
+│  │  refs, runs, suites, eval loop, Slurm)    │                               │
+│  │  _ops/ (op bodies) + _lib/ (helpers)      │                               │
+│  └───────────────────────────────────────────┘                               │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -278,7 +277,6 @@ The client registers 21 servers by default; the authoritative registry lives in
 | `todo` | Agent task checklist: create, read, update an ordered per-session todo list |
 | `interaction` | `ask_user_question` — pause mid-run to ask a structured clarifying question |
 | `agent` | `spawn_agent` — fan work out to a fresh agent: `role="explore"` (read-only recon, answers with a cited conclusion) or `role="task"` (full toolkit) |
-| `finetune` | LoRA fine-tuning lifecycle (config, run local/Slurm, metrics, iterate, promote) |
 | `proxy` | Proxy registration, references, runs, benchmark suites, and the iterative eval loop (7 op-dispatched tools) |
 
 Most tools return structured payloads (`status`, `result`, `error`, `hint`, `stdout`,
@@ -313,7 +311,7 @@ Sandboxing and hardening highlights:
   What that approval does *not* buy you is any constraint on the program once started
   (`python`/`make`/`gcc` run with the account's full privileges): see
   [the scope note](SERVERS_DETAILED.md#scope-of-the-sandbox-read-this-before-trusting-confined).
-  `finetune` / `proxy` keep all state
+  `proxy` keeps all state
   outside the workspace sandbox and run as detached subprocesses or Slurm jobs.
 
 The authoritative definition of policy, completion gating, and workflow-state rules is in
@@ -377,7 +375,6 @@ the directory) followed by the methodology body. Built-in skills:
 | `explore-repo` | Systematically explore and summarize a repository |
 | `analyze-only` | Analyse code and report findings without making edits |
 | `prepare-pr` | Prepare a pull-request description from recent changes |
-| `finetune` | Run and iterate on a LoRA fine-tuning session |
 | `proxy-optimize` | Optimize a registered proxy through the iterative eval loop |
 
 Trigger a skill explicitly with a slash command (`/fix-bug the import error in …`) or let the

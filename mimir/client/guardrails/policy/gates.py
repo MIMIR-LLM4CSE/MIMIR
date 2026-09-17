@@ -127,7 +127,7 @@ def _shell_path_targets(agent: Any, tool_name: str, arguments: dict, base: str) 
     about is exactly what would otherwise be refused. Scoped to tools that declare a
     ``command_prefix`` scope — the property this actually needs, since it reads the
     arguments *as shell*. CODE_EXEC would be the wrong test: it also marks tools that
-    execute through structured arguments (``proxy_exec``, ``ft_run``), whose parameters
+    execute through structured arguments (``proxy_exec``), whose parameters
     are not a command line. Driven off the shared segmenter, so no tool name or shell
     keyword is spelled out here. Fail-open on an unparseable command: the server still
     validates and confines every accepted call independently.

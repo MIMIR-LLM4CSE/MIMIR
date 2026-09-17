@@ -710,7 +710,7 @@ def _observe_tool_run(
     The counterpart of :func:`_observe_bash_validation`, split by *surface* rather than
     by purpose: a shell tool's calls differ in kind call by call (``cat`` reads,
     ``python`` executes), so only the command text can decide, and that function already
-    has the parse. A tool like ``proxy_exec`` or ``ft_run`` has no such variation — the
+    has the parse. A tool like ``proxy_exec`` has no such variation — the
     call *is* the execution — so the declared capability decides. The two are mutually
     exclusive, which is what keeps a bash run from being registered twice and spares a
     third shlex parse per call.

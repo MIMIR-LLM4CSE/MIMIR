@@ -67,12 +67,6 @@ What the base install covers:
 
 Optional extras (declared in `pyproject.toml`):
 
-- **`finetune`** — the `torch` / `transformers` / `peft` stack, only needed for the
-  `ml/` servers (`server_finetune.py`). Without it that one server fails to start
-  with an `ImportError`; the rest of the agent is unaffected.
-  ```bash
-  pip install ".[finetune]"
-  ```
 - **`dev`** — `pytest` and `ruff`, the two checks CI runs:
   ```bash
   pip install -e ".[dev]"
