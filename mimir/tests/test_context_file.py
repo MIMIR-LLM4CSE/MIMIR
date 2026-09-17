@@ -227,7 +227,10 @@ class DefaultBaseShapeTests(unittest.TestCase):
         # be parallel to the machine it runs on. The first is a boundary nothing else
         # states; the second is worth its 85 chars on any real project, where a serial
         # build is the single longest thing a run waits for. Base sat at 14614.
-        self.assertLess(len(cb._DEFAULT_BASE_SYSTEM_CONTENT), 15000)
+        # Raised 15000 -> 16000 for the build rules: a build goes through the tool that
+        # owns it, covers only what the change and the task need, and states its
+        # progress rule where the model picks the command. Base sat at 15451.
+        self.assertLess(len(cb._DEFAULT_BASE_SYSTEM_CONTENT), 16000)
 
     def test_env_resolution_cascade_lives_in_the_nudges_not_the_prompt(self) -> None:
         # The 5-step cascade is covered by env_resolution/env_cleanup nudges, which
@@ -351,7 +354,8 @@ class CoreNudgeCoverageTests(unittest.TestCase):
         # land in sections core carries, so core pays the whole 151 chars. Moved with
         # the base rather than alone, so the two ceilings keep the same headroom and a
         # later trim is measured against one story. Core sat at 11135.
-        self.assertLess(len(cb._CORE_SYSTEM_CONTENT), 11500)
+        # Raised 11500 -> 12500 with the base, for the same build rules. Core sat at 11756.
+        self.assertLess(len(cb._CORE_SYSTEM_CONTENT), 12500)
 
 
 class SubAgentSectionGateTests(unittest.TestCase):
