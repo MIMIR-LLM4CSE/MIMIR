@@ -8,6 +8,7 @@ Run:
     python -m unittest mimir.tests.test_out_of_workspace -v
 """
 
+import json
 import os
 import sys
 import tempfile
@@ -109,9 +110,9 @@ class _FakeAgent:
     def _is_write_tool(self, tool_name):
         return False
 
-    def _json_error_payload(self, msg, hint="", tool=""):
+    def _json_error_payload(self, msg, hint="", tool="", **extra):
         import json
-        return json.dumps({"status": "error", "error": msg, "hint": hint})
+        return json.dumps({"status": "error", "error": msg, "hint": hint, **extra})
 
     def _request_path_approval(self, paths, tool_name, arguments=None):
         # Every outside path of the call arrives in one prompt; the call's own
@@ -617,6 +618,68 @@ class ApprovalModeTests(_TmpStateDir):
         )
         self.assertIsNotNone(out.violation)
         self.assertEqual(agent.tool_approvals, [])
+
+
+class UnattendedModeTests(_TmpStateDir):
+    """A sub-agent has no one to ask: its mode decides, and nothing prompts.
+
+    Its stdin is the spawn server's JSON-RPC pipe, so a card there either hangs until
+    the cap or reads a protocol message as the user's answer.
+    """
+
+    def _agent(self, mode):
+        agent = _FakeEngineAgent(
+            approval_mod.ApprovalManager(sensitive_tools={"run_shell"}),
+            script=(True, False))
+        agent.approvals.approval_mode = mode
+        agent.approvals.unattended = True
+        return agent
+
+    def _evaluate(self, agent, command, ctx=None):
+        return engine.evaluate_tool_preconditions(
+            agent=agent, tool_name="run_shell", arguments={"command": command},
+            execution_context=ctx if ctx is not None else {"searched": True},
+        )
+
+    def test_manual_refuses_a_sensitive_tool_without_asking(self) -> None:
+        agent = self._agent("manual")
+        out = self._evaluate(agent, "mkdir build")
+        self.assertIsNotNone(out.violation)
+        self.assertEqual(agent.tool_approvals, [])
+        payload = json.loads(out.violation)
+        self.assertEqual(payload["needs_mode"], "auto")
+        self.assertIn("skip", payload["hint"])
+        self.assertIn("stop", payload["hint"])
+        self.assertEqual(agent.approvals.mode_blocked[0]["needs"], "auto")
+        self.assertNotIn("run_shell", agent.approvals.mode_blocked[0]["action"])
+
+    def test_auto_refuses_leaving_the_workspace_without_asking(self) -> None:
+        agent = self._agent("auto")
+        out = self._evaluate(agent, "mkdir /tmp/outside/unattended")
+        self.assertIsNotNone(out.violation)
+        self.assertEqual(agent.prompt_calls, 0)
+        self.assertEqual(json.loads(out.violation)["needs_mode"], "auto_all")
+        self.assertNotIn(os.path.realpath("/tmp/outside/unattended"),
+                         agent.approvals._allowed_paths)
+
+    def test_the_mode_it_inherited_still_lets_through_what_it_covers(self) -> None:
+        agent = self._agent("auto")
+        self.assertIsNone(self._evaluate(agent, "mkdir build").violation)
+        agent = self._agent("auto_all")
+        self.assertIsNone(self._evaluate(agent, "mkdir /tmp/outside/all").violation)
+        self.assertEqual(agent.approvals.mode_blocked, [])
+
+    def test_a_repeat_is_still_the_mode_s_refusal_not_the_user_s(self) -> None:
+        agent = self._agent("manual")
+        ctx = {"searched": True,
+               "denial_history": [{"scope": "fake:run_shell", "kind": "mode_denied"}] * 2}
+        out = self._evaluate(agent, "mkdir build", ctx)
+        self.assertEqual(json.loads(out.violation)["denial_kind"], "mode_denied")
+        self.assertEqual(len(agent.approvals.mode_blocked), 1)
+
+    def test_the_mode_note_maps_to_its_own_kind(self) -> None:
+        self.assertEqual(approval_mod.denial_kind(approval_mod.MODE_DENIED_NOTE),
+                         approval_mod.DENIAL_MODE)
 
 
 if __name__ == "__main__":

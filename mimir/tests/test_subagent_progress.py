@@ -136,7 +136,7 @@ class CallSiteTests(unittest.IsolatedAsyncioTestCase):
             tool_owner={"delegate": "srv"},
             tool_caps={},
             _tool_cache={},
-            approvals=types.SimpleNamespace(batch_mode=False),
+            approvals=types.SimpleNamespace(batch_mode=False, approval_mode="auto"),
             _normalize_tool_content=lambda r: "{}",
             _parse_tool_payload=lambda t: {},
             _normalize_workspace_path=lambda p: p,
@@ -165,6 +165,12 @@ class CallSiteTests(unittest.IsolatedAsyncioTestCase):
         captured = await self._call("call_7")
         self.assertIn("progress_callback", captured)
         self.assertIsNone(captured["progress_callback"])
+
+    async def test_the_call_carries_the_approval_mode(self):
+        """A sub-agent must run in the mode the user chose, read at call time."""
+        from mimir.client.guardrails.policy.approval import APPROVAL_MODE_META
+        captured = await self._call("call_7")
+        self.assertEqual(captured["meta"], {APPROVAL_MODE_META: "auto"})
 
 
 if __name__ == "__main__":

@@ -26,6 +26,43 @@ from ...context.capabilities import (
 )
 
 
+# ── unattended agents ─────────────────────────────────────────────────────────
+
+def describe_action(agent: Any, tool_name: str, arguments: dict) -> str:
+    """The action as the user would read it on a tool row — never the tool's name."""
+    from ...context.capabilities import label_for
+    from ...tool_execution.tool_status_messages import (
+        shorten_display_args, tool_arg_preview, tool_status_message,
+    )
+    short_args = shorten_display_args(tool_name, arguments or {}, agent.tool_caps)
+    label = label_for(tool_name, short_args, agent.tool_caps)
+    if label:
+        return label
+    preview = tool_arg_preview(tool_name, arguments or {})
+    status = tool_status_message(tool_name, arguments or {})
+    return f"{status}: {preview}" if preview else status
+
+
+def mode_denied_payload(agent: Any, tool_name: str, arguments: dict, needs: str) -> str:
+    """The result an unattended agent gets for an action its mode does not cover.
+
+    Deterministic, not a reading to choose among: no one refused, so there is no
+    "another way" to look for. The agent skips the step or stops, and says so.
+    """
+    agent.approvals.block_for_mode(describe_action(agent, tool_name, arguments), needs)
+    return agent._json_error_payload(
+        f"Not run: the approval mode is '{agent.approvals.approval_mode}', this action "
+        f"needs '{needs}', and a sub-agent cannot ask the user.",
+        hint=("Do not retry it and do not reach the same result another way. If the rest "
+              "of the task can go on without this step, skip it and continue; otherwise "
+              "stop now. Either way, name the skipped action in your answer."),
+        tool=tool_name,
+        denial_kind="mode_denied",
+        approval_mode=agent.approvals.approval_mode,
+        needs_mode=needs,
+    )
+
+
 # ── out-of-workspace access ───────────────────────────────────────────────────
 
 def _is_under(root: str, full: str) -> bool:
@@ -231,6 +268,8 @@ def _check_out_of_workspace_access(
         for abspath in targets:
             agent.approvals.grant_path(abspath, always=False)
         return None
+    if agent.approvals.unattended:
+        return mode_denied_payload(agent, tool_name, arguments, "auto_all")
     prompt = getattr(agent, "_request_path_approval", None)
     # The call's own arguments travel with the paths so the prompt can show the
     # usual tool description ("Running: …") instead of bare paths.

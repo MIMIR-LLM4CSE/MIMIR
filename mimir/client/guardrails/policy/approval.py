@@ -132,6 +132,15 @@ DENIAL_BATCH_REJECT: str = "batch_reject"        # the pending batch review was 
 DENIAL_INVALID_RESPONSE: str = "invalid_response"  # the prompt's retry budget ran out
 DENIAL_PATH: str = "path_denied"                 # out-of-workspace access refused
 DENIAL_AUTO_REPEAT: str = "auto_denied_repeat"   # refused so often we stopped asking
+DENIAL_MODE: str = "mode_denied"                 # nobody to ask, and the mode does not allow it
+
+# The request-``_meta`` key under which the client sends its approval mode with every
+# tool call; the spawn server reads it to run a sub-agent in the same mode.
+APPROVAL_MODE_META: str = "mimir/approval_mode"
+
+# The note an unattended agent (a sub-agent) gives when its approval mode does not
+# cover an action. Nobody refused it: there was nobody to ask.
+MODE_DENIED_NOTE: str = "not allowed by the approval mode"
 
 _DENIAL_KINDS: dict[str, str] = {
     "denied by user": DENIAL_DENIED,
@@ -141,6 +150,7 @@ _DENIAL_KINDS: dict[str, str] = {
     "denied after invalid approval responses": DENIAL_INVALID_RESPONSE,
     "path outside the workspace was not approved": DENIAL_PATH,
     "already refused; not asked again": DENIAL_AUTO_REPEAT,
+    MODE_DENIED_NOTE: DENIAL_MODE,
 }
 
 
@@ -222,6 +232,12 @@ class ApprovalManager:
         # path/redirection validation and the verification-tier gates all still refuse.
         self.approval_mode: str = "manual"
 
+        # True when no one can answer a card (a sub-agent: its stdin is the MCP pipe).
+        # What the mode does not cover is then refused without asking, and recorded in
+        # ``mode_blocked`` as ``{"action", "needs"}`` so the caller can report it.
+        self.unattended: bool = False
+        self.mode_blocked: list[dict] = []
+
         # Batch-approval state
         self.batch_mode: bool = True
         self._pending_review: list[dict] = []
@@ -241,6 +257,12 @@ class ApprovalManager:
     def auto_paths(self) -> bool:
         """True when reaching outside the workspace no longer raises a card."""
         return self.approval_mode == "auto_all"
+
+    def block_for_mode(self, action: str, needs: str) -> None:
+        """Record an action an unattended agent skipped because its mode is too low."""
+        entry = {"action": action, "needs": needs}
+        if entry not in self.mode_blocked:
+            self.mode_blocked.append(entry)
 
     def is_sensitive(self, tool_name: str, arguments: dict) -> bool:
         # Confirm-gated tools (a `confirm_gate` arg-role) are dry-run/preview when the

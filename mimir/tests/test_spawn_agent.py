@@ -44,7 +44,12 @@ class _FakeAgent:
         }
         self._answer = answer
 
+        self.approvals = types.SimpleNamespace(
+            approval_mode="manual", unattended=False, mode_blocked=[],
+            _allowed_paths=set())
+
     def set_mode(self, mode): self.mode = mode
+    def set_approval_mode(self, mode): self.approvals.approval_mode = mode
     def set_thinking_depth(self, depth): self.thinking_depth = depth
     def seed_classification_from_caps(self): pass
 
@@ -57,11 +62,12 @@ class _FakeAgent:
 
 
 def _run_child(role: str, answer: str = "done", agent: _FakeAgent | None = None,
-               on_event=None):
+               on_event=None, approval_mode: str = "manual"):
     """Drive _run_sub_agent against a fake agent and the real server catalog."""
     agent = agent or _FakeAgent(answer)
     with _patched_agent(agent):
-        result = asyncio.run(spawn._run_sub_agent("find X", "", role, 5, on_event=on_event))
+        result = asyncio.run(spawn._run_sub_agent(
+            "find X", "", role, 5, approval_mode, on_event=on_event))
     return agent, result
 
 
@@ -275,6 +281,59 @@ class ProgressForwardingTests(unittest.TestCase):
         self.assertEqual(out["status"], "ok")
         self.assertEqual(out["answer"], "X is in a.py:12.")
 
+
+
+class _MetaCtx(_RecordingCtx):
+    """A caller that sends its approval mode in the request _meta, as the client does."""
+
+    def __init__(self, mode):
+        super().__init__()
+        from mcp.types import RequestParams
+        self.request_context = types.SimpleNamespace(
+            meta=RequestParams.Meta(**{spawn._APPROVAL_MODE_META: mode}))
+
+
+class _BlockedAgent(_FakeAgent):
+    """A child whose mode refused one action during its run."""
+
+    async def run(self, **kwargs):
+        self.run_kwargs = kwargs
+        self.approvals.mode_blocked.append({"action": "Running: make", "needs": "auto"})
+        return "Skipped the build: the approval mode does not allow it."
+
+
+class ApprovalModeInheritanceTests(unittest.TestCase):
+    def test_the_meta_key_matches_the_client_s(self):
+        from mimir.client.guardrails.policy.approval import APPROVAL_MODE_META, ApprovalManager
+        self.assertEqual(spawn._APPROVAL_MODE_META, APPROVAL_MODE_META)
+        self.assertEqual(spawn._APPROVAL_MODES, ApprovalManager.APPROVAL_MODES)
+
+    def test_the_child_runs_in_the_caller_s_mode_and_never_asks(self):
+        for mode in ("manual", "auto", "auto_all"):
+            with self.subTest(mode=mode):
+                agent = _FakeAgent()
+                _run_tool(agent, _MetaCtx(mode))
+                self.assertEqual(agent.approvals.approval_mode, mode)
+                self.assertTrue(agent.approvals.unattended)
+
+    def test_no_or_unknown_mode_falls_back_to_manual(self):
+        self.assertEqual(spawn._caller_approval_mode(None), "manual")
+        self.assertEqual(spawn._caller_approval_mode(_MetaCtx("yolo")), "manual")
+        agent = _FakeAgent()
+        _run_tool(agent, _RecordingCtx())
+        self.assertEqual(agent.approvals.approval_mode, "manual")
+
+    def test_what_the_mode_blocked_reaches_the_caller_and_the_run_is_not_complete(self):
+        out = _run_tool(_BlockedAgent(), _MetaCtx("manual"))
+        self.assertEqual(out["status"], "ok")
+        self.assertFalse(out["completed"])
+        self.assertEqual(out["blocked_by_mode"],
+                         [{"action": "Running: make", "needs": "auto"}])
+
+    def test_a_clean_run_reports_nothing_blocked(self):
+        _, result = _run_child(spawn.ROLE_TASK, answer="done", approval_mode="auto")
+        self.assertEqual(result["blocked_by_mode"], [])
+        self.assertTrue(result["completed"])
 
 
 class DeclaredBudgetTests(unittest.TestCase):

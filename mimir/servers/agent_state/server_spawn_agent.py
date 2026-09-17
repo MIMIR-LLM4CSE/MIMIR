@@ -30,6 +30,7 @@ from typing import Any, Callable
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '_shared'))
 
+from approved_roots import approved_roots
 from capabilities import DELEGATE, PLAN_READONLY, REVERSIBLE, tool_caps
 from mcp.server.fastmcp import Context, FastMCP
 from responses import err, ok
@@ -50,6 +51,12 @@ _READONLY_CHILD_MODE = "ask"
 # is deliberately larger, so this cap fires first and hands back the partial answer
 # instead of the parent killing the call with nothing to show.
 SUBAGENT_HARD_CAP_SECS = 600
+
+# The request-_meta key the client sends its approval mode under (client
+# guardrails.policy.approval.APPROVAL_MODE_META). A child runs in that mode; absent or
+# unknown, it runs in "manual" — the mode that lets nothing sensitive through unasked.
+_APPROVAL_MODE_META = "mimir/approval_mode"
+_APPROVAL_MODES = ("manual", "auto", "auto_all")
 
 # Ceiling on what one step of a child may generate. The backend otherwise grants the
 # model's whole answer reserve, and a run that spends it is a single silent step.
@@ -194,6 +201,17 @@ async def _maybe_heartbeat(ctx: Context | None, state: dict, started: float) -> 
     await _report(ctx, state, {"v": 1, "t": "hb", "s": int(now - started)})
 
 
+def _caller_approval_mode(ctx: Context | None) -> str:
+    """The approval mode the caller sent with this call, or "manual"."""
+    try:
+        meta = ctx.request_context.meta if ctx is not None else None
+    except (AttributeError, ValueError):
+        return "manual"
+    mode = getattr(meta, "model_extra", None) or {}
+    mode = str(mode.get(_APPROVAL_MODE_META) or "").strip().lower()
+    return mode if mode in _APPROVAL_MODES else "manual"
+
+
 # ── Tool ──────────────────────────────────────────────────────────────────────
 
 @mcp.tool(**tool_caps(
@@ -248,6 +266,11 @@ async def spawn_agent(
             - ``files_written`` — workspace files the sub-agent modified (always empty
                                   for "explore"); lets a parent coordinating concurrent
                                   sub-agents detect overlapping edits.
+            - ``blocked_by_mode`` — actions the sub-agent skipped because the user's
+                                  approval mode does not allow them (it cannot ask).
+                                  Each is ``{"action", "needs"}``; when non-empty,
+                                  ``completed`` is False. Tell the user which mode
+                                  would let them run rather than retrying.
         On failure (the sub-agent crashed or hit the hard time cap):
             {"status": "error", "error": "…", "answer": "<partial>", ...}
             — distinct ``status`` so the orchestrator can branch on failure without
@@ -262,6 +285,7 @@ async def spawn_agent(
         )
 
     _silence_stdout_once()
+    approval_mode = _caller_approval_mode(ctx)
 
     # The child runs in a dedicated thread with its own event loop: its MCP exit
     # stack must be opened and closed in one task on one loop, and the hard cap
@@ -276,7 +300,7 @@ async def spawn_agent(
     def _thread_main() -> None:
         try:
             result = asyncio.run(_run_sub_agent(
-                task, context, role, max_steps,
+                task, context, role, max_steps, approval_mode,
                 on_event=_make_child_sink(events, counters),
             ))
             future.set_result(result)
@@ -323,6 +347,7 @@ async def spawn_agent(
             completed=False,
             files_read=result.get("files_read", []),
             files_written=result.get("files_written", []),
+            blocked_by_mode=result.get("blocked_by_mode", []),
         )
     if not str(result.get("answer") or "").strip():
         # The answer IS the payload — a blank one carries nothing back, whatever the
@@ -341,6 +366,7 @@ async def spawn_agent(
         "completed": result["completed"],
         "files_read": result["files_read"],
         "files_written": result["files_written"],
+        "blocked_by_mode": result["blocked_by_mode"],
     })
 
 
@@ -349,6 +375,7 @@ async def _run_sub_agent(
     context: str,
     role: str,
     max_steps: int,
+    approval_mode: str = "manual",
     on_event: Callable[[dict], None] | None = None,
 ) -> dict:
     """Async implementation: create MimirAgent, wire tools, run query.
@@ -380,7 +407,8 @@ async def _run_sub_agent(
     agent = MimirAgent(model=_model)
     try:
         return await _drive_sub_agent(
-            agent, task, context, role, exploring, max_steps, on_event)
+            agent, task, context, role, exploring, max_steps, on_event,
+            approval_mode=approval_mode)
     finally:
         # Close the child's MCP stdio sessions HERE, in the very task that opened
         # them. Left to asyncio.run's shutdown_asyncgens, each stdio_client would be
@@ -400,6 +428,7 @@ async def _drive_sub_agent(
     exploring: bool,
     max_steps: int,
     on_event: Callable[[dict], None] | None = None,
+    approval_mode: str = "manual",
 ) -> dict:
     """Configure the child agent, run it, and report what it did."""
     # _run_sub_agent already fixed sys.path if needed, so a plain import is safe here.
@@ -420,6 +449,14 @@ async def _drive_sub_agent(
     # loop's mode tracking starts where it ends and reads no switch on the first step.
     if exploring:
         agent.set_mode(_READONLY_CHILD_MODE)
+    # The user's approval mode, not the default: the child acts for the same user. It
+    # has no one to ask (its stdin is this server's JSON-RPC pipe), so what the mode
+    # does not cover is refused without a prompt and reported back as blocked.
+    agent.set_approval_mode(approval_mode)
+    agent.approvals.unattended = True
+    # The child writes the shared path allowlist too; starting from what is already
+    # there keeps its writes from erasing the caller's grants.
+    agent.approvals._allowed_paths.update(approved_roots())
 
     _servers = all_servers()
     servers_to_connect = (
@@ -479,7 +516,8 @@ async def _drive_sub_agent(
     # them); the hard step limit yields "Reached the maximum number of steps…".
     from mimir.client.guardrails.workflow import is_incomplete_answer
 
-    completed = error is None and not (
+    blocked_by_mode = list(agent.approvals.mode_blocked)
+    completed = error is None and not blocked_by_mode and not (
         not answer.strip()
         or is_incomplete_answer(answer)
         or answer.startswith("Reached the maximum number of steps")
@@ -489,6 +527,7 @@ async def _drive_sub_agent(
         "completed": completed,
         "files_read": files_read,
         "files_written": files_written,
+        "blocked_by_mode": blocked_by_mode,
         "error": error,
     }
 

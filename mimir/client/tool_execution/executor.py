@@ -8,6 +8,7 @@ from typing import Any
 
 from ..event_sink import captured_emitter
 from ..guardrails.observations import record_tool_observation
+from ..guardrails.policy.approval import APPROVAL_MODE_META
 from ..guardrails.policy.engine import evaluate_tool_preconditions
 from ..context.execution_context import failed_runs, unsettled_runs
 from ..context.capabilities import (
@@ -487,8 +488,12 @@ async def execute_tool_call(
     # to the request, and a server that never reports progress pays nothing for it.
     # Which tools are worth listening to is decided by what comes back, not by a list
     # of names here.
+    # The approval mode rides on every call for the same reason: a server that spawns
+    # an agent of its own (a sub-agent) must run it in the mode the user chose, and the
+    # mode changes mid-session while a server's environment is frozen at spawn.
     result = await session.call_tool(
-        tool_name, arguments, progress_callback=_make_subagent_progress_cb(call_id))
+        tool_name, arguments, progress_callback=_make_subagent_progress_cb(call_id),
+        meta={APPROVAL_MODE_META: agent.approvals.approval_mode})
     normalized = agent._normalize_tool_content(result)
 
     runs_before = set(unsettled_runs(execution_context or {}))

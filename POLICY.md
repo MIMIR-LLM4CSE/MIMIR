@@ -109,6 +109,12 @@ already answered.
 Approval mode is **session state and never persisted**. A mode that answers for the user
 has to be chosen for the session it applies to.
 
+A sub-agent runs in the **parent's** approval mode. The client sends the mode with every
+tool call (request `_meta`, key `mimir/approval_mode`), so a switch applies to the next
+delegation. A sub-agent cannot ask anything: where the table says **asks**, it refuses
+instead. The refusal tells it to skip the step, or to stop if the task cannot go on
+without it. The parent gets the list back in `blocked_by_mode`.
+
 ### What each session mode changes
 
 | | `agent` | `plan` | `ask` |

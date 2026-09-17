@@ -12,6 +12,7 @@ from .plugins import PolicyRegistry
 from ...context import ensure_execution_context, is_known_to_exist, known_existing_files
 from .state_machine import check_state_machine_guard
 from .gates import (
+    mode_denied_payload,
     _check_cluster_submit,
     _check_out_of_workspace_access,
     _check_proxy_exec,
@@ -21,6 +22,7 @@ from .gates import (
 # commands in any mode (the read-only classifier itself lives in bash_classify.py).
 from .readonly_exempt import _readonly_bash_exempt
 from ..workflow import approval_is_settled
+from .approval import MODE_DENIED_NOTE
 from ...config.constants import DISCOVERY_EVIDENCE_MIN_DISTINCT
 from ...context.capabilities import EDIT, REMOVE, has_cap
 from ...context.execution_context import (
@@ -494,7 +496,8 @@ def evaluate_tool_preconditions(
     if oow_violation is not None:
         agent._record_denied_tool_call(
             normalized_tool_name, rewritten_arguments, normalized_context,
-            "path outside the workspace was not approved")
+            MODE_DENIED_NOTE if agent.approvals.unattended
+            else "path outside the workspace was not approved")
         return PolicyEvaluation(
             tool_name=normalized_tool_name,
             arguments=rewritten_arguments,
@@ -510,12 +513,30 @@ def evaluate_tool_preconditions(
     if (agent.approvals.is_sensitive(normalized_tool_name, rewritten_arguments)
             and not oow_targets
             and not _readonly_bash_exempt(agent, normalized_tool_name, rewritten_arguments)):
+        if agent.approvals.unattended and not agent.approvals.auto_tools():
+            # No one can answer a card here (a sub-agent): refuse without asking. First,
+            # so a repeat reads as the mode's refusal too — no user was ever asked.
+            agent._record_denied_tool_call(
+                normalized_tool_name, rewritten_arguments, normalized_context,
+                MODE_DENIED_NOTE)
+            return PolicyEvaluation(
+                tool_name=normalized_tool_name,
+                arguments=rewritten_arguments,
+                execution_context=normalized_context,
+                violation=_enrich_violation_payload(
+                    violation=mode_denied_payload(
+                        agent, normalized_tool_name, rewritten_arguments, "auto"),
+                    policy_stage="approval",
+                    execution_context=normalized_context,
+                    tool_name=normalized_tool_name,
+                ),
+            )
+        scope = agent.approval_scope(normalized_tool_name, rewritten_arguments)
         # Already refused twice on this scope: refuse it ourselves rather than putting
         # the same card in front of the user again. Being asked again after saying no is
         # the friction the ladder exists to remove, and from `drop_or_stop` on the ladder
         # has already ruled out another attempt at the same goal — which the same route
         # most certainly is.
-        scope = agent.approval_scope(normalized_tool_name, rewritten_arguments)
         if approval_is_settled(normalized_context or {}, scope):
             note = "already refused; not asked again"
             approved = False

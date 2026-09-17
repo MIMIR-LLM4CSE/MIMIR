@@ -19,6 +19,7 @@ def _fake_approvals(is_sensitive, *, mode: str = "manual") -> SimpleNamespace:
         is_sensitive=is_sensitive,
         auto_tools=lambda: mode in ("auto", "auto_all"),
         auto_paths=lambda: mode == "auto_all",
+        unattended=False,
     )
 
 

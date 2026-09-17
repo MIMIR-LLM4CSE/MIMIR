@@ -934,11 +934,17 @@ Execution model:
   child's partial answer instead of the parent killing the call with nothing to show.
   Before this, the dispatcher's flat 120 s applied and no non-trivial delegation could
   finish.
-- Success payload: `{"status": "ok", "answer", "completed", "files_read", "files_written"}`
+- Success payload: `{"status": "ok", "answer", "completed", "files_read", "files_written",
+  "blocked_by_mode"}`
   — `completed=False` means the sub-agent ran out of steps or reported the task incomplete
   (the answer is still informative); `files_read` is what the caller's observation layer
   credits as delegated discovery evidence; `files_written` lets a parent coordinating
-  concurrent sub-agents detect overlapping edits.
+  concurrent sub-agents detect overlapping edits; `blocked_by_mode` lists the actions the
+  child skipped because the user's approval mode does not allow them
+  (`{"action", "needs"}`), and a non-empty list makes `completed` False.
+- The child runs in the caller's approval mode, read from the request `_meta`
+  (`manual` when absent). It never prompts: its stdin is this server's JSON-RPC pipe.
+  What the mode does not cover is refused (see POLICY.md).
 - Sub-agent stdout is prefixed with the task name so its activity stays identifiable in
   the UI. The capability registry is strictly per-agent, which is what makes concurrent
   sub-agents on different server subsets safe.
