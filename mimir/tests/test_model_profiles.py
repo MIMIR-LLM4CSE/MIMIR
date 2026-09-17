@@ -9,7 +9,7 @@ own ``vllm serve`` command, not something MIMIR sends or needs to know.
 """
 import unittest
 
-from mimir.client.config import models, constants
+from mimir.client.config import models
 from mimir.client.query_engine.backends import vllm_backend
 
 

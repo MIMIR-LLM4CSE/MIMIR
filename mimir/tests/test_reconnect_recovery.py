@@ -9,7 +9,6 @@ arrive — the query loop is serial, so every later query queued behind that wai
 the session read as hung with nothing on screen to say why.
 """
 import json
-import queue as _queue
 import unittest
 
 from mimir.client.ui.ws.ws_worker import _AgentWorker

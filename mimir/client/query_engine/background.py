@@ -9,7 +9,6 @@ UI event when a result opts in. Extracted from ``agent_loop.py``.
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 from typing import Any
 

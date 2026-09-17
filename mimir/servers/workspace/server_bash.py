@@ -138,7 +138,6 @@ from typing import Annotated
 from pydantic import Field
 import re
 import shlex
-import subprocess
 import sys
 import time
 

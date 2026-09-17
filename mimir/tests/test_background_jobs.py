@@ -619,7 +619,7 @@ class WatcherProbeIsNeverGuardedTests(unittest.TestCase):
 
     def test_dispatch_is_the_only_caller_that_consults_the_guards(self) -> None:
         import inspect
-        from mimir.client.query_engine import dispatch, background
+        from mimir.client.query_engine import background
         from mimir.client.ui.ws import ws_worker
 
         guard_names = ("_asks_whether_a_watched_run_is_done",

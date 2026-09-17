@@ -26,7 +26,6 @@ Lives in ``_shared`` for the flat ``sys.path`` import the servers use
 
 from __future__ import annotations
 
-import re
 
 # Invariants that express *correctness*: each is a comparison against something
 # the code under test does not itself define. ``finite`` is the weakest (it only

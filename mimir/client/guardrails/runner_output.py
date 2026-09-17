@@ -164,7 +164,7 @@ def test_failure_signature(text: str) -> str:
     """
     nodes = {
         m.group("node")
-        for m in (_NODE_ID_RE.match(l.strip()) for l in text.splitlines())
+        for m in (_NODE_ID_RE.match(line.strip()) for line in text.splitlines())
         if m
     }
     return " ".join(sorted(nodes))

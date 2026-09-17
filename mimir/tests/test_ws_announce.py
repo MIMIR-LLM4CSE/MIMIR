@@ -6,7 +6,6 @@ different ports, in an order that changes between launches. The line used to say
 extension dialled 127.0.0.1 on the IPv6 port and was refused on every retry.
 """
 import asyncio
-import socket
 import unittest
 
 import websockets

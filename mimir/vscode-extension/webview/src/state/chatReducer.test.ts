@@ -234,12 +234,14 @@ describe("chatReducer", () => {
     expect(state.liveToolCalls[0].status).toBe("error");
   });
 
-  it("stores tool output on the activity from tool_result", () => {
+  it("settles the activity with the summary and duration from tool_result", () => {
     const state = run([
       { type: "tool_call", id: "c1", name: "grep", label: "Searching", detail: "x" },
-      { type: "tool_result", id: "c1", name: "grep", ok: true, summary: "3 matches", output: "a.ts:1\nb.ts:2", duration_ms: 5 },
+      { type: "tool_result", id: "c1", name: "grep", ok: true, summary: "3 matches", duration_ms: 5 },
     ]);
-    expect(state.liveToolCalls[0].output).toBe("a.ts:1\nb.ts:2");
+    expect(state.liveToolCalls[0].status).toBe("ok");
+    expect(state.liveToolCalls[0].summary).toBe("3 matches");
+    expect(state.liveToolCalls[0].durationMs).toBe(5);
   });
 
   it("opens the terminal panel on the call, before any output exists", () => {
@@ -736,7 +738,7 @@ describe("session command replies", () => {
 
   it("does not end the turn — a command runs beside a run, not as one", () => {
     const state = run([
-      { type: "query", text: "hi" },
+      { type: "submit_query", text: "hi" },
       { type: "command_output", command: "/batch", title: "Batch review", items: [{ label: "on" }] },
     ]);
 

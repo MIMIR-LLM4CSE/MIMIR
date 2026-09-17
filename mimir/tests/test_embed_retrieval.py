@@ -17,7 +17,6 @@ for _p in (str(_SHARED),):
         sys.path.insert(0, _p)
 
 from mimir.servers._shared import embed
-from mimir.client.query_engine import toollist
 
 
 def _load_server_memory():

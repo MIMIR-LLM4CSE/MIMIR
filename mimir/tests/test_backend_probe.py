@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import asyncio
 import queue
-import types
 
 import httpx
 import pytest

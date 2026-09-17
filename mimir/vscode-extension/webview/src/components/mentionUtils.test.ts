@@ -19,7 +19,7 @@ describe("detectMentionQuery", () => {
   });
 
   it("detects an @ after whitespace", () => {
-    expect(detectMentionQuery("look at @to", 10)).toEqual({ start: 8, query: "to" });
+    expect(detectMentionQuery("look at @to", 11)).toEqual({ start: 8, query: "to" });
   });
 
   it("matches the empty query right after @", () => {
