@@ -135,57 +135,165 @@ const _diffContentProvider = new class implements vscode.TextDocumentContentProv
   }
 }();
 
-// ── Plan preview: one virtual document, always read from disk ────────────────
+// ── Plan preview: our own panel, rendered from the bytes on disk ─────────────
 //
-// The Markdown preview renders a *cached* TextDocument, and on a network mount
-// the file watcher may never fire, so previewing the plan file itself re-renders
-// the previous revision. We preview a `mimir-plan:` document instead: its content
-// provider re-reads the bytes on every request and we invalidate it on each
-// update. Trade-off: read-only, and relative links inside the plan do not
-// resolve; plans are prose, freshness matters more.
+// VS Code's Markdown preview renders a cached TextDocument, and nothing we can
+// call makes it re-read a given revision on demand: previewing the plan file
+// misses updates when the watcher does not fire (network mount), and previewing
+// a virtual document races the model update — the refresh often re-renders the
+// previous plan. Three rounds of invalidate/await/refresh narrowed that race
+// without closing it. So the plan is not previewed through a document at all:
+// each show reads the file, renders it with the Markdown extension's own engine
+// (`markdown.api.render`) and writes the HTML into a panel we own. What is on
+// screen is whatever was read last, by construction.
 //
-// The URI is CONSTANT — it names "the plan MIMIR is showing", not one plan file.
-// Keying it on the plan's path meant a second plan (new title → new file) became
-// a new resource, and switching an open preview's resource leaves it rendering
-// the old one; with a fixed resource every plan reuses the same preview tab.
+// One panel for every plan: a new plan (new title → new file) replaces the
+// content of the same tab rather than opening another.
 //
-// Invalidating that resource is necessary but NOT sufficient, for two reasons.
-// Nothing holds an editor on the virtual document, so VS Code drops it once it is
-// unreferenced, and firing the change event on a dropped document is a no-op —
-// hence the reopen before the fire. And the fire only *asks* VS Code to re-request
-// the content: the model is edited a tick or more later, so a refresh issued right
-// after it re-renders a document that is still on the previous plan's bytes. That
-// ordering is systematic, not flaky, which is why a plan written minutes earlier
-// stayed on screen for every plan after it. So the refresh waits for the document
-// to actually carry the new bytes (_awaitPlanDocument) instead of racing it.
+// A webview has no notion of the plan's folder, so what the preview used to
+// resolve for us is done here: relative image paths are rewritten to webview
+// URIs (and their folders allowed), and a small script hands link clicks back
+// to the extension, which resolves them against the plan's folder.
 
-const _planChanged = new vscode.EventEmitter<vscode.Uri>();
+/** The plan panel, while it is open. */
+let _planPanel: vscode.WebviewPanel | undefined;
 
-/** Absolute path of the plan the preview currently mirrors. */
+/** Absolute path of the plan the panel currently mirrors. */
 let _currentPlanPath: string | undefined;
 
-/** The single document the plan preview renders. `.md` types it as Markdown. */
-const PLAN_URI = vscode.Uri.from({ scheme: "mimir-plan", path: "/MIMIR plan.md" });
+/** Bumped on every render, so a slow render cannot overwrite a newer one. */
+let _planRenderSeq = 0;
 
-/** The bytes the plan preview should be showing right now. */
-function _planContent(): string {
-  if (!_currentPlanPath) return "No plan yet.";
-  try {
-    return fs.readFileSync(_currentPlanPath, "utf8");
-  } catch (e) {
-    return `Cannot read ${_currentPlanPath}\n\n${e}`;
-  }
+function _escapeHtml(s: string): string {
+  return s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]!));
 }
 
-const _planContentProvider = new class implements vscode.TextDocumentContentProvider {
-  readonly onDidChange = _planChanged.event;
-  provideTextDocumentContent(_uri: vscode.Uri): string {
-    return _planContent();
-  }
-}();
+/** The Markdown extension's folder, for its preview stylesheet. */
+function _markdownMediaUri(): vscode.Uri | undefined {
+  const ext = vscode.extensions.getExtension("vscode.markdown-language-features");
+  return ext ? vscode.Uri.joinPath(ext.extensionUri, "media") : undefined;
+}
 
-/** Poller for the currently previewed markdown file, if any. */
-let _previewWatch: { path: string; mtimeMs: number; timer: NodeJS.Timeout } | undefined;
+/** True for `https:`, `data:`, `vscode-resource:`… and protocol-relative URLs. */
+function _hasScheme(ref: string): boolean {
+  return /^[a-z][\w+.-]*:/i.test(ref) || ref.startsWith("//");
+}
+
+/** `ref` from the plan, as an absolute path (fragment and query dropped). */
+function _resolveFromPlan(ref: string, planAbs: string): string {
+  let p = ref.replace(/[?#].*$/, "");
+  try {
+    p = decodeURI(p);
+  } catch {
+    /* keep it as written */
+  }
+  return path.isAbsolute(p) ? p : path.join(path.dirname(planAbs), p);
+}
+
+/**
+ * Point every local `<img src>` at a webview URI. Returns the rewritten HTML and
+ * the folders those images live in, which the panel must be allowed to read.
+ */
+function _rewriteImages(html: string, planAbs: string, webview: vscode.Webview): { html: string; dirs: string[] } {
+  const dirs = new Set<string>();
+  const out = html.replace(/(<img\b[^>]*?\bsrc=")([^"]*)(")/gi, (all, pre: string, src: string, post: string) => {
+    if (!src || _hasScheme(src)) return all;
+    const abs = _resolveFromPlan(src.replace(/&amp;/g, "&"), planAbs);
+    dirs.add(path.dirname(abs));
+    return pre + webview.asWebviewUri(vscode.Uri.file(abs)).toString() + post;
+  });
+  return { html: out, dirs: [...dirs] };
+}
+
+/** Follow a link clicked in the plan panel. In-page anchors never get here. */
+function _openPlanLink(href: string): void {
+  const planAbs = _currentPlanPath;
+  if (_hasScheme(href) && !/^file:/i.test(href)) {
+    void vscode.env.openExternal(vscode.Uri.parse(href));
+    return;
+  }
+  if (!planAbs) return;
+  const abs = /^file:/i.test(href) ? vscode.Uri.parse(href).fsPath : _resolveFromPlan(href, planAbs);
+  if (!fs.existsSync(abs)) {
+    void vscode.window.showWarningMessage(`MIMIR: ${abs} not found`);
+    return;
+  }
+  if (fs.statSync(abs).isDirectory()) {
+    void vscode.commands.executeCommand("revealInExplorer", vscode.Uri.file(abs));
+    return;
+  }
+  vscode.workspace.openTextDocument(vscode.Uri.file(abs)).then(
+    (doc) => vscode.window.showTextDocument(doc, { preview: true, viewColumn: vscode.ViewColumn.One }),
+    () => vscode.commands.executeCommand("vscode.open", vscode.Uri.file(abs))
+  );
+}
+
+/** Hands link clicks to the extension; scrolls in-page anchors itself. */
+const _PLAN_SCRIPT = `
+const vscode = acquireVsCodeApi();
+document.addEventListener("click", (e) => {
+  const a = e.target.closest && e.target.closest("a[href]");
+  if (!a) return;
+  const href = a.getAttribute("href");
+  e.preventDefault();
+  if (href.startsWith("#")) {
+    const id = decodeURIComponent(href.slice(1));
+    const el = document.getElementById(id) || document.getElementsByName(id)[0];
+    if (el) el.scrollIntoView();
+    return;
+  }
+  vscode.postMessage({ type: "open", href });
+});`;
+
+/** Read the current plan from disk and write it into the panel. */
+async function _renderPlan(): Promise<void> {
+  const panel = _planPanel;
+  const abs = _currentPlanPath;
+  if (!panel || !abs) return;
+  const seq = ++_planRenderSeq;
+  let body: string;
+  try {
+    const text = fs.readFileSync(abs, "utf8");
+    try {
+      body = await vscode.commands.executeCommand<string>("markdown.api.render", text);
+    } catch {
+      // Markdown extension disabled: the plan is still readable as text.
+      body = `<pre>${_escapeHtml(text)}</pre>`;
+    }
+  } catch (e) {
+    body = `<p>Cannot read ${_escapeHtml(abs)}</p><pre>${_escapeHtml(String(e))}</pre>`;
+  }
+  if (seq !== _planRenderSeq || panel !== _planPanel) return;
+  const media = _markdownMediaUri();
+  const images = _rewriteImages(body, abs, panel.webview);
+  // Roots before html: the new page must be allowed to load what it references.
+  panel.webview.options = {
+    enableScripts: true,
+    localResourceRoots: [
+      ...(media ? [media] : []),
+      vscode.Uri.file(path.dirname(abs)),
+      ...images.dirs.map((d) => vscode.Uri.file(d)),
+    ],
+  };
+  const sheets = media
+    ? ["markdown.css", "highlight.css"]
+        .map((f) => `<link rel="stylesheet" href="${panel.webview.asWebviewUri(vscode.Uri.joinPath(media, f))}">`)
+        .join("\n")
+    : "";
+  const csp = panel.webview.cspSource;
+  const nonce = Math.random().toString(36).slice(2) + Date.now().toString(36);
+  panel.title = `Plan — ${path.basename(abs, path.extname(abs))}`;
+  panel.webview.html = `<!DOCTYPE html>
+<html><head><meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${csp} 'unsafe-inline'; img-src ${csp} https: data:; script-src 'nonce-${nonce}';">
+${sheets}
+<style>body { padding: 0 26px; font-family: var(--vscode-markdown-font-family, var(--vscode-font-family)); font-size: var(--vscode-markdown-font-size, 14px); }</style>
+</head><body class="vscode-body">${images.html}
+<script nonce="${nonce}">${_PLAN_SCRIPT}</script></body></html>`;
+}
+
+/** Poller for the plan the panel shows, if any. */
+let _previewWatch: { path: string; mtimeMs: number; size: number; timer: NodeJS.Timeout } | undefined;
 
 function _stopPreviewWatch(): void {
   if (_previewWatch) {
@@ -194,117 +302,58 @@ function _stopPreviewWatch(): void {
   }
 }
 
-/** Poll `abs` and re-render the plan document whenever the file changes on disk. */
+/** Poll `abs` and re-render the panel whenever the file changes on disk. */
 function _watchPreviewedFile(abs: string): void {
-  const stamp = (): number => {
+  const stamp = (): { mtimeMs: number; size: number } => {
     try {
-      return fs.statSync(abs).mtimeMs;
+      const st = fs.statSync(abs);
+      return { mtimeMs: st.mtimeMs, size: st.size };
     } catch {
-      return 0;
+      return { mtimeMs: 0, size: -1 };
     }
   };
-  if (_previewWatch?.path === abs) {
-    // Same plan reopened: keep the poller, just re-baseline it.
-    _previewWatch.mtimeMs = stamp();
-    return;
-  }
   _stopPreviewWatch();
   const timer = setInterval(() => {
     if (!_previewWatch) return;
-    const mtimeMs = stamp();
-    if (mtimeMs !== _previewWatch.mtimeMs) {
-      _previewWatch.mtimeMs = mtimeMs;
-      void _invalidatePlanDocument();
+    const now = stamp();
+    if (now.mtimeMs !== _previewWatch.mtimeMs || now.size !== _previewWatch.size) {
+      Object.assign(_previewWatch, now);
+      void _renderPlan();
     }
   }, 1000);
-  _previewWatch = { path: abs, mtimeMs: stamp(), timer };
+  _previewWatch = { path: abs, ...stamp(), timer };
 }
 
-/** The plan document, if VS Code still holds one open. */
-function _openPlanDocument(): vscode.TextDocument | undefined {
-  const key = PLAN_URI.toString();
-  return vscode.workspace.textDocuments.find((d) => d.uri.toString() === key);
-}
-
-/**
- * Resolve once the plan document actually carries `expected`.
- *
- * The change event is the fast path; the poll covers a model updated without one
- * reaching us. Bounded, so a provider that never delivers costs one stale frame
- * rather than a handler that never returns.
- */
-function _awaitPlanDocument(expected: string, timeoutMs = 1000): Promise<void> {
-  if (_openPlanDocument()?.getText() === expected) return Promise.resolve();
-  return new Promise<void>((resolve) => {
-    let settled = false;
-    const finish = (): void => {
-      if (settled) return;
-      settled = true;
-      sub.dispose();
-      clearInterval(poll);
-      clearTimeout(deadline);
-      resolve();
-    };
-    const check = (): void => {
-      if (_openPlanDocument()?.getText() === expected) finish();
-    };
-    const sub = vscode.workspace.onDidChangeTextDocument((e) => {
-      if (e.document.uri.toString() === PLAN_URI.toString()) check();
-    });
-    const poll = setInterval(check, 25);
-    const deadline = setTimeout(finish, timeoutMs);
-  });
-}
-
-/** Re-render every open Markdown preview from its (re-read) document. */
-async function _refreshPlanPreview(): Promise<void> {
-  try {
-    await vscode.commands.executeCommand("markdown.preview.refresh");
-  } catch {
-    /* command absent on this VS Code build — the invalidation is all we have */
-  }
-}
-
-/** Re-read the plan document and push the new bytes to the preview. */
-async function _invalidatePlanDocument(): Promise<void> {
-  // Read the target bytes before touching VS Code: this is what the provider will
-  // hand back, and what the document must hold before the preview is refreshed.
-  const expected = _planContent();
-  // Reopening resurrects the document if VS Code dropped it (no editor holds it),
-  // which re-runs the content provider on the current path; the fire covers the
-  // opposite case, a document still open on the previous plan's bytes.
-  try {
-    await vscode.workspace.openTextDocument(PLAN_URI);
-  } catch {
-    /* provider threw — the fire below still reaches an open document */
-  }
-  if (_openPlanDocument()?.getText() !== expected) {
-    // Subscribe before firing, so the update cannot land between the two.
-    const carried = _awaitPlanDocument(expected);
-    _planChanged.fire(PLAN_URI);
-    await carried;
-  }
-  await _refreshPlanPreview();
-}
-
-/** Point the plan preview at `abs` and open/refresh it. */
+/** Show `abs` in the plan panel, opening the panel if needed. */
 function _showPlanPreview(abs: string): void {
   _currentPlanPath = abs;
-  // Before revealing: revealing an already-open preview does not re-request the
-  // content, so an earlier plan would still be on screen.
-  void _invalidatePlanDocument().then(() =>
-    vscode.commands.executeCommand("markdown.showPreview", PLAN_URI).then(
-      () => _watchPreviewedFile(abs),
-      () => vscode.window.showWarningMessage(`MIMIR: cannot preview ${abs}`)
-    )
-  );
+  if (!_planPanel) {
+    const media = _markdownMediaUri();
+    _planPanel = vscode.window.createWebviewPanel(
+      "mimir.plan",
+      "Plan",
+      { viewColumn: vscode.ViewColumn.Beside, preserveFocus: true },
+      { enableScripts: true, localResourceRoots: media ? [media] : [] }
+    );
+    _planPanel.webview.onDidReceiveMessage((m) => {
+      if (m?.type === "open" && typeof m.href === "string") _openPlanLink(m.href);
+    });
+    _planPanel.onDidDispose(() => {
+      _planPanel = undefined;
+      _stopPreviewWatch();
+    });
+  } else {
+    _planPanel.reveal(undefined, true);
+  }
+  // Re-baseline the poller before the read, so a write landing in between is
+  // caught on the next tick rather than lost.
+  _watchPreviewedFile(abs);
+  void _renderPlan();
 }
 
 export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(
-    vscode.workspace.registerTextDocumentContentProvider("mimir-diff", _diffContentProvider),
-    vscode.workspace.registerTextDocumentContentProvider("mimir-plan", _planContentProvider),
-    _planChanged
+    vscode.workspace.registerTextDocumentContentProvider("mimir-diff", _diffContentProvider)
   );
 
   const provider = new MimirAgentViewProvider(context.extensionUri, context.globalState);
