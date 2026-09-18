@@ -1057,6 +1057,34 @@ class WakeCoalescingTests(unittest.TestCase):
         for key in ("j1", "j2", "j3"):
             self.assertIn(key, text)
 
+    def _drained_frame(self, ev: dict) -> dict:
+        """The frame the drain loop sends the client for *ev*."""
+        events = [ev]
+        self.worker.drain = lambda: [events.pop()] if events else []
+
+        async def run() -> None:
+            task = asyncio.create_task(self.session._drain_loop())
+            while not self.ws.sent:
+                await asyncio.sleep(0.01)
+            task.cancel()
+
+        asyncio.run(asyncio.wait_for(run(), 5))
+        return self.ws.sent[0]
+
+    def test_a_steered_wake_does_not_tell_the_client_a_turn_began(self) -> None:
+        # Seen on 2026-09-18: the client took this flag as a new turn and cleared the
+        # running turn's live rows, taking with them a build launched in that step —
+        # its row and every progress update addressed to it.
+        self._running(self.here.id)
+        frame = self._drained_frame(self._event("j1"))
+        self.assertFalse(frame["resumes_active_session"])
+        self.assertEqual(self.worker.submitted, [])
+
+    def test_a_wake_while_idle_tells_the_client_a_turn_began(self) -> None:
+        frame = self._drained_frame(self._event("j1"))
+        self.assertTrue(frame["resumes_active_session"])
+        self.assertEqual(len(self.worker.submitted), 1)
+
     def test_an_injected_wake_needs_no_catch_up(self) -> None:
         self._running(self.here.id)
         self._wake(self._event("j1"))

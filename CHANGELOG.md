@@ -19,6 +19,9 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Behind an OpenAI-compatible router that does not serve vLLM's `/tokenize`,
   each turn no longer waits tens of seconds before the model is asked. The
   refusal is remembered per endpoint instead of retried for every message.
+- A build launched just as another background job finished keeps its row and
+  its progress bar. The finished job was handed to the running turn, but the
+  panel was told a new turn had begun and cleared that turn's rows.
 
 ## [1.0.0] — 2026-09-18
 

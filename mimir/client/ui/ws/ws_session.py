@@ -801,6 +801,10 @@ class _Session:
                     foreign = self._is_foreign_event(ev)
                     if not foreign:
                         self.transcript.append(ev)
+                    # Decided once, before the send: the send yields, and a turn that
+                    # ended meanwhile would otherwise have the client and the handler
+                    # disagree about whether a new turn began.
+                    steer = self._wake_steers(ev)
                     try:
                         # A wake starts a turn nobody pressed send for. The client
                         # marks itself busy on its own submit, so without this it has
@@ -809,11 +813,16 @@ class _Session:
                         # resume a session that is not the one on screen, and marking
                         # the visible chat busy for a turn running elsewhere leaves a
                         # stop button that stops nothing.
+                        # A wake steered into the turn already running starts nothing,
+                        # and saying it did makes the client drop that turn's live
+                        # rows — a build launched in the same step lost its row, and
+                        # with it every progress update addressed to it.
                         await self.ws.send(json.dumps(
-                            {**ev, "resumes_active_session": not foreign}, default=str))
+                            {**ev, "resumes_active_session": not foreign and not steer},
+                            default=str))
                     except Exception:
                         return
-                    await self._handle_job_complete(ev)
+                    await self._handle_job_complete(ev, steer=steer)
                     continue
                 if self._is_foreign_event(ev):
                     # A detached wake turn still has to leave its answer somewhere:
@@ -1042,7 +1051,23 @@ class _Session:
                     f"'{status_tool}', then carry on with the work it was part of.")
         return f"{head} Carry on with the work it was part of."
 
-    async def _handle_job_complete(self, ev: dict) -> None:
+    def _wake_owner(self, ev: dict) -> str | None:
+        """The session a finished job belongs to: the one that launched it."""
+        return ev.get("session_id") or self._active_session_id
+
+    def _wake_steers(self, ev: dict) -> bool:
+        """True when *ev* will be handed to a turn already running, not start one.
+
+        `_query_session_id` names the session of the turn in flight, which is the
+        right comparison here and `_running_turn_is_ours` is not: that one asks
+        whether the turn belongs to the session *on screen*, the correct test for a
+        message the user typed, but a wake belongs to its own conversation whether or
+        not anyone is reading it.
+        """
+        owner = self._wake_owner(ev)
+        return bool(owner) and self.worker._query_session_id == owner
+
+    async def _handle_job_complete(self, ev: dict, steer: bool | None = None) -> None:
         """Hand a finished background job to a turn — the running one where possible.
 
         The event was already forwarded to the client (notification) by the drain loop.
@@ -1059,18 +1084,15 @@ class _Session:
         waiting — so a burst that finished during the last turn arrives as one turn
         rather than one apiece.
         """
-        owner = ev.get("session_id") or self._active_session_id
+        owner = self._wake_owner(ev)
+        if steer is None:
+            steer = self._wake_steers(ev)
         # Each entry remembers whether the user has already been shown this job, so a
         # later flush re-tells the *model* (a steer may never have been read) without
         # writing the notice and the log line a second time.
         item = {"ev": ev, "told": False}
         self._pending_wakes.setdefault(owner, []).append(item)
-        # `_query_session_id` names the session of the turn in flight, which is the
-        # right comparison here and `_running_turn_is_ours` is not: that one asks
-        # whether the turn belongs to the session *on screen*, the correct test for a
-        # message the user typed, but a wake belongs to its own conversation whether or
-        # not anyone is reading it.
-        if owner and self.worker._query_session_id == owner:
+        if steer:
             wake = self._wake_text(ev)
             self._record_wake(owner, wake, [ev])
             item["told"] = True
