@@ -2,8 +2,8 @@
 # Install the freshly built extension into VS Code, or update it in place.
 #
 # Run through `npm run deploy` (which builds first). Two cases:
-#   • already installed → copy the new bundle over it (fast; needs a window reload)
-#   • not installed yet → package a .vsix and install it with the `code` CLI
+#   • this version already installed → copy the new bundle over it (fast; needs a window reload)
+#   • not installed, or another version → package a .vsix and install it with the `code` CLI
 #
 # Covers both a local VS Code (~/.vscode/extensions) and a Remote-SSH session
 # (~/.vscode-server/extensions), which is where MIMIR usually runs.
@@ -12,12 +12,15 @@ set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$here"
 
-# --- Locate an existing install --------------------------------------------
+# --- Locate an existing install of this version ----------------------------
+# Only the same version is updated in place. After a version bump, copying into
+# the old folder would leave VS Code listing the old number for the new code, so a
+# new version goes through a real install, which also retires the old folder.
+version="$(sed -n 's/^  "version": "\(.*\)",$/\1/p' package.json)"
 ext=""
 for root in "$HOME/.vscode-server/extensions" "$HOME/.vscode/extensions"; do
-  found="$(ls -d "$root"/mimir.mimir-* 2>/dev/null | head -1 || true)"
-  if [ -n "$found" ]; then
-    ext="$found"
+  if [ -d "$root/mimir.mimir-$version" ]; then
+    ext="$root/mimir.mimir-$version"
     break
   fi
 done
@@ -34,7 +37,7 @@ if [ -n "$ext" ]; then
 fi
 
 # --- First install ----------------------------------------------------------
-echo "==> Not installed yet — packaging a .vsix"
+echo "==> Version $version not installed yet — packaging a .vsix"
 # vsce shells out to npm to compute the package contents, so a bare `bash
 # scripts/deploy.sh` outside `npm run deploy` fails obscurely without it.
 if ! command -v npm >/dev/null 2>&1; then
@@ -48,7 +51,7 @@ if [ -x node_modules/.bin/vsce ]; then
 else
   npx --yes @vscode/vsce package --no-dependencies >/dev/null
 fi
-vsix="$(ls -t ./*.vsix | head -1)"
+vsix="./mimir-$version.vsix"
 
 if ! command -v code >/dev/null 2>&1; then
   echo "error: packaged $here/$vsix but the 'code' command is not on PATH." >&2

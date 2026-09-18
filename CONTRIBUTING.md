@@ -44,6 +44,25 @@ npm run package      # build a .vsix without installing it
 After `npm run deploy`, reload the VS Code window to pick up the new bundle
 (`Ctrl+Shift+P` → *Developer: Reload Window*).
 
+## Releasing
+
+MIMIR has one version for the Python package and the extension. The rules for
+choosing the number are at the top of [CHANGELOG.md](CHANGELOG.md).
+
+| Step | File or command |
+|---|---|
+| 1. Move the `[Unreleased]` notes under a new `## [X.Y.Z] — date` heading | `CHANGELOG.md` |
+| 2. Set the new version | `pyproject.toml`, `mimir/vscode-extension/package.json`, and the two root `version` fields of `package-lock.json` |
+| 3. Check that the three agree | `pytest mimir/tests/test_version.py` |
+| 4. Commit, then tag | `git tag vX.Y.Z` |
+| 5. Build the extension package | `npm run package` in `mimir/vscode-extension` → `mimir-X.Y.Z.vsix` |
+
+Between releases, add each user-visible change under `[Unreleased]` in the same
+commit as the change.
+
+`npm run deploy` updates an installed extension in place only when the version is
+the same. After a bump it installs the new `.vsix`, and VS Code retires the old one.
+
 ## Project layout
 
 - `mimir/client/` — the agent client (loop, policy, context, UI, backends).

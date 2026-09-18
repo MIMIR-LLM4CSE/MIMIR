@@ -1,4 +1,4 @@
-include README.md POLICY.md CLIENT_DETAILED.md SERVERS_DETAILED.md SETUP.md LICENSE
+include README.md CHANGELOG.md POLICY.md CLIENT_DETAILED.md SERVERS_DETAILED.md SETUP.md LICENSE
 include mimir/requirements.txt
 recursive-include mimir/servers *.py *.json
 recursive-include mimir/skills *.md

@@ -2,14 +2,15 @@
   "name": "mimir",
   "publisher": "mimir",
   "displayName": "MIMIR Chat",
-  "description": "Chat with your local MIMIR agent directly inside VS Code",
-  "version": "0.1.0",
+  "description": "A chat panel for the MIMIR agent: plan, edit, run and verify code with the model server you already run (vLLM, Ray Serve, Ollama or Claude).",
+  "version": "1.0.0",
   "license": "MIT",
   "repository": { "type": "git", "url": "https://github.com/MIMIR-LLM4CSE/MIMIR.git", "directory": "mimir/vscode-extension" },
   "bugs": { "url": "https://github.com/MIMIR-LLM4CSE/MIMIR/issues" },
   "homepage": "https://github.com/MIMIR-LLM4CSE/MIMIR#readme",
   "engines": { "vscode": "^1.85.0" },
-  "categories": ["Other"],
+  "categories": ["AI", "Chat"],
+  "keywords": ["agent", "llm", "vllm", "ollama", "ray", "claude", "mcp", "hpc", "slurm"],
   "icon": "images/mimir-logo-dark.png",
   "activationEvents": ["onStartupFinished"],
   "main": "./dist/extension.js",  "contributes": {
@@ -39,7 +40,7 @@
       },
       {
         "command": "mimir.startServer",
-        "title": "MIMIR: Start WS Server"
+        "title": "MIMIR: Start Server"
       }
     ],
     "menus": {
@@ -79,11 +80,11 @@
           "type": "array",
           "items": { "type": "string" },
           "default": [
-            "claude-opus-4-8",
+            "claude-opus-5",
             "claude-sonnet-5",
+            "claude-fable-5-1",
             "claude-haiku-4-5",
-            "claude-opus-4-7",
-            "claude-fable-5"
+            "claude-opus-4-8"
           ],
           "description": "Claude model IDs shown in the model selector when backend is Anthropic. Edit in settings.json to add or reorder models."
         },
@@ -105,7 +106,7 @@
         "mimir.notifications.enabled": {
           "type": "boolean",
           "default": true,
-          "description": "Show a native VS Code notification when a task completes or MIMIR needs your input, and the chat view is not focused/visible."
+          "description": "Show a VS Code notification when a task finishes or MIMIR needs your answer while the chat panel is hidden or out of focus."
         }
       }
     }
