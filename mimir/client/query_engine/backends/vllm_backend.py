@@ -466,6 +466,10 @@ def _prepare_messages_for_openai(messages: list[dict]) -> list[dict]:
 
 
 
+# /tokenize statuses that mean "try again later", not "this endpoint has none".
+_TOKENIZE_RETRYABLE = frozenset({408, 425, 429, 502, 503, 504})
+
+
 class VllmBackend(LLMBackend):
     def __init__(self) -> None:
         super().__init__()
@@ -475,6 +479,11 @@ class VllmBackend(LLMBackend):
         # to the server. Guarded because sub-agents call chat() from their own threads.
         self._clients: dict[tuple[str, str], Any] = {}
         self._clients_lock = threading.Lock()
+        # Plain httpx pool for /tokenize, shared by every count (see _tokenize_text).
+        self._tokenize_http: Any = None
+        # API roots that answered /tokenize with a definitive refusal (see
+        # _tokenize_text). Keyed by root, since _config may point elsewhere later.
+        self._tokenize_absent: set[str] = set()
 
     def _config(self) -> tuple[str, str]:
         """The (base_url, api_key) this backend talks to.
@@ -526,6 +535,14 @@ class VllmBackend(LLMBackend):
         propagates to LLMBackend.count_text_tokens, which falls back to the
         chars-per-token heuristic — so a missing endpoint or network blip never
         breaks a budget check.
+
+        That fallback is not cached, and the history is recounted several times per
+        turn, so an endpoint that never serves /tokenize (an OpenAI-compatible router
+        in front of vLLM answered 500 "no valid backends") paid one round-trip per
+        message per pass: tens of seconds a turn, growing with the conversation. A
+        definitive HTTP refusal is therefore remembered per root and later calls raise
+        off the network. Timeouts, dropped connections and the "busy, retry" statuses
+        stay retried: a local vLLM still loading its weights must regain exact counts.
         """
         import httpx
 
@@ -533,6 +550,8 @@ class VllmBackend(LLMBackend):
         root = base_url.rstrip("/")
         if root.endswith("/v1"):
             root = root[: -len("/v1")]
+        if root in self._tokenize_absent:
+            raise RuntimeError(f"{root} serves no /tokenize")
         url = root + "/tokenize"
         headers = {}
         if api_key and api_key != "EMPTY":
@@ -540,10 +559,17 @@ class VllmBackend(LLMBackend):
         # add_special_tokens=False: we sum per-message counts, so we don't want
         # BOS/EOS added to each fragment inflating the total.
         payload = {"model": model, "prompt": text, "add_special_tokens": False}
-        with httpx.Client(trust_env=False, timeout=5.0, verify=verify_ssl()) as client:
-            resp = client.post(url, json=payload, headers=headers)
-            resp.raise_for_status()
-            data = resp.json()
+        with self._clients_lock:
+            if self._tokenize_http is None:
+                self._tokenize_http = httpx.Client(
+                    trust_env=False, timeout=5.0, verify=verify_ssl()
+                )
+            client = self._tokenize_http
+        resp = client.post(url, json=payload, headers=headers)
+        if resp.status_code >= 400 and resp.status_code not in _TOKENIZE_RETRYABLE:
+            self._tokenize_absent.add(root)
+        resp.raise_for_status()
+        data = resp.json()
         count = data.get("count")
         if isinstance(count, int):
             return count

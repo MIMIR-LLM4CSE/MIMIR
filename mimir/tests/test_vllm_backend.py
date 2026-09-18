@@ -97,3 +97,57 @@ class FinishReasonTests(unittest.TestCase):
         response = types.SimpleNamespace(
             choices=[types.SimpleNamespace(finish_reason=None, message=message)])
         self.assertNotIn("finish_reason", self._run(False, response))
+
+
+class TokenizeAbsenceTests(unittest.TestCase):
+    """Regression: a router with no /tokenize cost a round-trip per message per pass.
+
+    Incident (2026-09-18): an OpenAI-compatible router answered /tokenize with 500
+    "no valid backends". The heuristic fallback was not cached, so every recount of
+    the history went back to the network and turns waited 25-76 s before the model
+    was even asked.
+    """
+
+    def _backend(self, status: int):
+        import httpx
+        from mimir.client.query_engine.backends.vllm_backend import VllmBackend
+
+        calls = []
+
+        def _handler(request):
+            calls.append(request.url.path)
+            if status == 200:
+                return httpx.Response(200, json={"count": 7})
+            return httpx.Response(status, text="no valid backends")
+
+        backend = VllmBackend()
+        backend._tokenize_http = httpx.Client(transport=httpx.MockTransport(_handler))
+        return backend, calls
+
+    def _count(self, backend, texts):
+        with patch.dict("os.environ", {"VLLM_BASE_URL": "http://router:8000"}):
+            return [backend.count_text_tokens("m", t) for t in texts]
+
+    def test_a_definitive_refusal_is_asked_once(self) -> None:
+        for status in (404, 405, 500, 501):
+            with self.subTest(status=status):
+                backend, calls = self._backend(status)
+                counts = self._count(backend, ["first", "second", "third"])
+                self.assertTrue(all(c > 0 for c in counts))
+                self.assertEqual(calls, ["/tokenize"])
+
+    def test_a_busy_server_is_asked_again(self) -> None:
+        backend, calls = self._backend(503)
+        self._count(backend, ["first", "second"])
+        self.assertEqual(len(calls), 2)
+
+    def test_a_server_that_answers_is_used(self) -> None:
+        backend, calls = self._backend(200)
+        self.assertEqual(self._count(backend, ["hello"]), [7])
+
+    def test_the_refusal_belongs_to_its_endpoint(self) -> None:
+        backend, calls = self._backend(500)
+        self._count(backend, ["first"])
+        with patch.dict("os.environ", {"VLLM_BASE_URL": "http://other:8000"}):
+            backend.count_text_tokens("m", "second")
+        self.assertEqual(len(calls), 2)

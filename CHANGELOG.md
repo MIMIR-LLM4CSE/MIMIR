@@ -15,6 +15,11 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+- Behind an OpenAI-compatible router that does not serve vLLM's `/tokenize`,
+  each turn no longer waits tens of seconds before the model is asked. The
+  refusal is remembered per endpoint instead of retried for every message.
+
 ## [1.0.0] — 2026-09-18
 
 First versioned release. Everything since the initial public release (0.1.0) is

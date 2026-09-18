@@ -1130,7 +1130,8 @@ class ClientHelperTests(unittest.TestCase):
 
         # Exact path: /tokenize returns a count.
         with patch("httpx.Client") as MockClient:
-            client = MockClient.return_value.__enter__.return_value
+            client = MockClient.return_value
+            client.post.return_value.status_code = 200
             client.post.return_value.raise_for_status.return_value = None
             client.post.return_value.json.return_value = {"count": 42}
             self.assertEqual(backend.count_text_tokens("m", "hello world"), 42)
