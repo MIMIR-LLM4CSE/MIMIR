@@ -1344,8 +1344,8 @@ body {
   cursor: default;
   min-width: 0;
 }
-.tool-row-head:not(:disabled) { cursor: pointer; }
-.tool-row-head:not(:disabled):hover { background: var(--bg-input); }
+.tool-row-head:not([aria-disabled="true"]) { cursor: pointer; }
+.tool-row-head:not([aria-disabled="true"]):hover { background: var(--bg-input); }
 
 /* The secondary bits of a row are sized in `em` so the whole row scales with
    --chat-font-size instead of drifting apart from the label at other sizes. */
@@ -1372,6 +1372,19 @@ body {
 .tool-label-verb {
   color: var(--fg);
   font-weight: 600;
+}
+
+/* A file name the row can open: in the chat's normal text colour, underlined on
+   hover. No link colour, so a card of reads does not read as a list of links. */
+.tool-file-link {
+  color: var(--fg);
+  cursor: pointer;
+}
+
+.tool-file-link:hover,
+.tool-file-link:focus-visible {
+  text-decoration: underline;
+  outline: none;
 }
 
 .tool-detail {

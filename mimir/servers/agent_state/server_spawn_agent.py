@@ -137,6 +137,8 @@ def _compact_event(ev: dict) -> dict | None:
         ms = ev.get("duration_ms")
         if isinstance(ms, (int, float)):
             out["ms"] = int(ms)
+        if isinstance(ev.get("target"), dict):
+            out["f"] = ev["target"]
         return out
     return None
 

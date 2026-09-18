@@ -1,7 +1,8 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 import katex from "katex";
-import type { ExecResult, MathResult, ToolActivity } from "../types";
+import type { ExecResult, FileTarget, MathResult, ToolActivity } from "../types";
+import { vscodePostMessage } from "../hooks/useWebSocket";
 import { subAgentTail } from "./subAgentUtils";
 import { useElapsed, formatDuration } from "../hooks/useElapsed";
 
@@ -162,15 +163,62 @@ const ErrorOutput: React.FC<{ error: string; onCollapse: () => void }> = ({
   </div>
 );
 
+/** Open the file a row touched, with the lines it covered selected. */
+function openTarget(target: FileTarget): void {
+  vscodePostMessage({
+    type: "open_file",
+    file: target.path,
+    line: target.line,
+    end_line: target.end_line,
+  });
+}
+
+/** *text* with the first occurrence of the target's file name made a link. The
+ *  row head is itself a button, so the link stops the click from toggling the row.
+ *  Text that does not contain the name is returned as is. */
+function withFileLink(text: string, target?: FileTarget): React.ReactNode {
+  const at = target ? text.lastIndexOf(target.name) : -1;
+  if (!target || !target.name || at < 0) return text;
+  const lines = target.line
+    ? target.end_line && target.end_line !== target.line
+      ? `:${target.line}-${target.end_line}`
+      : `:${target.line}`
+    : "";
+  const open = (e: React.SyntheticEvent) => {
+    e.stopPropagation();
+    e.preventDefault();
+    openTarget(target);
+  };
+  return (
+    <>
+      {text.slice(0, at)}
+      <span
+        className="tool-file-link"
+        role="link"
+        tabIndex={0}
+        title={`Open ${target.path}${lines}`}
+        onClick={open}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") open(e);
+        }}
+      >
+        {target.name}
+      </span>
+      {text.slice(at + target.name.length)}
+    </>
+  );
+}
+
 /** Tool label with its leading verb emphasized: "**Reading** file: x.py".
- *  The verb carries the meaning at a glance; the rest stays dim. */
-const ToolLabel: React.FC<{ label: string }> = ({ label }) => {
+ *  The verb carries the meaning at a glance; the rest stays dim. The file name,
+ *  when the call succeeded on one, opens it. */
+const ToolLabel: React.FC<{ label: string; target?: FileTarget }> = ({ label, target }) => {
   const space = label.indexOf(" ");
-  if (space <= 0) return <span className="tool-label">{label}</span>;
+  if (space <= 0) return <span className="tool-label">{withFileLink(label, target)}</span>;
   return (
     <span className="tool-label">
       <span className="tool-label-verb">{label.slice(0, space)}</span>
-      {label.slice(space)}
+      {withFileLink(label.slice(space), target)}
     </span>
   );
 };
@@ -238,6 +286,13 @@ const ToolRow: React.FC<RowProps> = ({ tool, childRows = [], onDivert }) => {
   const showsCommandBelow =
     expanded && ((hasExec && !!tool.exec?.command) || hasMath);
 
+  // The file name opens the file only once the call has succeeded on it: a failed
+  // read or edit says nothing reliable about the file, and a running write may not
+  // have created it yet. The label carries the link; the detail only when the label
+  // does not show the name.
+  const fileTarget = tool.status === "ok" ? tool.target : undefined;
+  const linkInLabel = !!fileTarget && tool.label.includes(fileTarget.name);
+
   const running = tool.status === "running";
   // Latched locally rather than waiting for the row to change status: the request
   // travels to the shell server and back, and a control that stays live in the
@@ -287,7 +342,10 @@ const ToolRow: React.FC<RowProps> = ({ tool, childRows = [], onDivert }) => {
       <button
         className="tool-row-head"
         onClick={() => canExpand && setExpanded((e) => !e)}
-        disabled={!canExpand}
+        // Not `disabled`: a disabled button swallows the clicks of what it holds,
+        // and the file name inside it must still open the file.
+        aria-disabled={!canExpand || undefined}
+        tabIndex={canExpand ? undefined : -1}
         title={tool.error || tool.detail || tool.label}
       >
         {/* Success is the norm and needs no mark; only failure gets a glyph, and it
@@ -312,9 +370,11 @@ const ToolRow: React.FC<RowProps> = ({ tool, childRows = [], onDivert }) => {
             {tool.origin}
           </span>
         )}
-        <ToolLabel label={tool.label} />
+        <ToolLabel label={tool.label} target={linkInLabel ? fileTarget : undefined} />
         {tool.detail && !showsCommandBelow && (
-          <span className="tool-detail">{tool.detail}</span>
+          <span className="tool-detail">
+            {withFileLink(tool.detail, linkInLabel ? undefined : fileTarget)}
+          </span>
         )}
         <span className="tool-row-tail">
           {/* What the run is doing. The dots are what say it is still doing it: a

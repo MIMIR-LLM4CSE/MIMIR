@@ -988,8 +988,27 @@ class MimirAgentViewProvider implements vscode.WebviewViewProvider {
           ? rel
           : require("path").join(base, rel);
         const uri = vscode.Uri.file(abs);
+        const line = typeof m.line === "number" ? m.line : undefined;
+        const endLine = typeof m.end_line === "number" ? m.end_line : line;
         vscode.workspace.openTextDocument(uri).then(
-          (doc) => vscode.window.showTextDocument(doc, { preview: true }),
+          (doc) => {
+            if (line === undefined) {
+              void vscode.window.showTextDocument(doc, { preview: true });
+              return;
+            }
+            // Clamped: the file may have changed since the tool touched it.
+            const last = doc.lineCount - 1;
+            const start = Math.min(Math.max(line - 1, 0), last);
+            const end = Math.min(Math.max((endLine ?? line) - 1, start), last);
+            const range = new vscode.Range(start, 0, end, doc.lineAt(end).text.length);
+            void vscode.window.showTextDocument(doc, {
+              preview: true,
+              viewColumn: vscode.ViewColumn.One,
+              selection: range,
+            }).then((editor) => {
+              editor.revealRange(range, vscode.TextEditorRevealType.InCenterIfOutsideViewport);
+            });
+          },
           () => vscode.window.showWarningMessage(`MIMIR: cannot open ${rel}`)
         );
       }

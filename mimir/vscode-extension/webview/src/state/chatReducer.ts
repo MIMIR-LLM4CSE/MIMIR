@@ -814,7 +814,7 @@ export function createChatReducer(makeId: () => string) {
       }
 
       case "tool_result": {
-        const { id, ok, summary, error, exec, math, duration_ms } = action;
+        const { id, ok, summary, error, exec, math, target, duration_ms } = action;
         const patch = (t: ToolActivity): ToolActivity =>
           t.id === id
             ? {
@@ -835,6 +835,8 @@ export function createChatReducer(makeId: () => string) {
                 // the command that ran is the row's only trace of what was attempted.
                 exec: exec ?? t.exec,
                 math,
+                // Only a success names a file worth opening.
+                target: ok ? target : undefined,
                 // The run is over, whatever it was last seen doing. Without this a
                 // detached row keeps "building…" and its bar for the rest of the
                 // session, describing a moment that has passed.
@@ -958,6 +960,7 @@ export function createChatReducer(makeId: () => string) {
                       ...t,
                       status: action.ok ? ("ok" as const) : ("error" as const),
                       summary: action.summary,
+                      target: action.ok ? action.target ?? undefined : undefined,
                       durationMs: action.duration_ms,
                     }
                   : t

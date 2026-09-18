@@ -226,6 +226,24 @@ describe("chatReducer", () => {
     expect(state.liveToolCalls[0].math).toEqual({ latex: "{2}^{10} = 1024" });
   });
 
+  it("keeps the file target of a successful tool_result", () => {
+    const target = { path: "/w/a.py", name: "a.py", line: 3, end_line: 9 };
+    const state = run([
+      { type: "tool_call", id: "c1", name: "read", label: "Reading file: a.py", detail: "" },
+      { type: "tool_result", id: "c1", name: "read", ok: true, summary: "", target, duration_ms: 1 },
+    ]);
+    expect(state.liveToolCalls[0].target).toEqual(target);
+  });
+
+  it("drops the file target of a failed tool_result", () => {
+    const state = run([
+      { type: "tool_call", id: "c1", name: "edit", label: "Editing file: a.py", detail: "" },
+      { type: "tool_result", id: "c1", name: "edit", ok: false, summary: "no match",
+        target: { path: "/w/a.py", name: "a.py" }, duration_ms: 1 },
+    ]);
+    expect(state.liveToolCalls[0].target).toBeUndefined();
+  });
+
   it("marks a failed tool_result as error", () => {
     const state = run([
       { type: "tool_call", id: "c1", name: "code_execute", label: "Running", detail: "make" },

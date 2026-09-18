@@ -389,6 +389,7 @@ def _make_subagent_progress_cb(call_id: str):
                 "type": "subagent_event", "kind": "tool_result", "parent_id": call_id,
                 "id": child_id, "ok": bool(payload.get("ok")),
                 "summary": payload.get("s", ""), "duration_ms": payload.get("ms"),
+                "target": payload.get("f"),
             })
         elif kind == "end":
             emit_event({

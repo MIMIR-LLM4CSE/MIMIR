@@ -31,6 +31,7 @@ from ..tool_execution.normalizer import _make_hashable
 from ..tool_execution.executor import run_post_tool_annotations
 from ..tool_execution.exec_preview import exec_input_preview, extract_exec_preview
 from ..tool_execution.math_preview import extract_math_preview
+from ..tool_execution.file_target import file_target
 from ..tool_execution.tool_status_messages import (
     tool_status_message,
     tool_arg_preview,
@@ -374,6 +375,7 @@ async def _dispatch_tool_calls(
             exec_info: dict | None = None,
             error: str | None = None,
             math_info: dict | None = None,
+            target: dict | None = None,
         ) -> None:
             waited = human_pause.elapsed() - paused_at_start
             event = {
@@ -391,6 +393,9 @@ async def _dispatch_tool_calls(
             # A calculation typeset by the tool itself, shown as an equation.
             if math_info is not None:
                 event["math"] = math_info
+            # The file the call touched, and the lines, for the row's clickable name.
+            if target is not None:
+                event["target"] = target
             # Failures carry the FULL error text (the summary is a clipped one-liner
             # that reads as truncated in the row); the UI shows it in an expandable
             # panel under the row.
@@ -496,6 +501,7 @@ async def _dispatch_tool_calls(
                 ok, summary, extract_exec_preview(result, args),
                 error=None if ok else error_detail(result),
                 math_info=extract_math_preview(result) if ok else None,
+                target=file_target(name, args, result, agent.tool_caps) if ok else None,
             )
             _maybe_emit_open_editor(result)
             watched_key = (_reads_progress_of_a_watched_run(agent, name, args)

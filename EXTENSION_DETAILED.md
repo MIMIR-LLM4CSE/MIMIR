@@ -344,6 +344,32 @@ failure, say) keeps the command already on the row rather than erasing it.
 
 ---
 
+## Clickable file names in the tool rows
+
+| Event | What it carries | What the row shows |
+| --- | --- | --- |
+| `tool_result`, `ok: true` | `target: {path, name, line?, end_line?}` | the file name, underlined on hover |
+| `tool_result`, `ok: false` | no `target` | the file name, as plain text |
+
+A row shows the file name alone. So the server sends the full path on the result,
+next to the name the row shows. `file_target.py` finds the path by argument name
+(the `path` role, or else `path` / `filepath` / `file`), never by tool name. It adds
+the lines from the result: `new_start_line` / `new_end_line` for an edit, and
+`start_line` / `end_line` for a read.
+
+The target is sent only for a call that succeeded on an existing file. A failed
+read or edit says nothing reliable about the file. A running row has no link yet
+either, because a write in progress may not have created its file.
+
+A click on the name posts `open_file` with `line` and `end_line`. The extension
+opens the file and selects those lines, clamped to the file as it is now. A
+sub-agent's rows carry the target too, under the wire key `f`.
+
+The row head does not use `disabled`: a disabled button drops the clicks of what it
+holds, so the link inside would never fire. It uses `aria-disabled` instead.
+
+---
+
 ## Moving a running command to the background
 
 A tool row in `ToolActivityList.tsx` carries one control that talks to the server:

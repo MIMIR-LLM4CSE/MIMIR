@@ -226,7 +226,18 @@ export interface ToolResultMessage {
   exec?: ExecResult;
   /** The calculation typeset by the tool, present only for math-shaped results. */
   math?: MathResult;
+  /** The file the call touched, present only when it succeeded on an existing file. */
+  target?: FileTarget;
   duration_ms: number;
+}
+
+/** A file a tool call touched, and the lines it covered: what the row's file name
+ *  opens when clicked. `name` is the text of the row that becomes the link. */
+export interface FileTarget {
+  path: string;
+  name: string;
+  line?: number;
+  end_line?: number;
 }
 
 /** A calculation and its result as one display-math LaTeX body (no `$` delimiters). */
@@ -294,6 +305,8 @@ export interface SubAgentEventMessage {
   ok?: boolean;
   summary?: string;
   duration_ms?: number;
+  /** On "tool_result": the file the step touched, as on a tool_result. */
+  target?: FileTarget | null;
   /** On "end": how many of the child's events were shed rather than forwarded. */
   dropped?: number;
   /** On "heartbeat": seconds the child has been running with nothing to report. */
@@ -742,6 +755,8 @@ export interface ToolActivity {
   exec?: ExecResult;
   /** Typeset calculation, shown open under the row (math-shaped results only). */
   math?: MathResult;
+  /** The file a successful call touched: its name in the row opens it. */
+  target?: FileTarget;
   durationMs?: number;
   /** What the model said this run's output showed — set when a verdict settled it. */
   verdict?: "pass" | "fail" | "unknown";
