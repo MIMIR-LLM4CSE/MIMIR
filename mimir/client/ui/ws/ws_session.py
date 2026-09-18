@@ -25,7 +25,10 @@ from ...query_engine.history import (
 )
 from .ws_worker import _AgentWorker
 from ...tool_execution import run_channel
-from ...config import THINKING_DEPTH_LABELS, thinking_depth_from_label
+from ...config import (
+    TEMPERATURE_MAX, TEMPERATURE_MIN, THINKING_DEPTH_LABELS, parse_temperature,
+    thinking_depth_from_label,
+)
 
 import asyncio
 import json
@@ -168,6 +171,7 @@ class _Session:
             "enforcement": self.worker.get_enforcement(),
             "approval_mode": self.worker.get_approval_mode(),
             "thinking": self.worker.get_thinking_profile(),
+            "temperature": self.worker.get_temperature_state(),
             "agent_ready": self.worker.agent_ready(),
         }
 
@@ -1908,6 +1912,22 @@ class _Session:
                 await self.ws.send(json.dumps({"type": "enforcement", "mode": level}))
             else:
                 await self.ws.send(json.dumps({"type": "error", "text": f"Unknown enforcement level: {level}. Use strict, light, or off."}))
+        elif text == "/temperature" or text.startswith("/temperature "):
+            raw = text[12:].strip()
+            ok, value = parse_temperature(raw) if raw else (True, None)
+            if not raw:
+                # Bare command: report, change nothing.
+                pass
+            elif ok:
+                self.worker.set_temperature(value)
+            else:
+                await self.ws.send(json.dumps({"type": "error", "text": (
+                    f"Invalid temperature: {raw}. Use a number from "
+                    f"{TEMPERATURE_MIN:g} to {TEMPERATURE_MAX:g}, or 'default'.")}))
+                return
+            # The value the agent holds, not the one asked for (see _send_thinking_state).
+            await self.ws.send(json.dumps(
+                {"type": "temperature", **self.worker.get_temperature_state()}))
         elif text.startswith("/proxy"):
             # Housekeeping the person running the session may need without asking the
             # model for it: a proxy's runs and optimisation state used to be removable
@@ -2089,4 +2109,5 @@ class _Session:
             "model": self.worker.model,
             "thinking": self.worker.get_thinking_profile(),
             "enforcement": self.worker.get_enforcement(),
+            "temperature": self.worker.get_temperature_state(),
         }))

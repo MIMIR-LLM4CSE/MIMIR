@@ -173,6 +173,29 @@ def thinking_depth_from_label(label: str) -> int | None:
         return None
 
 
+# Sampling temperature the user may set per model (/temperature, the ⚙ panel). None
+# is "the model's own": nothing is sent and the server applies the model's
+# generation_config. Only the backends below forward it; Anthropic's extended thinking
+# requires temperature 1, so the setting is not offered there.
+TEMPERATURE_MIN: float = 0.0
+TEMPERATURE_MAX: float = 2.0
+TEMPERATURE_BACKENDS: frozenset[str] = frozenset({"vllm", "ray", "ollama"})
+
+
+def parse_temperature(text: str) -> tuple[bool, float | None]:
+    """Parse a /temperature argument: ``(ok, value)``, value None meaning "default"."""
+    key = (text or "").strip().lower()
+    if key in ("default", "auto", "none", "model"):
+        return True, None
+    try:
+        value = float(key)
+    except ValueError:
+        return False, None
+    if not TEMPERATURE_MIN <= value <= TEMPERATURE_MAX:
+        return False, None
+    return True, value
+
+
 # Transient backend-call resilience. A single model call (one step of a run that
 # has no step ceiling) should survive a flaky connection / 5xx / rate-limit rather
 # than discarding the whole query. Total attempts = 1 + LLM_RETRY_ATTEMPTS.

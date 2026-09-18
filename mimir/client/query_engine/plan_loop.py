@@ -199,7 +199,8 @@ async def _run_plan_mode(
     # agent-loop helpers + the tail-called agent loop are fetched at call time.
     from .agent_loop import (
         _advertised_tools, _drain_steer, _run_agent_loop,
-        _live_thinking, _live_thinking_budget, _sync_thinking_directive,
+        _live_thinking, _live_thinking_budget, _live_temperature,
+        _sync_thinking_directive,
         _live_mode, _apply_mode_switch, _note_empty_turn,
         _rebuild_system_content,
     )
@@ -348,7 +349,9 @@ async def _run_plan_mode(
         # "none": no interactive front-end / dismissed — deliver the plan as-is.
         return "break", None
 
-    base_options = {'temperature': 0.2, 'top_k': 25}
+    # No sampling params, as in agent mode: the model's generation_config decides,
+    # unless the user set a temperature (added per call below).
+    base_options: dict = {}
     auto_active = getattr(agent, "thinking_depth", None) == THINKING_DEPTH_AUTO
 
     # Unbounded when the caller set no ceiling (max_steps <= 0) — plan mode gathers
@@ -421,6 +424,9 @@ async def _run_plan_mode(
         _tb = _live_thinking_budget(agent)
         if thinking and _tb > 0:
             options['thinking_budget'] = _tb
+        _temp = _live_temperature(agent)
+        if _temp is not None:
+            options['temperature'] = _temp
         # Until the plan document exists, a turn that only talks is refused below and
         # nudged back — so its prose is held rather than streamed, instead of showing
         # a plan-shaped answer the loop is about to drop (see _DraftHold).

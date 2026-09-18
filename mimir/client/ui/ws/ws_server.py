@@ -18,7 +18,8 @@ Protocol — all messages are JSON objects, one per send/recv:
   Server → Client
     {"type": "ready",          "model": "...", "context_mode": "...", "enforcement": "...",
                                "thinking": {"mechanism": "kwarg|directive|effort",
-                                            "levels": [...], "can_disable": bool}}
+                                            "levels": [...], "can_disable": bool},
+                               "temperature": {"supported": bool, "value": float|null}}
     {"type": "output",         "text": "..."}          # stdout (tool status + LLM tokens)
     {"type": "enforcement",    "mode": "strict"|"light"|"off"}  # active guidance-nudge level
     {"type": "mode",           "mode": "agent"|"plan"|"ask"}    # server-driven mode switch
@@ -27,6 +28,9 @@ Protocol — all messages are JSON objects, one per send/recv:
     {"type": "thinking_depth", "depth": 0-5, "label": "..."}    # the depth the agent HOLDS,
                                                                 # after /thinking[-depth]
     {"type": "streaming",      "enabled": bool}                 # after /streaming
+    {"type": "temperature",    "supported": bool, "value": float|null}
+                                                                # after /temperature; null =
+                                                                # the model's own (none sent)
     {"type": "command_output", "command": "/memory list", "title": "3 memories",
                                "items": [{"label": "...", "detail": "..."}],
                                "note": "...", "tone": "ok"|"warn"|"empty"}

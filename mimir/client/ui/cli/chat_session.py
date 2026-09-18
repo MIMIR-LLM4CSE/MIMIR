@@ -217,6 +217,8 @@ async def run_chat_session(agent: Any) -> None:
             set_batch_mode=agent.set_batch_mode,
             set_context_mode=agent.set_context_mode,
             set_enforcement=agent.set_enforcement,
+            temperature=agent.temperature,
+            set_temperature=agent.set_temperature,
             set_approval_mode=agent.set_approval_mode,
             trust_tool=agent.approvals.trust_tool,
             untrust_tool=agent.approvals.untrust_tool,

@@ -23,6 +23,10 @@ from .constants import (
     DEFAULT_THINKING_DEPTH,
     clamp_thinking_depth,
     thinking_depth_from_label,
+    TEMPERATURE_BACKENDS,
+    TEMPERATURE_MAX,
+    TEMPERATURE_MIN,
+    parse_temperature,
 )
 from .models import DEFAULT_MODEL, VALID_MODES, READONLY_MODES, LLM_BACKEND, VLLM_BASE_URL, VLLM_API_KEY, VLLM_MODEL_PROFILES, RAY_BASE_URL, RAY_API_KEY, thinking_mechanism
 # NOTE: user-extension discovery (.mimir/ servers / skills / plugins) moved to
@@ -41,6 +45,10 @@ __all__ = [
     "THINKING_DEPTH_LABELS",
     "clamp_thinking_depth",
     "thinking_depth_from_label",
+    "TEMPERATURE_BACKENDS",
+    "TEMPERATURE_MAX",
+    "TEMPERATURE_MIN",
+    "parse_temperature",
     "INTRA_QUERY_COMPACT_CHARS",
     "LLM_BACKEND",
     "MIMIR_DIR",

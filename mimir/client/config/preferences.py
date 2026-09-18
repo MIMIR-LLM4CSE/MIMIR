@@ -13,11 +13,16 @@ Schema::
     {
       "disabled_servers": ["strings", "datetime"],
       "disabled_skills":  ["proxy-optimize"],
-      "disabled_nudges":  ["authz_reminder"]
+      "disabled_nudges":  ["authz_reminder"],
+      "temperatures":     {"qwen3-32b": 0.6}
     }
 
 Only *disabled* names are stored (an absent name is enabled), so newly added servers,
 skills, and application nudges default to on without needing a migration.
+
+``temperatures`` holds the sampling temperature the user chose, per served model name.
+A model absent from it uses its own default: no temperature is sent at all, and the
+server applies the model's generation_config.
 """
 
 from __future__ import annotations
@@ -64,18 +69,9 @@ def load_disabled() -> tuple[set[str], set[str], set[str]]:
     return _as_set("disabled_servers"), _as_set("disabled_skills"), _as_set("disabled_nudges")
 
 
-def save_disabled(
-    disabled_servers: set[str],
-    disabled_skills: set[str],
-    disabled_nudges: set[str] | None = None,
-) -> None:
-    """Persist the disabled sets to ``.mimir/preferences.json`` (sorted, atomic)."""
+def _write_preferences(payload: dict[str, Any]) -> None:
+    """Write the whole preferences dict atomically. Callers merge into what is there."""
     path = _preferences_path()
-    payload = {
-        "disabled_servers": sorted(disabled_servers),
-        "disabled_skills": sorted(disabled_skills),
-        "disabled_nudges": sorted(disabled_nudges or set()),
-    }
     try:
         os.makedirs(STATE_DIR, exist_ok=True)
         tmp = f"{path}.tmp"
@@ -85,3 +81,45 @@ def save_disabled(
         os.replace(tmp, path)
     except Exception as exc:
         logger.warning("Could not write %s: %s", path, exc)
+
+
+def save_disabled(
+    disabled_servers: set[str],
+    disabled_skills: set[str],
+    disabled_nudges: set[str] | None = None,
+) -> None:
+    """Persist the disabled sets (sorted, atomic), keeping every other key."""
+    payload = load_preferences()
+    payload.update({
+        "disabled_servers": sorted(disabled_servers),
+        "disabled_skills": sorted(disabled_skills),
+        "disabled_nudges": sorted(disabled_nudges or set()),
+    })
+    _write_preferences(payload)
+
+
+def load_temperature(model: str) -> float | None:
+    """The temperature the user chose for ``model``, or None for the model's own."""
+    table = load_preferences().get("temperatures")
+    if not isinstance(table, dict):
+        return None
+    value = table.get(model)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value)
+
+
+def save_temperature(model: str, value: float | None) -> None:
+    """Record ``value`` for ``model``; None removes the entry, back to the model's own."""
+    payload = load_preferences()
+    table = payload.get("temperatures")
+    table = dict(table) if isinstance(table, dict) else {}
+    if value is None:
+        table.pop(model, None)
+    else:
+        table[model] = float(value)
+    if table:
+        payload["temperatures"] = table
+    else:
+        payload.pop("temperatures", None)
+    _write_preferences(payload)

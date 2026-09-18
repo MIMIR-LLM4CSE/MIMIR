@@ -60,6 +60,14 @@ def _live_thinking_budget(agent: Any) -> int:
     return val if isinstance(val, int) else -1
 
 
+def _live_temperature(agent: Any) -> float | None:
+    """The temperature the user set for this model, re-read per call; None = its own."""
+    val = getattr(agent, "temperature", None)
+    if isinstance(val, bool) or not isinstance(val, (int, float)):
+        return None
+    return float(val)
+
+
 _OBSERVED_MODE = "_observed_agent_mode"
 
 
@@ -358,7 +366,10 @@ async def _run_agent_loop(
     # counter ran out mid-work. Callers that want a bound (runner, sub-agents, tests)
     # pass a positive one.
     budget = max_steps if max_steps > 0 else 0
-    options = {'temperature': 0.3}
+    # No sampling params by default: the server applies the model's own
+    # generation_config. A forced low temperature is what sends a reasoning model into
+    # repetition loops. Only a temperature the user set is added, per step below.
+    options: dict = {}
     # A sub-agent caps its own answer: left to the backend default it gets the whole
     # answer reserve (tens of thousands of tokens), and a step that runs away is
     # invisible from outside — one mute row for as long as it takes to generate.
@@ -472,6 +483,9 @@ async def _run_agent_loop(
             else:  # conclude and anything else
                 _scaled_tb = max(512, _base_tb // 4)
             step_options['thinking_budget'] = _scaled_tb
+        _temp = _live_temperature(agent)
+        if _temp is not None:
+            step_options['temperature'] = _temp
 
         # Hold this turn's prose off the screen when the loop still has grounds to
         # refuse it (see _DraftHold): rendering a turn that a nudge then discards is

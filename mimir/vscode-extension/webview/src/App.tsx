@@ -20,6 +20,7 @@ import type {
   AgentMode,
   ApprovalMode,
   ThinkingProfile,
+  TemperatureState,
   RememberedEndpoint,
 } from "./types";
 import { createChatReducer, initialChatState } from "./state/chatReducer";
@@ -126,6 +127,15 @@ export const App: React.FC = () => {
   // remembered endpoint arrive after it. Remounting on those is how it picks
   // them up without fighting the user's edits afterwards.
   const connectFormKey = `${backend}|${vllmBaseUrl}|${rayBaseUrl}|${ollamaBaseUrl}|${remembered?.baseUrl ?? ""}`;
+  // Point the form at *baseUrl* for *be*. Used for the remembered endpoint and for
+  // every connect: the form is remounted with these props, so whatever it shows next
+  // (after a disconnect) is the address last used, not the settings default.
+  const seedAddress = useCallback((be: string, baseUrl: string) => {
+    setBackend(be);
+    if (be === "ollama") setOllamaBaseUrl(baseUrl);
+    else if (be === "ray") setRayBaseUrl(baseUrl);
+    else if (be === "vllm") setVllmBaseUrl(baseUrl);
+  }, []);
   // Models the endpoint reports it serves — the connect form's dropdown.
   const [endpointModels, setEndpointModels] = useState<string[]>([]);
   const [modelsError, setModelsError] = useState<string | null>(null);
@@ -158,6 +168,8 @@ export const App: React.FC = () => {
 
   const [contextMode, setContextMode] = useState<"compact" | "full">("full");
   const [enforcement, setEnforcement] = useState<"strict" | "light" | "off">("strict");
+  // Held by the server, per model and on disk: never replayed from here on connect.
+  const [temperature, setTemperature] = useState<TemperatureState>({ supported: false, value: null });
   const [approvalMode, setApprovalMode] = useState<ApprovalMode>("manual");
   const [contextUsage, setContextUsage] = useState<ContextUsage | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -293,6 +305,7 @@ export const App: React.FC = () => {
         if (msg.enforcement) setEnforcement(msg.enforcement);
         if (msg.approval_mode) setApprovalMode(msg.approval_mode);
         if (msg.thinking) setThinkingProfile(msg.thinking);
+        if (msg.temperature) setTemperature(msg.temperature);
         handleReady();
         return;
 
@@ -314,12 +327,7 @@ export const App: React.FC = () => {
         // the user last connected to and asked us to keep.
         const saved = msg.remembered ?? null;
         setRemembered(saved);
-        if (saved) {
-          setBackend(saved.backend);
-          if (saved.backend === "ollama") setOllamaBaseUrl(saved.baseUrl);
-          else if (saved.backend === "ray") setRayBaseUrl(saved.baseUrl);
-          else setVllmBaseUrl(saved.baseUrl);
-        }
+        if (saved) seedAddress(saved.backend, saved.baseUrl);
         return;
       }
 
@@ -349,6 +357,7 @@ export const App: React.FC = () => {
         setModel(msg.model);
         if (msg.thinking) setThinkingProfile(msg.thinking);
         if (msg.enforcement) setEnforcement(msg.enforcement);
+        if (msg.temperature) setTemperature(msg.temperature);
         return;
 
       case "todo":
@@ -407,6 +416,10 @@ export const App: React.FC = () => {
 
       case "streaming":
         setStreaming(msg.enabled);
+        return;
+
+      case "temperature":
+        setTemperature({ supported: msg.supported, value: msg.value });
         return;
 
       // Parks the agent on a person: the card is local state, and the reducer is
@@ -671,11 +684,12 @@ export const App: React.FC = () => {
     (mdl: string, be: string, baseUrl: string, anthropicApiKey?: string, remember?: boolean) => {
       lastConnectArgsRef.current = [mdl, be, baseUrl, anthropicApiKey, remember];
       setRemembered(remember ? { backend: be, baseUrl, model: mdl } : null);
+      seedAddress(be, baseUrl);
       setConnection("connecting");
       setAgentReady(false);
       connect(mdl, be, baseUrl, anthropicApiKey, remember);
     },
-    [connect],
+    [connect, seedAddress],
   );
 
   // Ask the extension host what the endpoint at *baseUrl* serves. Anthropic has
@@ -941,6 +955,12 @@ export const App: React.FC = () => {
   const handleEnforcementChange = useCallback((val: "strict" | "light" | "off") => {
     setEnforcement(val);
     send({ type: "command", text: `/enforcement ${val}` });
+  }, [send]);
+
+  // null = back to the model's own. The server answers with the value it holds.
+  const handleTemperatureChange = useCallback((value: number | null) => {
+    setTemperature((t) => ({ ...t, value }));
+    send({ type: "command", text: `/temperature ${value === null ? "default" : value}` });
   }, [send]);
 
   const handleApprovalModeChange = useCallback((val: ApprovalMode) => {
@@ -1254,6 +1274,8 @@ export const App: React.FC = () => {
                   streaming={streaming}
                   contextMode={contextMode}
                   enforcement={enforcement}
+                  temperature={temperature}
+                  onTemperatureChange={handleTemperatureChange}
                   onThinkingLevelChange={handleThinkingLevelChange}
                   onStreamingToggle={handleStreamingToggle}
                   onContextModeChange={handleContextModeChange}

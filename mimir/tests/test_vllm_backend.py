@@ -99,6 +99,37 @@ class FinishReasonTests(unittest.TestCase):
         self.assertNotIn("finish_reason", self._run(False, response))
 
 
+class SamplingParamsTests(unittest.TestCase):
+    """The model's generation_config decides sampling unless a caller overrides it.
+
+    A forced low temperature sent a reasoning model into repetition loops, so the
+    backend adds no default of its own.
+    """
+
+    def _sent(self, options):
+        import mimir.client.query_engine.backends.vllm_backend as vb
+        sent = {}
+        message = types.SimpleNamespace(role="assistant", content="ok", tool_calls=None)
+        response = types.SimpleNamespace(
+            choices=[types.SimpleNamespace(finish_reason="stop", message=message)])
+
+        def _create(client, kwargs):
+            sent.update(kwargs)
+            return response
+
+        with patch.object(vb, "_create", _create), \
+             patch.object(vb, "served_model_len", lambda model, config=None: None):
+            FinishReasonTests._backend().chat(
+                "m", [{"role": "user", "content": "q"}], [], False, False, options)
+        return sent
+
+    def test_no_temperature_unless_asked(self) -> None:
+        self.assertNotIn("temperature", self._sent({}))
+
+    def test_an_explicit_temperature_is_forwarded(self) -> None:
+        self.assertEqual(self._sent({"temperature": 0.0})["temperature"], 0.0)
+
+
 class TokenizeAbsenceTests(unittest.TestCase):
     """Regression: a router with no /tokenize cost a round-trip per message per pass.
 

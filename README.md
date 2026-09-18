@@ -346,6 +346,9 @@ The authoritative definition of policy, completion gating, and workflow-state ru
   thinking is on but uncapped and self-calibrated (a prompt directive asks the model to
   keep it short on trivial turns and spend a long chain only where the task is genuinely
   uncertain); the fixed rungs impose a token budget instead. Live, like the mode.
+- **Temperature** — `/temperature <0-2>|default`, or the ⚙ panel. Default sends none:
+  the model's own recommended sampling applies. A value is kept per model, across
+  restarts. vLLM, Ray and Ollama only.
 - **Server & skill toggles** — hide a server's tools or a skill from the model via the webview
   panel or `/servers` / `/skills`; persisted in `<state-dir>/preferences.json`.
 - **Approval & trust** — `/trust` / `/untrust` a tool for the session; `/batch on|off` batches

@@ -15,6 +15,8 @@ from .config import (
     DEFAULT_THINKING_DEPTH,
     THINKING_DEPTH_BUDGETS,
     clamp_thinking_depth,
+    TEMPERATURE_MAX,
+    TEMPERATURE_MIN,
     STATE_DIR,
     SERVER_BASE,
     SKILL_BASE,
@@ -173,6 +175,11 @@ class MimirAgent:
         # immutable for the agent's lifetime, so there is nothing to re-resolve per
         # turn. Overridable at runtime via set_enforcement / the /enforcement command.
         self.enforcement: str = enforcement_level(model)
+        # Sampling temperature the user chose for this model, or None for the model's
+        # own (nothing sent). Persisted per model, so a sub-agent of the same model
+        # starts from it too.
+        from .config.preferences import load_temperature
+        self.temperature: float | None = load_temperature(model)
         self.sessions: dict[str, ClientSession] = {}
         self.tool_owner: dict[str, str] = {}
         self.tools: list[dict] = []
@@ -296,6 +303,8 @@ class MimirAgent:
         self.model = model
         os.environ["MIMIR_DEFAULT_MODEL"] = model
         self.enforcement = enforcement_level(model)
+        from .config.preferences import load_temperature
+        self.temperature = load_temperature(model)
 
     def set_batch_mode(self, enabled: bool) -> None:
         self.approvals.batch_mode = enabled
@@ -318,6 +327,17 @@ class MimirAgent:
         if normalized not in ("compact", "full"):
             raise ValueError("Invalid context mode. Use 'compact' or 'full'.")
         self.context_mode = normalized
+
+    def set_temperature(self, value: float | None) -> None:
+        """Set this model's sampling temperature and persist it; None restores its own."""
+        if value is not None:
+            value = float(value)
+            if not TEMPERATURE_MIN <= value <= TEMPERATURE_MAX:
+                raise ValueError(
+                    f"Temperature must be between {TEMPERATURE_MIN:g} and {TEMPERATURE_MAX:g}.")
+        self.temperature = value
+        from .config.preferences import save_temperature
+        save_temperature(self.model, value)
 
     def set_enforcement(self, level: str) -> None:
         normalized = (level or "").strip().lower()

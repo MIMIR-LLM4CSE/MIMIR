@@ -3017,6 +3017,11 @@ body {
 .settings-depth-tick:hover { color: var(--fg); }
 .settings-depth-tick.active { color: var(--accent); font-weight: 600; }
 
+/* A temperature hint that warns rather than describes. */
+.settings-temp-warn {
+  color: var(--vscode-editorWarning-foreground, #cca700);
+}
+
 /* ── Context usage bar ────────────────────────────────────────────────────── */
 .ctx-bar {
   display: flex;

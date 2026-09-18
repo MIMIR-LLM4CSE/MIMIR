@@ -1,5 +1,5 @@
-import React, { useEffect, useRef } from "react";
-import type { ThinkingProfile } from "../types";
+import React, { useEffect, useRef, useState } from "react";
+import type { TemperatureState, ThinkingProfile } from "../types";
 
 // Mode lives in its own toolbar control (ModeSwitcher), not in this popover.
 interface Props {
@@ -8,6 +8,8 @@ interface Props {
   streaming: boolean;
   contextMode: "compact" | "full";
   enforcement: "strict" | "light" | "off";
+  temperature: TemperatureState;
+  onTemperatureChange: (value: number | null) => void;
   onThinkingLevelChange: (level: number) => void;
   onStreamingToggle: (val: boolean) => void;
   onContextModeChange: (val: "compact" | "full") => void;
@@ -106,6 +108,27 @@ const ENFORCEMENT_HINTS: Record<"strict" | "light" | "off", string> = {
   off: "Guidance off — verification & safety always on",
 };
 
+/* ── Temperature ─────────────────────────────────────────────────────────────
+ * Mirrors TEMPERATURE_MIN / TEMPERATURE_MAX in client/config/constants.py. The
+ * hints are tendencies, not thresholds: the right value differs per model, which is
+ * why "Model default" (nothing sent) is the starting state.                      */
+const TEMP_MIN = 0;
+const TEMP_MAX = 2;
+const TEMP_STEP = 0.05;
+// Where unticking "Model default" puts the slider: neutral for most families.
+const TEMP_START = 1.0;
+
+function temperatureHint(value: number, thinkingOn: boolean): { text: string; warn: boolean } {
+  if (value < 0.4) {
+    return thinkingOn
+      ? { text: "⚠ Low with reasoning on: risk of repetition loops in the thinking", warn: true }
+      : { text: "Near-deterministic: little variation between attempts", warn: false };
+  }
+  if (value <= 1.0) return { text: "Usual range for reasoning models", warn: false };
+  if (value <= 1.3) return { text: "More varied output; occasional drift", warn: false };
+  return { text: "⚠ Incoherent output and malformed tool calls likely", warn: true };
+}
+
 // Approvals live in their own toolbar control (ApprovalSwitcher), not in this
 // popover: the mode answers cards on the user's behalf and is switched mid-run, so
 // its state has to be readable without opening anything.
@@ -115,6 +138,8 @@ export const AgentSettings: React.FC<Props> = ({
   streaming,
   contextMode,
   enforcement,
+  temperature,
+  onTemperatureChange,
   onThinkingLevelChange,
   onStreamingToggle,
   onContextModeChange,
@@ -134,6 +159,17 @@ export const AgentSettings: React.FC<Props> = ({
       );
 
   const ref = useRef<HTMLDivElement>(null);
+
+  // The slider moves a local draft; the value is sent on release only, since each
+  // send is a write to the preferences file.
+  const [tempDraft, setTempDraft] = useState<number>(temperature.value ?? TEMP_START);
+  useEffect(() => {
+    setTempDraft(temperature.value ?? TEMP_START);
+  }, [temperature.value]);
+  const commitTemp = () => {
+    if (temperature.value !== null && tempDraft !== temperature.value) onTemperatureChange(tempDraft);
+  };
+  const tempHint = temperatureHint(tempDraft, thinkingLevel > 0);
 
   // Close on click outside
   useEffect(() => {
@@ -226,6 +262,52 @@ export const AgentSettings: React.FC<Props> = ({
         <div className="settings-context-hint">{scale.hints[rung]}</div>
         {scale.note && <div className="settings-context-hint settings-depth-note">{scale.note}</div>}
       </div>
+
+      {temperature.supported && (
+        <>
+          <div className="settings-divider" />
+
+          {/* Sampling temperature — per model; the default sends none */}
+          <div className="settings-section-label">Temperature</div>
+          <div
+            className="settings-toggle-row"
+            title="Send no temperature: the server applies the model's own recommended sampling"
+            onClick={() => onTemperatureChange(temperature.value === null ? TEMP_START : null)}
+          >
+            <span className="settings-toggle-label">Model default</span>
+            <span className={`settings-toggle ${temperature.value === null ? "on" : "off"}`}>
+              {temperature.value === null ? "on" : "off"}
+            </span>
+          </div>
+          {temperature.value !== null && (
+            <div className="settings-depth-wrap">
+              <div className="settings-depth-header">
+                <span className="settings-depth-badge on">🌡 {tempDraft.toFixed(2)}</span>
+                <span className="settings-depth-budget">this model only</span>
+              </div>
+              <input
+                type="range"
+                min={TEMP_MIN}
+                max={TEMP_MAX}
+                step={TEMP_STEP}
+                value={tempDraft}
+                className="settings-depth-slider"
+                style={{ "--pct": `${((tempDraft - TEMP_MIN) * 100) / (TEMP_MAX - TEMP_MIN)}%` } as React.CSSProperties}
+                onChange={(e) => setTempDraft(Math.round(Number(e.target.value) * 100) / 100)}
+                onPointerUp={commitTemp}
+                onKeyUp={commitTemp}
+                onBlur={commitTemp}
+              />
+              <div className={`settings-context-hint ${tempHint.warn ? "settings-temp-warn" : ""}`}>
+                {tempHint.text}
+              </div>
+            </div>
+          )}
+          <div className="settings-context-hint settings-depth-note">
+            Recommended values differ per model; "Model default" uses its publisher's.
+          </div>
+        </>
+      )}
 
       <div className="settings-divider" />
 

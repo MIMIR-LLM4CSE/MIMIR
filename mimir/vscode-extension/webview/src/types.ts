@@ -15,6 +15,14 @@ export interface ThinkingProfile {
   can_disable: boolean;
 }
 
+/** Whether the backend honours a sampling temperature, and the one the user set for
+ *  the served model. `value` null is the model's own: nothing is sent, and the server
+ *  applies the model's generation_config. */
+export interface TemperatureState {
+  supported: boolean;
+  value: number | null;
+}
+
 export interface ReadyMessage {
   type: "ready";
   model: string;
@@ -26,6 +34,7 @@ export interface ReadyMessage {
   enforcement?: "strict" | "light" | "off";
   approval_mode?: ApprovalMode;
   thinking?: ThinkingProfile;
+  temperature?: TemperatureState;
 }
 
 export interface OutputMessage {
@@ -166,6 +175,8 @@ export interface ModelChangedMessage {
   thinking?: ThinkingProfile;
   /** Re-derived enforcement level for the new model, when the server reports it. */
   enforcement?: "strict" | "light" | "off";
+  /** The temperature stored for the new model (each model keeps its own). */
+  temperature?: TemperatureState;
 }
 
 export interface ThinkingMessage {
@@ -432,6 +443,11 @@ export interface ThinkingDepthMessage {
   label?: string;
 }
 
+/** The temperature the agent holds, after /temperature. */
+export interface TemperatureMessage extends TemperatureState {
+  type: "temperature";
+}
+
 /** Whether the agent is actually streaming, reported after any change. */
 export interface StreamingStateMessage {
   type: "streaming";
@@ -578,6 +594,7 @@ export type ServerMessage =
   | ApprovalModeMessage
   | AgentModeMessage
   | ThinkingDepthMessage
+  | TemperatureMessage
   | StreamingStateMessage
   | ContextUsageMessage
   | JobCompleteMessage

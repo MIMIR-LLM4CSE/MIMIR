@@ -131,6 +131,7 @@ class SessionFencingTests(unittest.IsolatedAsyncioTestCase):
         w.set_model = lambda m: (setattr(w, "model", m), "")[1]
         w.get_thinking_profile = lambda: {"mechanism": "kwarg"}
         w.get_enforcement = lambda: "light"
+        w.get_temperature_state = lambda: {"supported": True, "value": 0.6}
         sess = self._session(w)
         await sess._handle_set_model({"model": "qwen3:30b"})
         self.assertEqual(len(sess.ws.sent), 1)
@@ -139,6 +140,7 @@ class SessionFencingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["model"], "qwen3:30b")
         self.assertEqual(payload["thinking"], {"mechanism": "kwarg"})
         self.assertEqual(payload["enforcement"], "light")
+        self.assertEqual(payload["temperature"], {"supported": True, "value": 0.6})
 
     async def test_set_model_with_no_name_sends_an_error_not_a_change(self):
         sess = self._session(_bare_worker())

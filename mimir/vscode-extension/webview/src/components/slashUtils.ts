@@ -32,6 +32,7 @@ export const SESSION_COMMANDS: ToggleItem[] = [
   { name: "context", description: "compact | full — how much context to send", enabled: true },
   { name: "thinking", description: "on | off — reasoning", enabled: true },
   { name: "thinking-depth", description: "0-4 — how much reasoning", enabled: true },
+  { name: "temperature", description: "0-2 | default — sampling temperature for this model", enabled: true },
   { name: "streaming", description: "on | off — stream tokens as they arrive", enabled: true },
   { name: "approvals", description: "manual | auto | all — approval mode", enabled: true },
   { name: "enforcement", description: "strict | light | off — guidance nudges", enabled: true },

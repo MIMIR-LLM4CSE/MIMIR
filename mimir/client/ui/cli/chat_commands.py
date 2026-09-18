@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import json
+import os
 
 from typing import Any, Awaitable, Callable, Iterable
 
-from ...config import THINKING_DEPTH_LABELS, thinking_depth_from_label
+from ...config import (
+    TEMPERATURE_BACKENDS, TEMPERATURE_MAX, TEMPERATURE_MIN, THINKING_DEPTH_LABELS,
+    parse_temperature, thinking_depth_from_label,
+)
 
 
 # What the user types → the mode name. "all" is the spoken form of ``auto_all``:
@@ -36,6 +40,8 @@ async def handle_chat_command(
     set_batch_mode: Callable[[bool], None],
     set_context_mode: Callable[[str], None] | None = None,
     set_enforcement: Callable[[str], None] | None = None,
+    temperature: float | None = None,
+    set_temperature: Callable[[float | None], None] | None = None,
     set_approval_mode: Callable[[str], None] | None = None,
     trust_tool: Callable[[str], None] | None = None,
     untrust_tool: Callable[[str], None] | None = None,
@@ -80,6 +86,8 @@ async def handle_chat_command(
             "                           full: keep all tool messages in history (200K+ models)\n"
             "  /enforcement strict|light|off -> guidance-nudge level (verification/safety always on);\n"
             "                           strict: all guidance; light: drop discovery nudge; off: no guidance\n"
+            "  /temperature <0-2>|default -> sampling temperature for this model, kept across\n"
+            "                           restarts; default (initial) sends none, the model's own applies\n"
             "  /status       -> show current mode\n"
             "  /think off|auto|quick|medium|deep|max -> reasoning depth; auto (default) lets the\n"
             "                           model calibrate per turn, the rest impose a fixed budget\n"
@@ -126,6 +134,9 @@ async def handle_chat_command(
         lines.append(file_hint)
         return True, "\n".join(lines) + "\n"
 
+    def _temperature_label() -> str:
+        return "default" if temperature is None else f"{temperature:g}"
+
     if cmd == "/status":
         think_status = _thinking_label()
         stream_status = "on" if streaming else "off"
@@ -136,6 +147,7 @@ async def handle_chat_command(
             f"\nCurrent mode: {mode} | "
             f"thinking: {think_status} | streaming: {stream_status} | batch: {batch_status} | "
             f"context: {context_mode} | enforcement: {enforcement} | "
+            f"temperature: {_temperature_label()} | "
             f"approvals: {_APPROVAL_LABELS.get(approval_mode, approval_mode)} | "
             f"trusted: {trusted_list}\n",
         )
@@ -231,6 +243,28 @@ async def handle_chat_command(
             except ValueError as exc:
                 return True, f"\n❌ {exc}\n"
         return True, f"\nEnforcement level switched to: {val}.\n"
+
+    if cmd == "/temperature":
+        backend = os.environ.get("LLM_BACKEND", "vllm").lower()
+        ignored = (
+            "" if backend in TEMPERATURE_BACKENDS
+            else f" The {backend} backend ignores it."
+        )
+        if len(parts) == 1:
+            meaning = ("the model's own, none sent" if temperature is None
+                       else "set for this model")
+            return True, f"\nTemperature is currently: {_temperature_label()} ({meaning}).{ignored}\n"
+        ok, value = parse_temperature(parts[1])
+        if not ok:
+            return True, (
+                f"\n❌ Usage: /temperature <{TEMPERATURE_MIN:g}-{TEMPERATURE_MAX:g}>|default\n")
+        if set_temperature is not None:
+            try:
+                set_temperature(value)
+            except ValueError as exc:
+                return True, f"\n❌ {exc}\n"
+        shown = "default (the model's own)" if value is None else f"{value:g}"
+        return True, f"\nTemperature set to: {shown}.{ignored}\n"
 
     if cmd == "/trust":
         if len(parts) < 2:

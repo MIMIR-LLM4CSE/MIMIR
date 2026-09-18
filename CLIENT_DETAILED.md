@@ -56,6 +56,7 @@ separate handler.
 | `/help`, `/status` | usage; current model, mode, depth, approvals, trusted tools |
 | `/mode [agent\|plan\|ask]` | switch session mode |
 | `/think <depth>` | `off` · `auto` · `quick` · `medium` · `deep` · `max` |
+| `/temperature <0-2>\|default` | sampling temperature for the current model; `default` sends none |
 | `/enforcement strict\|light\|off` | the guidance-nudge dial ([POLICY.md](POLICY.md#nudges-by-enforcement-level)) |
 | `/approvals manual\|auto\|all` | who answers the approval cards ([POLICY.md](POLICY.md#policy-gates-by-approval-mode)) |
 | `/batch on\|off` | queue write approvals until the end of the turn |
@@ -148,6 +149,14 @@ written sorted and atomically to `<STATE_DIR>/preferences.json`. Only *disabled*
 stored, so a newly added server or skill is visible by default. It is agent **state**, not
 a user extension, which is why it lives under the state dir rather than the workspace
 `.mimir/`.
+
+The same file holds `temperatures`: the sampling temperature the user chose, per served
+model name. A model absent from it sends **no** temperature, and the server applies the
+model's own `generation_config`. The agent loads the value at construction and again on
+`set_model`, so each model keeps its own and a sub-agent of the same model starts from it.
+Both loops read `agent.temperature` before each call, so a change lands on the next step.
+Only vLLM, Ray and Ollama forward it. Anthropic's extended thinking requires 1, so the
+webview hides the control there. Each save rewrites only its own keys and keeps the rest.
 
 ---
 

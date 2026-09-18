@@ -147,6 +147,7 @@ class GreetingTests(unittest.IsolatedAsyncioTestCase):
         w.get_enforcement = lambda: "strict"
         w.get_approval_mode = lambda: "normal"
         w.get_thinking_profile = lambda: {}
+        w.get_temperature_state = lambda: {"supported": True, "value": None}
         return SessionFencingTests._session(self, w)
 
     def test_the_socket_greeting_admits_the_agent_is_not_up(self):
@@ -227,6 +228,7 @@ class ReadinessAnnouncementTests(unittest.IsolatedAsyncioTestCase):
         w.get_enforcement = lambda: "light"
         w.get_approval_mode = lambda: "manual"
         w.get_thinking_profile = lambda: {}
+        w.get_temperature_state = lambda: {"supported": True, "value": None}
         return w
 
     async def test_an_agent_that_comes_up_during_setup_is_announced(self):

@@ -1230,6 +1230,13 @@ class _AgentWorker:
             except ValueError:
                 pass
 
+    def set_temperature(self, value: float | None) -> None:
+        if self._agent is not None:
+            try:
+                self._agent.set_temperature(value)
+            except ValueError:
+                pass
+
     def set_approval_mode(self, mode: str) -> None:
         """Switch who answers the approval cards — valid mid-run.
 
@@ -1259,6 +1266,22 @@ class _AgentWorker:
         if self._agent is not None:
             return getattr(self._agent.approvals, "approval_mode", "manual")
         return "manual"
+
+    def get_temperature_state(self) -> dict:
+        """Whether this backend honours a temperature, and the one set for the model.
+
+        ``value`` None is the model's own. Before the agent exists (the greeting is
+        sent while the backend is still coming up) it is read from the stored
+        preference, which is exactly what the agent will load.
+        """
+        from ...config import TEMPERATURE_BACKENDS
+        backend = os.environ.get("LLM_BACKEND", "vllm").lower()
+        if self._agent is not None:
+            value = getattr(self._agent, "temperature", None)
+        else:
+            from ...config.preferences import load_temperature
+            value = load_temperature(self.model)
+        return {"supported": backend in TEMPERATURE_BACKENDS, "value": value}
 
     def get_thinking_profile(self) -> dict:
         """What the panel needs to draw a depth control this model can honour.

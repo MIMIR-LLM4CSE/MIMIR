@@ -614,8 +614,8 @@ class VllmBackend(LLMBackend):
         extra_body: dict = _thinking_extra_body(model, thinking, options)
 
         # top_k is not an OpenAI-standard sampling param; vLLM accepts it via
-        # extra_body. Forward it when callers (e.g. plan mode) request it so the
-        # constraint is actually applied instead of being silently dropped.
+        # extra_body. Forward it when a caller requests it, so the constraint is
+        # actually applied instead of being silently dropped.
         top_k = options.get("top_k")
         if top_k is not None:
             extra_body["top_k"] = top_k
@@ -638,8 +638,12 @@ class VllmBackend(LLMBackend):
             model=model,
             messages=prepared_messages,
             stream=streaming,
-            temperature=options.get("temperature", 0.3),
         )
+        # Sent only when a caller asks for it. Left out, vLLM applies the model's
+        # generation_config, i.e. its publisher's sampling. A default here would
+        # override that on every agent turn.
+        if options.get("temperature") is not None:
+            create_kwargs["temperature"] = options["temperature"]
         if tools:
             create_kwargs["tools"] = tools
         if extra_body:
