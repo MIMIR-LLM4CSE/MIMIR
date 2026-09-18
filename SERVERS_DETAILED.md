@@ -508,7 +508,20 @@ A long finished run comes back as its **beginning and its end**, cut on whole li
 the middle replaced by a marker that gives the bytes left out. The beginning holds the
 first error; the end says how the run finished. With the beginning alone, the model piped
 every build into `tail`, and a pipe holds the output back until the build ends, which hid
-its progress from the user. A run still going returns its tail instead. A blocking run's
+its progress from the user. A run still going returns its tail instead.
+
+That last hazard is now handled rather than only discouraged. A job's log is the
+pipeline's own output, so `make | tail -40` leaves it empty for the whole build and no
+count can be read from it. When the command pipes a build tool into anything,
+`build_progress.tee_command` splices a `tee` in ahead of the filter, writing a second
+copy to `progress.log` in the job directory, and every progress read looks there
+(`_bash_jobs.progress_path`). The filter stays, so the output and the exit status are
+what the caller asked for; `meta.json` records the rewritten command as
+`effective_command` beside the one that was approved. Deciding this needs the pipeline's
+shape, which is why `ParsedSegment` carries the separator that follows it — without it
+`make | tail` and `make && tail log` read the same. The splice is textual, at the offset
+`unquoted_pipe_offsets` gives: reassembling the command from shlex tokens would quote a
+glob or a `$VAR` into a literal. A blocking run's
 job directory is a scratch buffer, marked `ephemeral` in its `meta.json` and deleted
 the moment the call returns; a detached one's is the handle itself and is never swept.
 

@@ -897,7 +897,8 @@ def _run(
                 # prints its count into this log. Only a change is written, and a
                 # count that disappears (the build ended, the next step began) is
                 # retracted rather than left standing.
-                progress = build_progress.from_file(_bash_jobs.log_path(job_key))
+                progress = build_progress.from_file(
+                    _bash_jobs.progress_path(job_key))
                 if progress != last_progress:
                     last_progress = progress
                     percent, phase = progress if progress else (None, "")
@@ -995,8 +996,8 @@ def bash_run(command: str, timeout: int = _DEFAULT_TIMEOUT,
                                             # without its line number costs a read
         gcc solver.c -O3 -o solver.out -lm && ./solver.out
         python -m pytest tests/test_thing.py -q     # also ruff / mypy / py_compile
-        make -j8 2>&1                       # never `| tail`/`| head` on a build:
-                                            # the pipe hides its progress bar
+        make -j8 2>&1                       # bare: a `| head` on a build stops it
+                                            # early, a `| tail` drops its first error
         module load cuda && nvcc kernel.cu -o kernel.out
         pip list | grep -i numpy            # then: pip install <pkg>
 
@@ -1022,9 +1023,9 @@ def bash_run(command: str, timeout: int = _DEFAULT_TIMEOUT,
 
     Output: a long result comes back as its beginning and its end, with the middle
     left out and marked, so the first error and the last lines are both there. DO NOT
-    pipe a command into `tail` or `head` to shorten it: a pipe holds the output back
-    until the command ends, which hides a build's progress from the user while it
-    runs. For the same reason, LEAVE a build's output unfiltered.
+    pipe a command into `tail` or `head` to shorten it: that is already done, and
+    better — a `tail` throws away the first error, and a `head` stops the command
+    early, which on a build means an incomplete one reported as finished.
 
     Limits worth knowing before you retry something:
     - every path — file operand, '-o' target, redirection target, 'cd' destination —
@@ -1054,8 +1055,9 @@ def bash_run(command: str, timeout: int = _DEFAULT_TIMEOUT,
             the cap and stops the run, and starting detached costs nothing. The command
             is validated and approved exactly as a blocking one; only the waiting
             changes. Its output goes to a log you can read while it runs, so pass the
-            build command bare: a `| tail` or `| head` keeps that log empty until the
-            end, and the user sees no progress. If the result
+            build command bare rather than filtering it: a `| tail` keeps that log
+            empty until the very end, and there is nothing to read meanwhile. If the
+            result
             comes back saying the run is being watched, end your turn on it — you are
             resumed with the results. Say that only when the result says it.
     """

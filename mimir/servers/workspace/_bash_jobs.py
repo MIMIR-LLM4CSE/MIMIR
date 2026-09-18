@@ -76,6 +76,26 @@ def err_path(job_key: str) -> str:
     return _path(job_key, "run.err")
 
 
+def tee_path(job_key: str) -> str:
+    """Where a piped build's output is copied, so its count stays readable.
+
+    Written only when :func:`launch` spliced a ``tee`` in; see
+    ``build_progress.tee_command``. Never what the caller is shown — that stays the
+    pipeline's own output in ``run.log``, which is what it asked for.
+    """
+    return _path(job_key, "progress.log")
+
+
+def progress_path(job_key: str) -> str:
+    """The log a progress read should look at: the tee's copy when there is one.
+
+    A job whose output was not piped has no copy, and its run.log already holds
+    everything the build printed.
+    """
+    teed = tee_path(job_key)
+    return teed if os.path.exists(teed) else log_path(job_key)
+
+
 def _read(job_key: str, name: str, default: str = "") -> str:
     try:
         with open(_path(job_key, name)) as fh:
@@ -189,7 +209,11 @@ def launch(command: str, cwd: str, env: dict, preamble: str = "",
     os.makedirs(_job_dir(job_key), exist_ok=True)
 
     rc_path = _path(job_key, "exit_code")
-    script = _wrap(preamble + command, rc_path)
+    # A build piped into a filter gets a second copy of its output, taken before the
+    # filter, or nothing here would see its progress until it had finished. The
+    # command the caller wrote still runs, and still decides the exit status.
+    effective = build_progress.tee_command(command, tee_path(job_key)) or command
+    script = _wrap(preamble + effective, rc_path)
 
     log = log_path(job_key)
     err_fh = open(err_path(job_key), "w") if split_stderr else None
@@ -221,6 +245,10 @@ def launch(command: str, cwd: str, env: dict, preamble: str = "",
         "split_stderr": bool(split_stderr),
         "ephemeral": bool(ephemeral),
     }
+    if effective != command:
+        # What bash was actually handed, kept next to what was asked for: a later
+        # reader must be able to see that the two differ and how.
+        meta["effective_command"] = effective
     with open(_path(job_key, "meta.json"), "w") as fh:
         json.dump(meta, fh, indent=2)
     return {"job_key": job_key, "pid": proc.pid, "log": log,
@@ -362,7 +390,7 @@ def state(job_key: str) -> dict:
         payload["state"] = "running"
         # The build's own count, when its output carries one — the client watcher
         # passes phase/percent on without knowing what produced them.
-        progress = build_progress.from_file(log_path(job_key))
+        progress = build_progress.from_file(progress_path(job_key))
         if progress:
             payload["percent"], payload["phase"] = progress
         return payload

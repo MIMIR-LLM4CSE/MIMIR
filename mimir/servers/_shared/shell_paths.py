@@ -500,10 +500,18 @@ class ParsedSegment:
     a real command the shell will run, so it is emitted as its own segment and every
     caller confines its operands and classifies its head exactly as usual; the flag
     only lets the *policy* layer treat it differently from a top-level command.
+
+    ``sep`` is the separator that *follows* this segment (``''`` for the last one and
+    for a nested one). Without it a chain reads as a flat list, and ``make | tail``
+    is indistinguishable from ``make && tail log`` — the first hands the build's
+    output to a filter that withholds it, the second does not. Only a caller that
+    reasons about the plumbing itself needs this; one that only judges each command
+    on its own keeps ignoring it.
     """
     argv: list[str]
     redirections: list[Redirection] = field(default_factory=list)
     nested: bool = False
+    sep: str = ""
 
     @property
     def write_targets(self) -> list[str]:
@@ -602,7 +610,7 @@ def parse_segments(command: str) -> list[ParsedSegment]:
             if not argv:
                 raise ShellParseError(
                     "separator", "A command separator must join two real commands.")
-            segments.append(ParsedSegment(argv, redirections))
+            segments.append(ParsedSegment(argv, redirections, sep=tok))
             argv, redirections = [], []
             i += 1
             continue
@@ -661,6 +669,38 @@ def parse_segments(command: str) -> list[ParsedSegment]:
     # Nested commands trail the chain they were lifted from, so top-level order stays
     # intact for callers reasoning about `cd` rebasing.
     return segments + nested_segments
+
+
+def unquoted_pipe_offsets(command: str) -> list[int]:
+    """Where each unquoted ``|`` sits in *command*, in order; ``||`` is not one.
+
+    Offsets into the string the shell is actually handed, which is what a caller
+    splicing something into the pipeline needs: :func:`parse_segments` works from
+    shlex tokens, and reassembling a command from those would quote a glob or a
+    ``$VAR`` into a literal. So the k-th ``|`` separator of the parse is matched to
+    the k-th offset here and the text is cut at that point, leaving every other
+    character exactly as written. Both counts see the same pipes — newline
+    flattening moves characters around but adds and removes none.
+    """
+    offsets: list[int] = []
+    in_single = in_double = False
+    i, n = 0, len(command)
+    while i < n:
+        ch = command[i]
+        if ch == "\\" and not in_single and i + 1 < n:
+            i += 2  # the escape and whatever it protects, '|' included
+            continue
+        if ch == "'" and not in_double:
+            in_single = not in_single
+        elif ch == '"' and not in_single:
+            in_double = not in_double
+        elif ch == "|" and not in_single and not in_double:
+            if i + 1 < n and command[i + 1] == "|":
+                i += 2  # '||' chains two commands, it pipes nothing
+                continue
+            offsets.append(i)
+        i += 1
+    return offsets
 
 
 def is_path_like_command(argv0: str) -> bool:

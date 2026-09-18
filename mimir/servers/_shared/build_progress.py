@@ -22,6 +22,9 @@ from __future__ import annotations
 
 import os
 import re
+import shlex
+
+import shell_paths
 
 # Anchored at the start of a line: a compiler diagnostic quoting "[3/4]" mid-sentence
 # is not a progress report.
@@ -98,3 +101,86 @@ def read_tail(path: str, max_bytes: int = TAIL_BYTES) -> str:
 def from_file(path: str, drop_finished: bool = True) -> tuple[float, str] | None:
     """:func:`parse` applied to the end of the log at *path*."""
     return parse(read_tail(path), drop_finished)
+
+
+# --- Getting the bytes out of a pipeline ------------------------------------------
+#
+# Everything above reads a build's own output and nothing else. That only works while
+# the output reaches a log. In `make | tail -40` it does not: the job's log is the
+# *pipeline's* stdout, and `tail` holds everything back until the build has finished,
+# so the log is empty for exactly as long as a bar would have been worth showing.
+#
+# The fix is a second copy, taken before the filter. Which is the one decision here
+# made from the command line rather than from the output — unavoidably, since it has
+# to be made before a single byte exists. It decides only where bytes are copied to;
+# whether there is a bar to show is still the build's own count or nothing.
+
+# The tools whose progress this module can read, and the subcommand each needs before
+# it is a build rather than a configure or a query. `cmake` alone is a configure step,
+# which prints no count.
+_BUILD_TOOLS = {
+    "make": (), "gmake": (), "ninja": (), "samu": (),
+    "cmake": ("--build",), "meson": ("compile",), "bazel": ("build",),
+    "fpm": ("build",),
+}
+
+# Commands that run another command: the build is real, it just is not argv[0].
+_WRAPPERS = frozenset({"timeout", "env", "nice", "ionice", "stdbuf", "time", "nohup"})
+
+
+def _head_of(argv: list[str]) -> str:
+    """The program *argv* runs, seen through any wrappers in front of it."""
+    i = 0
+    while i < len(argv) and argv[i] in _WRAPPERS:
+        i += 1
+        # The wrapper's own options and the operand some of them take ('timeout 60',
+        # 'nice -n 10', 'env A=B') sit between it and the command it runs.
+        while i < len(argv) and (
+            argv[i].startswith("-") or "=" in argv[i]
+            or argv[i].replace(".", "", 1).isdigit()
+        ):
+            i += 1
+    return argv[i] if i < len(argv) else ""
+
+
+def _is_build(argv: list[str]) -> bool:
+    head = _head_of(argv)
+    if head not in _BUILD_TOOLS:
+        return False
+    required = _BUILD_TOOLS[head]
+    return not required or any(word in argv for word in required)
+
+
+def tee_command(command: str, log_path: str) -> str | None:
+    """*command* with a ``tee`` to *log_path* spliced in after a piped build.
+
+    Returns None when there is nothing to do — no pipe, nothing that builds in front
+    of one, or a ``tee`` already there. The rewrite is deliberately the smallest one
+    that works: the filter stays, every other character stays, and ``tee`` is not the
+    last command of the pipeline, so bash still reports the filter's status as the
+    pipeline's. Same output, same exit code, one more copy on disk.
+
+    Removing the filter instead would be a bigger lie: the caller asked for a short
+    result and would silently get a long one.
+    """
+    try:
+        segments = shell_paths.parse_segments(command)
+    except shell_paths.ShellParseError:
+        return None  # a command the parser refuses never reaches a shell anyway
+    offsets = shell_paths.unquoted_pipe_offsets(command)
+
+    seen = 0
+    for i, seg in enumerate(segments):
+        if seg.sep != "|":
+            continue
+        seen += 1
+        if not _is_build(seg.argv):
+            continue
+        if i + 1 < len(segments) and _head_of(segments[i + 1].argv) == "tee":
+            return None  # the output is already being kept somewhere
+        if seen > len(offsets):
+            return None  # counts disagree: leave the command alone
+        cut = offsets[seen - 1]
+        return (command[:cut] + "| tee -a " + shlex.quote(log_path) + " "
+                + command[cut:])
+    return None
