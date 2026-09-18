@@ -151,3 +151,79 @@ export function fetchModels(
     req.on("error", (err) => finish(() => reject(err)));
   });
 }
+
+/** Node's codes for a certificate the client would not trust. */
+const CERT_CODES = new Set([
+  "SELF_SIGNED_CERT_IN_CHAIN",
+  "DEPTH_ZERO_SELF_SIGNED_CERT",
+  "UNABLE_TO_VERIFY_LEAF_SIGNATURE",
+  "UNABLE_TO_GET_ISSUER_CERT",
+  "UNABLE_TO_GET_ISSUER_CERT_LOCALLY",
+  "CERT_UNTRUSTED",
+  "CERT_HAS_EXPIRED",
+  "ERR_TLS_CERT_ALTNAME_INVALID",
+]);
+
+/**
+ * Turn a `fetchModels` failure into a sentence the user can act on.
+ *
+ * The raw error ("connect ECONNREFUSED 10.0.0.1:8000") says what the socket saw,
+ * not what it means or what to try. Each case here names what happened in plain
+ * words, then the likely fix. The raw text still goes to the output channel, for
+ * whoever needs the code.
+ */
+export function explainFetchError(err: unknown, baseUrl: string): string {
+  const e = err as { code?: string; message?: string } | null;
+  const code = e?.code ?? "";
+  const msg = e?.message ?? String(err);
+  let host = baseUrl;
+  try {
+    host = new URL(baseUrl).host;
+  } catch {
+    return `“${baseUrl}” is not a valid address. It should look like http://host:port.`;
+  }
+
+  if (CERT_CODES.has(code) || /certificate|self.signed/i.test(msg)) {
+    return `The server at ${host} answered, but its security certificate is not trusted `
+      + `(common for internal servers). If you trust this server, untick `
+      + `“Vllm Verify Ssl” in the MIMIR settings, then retry.`;
+  }
+  if (code === "EPROTO" || /wrong version number/i.test(msg)) {
+    return `The server at ${host} does not speak HTTPS. Try the address with http:// instead.`;
+  }
+  switch (code) {
+    case "ECONNREFUSED":
+      return `No server is running at ${host}. Check that the model server is started `
+        + `and that the port is right.`;
+    case "ENOTFOUND":
+    case "EAI_AGAIN":
+      return `The name “${host}” could not be found. Check the spelling, or your VPN.`;
+    case "EHOSTUNREACH":
+    case "ENETUNREACH":
+      return `${host} cannot be reached from this machine. Check your VPN or network.`;
+    case "ECONNRESET":
+      return `The server at ${host} closed the connection. If the address starts with `
+        + `http://, try https:// (or the reverse).`;
+  }
+  if (/timed out/.test(msg)) {
+    return `${host} did not answer in time. The server may still be starting, `
+      + `or the network (VPN, firewall) blocks the way.`;
+  }
+  const status = /^HTTP (\d+)/.exec(msg)?.[1];
+  if (status === "401" || status === "403") {
+    return `The server at ${host} refused access (HTTP ${status}). It needs an API key.`;
+  }
+  if (status === "404") {
+    return `A server answers at ${host}, but it has no model list at this address. `
+      + `Check the path (for example, with or without /v1).`;
+  }
+  if (status) {
+    return `The server at ${host} answered with an error (HTTP ${status}). `
+      + `It may still be starting.`;
+  }
+  if (/unreadable response/.test(msg)) {
+    return `Something answers at ${host}, but it is not a model server. `
+      + `Check the port and the backend type.`;
+  }
+  return `Could not get the model list from ${host} (${msg}).`;
+}

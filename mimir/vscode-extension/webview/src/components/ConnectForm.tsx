@@ -142,14 +142,7 @@ export const ConnectForm: React.FC<Props> = ({
           </div>
           {modelsError && (
             <div className="connect-field-hint connect-field-error">
-              No model list from this address: {modelsError}
-              {/* A refused certificate is the one failure with a one-click remedy,
-                  and the one the server does not share: it verifies nothing by
-                  default, so the list can work there and fail here. */}
-              {/certificate|self.signed|SSL|TLS/i.test(modelsError) && (
-                <> — untick <code>mimir.vllmVerifySsl</code> if this is an internal
-                route behind a private CA.</>
-              )}
+              {modelsError}
             </div>
           )}
         </div>

@@ -4,7 +4,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import WebSocket = require("ws");
-import { fetchModels, type DiscoverableBackend } from "./modelList";
+import { explainFetchError, fetchModels, type DiscoverableBackend } from "./modelList";
 
 let serverProcess: cp.ChildProcess | undefined;
 
@@ -969,7 +969,10 @@ class MimirAgentViewProvider implements vscode.WebviewViewProvider {
       (this._modelLog ??= vscode.window.createOutputChannel("MIMIR Model Discovery")).appendLine(
         `Model list from ${baseUrl} failed: ${reason}`,
       );
-      this._view?.webview.postMessage({ type: "models", backend, models: [], error: reason });
+      // The panel gets the plain-words version; the raw reason stays in the log.
+      this._view?.webview.postMessage({
+        type: "models", backend, models: [], error: explainFetchError(err, baseUrl),
+      });
     }
   }
 

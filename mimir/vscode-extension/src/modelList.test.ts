@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import * as http from "http";
 import type { AddressInfo } from "net";
-import { fetchModels, modelsUrl, parseModels } from "./modelList";
+import { explainFetchError, fetchModels, modelsUrl, parseModels } from "./modelList";
 
 describe("modelsUrl", () => {
   it("builds the OpenAI models path for vLLM", () => {
@@ -106,5 +106,28 @@ describe("fetchModels always settles", () => {
     const { url, close } = await serving(() => {});
     await close();  // nothing is listening on that port any more
     await expect(fetchModels("vllm", url, true, 2000)).rejects.toThrow(/ECONNREFUSED/);
+  });
+});
+
+describe("explainFetchError", () => {
+  const base = "http://10.0.0.1:8000";
+  const sys = (code: string, message = code) => Object.assign(new Error(message), { code });
+
+  it("says no server runs there, not ECONNREFUSED", () => {
+    const text = explainFetchError(sys("ECONNREFUSED", "connect ECONNREFUSED 10.0.0.1:8000"), base);
+    expect(text).toMatch(/No server is running at 10\.0\.0\.1:8000/);
+    expect(text).not.toMatch(/ECONNREFUSED/);
+  });
+
+  it("points an untrusted certificate at the setting that fixes it", () => {
+    const text = explainFetchError(sys("SELF_SIGNED_CERT_IN_CHAIN", "self-signed certificate in certificate chain"), "https://h:443");
+    expect(text).toMatch(/certificate is not trusted/);
+    expect(text).toMatch(/Vllm Verify Ssl/);
+  });
+
+  it("reads a timeout, a 404 and a bad address", () => {
+    expect(explainFetchError(new Error("timed out after 5000 ms — x"), base)).toMatch(/did not answer in time/);
+    expect(explainFetchError(new Error(`HTTP 404 from ${base}/v1/models`), base)).toMatch(/no model list/);
+    expect(explainFetchError(new Error("invalid URL"), "not a url")).toMatch(/not a valid address/);
   });
 });

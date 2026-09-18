@@ -241,9 +241,10 @@ class _AgentWorker:
                 # resolve itself: waiting cannot add a CA to the trust store.
                 if "CERTIFICATE_VERIFY_FAILED" in str(exc) or "SSLCertVerificationError" in str(exc):
                     return False, (
-                        f"the certificate at {url} was refused ({exc}). Set "
-                        f"VLLM_VERIFY_SSL=0 (the extension's mimir.vllmVerifySsl "
-                        f"checkbox) if it is an internal route behind a private CA."
+                        f"the server at {url} answered, but its security certificate "
+                        f"is not trusted (common for internal servers). If you trust "
+                        f"this server, untick “Vllm Verify Ssl” in the MIMIR settings "
+                        f"(or set VLLM_VERIFY_SSL=0), then retry. Details: {exc}"
                     )
                 return False, ""
             except Exception:
