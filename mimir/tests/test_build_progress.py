@@ -115,6 +115,12 @@ class TeeInjectionTests(unittest.TestCase):
             # Not only `tail`: any filter withholds the output just as well.
             ("ninja | grep -i error",
              "ninja | tee -a /jobs/k/progress.log | grep -i error"),
+            # Called by its full path, as a toolchain outside PATH is: still cmake.
+            ("/opt/cmake/bin/cmake --build b -j32 2>&1 | tail -20",
+             "/opt/cmake/bin/cmake --build b -j32 2>&1 | tee -a /jobs/k/progress.log"
+             " | tail -20"),
+            ("/usr/bin/timeout 600 /usr/bin/gmake | tail",
+             "/usr/bin/timeout 600 /usr/bin/gmake | tee -a /jobs/k/progress.log | tail"),
         ):
             with self.subTest(command=command):
                 self.assertEqual(self._teed(command), expected)
@@ -125,6 +131,7 @@ class TeeInjectionTests(unittest.TestCase):
             "make && tail run.log",     # '&&' is not a pipe — the memory's false case
             "make 2>&1 | tee mine.log | tail -5",   # already copied somewhere
             "cmake -S . -B build | tail -5",        # configure, and it prints no count
+            "/opt/cmake/bin/cmake -S . -B b | tail",  # same configure, by its path
             "pip list | grep numpy",                # not a build
             "grep -rn 'a | b' src | tail -5",       # the pipe is inside a quote
         ):

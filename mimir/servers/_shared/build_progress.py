@@ -128,10 +128,19 @@ _BUILD_TOOLS = {
 _WRAPPERS = frozenset({"timeout", "env", "nice", "ionice", "stdbuf", "time", "nohup"})
 
 
+def _name(word: str) -> str:
+    """A program's name without its directory: '/opt/cmake/bin/cmake' is cmake."""
+    return os.path.basename(word)
+
+
 def _head_of(argv: list[str]) -> str:
-    """The program *argv* runs, seen through any wrappers in front of it."""
+    """The program *argv* runs, seen through any wrappers in front of it.
+
+    By name, not by the word as typed: a toolchain installed outside PATH is called
+    by its full path, and that build prints the same count.
+    """
     i = 0
-    while i < len(argv) and argv[i] in _WRAPPERS:
+    while i < len(argv) and _name(argv[i]) in _WRAPPERS:
         i += 1
         # The wrapper's own options and the operand some of them take ('timeout 60',
         # 'nice -n 10', 'env A=B') sit between it and the command it runs.
@@ -140,7 +149,7 @@ def _head_of(argv: list[str]) -> str:
             or argv[i].replace(".", "", 1).isdigit()
         ):
             i += 1
-    return argv[i] if i < len(argv) else ""
+    return _name(argv[i]) if i < len(argv) else ""
 
 
 def _is_build(argv: list[str]) -> bool:
