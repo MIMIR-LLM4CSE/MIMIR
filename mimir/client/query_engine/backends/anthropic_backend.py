@@ -376,6 +376,21 @@ class AnthropicBackend(LLMBackend):
 
     # ── chat ────────────────────────────────────────────────────────────────────
 
+    def _note_usage(self, model: str, messages: list[dict], final: Any) -> None:
+        """Hand the server's reported prompt size to the overhead calibration.
+
+        The prompt total is split three ways here — a cached read, a cache write and
+        the uncached remainder — and only their sum is comparable to what the bar
+        counts, so it is summed before being handed over.
+        """
+        usage = getattr(final, "usage", None)
+        if usage is None:
+            return
+        total = ((getattr(usage, "cache_read_input_tokens", 0) or 0)
+                 + (getattr(usage, "cache_creation_input_tokens", 0) or 0)
+                 + (getattr(usage, "input_tokens", 0) or 0))
+        self.note_prompt_usage(model, messages, total)
+
     def chat(
         self,
         model: str,
@@ -449,6 +464,7 @@ class AnthropicBackend(LLMBackend):
 
         self._cache_blocks(getattr(final, "content", []) or [])
         _log_cache_usage(final)
+        self._note_usage(model, messages, final)
 
         result: dict = {"role": "assistant", "content": "".join(content_parts)}
         if thinking_parts:

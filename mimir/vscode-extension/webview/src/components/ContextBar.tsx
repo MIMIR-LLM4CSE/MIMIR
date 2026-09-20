@@ -5,6 +5,8 @@ export interface ContextUsage {
   total_tokens: number;
   reserved_tokens: number;
   overhead_tokens?: number;
+  /** True once the overhead is the server's own count rather than an estimate. */
+  overhead_measured?: boolean;
   /** Messages in the window the model sees this turn. */
   history_messages?: number;
   /** Messages in the untrimmed record kept on disk — larger once the budget has
@@ -19,7 +21,7 @@ interface Props {
 
 export const ContextBar: React.FC<Props> = ({ usage, contextMode }) => {
   const {
-    used_tokens, total_tokens, reserved_tokens, overhead_tokens,
+    used_tokens, total_tokens, reserved_tokens, overhead_tokens, overhead_measured,
     history_messages, history_messages_full,
   } = usage;
   const usable = Math.max(1, total_tokens - reserved_tokens);
@@ -45,9 +47,13 @@ export const ContextBar: React.FC<Props> = ({ usage, contextMode }) => {
   const overK  = (overBy / 1000).toFixed(1);
 
   // The prompt overhead is part of `used_tokens`; naming it separately explains
-  // why the bar never starts at zero on a fresh session.
+  // why the bar never starts at zero on a fresh session. Whether it was measured
+  // or estimated is worth a word: the figure legitimately shifts once the first
+  // answer lands and the server's own count replaces the estimate, and a number
+  // that moves on its own is otherwise indistinguishable from a wrong one.
   const overheadNote = overhead_tokens
     ? ` · incl. ${(overhead_tokens / 1000).toFixed(1)}K system prompt + tools`
+      + ` (${overhead_measured ? "measured" : "estimated"})`
     : "";
   // Trimming is silent otherwise: the bar would sit comfortably under the limit while
   // the earliest turns had already dropped out of what the model can see. The record

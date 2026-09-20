@@ -440,6 +440,7 @@ export const App: React.FC = () => {
           total_tokens: msg.total_tokens,
           reserved_tokens: msg.reserved_tokens,
           overhead_tokens: msg.overhead_tokens,
+          overhead_measured: msg.overhead_measured,
           history_messages: msg.history_messages,
           history_messages_full: msg.history_messages_full,
         });

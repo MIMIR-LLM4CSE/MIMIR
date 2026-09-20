@@ -22,6 +22,7 @@ from .config import (
     SKILL_BASE,
     SERVERS,
     VALID_MODES,
+    READONLY_MODES,
 )
 from .config.models import enforcement_level
 from .context import (
@@ -56,6 +57,7 @@ from .tool_execution.validation import (
 )
 from .integration.server_manager import connect_server as connect_server_runtime
 from .query_engine import run_agent_query
+from .query_engine.toollist import tools_for_readonly_mode
 from .event_sink import set_event_sink, reset_event_sink
 from .tool_execution.formatter import (
     json_error_payload,
@@ -513,6 +515,18 @@ class MimirAgent:
         return todo_file
 
     async def _build_system_content(self, active_mode: str) -> str:
+        return self.build_system_content_now(active_mode)
+
+    def build_system_content_now(self, active_mode: str) -> str:
+        """The full system prompt for *active_mode*, assembled synchronously.
+
+        Split out of :meth:`_build_system_content` so a caller that is not on the
+        agent's own loop — the context bar, which estimates the prompt from the WS
+        event loop — can measure the prompt the query will actually send instead of
+        re-deriving a smaller one of its own. Nothing here awaits; the assembly only
+        reads local files, and the async method stays because every caller in the
+        loop is already a coroutine.
+        """
         memory_file = os.path.join(STATE_DIR, "memory", "MEMORY.md") if "memory_search" in self.tool_owner else ""
         todo_file = self._get_todo_file()
 
@@ -835,6 +849,20 @@ class MimirAgent:
             t for t in self.tools
             if self.tool_owner.get(t.get("function", {}).get("name", "")) not in self.disabled_servers
         ]
+
+    def advertised_tools_for_mode(self, active_mode: str | None = None) -> list[dict]:
+        """:meth:`advertised_tools`, narrowed by the mode's read-only filter.
+
+        The two filters the loop applies before it knows the query, in the order it
+        applies them (``agent_loop._mode_tools``). Kept here so the context bar can
+        ask for the same list without restating the rule: a bar that counts tools the
+        mode has already removed reports a load the model never receives.
+        """
+        mode = self.mode if active_mode is None else active_mode
+        tools = self.advertised_tools()
+        if mode in READONLY_MODES:
+            tools = tools_for_readonly_mode(tools, self.tool_caps, mode=mode)
+        return tools
 
     def skill_enabled(self, name: str) -> bool:
         return name not in self.disabled_skills

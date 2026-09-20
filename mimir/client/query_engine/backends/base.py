@@ -120,6 +120,46 @@ class LLMBackend(ABC):
         self._token_cache: dict[tuple, int] = {}
         # Maps model -> context window (tokens), populated lazily by subclasses.
         self._ctx_window_cache: dict[str, int | None] = {}
+        # Maps model -> the per-call prompt overhead the server actually charged,
+        # derived from a reported prompt_tokens (see :meth:`note_prompt_usage`).
+        self._prompt_overhead: dict[str, int] = {}
+
+    # ── Prompt overhead calibration ─────────────────────────────────────────────
+
+    def note_prompt_usage(
+        self, model: str, messages: list[dict], prompt_tokens: int
+    ) -> None:
+        """Record what the server said the prompt cost, as an overhead per model.
+
+        ``prompt_tokens`` from the response's usage block is the only exact figure
+        anyone here has: it is what the server counted, chat template and all. Stored
+        as *overhead* — the reported total minus this backend's own count of the
+        history that went with it — rather than as the total, because the total is a
+        fact about one call and goes stale the moment the answer lands, while the
+        overhead (system prompt, tools schema, template scaffolding) is the same on
+        the next call and is exactly the part estimated worst.
+
+        Counting the history with the same tokenizer that the bar uses is deliberate:
+        whatever that count gets wrong is absorbed into the overhead, so bar and
+        server agree exactly at the moment of the call instead of agreeing in
+        principle and differing in the number shown.
+
+        Best-effort and never raises — usage is telemetry, not part of the turn.
+        """
+        try:
+            if prompt_tokens <= 0:
+                return
+            history = messages[1:] if messages and messages[0].get("role") == "system" else messages
+            counted = self.count_messages_tokens(model, history, allow_network=False)
+            overhead = prompt_tokens - counted
+            if overhead > 0:
+                self._prompt_overhead[model] = overhead
+        except Exception:
+            pass
+
+    def measured_prompt_overhead(self, model: str) -> int | None:
+        """The calibrated overhead for *model*, or None before any call reported one."""
+        return self._prompt_overhead.get(model)
 
     # ── Context window ──────────────────────────────────────────────────────────
 

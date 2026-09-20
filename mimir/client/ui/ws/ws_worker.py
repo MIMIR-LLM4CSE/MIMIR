@@ -1442,24 +1442,69 @@ class _AgentWorker:
         except Exception:
             return 0
 
+    def context_overhead_is_measured(self) -> bool:
+        """True once a server-reported prompt size has replaced the estimate.
+
+        Surfaced to the bar's tooltip because the two numbers answer different
+        questions: before the first answer the overhead is this client's reading of
+        the prompt it is about to send, after it the server's reading of what it
+        received. Saying which one is on screen turns a figure that quietly shifts
+        after the first turn into one the user can account for.
+        """
+        try:
+            from ...query_engine.backends.factory import get_backend
+            probe = getattr(get_backend(), "measured_prompt_overhead", None)
+            return callable(probe) and probe(self.model) is not None
+        except Exception:
+            return False
+
     def context_overhead_tokens(self) -> int:
         """Fixed prompt overhead (tokens) sent on *every* LLM call besides history.
 
-        This is the base system prompt plus the full tools schema — together
-        ~8–12k tokens on this deployment. The context bar must include it,
-        otherwise the displayed usage hides the very tokens that overflow the
-        window. Best-effort, cached via the backend's token cache; never raises.
+        The system prompt plus the tools schema — together ~8–12k tokens on this
+        deployment. The context bar must include it, otherwise the displayed usage
+        hides the very tokens that actually overflow the window.
+
+        Both halves are measured the way the query builds them, not approximated.
+        The prompt comes from ``build_system_content_now`` in the current mode, so
+        the mode-gated sections, the memory index and the checklist are counted;
+        measuring the base doctrine alone under-reported the prompt by everything
+        the modes add. The tools come from ``advertised_tools_for_mode``, so a
+        disabled server and a read-only mode remove from the bar what they remove
+        from the call; the raw registry over-reported them. What stays out of reach
+        is ``tools_for_context``, which prunes against the query and therefore does
+        not exist before there is one — it only ever removes, so this is a ceiling
+        on the tool half and the bar errs high, never low.
+
+        Once a call has come back, none of this is estimated any more: the server
+        reports what it actually charged for the prompt, and ``measured_prompt_overhead``
+        hands back that figure minus the history it came with. That number replaces the
+        estimate for every later call, which is what makes the bar exact rather than
+        merely close — and it is why the estimate above only has to carry the session
+        as far as its first answer.
+
+        Best-effort, cached via the backend's token cache; never raises.
         """
-        if self._agent is None:
+        agent = self._agent
+        if agent is None:
             return 0
         try:
             from ...query_engine.backends.factory import get_backend
             from ...agent_core import build_base_system_content
             backend = get_backend()
-            total = backend.count_text_tokens(
-                self.model, build_base_system_content(), allow_network=False
-            )
-            tools = getattr(self._agent, "tools", None)
+            # getattr, not a direct call: a backend stub without the calibration
+            # should fall through to the estimate, not lose the overhead entirely
+            # to the except below.
+            probe = getattr(backend, "measured_prompt_overhead", None)
+            measured = probe(self.model) if callable(probe) else None
+            if measured is not None:
+                return measured
+            mode = getattr(agent, "mode", "") or ""
+            build = getattr(agent, "build_system_content_now", None)
+            prompt = build(mode) if callable(build) else build_base_system_content()
+            total = backend.count_text_tokens(self.model, prompt, allow_network=False)
+            narrow = getattr(agent, "advertised_tools_for_mode", None)
+            tools = narrow(mode) if callable(narrow) else getattr(agent, "tools", None)
             if tools:
                 total += backend.count_text_tokens(
                     self.model, json.dumps(tools), allow_network=False

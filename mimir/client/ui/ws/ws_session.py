@@ -701,6 +701,7 @@ class _Session:
                 "total_tokens": total,
                 "reserved_tokens": reserved,
                 "overhead_tokens": overhead,
+                "overhead_measured": self.worker.context_overhead_is_measured(),
                 # What the model actually has this turn, against the untrimmed record
                 # kept behind it — so a trimmed window is visible, not silent.
                 "history_messages": len(self.history),

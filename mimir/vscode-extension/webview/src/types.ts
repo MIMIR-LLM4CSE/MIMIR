@@ -500,6 +500,9 @@ export interface ContextUsageMessage {
   reserved_tokens: number;
   /** Fixed per-call overhead (system prompt + tools schema) included in used_tokens. */
   overhead_tokens?: number;
+  /** True once `overhead_tokens` is the size the server reported for a real prompt,
+   *  false while it is still this client's estimate of the prompt it will send. */
+  overhead_measured?: boolean;
   /** Messages in the window the model actually sees this turn. */
   history_messages?: number;
   /** Messages in the untrimmed record a resume would start from. Larger than

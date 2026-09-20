@@ -152,9 +152,7 @@ def _mode_tools(
     The single place the mode's tool surface is decided, so the initial build, a
     domain re-arm, and a mid-run mode switch can never disagree about it.
     """
-    tools = _advertised_tools(agent)
-    if active_mode in READONLY_MODES:
-        tools = tools_for_readonly_mode(tools, agent.tool_caps, mode=active_mode)
+    tools = _mode_advertised_tools(agent, active_mode)
     return tools_for_context(
         query=query,
         execution_context=execution_context,
@@ -180,6 +178,22 @@ async def _apply_mode_switch(
     if messages and messages[0].get("role") == "system":
         messages[0]["content"] = system_content
     return system_content
+
+
+def _mode_advertised_tools(agent: Any, active_mode: str) -> list[dict]:
+    """The advertised set narrowed by the mode, from the agent when it can do it.
+
+    The rule lives on the agent (``advertised_tools_for_mode``) so the context bar
+    measures the same list this builds; the fallback keeps the loop's lightweight
+    test stubs, which carry neither method, working as before.
+    """
+    fn = getattr(agent, "advertised_tools_for_mode", None)
+    if callable(fn):
+        return fn(active_mode)
+    tools = _advertised_tools(agent)
+    if active_mode in READONLY_MODES:
+        tools = tools_for_readonly_mode(tools, agent.tool_caps, mode=active_mode)
+    return tools
 
 
 def _advertised_tools(agent: Any) -> list[dict]:

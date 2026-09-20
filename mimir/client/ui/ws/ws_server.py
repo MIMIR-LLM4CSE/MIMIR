@@ -64,6 +64,7 @@ Protocol — all messages are JSON objects, one per send/recv:
                                "display_messages": [...], "todos": [...]}
     {"type": "context_usage",  "used_tokens": 0, "total_tokens": 0, "reserved_tokens": 0,
                                "overhead_tokens": 0,
+                               "overhead_measured": false,  # true once server-reported
                                "history_messages": 0,        # in the window the model sees
                                "history_messages_full": 0}   # in the untrimmed record
     {"type": "resources",      "resources": [{"uri": "...", "name": "...",
