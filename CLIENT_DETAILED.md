@@ -721,6 +721,41 @@ can no longer see, and per-pass counting made every pass announce less than the 
 A second compaction feeds the previous summary back through the summariser, so the window is
 always `[system, task, exactly one summary, last two exchanges]` and never a stack of them.
 
+**A step is bounded before it is appended, not after.** `bound_step_results()` clamps one
+step's tool results — per result, and per step together — and `dispatch.py` calls it in the
+loop that appends them. Everything else here runs too late to help: `_trim_tool_history`
+deliberately exempts the current step from eviction (a sub-agent's whole answer is one of
+those results), so the only thing that could touch them was the force-fit backstop, and only
+once the window was already over. That is how four parallel fetches took a 200k window to
+215k in a single step, one of them a 131k-token HTTP 403 body, with nothing given the chance
+to object.
+
+The shares are set so that a tool returning its **own documented maximum** is never
+what this cuts. Measured against every ceiling MIMIR ships, the largest legitimate
+single result is `github_get_file` at 256 KB — about 65k tokens — so half of a 160k
+usable window clears it, where the quarter share this started at (40k) would have cut
+a file fetch doing exactly what it is designed to do. A backstop that fires in normal
+operation is not a backstop; it is a second, worse ceiling that degrades results
+silently. A test holds the line against re-tightening. On a window too small to hold
+those ceilings at all — a served 32k, where one 128 KB page cannot fit whatever anyone
+does — something has to give, and these shares only decide it earlier and more fairly
+than the force-fit pass would have.
+
+Both budgets are fractions of the usable window rather than fixed numbers — a 20k ceiling is
+generous on 200k and catastrophic on 32k, and the served window is not known until the
+backend reports it. Allowances are shared by water-filling (`_water_fill`): smallest first,
+each taking either its whole size or an equal share of what is left, so a small result is
+never cut to pay for a large one and the budget the small ones release raises the ceiling for
+the rest. Truncation reuses `_truncate_text_to_tokens`, which keeps a head and a tail and is
+guaranteed to land under the cap, and the note it appends is counted inside the allowance it
+explains — bounding the result must not be the thing that breaks the bound.
+
+This is a **backstop**, deliberately loose, not the main mechanism. The server-side ceilings
+remain the first line: they cut knowing the shape of their own payload, where a head-and-tail
+cut here leaves a JSON document unparseable. What this catches is what no server ceiling
+covers — a third-party MCP server, or one of ours with a path that forgot to bound itself.
+It should almost never fire, and it says so in the status line when it does.
+
 ---
 
 ## tool_execution

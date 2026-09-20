@@ -19,6 +19,8 @@ from mimir.client.query_engine import agent_loop
 from mimir.client.query_engine import history as history_module
 from mimir.client.query_engine.history import (
     _digest_call_args,
+    _water_fill,
+    bound_step_results,
     _digest_failed_call_args,
     _force_fit_to_window,
     _maybe_compact_intra_query,
@@ -324,6 +326,154 @@ class DigestShapeTests(unittest.TestCase):
         _digest_failed_call_args(messages)
         self.assertEqual(original_args["content"], "x" * 2_000)
         self.assertIsNot(messages[1]["tool_calls"][0], original_call)
+
+
+class StepResultBudgetTests(unittest.TestCase):
+    """What one step may add to the context, bounded before it is appended.
+
+    Cover for the session that went from 200k to 215k in a single step: four fetches
+    landed together, one of them a 131k-token HTTP 403 body. Nothing looked at the
+    sum. The trim pass exempts the current step from eviction, so the only thing that
+    could have reduced them was the force-fit backstop — and only once the window was
+    already over.
+    """
+
+    # One token per character keeps the arithmetic in these tests readable.
+    _TOK = staticmethod(len)
+
+    def _bound(self, results, mode="full"):
+        return bound_step_results(
+            results, model="m", context_mode=mode, token_counter=self._TOK)
+
+    def _budget(self, mode="full"):
+        from mimir.client.config.constants import context_budget_for
+        total, reserved, _t, _c = context_budget_for("m", mode)
+        return total - reserved
+
+    def test_a_result_within_budget_is_untouched(self):
+        out, cut = self._bound(["small", "also small"])
+        self.assertEqual(out, ["small", "also small"])
+        self.assertEqual(cut, [])
+
+    def test_one_oversized_result_is_cut_head_and_tail_and_says_so(self):
+        usable = self._budget()
+        huge = "A" * (usable // 2) + "OMEGA"
+        out, cut = self._bound([huge])
+        self.assertLess(len(out[0]), len(huge))
+        self.assertIn("TOOL_RESULT_TRUNCATED", out[0])
+        self.assertIn(str(len(huge)), out[0])       # names the real size
+        self.assertIn("[truncated]", out[0])        # head+tail marker, not a head cut
+        self.assertTrue(out[0].startswith("AAA"))   # head kept
+        self.assertEqual(cut[0][0], len(huge))
+        self.assertLess(cut[0][1], cut[0][0])
+
+    def test_four_parallel_results_are_bounded_by_their_sum(self):
+        """The 215k shape: each call reasonable on its own, the step is not."""
+        usable = self._budget()
+        results = ["X" * (usable // 3) for _ in range(4)]
+        out, cut = self._bound(results)
+        self.assertLessEqual(sum(len(r) for r in out), usable)
+        self.assertEqual(len(cut), 4)
+
+    def test_a_small_result_is_not_cut_to_pay_for_a_large_one(self):
+        usable = self._budget()
+        out, _cut = self._bound(["tiny", "Z" * usable, "also tiny"])
+        self.assertEqual(out[0], "tiny")
+        self.assertEqual(out[2], "also tiny")
+        self.assertIn("TOOL_RESULT_TRUNCATED", out[1])
+
+    def test_the_budget_follows_the_window_instead_of_being_a_fixed_number(self):
+        """A ceiling that is generous on 200k is catastrophic on 32k."""
+        full = self._budget("full")
+        compact = self._budget("compact")
+        self.assertGreater(full, compact)
+        text = "Q" * (compact * 2)
+        out_full, _ = self._bound([text], mode="full")
+        out_compact, _ = self._bound([text], mode="compact")
+        self.assertLess(len(out_compact[0]), len(out_full[0]))
+
+    def test_the_note_fits_inside_the_allowance_it_explains(self):
+        """Bounding the result must not itself be what breaks the bound."""
+        usable = self._budget()
+        out, _cut = self._bound(["Y" * (usable * 3)])
+        self.assertLessEqual(len(out[0]), usable)
+
+    def test_an_empty_step_is_not_a_special_case(self):
+        self.assertEqual(self._bound([]), ([], []))
+
+
+class BackstopIsWideEnoughTests(unittest.TestCase):
+    """A backstop that fires in normal operation is not a backstop.
+
+    The shares started at usable//4, which on a 160k usable window is 40k tokens —
+    and `github_get_file` is allowed to return 256 KB, about 65k. A file fetch doing
+    exactly what it is designed to do would have been cut, silently, by the pass
+    meant to catch pathological results. These numbers are the ceilings MIMIR's own
+    servers declare; if one of them rises past the share, the share moves, not the
+    result.
+    """
+
+    # (tool, its own documented maximum, in bytes)
+    _SERVER_CEILINGS = [
+        ("bash_run", 64 * 1024),              # server_bash._MAX_OUTPUT
+        ("slurm/hpc", 128 * 1024),            # server_hpc._MAX_OUTPUT
+        ("http_get prose", 128 * 1024),       # server_web._MAX_TEXT_CHARS
+        ("github_get_file", 256 * 1024),      # server_github._MAX_FILE_BYTES
+    ]
+    _CHARS_PER_TOKEN = 4                      # constants.CHARS_PER_TOKEN
+
+    def test_no_shipped_tool_is_cut_at_its_own_maximum(self):
+        from mimir.client.config.constants import context_budget_for
+        from mimir.client.query_engine import history as H
+
+        total, reserved, _t, _c = context_budget_for("m", "full")
+        usable = total - reserved
+        per_result = usable // H._RESULT_WINDOW_SHARE
+        for name, ceiling_bytes in self._SERVER_CEILINGS:
+            with self.subTest(tool=name):
+                self.assertLessEqual(
+                    ceiling_bytes // self._CHARS_PER_TOKEN, per_result,
+                    f"{name} at its own ceiling would be cut by the backstop")
+
+    def test_a_step_may_still_not_take_the_whole_window(self):
+        """Wide is not unbounded: the step share has to leave room for the history
+        the results are being added to."""
+        from mimir.client.query_engine import history as H
+        self.assertLess(H._STEP_NUM / H._STEP_DEN, 1.0)
+
+    def test_the_original_incident_is_still_caught(self):
+        """The four fetches that took a 200k window to 215k: a 131k-token error body
+        beside three ordinary ones."""
+        from mimir.client.config.constants import context_budget_for
+
+        total, reserved, _t, _c = context_budget_for("m", "full")
+        usable = total - reserved
+        results = ["A" * (131_164 * 4), "B" * (34_479 * 4),
+                   "C" * (3_366 * 4), "D" * (3_142 * 4)]
+        out, cut = bound_step_results(
+            results, model="m", context_mode="full", token_counter=len)
+        self.assertTrue(cut)
+        self.assertLessEqual(sum(len(r) for r in out), usable * 4)
+
+
+class WaterFillTests(unittest.TestCase):
+    def test_everything_fits_when_the_budget_allows(self):
+        self.assertEqual(_water_fill([10, 20, 30], 100), [10, 20, 30])
+
+    def test_the_budget_released_by_small_items_raises_the_rest(self):
+        # A flat share would be 10 each; the two small ones release 17 for the big one.
+        allow = _water_fill([1, 2, 100], 30)
+        self.assertEqual(allow[0], 1)
+        self.assertEqual(allow[1], 2)
+        self.assertEqual(allow[2], 27)
+        self.assertLessEqual(sum(allow), 30)
+
+    def test_equal_items_split_the_budget_evenly(self):
+        self.assertEqual(_water_fill([50, 50], 30), [15, 15])
+
+    def test_it_never_exceeds_the_budget(self):
+        for budget in (0, 1, 7, 999):
+            self.assertLessEqual(sum(_water_fill([3, 30, 300], budget)), budget)
 
 
 class EnforceBudgetIntegrationTests(unittest.TestCase):

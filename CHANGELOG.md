@@ -15,7 +15,38 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- A GitHub file is read in pages. `github_get_file` takes a line range, returns at
+  most 400 lines a call, and says where to resume — so the first look at a long
+  source file costs a quarter of what the whole file did, and a file too large to
+  inline is read through its raw URL instead of being refused outright.
+- A fetch can now ask for part of a page instead of all of it. `contains=` returns
+  the regions that answer it — a word matching a heading gives you that whole
+  section, otherwise you get windows around the occurrences, each saying where it
+  sits. `offset=` resumes a long document where the last reply stopped. Headings
+  survive extraction as Markdown, so a page reads as named regions rather than one
+  wall of prose. Measured across twelve sites: a 20 500-token article answers a
+  targeted question in 127 tokens, a 33 700-token spec in 283.
+
 ### Fixed
+- A single step can no longer overrun the context window. Tool results are now
+  bounded before they enter the history — per result, and per step together — so
+  several calls returning at once cannot do what four fetches did to one session:
+  take a 200k window to 215k with nothing given the chance to object. Small results
+  are never cut to pay for large ones. This covers every tool, including servers
+  MIMIR does not ship.
+- A failed web request no longer costs more than a successful one. The error
+  branches returned up to 512 KB of the error body raw, with no extraction and no
+  ceiling: one paper host answering 403 cost 131 164 tokens for a request that
+  returned nothing.
+- A page whose text cannot be extracted — a script shell, or a body that never
+  arrived behind 700 KB of inline CSS — now comes back as its own metadata and
+  embedded data rather than as markup. One thesis record page went from 34 479
+  tokens of CSS to about 1 400 tokens carrying its title, jury, keywords and full
+  abstract.
+- Guidance written for the model actually reaches it now. `hint` is a reserved key
+  that is stripped from success payloads, so several tools' "fetch a more specific
+  URL" and "call again with confirm=True" lines had never once been delivered.
 - Behind an OpenAI-compatible router that does not serve vLLM's `/tokenize`,
   each turn no longer waits tens of seconds before the model is asked. The
   refusal is remembered per endpoint instead of retried for every message.

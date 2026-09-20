@@ -653,12 +653,46 @@ async def _dispatch_tool_calls(
     # (e.g. a grep/bash result) as touching no tracked file, so eviction won't
     # falsely invalidate a read just because a path appears in the output text.
     tool_msg_files: dict = execution_context.setdefault("tool_msg_files", {})
+    # Bound what this step adds, BEFORE it is appended. Afterwards is too late: the
+    # trim pass exempts the current step from eviction, so the only thing that could
+    # touch these was the force-fit backstop, and only once the window was already
+    # over. Server-side ceilings remain the first line; this catches what they do not
+    # cover — a third-party MCP server, or one of ours with an unbounded path.
+    results = _bound_results(results, agent)
     for result, (name, args, call_id) in zip(results, normalized):
         try:
             tool_msg_files[call_id] = agent.get_tool_file_targets(name, args)
         except Exception:
             tool_msg_files[call_id] = []
         messages.append({"role": "tool", "tool_call_id": call_id, "content": result})
+
+
+def _bound_results(results: list[str], agent: Any) -> list[str]:
+    """Apply the per-result and per-step context budgets, and say so when they bite.
+
+    Best effort: a backend that cannot count tokens, or a budget that cannot be
+    resolved, must not cost the step its results. The history's own passes still run
+    afterwards, so a failure here degrades to the behaviour that came before it.
+    """
+    try:
+        from . import streaming as _streaming
+        from .history import bound_step_results
+
+        backend = _streaming.get_backend()
+        bounded, cut = bound_step_results(
+            results,
+            model=agent.model,
+            context_mode=getattr(agent, "context_mode", "full"),
+            token_counter=lambda text: backend.count_text_tokens(agent.model, text),
+        )
+    except Exception:  # noqa: BLE001 — a budget failure must not drop the evidence
+        return results
+    for before, after in cut:
+        emit({"type": "status", "text": (
+            f"  \u2702 Context: a tool result of {before:,} tokens was cut to "
+            f"{after:,} to fit the step budget."
+        )})
+    return bounded
 
 
 async def _post_dispatch_inject(

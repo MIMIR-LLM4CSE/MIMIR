@@ -36,9 +36,6 @@ class ContextOverflowError(RuntimeError):
     """
 
 
-_TOOL_OUTPUT_MAX_CHARS = 4000
-_TOOL_OUTPUT_MAX_LINES = 60
-
 # Placeholder result emitted for an assistant tool call whose real result is absent —
 # keeps the assistant↔tool pairing valid and tells the model the output is gone.
 EVICTED_TOOL_RESULT = json.dumps({
@@ -240,25 +237,6 @@ def served_compaction_instruction() -> str:
         "- Keep it under 800 words\n"
         "- Do NOT repeat what can be inferred from file names alone"
     )
-
-
-def _truncate_output(text: Any) -> str:
-    """Clip a tool result to a UI-friendly preview (line- and char-bounded)."""
-    if text is None:
-        return ""
-    s = text if isinstance(text, str) else str(text)
-    lines = s.splitlines()
-    clipped = False
-    if len(lines) > _TOOL_OUTPUT_MAX_LINES:
-        lines = lines[:_TOOL_OUTPUT_MAX_LINES]
-        clipped = True
-    s = "\n".join(lines)
-    if len(s) > _TOOL_OUTPUT_MAX_CHARS:
-        s = s[:_TOOL_OUTPUT_MAX_CHARS]
-        clipped = True
-    if clipped:
-        s = s.rstrip() + "\n… (truncated)"
-    return s
 
 
 def _trim_tool_history(
@@ -499,6 +477,104 @@ def _truncate_text_to_tokens(text: str, max_tokens: int, token_counter: Any) -> 
         budget_chars //= 2
     # Fallback: marker alone (or empty if even that is too big).
     return marker if token_counter(marker) <= max_tokens else ""
+
+
+# What one tool result, and one whole step, may add to the context.
+#
+# Both are fractions of the usable window rather than fixed numbers: a 20k-token
+# ceiling is generous on a 200k window and catastrophic on a 32k one, and the served
+# window is not known until the backend reports it.
+#
+# These are a BACKSTOP, deliberately loose. The server-side ceilings are the real
+# mechanism — they cut knowing the shape of their own payload, where a head-and-tail
+# cut here leaves a JSON document unparseable. What this catches is what no server
+# ceiling covers: a third-party MCP server, or one of ours with a path that forgot to
+# bound itself.
+#
+# The shares are set so that a tool returning its OWN documented maximum is never the
+# thing this cuts. Measured against every ceiling MIMIR ships, the largest legitimate
+# single result is `github_get_file` at 256 KB — about 65k tokens — so a half share of
+# a 160k usable window (80k) clears it, where the quarter share this started at (40k)
+# would have cut a file fetch doing exactly what it is designed to do. A backstop that
+# fires in normal operation is not a backstop; it is a second, worse ceiling that
+# degrades results silently.
+#
+# On a window too small to hold those ceilings at all — a served 32k, where one 128 KB
+# page cannot fit whatever anyone does — something has to give, and these shares only
+# decide it earlier and more fairly than the force-fit pass would have.
+_RESULT_WINDOW_SHARE = 2       # one result may take up to usable // 2
+_STEP_NUM, _STEP_DEN = 3, 4    # one step's results, together, up to usable * 3/4
+
+_TRUNCATION_NOTE = (
+    "\n\nTOOL_RESULT_TRUNCATED: this result was {full} tokens and was cut to fit the "
+    "context budget — the middle is missing. Ask for less (a narrower range, a more "
+    "specific query) rather than repeating this call."
+)
+
+
+def _water_fill(sizes: list[int], budget: int) -> list[int]:
+    """Per-item allowances summing to at most *budget*.
+
+    Smallest first, each taking either its whole size or an equal share of what is
+    left. A small result is therefore never cut to pay for a large one, and the
+    budget released by the small ones raises the ceiling for the rest — which is the
+    fair reading of "several calls in one step share a budget". Deterministic, so the
+    same step always yields the same history.
+    """
+    allow = [0] * len(sizes)
+    left = budget
+    for rank, i in enumerate(sorted(range(len(sizes)), key=lambda j: sizes[j])):
+        share = left // max(1, len(sizes) - rank)
+        allow[i] = min(sizes[i], share)
+        left -= allow[i]
+    return allow
+
+
+def bound_step_results(
+    results: list[str],
+    *,
+    model: str,
+    context_mode: str,
+    token_counter: Any,
+) -> tuple[list[str], list[tuple[int, int]]]:
+    """Clamp one step's tool results before they enter the history.
+
+    Returns the bounded results and, for each one that was cut, its (before, after)
+    token count so the caller can tell the user.
+
+    Called from ``dispatch`` BEFORE the append, which is the only moment that works.
+    ``_enforce_context_budget`` runs after, and by then it is powerless here:
+    ``_trim_tool_history`` deliberately exempts the current step from eviction (a
+    sub-agent's whole answer is one of these results), so the only pass that could
+    touch them is ``_force_fit_to_window`` — and that one engages only once the window
+    is already over. Which is how four parallel fetches took a 200k window to 215k in
+    a single step, with nothing given the chance to object.
+    """
+    if not results:
+        return results, []
+    total, reserved, _trim, _compact = context_budget_for(model, context_mode)
+    usable = max(1, total - reserved)
+    per_result = max(512, usable // _RESULT_WINDOW_SHARE)
+    per_step = max(1024, usable * _STEP_NUM // _STEP_DEN)
+
+    texts = [r if isinstance(r, str) else str(r) for r in results]
+    sizes = [token_counter(t) for t in texts]
+    allow = [min(s, per_result) for s in sizes]
+    if sum(allow) > per_step:
+        allow = _water_fill(allow, per_step)
+
+    out: list[str] = list(texts)
+    cut: list[tuple[int, int]] = []
+    for i, (text, size, cap) in enumerate(zip(texts, sizes, allow)):
+        if size <= cap:
+            continue
+        note = _TRUNCATION_NOTE.format(full=size)
+        # The note has to fit inside the allowance too, or bounding the result would
+        # be the thing that broke the bound.
+        body_cap = max(1, cap - token_counter(note))
+        out[i] = _truncate_text_to_tokens(text, body_cap, token_counter) + note
+        cut.append((size, token_counter(out[i])))
+    return out, cut
 
 
 def _message_content_str(m: dict) -> str:
