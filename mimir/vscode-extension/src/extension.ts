@@ -332,7 +332,12 @@ function _showPlanPreview(abs: string): void {
     _planPanel = vscode.window.createWebviewPanel(
       "mimir.plan",
       "Plan",
-      { viewColumn: vscode.ViewColumn.Beside, preserveFocus: true },
+      // Active, not Beside: the chat lives in the side bar, so "beside" meant beside
+      // the editor group — splitting the editor area in two and leaving the plan half
+      // a window wide. The plan is a document to read, so it opens as a tab in the
+      // group already there and fills it. Focus comes with it, or the tab would open
+      // behind the file the user was reading and look like nothing had happened.
+      { viewColumn: vscode.ViewColumn.Active, preserveFocus: false },
       { enableScripts: true, localResourceRoots: media ? [media] : [] }
     );
     _planPanel.webview.onDidReceiveMessage((m) => {
@@ -343,7 +348,9 @@ function _showPlanPreview(abs: string): void {
       _stopPreviewWatch();
     });
   } else {
-    _planPanel.reveal(undefined, true);
+    // Same reasoning: an existing panel is brought to the front of its group rather
+    // than left behind whatever tab is on top of it.
+    _planPanel.reveal(undefined, false);
   }
   // Re-baseline the poller before the read, so a write landing in between is
   // caught on the next tick rather than lost.
