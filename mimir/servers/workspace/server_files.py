@@ -805,7 +805,9 @@ def replace_in_file(path: str, old_text: str, new_text: str) -> dict:
         }
         if normalized:
             result["normalized_match"] = True
-            result["hint"] = (
+            # note, not hint: `hint` is reserved and responses.ok() strips it from a
+            # success payload, so this warning never reached the model.
+            result["note"] = (
                 "Anchor matched after trailing-whitespace normalization. "
                 "Update old_text to match the exact file content to avoid relying on fuzzy matching."
             )
@@ -993,7 +995,10 @@ def replace_all_in_file(
                 "match_count": actual_count,
                 "matches": preview_matches,
                 "diff": diff,
-                "hint": (
+                # note, not hint: `hint` is a reserved protocol key and
+                # responses.ok() strips it from success payloads, so this line had
+                # never once reached the model it tells what to do next.
+                "note": (
                     f"Found {actual_count} occurrence(s). Review the diff and matches above, "
                     f"then call replace_all_in_file with confirm=True to apply."
                 ),

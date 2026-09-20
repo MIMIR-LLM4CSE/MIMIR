@@ -155,3 +155,59 @@ class GithubGetFileNotFoundTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class GithubFileWindowTests(unittest.TestCase):
+    """A GitHub file is read in pages, with the keys the local read established.
+
+    Two losses this replaced. A file over 256 KB was refused outright — a total loss
+    of the file to avoid a large one — and a file under it came back whole, up to
+    ~65k tokens, with no way to ask for part of it. Same key names as
+    ``read_file_lines`` on purpose: the client's ``_build_continuation_hint`` already
+    reads them, so a paged GitHub read inherits that for free.
+    """
+
+    _TEXT = "".join(f"line {i}\n" for i in range(1, 1001))
+
+    def test_the_first_page_stops_at_the_cap_and_says_where_to_resume(self):
+        w = server_github._line_window(self._TEXT, 1, 0)
+        self.assertEqual(w["start_line"], 1)
+        self.assertEqual(w["end_line"], server_github._MAX_READ_LINES)
+        self.assertEqual(w["total_lines"], 1000)
+        self.assertTrue(w["truncated"])
+        self.assertEqual(w["next_start_line"], server_github._MAX_READ_LINES + 1)
+        self.assertTrue(w["content"].startswith("line 1\n"))
+
+    def test_resuming_walks_the_file_without_gap_or_overlap(self):
+        seen, start, pages = [], 1, 0
+        while start and pages < 10:
+            w = server_github._line_window(self._TEXT, start, 0)
+            seen.append(w["content"])
+            start = w.get("next_start_line")
+            pages += 1
+        self.assertEqual("".join(seen), self._TEXT)
+
+    def test_an_explicit_range_is_honoured_and_still_capped(self):
+        w = server_github._line_window(self._TEXT, 200, 260)
+        self.assertEqual((w["start_line"], w["end_line"]), (200, 260))
+        self.assertEqual(w["lines_returned"], 61)
+        self.assertNotIn("line_cap", w)          # the range was under the cap
+        wide = server_github._line_window(self._TEXT, 1, 999)
+        self.assertEqual(wide["line_cap"], server_github._MAX_READ_LINES)
+
+    def test_the_last_page_does_not_claim_a_continuation(self):
+        w = server_github._line_window(self._TEXT, 801, 0)
+        self.assertEqual(w["end_line"], 1000)
+        self.assertNotIn("truncated", w)
+        self.assertNotIn("next_start_line", w)
+
+    def test_a_start_past_the_end_is_empty_rather_than_an_error(self):
+        w = server_github._line_window(self._TEXT, 5000, 0)
+        self.assertEqual(w["content"], "")
+        self.assertEqual(w["lines_returned"], 0)
+        self.assertEqual(w["total_lines"], 1000)
+
+    def test_an_empty_file_is_not_a_special_case(self):
+        w = server_github._line_window("", 1, 0)
+        self.assertEqual(w["total_lines"], 0)
+        self.assertEqual(w["content"], "")

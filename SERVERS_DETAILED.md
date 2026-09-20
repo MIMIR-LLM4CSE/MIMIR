@@ -377,6 +377,110 @@ Tools:
 - `parse_json`
 - `json_extract`
 
+Three ceilings, because a fetch can go wrong in three different ways.
+
+| ceiling | value | what it defends |
+|---|---|---|
+| `_MAX_BYTES` | 2 MB | the socket read: a hostile or runaway endpoint |
+| `_MAX_TEXT_CHARS` | 128 KB | what a page *with prose* may spend of the model's window |
+| `_MARKUP_FALLBACK_CHARS` | 8 KB | what a page with **no** prose may spend |
+| `_ERROR_BODY_READ` / `_ERROR_BODY_CHARS` | 64 KB / 2 KB | what a **failed** request may spend |
+
+HTML is turned into text before any of them applies, since markup is what the ceiling
+would otherwise spend itself on. When that extraction comes back empty the page is a
+script shell, or markup the parser choked on, or a body that never arrived — and the
+fallback used to hand back the raw markup under the 128 KB ceiling, on the reasoning
+that markup beats nothing.
+
+Measured, that is backwards. A thesis record page is 754 KB, 92% of it a single inline
+`<style>`. The socket read stops at 512 KB, entirely inside that block, so the body
+never arrives and the parser correctly reports no text — and the fallback then spent
+131 072 chars, about 34 000 tokens, on CSS. Empty extraction is the strongest evidence
+there is that the markup holds no prose.
+
+So the fallback now answers with what the page says about itself, under one 8 KB
+budget, in order:
+
+1. `<head>` metadata — `<title>`, `description`, `og:*`, the `citation_*` set. It is
+   the first thing off the wire, so it survives a read cut long before the body.
+2. Embedded structured data — `application/json` and `application/ld+json` blocks,
+   largest first, each whole or absent. On a script shell this *is* the content:
+   keeping only the metadata would answer a 34k-token page by dropping the one part
+   of it that held the answer. Half a JSON document cannot be parsed, so a block that
+   does not fit is left out rather than cut.
+3. Failing both, 8 KB of markup labelled `markup_only` — a sample to show what kind of
+   page this is, not a window.
+
+The thesis page costs about 100 tokens instead of 34 000 and says what it is instead of
+saying nothing in CSS; a 300 KB script shell carrying a record comes back as ~120 tokens
+of that record. `raw=True` bypasses all of it and always has.
+
+The read ceiling could then be raised, which is what actually recovered the content.
+It was 512 KB while the read and the prompt were the same thing; now that what reaches
+the model is bounded separately, a bigger read costs time and memory, not context. On
+the thesis page `<meta name="description">` sits at byte 700 336, behind ~700 KB of
+inline CSS — at 512 KB the abstract was not slow to reach, it was unreachable. At 2 MB
+the whole body arrives, extraction works normally, and the fetch returns the title,
+author, director, jury, date, keywords and full abstract for about 1 400 tokens. The
+no-prose fallback is what covers the pages where even that is not enough.
+
+### Reading part of a document
+
+A document that does not fit is not thereby unusable: what the caller wanted is
+nearly always one region of it, and `truncated` on its own left them with the first
+128 KB and no way to ask for the rest.
+
+`_TextExtractor` now keeps `h1`…`h6` as Markdown headings instead of collapsing them
+to a newline, so a page comes back as named regions (`## Résumé`) rather than one
+undifferentiated wall. That is what makes the rest possible.
+
+- `contains=` — `_find_matches` runs two passes, because a document names its own
+  parts. A query matching a **heading** returns that whole region: asking a thesis
+  page for "résumé" should give the abstract, not six sentences containing the word.
+  Only when no heading matches does it fall back to windows around the occurrences,
+  merged when they overlap, ranked by `lexical_rank` (`servers/_shared/embed.py`,
+  the same scorer the memory and platform searches use). Each excerpt says its offset
+  and the heading it sits under — the heading is looked up at the *hit*, not at the
+  window start, which opens half its width earlier and on a short document lands in
+  the previous region.
+- `offset=` — resumes where a truncated reply stopped, with the key names
+  `read_file_lines` established (`truncated`, `total_chars`, `next_offset`), which
+  the client already turns into a MORE_CONTENT hint on its own
+  (`tool_execution/executor.py` `_build_continuation_hint`).
+
+Order matters and is the whole point of `_read_body`: **extract, then target, then
+fit**. Fitting before targeting cuts away the very part the caller asked for — the
+first version did exactly that, cutting to 128 KB inside `_readable_body` before the
+offset was applied, so page two of a long read came back empty and the resume this
+ceiling exists to enable could never be taken. `next_offset` is absolute for the same
+reason: it is handed straight back as the next call's `offset`.
+
+Measured across twelve sites (arXiv, MDN, Python docs, GitHub, two JSON APIs,
+a thesis registry, a 403, Nature, the WHATWG HTML spec, example.com, a raw file): every
+one bounded, worst case 33 750 tokens for the 10 MB spec, and targeted reads of
+127–283 tokens against pages costing 20 500 and 33 750 whole.
+
+One related defect, found while measuring: `hint` is a reserved protocol key that
+`responses.ok()` strips from success payloads. Every piece of guidance this module
+wrote under it — "fetch a more specific URL", "pass raw=True" — had been addressed to
+a model that never received it. Success notes now use `body_note`, and a test holds
+the line. `replace_all_in_file` (`servers/workspace/server_files.py`) had the same
+trap: its "call again with confirm=True" line was dropped the same way.
+
+A **failed** request went through none of this. Both error branches read up to
+`_MAX_BYTES` and returned it as `body`, raw: no extraction, no ceiling. A paper host
+answering 403 with a block page therefore cost 131 164 tokens — for a request that
+returned nothing. `_error_body` now gives an error the same treatment as a page, then
+a much tighter ceiling: nothing downstream *uses* this text, it only has to say why
+the request failed. "Access Denied" survives; the markup around it does not.
+
+That single defect is what put a 200k window at 215k, because it did not arrive alone:
+four fetches issued in one step land together, and the history budget is only checked
+between steps. Capping each body is what makes the batch affordable — the same four
+calls went from ~137 800 tokens to ~7 100. The aggregate remains unbounded by design:
+four *legitimate* 128 KB pages would still be ~170k in one step. Worth revisiting if
+it is ever seen.
+
 ## external/server_github.py
 
 Purpose: read-only GitHub repository inspection.
@@ -387,6 +491,20 @@ Tools:
 - `github_list_issues`
 - `github_get_file`
 - `github_search_repositories`
+
+`github_get_file` reads in **line windows**, not whole files. It takes `start_line` /
+`end_line`, returns at most 400 lines a call, and when it stops short says so with the
+keys `read_file_lines` established — `truncated`, `total_lines`, `next_start_line`,
+`line_cap` — which the client's `_build_continuation_hint` already turns into a
+MORE_CONTENT hint. The first page of a 1 462-line source file costs ~4 100 tokens
+instead of ~15 000 for the whole thing, and the whole thing still costs the same if
+you actually want it.
+
+A file over `_MAX_FILE_BYTES` used to be **refused**, which cost the caller the file
+entirely in order to avoid a large result — a total loss of information to avoid a
+large one. It now falls back to the raw URL (bounded by `_MAX_RAW_BYTES`) and serves
+the same window, with `source` saying which path answered. A 1.18 MB LAPACK source
+that was unreadable comes back as 400 of its 41 864 lines for ~3 600 tokens.
 
 ## hpc/server_hpc.py
 

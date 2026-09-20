@@ -33,6 +33,10 @@ mcp = FastMCP(
 
 _API_BASE = "https://api.github.com"
 _MAX_FILE_BYTES = 256 * 1024
+# A file above the API's own inline limit is still readable through its raw URL; the
+# ceiling below bounds what we read off that, the way server_web bounds a page.
+_MAX_RAW_BYTES = 2 * 1024 * 1024
+_MAX_READ_LINES = 400          # per call, mirroring workspace/server_search.py
 _MAX_RESULTS = 25
 # A 404 on a file path is almost always a guessed name, not a missing repo. The
 # error walks back up to the deepest directory that does exist and names what is
@@ -201,18 +205,65 @@ def _not_found(owner: str, repo: str, path: str, ref: str, fallback: dict) -> di
     return fallback
 
 
+def _raw_text(url: str) -> str:
+    """The file straight off its raw URL, bounded. "" when it cannot be read."""
+    if not url:
+        return ""
+    try:
+        req = urllib.request.Request(url, headers=_headers(), method="GET")
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            return resp.read(_MAX_RAW_BYTES).decode("utf-8", errors="replace")
+    except Exception:
+        return ""
+
+
+def _line_window(text: str, start_line: int, end_line: int) -> dict:
+    """A line range of *text*, with the keys ``read_file_lines`` established.
+
+    The same names on purpose: `truncated`, `total_lines`, `next_start_line` and
+    `line_cap` are what the client's `_build_continuation_hint` already reads to tell
+    the model its read stopped short, so a paged GitHub read inherits that for free
+    rather than inventing a second vocabulary for the same idea.
+    """
+    lines = text.splitlines(keepends=True)
+    start = max(1, int(start_line or 1))
+    requested_end = len(lines) if not end_line or end_line <= 0 else int(end_line)
+    capped_end = min(requested_end, start + _MAX_READ_LINES - 1)
+    actual_end = min(capped_end, len(lines))
+    selected = lines[start - 1:actual_end] if start <= len(lines) else []
+    out = {
+        "start_line": start,
+        "end_line": actual_end,
+        "total_lines": len(lines),
+        "content": "".join(selected),
+        "lines_returned": len(selected),
+    }
+    if actual_end < len(lines):
+        out["truncated"] = True
+        out["next_start_line"] = actual_end + 1
+    if capped_end < requested_end:
+        out["line_cap"] = _MAX_READ_LINES
+    return out
+
+
 @mcp.tool(**tool_caps(caps=[EXTERNAL_FETCH], label="Fetching from GitHub: {path}"))
-def github_get_file(owner: str, repo: str, path: str, ref: str = "") -> dict:
+def github_get_file(owner: str, repo: str, path: str, ref: str = "",
+                    start_line: int = 1, end_line: int = 0) -> dict:
     """Fetch a text file from a GitHub repository and decode its content.
 
-    Best for README files, configuration files, source files, and docs.
-    Large files are rejected to avoid overloading the agent context.
+    Best for README files, configuration files, source files, and docs. The reply is
+    a line window: at most 400 lines per call, and when it stops short it says so
+    (`truncated`) and names where to resume (`next_start_line`), so a large file is
+    read in pages instead of being refused.
 
     Args:
-        owner: GitHub owner or organization name.
-        repo: Repository name.
-        path: File path inside the repository.
-        ref: Branch, tag, or commit SHA. Empty means the default branch.
+        owner:      GitHub owner or organization name.
+        repo:       Repository name.
+        path:       File path inside the repository.
+        ref:        Branch, tag, or commit SHA. Empty means the default branch.
+        start_line: First line to return (1-based).
+        end_line:   Last line to return, inclusive. 0 (the default) means "to the end
+                    of the file", up to the per-call cap.
     """
     params = {"ref": ref} if ref else None
     quoted_path = "/".join(urllib.parse.quote(part) for part in path.split("/"))
@@ -228,22 +279,30 @@ def github_get_file(owner: str, repo: str, path: str, ref: str = "") -> dict:
             hint="Use a file path, not a directory path.",
         )
     size = data.get("size", 0)
-    if size > _MAX_FILE_BYTES:
-        return err(
-            f"File is too large ({size} bytes).",
-            hint="Fetch a smaller file or inspect the repository structure first.",
-        )
     encoding = data.get("encoding")
     content = data.get("content", "")
-    if encoding != "base64":
-        return err(f"Unsupported content encoding '{encoding}'.")
-    decoded = base64.b64decode(content).decode("utf-8", errors="replace")
+    if size > _MAX_FILE_BYTES or encoding != "base64" or not content:
+        # Too large for the contents API to inline, or inlined in something we do not
+        # decode. This used to be a refusal, which cost the caller the file entirely —
+        # a total loss of information to avoid a large one. The raw URL has the same
+        # bytes, and the window below is what makes reading them affordable.
+        decoded = _raw_text(data.get("download_url") or "")
+        if not decoded:
+            return err(
+                f"File could not be read ({size} bytes, encoding {encoding!r}).",
+                hint="Inspect the repository structure, or fetch the raw URL directly.",
+            )
+        source = "raw"
+    else:
+        decoded = base64.b64decode(content).decode("utf-8", errors="replace")
+        source = "api"
     return ok({
         "path": data.get("path"),
         "sha": data.get("sha"),
         "size": size,
-        "content": decoded,
+        "source": source,
         "download_url": data.get("download_url"),
+        **_line_window(decoded, start_line, end_line),
     })
 
 

@@ -1213,7 +1213,9 @@ def platform_search(query: str, limit: int = 10, refresh: bool = False) -> dict:
         },
     }
     if modules:
-        payload["hint"] = "Load one with: module load <load>"
+        # note, not hint: `hint` is reserved and responses.ok() strips it from a
+        # success payload, so this line never reached the model.
+        payload["note"] = "Load one with: module load <load>"
     return ok(payload)
 
 

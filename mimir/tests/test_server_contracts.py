@@ -1,7 +1,9 @@
 import importlib.util
+import io
 import re
 import tempfile
 import unittest
+import urllib.error
 from pathlib import Path
 import sys
 
@@ -138,6 +140,76 @@ class SharedTextToolsTests(unittest.TestCase):
         self.assertGreater(exact, partial)
 
 
+def _body_full(page: str) -> str:
+    """The whole readable text of *page*, with no ceiling — what a resume walks."""
+    body, _note = server_web._readable_body(page, "text/html", raw=False)
+    return body
+
+
+class ReservedHintKeyTests(unittest.TestCase):
+    """`hint` belongs to error payloads, and success payloads silently drop it.
+
+    ``responses._drop_reserved_fields`` strips ``status``/``error``/``hint`` from
+    anything handed to ``ok()``. Five separate tools had written guidance under that
+    key — "fetch a more specific URL", "call again with confirm=True", "load one with
+    module load", "update old_text to match" — and not one of those lines had ever
+    reached the model it was written for. Nothing failed, nothing was logged; the
+    advice simply was not there. A static check, because that is the only kind that
+    catches the sixth one.
+    """
+
+    def _server_files(self):
+        root = Path(server_web.__file__).resolve().parents[1]
+        return sorted(root.rglob("*.py"))
+
+    def test_no_success_payload_carries_a_hint(self) -> None:
+        import ast
+
+        offenders: list[str] = []
+        for path in self._server_files():
+            tree = ast.parse(path.read_text(), filename=str(path))
+            for func in [n for n in ast.walk(tree)
+                         if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]:
+                # Names that reach ok(...) somewhere in this function.
+                to_ok = {
+                    a.args[0].id
+                    for a in ast.walk(func)
+                    if isinstance(a, ast.Call)
+                    and isinstance(a.func, ast.Name) and a.func.id == "ok"
+                    and a.args and isinstance(a.args[0], ast.Name)
+                }
+                for node in ast.walk(func):
+                    # payload["hint"] = ... on a dict that is later passed to ok()
+                    if isinstance(node, ast.Assign):
+                        for tgt in node.targets:
+                            if (isinstance(tgt, ast.Subscript)
+                                    and isinstance(tgt.value, ast.Name)
+                                    and tgt.value.id in to_ok
+                                    and isinstance(tgt.slice, ast.Constant)
+                                    and tgt.slice.value == "hint"):
+                                offenders.append(
+                                    f"{path.name}:{node.lineno} {tgt.value.id}['hint']")
+                    # ok({..., "hint": ...}) written inline
+                    if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                            and node.func.id == "ok" and node.args
+                            and isinstance(node.args[0], ast.Dict)):
+                        for key in node.args[0].keys:
+                            if isinstance(key, ast.Constant) and key.value == "hint":
+                                offenders.append(f"{path.name}:{node.lineno} ok({{'hint'}})")
+        self.assertEqual(offenders, [], "use 'note'; ok() drops 'hint': " + repr(offenders))
+
+    def test_the_check_would_catch_a_regression(self) -> None:
+        """The check is worth only what it detects — so prove it detects."""
+        import ast
+
+        tree = ast.parse("def f():\n    p = {}\n    p['hint'] = 'x'\n    return ok(p)\n")
+        func = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef))
+        to_ok = {a.args[0].id for a in ast.walk(func)
+                 if isinstance(a, ast.Call) and isinstance(a.func, ast.Name)
+                 and a.func.id == "ok" and a.args and isinstance(a.args[0], ast.Name)}
+        self.assertEqual(to_ok, {"p"})
+
+
 class RepresentativeServerContractTests(unittest.TestCase):
     def test_system_get_env_var_invalid_is_structured_error(self) -> None:
         payload = server_system.system("env", name="NOT_ALLOWED")
@@ -205,25 +277,256 @@ class RepresentativeServerContractTests(unittest.TestCase):
         self.assertNotIn("color:red", body)    # style dropped
         self.assertLess(len(body), len(self._PAGE) // 2)
 
+    def test_web_headings_survive_as_named_regions(self) -> None:
+        """h1..h6 used to sit in _BREAK and emit a bare newline, leaving a long
+        document as one wall of prose with nothing saying where the abstract ended.
+        Marked in Markdown, which a model reads without being told."""
+        page = ("<html><body><h1>Titre</h1><p>intro</p>"
+                "<h2>R\u00e9sum\u00e9</h2><p>corps</p>"
+                "<h3>Mots cl\u00e9s</h3><p>ondes</p></body></html>")
+        body, _note = server_web._readable_body(page, "text/html", raw=False)
+        lines = body.splitlines()
+        self.assertIn("# Titre", lines)
+        self.assertIn("## R\u00e9sum\u00e9", lines)
+        self.assertIn("### Mots cl\u00e9s", lines)
+        self.assertIn("corps", lines)          # the body text is still there
+        self.assertNotIn("# corps", body)      # and is not swallowed by the heading
+
+    def test_web_an_empty_heading_leaves_no_bare_marker(self) -> None:
+        body, _note = server_web._readable_body(
+            "<html><body><h2></h2><p>texte</p></body></html>", "text/html", raw=False)
+        self.assertEqual(body, "texte")
+
     def test_web_raw_returns_the_markup_untouched(self) -> None:
         body, note = server_web._readable_body(self._PAGE, "text/html", raw=True)
         self.assertEqual(body, self._PAGE)
         self.assertEqual(note, {})
 
     def test_web_long_document_is_cut_and_says_so(self) -> None:
+        # _read_body, not _readable_body: the ceiling is the last step of the
+        # pipeline, after targeting. See _fit_body.
         big = "<html><body>" + ("<p>word word word</p>" * 40_000) + "</body></html>"
-        body, note = server_web._readable_body(big, "text/html", raw=False)
+        body, note = server_web._read_body(big, "text/html", False, "", 0)
         self.assertLessEqual(len(body), server_web._MAX_TEXT_CHARS)
         self.assertTrue(note["truncated"])
         self.assertGreater(note["full_chars"], len(body))
-        self.assertIn("specific", note["hint"])  # says what to do about it
+        # body_note, not hint: responses.ok() strips `hint` from success payloads,
+        # so guidance written under that key never reaches the model. And it names a
+        # parameter the tool actually has — advice a caller cannot act on costs them
+        # a step to discover it was empty.
+        self.assertIn("offset=<next_offset>", note["body_note"])
+        self.assertIn("contains=", note["body_note"])
 
-    def test_web_a_page_with_no_text_keeps_its_markup(self) -> None:
-        """Empty extraction means the parser lost, not that the page is empty."""
-        shell = "<html><body><script>" + "var x=1;" * 500 + "</script></body></html>"
+    def test_web_a_page_with_no_text_falls_back_to_its_own_metadata(self) -> None:
+        """Measured on a thesis record page: 754 KB, 92% of it one inline <style>.
+
+        The socket read stops at 512 KB, entirely inside that block, so the body
+        never arrives and the parser correctly finds no prose. Handing back the
+        markup then spent 131 072 chars — ~34k tokens — on CSS. The page had said
+        what it was in its <head> all along, in the first KB off the wire.
+        """
+        page = ('<!doctype html><html><head><title>Catalogue Record 4471</title>'
+                '<meta name="description" content="A record held by the registry.">'
+                '<style>' + ".x{color:red}" * 2000 + '</style></head><body>')
+        body, note = server_web._readable_body(page, "text/html", raw=False)
+        self.assertFalse(note["extracted_text"])
+        self.assertTrue(note["from_metadata"])
+        self.assertIn("Catalogue Record 4471", body)
+        self.assertIn("held by the registry", body)
+        self.assertNotIn("color:red", body)
+        self.assertLess(len(body), 500)
+
+    def test_web_a_script_shell_keeps_the_data_it_carries(self) -> None:
+        """The content of a shell page is its embedded JSON, not its markup.
+
+        Answering such a page with `<head>` metadata alone would drop the one part of
+        it that held the answer — the opposite mistake to shipping 128 KB of CSS.
+        """
+        record = '{"title": "Catalogue Record 4471", "abstract": "Held by the registry."}'
+        shell = ('<!doctype html><html><head><title>Loading</title>'
+                 '<script type="application/ld+json">' + record + '</script>'
+                 '<script>var analytics=' + '{"k":1};' * 2000 + '</script>'
+                 '</head><body><div id="app"></div></body></html>')
         body, note = server_web._readable_body(shell, "text/html", raw=False)
-        self.assertEqual(body, shell)
-        self.assertNotIn("extracted_text", note)
+        self.assertTrue(note["embedded_data"])
+        self.assertIn("Held by the registry", body)    # the record survived
+        self.assertNotIn("analytics", body)            # the untyped script did not
+        self.assertLessEqual(len(body), server_web._MARKUP_FALLBACK_CHARS)
+
+    def test_web_embedded_data_keeps_the_biggest_block_whole(self) -> None:
+        """Largest first, because on a shell the big blob is the content and the
+        small ones are config — and half a JSON document cannot be parsed."""
+        big = '{"a": "' + "x" * 3000 + '"}'
+        small = '{"cfg": 1}'
+        page = ('<script type="application/json" id="cfg">' + small + '</script>'
+                '<script type="application/json" id="data">' + big + '</script>')
+        # A budget with room for the big block and nothing after it.
+        out = server_web._embedded_data(page, 3020)
+        self.assertIn("x" * 3000, out)     # whole, not clipped
+        self.assertNotIn('"cfg": 1', out)  # no room left, so absent rather than cut
+
+    def test_web_a_page_with_neither_text_nor_metadata_returns_a_sample(self) -> None:
+        """Nothing to summarise, so the markup is only good for showing what it is —
+        which costs a sample, not a window."""
+        shell = "<html><body><script>" + "var x=1;" * 20_000 + "</script></body></html>"
+        body, note = server_web._readable_body(shell, "text/html", raw=False)
+        self.assertTrue(note["markup_only"])
+        self.assertLessEqual(len(body), server_web._MARKUP_FALLBACK_CHARS)
+        self.assertIn("raw=True", note["body_note"])
+
+    def test_web_the_no_prose_fallback_costs_far_less_than_the_text_ceiling(self) -> None:
+        """The property the 34k-token fetch violated: a document proven to hold no
+        prose must not be allowed to spend what a document full of it may."""
+        self.assertLess(server_web._MARKUP_FALLBACK_CHARS,
+                        server_web._MAX_TEXT_CHARS // 8)
+
+    def test_web_raw_still_bypasses_every_fallback(self) -> None:
+        shell = "<html><body><script>var x=1;</script></body></html>"
+        self.assertEqual(server_web._readable_body(shell, "text/html", raw=True),
+                         (shell, {}))
+
+    def test_web_a_failed_request_body_is_capped_like_everything_else(self) -> None:
+        """The path that put a 200k window at 215k.
+
+        The error branches handed back up to `_MAX_BYTES` of the error body raw —
+        no extraction, no text ceiling. Measured on a paper host answering 403: the
+        block page came back as 131 164 tokens, and it was one of four fetches issued
+        in the same step. An error body is a diagnosis, not content.
+        """
+        class _Err(urllib.error.HTTPError):
+            def __init__(self) -> None:
+                page = ("<html><body><h1>Access Denied</h1>"
+                        + "<p>padding padding padding</p>" * 5000 + "</body></html>")
+                super().__init__("http://x", 403, "Forbidden",
+                                 {"Content-Type": "text/html"},
+                                 io.BytesIO(page.encode()))
+
+        body, note = server_web._error_body(_Err())
+        self.assertLessEqual(len(body), server_web._ERROR_BODY_CHARS)
+        self.assertTrue(note["body_truncated"])
+        self.assertIn("Access Denied", body)   # the one useful sentence survives
+        self.assertNotIn("<p>", body)          # markup did not
+
+    def test_web_a_short_error_body_is_left_whole(self) -> None:
+        class _Err(urllib.error.HTTPError):
+            def __init__(self) -> None:
+                super().__init__("http://x", 429, "Too Many Requests",
+                                 {"Content-Type": "application/json"},
+                                 io.BytesIO(b'{"error":"rate limited"}'))
+
+        body, note = server_web._error_body(_Err())
+        self.assertEqual(body, '{"error":"rate limited"}')
+        self.assertEqual(note, {})
+
+    def test_web_an_error_costs_far_less_than_a_successful_fetch(self) -> None:
+        """Nothing downstream uses an error body, so it may not spend what a page
+        full of prose may."""
+        self.assertLess(server_web._ERROR_BODY_CHARS,
+                        server_web._MARKUP_FALLBACK_CHARS)
+        self.assertLess(server_web._ERROR_BODY_READ, server_web._MAX_BYTES)
+
+    def test_web_success_notes_never_use_the_reserved_hint_key(self) -> None:
+        """`hint` belongs to error payloads: responses.ok() strips it. Every note this
+        module wrote under that key had been addressed to a model that never got it."""
+        src = Path(server_web.__file__).read_text()
+        head = src.split("# \u2500\u2500 tools")[0]
+        self.assertNotIn('note["hint"]', head)
+        self.assertNotIn('setdefault("hint"', head)
+
+    def test_web_may_read_far_more_than_it_will_ever_hand_back(self) -> None:
+        """What makes a generous read affordable. The two are no longer the same
+        number: metadata lives in <head>, and a page can put 700 KB of CSS in front
+        of it — but none of that reaches the model."""
+        self.assertGreater(server_web._MAX_BYTES, server_web._MAX_TEXT_CHARS)
+        self.assertGreater(server_web._MAX_BYTES, 1024 * 1024)
+
+    _DOC = (
+        "# Titre\n"
+        "intro du document\n"
+        "## Resume\n"
+        "le corps de la premiere section\n"
+        "## Mots cles\n"
+        "ondes seismique frechet\n"
+    )
+
+    def test_web_sections_cover_the_document_without_gaps(self) -> None:
+        regions = server_web._sections(self._DOC)
+        self.assertEqual([h for h, _s, _e in regions],
+                         ["Titre", "Resume", "Mots cles"])
+        # Contiguous and complete: an offset always lands in exactly one region.
+        self.assertEqual(regions[0][1], 0)
+        self.assertEqual(regions[-1][2], len(self._DOC))
+        for (_h, _s, end), (_h2, start2, _e2) in zip(regions, regions[1:]):
+            self.assertEqual(end, start2)
+
+    def test_web_a_query_naming_a_heading_returns_that_whole_region(self) -> None:
+        """Asking a thesis page for its abstract wants the abstract, not six
+        sentences that happen to contain the word."""
+        matches = server_web._find_matches(self._DOC, "resume")
+        self.assertEqual(len(matches), 1)
+        self.assertEqual(matches[0]["heading"], "Resume")
+        self.assertIn("le corps de la premiere section", matches[0]["text"])
+        self.assertNotIn("seismique", matches[0]["text"])   # the next region is not it
+
+    def test_web_a_query_matching_no_heading_falls_back_to_windows(self) -> None:
+        matches = server_web._find_matches(self._DOC, "seismique")
+        self.assertEqual(len(matches), 1)
+        self.assertIn("seismique", matches[0]["text"])
+        self.assertEqual(matches[0]["heading"], "Mots cles")  # says where it sits
+
+    def test_web_neighbouring_occurrences_become_one_window(self) -> None:
+        """Two hits a line apart must not be reported as two near-identical
+        excerpts — the caller would pay for the same text twice."""
+        text = "alpha\n" + ("x" * 20 + "\n") * 3 + "alpha\n"
+        self.assertEqual(len(server_web._find_matches(text, "alpha")), 1)
+
+    def test_web_an_unmatched_query_returns_nothing_and_says_what_to_do(self) -> None:
+        body, note = server_web._targeted(self._DOC, "kokkos", 0)
+        self.assertEqual(body, "")
+        self.assertEqual(note["match_count"], 0)
+        self.assertEqual(note["total_chars"], len(self._DOC))
+        self.assertIn("drop `contains`", note["body_note"])
+
+    def test_web_offset_resumes_where_the_reply_said_to(self) -> None:
+        body, note = server_web._targeted(self._DOC, "", 8)
+        self.assertEqual(body, self._DOC[8:])
+        self.assertEqual(note["offset"], 8)
+        self.assertEqual(note["total_chars"], len(self._DOC))
+
+    def test_web_contains_wins_over_offset(self) -> None:
+        """Naming what you want is more specific than naming where it starts."""
+        body, note = server_web._targeted(self._DOC, "resume", 999)
+        self.assertIn("le corps", body)
+        self.assertNotIn("offset", note)
+
+    def test_web_an_offset_past_the_end_is_clamped_not_an_error(self) -> None:
+        body, note = server_web._targeted(self._DOC, "", 10_000)
+        self.assertEqual(body, "")
+        self.assertEqual(note["offset"], len(self._DOC))
+
+    def test_web_a_truncated_body_names_where_to_resume(self) -> None:
+        """`truncated` alone left the caller with a fragment and no way to continue.
+        `next_offset` is the key read_file_lines established and the client already
+        turns into a MORE_CONTENT hint."""
+        big = "<html><body>" + ("<p>word word word</p>" * 40_000) + "</body></html>"
+        _body, note = server_web._read_body(big, "text/html", False, "", 0)
+        self.assertTrue(note["truncated"])
+        self.assertEqual(note["next_offset"], server_web._MAX_TEXT_CHARS)
+
+        # And the resume actually resumes: the defect this replaced cut the document
+        # to 128 KB *before* applying the offset, so page two was always empty.
+        page2, note2 = server_web._read_body(
+            big, "text/html", False, "", note["next_offset"])
+        self.assertTrue(page2)
+        self.assertEqual(note2["offset"], note["next_offset"])
+        self.assertGreater(note2["total_chars"], note["next_offset"])
+        self.assertEqual(page2[:60], _body_full(big)[note["next_offset"]:][:60])
+
+    def test_web_targeting_is_bounded_like_everything_else(self) -> None:
+        text = "## Cible\n" + ("mot " * 200_000)
+        body, note = server_web._targeted(text, "cible", 0)
+        self.assertLessEqual(len(body), server_web._MAX_TEXT_CHARS)
+        self.assertTrue(note.get("truncated"))
 
     def test_web_non_html_under_the_ceiling_is_untouched(self) -> None:
         payload = '{"a": 1}'
