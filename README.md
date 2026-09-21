@@ -78,7 +78,8 @@ git clone https://github.com/MIMIR-LLM4CSE/MIMIR.git && cd MIMIR
 ./install.sh
 ```
 
-`install.sh` creates `.venv`, installs the package with a smoke test, and — when
+`install.sh` fetches a portable Python 3.10, creates `.venv-<os>-<arch>` (e.g.
+`.venv-linux-x86_64`), installs the package with a smoke test, and — when
 `npm` is available — builds and installs the VS Code extension.
 
 **In VS Code:** reload the window, open the MIMIR panel, pick a backend, and type
@@ -89,7 +90,7 @@ Nothing goes in `.vscode/settings.json`.
 **On the command line:**
 
 ```bash
-source .venv/bin/activate
+source .venv-linux-x86_64/bin/activate
 export VLLM_BASE_URL=http://<host>:8000    # vLLM is the default backend
 cd /path/to/your/project                   # becomes the sandbox root
 mimir                                      # interactive CLI
@@ -471,8 +472,9 @@ python3 -m mimir.client.ui.ws.ws_server --port 8765 \
 ```
 
 The panel is the only place you configure a connection — a working setup needs no
-`.vscode/settings.json`. The interpreter is found on its own (`install.sh` records the
-venv's Python in `~/.mimir/python`; `MIMIR_PYTHON` overrides it), and the remaining
+`.vscode/settings.json`. The interpreter is found on its own (`install.sh` records a
+launcher in `~/.mimir/python` that starts the venv built for this machine's platform;
+`MIMIR_PYTHON` overrides it), and the remaining
 `mimir.*` settings just hold the defaults the form opens on. The full reference is in
 [`SETUP.md`](SETUP.md) §6; the WebSocket message protocol and frontend
 internals are in [`EXTENSION_DETAILED.md`](EXTENSION_DETAILED.md).

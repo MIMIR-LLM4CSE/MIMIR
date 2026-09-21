@@ -8,8 +8,8 @@ getting a development environment running and submitting changes.
 ```bash
 git clone https://github.com/MIMIR-LLM4CSE/MIMIR.git
 cd MIMIR
-./install.sh                        # creates .venv and installs with the 'vllm' extra
-source .venv/bin/activate
+./install.sh                        # creates .venv-<os>-<arch>, installs with the 'vllm' extra
+source .venv-linux-x86_64/bin/activate   # the name install.sh printed
 pip install -e ".[dev]"             # editable install + pytest and ruff
 ```
 
