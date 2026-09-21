@@ -123,7 +123,7 @@ class EnvelopeTests(unittest.TestCase):
 class CallSiteTests(unittest.IsolatedAsyncioTestCase):
     """The listener is attached to the actual tool call, unconditionally."""
 
-    async def _call(self, call_id: str):
+    async def _call(self, call_id: str, tool_caps: dict | None = None):
         captured: dict = {}
 
         class _Session:
@@ -132,15 +132,21 @@ class CallSiteTests(unittest.IsolatedAsyncioTestCase):
                 return types.SimpleNamespace(content=[])
 
         agent = types.SimpleNamespace(
+            model="served/model",
             sessions={"srv": _Session()},
-            tool_owner={"delegate": "srv"},
-            tool_caps={},
+            tool_owner={"delegate": "srv", "read_thing": "srv"},
+            mode="agent",
+            tool_caps=tool_caps or {},
+            disabled_servers=set(),
             _tool_cache={},
             approvals=types.SimpleNamespace(batch_mode=False, approval_mode="auto"),
             _normalize_tool_content=lambda r: "{}",
             _parse_tool_payload=lambda t: {},
             _normalize_workspace_path=lambda p: p,
+            tools=[{"type": "function", "function": {"name": n}}
+                   for n in ("delegate", "read_thing")],
         )
+        agent.advertised_tools = lambda: agent.tools
         evaluation = types.SimpleNamespace(
             violation=None, tool_name="delegate", arguments={}, execution_context={},
         )
@@ -166,11 +172,31 @@ class CallSiteTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("progress_callback", captured)
         self.assertIsNone(captured["progress_callback"])
 
-    async def test_the_call_carries_the_approval_mode(self):
-        """A sub-agent must run in the mode the user chose, read at call time."""
+    async def test_the_call_carries_the_approval_mode_and_the_model(self):
+        """A sub-agent must run in the mode the user chose and default to the model in
+        use, both read at call time."""
+        from mimir.client.config.models import CALLER_MODEL_META
         from mimir.client.guardrails.policy.approval import APPROVAL_MODE_META
         captured = await self._call("call_7")
-        self.assertEqual(captured["meta"], {APPROVAL_MODE_META: "auto"})
+        self.assertEqual(captured["meta"],
+                         {APPROVAL_MODE_META: "auto", CALLER_MODEL_META: "served/model"})
+
+    async def test_only_a_delegating_call_carries_what_it_may_grant(self):
+        """The table is for the one tool that hands tools on. On every other call it
+        would be payload nobody reads."""
+        from mimir.client.config.models import CALLER_MODE_META, GRANTABLE_TOOLS_META
+        from mimir.client.context.capabilities import DELEGATE, ToolCaps
+        captured = await self._call("call_7")
+        self.assertNotIn(GRANTABLE_TOOLS_META, captured["meta"])
+
+        captured = await self._call(
+            "call_8",
+            tool_caps={"delegate": ToolCaps(name="delegate",
+                                            capabilities=frozenset({DELEGATE}))})
+        # Delegation excludes itself: a child that can delegate spawns a tree nobody
+        # budgeted.
+        self.assertEqual(captured["meta"][GRANTABLE_TOOLS_META], {"read_thing": "srv"})
+        self.assertEqual(captured["meta"][CALLER_MODE_META], "agent")
 
 
 if __name__ == "__main__":

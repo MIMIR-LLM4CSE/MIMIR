@@ -38,7 +38,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'
 
 from mcp.server.fastmcp import FastMCP
 from module_env import module_probe_script
-from capabilities import tool_caps, CACHEABLE, ENV_DISCOVERY
+from capabilities import tool_caps, CACHEABLE, ENV_DISCOVERY, PANEL_REPORT
 from responses import ok
 from slurm_nodes import aggregate_node_types, parse_scontrol_nodes, stable_signature, stable_types
 from state_paths import state_dir
@@ -1249,6 +1249,68 @@ def platform_catalogue_status() -> dict:
         "signal_fresh": fresh,
         "digest": catalogue.get("digest", {}),
     })
+
+
+# A machine's facts do not change during a session, and the panel asks for them every
+# time it refreshes. Probed at most this often, per server process.
+_PANEL_PROFILE_TTL_SECS = 300
+_PANEL_PROFILE: dict = {"at": 0.0, "profile": {}}
+
+
+def _panel_profile() -> dict:
+    now = time.time()
+    if not _PANEL_PROFILE["profile"] or now - _PANEL_PROFILE["at"] > _PANEL_PROFILE_TTL_SECS:
+        try:
+            _PANEL_PROFILE["profile"] = _build_profile()
+            _PANEL_PROFILE["at"] = now
+        except Exception:
+            return dict(_PANEL_PROFILE["profile"])
+    return dict(_PANEL_PROFILE["profile"])
+
+
+@mcp.tool(**tool_caps(
+    caps=[PANEL_REPORT, ENV_DISCOVERY],
+    read_only=True,
+    panel={"section": "Machine", "order": 40},
+    label="Machine profile",
+))
+def platform_panel_report() -> dict:
+    """The machine, in a form a panel can show: a few lines, no probing of its own.
+
+    The profile is probed at most once every few minutes (see ``_panel_profile``): the
+    panel refreshes whenever it is opened or a turn ends, and hardware does not change
+    between two of those.
+    """
+    profile = _panel_profile()
+    if not profile:
+        return ok({"title": "Machine", "lines": [],
+                   "detail": "The machine could not be probed."})
+
+    cpu = profile.get("cpu") or {}
+    gpu = profile.get("gpu") or {}
+    mem = profile.get("memory") or {}
+    slurm = profile.get("slurm") or {}
+    devices = gpu.get("devices") or []
+    lines = [
+        {"label": "host", "value": str(profile.get("hostname", "?"))},
+        # The model name is empty on hosts whose lscpu does not print one, so the
+        # architecture stands in rather than a blank before the count.
+        {"label": "cpu", "value": f"{cpu.get('model') or cpu.get('arch') or '?'}"
+                                  f" × {cpu.get('logical_cpus', '?')}"},
+    ]
+    if mem.get("total_gb"):
+        lines.append({"label": "memory", "value": f"{mem['total_gb']} GB"})
+    if devices:
+        first = devices[0].get("name", "?")
+        lines.append({"label": "gpu",
+                      "value": f"{len(devices)} × {first}" if len(devices) > 1 else first})
+    elif gpu.get("available"):
+        lines.append({"label": "gpu", "value": ", ".join(gpu.get("vendors") or ["present"])})
+    if slurm.get("available"):
+        lines.append({"label": "slurm",
+                      "value": ", ".join(slurm.get("partitions") or []) or "available"})
+    return ok({"title": "Machine", "lines": lines,
+               "detail": f"Probed {profile.get('timestamp', '?')}."})
 
 
 if __name__ == "__main__":

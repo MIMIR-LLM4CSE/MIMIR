@@ -173,6 +173,35 @@ def thinking_depth_from_label(label: str) -> int | None:
         return None
 
 
+# ── How much a sub-agent may do ───────────────────────────────────────────────
+# A ladder, weakest first, each rung adding to the one before it. It is the user's
+# call, not the model's: a child that writes, and more so one that opens a branch,
+# commits something on their behalf.
+#
+#   explore   read, search, navigate. What a sub-agent could do before this ladder
+#             existed, and what it falls back to whenever the rung is unknown.
+#   parallel  + editing and running commands — always in a git worktree of its own,
+#             on its own branch. There is deliberately no rung in between: sub-agents
+#             editing one shared tree overwrite each other in silence (one reads a
+#             file, another rewrites it, the first writes back what it read), and no
+#             arbitration the model can be trusted with fixes that. A sub-agent that
+#             writes gets a copy, or it does not write.
+SUBAGENT_LEVELS: tuple[str, ...] = ("explore", "parallel")
+DEFAULT_SUBAGENT_LEVEL: str = SUBAGENT_LEVELS[0]
+
+
+def clamp_subagent_level(level: str) -> str:
+    """Resolve a rung name, falling back to the one that concedes nothing."""
+    name = (level or "").strip().lower()
+    return name if name in SUBAGENT_LEVELS else DEFAULT_SUBAGENT_LEVEL
+
+
+def subagent_level_allows(level: str, required: str) -> bool:
+    """True when *level* is at least *required* on the ladder."""
+    return SUBAGENT_LEVELS.index(clamp_subagent_level(level)) >= \
+        SUBAGENT_LEVELS.index(clamp_subagent_level(required))
+
+
 # Sampling temperature the user may set per model (/temperature, the ⚙ panel). None
 # is "the model's own": nothing is sent and the server applies the model's
 # generation_config. Only the backends below forward it; Anthropic's extended thinking

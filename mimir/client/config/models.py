@@ -6,6 +6,25 @@ from pathlib import Path
 
 DEFAULT_MODEL = os.environ.get("MIMIR_DEFAULT_MODEL", "")
 
+# The request-_meta key every tool call carries the caller's current model under. A
+# server that runs an agent of its own (a sub-agent) defaults to it; its environment
+# was frozen at spawn and misses a mid-session model switch.
+CALLER_MODEL_META = "mimir/model"
+
+# Sent with a delegation call only: what the caller may grant a sub-agent
+# ({tool: owning server}) and the mode that set was computed under. Both move with the
+# user during a session, while the server that spawns the child keeps the environment
+# it started with — so they travel per call, like the approval mode.
+GRANTABLE_TOOLS_META = "mimir/grantable"
+# Which of those would change the tree — the caller knows, the spawning server does not
+# (it holds names, and no capability registry until it connects the servers).
+GRANTABLE_WRITERS_META = "mimir/grantable_writers"
+CALLER_MODE_META = "mimir/mode"
+# How far the user lets a sub-agent go (config.constants.SUBAGENT_LEVELS). Sent with
+# the same call, because the server that spawns the child cannot read a preference
+# that lives in the client's state dir and changes mid-session.
+SUBAGENT_LEVEL_META = "mimir/subagent_level"
+
 VALID_MODES: tuple[str, ...] = ("agent", "plan", "ask")
 
 # Modes whose tool surface is read-only: PLAN_BLOCKED tools are hidden from the
@@ -59,13 +78,12 @@ def _normalize_model_key(name: str) -> str:
     return (name or "").lower().replace("\\", "/").replace("_", ".").strip()
 
 
-def profile_for_model(model: str) -> dict:
-    """Return the matching profile for *model* (longest case-insensitive prefix).
+def longest_prefix_key(model: str, keys) -> str | None:
+    """The longest of *keys* that prefixes *model*, or None.
 
     Matched against the whole name, its last path segment, and each segment, so a
     fully qualified ``publisher/Family-Version-Size-Revision`` name reaches its
-    ``family-version`` key. Returns ``{}`` on no match, which is a normal outcome: every default
-    is chosen so that an unlisted model still behaves correctly.
+    ``family-version`` key.
     """
     model_lower = _normalize_model_key(model)
     parts = [p for p in model_lower.split("/") if p]
@@ -73,14 +91,20 @@ def profile_for_model(model: str) -> dict:
     if parts:
         candidates.append(parts[-1])
         candidates.extend(parts)
-    best_key = max(
-        (
-            k for k in VLLM_MODEL_PROFILES
-            if any(c.startswith(_normalize_model_key(k)) for c in candidates)
-        ),
+    return max(
+        (k for k in keys if any(c.startswith(_normalize_model_key(k)) for c in candidates)),
         key=len,
         default=None,
     )
+
+
+def profile_for_model(model: str) -> dict:
+    """Return the matching profile for *model* (see ``longest_prefix_key``).
+
+    Returns ``{}`` on no match, which is a normal outcome: every default is chosen so
+    that an unlisted model still behaves correctly.
+    """
+    best_key = longest_prefix_key(model, VLLM_MODEL_PROFILES)
     return dict(VLLM_MODEL_PROFILES.get(best_key, {})) if best_key else {}
 
 

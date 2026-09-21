@@ -12,6 +12,7 @@ import itertools
 import json
 from typing import Any
 
+from . import streaming as _streaming
 from ..event_sink import emit
 from ..context.execution_context import plan_evidence_ready
 from ..context.capabilities import DELEGATE, arg_role, names_with_cap
@@ -39,6 +40,7 @@ from ..guardrails.workflow import (
 from ..guardrails.nudges import drop_transient_reminders, inject_reminder
 from ..tool_execution.formatter import normalize_arguments
 from .streaming import _DraftHold, _note_truncated_turn, _stream_chat, _process_response, _to_dict
+from .history import _enforce_context_budget
 from .dispatch import _dispatch_tool_calls, _post_dispatch_inject
 from .deferral import (
     KIND_PLAN_DECISION, deferred_prompts, end_deferred_calls, end_deferred_turn,
@@ -352,6 +354,11 @@ async def _run_plan_mode(
     # No sampling params, as in agent mode: the model's generation_config decides,
     # unless the user set a temperature (added per call below).
     base_options: dict = {}
+    # Same three the agent loop lifts out of its step body: plan mode enforces the
+    # context budget too (see the call before _stream_chat below).
+    _tok = lambda text: _streaming.get_backend().count_text_tokens(agent.model, text)  # noqa: E731
+    compact_fn = getattr(agent, "compact_messages", None)
+    context_mode = getattr(agent, "context_mode", "full")
     auto_active = getattr(agent, "thinking_depth", None) == THINKING_DEPTH_AUTO
 
     # Unbounded when the caller set no ceiling (max_steps <= 0) — plan mode gathers
@@ -436,6 +443,23 @@ async def _run_plan_mode(
             else None
         )
         step_cb = {**cb, "token_callback": hold.capture} if hold else cb
+
+        # Enforce the context budget BEFORE the call, exactly as the agent loop does.
+        # Plan mode reads evidence for as long as the question needs — unbounded when
+        # max_steps <= 0 — so it is the mode whose history grows *most*, and it was the
+        # one growing it unchecked: a single fetched document can outweigh everything
+        # else in the window, and nothing here evicted, summarised or truncated it.
+        # Plan mode carries its system prompt in messages[0] rather than in a variable
+        # of its own, so the budget is handed the same text from there.
+        _system = (
+            messages[0].get("content", "")
+            if messages and messages[0].get("role") == "system" else ""
+        )
+        _enforce_context_budget(
+            messages, _system, plan_tools, execution_context,
+            agent.model, context_mode, compact_fn, _tok,
+        )
+
         try:
             msg = _stream_chat(
                 agent.model,

@@ -22,6 +22,7 @@ class ExecutionContext(TypedDict):
     similar_candidates_by_dir: dict[str, set[str]]  # per-directory near-name candidates from candidate searches (path clarification)
     search_tool_calls: int                          # count of successful search calls (blast-radius gate)
     action_op_count: int                            # count of successful substantive actions (PLAN_BLOCKED: writes/exec/mutations); drives the todo op-count trigger
+    workspace_root: str                             # the tree THIS agent works in; a sub-agent given a copy of the repository declares its paths under that copy
     # ── Edit: planned and in-flight mutations ──────────────────────────────────
     dirty_written_files: set[str]                   # code files successfully written this query and not yet re-validated
     validated_files: set[str]                       # dirty files that have since passed a checker (syntax/imports/lint) — never an execution
@@ -221,6 +222,10 @@ _FIELD_SPECS: tuple[_FieldSpec, ...] = (
     # tool). Read by the todo nudge so a many-operation task is recognised as
     # multi-step even when it touches only one (or zero) files.
     ("action_op_count", lambda: 0, (int,), _NO_TRAITS),
+    # Empty means "the workspace the client was started in" — the module constant.
+    # Set per run, because an agent's root is a property of the agent and a sub-agent
+    # may work in a copy of the repository.
+    ("workspace_root", lambda: "", (str,), _NO_TRAITS),
     # ── Edit: planned and in-flight mutations ──────────────────────────────────
     ("planned_edit_targets", RecencySet, (set,), _NO_TRAITS),
     ("declared_edit_set", set, (set,), _NO_TRAITS),
@@ -556,7 +561,9 @@ def unwritten_declared_files(execution_context: dict[str, Any]) -> list[str]:
         return []
     dirty = set(execution_context.get("dirty_written_files", set()) or set())
     from ..config.constants import WORKSPACE_ROOT
-    root = os.path.abspath(WORKSPACE_ROOT)
+    # Off the context, not off the import: a sub-agent in a copy of the repository
+    # declares paths under its own root, and this function never sees the agent.
+    root = os.path.abspath(execution_context.get("workspace_root") or WORKSPACE_ROOT)
     return sorted(d for d in declared if not _declared_target_written(d, dirty, root))
 
 

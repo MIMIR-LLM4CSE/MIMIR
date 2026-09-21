@@ -6,6 +6,7 @@ import os
 from typing import Any, Awaitable, Callable, Iterable
 
 from ...config import (
+    SUBAGENT_LEVELS,
     TEMPERATURE_BACKENDS, TEMPERATURE_MAX, TEMPERATURE_MIN, THINKING_DEPTH_LABELS,
     parse_temperature, thinking_depth_from_label,
 )
@@ -226,6 +227,21 @@ async def handle_chat_command(
             except ValueError as exc:
                 return True, f"\n❌ {exc}\n"
         return True, f"\nContext mode switched to: {val}.\n"
+
+    if cmd == "/subagents":
+        if agent is None:
+            return True, "\n❌ /subagents is not available here.\n"
+        current = getattr(agent, "subagent_level", "explore")
+        if len(parts) == 1:
+            return True, (
+                f"\nSub-agents may currently: {current}  "
+                "(explore=read only; parallel=+edit and run commands, each in a copy "
+                "of the repository on its own branch)\n"
+            )
+        val = parts[1].lower()
+        if val not in SUBAGENT_LEVELS:
+            return True, f"\n❌ Usage: /subagents {'|'.join(SUBAGENT_LEVELS)}\n"
+        return True, f"\nSub-agents may now: {agent.set_subagent_level(val)}.\n"
 
     if cmd == "/enforcement":
         if len(parts) == 1:

@@ -179,7 +179,11 @@ def _out_of_workspace_targets(agent: Any, tool_name: str, arguments: dict) -> li
     """
     from ...config.constants import WORKSPACE_ROOT
     from ...tool_execution.validation import absolute_workspace_path
-    root = os.path.realpath(os.path.abspath(WORKSPACE_ROOT))
+    # The agent's own root: a sub-agent working in a copy of the repository is inside
+    # ITS workspace there, and outside the caller's — which is the whole point of the
+    # copy. Falls back to the module constant for anything agent-like without one.
+    root = os.path.realpath(os.path.abspath(
+        getattr(agent, "workspace_root", None) or WORKSPACE_ROOT))
 
     raw: list[str] = []
     try:

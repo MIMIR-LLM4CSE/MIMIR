@@ -303,7 +303,27 @@ A few notes worth keeping:
   `@mcp.tool(**tool_caps(...))`; `infer_tool_caps` resolves them at connect into a
   per-agent registry (`agent.tool_caps`), and the policy, approval and execution layers
   query that. A new MCP server is classified with zero client edits. The registry is
-  per-agent because `spawn_agent` runs sub-agents with a subset of servers.
+  per-agent because a sub-agent runs with a subset of servers — and, since it is given a
+  named list of tools, with a subset of those servers' tools too.
+- **How far a sub-agent may go is the user's setting, not the model's choice.** Two
+  rungs (`config.constants.SUBAGENT_LEVELS`): `explore` reads, `parallel` also writes.
+  There is deliberately nothing in between — sub-agents editing one shared tree
+  overwrite each other in silence, and no instruction to a model prevents it, so a
+  child that writes gets a git worktree of its own or it does not write. Enforced at
+  both ends: the grantable table holds nothing writing at `explore`, and the spawning
+  server reads the rung off the call rather than trusting what it is asked for.
+- **The workspace root is a property of the agent, not of the process.** A sub-agent
+  working in a copy of the repository is inside *its* workspace there and outside the
+  caller's; the out-of-workspace gate, the declared-edit tracker, the prompt and the
+  servers' environment all read `agent.workspace_root`. The state dir and the `.mimir/`
+  extensions deliberately do not follow it: it is a copy of the code, not another
+  project.
+- **What a sub-agent may never be given is declared, not listed.** `MAIN_ONLY` marks a
+  tool as the orchestrating run's own: the plan the user approved, the questions asked of
+  them, writing the memory every session shares. With `DELEGATE` (no recursion) and
+  `CLUSTER_SUBMIT` (allocation hours are spent in front of the user), it is what
+  `reserved_for_main` subtracts from what the caller can grant. A new server reserves its
+  own tool by declaring the capability, with no client edit.
 
 ### One injection path
 

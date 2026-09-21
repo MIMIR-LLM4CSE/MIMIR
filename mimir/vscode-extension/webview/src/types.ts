@@ -385,6 +385,94 @@ export interface SessionMeta {
   title_custom?: boolean;
 }
 
+/** How far the user lets a sub-agent go. Mirrors config.constants.SUBAGENT_LEVELS:
+ *  "explore" reads, "parallel" also writes — each in a copy of the repository, which
+ *  is why there is no rung in between. */
+export type SubAgentLevel = "explore" | "parallel";
+
+/** One line of a panel section, in the words of the server that filled it. */
+export interface PanelLine {
+  label: string;
+  value: string;
+  /** Optional emphasis the server asked for, e.g. "running". */
+  state?: string;
+}
+
+export interface PanelSection {
+  section: string;
+  title: string;
+  lines: PanelLine[];
+  detail?: string;
+}
+
+/** A detached run the watcher is holding: a build, a Slurm job, a sub-agent. */
+export interface WatchedRun {
+  job_key: string;
+  kind?: string;
+  server?: string;
+}
+
+export interface PanelReportMessage {
+  type: "panel_report";
+  subagent_level: SubAgentLevel;
+  subagents: SubAgent[];
+  running?: number;
+  runs: WatchedRun[];
+  sections: PanelSection[];
+}
+
+export interface SubAgentLevelMessage {
+  type: "subagent_level";
+  level: SubAgentLevel;
+}
+
+/** One sub-agent of the session in view, as the spawn server's card describes it. */
+export interface SubAgent {
+  id: string;
+  state: "running" | "finished" | "abandoned" | "failed" | "unknown";
+  task?: string;
+  /** The tools it was granted; empty means a read-only exploration. */
+  tools?: string[];
+  model?: string;
+  budget_secs?: number;
+  completed?: boolean;
+  started_at?: string;
+  ended_at?: string;
+  /** Its answer or handoff — only sent when one sub-agent is opened. */
+  answer?: string;
+  /** Its own checklist, raw Markdown — likewise. */
+  todo?: string;
+  /** The tail of its activity log: one row per event, paired by `activityRows`. */
+  activity?: unknown[];
+  /** Set when it worked in a copy of the repository: branch, path, diffstat. */
+  workspace?: {
+    /** Empty when it changed nothing: that branch carried no commit and was dropped. */
+    branch?: string;
+    path?: string;
+    /** The repository the copy was cut from. */
+    repo?: string;
+    files_changed?: string[];
+    diffstat?: string;
+    /** A copy is kept now; cards written before that say so here. */
+    kept?: boolean;
+    /** What the server has to say about it — how to bring the work over, mostly. */
+    note?: string;
+  };
+}
+
+export interface SubAgentsListMessage {
+  type: "subagents_list";
+  session_id: string;
+  subagents: SubAgent[];
+  /** How many are working right now — the badge on the button. */
+  running?: number;
+}
+
+export interface SubAgentMessage {
+  type: "subagent";
+  subagent: SubAgent;
+}
+
 export interface SessionsListMessage {
   type: "sessions_list";
   sessions: SessionMeta[];
@@ -591,6 +679,10 @@ export type ServerMessage =
   | FileProgressMessage
   | BatchStatusMessage
   | SessionsListMessage
+  | SubAgentsListMessage
+  | SubAgentMessage
+  | SubAgentLevelMessage
+  | PanelReportMessage
   | SessionLoadedMessage
   | ContextModeMessage
   | EnforcementModeMessage

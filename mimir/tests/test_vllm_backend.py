@@ -182,3 +182,79 @@ class TokenizeAbsenceTests(unittest.TestCase):
         with patch.dict("os.environ", {"VLLM_BASE_URL": "http://other:8000"}):
             backend.count_text_tokens("m", "second")
         self.assertEqual(len(calls), 2)
+
+
+class UnknownWindowTests(unittest.TestCase):
+    """A server that publishes no max_model_len must still bound the answer.
+
+    Incident (2026-09-20): an OpenAI-compatible router served the model but
+    reported no ``max_model_len``, so no ``max_tokens`` was sent and vLLM defaulted
+    it to the whole remaining window — a >600K-token allowance. A sub-agent's
+    report-writing step ran until the router gave up with a 500, three identical
+    retries deep, ~90s apiece, with nothing to show for the six minutes.
+    """
+
+    def _sent(self, options, window=None):
+        import mimir.client.query_engine.backends.vllm_backend as vb
+        sent: dict = {}
+        message = types.SimpleNamespace(role="assistant", content="ok", tool_calls=None)
+        response = types.SimpleNamespace(
+            choices=[types.SimpleNamespace(finish_reason="stop", message=message)])
+
+        def _create(client, kwargs):
+            sent.update(kwargs)
+            return response
+
+        with patch.object(vb, "_create", _create), \
+             patch.object(vb, "served_model_len", lambda model, config=None: window):
+            FinishReasonTests._backend().chat(
+                "m", [{"role": "user", "content": "q"}], [], False, False, options)
+        return sent
+
+    def test_no_published_window_still_caps_the_answer(self) -> None:
+        from mimir.client.config.constants import CTX_TOTAL_FULL
+        sent = self._sent({})
+        self.assertEqual(sent["max_tokens"], int(CTX_TOTAL_FULL * CTX_RESERVED_RATIO))
+
+    def test_an_explicit_ceiling_still_wins(self) -> None:
+        self.assertEqual(self._sent({"max_tokens": 128})["max_tokens"], 128)
+
+    def test_a_published_window_sizes_the_answer_as_before(self) -> None:
+        sent = self._sent({}, window=262_144)
+        self.assertEqual(sent["max_tokens"], int(262_144 * CTX_RESERVED_RATIO))
+
+
+class WindowPrecedenceTests(unittest.TestCase):
+    """Detection first; the declared value only covers what detection cannot reach.
+
+    Reading the window off the endpoint is the generic answer — it needs no
+    maintenance and survives the endpoint being upgraded or repointed. The declared
+    value used to short-circuit the lookup entirely, so a setting left behind from
+    one endpoint silently displaced the next one's published window.
+    """
+
+    def _window(self, declared, served):
+        import mimir.client.query_engine.backends.vllm_backend as vb
+        env = {"MIMIR_VLLM_MAX_MODEL_LEN": str(declared)} if declared is not None else {}
+        b = FinishReasonTests._backend()
+        with patch.dict("os.environ", env, clear=False), \
+             patch.object(vb, "served_model_len", lambda model, config=None: served):
+            if declared is None:
+                import os
+                os.environ.pop("MIMIR_VLLM_MAX_MODEL_LEN", None)
+            return b._fetch_context_window("m")
+
+    def test_the_published_window_wins_over_a_larger_declaration(self) -> None:
+        self.assertEqual(self._window(524_288, 262_144), 262_144)
+
+    def test_the_published_window_wins_over_a_smaller_one_too(self) -> None:
+        self.assertEqual(self._window(131_072, 262_144), 262_144)
+
+    def test_the_declaration_fills_the_gap_when_nothing_is_published(self) -> None:
+        self.assertEqual(self._window(524_288, None), 524_288)
+
+    def test_detection_alone_still_works(self) -> None:
+        self.assertEqual(self._window(None, 262_144), 262_144)
+
+    def test_neither_leaves_the_window_unknown(self) -> None:
+        self.assertIsNone(self._window(None, None))

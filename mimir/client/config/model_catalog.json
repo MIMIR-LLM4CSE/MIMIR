@@ -1,0 +1,150 @@
+{
+  "_comment": [
+    "What each served model is worth, so the orchestrating model can pick one per sub-agent.",
+    "",
+    "WHO READS IT. The spawn-agent server, once at start-up: for every model the endpoint",
+    "lists in /v1/models it renders one line of this data into the description of its",
+    "`model` argument. The orchestrator reads that line and decides; nothing here decides",
+    "for it.",
+    "",
+    "SCORES ARE COMPARABLE OR ABSENT. Every score in one category comes from ONE harness",
+    "run on every model (see _scale), never from vendor model cards: vendors each publish",
+    "different benchmarks under different settings, and a column mixing them ranks the",
+    "harnesses, not the models. A category no common source covers stays null and is",
+    "rendered 'n/a' -- a guess would be read as a measurement.",
+    "",
+    "SPEED IS ESTIMATED, NOT MEASURED. Decoding is memory-bandwidth bound, so its relative",
+    "cost is about active_params_b x bytes per weight (see _weight_bytes). Dense models",
+    "activate every parameter; MoE models only their active ones. The estimate ignores the",
+    "hardware each model is served on.",
+    "",
+    "MATCHING is the same as vllm_model_profiles.json: the longest key that prefixes the",
+    "served id, its last path segment or any segment, '_' and '.' being one separator.",
+    "A served model with no entry is still offered, marked 'no data'.",
+    "",
+    "  arch                 'dense' | 'moe'",
+    "  total_params_b       total parameters, billions",
+    "  active_params_b      parameters used per decoded token, billions (= total if dense)",
+    "  weights              served precision, a key of _weight_bytes",
+    "  context_tokens       documented window; the endpoint's max_model_len wins when it has one",
+    "  delegable            false = listed but refused as a sub-agent model (say why in note)",
+    "  scores               {category: {benchmark: value} | null}, categories from _scale",
+    "  scored_variant       the variant the source measured, when it differs from how a",
+    "                       sub-agent runs it (sub-agents run at the lowest reasoning rung)",
+    "  sources              where each number was read, with the date",
+    "  note                 anything the numbers do not say"
+  ],
+
+  "_weight_bytes": { "bf16": 2, "fp16": 2, "fp8": 1, "int8": 1, "nvfp4": 0.5, "int4": 0.5 },
+
+  "_scale": {
+    "source": "Artificial Analysis Intelligence Index v4.3.2, read 2026-09-19",
+    "categories": {
+      "reasoning":    { "use": "diagnosis, hard problems", "benchmarks": ["HLE %", "CritPt %"] },
+      "coding":       { "use": "writing or changing code", "benchmarks": ["SciCode %"] },
+      "agentic":      { "use": "long autonomous multi-step work", "benchmarks": ["Terminal-Bench 4.0 %"] },
+      "tools":        { "use": "chaining tool calls without mistakes", "benchmarks": ["AutomationBench-AA %"] },
+      "discovery":    { "use": "reading a lot and reporting it without inventing", "benchmarks": ["AA-LCR long-context recall %", "AA-Omniscience reliability -100..100"] },
+      "instructions": { "use": "following a format or constraints", "benchmarks": [] },
+      "overall":      { "use": "order of magnitude", "benchmarks": ["Intelligence Index"] }
+    }
+  },
+
+  "glm-5.3-flash-nvfp4": {
+    "arch": "moe", "total_params_b": 320, "active_params_b": 18, "weights": "nvfp4",
+    "context_tokens": 300000,
+    "scores": {
+      "reasoning": { "HLE": 40, "CritPt": 15 },
+      "coding": { "SciCode": 52 },
+      "agentic": { "Terminal-Bench 4.0": 33 },
+      "tools": { "AutomationBench-AA": 60 },
+      "discovery": { "AA-LCR": 80, "AA-Omniscience": 7 },
+      "instructions": null,
+      "overall": { "Intelligence Index": 42 }
+    },
+    "sources": [
+      "https://huggingface.co/zai-org/GLM-5.3-Flash (320B total, 18B active; read 2026-09-19)",
+      "https://huggingface.co/RedHatAI/GLM-5.3-Flash-NVFP4 (FP4 experts, FP8 MTP layers; read 2026-09-19)",
+      "https://artificialanalysis.ai/models/comparisons/deepseek-v4-1-flash-vs-glm-5-3-flash (read 2026-09-19)"
+    ],
+    "note": "Scores are for the unquantized model; the NVFP4 checkpoint is RedHat's quantization of it."
+  },
+
+  "deepseek-v4.1-flash": {
+    "arch": "moe", "total_params_b": 552, "active_params_b": 16, "weights": "fp8",
+    "context_tokens": 1000000,
+    "scores": {
+      "reasoning": { "HLE": 39, "CritPt": 14 },
+      "coding": { "SciCode": 52 },
+      "agentic": { "Terminal-Bench 4.0": 27 },
+      "tools": { "AutomationBench-AA": 69 },
+      "discovery": { "AA-LCR": 84, "AA-Omniscience": -5 },
+      "instructions": null,
+      "overall": { "Intelligence Index": 39 }
+    },
+    "scored_variant": "reasoning, max effort",
+    "sources": [
+      "https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash (552B backbone, 16B active in decode, 8B in prefill; read 2026-09-19)",
+      "https://artificialanalysis.ai/models/comparisons/deepseek-v4-1-flash-vs-glm-5-3-flash (read 2026-09-19)"
+    ],
+    "note": "active_params_b is the decode figure, the one that sets generation speed. Weights assumed to be the native F8_E4M3 checkpoint."
+  },
+
+  "mistral-medium-3.5-128b": {
+    "arch": "dense", "total_params_b": 128, "active_params_b": 128, "weights": "bf16",
+    "context_tokens": 256000,
+    "scores": {
+      "reasoning": { "HLE": 14, "CritPt": 0 },
+      "coding": { "SciCode": 40 },
+      "agentic": { "Terminal-Bench 4.0": 0 },
+      "tools": { "AutomationBench-AA": 6 },
+      "discovery": { "AA-LCR": 69, "AA-Omniscience": -37 },
+      "instructions": null,
+      "overall": { "Intelligence Index": 14 }
+    },
+    "scored_variant": "reasoning",
+    "sources": [
+      "https://huggingface.co/mistralai/Mistral-Medium-3.5-128B (dense 128B, BF16 and F8 weights; read 2026-09-19)",
+      "https://artificialanalysis.ai/models/comparisons/deepseek-v4-1-flash-vs-mistral-medium-3-5 (read 2026-09-19)"
+    ],
+    "note": "Weights assumed BF16: the served id carries no quantization suffix."
+  },
+
+  "mistral-large-3-675b-instruct-2512-nvfp4": {
+    "arch": "moe", "total_params_b": 675, "active_params_b": 41, "weights": "nvfp4",
+    "context_tokens": 256000,
+    "scores": {
+      "reasoning": { "HLE": 4, "CritPt": 0 },
+      "coding": { "SciCode": 37 },
+      "agentic": { "Terminal-Bench 4.0": 0 },
+      "tools": { "AutomationBench-AA": 1 },
+      "discovery": { "AA-LCR": 36, "AA-Omniscience": -40 },
+      "instructions": null,
+      "overall": { "Intelligence Index": 9 }
+    },
+    "sources": [
+      "https://huggingface.co/mistralai/Mistral-Large-3-675B-Instruct-2512-NVFP4 (675B total, 41B active; read 2026-09-19)",
+      "https://artificialanalysis.ai/models/comparisons/mistral-large-3-vs-glm-5-3-flash (read 2026-09-19)"
+    ],
+    "note": "Not a reasoning model."
+  },
+
+  "qwen3-0.6b": {
+    "arch": "dense", "total_params_b": 0.6, "active_params_b": 0.6, "weights": "bf16",
+    "context_tokens": 32768,
+    "delegable": false,
+    "scores": {
+      "reasoning": { "CritPt": 0 },
+      "coding": null,
+      "agentic": null,
+      "tools": null,
+      "discovery": { "AA-LCR": 0, "AA-Omniscience": -85 },
+      "instructions": null,
+      "overall": { "Intelligence Index": 5 }
+    },
+    "sources": [
+      "https://artificialanalysis.ai/models/comparisons/qwen3-0.6b-instruct-vs-glm-5-3-flash (Intelligence Index marked estimated; read 2026-09-19)"
+    ],
+    "note": "Too small to hold a tool-calling loop: the fastest model here, and the wrong one for any sub-agent."
+  }
+}

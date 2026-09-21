@@ -3475,3 +3475,155 @@ body.vscode-light .hljs-deletion, body.vscode-high-contrast-light .hljs-deletion
   font-size: 0.72em;
   opacity: 0.9;
 }
+
+/* ── Sub-agents panel ──────────────────────────────────────────────────────
+   Same drawer as the session list, under the session that spawned them. */
+.subagent-row {
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.subagent-head {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  width: 100%;
+  background: none;
+  border: none;
+  padding: 0;
+  text-align: left;
+  color: var(--fg);
+  cursor: pointer;
+}
+
+.subagent-state {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  flex-shrink: 0;
+  color: var(--fg-dim);
+}
+
+.subagent-state.state-running { color: var(--vscode-charts-blue, #4aa3ff); }
+.subagent-state.state-failed { color: var(--vscode-charts-red, #e06c6c); }
+.subagent-state.state-abandoned { color: var(--vscode-charts-orange, #d99a4e); }
+/* A status row is the loop explaining itself between two tool calls — present so the
+   gap is readable, recessed so it never competes with the calls themselves. */
+.subagent-step.step-note { opacity: 0.7; font-style: italic; }
+
+.subagent-task {
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.subagent-grant,
+.subagent-model {
+  font-size: 10px;
+  color: var(--fg-dim);
+  margin-top: 2px;
+  word-break: break-word;
+}
+
+.subagent-detail { margin-top: 6px; }
+
+.subagent-todo {
+  list-style: none;
+  margin: 4px 0;
+  padding: 0;
+  font-size: 11px;
+}
+
+.subagent-todo li.done { color: var(--fg-dim); text-decoration: line-through; }
+
+.subagent-answer {
+  font-size: 11px;
+  white-space: pre-wrap;
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+/* ── Scientific-computing panel ────────────────────────────────────────────
+   The drawer that gathers what is specific to this work: how far sub-agents may
+   go and what they are doing, the optimisation in progress, the machine, and the
+   runs still going outside the current turn. */
+.science-section {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.science-section-title {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--fg-dim);
+  margin-bottom: 6px;
+}
+
+.science-levels { display: flex; gap: 4px; }
+
+.science-level {
+  flex: 1;
+  font-size: 11px;
+  padding: 3px 6px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: none;
+  color: var(--fg-dim);
+  cursor: pointer;
+}
+
+.science-level.active {
+  color: var(--fg);
+  border-color: var(--vscode-focusBorder, var(--fg-dim));
+}
+
+.science-level-desc {
+  font-size: 10px;
+  color: var(--fg-dim);
+  margin: 4px 0 6px;
+}
+
+.science-line {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 11px;
+  padding: 1px 0;
+}
+
+.science-line-label { color: var(--fg-dim); flex-shrink: 0; }
+
+.science-line-value {
+  text-align: right;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.science-line-value.is-running { color: var(--vscode-charts-blue, #4aa3ff); }
+
+.science-detail { font-size: 10px; color: var(--fg-dim); margin-top: 4px; }
+
+.subagent-badge {
+  font-size: 9px;
+  margin-left: 2px;
+  padding: 0 3px;
+  border-radius: 6px;
+  background: var(--vscode-charts-blue, #4aa3ff);
+  color: var(--vscode-editor-background, #000);
+}
+
+.subagent-step {
+  display: flex;
+  gap: 4px;
+  font-size: 10px;
+  padding: 1px 0;
+}
+
+.subagent-step-mark { flex-shrink: 0; color: var(--fg-dim); }
+.subagent-step.step-error .subagent-step-mark { color: var(--vscode-charts-red, #e06c6c); }
+.subagent-step-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.subagent-step-detail { color: var(--fg-dim); margin-left: auto; flex-shrink: 0; }

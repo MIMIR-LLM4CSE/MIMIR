@@ -32,7 +32,7 @@ below with the arguments and the behaviour.
 | `workspace/server_files.py` | `write_file`, `append_file`, `delete_file`, `replace_in_file`, `replace_lines`, `replace_all_in_file` |
 | `workspace/server_search.py` | `read_file_lines`, `list_directory`, `tree_summary` |
 | `agent_state/server_memory.py` | `memory_add`, `memory_search`, `memory_list_all`, `memory_update`, `memory_delete`, `memory_clear` |
-| `agent_state/server_spawn_agent.py` | `spawn_agent` |
+| `agent_state/server_spawn_agent.py` | `spawn_agent`, `subagent_job` |
 | `agent_state/server_todo.py` | `todo_set_plan`, `todo_read_plan`, `todo_list_plans`, `todo_delete_plan`, `todo_write`, `todo_read`, `todo_read_ready`, `todo_update` |
 | `interaction/server_interaction.py` | `ask_user_question` |
 | `utilities/server_datetime.py` | `date_op` |
@@ -160,6 +160,11 @@ indexed by `MEMORY.md` (one scannable line per memory, loaded into context each 
 Adds are deduplicated (Jaccard word-overlap over the recent window) and the store is
 capped, pruning the oldest entries.
 
+The **writing** tools (`memory_add`, `memory_update`, `memory_delete`, `memory_clear`)
+declare `MAIN_ONLY`: the store is shared by every session of the workspace, and what is
+worth keeping is decided in front of the user. `memory_search` and `memory_list_all` stay
+grantable.
+
 **Semantic search**: `memory_search` ranks memories by embedding similarity to the
 query (so reworded, synonymous, or other-language queries still match), falling back to
 case-insensitive substring matching when no embedding backend is reachable. Vectors are
@@ -187,9 +192,15 @@ execution plan instead of relying on a static system-prompt injection.
 Storage is **per session** under the central state dir
 (`<STATE_DIR>/sessions/<sid>/`): the checklist as a Markdown checkbox list
 (`todo_list.md`) and named plans as a history under `plans/` (one `<date>-<slug>.md` per
-plan, indexed by `PLANS.md`, with a `.active` pointer). The active session is resolved via
-`<STATE_DIR>/active_session` (written by `ws_server` on each switch); CLI/standalone runs
-fall back to the shared legacy `todo_list.md`.
+plan, indexed by `PLANS.md`, with a `.active` pointer). The session is resolved by
+`state_paths.active_session_id()`: `MIMIR_SESSION_ID` when the server was started with one
+— that is how a sub-agent gets a checklist of its own — else `<STATE_DIR>/active_session`
+(written by `ws_server` on each switch). CLI/standalone runs fall back to the shared
+legacy `todo_list.md`.
+
+The **plan** tools declare `MAIN_ONLY` and are never granted to a sub-agent: the plan is
+what the user approved, and an axis of it has no standing to rewrite it. The **checklist**
+tools are grantable, because a child writes them in its own session.
 
 Tools:
 - `todo_set_plan` — write a named plan (approach/rationale) and make it active. Declares two arg-roles so client-side consumers find its arguments without knowing its name: `plan_title` (the plan loop pins it so a revision overwrites in place) and `plan_document` (the prose body). A client-side guard used to read that body and refuse a plan whose axes were exploration steps; it was removed — see [POLICY.md](POLICY.md#why-there-is-no-plan-shape-guard) for why a verb list is the wrong instrument for a refusal
@@ -1025,28 +1036,143 @@ completion and returns its answer, so the orchestrator can fan work out instead 
 carrying every intermediate step in its own context.
 
 Tools:
-- `spawn_agent(task, context="", role="explore", max_steps=30)` — spin up a child agent,
-  run it, return its answer. `context` is prepended to the task prompt; the model is
-  always the parent's (`MIMIR_DEFAULT_MODEL`, then the config default) since the backend
-  serves one at a time.
-  - `role="explore"` (default) — read-only reconnaissance. The child runs in a **read-only
-    mode**, which is what makes it read-only: the mode strips every `PLAN_BLOCKED` tool and
-    gates the dual-use shell at call time. The server-name set it connects
-    (`capabilities.explorer_servers()`) is a *connection-cost* filter, not the guarantee —
-    `files` carries the write tools too. The child is briefed to answer with a conclusion
-    citing files, symbols and line numbers rather than the contents it read; the caller
-    delegates precisely to keep those contents out of its window.
-  - `role="task"` — the full workspace toolkit, for a separable piece of work that must
-    write. Refused outright in plan/ask mode (see below).
+- `spawn_agent(task, context="", tools=[], max_steps=30, time_budget_secs=600, model="")`
+  — spin up a child agent, run it, return its answer. `context` is prepended to the task
+  prompt.
+  - `model` — empty means the caller's model. The client sends it with every call, in
+    the request `_meta` (`mimir/model`), so a `/model` switch mid-session reaches the
+    child; the server's environment was frozen at spawn and is only a fallback.
+  - The caller may name another model **the endpoint serves**. At start-up the server
+    asks the backend once for its served models (`served_model_info()`, i.e.
+    `/v1/models`) and renders them with the client's model catalog
+    (`config/model_catalog.py`) into the description of `model`. It is rendered once,
+    so the tool list stays prefix-stable for the session.
+  - A model the endpoint does not list, or one the catalog marks `"delegable": false`,
+    is refused with the list of usable ones. There is no fuzzy matching.
+  - The result carries `model`, the model the child ran on.
+  - **The user's setting decides what may be handed over at all** — `explore` or
+    `parallel` (`config.constants.SUBAGENT_LEVELS`), sent per call in the request
+    `_meta` (`mimir/subagent_level`). At `explore` the grantable table holds nothing
+    that writes. There is deliberately no rung in between: sub-agents editing one
+    shared tree overwrite each other in silence, so a child that writes gets a copy of
+    the repository or it does not write.
+  - **A child granted a writing or running tool works in a git worktree of its own**,
+    created before it starts, on branch `mimir/<child>`, under `/tmp/mimir-worktrees-*`
+    — the local disk, not the state dir (a home under quota cannot hold a checkout plus
+    what a build writes), and deliberately not the scratchpad (writable without
+    approval, which would take the child's edits out of the approval layer). On a clean
+    run MIMIR commits the work to the branch and **keeps the copy**: the branch carries
+    the code, the copy carries the build tree, which git never had and which the axis
+    paid its compile for. Git refuses to check out a branch a copy holds, so the result
+    says to merge or cherry-pick it rather than leave the caller to read a git refusal.
+
+    **A branch that carries nothing is dropped**, and the test is the commit the copy
+    was cut from, recorded at creation — not `git branch -d`, which asks whether the
+    branch is merged into whatever HEAD is *now* and so keeps every empty branch as soon
+    as the main tree moves on. The copy is detached first (git will not delete a branch a
+    worktree holds) and the report only says the branch went if it went.
+
+    **A copy goes one way only**: whatever it holds is committed first, then the
+    directory is removed. The copy most worth reclaiming is the one a failed run left,
+    and that is exactly the one whose work exists nowhere else.
+
+    Two rules reclaim them, because one registry is not enough:
+      - *Per session, at creation.* A session keeps `SUBAGENT_WORKTREES_KEPT` (3)
+        finished copies plus the one being made, read off the sibling cards. Only copies
+        still on disk take a place, and "still running" is read off the **pid** on the
+        card — a server killed mid-run leaves a card saying "running" for ever, and
+        taking that at face value would exempt its copy from reclamation.
+      - *Orphan sweep, also at creation.* The cards live with the session, so deleting a
+        conversation takes the registry and leaves the copies. Each copy therefore also
+        carries a **marker** beside it (never inside: `git add -A` would commit it),
+        written before the copy is handed over and naming its session and pid. A copy is
+        an orphan when its owner is gone **and** its card is gone — either alone is a
+        copy merely between states. One with no marker predates this and is judged by
+        git: a directory `git worktree list` does not register is nobody's copy.
+  - **What the child reports, it reports in the repository's names.** `files_read` and
+    `files_written` are made relative to the copy before they go back, as
+    `files_changed` always was — a caller quoting `/tmp/mimir-worktrees-…` as evidence
+    cites a path that means nothing in the repository.
+  - `tools` — the tools the child gets, named from the caller's own list. **The caller
+    cannot grant what it does not have**: the client sends what it may hand over with the
+    call, in the request `_meta` (`mimir/grantable`, a `{tool: owning server}` table built
+    by `query_engine.toollist.grantable_tools`), together with its mode
+    (`mimir/mode`). A name outside that table is refused with the list of what is in it;
+    no table at all (an unknown caller) grants nothing.
+  - **Empty `tools` is reconnaissance**: the servers in `capabilities.explorer_servers()`,
+    in a **read-only mode**, which is what makes it read-only — the mode strips every
+    `PLAN_BLOCKED` tool and gates the dual-use shell at call time. The child is briefed to
+    answer with a conclusion citing files, symbols and line numbers rather than the
+    contents it read; the caller delegates precisely to keep those out of its window.
+  - **Named tools decide the rest.** The child connects only the servers those tools live
+    in, then *prunes* its registry to the grant (`_prune_tools`): connecting a server
+    brings its siblings, and an unpruned grant would be approximate. It runs in `agent`
+    mode when at least one granted tool is `PLAN_BLOCKED` or `PLAN_READONLY` — without the
+    second, a child given the shell to build with could not run the build — and is briefed
+    to end with a HANDOFF rather than stopping mid-air.
+  - `time_budget_secs` — the wall for this run, clamped to
+    `[SUBAGENT_MIN_BUDGET_SECS, SUBAGENT_HARD_CAP_SECS]` (60–1140 s). The child is told
+    how long it has, in the brief.
+  - `background=True` **detaches the child**: the call returns a `background_job`
+    descriptor at once, the caller carries on, and the client's watcher resumes it with
+    the answer when the child lands — the same machinery a detached shell command uses
+    (`query_engine/background.py`, `ws_worker._watch_job`), so nothing in the client
+    knows this kind of job from that one. The descriptor's `status_op` and `summary_op`
+    both point at `subagent_job`; the dispatch guard then refuses the *status* question
+    (the wake answers it) while allowing the *result* one, which is progress.
+  - Each child gets a **session of its own**, `sessions/<parent>/subagents/sub-xxxxxxxx`,
+    passed to the servers it starts as `MIMIR_SESSION_ID` through `agent.server_env`
+    (merged by `integration/server_manager.connect_server`). Its todo list and its
+    scratchpad are therefore its own — which is what makes the checklist tools grantable —
+    and several children working in parallel cannot collide. It leaves a `subagent.json`
+    card next to them for the sub-agents panel, and the whole thing goes when the parent
+    session is deleted.
+  - **A child that outlives its caller is stopped.** The child runs on a thread of its
+    own that nothing can kill, so a budget that expires used to return to the caller and
+    leave the thread working: it went on spending model calls on an answer nobody would
+    read, and wrote its card as a clean `finished` minutes later. The timeout branch now
+    sets the agent's `_cancel_flag` — the same cooperative flag the WebSocket worker uses
+    to interrupt a turn — and marks the card `abandoned`, which outranks `finished` even
+    when the thread does reach a clean result. The card's four terminal states are
+    therefore `finished`, `abandoned`, `failed` and `unknown`. The line handed back to
+    the caller says not to spawn the same task again unchanged: told only to use a fresh
+    sub-agent, it respawned the task verbatim and spent a second full budget on it.
+  - **A silent gap is accounted for.** A step is not one model call: an empty turn is
+    retried, a nudge is answered, a checklist refresh re-asks — each up to the child's
+    8192-token per-step ceiling (`SUBAGENT_ANSWER_TOKENS`), none of them a tool call.
+    The activity log recorded only tool calls, so a child spending four minutes that
+    way was, from the panel, indistinguishable from one that had hung. `_compact_event`
+    now forwards the loop's `status` lines as `st` rows — blank ones dropped, clipped
+    to 160 chars like every other field — and the panel renders them recessed between
+    the tool rows. The token and diff streams still do not travel: those are per-token,
+    this is per step.
+
+- **Reaching the user.** A child whose delegating call is still open gets its
+  approvals and its questions routed to the person, through that call's MCP session
+  (`_install_user_channel`). Two rules are enforced rather than hoped for: the cards
+  are shown **one at a time** (several children asking at once is a pile nobody can
+  answer in order), and each says **which sub-agent is asking**. A detached child has
+  no session left to raise a card on: it runs unattended and reports what its mode
+  refused, as before.
+- `subagent_job(op="status"|"result"|"list", job_key="")` — read a detached child:
+  its state (`running` | `done` | `crashed`, or `unknown` once it has outlived its
+  budget), everything it returned, or the list of this session's children. Read-only and
+  `MAIN_ONLY`: these are the caller's own handles. `result` on a child still working
+  gives what it has touched so far, which is what makes reading progress possible
+  without polling its state.
 
 Capabilities and gating:
 - Declares `DELEGATE` (the channel prompt, guidance and observation all address by
-  capability rather than by name) and `PLAN_READONLY`. As a dual-use tool it stays visible
-  in the read-only modes — that is where a sweep is the whole of the work — and its
-  descriptor names which invocations are the read-only ones
-  (`readonly_when={"arg": "role", "values": ["explore"]}`), which the client's
-  `readonly_guard` reads off the descriptor. A `role="task"` call in plan/ask mode is
-  rejected with a tool-role error telling the model how to re-issue it.
+  capability rather than by name) and `BACKGROUNDABLE` (a detached child's handle). It is **no longer dual-use by argument**: delegation
+  cannot be the way around a read-only mode, because the grantable table is computed under
+  the caller's own mode and has nothing writing in it there. So it stays plainly visible in
+  plan and ask — that is where a sweep is the whole of the work.
+- What a child is never granted is declared by the tools themselves, and read by
+  `context.capabilities.reserved_for_main`: `MAIN_ONLY` (the plan the user approved, the
+  questions asked of them, writing the shared memory), `DELEGATE` (no recursion) and
+  `CLUSTER_SUBMIT` (allocation hours are spent where the user can see it). `TASK_PLANNING`
+  is deliberately *not* reserved — it covers the working checklist too, which a child keeps
+  in its own session.
 - Declared `reversibility="reversible"`, hence **not** approval-gated: a card in front of
   every exploration is a card in front of the behaviour the tool exists to make cheap. A
   writing child is gated by its own approval layer.
@@ -1057,14 +1183,18 @@ Execution model:
   running asyncio loop. Several `spawn_agent` calls emitted in one model step are
   dispatched **concurrently** by the parent's `asyncio.gather` in `dispatch.py` — which is
   why the prompt asks for the fan-out in a single response.
-- Hard cap of `SUBAGENT_HARD_CAP_SECS` (600 s) per sub-agent, enforced here. The tool
+- The per-call budget is enforced here, up to `SUBAGENT_HARD_CAP_SECS` (1140 s). The tool
   *declares* a larger wall to the dispatcher (`timeout_secs`, read by
-  `capabilities.timeout_for`), so the inner cap always fires first and hands back the
-  child's partial answer instead of the parent killing the call with nothing to show.
-  Before this, the dispatcher's flat 120 s applied and no non-trivial delegation could
-  finish.
+  `capabilities.timeout_for`, and kept under the client ceiling
+  `TOOL_CALL_TIMEOUT_MAX_SECS`), so the inner cap always fires first and hands back what
+  the child had instead of the parent killing the call with nothing to show. Before this,
+  the dispatcher's flat 120 s applied and no non-trivial delegation could finish.
+- A child that overruns keeps running in its own thread and its answer never arrives. The
+  timeout branch therefore reports what can be read off the agent itself
+  (`_partial_handoff`): the files it had already touched, and its session — enough to
+  carry the work on with a fresh child instead of starting it again.
 - Success payload: `{"status": "ok", "answer", "completed", "files_read", "files_written",
-  "blocked_by_mode"}`
+  "blocked_by_mode", "model", "tools", "session"}`
   — `completed=False` means the sub-agent ran out of steps or reported the task incomplete
   (the answer is still informative); `files_read` is what the caller's observation layer
   credits as delegated discovery evidence; `files_written` lets a parent coordinating
@@ -1082,6 +1212,10 @@ Execution model:
 
 Purpose: let the agent pause mid-run and ask the **user** a clarifying question with
 selectable choices, then resume with the answer.
+
+Declares `MAIN_ONLY`: a sub-agent runs unattended, with this server's JSON-RPC pipe for
+stdin. What it cannot settle it reports back, and the orchestrator — which does have the
+user's attention — decides whether to ask.
 
 Tools:
 - `ask_user_question(question, header, options, multi_select=False)`

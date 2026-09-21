@@ -42,13 +42,24 @@ def state_dir() -> str:
 
 
 def active_session_id(base: str | None = None) -> str:
-    """The session the client is currently driving, or "" outside a session.
+    """The session this server writes under, or "" outside a session.
 
-    Reads the ``active_session`` sidecar the client rewrites on every session
+    ``MIMIR_SESSION_ID`` wins when set. It is how a sub-agent gets a session of its
+    own: the environment belongs to one server process, where the sidecar below is
+    shared by every process of the workspace — so a child writing its todo cannot
+    land in the list of the run that spawned it. The value may carry ``/`` (a
+    sub-session is stored under its parent, ``<parent>/subagents/<child>``), which
+    only ever reaches ``os.path.join``; ids coming from the front end are separately
+    confined by ``session_store._path``.
+
+    Otherwise, the ``active_session`` sidecar the client rewrites on every session
     switch. The servers' environment is frozen at spawn, so a file on the shared
     state dir is the only live client→server channel (same mechanism the approved
     -paths allowlist uses). Best-effort: any read error means "no session".
     """
+    env = os.environ.get("MIMIR_SESSION_ID", "").strip()
+    if env:
+        return env
     try:
         with open(os.path.join(base or state_dir(), "active_session"), encoding="utf-8") as fh:
             return fh.read().strip()
@@ -76,7 +87,7 @@ def scratch_home() -> str:
     return os.path.join(os.path.abspath(tmp), f"mimir-{os.getuid()}-{workspace_id(root)}")
 
 
-def scratch_dir(base: str | None = None) -> str:
+def scratch_dir(base: str | None = None, session_id: str | None = None) -> str:
     """The agent's scratchpad: a writable directory *outside* the workspace.
 
     Somewhere to put throwaway probe scripts, intermediate data, and working files
@@ -94,9 +105,11 @@ def scratch_dir(base: str | None = None) -> str:
 
     *base* overrides the *state* dir, which is consulted only for the active-session
     sidecar: the client passes its own ``STATE_DIR`` because ``MIMIR_STATE_DIR`` is
-    placed only in the server subprocesses' environment, never its own.
+    placed only in the server subprocesses' environment, never its own. *session_id*
+    names the session outright, which is what a sub-agent does: several of them run in
+    one process, so neither the environment nor the shared sidecar can tell them apart.
     """
-    sid = active_session_id(base or state_dir())
+    sid = session_id or active_session_id(base or state_dir())
     home = scratch_home()
     return os.path.join(home, sid) if sid else home
 

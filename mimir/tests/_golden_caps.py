@@ -67,6 +67,8 @@ CLUSTER_SUBMIT_TOOLS = {
 # Launchers of long detached runs a client watcher can track to completion.
 BACKGROUNDABLE_TOOLS = {
     "bash_run", "proxy_eval", "proxy_slurm", "sbatch_submit",
+    # A sub-agent the caller detaches: same handle, same watcher, same resume.
+    "spawn_agent",
 }
 
 # Tools that publish a run channel while they block, so the user can move the run
@@ -78,8 +80,10 @@ DIVERTIBLE_TOOLS = {
 }
 
 # Dual-use tools kept available in a read-only mode for read-only invocations only:
-# the shell (judged per command), and the sub-agent spawn (judged per role).
-PLAN_READONLY_TOOLS = {"bash_run", "spawn_agent"}
+# the shell, judged per command. Delegation is no longer one of them — what a child
+# may be given is drawn from the caller's own visible tools, so a caller in a
+# read-only mode has nothing writing to hand over.
+PLAN_READONLY_TOOLS = {"bash_run"}
 
 SEARCH_TOOLS = set()
 EDIT_TOOLS = {
@@ -114,6 +118,14 @@ OVERWRITE_TOOLS = {"write_file"}
 TASK_PLANNING_TOOLS = {"todo_write", "todo_set_plan"}
 JUDGE_TOOLS = {"report_verdict"}
 DELEGATE_TOOLS = {"spawn_agent"}
+# Reserved to the orchestrating agent, never granted to a sub-agent: the plan the user
+# approved, the questions asked of them, the memory every session shares.
+MAIN_ONLY_TOOLS = {
+    "todo_set_plan", "todo_read_plan", "todo_list_plans", "todo_delete_plan",
+    "memory_add", "memory_update", "memory_delete", "memory_clear",
+    # The caller's handles on the children it detached.
+    "subagent_job",
+}
 
 # --- code-intelligence navigation (server_code_intel.py) ---------------------
 # These nav tools join the broad read/search caps.
@@ -234,6 +246,7 @@ GOLDEN = {
     "task_planning": TASK_PLANNING_TOOLS,
     "judge": JUDGE_TOOLS,
     "delegate": DELEGATE_TOOLS,
+    "main_only": MAIN_ONLY_TOOLS,
 }
 
 

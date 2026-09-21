@@ -412,6 +412,57 @@ class FinalizeAnswerTests(unittest.TestCase):
         self.assertEqual(calls, [])
 
 
+class PlanModeContextBudgetTests(unittest.TestCase):
+    """Regression: plan mode made every model call without enforcing any budget.
+
+    Plan mode reads evidence for as long as the question needs — the step ceiling is
+    optional there — so it is the mode whose history grows most, and it was extracted
+    from the agent loop without the trim/compaction pass. Observed 2026-09-20: a
+    fetched document worth ~125K tokens sat in a plan-mode history across three
+    further model calls, untouched, while the agent loop's own history would have
+    been compacted before the first of them.
+    """
+
+    def test_the_history_is_bounded_before_the_call(self) -> None:
+        backend = ScriptedBackend([{"content": "Here is the plan."}])
+        # One fetched document that alone outweighs the whole budget.
+        blob = "x" * (4 * (200_000 + 50_000))
+        messages = [
+            {"role": "system", "content": "S"},
+            {"role": "user", "content": "plan it"},
+            {"role": "assistant", "content": "fetching"},
+            {"role": "tool", "tool_call_id": "c1", "content": blob},
+            {"role": "assistant", "content": "read it"},
+            {"role": "assistant", "content": "t1"},
+            {"role": "assistant", "content": "t2"},
+            {"role": "assistant", "content": "t3"},
+            {"role": "assistant", "content": "t4"},
+        ]
+        agent = types.SimpleNamespace(
+            model="m", tools=[], tool_caps=dict(_CHECKLIST_CAPS),
+            compact_messages=lambda middle: [{"role": "assistant", "content": "SUMMARY"}],
+        )
+
+        async def _finalize(agent, query, answer, execution_context, messages, logger):
+            return answer
+
+        with patch.object(streaming_module, "get_backend", lambda: backend), \
+             patch.object(plan_loop_module, "tools_for_plan_mode", lambda tools, caps, **kw: []), \
+             patch.object(plan_loop_module, "_finalize_answer", _finalize):
+            asyncio.run(
+                plan_loop_module._run_plan_mode(
+                    agent=agent, query="q", messages=messages,
+                    execution_context=build_execution_context(),
+                    max_steps=1, thinking=False, streaming=False, logger=None,
+                    cb={"think_token_callback": None},
+                )
+            )
+
+        sent = backend.calls[0]["messages"]
+        self.assertNotIn(blob, [m.get("content") for m in sent])
+        self.assertLess(sum(len(str(m.get("content", ""))) for m in sent), len(blob))
+
+
 class RunPlanModeTests(unittest.TestCase):
     def test_emits_plan_then_delivers_answer(self) -> None:
         # Step 1: model records the plan document. Step 2: no tool calls → content is the answer.

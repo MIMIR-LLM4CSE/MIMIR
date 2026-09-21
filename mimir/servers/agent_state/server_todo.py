@@ -36,9 +36,9 @@ from datetime import datetime, timezone
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '_shared'))
 
 from mcp.server.fastmcp import FastMCP
-from capabilities import TASK_PLANNING, tool_caps, RECOVERABLE
+from capabilities import MAIN_ONLY, TASK_PLANNING, tool_caps, RECOVERABLE
 from responses import err, ok
-from state_paths import state_dir
+from state_paths import active_session_id, state_dir
 from text_tools import yaml_scalar, yaml_unquote
 
 # Central per-workspace state dir (MIMIR_STATE_DIR, set by server_manager; legacy
@@ -48,24 +48,22 @@ from text_tools import yaml_scalar, yaml_unquote
 _MIMIR_DIR = state_dir()
 # Legacy fallback path (used when no active session sidecar exists).
 _LEGACY_TODO_FILE = os.path.abspath(os.path.join(_MIMIR_DIR, "todo_list.md"))
-_ACTIVE_SESSION_FILE = os.path.abspath(os.path.join(_MIMIR_DIR, "active_session"))
 
 
 def _get_todo_file() -> str:
-    """Return the todo file path for the currently active session.
+    """Return the todo file path for the session this server belongs to.
 
-    Reads .mimir/active_session (written by ws_server.py on each session
-    switch) to find the session-scoped path.  Falls back to the legacy shared
-    todo_list.md when no sidecar exists (e.g. CLI mode).
+    The session comes from ``state_paths.active_session_id()`` — the one
+    implementation, so a sub-agent's own session (``MIMIR_SESSION_ID``) is honoured
+    here exactly as it is for the scratchpad. Falls back to the legacy shared
+    todo_list.md outside any session (e.g. CLI mode).
     """
     try:
-        if os.path.exists(_ACTIVE_SESSION_FILE):
-            with open(_ACTIVE_SESSION_FILE, "r", encoding="utf-8") as f:
-                session_id = f.read().strip()
-            if session_id:
-                session_dir = os.path.join(os.path.dirname(_LEGACY_TODO_FILE), "sessions", session_id)
-                os.makedirs(session_dir, exist_ok=True)
-                return os.path.join(session_dir, "todo_list.md")
+        session_id = active_session_id(_MIMIR_DIR)
+        if session_id:
+            session_dir = os.path.join(os.path.dirname(_LEGACY_TODO_FILE), "sessions", session_id)
+            os.makedirs(session_dir, exist_ok=True)
+            return os.path.join(session_dir, "todo_list.md")
     except OSError:
         pass
     return _LEGACY_TODO_FILE
@@ -249,7 +247,11 @@ def _delete_deps() -> None:
 # ── tools ─────────────────────────────────────────────────────────────────────
 
 @mcp.tool(**tool_caps(
-    caps=[TASK_PLANNING],
+    # MAIN_ONLY, like every plan tool below: the plan is what the user approved, and a
+    # sub-agent working one axis of it has no standing to rewrite it. Its own working
+    # checklist (todo_write and friends) stays grantable — it lands in the child's own
+    # session, so the orchestrator's list is untouched.
+    caps=[TASK_PLANNING, MAIN_ONLY],
     # Two roles, because two client-side consumers need to find different arguments
     # without knowing this tool's name: the plan loop pins the title so a revision
     # overwrites in place, and the plan-shape gate reads the body.
@@ -319,7 +321,7 @@ def todo_set_plan(text: str, title: str) -> dict:
     })
 
 
-@mcp.tool()
+@mcp.tool(**tool_caps(caps=[MAIN_ONLY]))
 def todo_read_plan(name: str = None) -> dict:
     """Return a prose plan written by todo_set_plan.
 
@@ -358,7 +360,7 @@ def todo_read_plan(name: str = None) -> dict:
     })
 
 
-@mcp.tool()
+@mcp.tool(**tool_caps(caps=[MAIN_ONLY]))
 def todo_list_plans() -> dict:
     """List every plan in the active session, newest first.
 
@@ -374,6 +376,7 @@ def todo_list_plans() -> dict:
 
 
 @mcp.tool(**tool_caps(
+    caps=[MAIN_ONLY],
     reversibility=RECOVERABLE, non_batch=True,
     risk_note="deletes a persistent plan file",
 ))

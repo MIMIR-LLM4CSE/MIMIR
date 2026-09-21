@@ -14,11 +14,17 @@ Schema::
       "disabled_servers": ["strings", "datetime"],
       "disabled_skills":  ["proxy-optimize"],
       "disabled_nudges":  ["authz_reminder"],
-      "temperatures":     {"qwen3-32b": 0.6}
+      "temperatures":     {"qwen3-32b": 0.6},
+      "subagent_level":   "parallel"
     }
 
 Only *disabled* names are stored (an absent name is enabled), so newly added servers,
 skills, and application nudges default to on without needing a migration.
+
+``subagent_level`` is how far a sub-agent may go (constants.SUBAGENT_LEVELS). Absent
+means the weakest rung: a sub-agent that only reads. Unlike the ``disabled_*`` lists,
+which take something away, this one hands something over — so its absence must be the
+cautious answer, not the permissive one.
 
 ``temperatures`` holds the sampling temperature the user chose, per served model name.
 A model absent from it uses its own default: no temperature is sent at all, and the
@@ -95,6 +101,24 @@ def save_disabled(
         "disabled_skills": sorted(disabled_skills),
         "disabled_nudges": sorted(disabled_nudges or set()),
     })
+    _write_preferences(payload)
+
+
+def load_subagent_level() -> str:
+    """The rung the user last chose, or the weakest one."""
+    from .constants import clamp_subagent_level
+    return clamp_subagent_level(str(load_preferences().get("subagent_level") or ""))
+
+
+def save_subagent_level(level: str) -> None:
+    """Persist the rung, keeping every other key."""
+    from .constants import clamp_subagent_level, DEFAULT_SUBAGENT_LEVEL
+    payload = load_preferences()
+    level = clamp_subagent_level(level)
+    if level == DEFAULT_SUBAGENT_LEVEL:
+        payload.pop("subagent_level", None)   # absent means the default
+    else:
+        payload["subagent_level"] = level
     _write_preferences(payload)
 
 

@@ -14,6 +14,7 @@ carries a compaction summary resumes from itself, because reloading the record o
 throws that summary away and starts the session back at its pre-compaction size.
 """
 import concurrent.futures
+import json
 import os
 import tempfile
 import unittest
@@ -23,7 +24,9 @@ from unittest import mock
 from mimir.client.query_engine.history import (
     carries_compaction_summary, compacted_exchanges, compaction_summary_message,
 )
-from mimir.client.ui.ws.session_store import FullSession, SessionStore
+from mimir.client.ui.ws.session_store import (
+    FullSession, SessionStore, list_subagents, read_subagent,
+)
 from mimir.client.ui.ws.ws_session import _Session
 
 
@@ -187,6 +190,52 @@ class RichTranscriptRoundTripTests(unittest.TestCase):
             "llm_history": [{"role": "user", "content": "hi"}],
         })
         self.assertEqual(old.llm_history_full, [])
+
+
+class SubAgentCardTests(unittest.TestCase):
+    """The card a sub-agent leaves, and where its answer is allowed to be cut.
+
+    The answer used to be clipped on the way *to* disk, so the whole of it existed
+    nowhere: the panel showed 2000 characters ending mid-word and a reload could not
+    recover the rest. It is written whole now, and cut only for the list — which goes
+    out carrying every card of the session at once.
+    """
+
+    def _session_with_card(self, tmp, answer):
+        directory = os.path.join(tmp, "s1", "subagents", "sub-1")
+        os.makedirs(directory)
+        with open(os.path.join(directory, "subagent.json"), "w", encoding="utf-8") as fh:
+            json.dump({"state": "finished", "completed": True, "answer": answer,
+                       "started_at": "2026-09-20T11:41:51"}, fh)
+
+    def test_the_detail_view_serves_the_answer_whole(self):
+        answer = "A" * 9000
+        with tempfile.TemporaryDirectory() as tmp:
+            self._session_with_card(tmp, answer)
+            with mock.patch("mimir.client.ui.ws.session_store._sessions_dir",
+                            return_value=tmp):
+                card = read_subagent("s1", "sub-1")
+        self.assertEqual(card["answer"], answer)
+
+    def test_the_list_cuts_it_because_it_carries_every_card_at_once(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._session_with_card(tmp, "A" * 9000)
+            with mock.patch("mimir.client.ui.ws.session_store._sessions_dir",
+                            return_value=tmp):
+                cards = list_subagents("s1")
+        self.assertEqual(len(cards), 1)
+        self.assertLess(len(cards[0]["answer"]), 9000)
+        self.assertTrue(cards[0]["answer"].endswith("…"))
+
+    def test_a_short_answer_is_not_touched_by_either(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._session_with_card(tmp, "chi >= 8, colouring exact.")
+            with mock.patch("mimir.client.ui.ws.session_store._sessions_dir",
+                            return_value=tmp):
+                self.assertEqual(list_subagents("s1")[0]["answer"],
+                                 "chi >= 8, colouring exact.")
+                self.assertEqual(read_subagent("s1", "sub-1")["answer"],
+                                 "chi >= 8, colouring exact.")
 
 
 class TranscriptHandlerTests(unittest.IsolatedAsyncioTestCase):

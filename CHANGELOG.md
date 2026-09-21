@@ -16,6 +16,53 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- How far a sub-agent may go is now the user's setting, not the model's choice:
+  **explore** (read only, the default) or **parallel**. At *parallel* a sub-agent
+  may also edit and run commands — always in a copy of the repository, on its own
+  branch, so several of them can work at once without touching each other's
+  files. It hands back a branch and a diff; nothing is merged for you. The copy
+  is kept when it finishes — it holds the build the work just paid for — and the
+  panel says where. The last three copies of a session are kept; older ones go
+  when the next sub-agent needs the room, and copies left by a conversation you
+  deleted go with them. Nothing is ever removed before what it holds is committed,
+  so a sub-agent that stopped half-way leaves its work on its branch. A sub-agent
+  that changed nothing leaves no branch behind. Set it with `/subagents`, or in
+  the new panel.
+- A **scientific-computing panel** in the extension: the sub-agent setting and
+  what each one is doing, the optimisation in progress, the machine MIMIR
+  detected, and the runs still going outside the current turn. Each section is
+  filled by the server that owns those facts, so an extension server can add its
+  own.
+- A sub-agent's **approvals and questions now reach you**, on the usual card.
+  They are queued — one at a time — and each says which sub-agent is asking.
+- A button with a badge shows how many sub-agents are working; opening one shows
+  what it is doing, step by step, including a detached one.
+- The main agent works as the lead engineer: it takes the heaviest part itself,
+  reports progress as the work proceeds, and brings you what is yours to decide.
+- The main agent chooses the tools of each sub-agent, out of what it can use
+  itself. A sub-agent given a writing or executing tool works; given none, it
+  explores read-only. Planning, delegation, asking the user, writing memory and
+  cluster submissions stay with the main agent.
+- Each sub-agent keeps its own todo list and its own scratchpad, in a session of
+  its own stored under the session that spawned it. Several sub-agents can
+  therefore work in parallel, one per line of work, without colliding.
+- A sub-agent can be started in the background: the main agent gets a handle
+  right away, keeps working, and is woken with the answer when the sub-agent
+  finishes — the same behaviour as a command sent to the background. The wake
+  leads with the answer, and says where to read the rest when there is more of it
+  than a wake can carry.
+- The main agent sets how long a sub-agent may run (up to 19 minutes). A
+  sub-agent is told its budget and is asked to hand over — what it established,
+  what is left, where — before the time runs out, so a long piece of work
+  continues instead of restarting.
+- A "sub-agents" panel in the extension lists what the current session
+  delegated, with each sub-agent's state, tools and checklist. Sub-agents never
+  appear in the session list, and they are deleted with their session.
+- On an endpoint that serves several models, a sub-agent can run on another one
+  than the main agent's. The main model picks, from a table of the served models
+  with their size, estimated speed and benchmark scores by category (reasoning,
+  coding, agentic work, tools, discovery). The data lives in
+  `mimir/client/config/model_catalog.json`, with a source for every number.
 - A GitHub file is read in pages. `github_get_file` takes a line range, returns at
   most 400 lines a call, and says where to resume — so the first look at a long
   source file costs a quarter of what the whole file did, and a file too large to
@@ -47,6 +94,8 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Guidance written for the model actually reaches it now. `hint` is a reserved key
   that is stripped from success payloads, so several tools' "fetch a more specific
   URL" and "call again with confirm=True" lines had never once been delivered.
+- After a `/model` switch, sub-agents run on the new model. They kept the model
+  the session started with.
 - Behind an OpenAI-compatible router that does not serve vLLM's `/tokenize`,
   each turn no longer waits tens of seconds before the model is asked. The
   refusal is remembered per endpoint instead of retried for every message.

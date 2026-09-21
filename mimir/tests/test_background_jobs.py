@@ -737,6 +737,42 @@ class WakeTextTests(unittest.TestCase):
         self.assertIn("0.0073", out)
         self.assertIn("continue the loop", out)
 
+    def test_the_answer_survives_an_echo_that_would_fill_the_budget(self) -> None:
+        # What a sub-agent wake did: the task the caller had written itself came first in
+        # the record and spent all 2000 characters, so the answer it was resumed for was
+        # cut off entirely and only a second tool call recovered it.
+        ev = {"job_key": "sub-401c9590", "kind": "sub-agent", "state": "done",
+              "summary_op": {"tool": "subagent_job", "args": {"op": "result"}},
+              "summary": {"state": "done", "task": "Enumerate every pair. " + "x" * 4000,
+                          "answer": "The (i%2,j%2,k%2) colouring is exact.",
+                          "completed": True}}
+        out = self._wake(ev)
+        self.assertIn("The (i%2,j%2,k%2) colouring is exact.", out)
+        self.assertLess(out.count("x"), 200)          # the echo, down to its first line
+        self.assertIn("Enumerate every pair.", out)   # but still enough to recognise it
+
+    def test_a_cut_wake_says_where_the_whole_of_it_is(self) -> None:
+        ev = {"job_key": "sub-1", "kind": "sub-agent", "state": "done",
+              "summary_op": {"tool": "subagent_job", "args": {"op": "result"}},
+              "summary": {"answer": "y" * 5000}}
+        out = self._wake(ev)
+        self.assertIn("cut", out)
+        self.assertIn("subagent_job", out)
+
+    def test_an_uncut_wake_names_no_op_at_all(self) -> None:
+        ev = {"job_key": "sub-1", "kind": "sub-agent", "state": "done",
+              "summary_op": {"tool": "subagent_job", "args": {"op": "result"}},
+              "summary": {"answer": "short"}}
+        self.assertNotIn("subagent_job", self._wake(ev))
+
+    def test_a_key_the_client_does_not_know_keeps_its_place(self) -> None:
+        # Passing the payload through is still the rule: the ordering is the one liberty
+        # taken, and it drops nothing.
+        out = self._wake({"job_key": "j", "state": "done",
+                          "summary": {"blocked_by_mode": ["write_file"], "hpc_queue": "gpu"}})
+        self.assertIn("blocked_by_mode", out)
+        self.assertIn("gpu", out)
+
     def test_a_shell_job_is_not_told_to_review_proxy_results(self) -> None:
         # The bug this whole family exists to prevent: a two-hour compile finishing and
         # the wake telling the model to read proxy results and continue an optimization

@@ -12,6 +12,10 @@ import type {
   ConnectionState,
   ServerMessage,
   SessionMeta,
+  PanelSection,
+  SubAgent,
+  SubAgentLevel,
+  WatchedRun,
   TodoItem,
   DiffEntry,
   QuestionSpec,
@@ -36,6 +40,8 @@ import { ConnectForm } from "./components/ConnectForm";
 import { ResumePlanPrompt } from "./components/ResumePlanPrompt";
 import { UserQuestion } from "./components/UserQuestion";
 import { SessionsPanel } from "./components/SessionsPanel";
+import { SubAgentsPanel } from "./components/SubAgentsPanel";
+import { SciencePanel } from "./components/SciencePanel";
 import { ContextBar } from "./components/ContextBar";
 import { RunProgressDock } from "./components/RunProgressDock";
 import { runsInFlight } from "./components/runDockUtils";
@@ -203,6 +209,16 @@ export const App: React.FC = () => {
   // without stale-closure issues.
   const activeSessionIdRef = useRef<string | null>(null);
   const [showSessionsPanel, setShowSessionsPanel] = useState(false);
+  // Sub-agents of the session in view. Kept apart from `sessions`: they are work this
+  // session sent out, not conversations to come back to.
+  const [subAgents, setSubAgents] = useState<SubAgent[]>([]);
+  const [openedSubAgent, setOpenedSubAgent] = useState<SubAgent | null>(null);
+  const [runningSubAgents, setRunningSubAgents] = useState(0);
+  const [subAgentLevel, setSubAgentLevel] = useState<SubAgentLevel>("explore");
+  const [panelSections, setPanelSections] = useState<PanelSection[]>([]);
+  const [watchedRuns, setWatchedRuns] = useState<WatchedRun[]>([]);
+  const [showSciencePanel, setShowSciencePanel] = useState(false);
+  const [showSubAgentsPanel, setShowSubAgentsPanel] = useState(false);
 
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -378,6 +394,27 @@ export const App: React.FC = () => {
         setSessions(msg.sessions);
         return;
 
+      case "subagents_list":
+        setSubAgents(msg.subagents ?? []);
+        setRunningSubAgents(msg.running ?? 0);
+        return;
+
+      case "subagent_level":
+        setSubAgentLevel(msg.level);
+        return;
+
+      case "panel_report":
+        setSubAgentLevel(msg.subagent_level);
+        setSubAgents(msg.subagents ?? []);
+        setRunningSubAgents(msg.running ?? 0);
+        setWatchedRuns(msg.runs ?? []);
+        setPanelSections(msg.sections ?? []);
+        return;
+
+      case "subagent":
+        setOpenedSubAgent(msg.subagent ?? null);
+        return;
+
       case "toggles_list":
         setServerToggles(msg.servers ?? []);
         setSkillToggles(msg.skills ?? []);
@@ -549,6 +586,15 @@ export const App: React.FC = () => {
     },
   });
 
+  // The cards are files the sub-agents leave behind, so the panel asks for them rather
+  // than being pushed to: on opening, and whenever the user wants a fresh look.
+  const refreshSubAgents = useCallback(
+    () => (send as any)({ type: "list_subagents" }), [send]);
+  // One call fills the whole drawer: the sub-agents, the runs still going, and each
+  // server's own section.
+  const refreshPanel = useCallback(
+    () => (send as any)({ type: "list_panel" }), [send]);
+
   // Creating a session also opens it: the server makes the new session active
   // and answers with `session_loaded`, so we only have to show the (empty)
   // thread — panel closed, spinner up until that reply lands.
@@ -610,8 +656,13 @@ export const App: React.FC = () => {
     wasBusyRef.current = chatState.busy;
     if (chatState.busy || !wasBusy) return;
     const timer = setTimeout(sendTranscript, 1000);
+    // A turn that delegated left new cards on disk. Ask again rather than watch: the
+    // panel is a reader of files another process writes.
+    if (showSubAgentsPanel) refreshSubAgents();
+    if (showSciencePanel) refreshPanel();
     return () => clearTimeout(timer);
-  }, [chatState.busy, sendTranscript]);
+  }, [chatState.busy, sendTranscript, showSubAgentsPanel, refreshSubAgents,
+      showSciencePanel, refreshPanel]);
 
   // And during it. The end of the turn used to be the only handover, which made every
   // long run a window where the work on screen existed nowhere else: a dropped
@@ -1023,6 +1074,41 @@ export const App: React.FC = () => {
         />
       )}
 
+      {/* ── Scientific-computing panel ───────────────────────────────── */}
+      {showSciencePanel && connection === "connected" && (
+        <SciencePanel
+          level={subAgentLevel}
+          onLevelChange={(lvl) => {
+            setSubAgentLevel(lvl);
+            (send as any)({ type: "command", text: `/subagents ${lvl}` });
+          }}
+          subAgents={subAgents}
+          openedSubAgent={openedSubAgent}
+          runs={watchedRuns}
+          sections={panelSections}
+          onRefresh={refreshPanel}
+          onOpenSubAgent={(id) => {
+            setOpenedSubAgent(null);
+            (send as any)({ type: "read_subagent", id });
+          }}
+          onCloseSubAgent={() => setOpenedSubAgent(null)}
+        />
+      )}
+
+      {/* ── Sub-agents panel ─────────────────────────────────────────── */}
+      {showSubAgentsPanel && connection === "connected" && (
+        <SubAgentsPanel
+          subAgents={subAgents}
+          opened={openedSubAgent}
+          onRefresh={refreshSubAgents}
+          onOpen={(id) => {
+            setOpenedSubAgent(null);
+            (send as any)({ type: "read_subagent", id });
+          }}
+          onClose={() => setOpenedSubAgent(null)}
+        />
+      )}
+
       {/* ── Main area ───────────────────────────────────────────────── */}
       <div className="main">
         {/* Status bar — connection + model name + disconnect */}
@@ -1047,6 +1133,31 @@ export const App: React.FC = () => {
                 onClick={() => startNewSession()}
               >
                 ＋
+              </button>
+              {/* Always here, with a count when sub-agents are working: a button that
+                  comes and goes is a button the user has to look for. */}
+              <button
+                className={`sessions-toggle-btn ${showSubAgentsPanel ? "active" : ""}`}
+                title={runningSubAgents
+                  ? `${runningSubAgents} sub-agent(s) working`
+                  : "Sub-agents of this session"}
+                aria-label="Toggle sub-agents"
+                aria-pressed={showSubAgentsPanel}
+                onClick={() => setShowSubAgentsPanel((v) => !v)}
+              >
+                ⑂
+                {runningSubAgents > 0 && (
+                  <span className="subagent-badge">{runningSubAgents}</span>
+                )}
+              </button>
+              <button
+                className={`sessions-toggle-btn ${showSciencePanel ? "active" : ""}`}
+                title="Scientific computing"
+                aria-label="Toggle the scientific-computing panel"
+                aria-pressed={showSciencePanel}
+                onClick={() => setShowSciencePanel((v) => !v)}
+              >
+                ⚗
               </button>
             </>
           )}

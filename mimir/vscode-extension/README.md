@@ -80,6 +80,8 @@ free port, so several windows run side by side. No `.vscode/settings.json` is ne
 | Long runs | A build or job shows its current phase, and a progress bar when the tool counts its own progress. A run whose row scrolled away stays visible as a small card in the corner; a click brings you back to it. |
 | Background runs | A running command can be sent to the background with one click. The turn goes on, and the row settles when the run ends. |
 | Plan and todo panel | The current plan and its checklist, updated as steps close. An unfinished checklist is offered again when you reopen the session. |
+| Scientific computing panel | One drawer for what this work needs: how far sub-agents may go and what each is doing, the optimisation in progress, the machine MIMIR detected, and the runs still going outside the current turn. Each section is filled by the part of MIMIR that owns those facts. |
+| Sub-agents panel | What this session delegated: one row per sub-agent, with the tools it was given, whether it finished, and the checklist it kept. Sub-agents are not chat sessions, so they stay out of the history list and go when the session does. |
 | Verification | Under each answer, a collapsed line says what was checked and what was not. |
 | Context bar | How full the model's context window is. |
 | Notifications | A VS Code notification when a task ends or MIMIR needs you while the panel is hidden. |

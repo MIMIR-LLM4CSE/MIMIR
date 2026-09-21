@@ -332,6 +332,53 @@ def _looks_like_html(content_type: str, body: str) -> bool:
     return head.startswith("<!doctype html") or head.startswith("<html")
 
 
+# application/* subtypes that are text despite the family. Anything outside this
+# set (pdf, zip, octet-stream, …) is treated as bytes, as is every non-text family.
+_TEXTUAL_APPLICATION_SUBTYPES = frozenset({
+    "json", "xml", "javascript", "ecmascript", "x-javascript",
+    "yaml", "x-yaml", "toml", "x-toml", "csv", "x-www-form-urlencoded",
+    "sql", "graphql", "x-ndjson", "ld+json", "rss+xml", "atom+xml",
+})
+
+
+def _looks_binary(body: str, content_type: str) -> bool:
+    """True when *body* is bytes that were never text, whatever the ceiling allows.
+
+    A PDF, an image or an archive decoded with ``errors="replace"`` is not shorter
+    than a page — it is the same size in mojibake, and it JSON-escapes to more than
+    twice that on the way into the model's context (measured 2026-09-20: a 131072-char
+    PDF prefix went in as 502529 characters, ~125K tokens of catalog objects and
+    stream bytes, in a window budgeted for 160K). None of it can be read, so the
+    ceiling is the wrong instrument: the answer is not a smaller slice of binary.
+
+    Judged on the decoded text rather than on the declared type alone, since a server
+    that mislabels a PDF as octet-stream — or as nothing at all — must not get a pass.
+    """
+    main = content_type.split(";")[0].strip().lower()
+    if main and "/" in main:
+        family, _, sub = main.partition("/")
+        # text/* is text by declaration; the handful of application/* subtypes below
+        # are the textual ones a fetch legitimately lands on. Everything else — pdf,
+        # zip, octet-stream, image, audio, video, font — is bytes.
+        textual = family == "text" or (
+            family == "application"
+            and (sub in _TEXTUAL_APPLICATION_SUBTYPES
+                 or sub.endswith(("+json", "+xml")))
+        )
+        if not textual:
+            return True
+    head = body[:4096]
+    if not head:
+        return False
+    if "\x00" in head:
+        return True
+    if head.lstrip().startswith("%PDF-"):
+        return True
+    # U+FFFD is what a byte that is not this charset decodes to. Prose does not
+    # produce them; a compressed stream produces little else.
+    return head.count("\ufffd") > len(head) // 20
+
+
 def _readable_body(body: str, content_type: str, raw: bool) -> tuple[str, dict]:
     """The body as the model should receive it, plus what was done to it.
 
@@ -545,6 +592,20 @@ def _read_body(decoded: str, content_type: str, raw: bool,
     caller asked for, and targeting before extracting searches markup instead of
     prose.
     """
+    if _looks_binary(decoded, content_type):
+        # Handing the caller the bytes would spend the window on something no reader
+        # can use. Saying what it is leaves the next move available — a text mirror,
+        # an extraction service, a download — which is what the model did on its own
+        # once the PDF's bytes had already cost it the context.
+        return "", {
+            "binary": True,
+            "content_type": content_type,
+            "body_omitted": True,
+            "hint": (
+                "The response is binary, not text, so its bytes are not returned. "
+                "Fetch a text rendering of this resource instead."
+            ),
+        }
     body, note = _readable_body(decoded, content_type, raw)
     if contains or offset:
         body, targeted = _targeted(body, contains, offset)

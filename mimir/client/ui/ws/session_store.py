@@ -52,6 +52,111 @@ def _sessions_dir() -> str:
     return base
 
 
+# ── Sub-agents ────────────────────────────────────────────────────────────────
+# A sub-agent writes under a session of its own, stored *inside* its parent's sidecar
+# directory: sessions/<parent>/subagents/<child>/. Two things follow for free — the
+# front-end session list never shows one (it enumerates the <id>.json files at the root
+# of sessions/, and a sub-session writes only directories), and deleting a session takes
+# its children with it (delete_session drops the whole sidecar).
+
+_SUBAGENTS_DIRNAME = "subagents"
+
+# What a card carries of the child's answer. The whole answer is on disk and the detail
+# view serves it whole; the list goes out as one message holding every card of the
+# session, and a handful of multi-kilobyte answers in it is a payload nobody reads.
+_CARD_ANSWER_CHARS = 400
+
+
+def _subagents_dir(session_id: str) -> str:
+    return os.path.join(_sessions_dir(), os.path.basename(session_id), _SUBAGENTS_DIRNAME)
+
+
+def list_subagents(session_id: str) -> list[dict]:
+    """The sub-agents this session spawned, newest first.
+
+    Each is the card the spawn server left (``subagent.json``): what it was asked, what
+    it was given, how it ended. A directory without one is a child that died before
+    writing anything, reported as such rather than hidden — an axis that vanished is
+    precisely what the user needs to see.
+
+    The answer is clipped here and only here: it is the one field that can run to
+    kilobytes, this list carries every card of the session at once, and the panel shows
+    an answer only in the detail view, which reads it through :func:`read_subagent`.
+    """
+    base = _subagents_dir(session_id) if session_id else ""
+    if not base or not os.path.isdir(base):
+        return []
+    cards: list[dict] = []
+    for name in os.listdir(base):
+        directory = os.path.join(base, name)
+        if not os.path.isdir(directory):
+            continue
+        card = {"id": name, "state": "unknown"}
+        try:
+            with open(os.path.join(directory, "subagent.json"), "r", encoding="utf-8") as f:
+                card.update(json.load(f))
+        except (OSError, json.JSONDecodeError):
+            pass
+        card["id"] = name           # the directory is the identity, not the file
+        answer = card.get("answer") or ""
+        if len(answer) > _CARD_ANSWER_CHARS:
+            card["answer"] = answer[:_CARD_ANSWER_CHARS] + "…"
+        cards.append(card)
+    cards.sort(key=lambda c: c.get("started_at", ""), reverse=True)
+    return cards
+
+
+def _activity_tail(directory: str, limit: int = 120) -> list[dict]:
+    """The last rows of a sub-agent's activity log, oldest first.
+
+    The log is written line by line by another process, possibly mid-write: a line
+    that does not parse is dropped rather than failing the read, because a half-written
+    last row is the normal state of a child that is still working.
+    """
+    rows: list[dict] = []
+    try:
+        with open(os.path.join(directory, "activity.jsonl"), "r", encoding="utf-8") as f:
+            lines = f.readlines()[-limit:]
+    except OSError:
+        return []
+    for line in lines:
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(row, dict):
+            rows.append(row)
+    return rows
+
+
+def read_subagent(session_id: str, sub_id: str) -> dict:
+    """One sub-agent's card, the todo list it kept, and what it has been doing, or ``{}``.
+
+    ``sub_id`` is confined with ``basename`` the way session ids are: it arrives from
+    the front end, and nothing read here is meant to sit outside this session's own
+    sub-agent directory.
+    """
+    if not session_id or not sub_id:
+        return {}
+    directory = os.path.join(_subagents_dir(session_id), os.path.basename(sub_id))
+    if not os.path.isdir(directory):
+        return {}
+    card = {"id": os.path.basename(sub_id), "state": "unknown"}
+    try:
+        with open(os.path.join(directory, "subagent.json"), "r", encoding="utf-8") as f:
+            card.update(json.load(f))
+    except (OSError, json.JSONDecodeError):
+        pass
+    card["id"] = os.path.basename(sub_id)
+    try:
+        with open(os.path.join(directory, "todo_list.md"), "r", encoding="utf-8") as f:
+            card["todo"] = f.read()
+    except OSError:
+        card["todo"] = ""
+    card["activity"] = _activity_tail(directory)
+    return card
+
+
 # ── Data classes ───────────────────────────────────────────────────────────────
 
 @dataclass

@@ -82,6 +82,8 @@ TASK_PLANNING = "task_planning"        # records a task plan (checklist and/or p
 JUDGE = "judge"                        # records the model's verdict on a run's output
 DELEGATE = "delegate"                  # hands a self-contained sub-task to a fresh child agent that
                                        # runs to completion and returns its answer
+MAIN_ONLY = "main_only"                # reserved to the orchestrating agent; never granted to a child
+PANEL_REPORT = "panel_report"          # fills one section of the scientific-computing panel
 
 # --- Approval & mode policy ------------------------------------------------
 # How much of a tool's effect can be taken back — the *declared* dimension, from which
@@ -166,6 +168,9 @@ class ToolCaps:
     # verdict for a non-shell execution tool; withholds credit only, never grants it.
     # None -> the client has no machine reading of this tool's runs.
     run_outcome: dict[str, Any] | None = None
+    # Which section of the scientific-computing panel this tool fills, and how to call
+    # it: {"section", "order", "args"}. Read by ``panel_sections``.
+    panel: dict[str, Any] | None = None
 
     def has(self, cap: str) -> bool:
         return cap in self.capabilities
@@ -261,6 +266,8 @@ def _caps_from_meta(name: str, desc: dict) -> ToolCaps:
     preview = dict(preview) if isinstance(preview, dict) else None
     outcome = desc.get("run_outcome")
     outcome = dict(outcome) if isinstance(outcome, dict) else None
+    panel = desc.get("panel")
+    panel = dict(panel) if isinstance(panel, dict) else None
     return ToolCaps(
         name=name,
         capabilities=frozenset(caps),
@@ -274,6 +281,7 @@ def _caps_from_meta(name: str, desc: dict) -> ToolCaps:
         timeout_secs=_declared_timeout(desc.get("timeout_secs")),
         readonly_when=_readonly_when(desc.get("readonly_when")),
         run_outcome=outcome,
+        panel=panel,
     )
 
 
@@ -359,6 +367,43 @@ def names_with_cap(cap: str, registry: dict[str, ToolCaps] | None = None) -> set
 def has_cap(name: str, cap: str, registry: dict[str, ToolCaps] | None = None) -> bool:
     c = _registry(registry).get(name)
     return bool(c and cap in c.capabilities)
+
+
+def panel_sections(registry: dict[str, ToolCaps] | None = None) -> list[tuple[str, dict]]:
+    """The tools that fill a panel section, in the order they declared, as (name, spec).
+
+    By capability, so the panel asks whoever can answer — a plugin server adds its own
+    section by declaring ``PANEL_REPORT`` and a ``panel`` spec, with no client edit.
+    """
+    reg = _registry(registry)
+    found = [
+        (name, dict(c.panel or {}))
+        for name, c in reg.items()
+        if PANEL_REPORT in c.capabilities and c.panel and c.panel.get("section")
+    ]
+    return sorted(found, key=lambda item: (item[1].get("order", 100), item[0]))
+
+
+def reserved_for_main(registry: dict[str, ToolCaps] | None = None) -> set[str]:
+    """Tools a sub-agent is never granted, by capability rather than by name.
+
+    Three reasons, each declared by the tool itself:
+
+    - ``MAIN_ONLY`` — it belongs to the run the user is watching: the plan agreed
+      with them, the questions asked of them, the memory shared by every session.
+    - ``DELEGATE``  — a child that can delegate spawns a tree nobody budgeted.
+    - ``CLUSTER_SUBMIT`` — allocation hours are spent once and never given back;
+      that decision stays where the user can see it being made.
+
+    ``TASK_PLANNING`` is deliberately *not* here. It covers the working checklist
+    too, and a sub-agent working an axis of its own keeps one — in its own session,
+    so the orchestrator's list is untouched. The plan tools carry ``MAIN_ONLY``.
+    """
+    reg = _registry(registry)
+    return {
+        name for name, c in reg.items()
+        if c.capabilities & {MAIN_ONLY, DELEGATE, CLUSTER_SUBMIT}
+    }
 
 
 def is_write(name: str, registry: dict[str, ToolCaps] | None = None) -> bool:
@@ -570,5 +615,5 @@ __all__ = [
     "PLAN_BLOCKED", "PLAN_READONLY", "SENSITIVE", "NON_BATCH",
     "CODE_NAV", "ENV_DISCOVERY", "EXTERNAL_FETCH", "CLUSTER_SUBMIT", "ENV_MUTATE",
     "BACKGROUNDABLE", "DIVERTIBLE", "REMOVE", "OVERWRITE", "TASK_PLANNING", "JUDGE",
-    "DELEGATE",
+    "DELEGATE", "MAIN_ONLY", "PANEL_REPORT", "reserved_for_main", "panel_sections",
 ]

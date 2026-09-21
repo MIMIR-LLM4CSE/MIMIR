@@ -140,6 +140,11 @@ def _parse_answer(raw_answer: Any) -> dict[str, Any]:
     return {"selected": selected, "other_text": other_text}
 
 
+# Grantable: a sub-agent whose delegating call is still open reaches the user through
+# it, queued behind any other child's card and saying which child is asking (see
+# server_spawn_agent._install_user_channel). A DETACHED child has no such session, and
+# this tool already answers that case — no interactive frontend, empty answers, and a
+# result telling the model to ask in its reply instead of deciding for the user.
 @mcp.tool(**tool_caps(read_only=True, label="Asking the user"))
 async def ask_user_question(
     questions: list[dict[str, Any]],

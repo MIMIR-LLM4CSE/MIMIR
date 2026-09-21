@@ -897,6 +897,15 @@ class MimirAgentViewProvider implements vscode.WebviewViewProvider {
     // An HTTP proxy silently swallows requests to an on-prem endpoint, so
     // ws_server would hang on model resolution before ever binding its port.
     const noProxyEnv = backend === "anthropic" ? {} : noProxyFor(baseUrl);
+    // An endpoint that does not publish max_model_len leaves every budget — the
+    // context bar, the trim, the compaction, the answer allocation — sized to a
+    // static assumption rather than to the model. The user declares it here when
+    // their endpoint hides it; 0 means "detect it", which is the normal case.
+    const declaredWindow = cfg.get<number>("maxModelLen", 0);
+    const windowEnv =
+      backend === "vllm" && declaredWindow > 0
+        ? { MIMIR_VLLM_MAX_MODEL_LEN: String(Math.floor(declaredWindow)) }
+        : {};
     // Only override ANTHROPIC_API_KEY when the webview actually supplied one;
     // otherwise inherit whatever is already exported (so users who set the key in
     // their shell don't have to retype it in the form).
@@ -906,7 +915,7 @@ class MimirAgentViewProvider implements vscode.WebviewViewProvider {
       cwd,
       // Anchor the agent's per-workspace state dir (.mimir) and the file-server
       // root to the opened workspace, regardless of the process cwd.
-      env: { ...process.env, MCP_FILES_ROOT: cwd, ...noProxyEnv, ...verifyEnv, ...anthropicEnv },
+      env: { ...process.env, MCP_FILES_ROOT: cwd, ...noProxyEnv, ...verifyEnv, ...windowEnv, ...anthropicEnv },
       stdio: ["ignore", "pipe", "pipe"],
     });
 

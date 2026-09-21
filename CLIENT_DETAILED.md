@@ -142,6 +142,33 @@ Resolved **once** at construction into `self.enforcement` — the model is immut
 agent's life — and read through `resolve_enforcement(agent)`. A profile opts up with
 `"enforcement": "strict"`; `/enforcement` overrides at runtime.
 
+### `model_catalog.py` / `model_catalog.json`
+
+What each served model is worth, for the orchestrator picking a sub-agent's model.
+
+| Field | Meaning |
+|---|---|
+| `arch`, `total_params_b`, `active_params_b` | dense or MoE, and its size |
+| `weights` | served precision; a key of `_weight_bytes` |
+| `scores` | one value per benchmark, grouped by the categories in `_scale` |
+| `delegable` | `false` keeps a model out of sub-agents (Qwen3-0.6B is too small for a tool loop) |
+| `sources` | where each number was read, with the date |
+
+**Scores come from one harness or not at all.** Every category uses the same
+independent source for every model (Artificial Analysis today). Vendor model cards each
+publish different benchmarks, so a column mixing them ranks the harnesses. A category no
+common source covers stays `null` and is shown as `n/a`: that is the case of
+`instructions` for now.
+
+**Speed is estimated.** Decoding is memory-bandwidth bound, so `decode_cost()` is
+active parameters × bytes per weight. The rank is relative to the served models, and it
+ignores the hardware.
+
+`catalog_entry(model, root)` matches on the served id, then on vLLM's `root`, with the
+same longest-prefix rule as the vLLM profiles (`models.longest_prefix_key`).
+`describe_served_models()` renders the table the spawn-agent server puts in its `model`
+argument; `subagent_model_refusal()` says why a model cannot run a sub-agent.
+
 ### `preferences.py`
 
 Load and save of the soft-hide toggles: the disabled server, skill and nudge names,
@@ -565,6 +592,41 @@ Two details worth stating here:
 Per-query tool-list construction is **not** here — it lives in `query_engine/toollist.py`,
 and withholds nothing but what the mode forbids.
 
+`toollist.grantable_tools(agent)` answers a different question: what the orchestrator may
+hand to a **sub-agent**, as `{tool: owning server}` (the child connects servers, not
+tools). Four filters, in this order: the user's server toggles, already applied by
+`agent.advertised_tools()`; the orchestrator's own mode, so a read-only mode has no write
+surface to give away and delegation cannot be the way around plan mode; the **sub-agent
+rung** the user set (`agent.subagent_level`, persisted in `preferences.json`), which at
+`explore` leaves nothing that writes; and `context.capabilities.reserved_for_main`, the
+tools a child is never granted — `MAIN_ONLY` (the plan the user approved, writing the
+shared memory), `DELEGATE` (no recursion), `CLUSTER_SUBMIT` (allocation hours).
+`grantable_writers()` says which of the granted tools would change the tree, because the
+spawning server holds names and has no registry until it connects the servers; a child
+granted one of those works in a copy of the repository. All of it travels with the
+delegating call only, in its `_meta`.
+
+### The agent's own root
+
+`MimirAgent.workspace_root` is the tree **this** agent works in — the module constant
+`WORKSPACE_ROOT` for the agent the user drives, the worktree for a sub-agent given a copy.
+Four places read it instead of the import: the out-of-workspace gate
+(`guardrails/policy/gates.py`), the declared-edit tracker (through
+`execution_context["workspace_root"]`, since it never sees the agent), the system prompt,
+and `connect_server`, which hands it to the servers as `MCP_FILES_ROOT` / `SEARCH_ROOT`.
+`STATE_DIR` and `MIMIR_DIR` deliberately do **not** follow: memory, preferences and
+`.mimir/` extensions stay the real workspace's — a sub-agent works on a copy of the code,
+not in another project.
+
+### The scientific-computing panel
+
+`context.capabilities.panel_sections()` lists the tools that declared `PANEL_REPORT` with
+a `panel` spec (`{section, order, args}`), and `ws_worker.panel_sections()` calls each one
+straight on its owning session — read-only, no observations, like the background watcher's
+probes. Each server answers with render-ready content (`{title, lines, detail}`): the
+panel renders what it is given and interprets nothing, which is what lets a plugin server
+add a section with no client edit.
+
 ### `nudges/`
 
 At most one reminder per step. `maybe_append_nudge()` walks the built-in table
@@ -913,6 +975,18 @@ window was amputated where it could have been summarised.
 the conversation on screen, so the job records its session at launch and the completion event
 carries it back. When it names the active session the wake lands in the live history as any
 turn would; otherwise it is appended to *that* session's stored history and submitted there.
+
+**A wake carries the result, not the question.** The client does not know what a job does,
+so it passes the record through rather than paraphrasing it — but a record is a mapping, and
+the order its server chose is the order the budget is spent in. A sub-agent's record opened
+with the task the caller had written itself, so all 2000 characters went on repeating the
+question and the answer was cut off whole. `_compact_summary` therefore projects before it
+cuts: the result keys (`answer`, `output`, `verdict`, `best`, `next_step`, `reason`, `error`,
+`note`) move to the front intact, the echo keys (`task`, `command`, `context`, `prompt`) to
+the back and down to their first line, and every other key keeps its place. Keys, not tool
+names — the same licence the wake has to read `verdict` off any server's payload. When the
+text still has to be cut, the wake names the op that reads the whole of it, taken off the
+job's own `summary_op`.
 
 **A connection that drops does not end the turn.** One worker serves the whole server and
 outlives every session, so a socket that dies mid-run leaves a turn working with nobody

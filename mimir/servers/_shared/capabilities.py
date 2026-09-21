@@ -76,6 +76,19 @@ JUDGE = "judge"
 # delegation channel without naming the tool.
 DELEGATE = "delegate"
 
+# Reserved to the orchestrating agent: never granted to a sub-agent. For what only the
+# run the user is watching may do — the plan it agreed to, the questions it asks, the
+# memory shared by every session. Declared by the tool, so the client filters by
+# capability and no list of names lives client-side.
+MAIN_ONLY = "main_only"
+
+# Fills one section of the client's scientific-computing panel. Declared with a
+# ``panel`` spec — ``{"section": <name>, "order": <int>, "args": {...}}`` — so the
+# client calls it by capability, never by name, and a plugin server adds a section of
+# its own by declaring this. The tool answers read-only, with its own words:
+# ``{"title", "lines": [{"label", "value", "state"?}], "detail"?}``.
+PANEL_REPORT = "panel_report"
+
 # Approval & mode policy
 SENSITIVE = "sensitive"
 NON_BATCH = "non_batch"
@@ -160,6 +173,7 @@ def build_descriptor(
     timeout_secs: int | None = None,
     readonly_when: dict[str, Any] | None = None,
     run_outcome: dict[str, Any] | None = None,
+    panel: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build the ``meta["mimir"]`` descriptor dict (pure / stdlib-only).
 
@@ -216,6 +230,16 @@ def build_descriptor(
 
     if risk_note:
         descriptor["risk_note"] = risk_note
+
+    # Which section of the client's panel this tool fills, where it sits among the
+    # others, and the arguments to call it with. The client reads this off the
+    # descriptor, so it asks by capability and never by name.
+    if panel and panel.get("section"):
+        descriptor["panel"] = {
+            "section": str(panel["section"]),
+            "order": int(panel.get("order") or 100),
+            "args": dict(panel.get("args") or {}),
+        }
 
     # A tool's own wall, for the few whose work the global per-call default cannot
     # bound. Omitted when undeclared so the existing catalog's descriptors are
@@ -289,6 +313,7 @@ def tool_caps(
     timeout_secs: int | None = None,
     readonly_when: dict[str, Any] | None = None,
     run_outcome: dict[str, Any] | None = None,
+    panel: dict[str, Any] | None = None,
     read_only: bool | None = None,
     destructive: bool | None = None,
 ) -> dict[str, Any]:
@@ -317,6 +342,7 @@ def tool_caps(
         timeout_secs=timeout_secs,
         readonly_when=readonly_when,
         run_outcome=run_outcome,
+        panel=panel,
     )
     kwargs: dict[str, Any] = {"meta": {"mimir": descriptor}}
 
@@ -350,4 +376,5 @@ __all__ = [
     "REVERSIBLE", "RECOVERABLE", "IRREVERSIBLE", "REVERSIBILITY_LEVELS",
     "CODE_NAV", "ENV_DISCOVERY", "EXTERNAL_FETCH", "CLUSTER_SUBMIT", "ENV_MUTATE",
     "BACKGROUNDABLE", "DIVERTIBLE", "REMOVE", "OVERWRITE", "TASK_PLANNING", "JUDGE",
+    "DELEGATE", "MAIN_ONLY", "PANEL_REPORT",
 ]

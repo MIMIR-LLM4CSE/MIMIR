@@ -40,8 +40,11 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from ..config.constants import DEFAULT_SUBAGENT_LEVEL, subagent_level_allows
+from ..config.models import READONLY_MODES
 from ..context.capabilities import (
-    PLAN_BLOCKED, TASK_PLANNING, names_with_arg_role, names_with_cap,
+    PLAN_BLOCKED, PLAN_READONLY, TASK_PLANNING, has_cap, names_with_arg_role,
+    names_with_cap, reserved_for_main,
 )
 from ..context.execution_context import bootstrap_engine_context as _bootstrap_engine_context
 
@@ -164,6 +167,57 @@ def tools_for_readonly_mode(
         tool for tool in tools
         if tool.get("function", {}).get("name") not in hidden
     ]
+
+
+def grantable_tools(agent: Any) -> dict[str, str]:
+    """What the orchestrator may hand to a sub-agent right now: ``{tool: server}``.
+
+    The same three filters that decide what *it* can use, in the same order, plus two:
+
+    * the user's server toggles, already applied by ``agent.advertised_tools()``;
+    * its own mode — a read-only mode has no write surface to give away, which is why
+      a sub-agent cannot be the way around plan mode;
+    * the **sub-agent rung** the user set (``config.constants.SUBAGENT_LEVELS``): at
+      "explore" the surface is read-only whatever mode the orchestrator is in, because
+      a child that writes is something the user hands over, not something the model
+      decides. At "parallel" the writing tools may be granted, and the child that gets
+      one works in a copy of the repository — never in this tree;
+    * :func:`~context.capabilities.reserved_for_main`, the tools a child is never
+      granted, read off the capabilities the servers declare.
+
+    The owning server travels with each name because the child connects servers, not
+    tools: it starts only the ones its granted tools live in, instead of all of them.
+    """
+    hidden = reserved_for_main(agent.tool_caps)
+    tools = agent.advertised_tools()
+    level = getattr(agent, "subagent_level", DEFAULT_SUBAGENT_LEVEL)
+    mode = getattr(agent, "mode", "")
+    if mode in READONLY_MODES or not subagent_level_allows(level, "parallel"):
+        tools = tools_for_readonly_mode(
+            tools, agent.tool_caps, mode=mode if mode in READONLY_MODES else "ask")
+    granted: dict[str, str] = {}
+    for tool in tools:
+        name = tool.get("function", {}).get("name", "")
+        owner = agent.tool_owner.get(name)
+        if name and owner and name not in hidden:
+            granted[name] = owner
+    return granted
+
+
+def grantable_writers(agent: Any, granted: dict[str, str] | None = None) -> list[str]:
+    """Which granted tools would have a sub-agent change the tree it works in.
+
+    Read off the capabilities, here, because the spawning server sees only names: it
+    connects the servers a grant needs and has no registry until it does. What it does
+    with the answer is arbitration — two children editing the same files overwrite each
+    other in silence, so in a shared tree they take turns.
+    """
+    granted = grantable_tools(agent) if granted is None else granted
+    return sorted(
+        name for name in granted
+        if has_cap(name, PLAN_BLOCKED, agent.tool_caps)
+        or has_cap(name, PLAN_READONLY, agent.tool_caps)
+    )
 
 
 def tools_for_plan_mode(

@@ -15,9 +15,11 @@ from .config import (
     DEFAULT_THINKING_DEPTH,
     THINKING_DEPTH_BUDGETS,
     clamp_thinking_depth,
+    clamp_subagent_level,
     TEMPERATURE_MAX,
     TEMPERATURE_MIN,
     STATE_DIR,
+    WORKSPACE_ROOT,
     SERVER_BASE,
     SKILL_BASE,
     SERVERS,
@@ -140,9 +142,21 @@ class MimirAgent:
 
     def __init__(self, model: str = DEFAULT_MODEL):
         self.model = model
+        # Set when this agent is not the one the user is driving: a sub-agent names its
+        # own session, and its todo list and scratchpad follow it there. Empty means
+        # "whatever session the client is currently on", read from the shared sidecar.
+        self.session_id = ""
+        self.server_env: dict[str, str] = {}
+        # The tree this agent works in. The module constant for the agent the user
+        # drives; a sub-agent given a copy of the repository points here instead, and
+        # every root-sensitive check reads it off the agent rather than off the import.
+        # Note what does NOT follow it: STATE_DIR and MIMIR_DIR stay the real
+        # workspace's, so memory, preferences and .mimir extensions are shared.
+        self.workspace_root: str = WORKSPACE_ROOT
         import os
-        # Publish the active model to the environment so sub-agents (spawned via
-        # server_spawn_agent.py in a separate thread) inherit the same model.
+        # Publish the active model to the environment, for the server subprocesses
+        # started after this point. Only a fallback for sub-agents: every tool call
+        # also carries the live model in its _meta (config.models.CALLER_MODEL_META).
         if model:
             os.environ["MIMIR_DEFAULT_MODEL"] = model
         # Resolve the scratchpad home once, here, and publish it: the ownership check
@@ -250,8 +264,13 @@ class MimirAgent:
         # disabled skills are excluded from auto-detection; disabled nudges are skipped by
         # the nudge dispatcher. Application policies are locked (no toggle). See
         # config/preferences.py.
-        from .config.preferences import load_disabled
+        from .config.preferences import load_disabled, load_subagent_level
         self.disabled_servers, self.disabled_skills, self.disabled_nudges = load_disabled()
+        # How far a sub-agent of this agent may go (config.constants.SUBAGENT_LEVELS).
+        # The user's call, persisted like the toggles above; the weakest rung when they
+        # have never chosen, because each rung hands something over rather than taking
+        # it away.
+        self.subagent_level = load_subagent_level()
 
     @staticmethod
     def _normalize_mode(mode: str) -> str:
@@ -294,8 +313,9 @@ class MimirAgent:
 
         The model is read live at every LLM call (``agent.model`` is passed to the
         backend per step), so mutating it here is enough for the next call to use
-        the new model — no reconnect is needed. The environment is refreshed so
-        sub-agents (spawned in a separate thread) inherit the new model, and
+        the new model — no reconnect is needed. Sub-agents follow through the model
+        each tool call carries in its _meta (servers already running never see this
+        environment refresh), and
         ``enforcement`` is re-derived from the new model's profile, matching how it
         is resolved once at ``__init__``.
         """
@@ -340,6 +360,18 @@ class MimirAgent:
         self.temperature = value
         from .config.preferences import save_temperature
         save_temperature(self.model, value)
+
+    def set_subagent_level(self, level: str) -> str:
+        """Set how far a sub-agent may go, and persist it. Returns the rung applied.
+
+        An unknown rung lands on the weakest one rather than raising: this is also
+        reached from a typed command, and refusing outright would leave the user with
+        an error where a plain "here is what is in force" is more use.
+        """
+        from .config.preferences import save_subagent_level
+        self.subagent_level = clamp_subagent_level(level)
+        save_subagent_level(self.subagent_level)
+        return self.subagent_level
 
     def set_enforcement(self, level: str) -> None:
         normalized = (level or "").strip().lower()
@@ -398,8 +430,11 @@ class MimirAgent:
         return parent_path(path)
 
     @staticmethod
-    def _new_execution_context() -> dict[str, Any]:
+    def _new_execution_context(workspace_root: str = "") -> dict[str, Any]:
         context = build_execution_context()
+        # The root travels on the context because the consumers that need it — the
+        # declared-edit tracker among them — never see the agent.
+        context["workspace_root"] = workspace_root
         validate_execution_context(context)
         return context
 
@@ -496,18 +531,24 @@ class MimirAgent:
 
 
     def _get_todo_file(self) -> str:
-        """Return the absolute path to the active todo_list.md, or '' if not available."""
+        """Return the absolute path to this agent's todo_list.md, or '' if not available.
+
+        ``self.session_id`` when it has one — a sub-agent keeps its own checklist, and
+        several of them run in one process, so neither the environment nor the shared
+        sidecar can tell them apart. Otherwise the session the user is driving.
+        """
         if not names_with_cap(TASK_PLANNING, self.tool_caps):
             return ""
         mimir_dir = STATE_DIR
         sidecar = os.path.join(mimir_dir, "active_session")
         todo_file = ""
         try:
-            if os.path.exists(sidecar):
+            _sid = self.session_id
+            if not _sid and os.path.exists(sidecar):
                 with open(sidecar, "r", encoding="utf-8") as _f:
                     _sid = _f.read().strip()
-                if _sid:
-                    todo_file = os.path.join(mimir_dir, "sessions", _sid, "todo_list.md")
+            if _sid:
+                todo_file = os.path.join(mimir_dir, "sessions", _sid, "todo_list.md")
         except OSError:
             pass
         if not todo_file:
@@ -539,6 +580,9 @@ class MimirAgent:
             plan_todos=self.plan_todos,
             thinking_depth=self.thinking_depth,
             delegation_available=bool(names_with_cap(DELEGATE, self.tool_caps)),
+            session_id=self.session_id,
+            subagent_level=self.subagent_level,
+            workspace_root=self.workspace_root,
             # Read from the live schemas rather than restated anywhere: the server that
             # declares a tool owns what it does, and a catalog copied by hand is a
             # catalog that goes stale without anyone noticing.

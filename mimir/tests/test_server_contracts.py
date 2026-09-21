@@ -2240,3 +2240,52 @@ class ToolSchemaHonestyTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class BinaryBodyTests(unittest.TestCase):
+    """A fetch that lands on bytes must not spend the window on them.
+
+    Incident (2026-09-20): a plan-mode run fetched a PDF from HAL. The text ceiling
+    held — 131072 characters — but those characters were catalog objects and stream
+    bytes, and they JSON-escaped to 502529 characters, ~125K tokens, inside a window
+    budgeted for 160K. Nothing in them was readable, and the run reached for a text
+    mirror on its very next step, having already paid for the bytes.
+    """
+
+    def _read(self, decoded: str, content_type: str):
+        return server_web._read_body(decoded, content_type, False, "", 0)
+
+    def test_a_pdf_returns_no_body(self) -> None:
+        body, note = self._read("%PDF-1.4\n%���\n1 0 obj\n", "application/pdf")
+        self.assertEqual(body, "")
+        self.assertTrue(note["binary"])
+        self.assertIn("binary", note["hint"])
+
+    def test_mislabelled_bytes_are_caught_too(self) -> None:
+        _body, note = self._read("MZ\x00\x00\x90\x00", "")
+        self.assertTrue(note["binary"])
+
+    def test_a_non_textual_type_is_enough_on_its_own(self) -> None:
+        for ctype in ("application/zip", "image/png", "audio/mpeg", "font/woff2"):
+            with self.subTest(content_type=ctype):
+                _body, note = self._read("whatever the first bytes look like", ctype)
+                self.assertTrue(note["binary"])
+
+    def test_textual_application_types_are_not_binary(self) -> None:
+        for ctype in ("application/json", "application/xml", "application/ld+json",
+                      "application/yaml", "text/csv"):
+            with self.subTest(content_type=ctype):
+                body, note = self._read('{"a": 1}', ctype)
+                self.assertNotIn("binary", note)
+                self.assertEqual(body, '{"a": 1}')
+
+    def test_prose_is_untouched(self) -> None:
+        text = "Ce rapport présente MOR-TL, une méthode de réduction d'ordre."
+        body, note = self._read(text, "text/plain")
+        self.assertEqual(body, text)
+        self.assertNotIn("binary", note)
+
+    def test_a_page_is_still_extracted(self) -> None:
+        body, note = self._read("<html><body><p>hello</p></body></html>", "text/html")
+        self.assertIn("hello", body)
+        self.assertNotIn("binary", note)

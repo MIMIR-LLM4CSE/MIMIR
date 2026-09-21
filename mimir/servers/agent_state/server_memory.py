@@ -27,7 +27,7 @@ from datetime import datetime, timezone
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '_shared'))
 
 from mcp.server.fastmcp import FastMCP
-from capabilities import tool_caps, PLAN_BLOCKED, RECOVERABLE
+from capabilities import tool_caps, MAIN_ONLY, PLAN_BLOCKED, RECOVERABLE
 from responses import err, ok
 from state_paths import state_dir
 from text_tools import yaml_scalar, yaml_unquote
@@ -291,7 +291,10 @@ def _semantic_search(query: str, candidates: list, limit: int) -> list | None:
 
 # ── tools ─────────────────────────────────────────────────────────────────────
 
-@mcp.tool()
+# Writing memory is MAIN_ONLY: it is shared by every session of this workspace, and
+# what is worth keeping is the user's call made in front of them — not something a
+# child run decides on its own. Reading (search, list) stays grantable.
+@mcp.tool(**tool_caps(caps=[MAIN_ONLY]))
 def memory_add(text: str, description: str = None, tags: list = None) -> dict:
     """Store a fact as its own timestamped Markdown memory file.
 
@@ -416,7 +419,7 @@ def memory_list_all() -> dict:
     return ok({"memory": memory, "count": len(memory)})
 
 
-@mcp.tool()
+@mcp.tool(**tool_caps(caps=[MAIN_ONLY]))
 def memory_update(
     name: str,
     text: str = None,
@@ -470,7 +473,7 @@ def memory_update(
 
 
 @mcp.tool(**tool_caps(
-    caps=[PLAN_BLOCKED], reversibility=RECOVERABLE, non_batch=True,
+    caps=[PLAN_BLOCKED, MAIN_ONLY], reversibility=RECOVERABLE, non_batch=True,
     risk_note="deletes a persistent memory file",
 ))
 def memory_delete(name: str) -> dict:
@@ -502,7 +505,7 @@ def memory_delete(name: str) -> dict:
 
 
 @mcp.tool(**tool_caps(
-    caps=[PLAN_BLOCKED], reversibility=RECOVERABLE, non_batch=True,
+    caps=[PLAN_BLOCKED, MAIN_ONLY], reversibility=RECOVERABLE, non_batch=True,
     risk_note="wipes all persistent memory files",
 ))
 def memory_clear() -> dict:

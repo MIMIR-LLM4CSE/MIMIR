@@ -96,8 +96,9 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from mcp.server.fastmcp import FastMCP
 from capabilities import (tool_caps, CODE_EXEC, PLAN_BLOCKED, CLUSTER_SUBMIT,
-                          BACKGROUNDABLE, DIVERTIBLE, IRREVERSIBLE, RECOVERABLE)
-from responses import err
+                          BACKGROUNDABLE, DIVERTIBLE, IRREVERSIBLE, RECOVERABLE,
+                          PANEL_REPORT)
+from responses import err, ok
 from _lib.execute import _DEFAULT_MAX_OUTPUT_MB, _REF_RUN_TIMEOUT
 from _lib.procs import _validate_slurm_args
 from _ops import eval_session, references, registry, runs, scaffold as scaffold_ops, slurm, suites
@@ -810,6 +811,49 @@ def proxy_slurm(
     # op == "eval"
     return slurm.submit_eval(partition, proxy_name, background, gpus, cpus_per_task,
                              mem, wall_time, account, job_name or "proxy_opt")
+
+
+@mcp.tool(**tool_caps(
+    caps=[PANEL_REPORT],
+    read_only=True,
+    panel={"section": "Optimisation", "order": 20},
+    label="Optimisation status",
+))
+def proxy_panel_report() -> dict:
+    """Where the current optimisation stands, in a form a panel can show.
+
+    Read-only and cheap: the panel calls it on every refresh. It reports in this
+    server's own words — the client renders the lines it is given and knows nothing
+    about proxies, which is what lets another server add a section of its own.
+    """
+    from _lib.store import _resolve_proxy_name, _load_registry
+    from _lib.ratchet import _load_best
+
+    name = _resolve_proxy_name("")
+    if not name:
+        return ok({"title": "Optimisation", "lines": [],
+                   "detail": "No optimisation session in this workspace."})
+
+    cfg = eval_session._load_opt_config(name) or {}
+    state = eval_session.status(name).get("state", "unknown")
+    best = _load_best(name) or {}
+    metric = cfg.get("primary_metric", "time_s")
+    lines = [
+        {"label": "proxy", "value": name},
+        {"label": "state", "value": state,
+         "state": "running" if state in ("running", "pending") else ""},
+        {"label": "metric", "value": metric},
+    ]
+    if best:
+        lines.append({"label": "best so far",
+                      "value": f"{best.get('primary_value')} ({best.get('run_id', '?')})"})
+    if cfg.get("benchmark_name"):
+        lines.append({"label": "benchmark", "value": cfg["benchmark_name"]})
+    registry_names = sorted(_load_registry().keys())
+    if len(registry_names) > 1:
+        lines.append({"label": "other proxies",
+                      "value": ", ".join(n for n in registry_names if n != name)})
+    return ok({"title": "Optimisation", "lines": lines})
 
 
 if __name__ == "__main__":

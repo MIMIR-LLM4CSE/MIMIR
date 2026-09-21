@@ -29,6 +29,7 @@ import uuid
 from typing import Any, NamedTuple
 
 from ... import human_pause
+from ...config.constants import DEFAULT_SUBAGENT_LEVEL
 from ...tool_execution.formatter import parse_tool_payload
 
 logger = logging.getLogger(__name__)
@@ -1223,6 +1224,15 @@ class _AgentWorker:
             except ValueError:
                 pass
 
+    def set_subagent_level(self, level: str) -> str:
+        """Set how far sub-agents may go, and return the rung in force."""
+        if self._agent is None:
+            return DEFAULT_SUBAGENT_LEVEL
+        return self._agent.set_subagent_level(level)
+
+    def get_subagent_level(self) -> str:
+        return getattr(self._agent, "subagent_level", DEFAULT_SUBAGENT_LEVEL)
+
     def set_enforcement(self, level: str) -> None:
         if self._agent is not None:
             try:
@@ -1401,6 +1411,64 @@ class _AgentWorker:
                 return {"status": "error", "error": str(exc)}
 
         return asyncio.run_coroutine_threadsafe(_run(), self._loop)
+
+    def panel_sections(self) -> Any:
+        """Collect every section the connected servers can fill. Future of a list.
+
+        Asked by capability, never by name: a server declares ``PANEL_REPORT`` and the
+        section it fills, and a plugin server's section appears with no client edit.
+        Each answer is whatever that server chose to show — the panel renders lines, it
+        does not interpret them.
+
+        Straight to the owning session, like the slash commands above: this is the
+        user opening a drawer, not the model taking a step, and routing it through the
+        guardrail pipeline would scatter tool cards through their transcript.
+        """
+        from ...context.capabilities import panel_sections as _declared
+
+        if self._agent is None or self._loop is None:
+            fut: Any = concurrent.futures.Future()
+            fut.set_result([])
+            return fut
+        agent = self._agent
+        declared = _declared(getattr(agent, "tool_caps", None))
+
+        async def _run() -> list[dict]:
+            out: list[dict] = []
+            for tool, spec in declared:
+                owner = (getattr(agent, "tool_owner", None) or {}).get(tool)
+                if owner is None:
+                    continue
+                try:
+                    raw = await agent.sessions[owner].call_tool(tool, dict(spec.get("args") or {}))
+                    text = agent._normalize_tool_content(raw)
+                    payload = json.loads(text) if isinstance(text, str) else (text or {})
+                except Exception as exc:
+                    # One server that cannot answer costs its own section, never the
+                    # panel: the others have already said something worth showing.
+                    logger.debug("panel section %r failed: %s", tool, exc)
+                    continue
+                out.append({
+                    "section": spec.get("section", tool),
+                    "title": payload.get("title") or spec.get("section", tool),
+                    "lines": payload.get("lines") or [],
+                    "detail": payload.get("detail") or "",
+                })
+            return out
+
+        return asyncio.run_coroutine_threadsafe(_run(), self._loop)
+
+    def watched_runs(self) -> list[dict]:
+        """What is running outside the current turn: detached jobs the watcher holds.
+
+        Read off the descriptors the servers put there, so this says what kind of run
+        it is without knowing what any of them do.
+        """
+        return [
+            {"job_key": d.get("job_key", "?"), "kind": d.get("kind", ""),
+             "server": d.get("server", "")}
+            for d in self._watched_bg_jobs()
+        ]
 
     def compact_middle(self, middle: list) -> Any:
         """Summarize *middle* into one message, off the WS event loop.

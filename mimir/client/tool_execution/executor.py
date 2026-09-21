@@ -9,10 +9,15 @@ from typing import Any
 from ..event_sink import captured_emitter
 from ..guardrails.observations import record_tool_observation
 from ..guardrails.policy.approval import APPROVAL_MODE_META
+from ..config.constants import DEFAULT_SUBAGENT_LEVEL
+from ..config.models import (
+    CALLER_MODE_META, CALLER_MODEL_META, GRANTABLE_TOOLS_META,
+    GRANTABLE_WRITERS_META, SUBAGENT_LEVEL_META,
+)
 from ..guardrails.policy.engine import evaluate_tool_preconditions
 from ..context.execution_context import failed_runs, unsettled_runs
 from ..context.capabilities import (
-    CACHEABLE, CODE_NAV, EDIT, JUDGE,
+    CACHEABLE, CODE_NAV, DELEGATE, EDIT, JUDGE,
     has_cap, names_with_cap,
 )
 from . import bash_effect
@@ -489,12 +494,30 @@ async def execute_tool_call(
     # to the request, and a server that never reports progress pays nothing for it.
     # Which tools are worth listening to is decided by what comes back, not by a list
     # of names here.
-    # The approval mode rides on every call for the same reason: a server that spawns
-    # an agent of its own (a sub-agent) must run it in the mode the user chose, and the
-    # mode changes mid-session while a server's environment is frozen at spawn.
+    # The approval mode and the model ride on every call for the same reason: a server
+    # that spawns an agent of its own (a sub-agent) must run it in the mode the user
+    # chose and default to the model in use, and both change mid-session while a
+    # server's environment is frozen at spawn.
+    call_meta = {APPROVAL_MODE_META: agent.approvals.approval_mode,
+                 CALLER_MODEL_META: agent.model}
+    if has_cap(tool_name, DELEGATE, agent.tool_caps):
+        # Only the delegation channel gets these, and only because it hands them on:
+        # what the caller may grant a child, and the mode that set of tools was
+        # computed under. Sent per call rather than declared once, because both move
+        # with the user (a mode switch, a server toggled off) while the server that
+        # spawns the child keeps the environment it started with.
+        # Imported here, not at module scope: query_engine's package init pulls the
+        # agent loop, which pulls this module back.
+        from ..query_engine.toollist import grantable_tools, grantable_writers
+        granted = grantable_tools(agent)
+        call_meta[GRANTABLE_TOOLS_META] = granted
+        call_meta[GRANTABLE_WRITERS_META] = grantable_writers(agent, granted)
+        call_meta[CALLER_MODE_META] = getattr(agent, "mode", "")
+        call_meta[SUBAGENT_LEVEL_META] = getattr(
+            agent, "subagent_level", DEFAULT_SUBAGENT_LEVEL)
     result = await session.call_tool(
         tool_name, arguments, progress_callback=_make_subagent_progress_cb(call_id),
-        meta={APPROVAL_MODE_META: agent.approvals.approval_mode})
+        meta=call_meta)
     normalized = agent._normalize_tool_content(result)
 
     runs_before = set(unsettled_runs(execution_context or {}))

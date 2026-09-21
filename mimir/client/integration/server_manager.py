@@ -185,12 +185,18 @@ async def connect_server(*, agent: Any, name: str, script: str) -> None:
     # is deliberately distinct from the file/search sandbox — see config.constants.
     # The scratchpad travels the same way: the client vetted that path at startup
     # (ensure_scratch_home), so servers must use its answer, not re-derive one.
+    # ``agent.server_env`` is how an agent that is not the one the user is driving
+    # places itself: a sub-agent sets its own MIMIR_SESSION_ID there, so its todo and
+    # its scratchpad land under its own session. It must be per agent rather than in
+    # os.environ, because several sub-agents run concurrently in one process.
+    root = getattr(agent, "workspace_root", None) or os.getcwd()
     server_env = {
         **os.environ,
-        "MCP_FILES_ROOT": os.getcwd(),
-        "SEARCH_ROOT": os.getcwd(),
+        "MCP_FILES_ROOT": root,
+        "SEARCH_ROOT": root,
         "MIMIR_STATE_DIR": STATE_DIR,
         "MIMIR_SCRATCH_DIR": scratch_home(),
+        **(getattr(agent, "server_env", None) or {}),
     }
     params = StdioServerParameters(command=command, args=[script], env=server_env)
 

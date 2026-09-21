@@ -18,6 +18,7 @@ from ._ws_runtime import (
     context_budget_for,
     get_backend,
 )
+from .session_store import list_subagents as _list_subagents, read_subagent as _read_subagent
 from .transcript_log import TranscriptLog
 from ...query_engine.deferral import KIND_CALLS, take_deferred_calls
 from ...query_engine.history import (
@@ -26,6 +27,7 @@ from ...query_engine.history import (
 from .ws_worker import _AgentWorker
 from ...tool_execution import run_channel
 from ...config import (
+    SUBAGENT_LEVELS,
     TEMPERATURE_MAX, TEMPERATURE_MIN, THINKING_DEPTH_LABELS, parse_temperature,
     thinking_depth_from_label,
 )
@@ -53,6 +55,25 @@ _CANCEL_SETTLE_TICKS = 200
 # and the tail of a build log; short of pasting a whole test suite into the history.
 _WAKE_SUMMARY_LIMIT = 2000
 
+# Which keys of that summary are worth the budget, and which are only an echo of what
+# the caller itself asked for. A result dict is a mapping, not a message: whoever wrote
+# it chose its order for its own reasons and json.dumps keeps that order, so a long echo
+# sitting near the front can spend the whole budget before the result is reached. A
+# sub-agent wake did exactly that — 2000 characters repeating a task the caller had
+# written itself, while the answer it was resumed for was cut off entirely.
+#
+# Keys, not tool names: the same licence _wake_text has to read `verdict` or `next_step`
+# off any server's payload. A key in neither tuple keeps its place and its contents, so
+# passing the payload through stays the rule and this stays the named exception.
+_WAKE_RESULT_KEYS = (
+    "answer", "output", "verdict", "best", "next_step", "reason", "error", "note",
+)
+_WAKE_ECHO_KEYS = ("task", "command", "context", "prompt")
+
+# An echo is kept only as far as it identifies which request came back — one line, since
+# several children of one session are told apart by their first sentence.
+_WAKE_ECHO_CHARS = 160
+
 # Events that must reach the user no matter which conversation they belong to: each
 # one is a question the agent is parked on, and filtering it as "foreign" (which it is,
 # during a background-job wake in another session) would leave the turn waiting on an
@@ -61,19 +82,49 @@ _WAKE_SUMMARY_LIMIT = 2000
 _INTERACTION_EVENTS = frozenset({"approval", "user_question"})
 
 
-def _compact_summary(payload: dict) -> str:
+def _echo_head(value: object) -> object:
+    """An echoed request, reduced to the line that identifies it.
+
+    Anything that is not text is left alone: the tuple names keys, and a server is free
+    to put something other than a string behind one of them.
+    """
+    if not isinstance(value, str):
+        return value
+    whole = value.strip()
+    head = whole.split("\n", 1)[0][:_WAKE_ECHO_CHARS]
+    return f"{head}…" if len(head) < len(whole) else head
+
+
+def _project_summary(payload: dict) -> dict:
+    """The same payload, ordered so that a cut falls on the echo and not on the result.
+
+    Nothing is dropped and nothing is renamed — the result keys move to the front, the
+    echo keys to the back and lose everything past their first line, and every other key
+    keeps its place between them.
+    """
+    result = {k: payload[k] for k in _WAKE_RESULT_KEYS if k in payload}
+    echo = {k: _echo_head(payload[k]) for k in _WAKE_ECHO_KEYS if k in payload}
+    rest = {k: v for k, v in payload.items() if k not in result and k not in echo}
+    return {**result, **rest, **echo}
+
+
+def _compact_summary(payload: dict) -> tuple[str, bool]:
     """A job's recorded result, as one line of JSON, cut to a budget.
 
     Passed through rather than interpreted: the client does not know what kind of job
-    ran, so it hands the model what the server recorded instead of paraphrasing it.
+    ran, so it hands the model what the server recorded instead of paraphrasing it. The
+    ordering above is the one liberty taken, and it removes nothing.
+
+    Returns the text and whether it had to be cut — the caller says where the whole of
+    it can be read, which is only honest once something is missing.
     """
     try:
-        text = json.dumps(payload, ensure_ascii=False, default=str)
+        text = json.dumps(_project_summary(payload), ensure_ascii=False, default=str)
     except (TypeError, ValueError):
         text = str(payload)
     if len(text) <= _WAKE_SUMMARY_LIMIT:
-        return text
-    return f"{text[:_WAKE_SUMMARY_LIMIT]}… [cut: {len(text)} chars in all]"
+        return text, False
+    return f"{text[:_WAKE_SUMMARY_LIMIT]}… [cut: {len(text)} chars in all]", True
 
 
 def _reconcile(messages: list[dict]) -> list[dict]:
@@ -988,6 +1039,9 @@ class _Session:
         "toggle_skill": "_handle_toggle_skill",
         "toggle_nudge": "_handle_toggle_nudge",
         "set_model": "_handle_set_model",
+        "list_subagents": "_handle_list_subagents",
+        "list_panel": "_handle_list_panel",
+        "read_subagent": "_handle_read_subagent",
     }
 
     async def _handle(self, raw: str) -> None:
@@ -1012,9 +1066,11 @@ class _Session:
         Naming another server's ops in this function is how a build once got told to
         review proxy results and continue an optimization loop that did not exist.
 
-        The one tool name it may use is ``status_op``'s, and only because that is
-        registry data travelling on the descriptor — the same reason the watcher can
-        poll generically. It is the last resort, for a job that recorded no summary.
+        The only tool names it may use are ``status_op``'s and ``summary_op``'s, and
+        only because those are registry data travelling on the descriptor — the same
+        reason the watcher can poll generically. The first is the last resort, for a job
+        that recorded no summary; the second is named only when the summary had to be
+        cut, so that what was left out is still reachable.
         """
         job_key = ev.get("job_key", "?")
         state   = ev.get("state", "done")
@@ -1048,8 +1104,16 @@ class _Session:
         if next_step:
             return f"{head} {next_step}"
         if summary:
+            body, cut = _compact_summary(summary)
+            more = ""
+            if cut:
+                # Only once something is actually missing, and only with a tool name the
+                # descriptor handed over — the same registry data the watcher polls on.
+                op = (ev.get("summary_op") or {}).get("tool")
+                more = (f" What follows is cut short; read the whole of it with "
+                        f"'{op}'." if op else "")
             return (f"{head} Here is what it recorded — read it, then carry on with "
-                    f"the work it was part of:\n{_compact_summary(summary)}")
+                    f"the work it was part of.{more}\n{body}")
         status_tool = (ev.get("status_op") or {}).get("tool")
         if status_tool:
             return (f"{head} It recorded no result of its own; read its state with "
@@ -1906,6 +1970,18 @@ class _Session:
                 await self.ws.send(json.dumps({"type": "approval_mode", "mode": mode}))
             else:
                 await self.ws.send(json.dumps({"type": "error", "text": f"Unknown approval mode: {raw}. Use manual, auto, or all."}))
+        elif text == "/subagents" or text.startswith("/subagents "):
+            # How far a sub-agent may go is the user's call, not the model's: this is
+            # where they make it, and a bare command reports without changing anything.
+            raw = text[11:].strip().lower()
+            if raw and raw not in SUBAGENT_LEVELS:
+                await self.ws.send(json.dumps({"type": "error", "text": (
+                    f"Unknown sub-agent setting: {raw}. Use "
+                    f"{', '.join(SUBAGENT_LEVELS)}.")}))
+                return
+            level = self.worker.set_subagent_level(raw) if raw \
+                else self.worker.get_subagent_level()
+            await self.ws.send(json.dumps({"type": "subagent_level", "level": level}))
         elif text.startswith("/enforcement "):
             level = text[13:].strip().lower()
             if level in ("strict", "light", "off"):
@@ -2061,6 +2137,46 @@ class _Session:
 
     async def _handle_list_toggles(self, msg: dict) -> None:
         await self._send_toggles()
+
+    async def _handle_list_panel(self, msg: dict) -> None:
+        """Serve the scientific-computing panel: the servers' sections, plus ours.
+
+        Two sections are the client's own because their state lives here — the rung the
+        user set with the sub-agents of this session, and the runs the watcher is
+        holding. The rest is whatever the connected servers declared they could fill.
+        """
+        sections = await asyncio.wrap_future(self.worker.panel_sections())
+        cards = _list_subagents(self._active_session_id or "")
+        await self.ws.send(json.dumps({
+            "type": "panel_report",
+            "subagent_level": self.worker.get_subagent_level(),
+            "subagents": cards,
+            "running": sum(1 for c in cards if c.get("state") == "running"),
+            "runs": self.worker.watched_runs(),
+            "sections": sections,
+        }))
+
+    async def _handle_list_subagents(self, msg: dict) -> None:
+        """Serve the sub-agents of the session in view.
+
+        Read-only, and read off the files the children left: a panel that could relaunch
+        one would be a second way to delegate, out of the orchestrator's sight.
+        """
+        cards = _list_subagents(self._active_session_id or "")
+        await self.ws.send(json.dumps({
+            "type": "subagents_list",
+            "session_id": self._active_session_id or "",
+            "subagents": cards,
+            # For the badge on the button: how many are working right now.
+            "running": sum(1 for c in cards if c.get("state") == "running"),
+        }))
+
+    async def _handle_read_subagent(self, msg: dict) -> None:
+        await self.ws.send(json.dumps({
+            "type": "subagent",
+            "subagent": _read_subagent(
+                self._active_session_id or "", str(msg.get("id") or "")),
+        }))
 
     async def _handle_list_resources(self, msg: dict) -> None:
         """Serve the attachable-resource list for the webview picker/autocomplete."""

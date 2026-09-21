@@ -7,7 +7,9 @@ import re
 # The user system-prompt override lives in ``.mimir/`` — its resolution belongs with
 # the other user-extension resolvers (servers/skills/plugins); building lives here.
 from ..extensions.system_prompt import resolve_system_prompt_file
-from ..config.constants import THINKING_DEPTH_AUTO
+from ..config.constants import (
+    DEFAULT_SUBAGENT_LEVEL, THINKING_DEPTH_AUTO, subagent_level_allows,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -322,9 +324,48 @@ _SECTION_SUBAGENTS = (
     "- Keep in your own loop what needs the surrounding context: a targeted read of code you "
     "have already located, a trivial step, and every edit. Then read for yourself the few "
     "places the answers point at, before changing them.\n"
-    "- Give a sub-task write access only when it must write.\n"
+    "- Give a sub-agent only the tools its sub-task needs, named from your own tool list; "
+    "a writing or executing one only when the task must write or run something.\n"
+    "- A sub-agent whose answer is not your next step can be detached: you get a handle "
+    "at once, carry on with other work, and are resumed with its answer when it lands. "
+    "Never poll it — waiting for it is the one thing you do not have to do.\n"
     "- Before delegating, check whether the result already exists — prefer reuse over "
-    "recomputation."
+    "recomputation.\n"
+    "- The user decides how far a sub-agent may go, and they may have it on reading only. "
+    "A refusal saying which setting would allow more is theirs to act on: report it and "
+    "carry on another way, never work around it."
+)
+
+# Appended once the user has allowed sub-agents to write, which turns a fan-out of
+# readers into a team with you at its head. States the part a tool description cannot —
+# what YOUR job becomes.
+_SECTION_SUBAGENTS_LEAD = (
+    "\n- You are the lead engineer of this work; the user is its project manager. Sub-agents "
+    "are your team: you decide what each one takes, you review what comes back, and you own "
+    "the result.\n"
+    "- Take the hardest or most consequential part yourself — the one that needs the "
+    "surrounding context, a judgement call, or the change everything else depends on. A lead "
+    "who only dispatches has read none of the code they are answerable for.\n"
+    "- Report to the user as the work proceeds, not only at the end: who is on what, what "
+    "came back, what you are doing next, and what is now uncertain. Say it in a few lines of "
+    "plain prose — a manager reads a status, not a transcript.\n"
+    "- Bring to them what is theirs to decide: a trade-off between approaches, a change of "
+    "direction, anything that costs real time or machine hours. Choices inside the work are "
+    "yours to make."
+)
+
+# The other half of the same rung: what having copies makes possible.
+_SECTION_SUBAGENTS_AXES = (
+    "\n- A sub-agent you give a writing or running tool works in a COPY of the repository, "
+    "on a branch of its own — never in these files. So work that splits into independent "
+    "lines, several ways to optimise the same code or several candidate fixes, is one "
+    "sub-agent per line, running at once: they cannot disturb each other's files or "
+    "measurements. Start them in the SAME response and let them work.\n"
+    "- Each comes back as a branch and a diff, never merged for you. Compare the axes on "
+    "what they measured, say plainly which one you would keep and why, and integrate the "
+    "one the user settles on.\n"
+    "- A line of work too long for one run is not restarted: ask for the state (what is "
+    "established, what is left, where), then send a fresh sub-agent on from there."
 )
 
 # Conditional — injected by build_system_content only when the memory server is
@@ -559,17 +600,18 @@ def build_tool_catalog_for_planning(
 _OPTIONAL_STEP_RE = re.compile(r"^\s*[\(\[]?optional[\)\]]?\s*[:\-–]?\s+", re.IGNORECASE)
 
 
-def _workspace_root_for_prompt() -> str:
+def _workspace_root_for_prompt(workspace_root: str = "") -> str:
     """The workspace root, stated absolutely so in-workspace paths are copied, not inferred.
 
     The file tools reject a relative path, so the model needs the root to build an
-    absolute one; this is the only place the prompt states it. Resolved the same way
-    the client resolves paths against, and without touching the disk.
+    absolute one; this is the only place the prompt states it. *workspace_root* is the
+    agent's own — a sub-agent working in a copy of the repository must be told where
+    that copy is, not where the caller's tree sits. Resolved without touching the disk.
     """
-    return os.environ.get("SEARCH_ROOT") or os.getcwd()
+    return workspace_root or os.environ.get("SEARCH_ROOT") or os.getcwd()
 
 
-def _scratch_dir_for_prompt() -> str:
+def _scratch_dir_for_prompt(session_id: str = "") -> str:
     """The scratchpad path to advertise, or "" if it cannot resolve.
 
     The session-scoped directory, not ``standing_roots()[0]``: the standing grant is
@@ -580,7 +622,7 @@ def _scratch_dir_for_prompt() -> str:
     try:
         from ...servers._shared.state_paths import scratch_dir
         from ..config.constants import STATE_DIR
-        return scratch_dir(STATE_DIR)
+        return scratch_dir(STATE_DIR, session_id or None)
     except Exception:
         return ""
 
@@ -658,6 +700,9 @@ def build_system_content(
     thinking_depth: int = 0,
     delegation_available: bool = False,
     tool_descriptions: dict[str, str] | None = None,
+    session_id: str = "",
+    subagent_level: str = DEFAULT_SUBAGENT_LEVEL,
+    workspace_root: str = "",
 ) -> str:
     system_content = build_base_system_content(context_file)
 
@@ -675,7 +720,15 @@ def build_system_content(
     if delegation_available:
         # Leading blank line: _section only prepends one newline, which would glue
         # the "## Sub-agents" heading to the previous section's last bullet.
-        system_content += _section("\n" + _SECTION_SUBAGENTS)
+        # The rungs the user granted decide how much of the section applies: describing
+        # a team of writers to a session where sub-agents may only read is the same
+        # phantom instruction the gate above exists to prevent.
+        section = _SECTION_SUBAGENTS
+        if subagent_level_allows(subagent_level, "parallel"):
+            section += _SECTION_SUBAGENTS_LEAD
+        if subagent_level_allows(subagent_level, "parallel"):
+            section += _SECTION_SUBAGENTS_AXES
+        system_content += _section("\n" + section)
 
     # Same gating shape, on the tool rather than on a capability: the question channel
     # has exactly one consumer, so a declared capability would buy nothing the name does
@@ -692,8 +745,8 @@ def build_system_content(
     # the machine is injected: what this task touches is the model's to discover with its
     # own searches and reads, and hardware detail is on demand from the platform tools.
     system_content += _section(
-        f"Workspace root (absolute): {_workspace_root_for_prompt()}\n"
-        f"Scratchpad (yours, outside the workspace, no approval needed): {_scratch_dir_for_prompt()}\n"
+        f"Workspace root (absolute): {_workspace_root_for_prompt(workspace_root)}\n"
+        f"Scratchpad (yours, outside the workspace, no approval needed): {_scratch_dir_for_prompt(session_id)}\n"
         "Nothing there counts as produced work or is reported to the user. Where a check goes "
         "follows from how long it has to live:\n"
         "- Run once — not a file at all: the code inline as a quoted `-c` argument, steps chained "

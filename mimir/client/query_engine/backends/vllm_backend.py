@@ -142,6 +142,16 @@ def _answer_max_tokens(mml: int, prompt_tokens: int) -> int:
     return min(remaining, int(mml * CTX_RESERVED_RATIO))
 
 
+def _unknown_window_answer_tokens() -> int:
+    """Answer allocation to request when the server reports no max_model_len.
+
+    The reserve the context budget already sets aside for the answer on the assumed
+    window — the one number here that does not pretend to know the real window.
+    """
+    from ...config.constants import CTX_RESERVED_RATIO, CTX_TOTAL_FULL
+    return max(1, int(CTX_TOTAL_FULL * CTX_RESERVED_RATIO))
+
+
 # Models whose chat template rejected `chat_template_kwargs` outright, so we stop
 # sending them. Keyed by model name; populated by `_create` on the one 400 it takes
 # to find out. Most templates ignore a kwarg they don't know, so this stays empty.
@@ -497,6 +507,9 @@ class VllmBackend(LLMBackend):
     def served_models(self) -> list[str]:
         return list_served_models(self._config())
 
+    def served_model_info(self) -> list[dict]:
+        return [m for m in _fetch_models(self._config()) if m.get("id")]
+
     def _client_for(self, base_url: str, api_key: str) -> Any:
         key = (base_url, api_key)
         with self._clients_lock:
@@ -518,14 +531,27 @@ class VllmBackend(LLMBackend):
     def _fetch_context_window(self, model: str) -> int | None:
         """vLLM context window = the server's reported max_model_len.
 
-        ``MIMIR_VLLM_MAX_MODEL_LEN`` overrides it — an escape hatch for older
-        servers whose /v1/models doesn't report max_model_len.
+        Detection comes first and wins whenever it answers: what the deployment
+        publishes is true of *this* endpoint, today, and needs no maintenance — it
+        is the generic answer, and it keeps working when the endpoint is upgraded,
+        replaced or pointed elsewhere.
+
+        ``MIMIR_VLLM_MAX_MODEL_LEN`` is the fallback for the case detection cannot
+        cover: an endpoint that publishes nothing, typically an OpenAI-compatible
+        router in front of vLLM that does not republish max_model_len. Without it
+        every budget here — the context bar, the eviction, the compaction, the
+        answer allocation — sizes itself to a static assumption instead of to the
+        model. It is deliberately not an override: a value left behind from one
+        endpoint must not silently displace the next one's published window.
         """
         import os
+        served = served_model_len(model, self._config())
+        if served:
+            return served
         env = os.environ.get("MIMIR_VLLM_MAX_MODEL_LEN", "").strip()
         if env.isdigit() and int(env) > 0:
             return int(env)
-        return served_model_len(model, self._config())
+        return None
 
     def _tokenize_text(self, model: str, text: str) -> int:
         """Exact token count via vLLM's /tokenize endpoint.
@@ -677,6 +703,16 @@ class VllmBackend(LLMBackend):
                 )
             if max_tokens is None:
                 max_tokens = _answer_max_tokens(mml, prompt_tokens)
+        elif max_tokens is None:
+            # No served window to size the answer against, and none requested: vLLM
+            # then defaults max_tokens to (max_model_len - prompt_tokens), which on a
+            # large window is an all-but-unbounded generation. Observed against an
+            # OpenAI-compatible router that reports no max_model_len and serves a
+            # >600K window: a report-writing step ran until the router gave up and
+            # answered 500, three identical retries deep, ~90s each. Fall back to the
+            # same answer reserve the budget assumes when the window is unknown, so an
+            # unmeasurable endpoint bounds the answer instead of not bounding it.
+            max_tokens = _unknown_window_answer_tokens()
         if max_tokens is not None:
             create_kwargs["max_tokens"] = max(1, int(max_tokens))
 
