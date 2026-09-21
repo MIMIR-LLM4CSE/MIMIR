@@ -158,6 +158,24 @@ def _is_retryable(exc: Exception) -> bool:
     return not any(marker in text for marker in _DETERMINISTIC_ERROR_MARKERS)
 
 
+def _calibrate_overhead(backend: Any, model: str, messages: list[dict], msg: Any) -> None:
+    """Hand the server's reported prompt size to the context bar's calibration.
+
+    Only the agent and plan loops come through here, and that is the point: the
+    skill classifier, the session summary and compaction share the backend and the
+    model but send a prompt of their own, a few hundred tokens of instruction and no
+    tools. Calibrated from those, the overhead dropped to almost nothing after every
+    side call and climbed back on the next step, and the bar swung by the size of
+    the system prompt each time. The key is popped so it never reaches history.
+    """
+    if not isinstance(msg, dict):
+        return
+    reported = msg.pop("prompt_tokens", None)
+    note = getattr(backend, "note_prompt_usage", None)
+    if reported and callable(note):
+        note(model, messages, reported)
+
+
 def _stream_chat(model: str,
                  messages: list[dict],
                  tools: list[dict],
@@ -189,7 +207,7 @@ def _stream_chat(model: str,
         if cancel_flag is not None and cancel_flag.is_set():
             raise asyncio.CancelledError("Cancelled by user")
         try:
-            return backend.chat(
+            msg = backend.chat(
                 model=model,
                 messages=messages,
                 tools=tools,
@@ -202,6 +220,8 @@ def _stream_chat(model: str,
                 think_start_callback=think_start_callback,
                 think_end_callback=think_end_callback,
             )
+            _calibrate_overhead(backend, model, messages, msg)
+            return msg
         except Exception as exc:  # noqa: BLE001 — backend exception types vary by provider
             last_exc = exc
             if attempt >= LLM_RETRY_ATTEMPTS or not _is_retryable(exc):

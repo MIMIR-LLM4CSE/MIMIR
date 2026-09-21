@@ -578,11 +578,12 @@ class VllmBackend(LLMBackend):
             return len(tokens)
         raise ValueError("unexpected /tokenize response shape")
 
-    def _note_usage(self, model: str, messages: list[dict], usage: Any) -> None:
-        """Hand the server's reported prompt size to the overhead calibration."""
+    @staticmethod
+    def _prompt_tokens(usage: Any) -> int:
+        """The server's reported prompt size, for the overhead calibration."""
         if usage is None:
-            return
-        self.note_prompt_usage(model, messages, getattr(usage, "prompt_tokens", 0) or 0)
+            return 0
+        return getattr(usage, "prompt_tokens", 0) or 0
 
     def chat(
         self,
@@ -767,12 +768,12 @@ class VllmBackend(LLMBackend):
                 think_end_callback()
 
             _log_cache_usage(usage)
-            self._note_usage(model, messages, usage)
+            reported_prompt = self._prompt_tokens(usage)
 
         else:
             response = _create(client, create_kwargs)
             _log_cache_usage(getattr(response, "usage", None))
-            self._note_usage(model, messages, getattr(response, "usage", None))
+            reported_prompt = self._prompt_tokens(getattr(response, "usage", None))
             choice = response.choices[0] if response.choices else None
             if choice:
                 finish_reason = normalize_finish_reason(
@@ -809,5 +810,8 @@ class VllmBackend(LLMBackend):
 
         if finish_reason:
             final_msg["finish_reason"] = finish_reason
+
+        if reported_prompt > 0:
+            final_msg["prompt_tokens"] = reported_prompt
 
         return final_msg

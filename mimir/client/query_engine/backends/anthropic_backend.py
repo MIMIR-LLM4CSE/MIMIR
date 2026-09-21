@@ -376,8 +376,9 @@ class AnthropicBackend(LLMBackend):
 
     # ── chat ────────────────────────────────────────────────────────────────────
 
-    def _note_usage(self, model: str, messages: list[dict], final: Any) -> None:
-        """Hand the server's reported prompt size to the overhead calibration.
+    @staticmethod
+    def _prompt_tokens(final: Any) -> int:
+        """The server's reported prompt size, for the overhead calibration.
 
         The prompt total is split three ways here — a cached read, a cache write and
         the uncached remainder — and only their sum is comparable to what the bar
@@ -385,11 +386,10 @@ class AnthropicBackend(LLMBackend):
         """
         usage = getattr(final, "usage", None)
         if usage is None:
-            return
-        total = ((getattr(usage, "cache_read_input_tokens", 0) or 0)
-                 + (getattr(usage, "cache_creation_input_tokens", 0) or 0)
-                 + (getattr(usage, "input_tokens", 0) or 0))
-        self.note_prompt_usage(model, messages, total)
+            return 0
+        return ((getattr(usage, "cache_read_input_tokens", 0) or 0)
+                + (getattr(usage, "cache_creation_input_tokens", 0) or 0)
+                + (getattr(usage, "input_tokens", 0) or 0))
 
     def chat(
         self,
@@ -464,7 +464,6 @@ class AnthropicBackend(LLMBackend):
 
         self._cache_blocks(getattr(final, "content", []) or [])
         _log_cache_usage(final)
-        self._note_usage(model, messages, final)
 
         result: dict = {"role": "assistant", "content": "".join(content_parts)}
         if thinking_parts:
@@ -477,6 +476,9 @@ class AnthropicBackend(LLMBackend):
         finish_reason = normalize_finish_reason(getattr(final, "stop_reason", None))
         if finish_reason:
             result["finish_reason"] = finish_reason
+        prompt_tokens = self._prompt_tokens(final)
+        if prompt_tokens > 0:
+            result["prompt_tokens"] = prompt_tokens
         return result
 
     @staticmethod
