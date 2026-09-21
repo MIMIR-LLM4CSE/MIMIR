@@ -63,6 +63,19 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   with their size, estimated speed and benchmark scores by category (reasoning,
   coding, agentic work, tools, discovery). The data lives in
   `mimir/client/config/model_catalog.json`, with a source for every number.
+- MIMIR optimizes for the compute nodes, not only for the machine it runs on. A
+  short Slurm job reads a node's full profile on the node: CPU model, SIMD, the
+  `-march` gcc resolves there, caches, GPUs, OS and glibc, toolchains, Python
+  environments. The profile is kept until Slurm's description of the node changes.
+  `slurm_node_profile` says which of these differ from the login node. MIMIR tells
+  apart three places it can run: no scheduler, a login node, or inside an allocation
+  on the node itself, where no probe is needed.
+- Batch jobs can aim at one kind of node. `sbatch_submit` and `proxy_slurm` take
+  `constraint`, `nodelist`, `ntasks` and `exclusive`. A proxy optimization run on
+  Slurm is exclusive by default, and picks a Python that starts on the node.
+- An optimization session is pinned to the machine its baseline ran on. A timing
+  taken on another kind of machine is reported as `incomparable` and moves neither
+  the best nor the stall count.
 - A GitHub file is read in pages. `github_get_file` takes a line range, returns at
   most 400 lines a call, and says where to resume — so the first look at a long
   source file costs a quarter of what the whole file did, and a file too large to
@@ -84,6 +97,10 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   An existing install keeps working until you run `install.sh` again.
 
 ### Fixed
+- On a host whose locale is not English, `platform_probe` reported no CPU model and
+  no SIMD at all: `lscpu` translates its field names. Probes now run in the C locale.
+- `srun` from a login node started a job without the approval and the validation
+  hold that `sbatch` gets. It now gets both. Inside an allocation it is unchanged.
 - A single step can no longer overrun the context window. Tool results are now
   bounded before they enter the history — per result, and per step together — so
   several calls returning at once cannot do what four fetches did to one session:

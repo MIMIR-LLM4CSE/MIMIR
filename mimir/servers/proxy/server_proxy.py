@@ -101,6 +101,7 @@ from capabilities import (tool_caps, CODE_EXEC, PLAN_BLOCKED, CLUSTER_SUBMIT,
 from responses import err, ok
 from _lib.execute import _DEFAULT_MAX_OUTPUT_MB, _REF_RUN_TIMEOUT
 from _lib.procs import _validate_slurm_args
+from slurm_script import validate_target
 from _ops import eval_session, references, registry, runs, scaffold as scaffold_ops, slurm, suites
 
 mcp = FastMCP(
@@ -754,12 +755,23 @@ def proxy_slurm(
     account: str = "",
     job_name: str = "",
     background: bool = False,
+    constraint: str = "",
+    nodelist: str = "",
+    ntasks: int = 1,
+    exclusive: bool | None = None,
     confirm: bool = False,
 ) -> dict:
     """Submit proxy work as Slurm batch jobs (sensitive, non-blocking, expensive).
 
     Validate the workload locally with proxy_exec first — a failed batch job
     still consumes allocation hours.
+
+    Everything in the job runs on the compute node: the build an optimisation session
+    declares, the cases, the timing. That makes this the route when the code is to be
+    optimised FOR the compute nodes — measured on the login node, a speedup describes
+    the login node. Aim at one kind of node (``constraint`` or ``nodelist``) when the
+    partition mixes several, and keep every run of a session on that kind: the ratchet
+    refuses to compare timings taken on different machines.
 
     Operations (set ``op``; all require confirm=True):
       run   -> one job for a single proxy run (requires: proxy_name); monitor
@@ -788,29 +800,41 @@ def proxy_slurm(
         job_name: Slurm job name (optional; a sensible default is derived).
         background: For 'eval': detach the job — end your turn instead of
             polling; you are auto-resumed when the job finishes.
+        constraint: Slurm feature expression selecting the kind of node
+            (e.g. 'icelake', 'a100|h100').
+        nodelist: Specific node(s), as a Slurm hostlist.
+        ntasks: Tasks in the job (default 1; more for an MPI proxy).
+        exclusive: Reserve the whole node. Defaults to True for 'eval' and
+            'suite', whose timings a neighbour's job would distort, and False for 'run'.
         confirm: Must be True to submit.
     """
     if op not in _SLURM_OPS:
         return _unknown_op(op, _SLURM_OPS)
     if not confirm:
         return err("Not confirmed.", hint="Set confirm=True to submit.")
-    slurm_err = _validate_slurm_args(partition, gpus, cpus_per_task, mem, wall_time)
+    slurm_err = (_validate_slurm_args(partition, gpus, cpus_per_task, mem, wall_time)
+                 or validate_target(constraint, nodelist, ntasks=ntasks))
     if slurm_err:
         return err(slurm_err)
+    target = {
+        "ntasks": ntasks, "constraint": constraint, "nodelist": nodelist,
+        "exclusive": (op != "run") if exclusive is None else bool(exclusive),
+    }
 
     if op == "run":
         return (_missing_args(op, proxy_name=proxy_name)
                 or slurm.submit_run(proxy_name, partition, extra_params,
                                     param_overrides, compare_to_reference,
                                     gpus, cpus_per_task, mem, wall_time,
-                                    account, job_name))
+                                    account, job_name, target=target))
     if op == "suite":
         return (_missing_args(op, suite_name=suite_name)
                 or slurm.submit_suite(suite_name, partition, gpus, cpus_per_task,
-                                      mem, wall_time, account))
+                                      mem, wall_time, account, target=target))
     # op == "eval"
     return slurm.submit_eval(partition, proxy_name, background, gpus, cpus_per_task,
-                             mem, wall_time, account, job_name or "proxy_opt")
+                             mem, wall_time, account, job_name or "proxy_opt",
+                             target=target)
 
 
 @mcp.tool(**tool_caps(

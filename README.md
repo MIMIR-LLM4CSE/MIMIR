@@ -269,8 +269,8 @@ The client registers 21 servers by default; the authoritative registry lives in
 | `search` | File/pattern search, file reads, cached tree summaries, directory listing, ranking |
 | `web` | Safe HTTP GET/POST, JSON parsing and field extraction (SSRF-hardened) |
 | `github` | Read-only GitHub search, metadata, issues, branches, file fetch |
-| `hpc` | Slurm: partition/queue queries, compute-node inventory (arch, GPUs, live occupancy) for choosing where to submit, `salloc`/`sbatch` submission + async batch tracking (loading a module goes through `bash`'s `module`; finding one goes through `platform`) |
-| `platform` | Platform profiling: CPU/NUMA/memory/GPU/Slurm/toolchains/Python environments, plus a searchable index of the site's environment modules (`platform_search`) |
+| `hpc` | Slurm: partition/queue queries, compute-node inventory (arch, GPUs, live occupancy) for choosing where to submit, compute-node profiles read on the node (CPU model, SIMD, `-march`, caches, OS), `salloc`/`sbatch` submission aimed at one kind of node + async batch tracking (loading a module goes through `bash`'s `module`; finding one goes through `platform`) |
+| `platform` | Profiling of the host MIMIR runs on: CPU/NUMA/caches/`-march`/OS/memory/GPU/Slurm/toolchains/Python environments, where it sits (no scheduler, login node, inside an allocation), plus a searchable index of the site's environment modules (`platform_search`) |
 | `env` | Mutating Python-environment management (pip install/uninstall, create/delete) |
 | `system` | Read-only OS/CPU/memory/disk/uptime inspection |
 | `code_intel` | Symbol navigation (ctags + LSP): definition, references, outline, hover |

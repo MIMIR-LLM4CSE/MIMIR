@@ -251,6 +251,20 @@ def main() -> None:
         _log(f"[proxy_runner] ERROR: cannot import _lib: {exc}")
         sys.exit(1)
 
+    # ── record where this run executes ───────────────────────────────────────
+    # Written by the run itself, on the machine that runs it — local, inside an
+    # allocation or in a batch job alike — so the ratchet can tell whether two timings
+    # were taken on the same kind of machine before comparing them.
+    try:
+        from cpu_facts import local_machine
+        machine = local_machine()
+        with open(os.path.join(run_dir, "machine.json"), "w") as fh:
+            json.dump(machine, fh, indent=2)
+        _log(f"[proxy_runner] machine={machine['host']} "
+             f"context={machine['execution_context']} cpu={machine['cpu_model']!r}")
+    except Exception as exc:  # never fail the run over bookkeeping
+        _log(f"[proxy_runner] WARNING: could not record the machine: {exc}")
+
     # ── load registry + proxy entry ──────────────────────────────────────────
     try:
         reg = _load_registry()

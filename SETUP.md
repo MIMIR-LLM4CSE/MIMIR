@@ -483,6 +483,30 @@ server exposes `salloc_submit`, `sbatch_submit`, and job-inspection tools, so yo
 ask MIMIR to submit and monitor *your* jobs. See
 [SERVERS_DETAILED.md](SERVERS_DETAILED.md) for that tool catalog.
 
+### Where MIMIR runs, and which machine it optimizes for
+
+| MIMIR runs on | What it detects | Target machine by default |
+|---|---|---|
+| A workstation, no Slurm | `none` | this machine |
+| A login node | `login` | a compute node, or this machine if you say so |
+| A compute node, inside an allocation | `in_allocation` | this node |
+
+On a login node, "optimize for the architecture" means the compute node's. Slurm
+does not know a node's CPU model, SIMD flags or native `-march`. MIMIR reads them on
+the node with a short job (a few seconds, one approval). It keeps the result until
+Slurm's description of that node changes.
+
+The job, and the proxy's Slurm runs, need a MIMIR Python that starts on the node.
+They try, in order: `~/.mimir/bin/python` (the launcher `install.sh` writes), then
+`.venv-<os>-<arch>` in the checkout, then the server's own interpreter. A node with
+another OS or CPU than the login node needs its own install: run `install.sh` once
+from that kind of node. Without one, the probe still reads CPU, `-march`, GPU and OS
+through the shell, but not toolchains or Python environments.
+
+A `srun` that MIMIR runs from a login node counts as a job submission. It asks for
+approval, and waits until a local check has passed if MIMIR edited code this session.
+Inside an allocation, `srun` only starts a step and asks nothing more.
+
 ---
 
 ## 8. GitHub Token (Optional but Recommended)

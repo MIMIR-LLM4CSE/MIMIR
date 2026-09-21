@@ -60,6 +60,17 @@ def parse_scontrol_nodes(stdout: str) -> list[dict]:
     return nodes
 
 
+# What makes two nodes "the same kind of machine" in Slurm's eyes. Deliberately blind
+# to the CPU model, which Slurm does not report: two generations with the same core
+# count and memory share a key, which is why a probed node profile is per node.
+HARDWARE_FIELDS = ("arch", "cpus", "mem_mb", "gres", "sockets",
+                   "cores_per_socket", "threads_per_core", "features")
+
+
+def hardware_key(node: dict) -> tuple:
+    return tuple(node.get(k) for k in HARDWARE_FIELDS)
+
+
 def aggregate_node_types(nodes: list[dict]) -> list[dict]:
     """Collapse nodes onto their hardware signature.
 
@@ -69,9 +80,7 @@ def aggregate_node_types(nodes: list[dict]) -> list[dict]:
     """
     groups: dict[tuple, dict] = {}
     for n in nodes:
-        key = (n["arch"], n["cpus"], n["mem_mb"], n["gres"],
-               n["sockets"], n["cores_per_socket"], n["threads_per_core"], n["features"])
-        g = groups.setdefault(key, {
+        g = groups.setdefault(hardware_key(n), {
             "arch": n["arch"], "cpus": n["cpus"], "mem_mb": n["mem_mb"],
             "mem_gb": round(n["mem_mb"] / 1024, 1) if n["mem_mb"] else None,
             "gres": n["gres"], "sockets": n["sockets"],
@@ -102,10 +111,7 @@ def aggregate_node_types(nodes: list[dict]) -> list[dict]:
 # occupancy. The digest's freshness signal is computed over these alone: including
 # by_state or cpus_free_total would make the signal change every few seconds as jobs
 # start and end, which would turn a deterministic fingerprint into a busy-loop.
-_STABLE_TYPE_FIELDS = (
-    "arch", "cpus", "mem_mb", "gres", "sockets",
-    "cores_per_socket", "threads_per_core", "features", "partitions",
-)
+_STABLE_TYPE_FIELDS = HARDWARE_FIELDS + ("partitions",)
 
 
 def stable_types(types: list[dict]) -> list[dict]:

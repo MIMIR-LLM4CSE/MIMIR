@@ -18,10 +18,10 @@ import re
 import shlex
 from typing import Any
 
-from ....servers._shared.shell_paths import COMMAND_WRAPPERS, unwrap_argv
+from ....servers._shared.shell_paths import COMMAND_WRAPPERS, allocates_cluster, unwrap_argv
 
 from ...context.capabilities import (
-    CLUSTER_SUBMIT, EDIT, PLAN_BLOCKED, READ,
+    CLUSTER_SUBMIT, EDIT, PLAN_BLOCKED, PLAN_READONLY, READ,
     arg_role, has_cap, scope_spec,
 )
 
@@ -293,7 +293,8 @@ def _check_out_of_workspace_access(
 # ── cluster submit ────────────────────────────────────────────────────────────
 
 def _check_cluster_submit(
-    agent: Any, tool_name: str, execution_context: dict[str, Any] | None
+    agent: Any, tool_name: str, execution_context: dict[str, Any] | None,
+    arguments: dict[str, Any] | None = None,
 ) -> str | None:
     """Hold an expensive cluster submission until something has been validated locally.
 
@@ -323,7 +324,12 @@ def _check_cluster_submit(
     """
     if execution_context is None:
         return None
-    if not has_cap(tool_name, CLUSTER_SUBMIT, agent.tool_caps):
+    # The dual-use shell submits too when its command allocates (``srun`` outside an
+    # allocation): same cost, same precondition. Recognised by capability and by what
+    # the command does, never by the tool's name.
+    shell_submit = (has_cap(tool_name, PLAN_READONLY, agent.tool_caps)
+                    and allocates_cluster(str((arguments or {}).get("command", ""))))
+    if not (has_cap(tool_name, CLUSTER_SUBMIT, agent.tool_caps) or shell_submit):
         return None
     if execution_context.get("validated_files"):
         return None

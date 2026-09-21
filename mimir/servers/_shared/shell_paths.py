@@ -287,6 +287,41 @@ def unwrap_argv(argv: list[str]) -> tuple[list[str], list[str]]:
     return current, wrappers
 
 
+# Wrappers that request cluster resources of their own when nothing already holds an
+# allocation: outside one, ``srun`` is a submission — it queues, then spends node hours —
+# and must be treated like the typed submitters. Inside one (``SLURM_JOB_ID`` set, as
+# under salloc or in a batch job) it launches a step on resources already granted.
+ALLOCATING_WRAPPERS = frozenset({"srun"})
+_ASSIGNMENT_RE = re.compile(r"^[A-Za-z_]\w*=")
+_ALLOCATING_TEXT_RE = re.compile(r"(?:^|[\s;&|(])(?:\S*/)?srun(?:\s|$)")
+
+
+def allocates_cluster(command: str, env: dict | None = None) -> bool:
+    """Whether running *command* here would request a new cluster allocation.
+
+    A command the parser cannot read is scanned textually instead — erring toward
+    "allocates", since what it guards is the most expensive action there is.
+    """
+    env = os.environ if env is None else env
+    if env.get("SLURM_JOB_ID") or not isinstance(command, str):
+        return False
+    try:
+        segments = parse_segments(command)
+    except ShellParseError:
+        return bool(_ALLOCATING_TEXT_RE.search(command))
+    for seg in segments:
+        argv = list(seg.argv)
+        while argv and _ASSIGNMENT_RE.match(argv[0]):
+            argv = argv[1:]
+        if not argv:
+            continue
+        inner, wrappers = unwrap_argv(argv)
+        heads = [os.path.basename(h) for h in [*wrappers, *inner[:1]]]
+        if any(h in ALLOCATING_WRAPPERS for h in heads):
+            return True
+    return False
+
+
 def denied_command(argv0: str) -> str | None:
     """The denylisted name *argv0* resolves to, or None.
 

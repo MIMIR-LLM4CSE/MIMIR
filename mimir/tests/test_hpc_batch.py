@@ -9,10 +9,12 @@ Run:
     python -m unittest mimir.tests.test_hpc_batch -v
 """
 
+import json
 import os
 import sys
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 
 _SERVERS = Path(__file__).resolve().parents[1] / "servers"
@@ -250,6 +252,188 @@ class SlurmNodesTests(unittest.TestCase):
             self.assertIn("architecture", res["degraded"])
         finally:
             server_hpc._run_bash = orig_bash
+
+
+class SbatchTargetingTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._orig_run = server_hpc._run_argv
+        self._orig_dir = server_hpc._HPC_JOBS_DIR
+        self._tmp = tempfile.TemporaryDirectory()
+        server_hpc._HPC_JOBS_DIR = os.path.join(self._tmp.name, "jobs")
+        server_hpc._run_argv = lambda argv, t: {
+            "status": "ok", "stdout": "Submitted batch job 7", "stderr": "", "returncode": 0}
+
+    def tearDown(self) -> None:
+        server_hpc._run_argv = self._orig_run
+        server_hpc._HPC_JOBS_DIR = self._orig_dir
+        self._tmp.cleanup()
+
+    def test_constraint_nodelist_exclusive_reach_the_script(self) -> None:
+        res = server_hpc.sbatch_submit(command="./bench", partition="cpu", constraint="icelake",
+                                       nodelist="n[01-02]", exclusive=True, ntasks=4,
+                                       confirm=True)
+        with open(res["batch_script"]) as fh:
+            script = fh.read()
+        for want in ("--constraint=icelake", "--nodelist=n[01-02]", "--exclusive", "--ntasks=4"):
+            self.assertIn(want, script)
+        self.assertNotIn("--nodes=", script)   # 0 = scheduler default
+
+    def test_bad_constraint_rejected(self) -> None:
+        res = server_hpc.sbatch_submit(command="x", partition="cpu", constraint="a b",
+                                       confirm=True)
+        self.assertEqual(res.get("status"), "error")
+
+
+def _fake_scontrol(stdout: str):
+    def fake(argv, t):
+        if argv[:2] == ["scontrol", "show"]:
+            return {"status": "ok", "stdout": stdout, "stderr": "", "returncode": 0}
+        if argv[:1] == ["sbatch"]:
+            return {"status": "ok", "stdout": "Submitted batch job 900", "stderr": "",
+                    "returncode": 0}
+        return {"status": "error", "stdout": "", "stderr": "", "returncode": 1}
+    return fake
+
+
+_NODE_LSCPU = ("Architecture: x86_64\nModel name: Intel(R) Xeon(R) Platinum 8358\n"
+               "Socket(s): 2\nCore(s) per socket: 32\nThread(s) per core: 1\n"
+               "L3 cache: 96 MiB (2 instances)\nFlags: avx2 fma avx512f avx512bw avx512vl\n")
+
+
+class NodeProfileTests(unittest.TestCase):
+    """Probing a compute node on the node, and reading the result back."""
+
+    def setUp(self) -> None:
+        self._saved = {k: getattr(server_hpc, k) for k in (
+            "_run_argv", "_run_bash", "_HPC_JOBS_DIR", "_NODE_PROFILES_DIR",
+            "_host_identity", "_local_profile_record")}
+        self._tmp = tempfile.TemporaryDirectory()
+        server_hpc._HPC_JOBS_DIR = os.path.join(self._tmp.name, "jobs")
+        server_hpc._NODE_PROFILES_DIR = os.path.join(self._tmp.name, "profiles")
+        server_hpc._run_argv = _fake_scontrol(_SCONTROL)
+        server_hpc._run_bash = _canned({"squeue": ("ok", "PENDING")})
+        # The host MIMIR runs on: a login node of another generation, on a newer OS.
+        server_hpc._host_identity = lambda: {
+            "arch": "x86_64", "os": {"id": "rhel", "version": "9.4", "glibc": "2.34"},
+            "cpu": {"model": "Intel(R) Xeon(R) 6747P", "simd": {"avx2": True, "amx_tile": True}},
+        }
+        self._env = dict(os.environ)
+        os.environ.pop("SLURM_JOB_ID", None)
+
+    def tearDown(self) -> None:
+        for k, v in self._saved.items():
+            setattr(server_hpc, k, v)
+        os.environ.clear()
+        os.environ.update(self._env)
+        self._tmp.cleanup()
+
+    def _submit(self, **kw) -> str:
+        res = server_hpc.slurm_probe_node(partition="cpu", confirm=True, **kw)
+        self.assertEqual(res.get("status"), "ok")
+        self.assertEqual(res["background_job"]["status_op"]["args"]["job_id"], "900")
+        return res["job_dir"]
+
+    def _finish(self, job_dir: str, node: str, mode: str, **files) -> None:
+        for name, text in {"node": node, "mode": mode, **files}.items():
+            with open(os.path.join(job_dir, name), "w") as fh:
+                fh.write(text)
+
+    def test_probe_requires_confirm_and_valid_target(self) -> None:
+        self.assertIn("confirm", server_hpc.slurm_probe_node(partition="cpu").get("hint", ""))
+        bad = server_hpc.slurm_probe_node(partition="cpu", constraint="x;y", confirm=True)
+        self.assertEqual(bad.get("status"), "error")
+
+    def test_probe_runs_the_platform_profile_on_the_node(self) -> None:
+        job_dir = self._submit(constraint="avx512")
+        with open(os.path.join(job_dir, "probe.sh")) as fh:
+            script = fh.read()
+        self.assertIn("server_platform.py", script)
+        self.assertIn("--profile-json", script)
+        self.assertIn("--constraint=avx512", script)
+        self.assertIn(".venv-", script)          # the node's own interpreter
+        self.assertIn("lscpu", script)           # the no-Python fallback
+
+    def test_unprobed_kind_says_so_and_pending_probe_is_listed(self) -> None:
+        self._submit()
+        res = server_hpc.slurm_node_profile(partition="cpu")
+        kind = res["node_types"][0]
+        self.assertFalse(kind["profiled"])
+        self.assertEqual(res["pending_probes"][0]["job_id"], "900")
+        self.assertEqual(res["execution_context"]["context"], "login")
+
+    def test_full_probe_is_harvested_and_compared_with_the_host(self) -> None:
+        job_dir = self._submit()
+        profile = {
+            "cpu": {"arch": "x86_64", "model": "Intel(R) Xeon(R) Platinum 8358",
+                    "simd": {"avx2": True, "avx512f": True}},
+            "os": {"id": "rhel", "version": "8.10", "glibc": "2.28"},
+            "march": {"march": "icelake-server"},
+            "gpu": {"available": False}, "toolchains": {"gcc": "gcc 8.5"},
+            "conda_envs": {}, "virtualenvs": {},
+        }
+        self._finish(job_dir, "cpu-n01", "full", **{"profile.json": json.dumps(profile)})
+        res = server_hpc.slurm_node_profile(partition="cpu")
+        kind = res["node_types"][0]
+        self.assertTrue(kind["profiled"])
+        self.assertEqual(kind["profiled_on"], "cpu-n01")
+        # Everything the host profile carries, not a thinner node view.
+        self.assertEqual(kind["profile"]["toolchains"], {"gcc": "gcc 8.5"})
+        self.assertEqual(kind["profile"]["march"]["march"], "icelake-server")
+        match = kind["matches_this_host"]
+        self.assertFalse(match["same"])
+        self.assertEqual(set(match["differs"]), {"cpu_model", "simd", "os", "glibc"})
+        # cpu-n02 shares Slurm's signature but was not read.
+        self.assertEqual(kind["unprofiled_nodes"], 1)
+        # Harvested once: a second read neither re-harvests nor loses it.
+        again = server_hpc.slurm_node_profile(partition="cpu")
+        self.assertTrue(again["node_types"][0]["profiled"])
+        self.assertNotIn("pending_probes", again)
+
+    def test_fallback_without_python_is_partial_but_parsed(self) -> None:
+        job_dir = self._submit()
+        fallback = ("==uname\nx86_64\n==lscpu\n" + _NODE_LSCPU +
+                    "==march\n  -march=  \ticelake-server\n==gpu\n==os\nID=rhel\nVERSION_ID=8.10\n"
+                    "==ldd\nldd (GNU libc) 2.28\n==nproc\n64\n")
+        self._finish(job_dir, "cpu-n01", "partial", **{"fallback.txt": fallback})
+        kind = server_hpc.slurm_node_profile(node="cpu-n01")["node_types"][0]
+        self.assertIn("No MIMIR Python", kind["partial"])
+        prof = kind["profile"]
+        self.assertEqual(prof["cpu"]["model"], "Intel(R) Xeon(R) Platinum 8358")
+        self.assertTrue(prof["cpu"]["simd"]["avx512f"])
+        self.assertEqual(prof["march"]["march"], "icelake-server")
+        self.assertEqual(prof["os"]["glibc"], "2.28")
+
+    def test_profile_goes_stale_when_slurm_describes_the_node_differently(self) -> None:
+        job_dir = self._submit()
+        self._finish(job_dir, "cpu-n01", "full",
+                     **{"profile.json": json.dumps({"cpu": {"model": "old"}})})
+        server_hpc.slurm_node_profile(partition="cpu")
+        # The node came back from maintenance with more memory: a different machine.
+        server_hpc._run_argv = _fake_scontrol(_SCONTROL.replace("RealMemory=773500",
+                                                                "RealMemory=1547000"))
+        kind = server_hpc.slurm_node_profile(node="cpu-n01")["node_types"][0]
+        self.assertFalse(kind["profiled"])
+        self.assertIn("changed", kind["note"])
+
+    def test_inside_an_allocation_the_host_is_the_node(self) -> None:
+        """No job to submit: MIMIR already runs on the node, so its own profile is it."""
+        os.environ.update({"SLURM_JOB_ID": "5", "SLURM_JOB_NODELIST": "cpu-n02"})
+        calls = []
+
+        def local(node):
+            calls.append(node["node"])
+            return {"node": node["node"], "probed_at": "now", "source": "this host",
+                    "slurm": server_hpc._slurm_facts(node), "partial": False,
+                    "profile": {"cpu": {"model": "Intel(R) Xeon(R) Platinum 8358"}}}
+
+        server_hpc._local_profile_record = local
+        with unittest.mock.patch.object(server_hpc.socket, "gethostname", lambda: "cpu-n02"):
+            res = server_hpc.slurm_node_profile(partition="cpu")
+        self.assertEqual(res["execution_context"]["context"], "in_allocation")
+        self.assertEqual(calls, ["cpu-n02"])
+        self.assertTrue(res["node_types"][0]["profiled"])
+        self.assertFalse(os.listdir(server_hpc._HPC_JOBS_DIR) if os.path.isdir(
+            server_hpc._HPC_JOBS_DIR) else [])
 
 
 if __name__ == "__main__":

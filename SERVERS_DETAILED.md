@@ -10,7 +10,7 @@ Servers are organized into domain-based subdirectories:
 
 | Directory | Purpose | Servers |
 |---|---|---|
-| `_shared/` | Cross-group utilities | `responses.py`, `capabilities.py`, `root_paths.py`, `approved_roots.py`, `trusted_read_roots.py`, `text_tools.py`, `module_env.py`, `embed.py`, `vector_cache.py`, `slurm_nodes.py`, `lsp_client.py`, `shell_paths.py`, `state_paths.py`, `numerics.py`, `proc_run.py` |
+| `_shared/` | Cross-group utilities | `responses.py`, `capabilities.py`, `root_paths.py`, `approved_roots.py`, `trusted_read_roots.py`, `text_tools.py`, `module_env.py`, `embed.py`, `vector_cache.py`, `slurm_nodes.py`, `slurm_script.py`, `cpu_facts.py`, `lsp_client.py`, `shell_paths.py`, `state_paths.py`, `numerics.py`, `proc_run.py` |
 | `workspace/` | File & code interaction | `server_bash`, `server_files`, `server_search`, `server_code_intel` |
 | `utilities/` | Stateless data helpers | `server_math`, `server_strings`, `server_datetime`, `server_symbolic_math` |
 | `agent_state/` | Agent memory, planning & delegation | `server_memory`, `server_todo`, `server_spawn_agent` |
@@ -21,7 +21,7 @@ Servers are organized into domain-based subdirectories:
 
 ## Tool catalogue
 
-Every `@mcp.tool` the bundled servers expose — 68 tools
+Every `@mcp.tool` the bundled servers expose — 70 tools
 across 19 servers, all registered by default. Each server has its own section
 below with the arguments and the behaviour.
 
@@ -43,7 +43,7 @@ below with the arguments and the behaviour.
 | `external/server_system.py` | `system` |
 | `external/server_web.py` | `http_get`, `http_post`, `parse_json`, `json_extract` |
 | `hpc/server_env.py` | `env_pip_install`, `env_pip_uninstall`, `env_create`, `env_delete` |
-| `hpc/server_hpc.py` | `slurm_partitions`, `slurm_nodes`, `slurm_queue`, `salloc_submit`, `slurm_job_status`, `sbatch_submit` |
+| `hpc/server_hpc.py` | `slurm_partitions`, `slurm_nodes`, `slurm_queue`, `salloc_submit`, `slurm_job_status`, `sbatch_submit`, `slurm_probe_node`, `slurm_node_profile` |
 | `hpc/server_platform.py` | `platform_probe`, `platform_get_profile`, `platform_search`, `platform_catalogue_status` |
 | `proxy/server_proxy.py` | `proxy_get`, `proxy_runs`, `proxy_eval_status`, `proxy_manage`, `proxy_exec`, `proxy_eval`, `proxy_slurm` |
 
@@ -527,12 +527,18 @@ because a load mutates one subprocess's environment.)
 Tools:
 - `slurm_partitions`
 - `slurm_nodes(partition="", states="", node="", detail=False)` — **compute-node inventory**: architecture, CPU topology, memory, GPU type/count, node features, and live occupancy (allocated/free CPUs, free memory, load), read from `scontrol show node` — Slurm's own database, which is what actually governs placement. Read-only and instant: it allocates nothing, so it can be consulted *before* choosing where to submit, unlike running a probe on the node (that needs `srun`, i.e. a queued allocation billed against your hours). Aggregates nodes onto their hardware signature by default with a count per state, since a per-node listing of a large cluster is mostly noise; `detail=True` or `node="<name>"` gives individual nodes. Falls back to `sinfo -N` where `scontrol` is restricted, flagging in `degraded` that architecture and CPU occupancy are then unknown. The `scontrol` parsing and the signature aggregation live in `_shared/slurm_nodes.py`: `server_platform`'s digest needs the same view of the cluster's hardware, and two copies of a `scontrol` parser would drift.
-  > **Architecture is the field that earns the tool.** Where a cluster mixes architectures, a binary built where the agent runs will not run on a node of a different one — and nothing else in the toolkit reports that. What it cannot report is on-node software (SIMD flags, modules, toolchains); that needs execution there, and the standard answer is to compile inside the job.
+  > **Architecture is the field that earns the tool.** Where a cluster mixes architectures, a binary built where the agent runs will not run on a node of a different one. What Slurm cannot report — CPU model, SIMD, `-march`, caches, OS, toolchains — is read on the node by `slurm_probe_node` and served by `slurm_node_profile`.
 - `slurm_queue`
 - `salloc_submit` — synchronous **interactive** allocation. Takes the resources as arguments (partition, nodes, ntasks, cpus, mem, time, gres, constraint, account/qos) and builds the `salloc` command itself, so the validated command is the one that runs; launched as argv, never through a shell. `confirm=False` returns the exact command as a preview instead of executing — the old two-step the server + free-form `salloc_submit(command=...)` is gone, because the validation lived entirely in the step nothing forced you to call
-- `sbatch_submit` — non-blocking Slurm **batch** submission (unlike synchronous `salloc_submit`): returns a `job_id` immediately plus a `background_job` descriptor (`BACKGROUNDABLE`), so the run is watched off the critical path and auto-resumes the agent on completion. Writes the script/log under `state_dir()/hpc_jobs/<ts>/` (env `MIMIR_HPC_JOBS_DIR`).
+- `sbatch_submit` — non-blocking Slurm **batch** submission (unlike synchronous `salloc_submit`): returns a `job_id` immediately plus a `background_job` descriptor (`BACKGROUNDABLE`), so the run is watched off the critical path and auto-resumes the agent on completion. Writes the script/log under `state_dir()/hpc_jobs/<ts>/` (env `MIMIR_HPC_JOBS_DIR`). Takes `constraint`, `nodelist`, `nodes`, `ntasks` and `exclusive` to aim at one kind of node and to time without a neighbour. The job inherits the server's environment, not modules loaded by earlier shell commands. Its output is not recorded as a measurement.
+- `slurm_probe_node(partition, constraint="", nodelist="", account="", confirm=False)` — submits a job of a few seconds that runs `server_platform.py --profile-json` **on the node**, so the node gets the same profile as the host. The job picks its own Python (`.venv-<os>-<arch>`); with none, a shell fallback still reads `lscpu`, `-march`, GPU and OS, and the profile is marked `partial`. Irreversible (approval prompt) but not `CLUSTER_SUBMIT`: it runs no user code, so the local-validation hold does not apply.
+- `slurm_node_profile(partition="", node="")` — read-only. Harvests finished probes into `state_dir()/hpc/node_profiles/<node>.json`, then returns each node kind of the partition with its profile, or `profiled: false`. A profile is kept until Slurm's description of the node changes (no TTL). `matches_this_host` lists what differs from the host MIMIR runs on (arch, CPU model, SIMD, OS, glibc). Inside an allocation, the current node is profiled on the spot, with no job.
 - `slurm_job_status(job_id)` — normalized per-job state (running|pending|done|crashed|unknown) via squeue (active) + sacct (terminal); the poll target the background-job watcher uses.
 
+> **Three contexts.** `none` (no Slurm), `login` (Slurm, but this host is not an allocated node) and `in_allocation` (`SLURM_JOB_ID` set and this host in the nodelist). Computed by `_shared/cpu_facts.execution_context` and reported by `platform_probe` and `slurm_node_profile`. `local` stays a valid target from all three.
+>
+> **`srun` in the shell.** Outside an allocation it is a submission: it is never an approval-exempt read, and the cluster-submission hold applies to it (`shell_paths.allocates_cluster`). Inside an allocation it is a job step and is unchanged.
+>
 > `salloc_submit` / `sbatch_submit` declare the `CLUSTER_SUBMIT` capability (shared with `proxy_slurm`). The client's pre-submission guard holds the first such call each query until something has been validated locally, then lets the retry through (see `POLICY.md` → Cluster-Submission Guard). `sbatch_submit`, `proxy_eval(op='run')`, and `proxy_slurm(op='eval')` additionally declare `BACKGROUNDABLE` (see the background-jobs note under `proxy_eval`).
 
 ## hpc/server_platform.py
@@ -540,8 +546,8 @@ Tools:
 Purpose: report what this host actually is — hardware, scheduler, toolchains, Python environments — and search the site's environment-module catalogue.
 
 Tools:
-- `platform_probe` — collect and return a full platform profile (CPU, GPU, memory, Slurm, loaded modules, toolchains, Python environments). Every fact is built on demand, so none of it can be stale; it reports the module catalogue's summary but never builds it
-  > **Nothing here assumes an architecture or a vendor.** The reported ISA extensions come from a per-architecture table (`_ISA_EXTENSIONS`: AVX/FMA/AMX on x86_64, ASIMD/SVE/BF16 on aarch64, VSX on ppc64le) read from whichever key that host's `lscpu` uses — `Flags:` on x86, `Features:` on aarch64 — and an architecture with no entry says so rather than reporting a vector unit it never looked for. The accelerator probe detects NVIDIA, AMD and Intel tooling and only *enumerates* NVIDIA, reporting the others as present-but-unenumerated: answering "no GPU" on a host whose accelerator it cannot read would be a lie. The toolchain scan covers GNU, LLVM, Intel oneAPI, the NVIDIA HPC SDK, ROCm and Cray wrappers; whatever is absent simply does not appear.
+- `platform_probe` — collect and return a full profile of **this host** (CPU with caches, `-march`, OS and glibc, GPU, memory, Slurm, loaded modules, toolchains, Python environments), plus `execution_context` and `machine_signature`. Every fact is built on demand, so none of it can be stale; it reports the module catalogue's summary but never builds it. `server_platform.py --profile-json` prints the same profile without serving MCP: that is what a node probe runs. Probes run with `LC_ALL=C`, since `lscpu` translates its field names.
+  > **Nothing here assumes an architecture or a vendor.** The reported ISA extensions come from a per-architecture table (`ISA_EXTENSIONS` in `_shared/cpu_facts.py`: AVX/FMA/AMX on x86_64, ASIMD/SVE/BF16 on aarch64, VSX on ppc64le) read from whichever key that host's `lscpu` uses — `Flags:` on x86, `Features:` on aarch64 — and an architecture with no entry says so rather than reporting a vector unit it never looked for. The accelerator probe detects NVIDIA, AMD and Intel tooling and only *enumerates* NVIDIA, reporting the others as present-but-unenumerated: answering "no GPU" on a host whose accelerator it cannot read would be a lie. The toolchain scan covers GNU, LLVM, Intel oneAPI, the NVIDIA HPC SDK, ROCm and Cray wrappers; whatever is absent simply does not appear.
 - `platform_get_profile` — build and return a fresh profile for the current host plus a live `sinfo` partition/node table so the agent knows what Slurm resources are available without a separate command. Always built fresh for the current host (so it can never serve another node's hardware), no cache, no the catalogue guard arg. The collectors whose answer cannot change while the process lives (CPU, GPU, Slurm, modules, toolchains) are memoized, so a second probe costs a fraction of the first. The probe tools are the **only** source of live platform facts: the client used to carry a duplicate probe whose output was injected into every system prompt, which paid for a full hardware summary on every query to answer a question most of them never asked.
 
 - `platform_search(query, limit=10, refresh=False)` — search the host's **environment-module catalogue** by name (`"cuda"`) or by capability (`"parallel hdf5"`). Each hit carries `load`, the exact string to pass to `module load`.
@@ -553,7 +559,7 @@ Tools:
 >
 > **Nobody waits for the expensive tier.** Only the name-level pass (`module -t avail`, under two seconds) runs on the request path. Descriptions are filled in behind the user: Lmod's `spider` where it exists — it is Lmod-only, and Tcl Environment Modules is never asked for it — otherwise a single-process bulk `whatis`. While that runs, results carry `catalogue.enriching: true`, so an empty description reads as *not yet known* rather than absent. A background pass whose signal moved while it worked discards its own result.
 >
-> **The digest.** Riding in the same file is the small set of stable, high-impact facts that *do* fit in a context window: host architecture and ISA, the cluster's compute-node *types* (architecture, CPU topology, memory, GPUs — from `scontrol`, aggregated by hardware signature), its partitions, and the toolchains present. This is what lets the agent know, without spending a tool call, that the compute nodes are a different architecture from the login node it is running on. Occupancy is deliberately excluded: it is volatile, `slurm_nodes` owns it, and including it would make the fingerprint churn every few seconds.
+> **The digest.** Riding in the same file is the small set of stable, high-impact facts that *do* fit in a context window: host architecture and ISA, the cluster's compute-node *types* (architecture, CPU topology, memory, GPUs — from `scontrol`, aggregated by hardware signature), its partitions, and the toolchains present. It is returned by `platform_catalogue_status` and inside `platform_probe`; nothing puts it in the system prompt. Occupancy is deliberately excluded: it is volatile, `slurm_nodes` owns it, and including it would make the fingerprint churn every few seconds.
 
 ## hpc/server_env.py
 
@@ -1313,6 +1319,9 @@ Tools (sensitive / approval-gated, `confirm=True` required):
 
 Tools (cluster, `CLUSTER_SUBMIT`):
 - `proxy_slurm(op, partition, …)` — ops: `run` (single job), `suite` (one job per case × sweep), `eval` (optimization run); carries a `risk_note` shown in the approval prompt
+  - Aims at one kind of node with `constraint`/`nodelist`; `ntasks` for an MPI proxy. `exclusive` defaults to on for `eval` and `suite` (timings) and off for `run`. The batch header comes from `_shared/slurm_script.py`, shared with `sbatch_submit`.
+  - Everything runs on the node, build included. The runner and the post-run step pick a Python the node can run (`.venv-<os>-<arch>`, then the server's), unless `python_executable` is set.
+  - **Machine pinning.** Each eval run writes `machine.json` (host, context, `machine_signature`) where it runs. The baseline run pins the session to its signature. A later run with a timing metric on another signature gets the verdict `incomparable`: best and stall do not move, and the next step is to run where the baseline ran or to `rebaseline` on the target. `rebaseline` clears the pin. Accuracy metrics are never held back.
 
 Param file system:
 - Each registration optionally includes a `param_file_template` (inline text), a `param_file_path` (path relative to the executable), and a `param_file_format` (`text`/`json`/`yaml`/`fortran_namelist`/`ini`).

@@ -364,7 +364,8 @@ def evaluate_tool_preconditions(
     if pre_mutation_eval is not None:
         return pre_mutation_eval
 
-    cluster_violation = _check_cluster_submit(agent, normalized_tool_name, normalized_context)
+    cluster_violation = _check_cluster_submit(
+        agent, normalized_tool_name, normalized_context, rewritten_arguments)
     if cluster_violation is not None:
         return PolicyEvaluation(
             tool_name=normalized_tool_name,

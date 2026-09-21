@@ -131,6 +131,26 @@ seal a reference (`benchmark_create`) or declare `conserved_metric` — do NOT t
 emit the metric from the proxy; `init` refuses configurations that cannot satisfy
 these requirements.
 
+## Optimizing for the compute nodes
+
+When MIMIR runs on a login node and the code is meant for the compute nodes, the
+whole session runs there: `proxy_slurm(op='eval', partition=..., constraint=...)`
+instead of `proxy_eval(op='run')`. The job builds, runs the cases and times them on
+the node. A baseline measured on the login node describes the login node.
+
+- **Pick the node kind first.** Use the partition the user named, or the one the code
+  calls for; ask when it is not clear. `slurm_node_profile(partition=...)` shows each
+  kind of node, with its CPU model, SIMD and `-march` once a node of that kind has
+  been probed (`slurm_probe_node`).
+- **Stay on one kind of node.** Pass `constraint` or `nodelist` when the partition
+  mixes several. `exclusive` is on by default for `eval`.
+- **The session is pinned to the baseline's machine.** Each run records where it ran.
+  A timing taken on another kind of machine gets the verdict `incomparable`: best and
+  stall do not move. To move the session to the node, restore the original
+  (`proxy_eval(op='reset')`), then `proxy_eval(op='rebaseline')`, and run on the node.
+- **Inside an allocation**, MIMIR already runs on the node: `proxy_eval(op='run')` is
+  the node run.
+
 ## Optimization loop
 
 1. **Run**: `proxy_eval(op='run', confirm=True)`. The call **waits** for the run and

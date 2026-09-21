@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import os
 import shlex
-import sys
 from datetime import datetime, timezone
 
 from _ops import _PROXY_DIR, _with_next, err, ok
 from _lib.command import _build_sbatch, _sbatch_header
+from slurm_script import node_python_lines
 from _lib.procs import (
     _log_path,
     _new_run_dir, _write_run_config, _update_run_config, _submit_sbatch,
@@ -37,6 +37,7 @@ def submit_run(
     wall_time: str = "04:00:00",
     account: str = "",
     job_name: str = "",
+    target: dict | None = None,
 ) -> dict:
     """Submit a single proxy run as a Slurm batch job (non-blocking)."""
     reg, _reg_err = _load_registry_or_err()
@@ -61,6 +62,7 @@ def submit_run(
         "output_format":        entry.get("output_format", "npz"),
         "compare_to_reference": compare_to_reference,
         "partition":            partition,
+        "slurm_target":         target or {},
         "started_at":           datetime.now(timezone.utc).isoformat(),
     })
 
@@ -70,8 +72,8 @@ def submit_run(
         mem=mem, wall_time=wall_time, account=account,
         job_name=job_name or f"proxy_{proxy_name}",
         compare_to_reference=compare_to_reference,
-        python_exe=sys.executable,
         param_overrides=param_overrides,
+        target=target,
     )
     job_id, error = _submit_sbatch(
         run_dir, script,
@@ -99,6 +101,7 @@ def submit_suite(
     mem: str = "32G",
     wall_time: str = "04:00:00",
     account: str = "",
+    target: dict | None = None,
 ) -> dict:
     """Submit one Slurm job per (case × sweep point) in a suite (non-blocking)."""
     suite = _load_suite(suite_name)
@@ -141,6 +144,8 @@ def submit_suite(
                 "compare_to_reference": reference_name,
                 "suite_name":           suite_name,
                 "case_id":              case_id,
+                "partition":            partition,
+                "slurm_target":         target or {},
                 "started_at":           datetime.now(timezone.utc).isoformat(),
             })
 
@@ -149,8 +154,8 @@ def submit_suite(
                 partition=partition, gpus=gpus, cpus_per_task=cpus_per_task,
                 mem=mem, wall_time=wall_time, account=account, job_name=job_name,
                 compare_to_reference=reference_name,
-                python_exe=sys.executable,
                 param_overrides=sweep_overrides,
+                target=target,
             )
 
             # Record pointer before submission
@@ -196,6 +201,7 @@ def submit_eval(
     wall_time: str = "04:00:00",
     account: str = "",
     job_name: str = "proxy_opt",
+    target: dict | None = None,
 ) -> dict:
     """Submit an optimization-session run as a Slurm batch job (non-blocking)."""
     cfg, error, run_dir, resume_notice = _prepare_run(proxy_name)
@@ -203,18 +209,23 @@ def submit_eval(
         return error
     name       = cfg["proxy_name"]
     log_file   = _log_path(run_dir)
-    python_exe = cfg.get("python_executable") or sys.executable
-
     # _prepare_run already wrote the full config (convergence included); only the
     # partition is Slurm-specific, so merge it in rather than rewriting the file.
-    _update_run_config(run_dir, {"partition": partition})
+    _update_run_config(run_dir, {"partition": partition, "slurm_target": target or {}})
 
     script_lines = _sbatch_header(
         job_name=job_name, partition=partition, cpus_per_task=cpus_per_task,
         wall_time=wall_time, mem=mem, log_file=log_file, gpus=gpus, account=account,
+        **(target or {}),
     )
-    runner_cmd = shlex.join([python_exe, _OPT_RUNNER, "--run-dir", run_dir])
-    script = "\n".join(script_lines + ["", runner_cmd, ""]) + "\n"
+    # The runner starts on the node, so the interpreter is chosen there: the server's
+    # own may be a venv the node's OS cannot run.
+    runner_cmd = '"$_MIMIR_PY" ' + shlex.join([_OPT_RUNNER, "--run-dir", run_dir])
+    script = "\n".join(
+        script_lines + [""]
+        + node_python_lines(explicit=cfg.get("python_executable", ""))
+        + ['[ -n "$_MIMIR_PY" ] || { echo "[proxy] no MIMIR Python runs on this node" >&2; exit 127; }',
+           runner_cmd, ""]) + "\n"
 
     job_id, error = _submit_sbatch(
         run_dir, script,

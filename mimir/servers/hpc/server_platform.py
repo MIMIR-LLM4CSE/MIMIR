@@ -39,6 +39,9 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'
 from mcp.server.fastmcp import FastMCP
 from module_env import module_probe_script
 from capabilities import tool_caps, CACHEABLE, ENV_DISCOVERY, PANEL_REPORT
+from cpu_facts import (GPU_FIELDS, GPU_FIELDS_BASE, GPU_PROBES, GPU_QUERY, GPU_QUERY_BASE,
+                       MARCH_QUERY, cpu_facts, execution_context, local_os, machine_signature,
+                       parse_march, parse_nvidia_csv)
 from responses import ok
 from slurm_nodes import aggregate_node_types, parse_scontrol_nodes, stable_signature, stable_types
 from state_paths import state_dir
@@ -60,6 +63,12 @@ def _cmd_exists(name: str) -> bool:
     return shutil.which(name) is not None
 
 
+# Probes run in the C locale: lscpu and free translate their field names ("Nom de
+# modèle", "Drapeaux"), and a parser keyed on the English names then reads a
+# French-locale host as having no CPU model and no SIMD at all.
+_PROBE_ENV = {**os.environ, "LC_ALL": "C"}
+
+
 def _run(cmd: list[str], timeout: int = 8) -> dict:
     try:
         res = subprocess.run(
@@ -68,6 +77,7 @@ def _run(cmd: list[str], timeout: int = 8) -> dict:
             stderr=subprocess.PIPE,
             text=True,
             timeout=timeout,
+            env=_PROBE_ENV,
         )
         return {
             "ok": res.returncode == 0,
@@ -83,28 +93,6 @@ def _run_shell(script: str, timeout: int = 10) -> dict:
     return _run(["bash", "-lc", script], timeout=timeout)
 
 
-def _parse_lscpu(text: str) -> dict:
-    info = {}
-    for line in text.splitlines():
-        if ":" not in line:
-            continue
-        k, v = line.split(":", 1)
-        # Normalize key to title case so lookups are distro-independent.
-        info[k.strip().lower()] = v.strip()
-    return info
-
-
-# ISA extensions worth reporting, per architecture. There is no portable name for
-# "the vector unit": asking an aarch64 host whether it has AVX-512 always answers no,
-# which reads as "no SIMD" rather than "a different SIMD". lscpu prints these under
-# "Flags:" on x86 and "Features:" on aarch64, so both keys are read.
-_ISA_EXTENSIONS: dict[str, tuple[str, ...]] = {
-    "x86_64":  ("avx2", "avx512f", "avx512bw", "avx512vl", "fma", "amx_tile"),
-    "aarch64": ("asimd", "sve", "sve2", "bf16", "i8mm"),
-    "ppc64le": ("vsx",),
-}
-
-
 @lru_cache(maxsize=1)
 def _collect_cpu() -> dict:
     data = {
@@ -114,22 +102,17 @@ def _collect_cpu() -> dict:
     if _cmd_exists("lscpu"):
         out = _run(["lscpu"])
         if out["ok"]:
-            ls = _parse_lscpu(out["stdout"])
-            flags = set((ls.get("flags") or ls.get("features") or "").split())
-            known = _ISA_EXTENSIONS.get(data["arch"], ())
-            data.update(
-                {
-                    "model": ls.get("model name", ""),
-                    "sockets": ls.get("socket(s)", ""),
-                    "cores_per_socket": ls.get("core(s) per socket", ""),
-                    "threads_per_core": ls.get("thread(s) per core", ""),
-                    "numa_nodes": ls.get("numa node(s)", ""),
-                    "simd": {name: name in flags for name in known},
-                }
-            )
-            if not known:
-                data["simd_note"] = f"No ISA extension list known for {data['arch']}."
+            data.update(cpu_facts(data["arch"], out["stdout"]))
     return data
+
+
+@lru_cache(maxsize=1)
+def _collect_march() -> dict:
+    """What ``-march=native`` means on this host, as a name usable elsewhere."""
+    if not _cmd_exists("gcc"):
+        return {}
+    out = _run_shell(MARCH_QUERY)
+    return parse_march(out["stdout"]) if out["ok"] else {}
 
 
 def _collect_memory() -> dict:
@@ -153,57 +136,34 @@ def _collect_memory() -> dict:
     return data
 
 
-# Vendor CLI -> the tool that proves a GPU of that vendor is present locally. Only the
-# NVIDIA output is parsed into devices; the others are detected and reported as such,
-# because claiming "no GPU" on a machine whose accelerator this probe cannot read is
-# worse than saying so. Cluster-wide GPU truth comes from Slurm GRES (slurm_nodes),
-# which is vendor-neutral.
-_GPU_PROBES = (("nvidia", "nvidia-smi"), ("amd", "rocm-smi"), ("intel", "xpu-smi"))
-
-# compute_cap is queried alongside the descriptive fields because it is the one that
-# decides a build: on a CUDA/Kokkos project the arch flag comes from it, and nothing
-# else here substitutes. Reported without it, a host is described by its marketing
-# name, and the gap gets filled by inference from that name — which is exactly where
-# it breaks (B200 is sm_100, B300 is sm_103), silently, until the first kernel launch.
-_GPU_FIELDS_BASE = ("name", "memory", "driver")
-_GPU_FIELDS = _GPU_FIELDS_BASE + ("compute_cap",)
-_GPU_QUERY_BASE = ("nvidia-smi --query-gpu=name,memory.total,driver_version"
-                   " --format=csv,noheader")
-_GPU_QUERY = ("nvidia-smi --query-gpu=name,memory.total,driver_version,compute_cap"
-              " --format=csv,noheader")
+# Only the NVIDIA output is parsed into devices; the others are detected and reported
+# as such, because claiming "no GPU" on a machine whose accelerator this probe cannot
+# read is worse than saying so. Cluster-wide GPU truth comes from Slurm GRES
+# (slurm_nodes), which is vendor-neutral. Query strings and fields: cpu_facts.
 
 
 @lru_cache(maxsize=1)
 def _collect_gpu() -> dict:
-    present = [vendor for vendor, cmd in _GPU_PROBES if _cmd_exists(cmd)]
+    present = [vendor for vendor, cmd in GPU_PROBES if _cmd_exists(cmd)]
     if not present:
-        return {"available": False, "probed": [cmd for _, cmd in _GPU_PROBES]}
+        return {"available": False, "probed": [cmd for _, cmd in GPU_PROBES]}
     if "nvidia" not in present:
         return {
             "available": True, "vendors": present, "devices": [],
             "note": "Accelerator detected but not enumerated: only the NVIDIA probe is "
                     "parsed here. Ask Slurm (slurm_nodes) for GPU type and count.",
         }
-    out = _run_shell(_GPU_QUERY)
-    fields = _GPU_FIELDS
+    out = _run_shell(GPU_QUERY)
+    fields = GPU_FIELDS
     if not out["ok"]:
         # An nvidia-smi too old to know a field rejects the whole query rather than
         # the field, which would cost us the enumeration entirely. Retry without the
         # newer field before reporting the host as unreadable.
-        out = _run_shell(_GPU_QUERY_BASE)
-        fields = _GPU_FIELDS_BASE
+        out = _run_shell(GPU_QUERY_BASE)
+        fields = GPU_FIELDS_BASE
     if not out["ok"]:
         return {"available": False, "vendors": present, "error": out["stderr"].strip()}
-    gpus = []
-    for line in out["stdout"].splitlines():
-        parts = [p.strip() for p in line.split(",")]
-        if len(parts) < len(_GPU_FIELDS_BASE):
-            continue
-        # nvidia-smi prints '[N/A]' / '[Not Supported]' for a field this driver cannot
-        # answer. Dropping it says "unknown"; keeping it would read as a real value.
-        gpu = {k: v for k, v in zip(fields, parts) if not v.startswith("[")}
-        if gpu.get("name"):
-            gpus.append(gpu)
+    gpus = parse_nvidia_csv(out["stdout"], fields)
     return {"available": bool(gpus), "vendors": present, "count": len(gpus), "devices": gpus}
 
 
@@ -737,10 +697,11 @@ def _scontrol_nodes() -> list[dict]:
 def _build_digest() -> dict:
     """The stable, high-impact facts that *fit* in a context window.
 
-    Not searched — injected. This is what lets the agent know, without spending a
-    tool call, that the compute nodes are a different architecture from the login
+    Not searched — returned whole by the catalogue status and the host profile, so one
+    call shows that the compute nodes are a different architecture from the login
     node it is running on, which is the difference between a binary that runs and one
-    that dies on an illegal instruction. Occupancy is deliberately absent: it is
+    that dies on an illegal instruction. Nothing puts it in the system prompt: the
+    model reads it through those tools. Occupancy is deliberately absent: it is
     volatile, slurm_nodes owns it, and including it would make the signal below
     change every few seconds.
     """
@@ -1114,13 +1075,19 @@ def _collect_virtualenvs(workspace_root: str | None = None) -> dict:
 
 def _build_profile() -> dict:
     workspace_root = os.getcwd()
+    cpu, gpu = _collect_cpu(), _collect_gpu()
     return {
         "timestamp": now_iso(),
         "hostname": socket.gethostname(),
         "platform": platform.platform(),
-        "cpu": _collect_cpu(),
+        "execution_context": execution_context(has_slurm=_cmd_exists("sinfo")),
+        "machine_signature": machine_signature(
+            cpu.get("arch", ""), cpu, [d.get("name", "") for d in gpu.get("devices", [])]),
+        "os": local_os(),
+        "cpu": cpu,
+        "march": _collect_march(),
         "memory": _collect_memory(),
-        "gpu": _collect_gpu(),
+        "gpu": gpu,
         "slurm": _collect_slurm(),
         "modules": _collect_modules(),
         "toolchains": _collect_toolchains(),
@@ -1132,11 +1099,18 @@ def _build_profile() -> dict:
 
 @mcp.tool(**tool_caps(caps=[ENV_DISCOVERY]))
 def platform_probe() -> dict:
-    """Collect and return a fresh platform profile.
+    """Collect and return a fresh profile of THIS host — the machine MIMIR runs on.
 
     Every fact is probed on demand, so none of it can be stale. It reads the module
     catalogue's summary if one already exists but never builds it — use
     platform_search to search the modules themselves.
+
+    `execution_context` says what this host is to the scheduler: `none` (no Slurm —
+    this host is the only machine), `login` (a login node: the compute nodes are
+    other machines, described by the HPC node-profile tool, not by this one), or
+    `in_allocation` (this host is an allocated compute node, so this profile is that
+    node's). `march` is the name `-march=native` resolves to here; pass that name, not
+    `native`, when building on one machine for another.
     """
     started = time.perf_counter()
     profile = _build_profile()
@@ -1146,7 +1120,10 @@ def platform_probe() -> dict:
 
 @mcp.tool(**tool_caps(caps=[ENV_DISCOVERY]))
 def platform_get_profile() -> dict:
-    """Return a fresh platform profile for the current host, with live sinfo data.
+    """Return a fresh profile of THIS host, with live sinfo data.
+
+    On a login node this describes the login node, not the compute nodes jobs run on;
+    see `execution_context` in the result.
 
     Built on demand for the current host, so it is always correct rather than
     remembered. Like platform_probe, it reports the module catalogue's summary
@@ -1314,4 +1291,11 @@ def platform_panel_report() -> dict:
 
 
 if __name__ == "__main__":
-    mcp.run()
+    # --profile-json: print this machine's profile and exit, without serving MCP. A
+    # Slurm probe job runs this on a compute node, so the node is described by the
+    # very collectors that describe the login node — never by a second, thinner probe.
+    if "--profile-json" in sys.argv[1:]:
+        json.dump(_build_profile(), sys.stdout, ensure_ascii=False)
+        sys.stdout.write("\n")
+    else:
+        mcp.run()

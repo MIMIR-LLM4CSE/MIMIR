@@ -34,6 +34,7 @@ from typing import NamedTuple
 # actually permits and confines — one implementation, no drift (see its docstring).
 from ....servers._shared.shell_paths import (
     EFFECT_RUN,
+    allocates_cluster,
     ENV_MANAGER_COMMANDS,
     EXEC_COMMANDS,
     EXEC_EFFECTS,
@@ -536,6 +537,10 @@ def bash_command_is_readonly(command: str) -> bool:
     bash server still fully validates every accepted call, so this is a policy
     predicate, not the security boundary.
     """
+    # `srun lscpu` reads nothing it could not read here, but outside an allocation it
+    # queues for and spends node hours first: never read-only, never exempt.
+    if allocates_cluster(command):
+        return False
     segments = classify_bash_command(command)
     if segments is None:
         return False

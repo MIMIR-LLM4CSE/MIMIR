@@ -886,6 +886,8 @@ def rebaseline(proxy_name: str = "") -> dict:
     cfg["baseline_id"] = baseline_id
     cfg["baseline_fingerprint"] = tree_snapshot.fingerprint(_workspace_root(), paths)
     cfg["baseline_run_id"] = ""
+    # The next baseline run pins the session to wherever it executes.
+    cfg.pop("machine", None)
     cfg["stall"] = 0
     cfg["rebaselined_at"] = datetime.now(timezone.utc).isoformat()
     cfg["previous_baseline_id"] = previous
@@ -997,6 +999,19 @@ def _ratchet_settle_locked(
     run_id        = os.path.basename(os.path.normpath(run_dir))
     best          = _load_best(name)
 
+    # A timing describes the machine as much as the code. The session is pinned to the
+    # machine its baseline ran on, and a run elsewhere is not compared at all: judged
+    # against a baseline from the login node, a compute node's run would be accepted
+    # or rejected on the hardware difference. An accuracy metric is reproducible
+    # across machines, so it is never held back.
+    machine = _read_json(os.path.join(run_dir, "machine.json")) or {}
+    pinned = (cfg.get("machine") or {}).get("machine_signature", "")
+    if (primary_metric in _NOISY_METRICS and pinned
+            and machine.get("machine_signature") not in ("", None, pinned)):
+        return _settle_incomparable(name, run_dir, cfg, outcome_path, machine, feasible,
+                                    primary_value, wall_value, primary_metric, goal,
+                                    max_stall, best)
+
     # The baseline is the one run whose spread describes the machine rather than the
     # change, so it is where the noise floor comes from — recorded once, then applied
     # to every comparison after it.
@@ -1026,6 +1041,8 @@ def _ratchet_settle_locked(
     baseline_run = cfg.get("baseline_run_id", "")
     if not baseline_run:
         cfg["baseline_run_id"] = baseline_run = run_id
+        if machine.get("machine_signature"):
+            cfg["machine"] = machine
 
     stall = int(cfg.get("stall", 0))
     if verdict == "accept":
@@ -1073,6 +1090,43 @@ def _ratchet_settle_locked(
         "primary_spread":  spread,
         "noise_floor":     cfg.get("noise_floor"),
         "timing_warning": timing_warning,
+    }
+    try:
+        with open(outcome_path, "w") as fh:
+            json.dump(outcome, fh, indent=2)
+    except OSError:
+        pass
+    outcome["best"] = best
+    return outcome
+
+
+def _settle_incomparable(
+    name: str, run_dir: str, cfg: dict, outcome_path: str, machine: dict,
+    feasible: bool, primary_value, wall_value, primary_metric: str, goal: str,
+    max_stall: int, best: dict | None,
+) -> dict:
+    """Freeze the outcome of a run taken on another machine than the baseline's.
+
+    Neither best nor stall moves: the number says nothing about the edit. The run is
+    still ledgered, so where it ran and what it measured stay on record.
+    """
+    pinned = cfg.get("machine") or {}
+    run_id = os.path.basename(os.path.normpath(run_dir))
+    _append_ledger(name, {
+        "run_id": run_id, "ts": datetime.now(timezone.utc).isoformat(),
+        "feasible": feasible, "primary_value": primary_value, "wall_value": wall_value,
+        "verdict": "incomparable", "stall": int(cfg.get("stall", 0)),
+        "machine": machine.get("host", ""),
+        "best_run_id": best.get("run_id") if best else None,
+    })
+    outcome = {
+        "baseline_run_id": cfg.get("baseline_run_id", ""),
+        "feasible": feasible, "primary_value": primary_value, "wall_value": wall_value,
+        "verdict": "incomparable", "stall": int(cfg.get("stall", 0)),
+        "max_stall": max_stall, "primary_metric": primary_metric, "goal": goal,
+        "min_improvement": None, "margin_source": "", "primary_spread": None,
+        "noise_floor": cfg.get("noise_floor"), "timing_warning": None,
+        "machine": {"run": machine, "baseline": pinned},
     }
     try:
         with open(outcome_path, "w") as fh:
@@ -1192,7 +1246,19 @@ def results(proxy_name: str = "") -> dict:
     best_val = best.get("primary_value") if best else None
     pm, pv   = r["primary_metric"], r["primary_value"]
 
-    if verdict == "converged":
+    if verdict == "incomparable":
+        ran, base = r["machine"]["run"], r["machine"]["baseline"]
+        recommendation = (
+            f"Not compared: this run executed on {ran.get('host', '?')} "
+            f"({ran.get('cpu_model') or ran.get('arch', '?')}), a different machine from "
+            f"the baseline's {base.get('host', '?')} ({base.get('cpu_model') or base.get('arch', '?')}). "
+            f"A {pm} measured on other hardware says nothing about the edit, so best and "
+            "stall are unchanged. Run on the baseline's kind of machine again, or — if "
+            "this machine is the real target — re-measure the baseline here."
+        )
+        next_step = ("run again where the baseline ran, or proxy_eval(op='rebaseline', "
+                     "confirm=True) then run on the target")
+    elif verdict == "converged":
         recommendation = (
             f"Converged: all requirements pass and {pm} did not improve for "
             f"{r['max_stall']} iterations (best run {best_id}, {pm}={best_val}). "

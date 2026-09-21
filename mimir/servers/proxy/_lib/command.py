@@ -13,6 +13,7 @@ import re
 import shlex
 
 from _lib import procs
+from slurm_script import node_python_lines, sbatch_header
 
 _PARAM_EXT: dict[str, str] = {
     "text":              "txt",
@@ -126,29 +127,23 @@ def _sbatch_header(
     log_file: str,
     gpus: int = 0,
     account: str = "",
+    ntasks: int = 1,
+    constraint: str = "",
+    nodelist: str = "",
+    exclusive: bool = False,
 ) -> list[str]:
     """Return the ``#!/bin/bash`` + ``#SBATCH`` directive lines (no command body).
 
-    Shared by ``_build_sbatch`` and the eval Slurm submission path so the
-    resource-request preamble (and its quoting) stays consistent.
+    One node always: a proxy run is one process tree. The directives themselves come
+    from ``_shared/slurm_script`` so the proxy and the HPC server request resources
+    the same way.
     """
-    lines = [
-        "#!/bin/bash",
-        f"#SBATCH --job-name={job_name}",
-        f"#SBATCH --partition={partition}",
-        "#SBATCH --nodes=1",
-        "#SBATCH --ntasks=1",
-        f"#SBATCH --cpus-per-task={cpus_per_task}",
-        f"#SBATCH --time={wall_time}",
-        f"#SBATCH --mem={mem}",
-        f"#SBATCH --output={shlex.quote(log_file)}",
-        f"#SBATCH --error={shlex.quote(log_file)}",
-    ]
-    if gpus > 0:
-        lines.append(f"#SBATCH --gres=gpu:{gpus}")
-    if account:
-        lines.append(f"#SBATCH --account={account}")
-    return lines
+    return sbatch_header(
+        job_name=job_name, partition=partition, nodes=1, ntasks=ntasks,
+        cpus_per_task=cpus_per_task, wall_time=wall_time, mem=mem, log_file=log_file,
+        gpus=gpus, account=account, constraint=constraint, nodelist=nodelist,
+        exclusive=exclusive,
+    )
 
 
 def _build_sbatch(
@@ -164,8 +159,9 @@ def _build_sbatch(
     account: str,
     job_name: str,
     compare_to_reference: str,
-    python_exe: str,
+    python_exe: str = "",
     param_overrides: dict | None = None,
+    target: dict | None = None,
 ) -> str:
     log_file = procs._log_path(run_dir)
     cmd_str  = shlex.join(shlex.split(
@@ -173,6 +169,7 @@ def _build_sbatch(
     lines = _sbatch_header(
         job_name=job_name, partition=partition, cpus_per_task=cpus_per_task,
         wall_time=wall_time, mem=mem, log_file=log_file, gpus=gpus, account=account,
+        **(target or {}),
     )
     # Capture wall time + exit code around the solver so the post-run step can
     # apply the same time_s plausibility guard as local runs.
@@ -206,8 +203,9 @@ def _build_sbatch(
     postrun_path = os.path.join(run_dir, "postrun.py")
     with open(postrun_path, "w") as _pfh:
         _pfh.write(postrun_script)
-    lines += [
-        "# --- MCP post-run parsing step ---",
-        f"{shlex.quote(python_exe)} {shlex.quote(postrun_path)}",
-    ]
+    # The post-run step runs on the node, so it needs a Python the node can run —
+    # chosen there, not here (see slurm_script.node_python_lines).
+    lines += ["# --- MCP post-run parsing step ---"]
+    lines += node_python_lines(explicit=python_exe)
+    lines += [f'"$_MIMIR_PY" {shlex.quote(postrun_path)}']
     return "\n".join(lines) + "\n"

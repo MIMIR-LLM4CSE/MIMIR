@@ -34,7 +34,7 @@ _BUILD_DESCRIPTOR_PARAMS = frozenset(inspect.signature(srv.build_descriptor).par
 # --- golden expected classification (independent literal snapshots) ----------
 SENSITIVE_TOOLS = {
     "delete_file", "bash_run", "bash_job_stop", "http_post",
-    "salloc_submit", "sbatch_submit", "memory_delete",
+    "salloc_submit", "sbatch_submit", "slurm_probe_node", "memory_delete",
     "memory_clear", "todo_delete_plan",
     "proxy_manage", "proxy_exec", "proxy_eval", "proxy_slurm",
     "env_pip_install", "env_pip_uninstall", "env_create", "env_delete",
@@ -54,19 +54,21 @@ PLAN_BLOCKED_TOOLS = {
 NON_BATCH_TOOLS = {
     "bash_job_stop",
     "proxy_manage", "proxy_exec", "proxy_eval", "proxy_slurm",
-    "salloc_submit", "sbatch_submit",
+    "salloc_submit", "sbatch_submit", "slurm_probe_node",
     "bash_run", "http_post", "memory_delete",
     "memory_clear", "todo_delete_plan",
     "env_pip_install", "env_pip_uninstall", "env_create", "env_delete",
 }
 
+# slurm_probe_node is not here: it runs no user code, so the "validate locally before
+# submitting" hold has nothing to wait for. It is still irreversible, hence approved.
 CLUSTER_SUBMIT_TOOLS = {
     "salloc_submit", "sbatch_submit", "proxy_slurm",
 }
 
 # Launchers of long detached runs a client watcher can track to completion.
 BACKGROUNDABLE_TOOLS = {
-    "bash_run", "proxy_eval", "proxy_slurm", "sbatch_submit",
+    "bash_run", "proxy_eval", "proxy_slurm", "sbatch_submit", "slurm_probe_node",
     # A sub-agent the caller detaches: same handle, same watcher, same resume.
     "spawn_agent",
 }
@@ -217,7 +219,7 @@ RISK_NOTE_TOOLS = {
     "bash_run", "bash_job_stop", "http_get", "http_post",
     "env_pip_install", "env_pip_uninstall", "env_create", "env_delete",
     "salloc_submit", "sbatch_submit", "memory_delete",
-    "memory_clear", "todo_delete_plan", "proxy_slurm",
+    "memory_clear", "todo_delete_plan", "proxy_slurm", "slurm_probe_node",
 }
 
 #: capability constant -> golden member set

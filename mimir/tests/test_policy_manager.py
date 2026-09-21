@@ -2,9 +2,11 @@ import os
 import unittest
 import json
 from types import SimpleNamespace
+from unittest import mock
 from unittest.mock import patch
 
 import mimir.client.guardrails.policy.engine as policy_manager_module
+from mimir.client.guardrails.policy.bash_classify import bash_command_is_readonly
 from mimir.client.query_engine import toollist
 from mimir.tests._golden_caps import build_declared_registry
 
@@ -271,6 +273,35 @@ class PolicyManagerTests(unittest.TestCase):
             execution_context={"validated_files": {"solver.py"}},
         )
         self.assertIsNone(result.violation)
+
+    def test_shell_srun_outside_an_allocation_is_held_like_a_submission(self) -> None:
+        """`srun` from a login node queues for and spends node hours, exactly like the
+        typed submitters, so the same precondition applies — and only outside an
+        allocation: inside one it is a step on resources already granted."""
+        agent = _FakeAgent()
+        agent.tool_owner["bash_run"] = "bash"
+        ctx: dict = {"dirty_written_files": {"solver.c"}}
+
+        def _run(command: str):
+            return policy_manager_module.evaluate_tool_preconditions(
+                agent=agent, tool_name="bash_run", arguments={"command": command},
+                execution_context=ctx,
+            ).violation
+
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("SLURM_JOB_ID", None)
+            held = _run("srun -p cpu ./solver")
+            self.assertIsNotNone(held)
+            self.assertIn("held", held.lower())
+            self.assertIsNone(_run("make -j8"))
+        with mock.patch.dict(os.environ, {"SLURM_JOB_ID": "12"}):
+            self.assertIsNone(_run("srun -n 4 ./solver"))
+
+    def test_shell_srun_is_never_an_exempt_read(self) -> None:
+        """`srun lscpu` reads, but outside an allocation it first submits a job."""
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("SLURM_JOB_ID", None)
+            self.assertFalse(bash_command_is_readonly("srun -p cpu lscpu"))
 
     def test_blocked_tools_for_context_has_no_external_fetch_literals(self) -> None:
         """The former hardcoded github-name block is gone: a fresh context no longer

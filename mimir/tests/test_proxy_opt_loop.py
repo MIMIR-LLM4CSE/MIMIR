@@ -24,7 +24,9 @@ def _eval(*args, **kwargs):
     return asyncio.run(server_proxy.proxy_eval(*args, **kwargs))
 
 
-class RatchetLoopTests(_TmpStorageTest):
+class _RatchetFixture(_TmpStorageTest):
+    """A registered proxy, a suite and fabricated finished runs — no runner launched."""
+
     def _init(self, max_stall: int = 2) -> None:
         self._register()
         server_proxy.proxy_manage(
@@ -113,6 +115,8 @@ class RatchetLoopTests(_TmpStorageTest):
     def _results(self) -> dict:
         return server_proxy.proxy_eval_status(op="results")
 
+
+class RatchetLoopTests(_RatchetFixture):
     def test_full_ratchet_lifecycle(self) -> None:
         self._init(max_stall=2)
 
@@ -383,6 +387,13 @@ class RunnerSettlesRatchetTests(_TmpStorageTest):
         self.assertIsNotNone(best)
         self.assertEqual(best["run_id"], os.path.basename(run_dir))
         self.assertTrue(os.path.isfile(os.path.join(run_dir, "ratchet.json")))
+        # The run recorded where it executed, and the baseline pinned the session there.
+        with open(os.path.join(run_dir, "machine.json")) as fh:
+            machine = json.load(fh)
+        self.assertTrue(machine["machine_signature"])
+        from _ops import eval_session as _es
+        self.assertEqual(_es._load_opt_config("fast")["machine"]["machine_signature"],
+                         machine["machine_signature"])
         # The accepted state is the TREE as it stood at launch, recorded for the whole
         # optimize_paths set — not a copy of one source file, which could only ever
         # restore part of a multi-file change.
@@ -483,3 +494,127 @@ class ReferenceRequirementGuardTests(_TmpStorageTest):
 if __name__ == "__main__":
     import unittest
     unittest.main()
+
+
+class MachinePinningTests(_RatchetFixture):
+    """A timing is compared only with timings taken on the same kind of machine.
+
+    Where the run executes is recorded by the run itself (``machine.json``), so a
+    baseline measured on the login node and a run on a compute node — or on two kinds
+    of node in one partition — are never judged against each other.
+    """
+
+    def _on(self, run_dir: str, host: str, signature: str) -> None:
+        with open(os.path.join(run_dir, "machine.json"), "w") as fh:
+            json.dump({"host": host, "execution_context": "login", "arch": "x86_64",
+                       "cpu_model": f"cpu of {host}", "machine_signature": signature}, fh)
+
+    def test_run_on_another_machine_is_not_compared(self) -> None:
+        self._init(max_stall=5)
+        base = self._complete_run("20240101T000000Z", all_passed=True, time_s=9.0)
+        self._on(base, "login1", "sig-login")
+        self.assertEqual(self._results()["verdict"], "accept")
+
+        self._write_source("A")
+        other = self._complete_run("20240101T000100Z", all_passed=True, time_s=2.0)
+        self._on(other, "node07", "sig-node")
+        res = self._results()
+        self.assertEqual(res["verdict"], "incomparable")
+        self.assertIn("node07", res["recommendation"])
+        self.assertIn("rebaseline", res["next_step"])
+        # The 4.5x "speedup" is hardware: it must not become the best.
+        self.assertEqual(ratchet._load_best("tiny")["primary_value"], 9.0)
+        self.assertEqual(res["stall"], 0)
+
+        # Same machine as the baseline: compared as usual.
+        self._write_source("B")
+        same = self._complete_run("20240101T000200Z", all_passed=True, time_s=5.0)
+        self._on(same, "login1", "sig-login")
+        self.assertEqual(self._results()["verdict"], "accept")
+
+    def test_same_kind_of_node_is_comparable_across_hosts(self) -> None:
+        """A local baseline inside an allocation and a batch run on another node of the
+        same kind carry one signature, so they compare."""
+        self._init(max_stall=5)
+        base = self._complete_run("20240101T000000Z", all_passed=True, time_s=9.0)
+        self._on(base, "node01", "sig-icelake")
+        self._results()
+        self._write_source("A")
+        run = self._complete_run("20240101T000100Z", all_passed=True, time_s=4.0)
+        self._on(run, "node02", "sig-icelake")
+        self.assertEqual(self._results()["verdict"], "accept")
+
+    def test_rebaseline_repins_the_session(self) -> None:
+        self._init(max_stall=5)
+        base = self._complete_run("20240101T000000Z", all_passed=True, time_s=9.0)
+        self._on(base, "login1", "sig-login")
+        self._results()
+        _eval(op="rebaseline", confirm=True)
+        from _ops import eval_session as _es
+        self.assertNotIn("machine", _es._load_opt_config("tiny"))
+        node = self._complete_run("20240101T000100Z", all_passed=True, time_s=3.0)
+        self._on(node, "node07", "sig-node")
+        self._results()
+        self.assertEqual(_es._load_opt_config("tiny")["machine"]["host"], "node07")
+
+
+class ProxySlurmScriptTests(_RatchetFixture):
+    def test_header_keeps_one_node_and_adds_targeting(self) -> None:
+        from _lib.command import _sbatch_header
+        plain = _sbatch_header(job_name="j", partition="p", cpus_per_task=8,
+                               wall_time="01:00:00", mem="32G", log_file="/x/log")
+        self.assertIn("#SBATCH --nodes=1", plain)
+        self.assertIn("#SBATCH --ntasks=1", plain)
+        self.assertIn("#SBATCH --mem=32G", plain)
+        self.assertFalse([ln for ln in plain if "--exclusive" in ln or "--constraint" in ln])
+        aimed = _sbatch_header(job_name="j", partition="p", cpus_per_task=8,
+                               wall_time="01:00:00", mem="32G", log_file="/x/log",
+                               constraint="icelake", exclusive=True, ntasks=4)
+        for want in ("#SBATCH --constraint=icelake", "#SBATCH --exclusive", "#SBATCH --ntasks=4"):
+            self.assertIn(want, aimed)
+
+    def test_eval_job_picks_its_python_on_the_node_and_is_exclusive(self) -> None:
+        from _ops import slurm as slurm_ops
+        self._init()
+        seen = {}
+
+        def fake_submit(run_dir, script, **kw):
+            seen["script"] = script
+            return "321", None
+
+        orig = slurm_ops._submit_sbatch
+        slurm_ops._submit_sbatch = fake_submit
+        try:
+            res = server_proxy.proxy_slurm(op="eval", partition="cpu", constraint="icelake",
+                                           confirm=True)
+        finally:
+            slurm_ops._submit_sbatch = orig
+        self.assertEqual(res.get("status"), "ok")
+        script = seen["script"]
+        self.assertIn("#SBATCH --exclusive", script)          # a timing: default on
+        self.assertIn("#SBATCH --constraint=icelake", script)
+        self.assertIn(".venv-", script)
+        self.assertIn('"$_MIMIR_PY" ', script)
+
+    def test_single_run_is_not_exclusive_by_default(self) -> None:
+        from _ops import slurm as slurm_ops
+        self._register()
+        seen = {}
+
+        def fake_submit(run_dir, script, **kw):
+            seen["s"] = script
+            return "1", None
+
+        orig = slurm_ops._submit_sbatch
+        slurm_ops._submit_sbatch = fake_submit
+        try:
+            server_proxy.proxy_slurm(op="run", partition="cpu", proxy_name="tiny", confirm=True)
+        finally:
+            slurm_ops._submit_sbatch = orig
+        self.assertNotIn("--exclusive", seen["s"])
+        self.assertIn('"$_MIMIR_PY"', seen["s"])              # post-run step on the node
+
+    def test_bad_constraint_is_refused(self) -> None:
+        res = server_proxy.proxy_slurm(op="run", partition="cpu", proxy_name="tiny",
+                                       constraint="x y", confirm=True)
+        self.assertEqual(res.get("status"), "error")
