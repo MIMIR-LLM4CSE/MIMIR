@@ -113,6 +113,10 @@ Every setting has a working default. Most only set the value the Connect form st
 **Which Python runs the server.** The extension looks in this order:
 `mimir.pythonPath`, then the `MIMIR_PYTHON` environment variable, then
 `~/.mimir/python` (written by `install.sh`), then `python3` on `PATH`.
+`~/.mimir/python` points at a launcher that starts the venv installed for this
+machine's platform. So one home directory shared by several kinds of machines
+still starts the right Python. If this platform has no install, the *MIMIR Server*
+output says so: run `install.sh` on this machine.
 
 ## Commands
 

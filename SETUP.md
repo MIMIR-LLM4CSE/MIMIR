@@ -32,9 +32,25 @@ extension too.
 ```bash
 git clone https://github.com/MIMIR-LLM4CSE/MIMIR.git
 cd MIMIR
-./install.sh                 # -> .venv, `mimir` + `mimir-server`, VS Code extension
-source .venv/bin/activate
+./install.sh                 # -> .venv-<os>-<arch>, `mimir` + `mimir-server`, VS Code extension
+source .venv-linux-x86_64/bin/activate   # the name install.sh printed
 ```
+
+**Which Python.** By default `install.sh` fetches a portable Python 3.10 with
+[uv](https://docs.astral.sh/uv/) into `~/.mimir/pythons`, and installs uv into
+`~/.mimir/bin` if it is missing. This build needs only glibc 2.17 or later and
+brings its own OpenSSL and libcrypt. One venv therefore runs on every Linux x86_64
+machine, old or new. A Python compiled on a RHEL 9 node, by contrast, fails on a
+RHEL 8 node with `libcrypt.so.2: cannot open shared object file`. To use your own
+interpreter instead, set `PYTHON=/path/to/python3.10 ./install.sh`.
+
+**Several kinds of machines, one home directory.** The venv is named after the
+platform (`<os>-<arch>`, e.g. `linux-x86_64`). Each platform records its venv in
+`~/.mimir/python.d/<os>-<arch>`, and `~/.mimir/bin/python` starts the one that
+matches the current machine. Run `install.sh` once per platform, not once per
+machine. On a platform with no install, the launcher prints
+`MIMIR: no interpreter installed for <os>-<arch>. Run ./install.sh on this machine.`
+in the *MIMIR Server* output and exits with code 127.
 
 Override the target venv, the extras, or skip the extension:
 
@@ -445,7 +461,8 @@ The interpreter is therefore resolved in this order:
 
 1. `mimir.pythonPath`, if you set it;
 2. the `MIMIR_PYTHON` environment variable;
-3. `~/.mimir/python` — **written by `install.sh`**, which is why a plain
+3. `~/.mimir/python` — **written by `install.sh`**. It points at the launcher
+   `~/.mimir/bin/python`, which picks this machine's platform. That is why a plain
    `./install.sh` needs no configuration at all;
 4. `python3` from `PATH`.
 

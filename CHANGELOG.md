@@ -27,6 +27,14 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   survive extraction as Markdown, so a page reads as named regions rather than one
   wall of prose. Measured across twelve sites: a 20 500-token article answers a
   targeted question in 127 tokens, a 33 700-token spec in 283.
+- One install now runs on every node of a mixed cluster. `install.sh` fetches a
+  portable Python 3.10 through uv, which needs only glibc 2.17 and brings its own
+  OpenSSL and libcrypt. A Python compiled on a RHEL 9 node stopped on every RHEL 8
+  node with `libcrypt.so.2: cannot open shared object file`. The venv is now named
+  after the platform (`.venv-linux-x86_64`). A launcher, `~/.mimir/bin/python`,
+  starts the venv built for the machine it runs on, so a shared home directory can
+  serve several kinds of machines. `PYTHON=...` still selects your own interpreter.
+  An existing install keeps working until you run `install.sh` again.
 
 ### Fixed
 - A single step can no longer overrun the context window. Tool results are now
