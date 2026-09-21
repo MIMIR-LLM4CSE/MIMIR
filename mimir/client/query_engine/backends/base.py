@@ -144,6 +144,11 @@ class LLMBackend(ABC):
         server agree exactly at the moment of the call instead of agreeing in
         principle and differing in the number shown.
 
+        Called by the agent loop alone (``streaming._calibrate_overhead``), never
+        from inside :meth:`chat`: a side call with its own short prompt would
+        otherwise overwrite the overhead the bar reads. Backends report the figure
+        as ``prompt_tokens`` in the returned message instead.
+
         Best-effort and never raises — usage is telemetry, not part of the turn.
         """
         try:
