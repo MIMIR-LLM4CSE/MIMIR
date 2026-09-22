@@ -267,8 +267,21 @@ def _new_run_dir(base_dir: str, tag_suffix: str = "") -> str:
     tag = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     if tag_suffix:
         tag += f"_{tag_suffix}"
+    # The tag is second-resolution, so two runs started inside the same second used to
+    # be handed the same directory (exist_ok=True) — one run's log, metrics and state
+    # overwriting the other's, and both answering to the one job_key a watcher dedups
+    # on, which left the second run unwatched and its finish unreported. A fresh
+    # directory is claimed instead, by creating it: the check and the claim are one
+    # step, so two submissions racing cannot both win the same name.
     run_dir = os.path.join(base_dir, tag)
-    os.makedirs(run_dir, exist_ok=True)
+    for n in range(2, 1000):
+        try:
+            os.makedirs(run_dir)
+            break
+        except FileExistsError:
+            run_dir = os.path.join(base_dir, f"{tag}_{n}")
+    else:
+        os.makedirs(run_dir, exist_ok=True)
     with open(os.path.join(run_dir, "start_time"), "w") as fh:
         fh.write(str(time.time()))
     return run_dir

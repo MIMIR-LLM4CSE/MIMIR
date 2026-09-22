@@ -118,6 +118,19 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   no SIMD at all: `lscpu` translates its field names. Probes now run in the C locale.
 - `srun` from a login node started a job without the approval and the validation
   hold that `sbatch` gets. It now gets both. Inside an allocation it is unchanged.
+- A Slurm job submitted through `proxy_slurm` now wakes MIMIR when it finishes.
+  `sbatch` returns while the job is still queued, so the answer never carried the
+  run's result — but only `op='eval'` with `background=True` handed over a job
+  handle, and every other submission was left with nothing watching it: the model
+  was told to monitor the job by hand, ended its turn because there was nothing
+  else to do, and was never resumed when the job landed. `op='run'` and `op='eval'`
+  now always return one. (`op='suite'` submits many jobs at once and still needs
+  `proxy_get(op='report', ...)` afterwards.) `proxy_runs(op='status', run_id=...)`
+  is the new single-run state op the watcher polls.
+- Two proxy runs started in the same second no longer share one run directory. The
+  directory tag is second-resolution and was reused, so the two runs overwrote each
+  other's log, metrics and state, and answered to one job key — which left the
+  second run unwatched and its finish unreported.
 - The run timer of a proxy evaluation starts at zero on every run. A second run of
   the same proxy used to continue from the first run's card, which went on counting
   from the earlier start.

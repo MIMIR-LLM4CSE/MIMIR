@@ -688,7 +688,15 @@ class ProxySlurmBackgroundTests(_TmpStorageTest):
         self.assertEqual(job["job_key"], os.path.basename(res["run_dir"]))
         self.assertEqual(job["status_op"]["tool"], "proxy_eval_status")
 
-    def test_eval_without_background_has_no_descriptor(self) -> None:
+    def test_eval_without_background_still_attaches_descriptor(self) -> None:
+        """A submission is detached whatever the flag says, so it is watched either way.
+
+        sbatch returns with the job still queued: there is no version of this call
+        that answers with a result. Honouring background=False here only decided
+        whether anything was left watching the job, and nothing was — the model was
+        told to monitor by hand, ended its turn with nothing left to do, and was
+        never resumed when the job landed.
+        """
         from unittest import mock
         from mimir.tests.test_proxy_ops import slurm as slurm_ops
         self._init_session()
@@ -696,7 +704,35 @@ class ProxySlurmBackgroundTests(_TmpStorageTest):
             res = server_proxy.proxy_slurm(op="eval", partition="cpu",
                                            proxy_name="fast", confirm=True)
         self.assertEqual(res.get("status"), "ok")
-        self.assertNotIn("background_job", res)
+        job = res.get("background_job")
+        self.assertIsInstance(job, dict)
+        self.assertEqual(job["job_key"], os.path.basename(res["run_dir"]))
+
+    def test_submitted_run_attaches_descriptor(self) -> None:
+        """proxy_slurm(op='run') hands over a handle a watcher can poll.
+
+        Its status op must report a single run's ``state`` at the top level — the one
+        shape the watcher tests for a terminal value.
+        """
+        from unittest import mock
+        from mimir.tests.test_proxy_ops import slurm as slurm_ops
+        self._init_session()
+        with mock.patch.object(slurm_ops, "_submit_sbatch", return_value=(4244, None)):
+            res = server_proxy.proxy_slurm(op="run", partition="cpu",
+                                           proxy_name="fast", confirm=True)
+        self.assertEqual(res.get("status"), "ok")
+        job = res.get("background_job")
+        self.assertIsInstance(job, dict)
+        self.assertEqual(job["server"], "proxy")
+        self.assertEqual(job["job_key"], os.path.basename(res["run_dir"]))
+        self.assertEqual(job["status_op"]["tool"], "proxy_runs")
+        status = server_proxy.proxy_runs(**job["status_op"]["args"])
+        self.assertEqual(status.get("status"), "ok")
+        self.assertIn(status.get("state"),
+                      ("pending", "running", "done", "crashed", "unknown"))
+        # The summary op must answer too — it is what the wake relays.
+        self.assertEqual(server_proxy.proxy_runs(
+            **job["summary_op"]["args"]).get("status"), "ok")
 
 
 # ── 3a. CLI efficient-await: poll in-turn (no model calls), append the summary ──

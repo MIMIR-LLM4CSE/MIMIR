@@ -176,7 +176,7 @@ def proxy_get(
     return _unknown_op(op, _GET_OPS)
 
 
-_RUNS_OPS = ("list", "logs", "diff", "compare", "aggregate")
+_RUNS_OPS = ("list", "status", "logs", "diff", "compare", "aggregate")
 
 
 @mcp.tool(**tool_caps(label="Proxy runs: {op}"))
@@ -198,6 +198,8 @@ def proxy_runs(
 
     Operations (set ``op``):
       list      -> run history, newest first (proxy_name optional filter)
+      status    -> state of one run ('pending'|'running'|'done'|'crashed') with
+                   progress and metrics when it has them (requires: run_id)
       logs      -> last `tail` lines of a run's stdout log (requires: run_id)
       diff      -> config + metric diff between two runs (run_a/run_b default
                    to the two newest runs)
@@ -210,6 +212,7 @@ def proxy_runs(
     Args:
         proxy_name: For 'list': restrict to one proxy's runs.
         run_id: Run ID (e.g. 'my_proxy/20250101T120000Z') or absolute path.
+            Required for 'status' and 'logs'.
         run_a, run_b: For 'diff': run IDs or absolute paths.
         reference_name: Reference dataset name for 'compare'/'aggregate'.
         tail: For 'logs': number of lines from the end (default 100).
@@ -218,6 +221,8 @@ def proxy_runs(
     """
     if op == "list":
         return runs.list_runs(proxy_name)
+    if op == "status":
+        return _missing_args(op, run_id=run_id) or runs.run_status(run_id)
     if op == "logs":
         return _missing_args(op, run_id=run_id) or runs.run_logs(run_id, tail)
     if op == "diff":
@@ -769,9 +774,12 @@ def proxy_slurm(
                with proxy_runs()
       suite -> one job per case×sweep point of a suite (requires: suite_name);
                aggregate afterwards with proxy_get(op='report', ...)
-      eval  -> one job for an optimization-session run; monitor with
-               proxy_eval_status(). Pass background=True to detach it: end your
-               turn instead of polling; you are auto-resumed when the job finishes.
+      eval  -> one job for an optimization-session run
+
+    Every op returns while its job is still queued, and a watcher tracks the job
+    from there: end your turn instead of polling, and you are auto-resumed with the
+    results when it finishes. ('suite' submits many jobs and is the exception —
+    aggregate it yourself with proxy_get(op='report', ...) once they are done.)
 
     Args:
         partition: Slurm partition (required for every op).
@@ -788,8 +796,8 @@ def proxy_slurm(
         wall_time: Wall-clock limit HH:MM:SS or D-HH:MM:SS (default '04:00:00').
         account: Slurm account to charge (optional).
         job_name: Slurm job name (optional; a sensible default is derived).
-        background: For 'eval': detach the job — end your turn instead of
-            polling; you are auto-resumed when the job finishes.
+        background: Accepted for symmetry with proxy_eval and ignored — a
+            submitted job is detached either way, and is watched either way.
         constraint: Slurm feature expression selecting the kind of node
             (e.g. 'icelake', 'a100|h100').
         nodelist: Specific node(s), as a Slurm hostlist.

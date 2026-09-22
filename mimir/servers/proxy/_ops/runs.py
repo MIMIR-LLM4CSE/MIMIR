@@ -70,13 +70,41 @@ def list_runs(proxy_name: str = "") -> dict:
         "proxy_runs(op='logs', run_id=...) to read one, or op='diff' to compare two."))
 
 
+def run_status(run_id: str) -> dict:
+    """State of one run: 'pending'|'running'|'done'|'crashed'|'unknown', plus progress.
+
+    The single-run counterpart to ``list_runs``, which answers for every run at once
+    and so names no ``state`` of its own at the top level. A background watcher polls
+    exactly this shape — a top-level ``state`` it can test for a terminal value — so a
+    detached run has something to be tracked by; see ``slurm._background_descriptor``.
+    """
+    run_dir = _resolve_run_dir(run_id)
+    if not os.path.isdir(run_dir):
+        return err(f"Run directory not found: {run_dir}")
+    rs = _run_state(run_dir)
+    payload = {"run_id": run_id, "run_dir": run_dir, "log": _log_path(run_dir), **rs}
+    metrics = _read_json(os.path.join(run_dir, "metrics.json"))
+    if metrics is not None:
+        payload["metrics"] = metrics
+    return ok(_with_next(
+        payload,
+        f"proxy_runs(op='logs', run_id='{run_id}') to read its output."
+        if rs["state"] in ("pending", "running") else
+        f"proxy_runs(op='compare', run_id='{run_id}', reference_name=...) "
+        "to score it against a reference."))
+
+
 def run_logs(run_id: str, tail: int = 100) -> dict:
     run_dir = _resolve_run_dir(run_id)
     if not os.path.isdir(run_dir):
         return err(f"Run directory not found: {run_dir}")
     lp = _log_path(run_dir)
     if not os.path.isfile(lp):
-        return ok(_with_next({"run_id": run_id, "lines": [], "note": "Log not yet created."},
+        # State even with no log yet: a queued Slurm job has nothing to read for as
+        # long as it sits in the partition, and a reply that omits the state reads
+        # like a run nobody can account for.
+        return ok(_with_next({"run_id": run_id, "state": _run_state(run_dir)["state"],
+                              "lines": [], "note": "Log not yet created."},
                              f"proxy_runs(op='logs', run_id='{run_id}') again once it starts."))
     try:
         with open(lp, errors="replace") as fh:
