@@ -44,7 +44,7 @@ SENSITIVE_TOOLS = {
 # mode for read-only discovery; its exec use is gated client-side at call time).
 PLAN_BLOCKED_TOOLS = {
     "append_file", "bash_job_stop", "delete_file", "replace_in_file",
-    "replace_all_in_file", "replace_lines", "write_file", "salloc_submit",
+    "replace_all_in_file", "replace_lines", "write_file",
     "http_post", "memory_delete", "memory_clear",
     "proxy_manage", "proxy_exec", "proxy_eval", "proxy_slurm",
     "salloc_submit", "sbatch_submit", "slurm_cancel",
