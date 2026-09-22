@@ -1113,7 +1113,6 @@ def bash_job(
     left no exit code, so it was killed from outside rather than having returned.
 
     Args:
-        op: The operation to perform (default 'status').
         job_key: The handle bash_run returned. Required for 'status' and 'output'.
     """
     if op not in _JOB_OPS:
@@ -1178,7 +1177,11 @@ def report_verdict(
     run: Annotated[str, Field(
         description=(
             "Which run is being judged, as its command; a recognisable fragment is "
-            "enough. Optional — omitted, a 'pass' settles the most recent run."
+            "enough. Optional: left out, a 'pass' or 'rejected' settles the most recent "
+            "run, so name the run whenever you are judging an earlier one. 'fail' and "
+            "'unknown' address everything outstanding, which is why a losing candidate "
+            "belongs under 'rejected' and not under 'fail'; 'blocked' addresses every "
+            "failed run the same way."
         ),
     )] = "",
 ) -> dict:
@@ -1228,16 +1231,6 @@ def report_verdict(
     says only that repairing it is not the next piece of this work, which stops it counting
     against you as an unfinished task. Use it when reaching a first run would cost a step of
     its own; never to avoid a fix you could make.
-
-    Args:
-        verdict: "pass", "fail", "unknown", "blocked" or "rejected".
-        reason:  What in the output shows it — the number, message or behaviour.
-        run:     Which run is being judged, as its command — a recognisable fragment is
-                 enough. Optional: left out, a "pass" or "rejected" settles the most
-                 recent run, so name the run whenever you are judging an earlier one.
-                 "fail" and "unknown" address everything outstanding, which is why a
-                 losing candidate belongs under "rejected" and not under "fail";
-                 "blocked" addresses every failed run the same way.
     """
     value = (verdict or "").strip().lower()
     if value not in _VERDICT_VALUES:

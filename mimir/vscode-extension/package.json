@@ -103,6 +103,11 @@
           "default": true,
           "description": "Verify the TLS certificate of the vLLM or Ray Serve endpoint (one switch for both). Disable (uncheck) for internal HTTPS routes served behind a private/corporate CA that isn't in the system trust store (avoids CERTIFICATE_VERIFY_FAILED). Sets VLLM_VERIFY_SSL=0 for the server."
         },
+        "mimir.vllmTokenize": {
+          "type": "boolean",
+          "default": true,
+          "description": "Count tokens exactly with the endpoint's /tokenize (vLLM or Ray Serve). Uncheck when the endpoint is a router that does not serve it, or answers it slowly: token counts then use an estimate calibrated against what the server reports for each prompt, and no request is spent on /tokenize. Sets MIMIR_VLLM_TOKENIZE=0 for the server."
+        },
         "mimir.notifications.enabled": {
           "type": "boolean",
           "default": true,

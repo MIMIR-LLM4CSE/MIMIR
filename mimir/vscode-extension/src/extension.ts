@@ -894,6 +894,9 @@ class MimirAgentViewProvider implements vscode.WebviewViewProvider {
     // CA; when the user disables cert verification, propagate VLLM_VERIFY_SSL so
     // /v1/models model-resolution and chat requests don't hit CERTIFICATE_VERIFY_FAILED.
     const verifyEnv = cfg.get<boolean>("vllmVerifySsl", true) ? {} : { VLLM_VERIFY_SSL: "0" };
+    // A router in front of vLLM need not serve /tokenize; turning it off spares every
+    // process (sub-agents included) the request, and the retries when it times out.
+    const tokenizeEnv = cfg.get<boolean>("vllmTokenize", true) ? {} : { MIMIR_VLLM_TOKENIZE: "0" };
     // An HTTP proxy silently swallows requests to an on-prem endpoint, so
     // ws_server would hang on model resolution before ever binding its port.
     const noProxyEnv = backend === "anthropic" ? {} : noProxyFor(baseUrl);
@@ -906,7 +909,7 @@ class MimirAgentViewProvider implements vscode.WebviewViewProvider {
       cwd,
       // Anchor the agent's per-workspace state dir (.mimir) and the file-server
       // root to the opened workspace, regardless of the process cwd.
-      env: { ...process.env, MCP_FILES_ROOT: cwd, ...noProxyEnv, ...verifyEnv, ...anthropicEnv },
+      env: { ...process.env, MCP_FILES_ROOT: cwd, ...noProxyEnv, ...verifyEnv, ...tokenizeEnv, ...anthropicEnv },
       stdio: ["ignore", "pipe", "pipe"],
     });
 

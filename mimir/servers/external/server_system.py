@@ -159,7 +159,6 @@ def system(
       uptime -> system uptime + current epoch
 
     Args:
-        op:   The operation to perform (see list above).
         path: Filesystem path for ``disk`` (default '/'). Workspace-scoped.
         name: Env var name for ``env`` (only a safe allowlist is accessible).
     """

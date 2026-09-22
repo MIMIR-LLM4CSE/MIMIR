@@ -158,7 +158,8 @@ def _is_retryable(exc: Exception) -> bool:
     return not any(marker in text for marker in _DETERMINISTIC_ERROR_MARKERS)
 
 
-def _calibrate_overhead(backend: Any, model: str, messages: list[dict], msg: Any) -> None:
+def _calibrate_overhead(backend: Any, model: str, messages: list[dict], msg: Any,
+                        tools: list[dict] | None = None) -> None:
     """Hand the server's reported prompt size to the context bar's calibration.
 
     Only the agent and plan loops come through here, and that is the point: the
@@ -167,13 +168,16 @@ def _calibrate_overhead(backend: Any, model: str, messages: list[dict], msg: Any
     tools. Calibrated from those, the overhead dropped to almost nothing after every
     side call and climbed back on the next step, and the bar swung by the size of
     the system prompt each time. The key is popped so it never reaches history.
+
+    The tools go along because they are most of the fixed part: the chars-per-token
+    calibration takes them out of the reported size to find what the history cost.
     """
     if not isinstance(msg, dict):
         return
     reported = msg.pop("prompt_tokens", None)
     note = getattr(backend, "note_prompt_usage", None)
     if reported and callable(note):
-        note(model, messages, reported)
+        note(model, messages, reported, tools=tools)
 
 
 def _stream_chat(model: str,
@@ -220,7 +224,7 @@ def _stream_chat(model: str,
                 think_start_callback=think_start_callback,
                 think_end_callback=think_end_callback,
             )
-            _calibrate_overhead(backend, model, messages, msg)
+            _calibrate_overhead(backend, model, messages, msg, tools)
             return msg
         except Exception as exc:  # noqa: BLE001 — backend exception types vary by provider
             last_exc = exc

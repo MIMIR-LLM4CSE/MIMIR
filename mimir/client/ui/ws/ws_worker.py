@@ -1461,9 +1461,9 @@ class _AgentWorker:
     def context_overhead_tokens(self) -> int:
         """Fixed prompt overhead (tokens) sent on *every* LLM call besides history.
 
-        The system prompt plus the tools schema — together ~8–12k tokens on this
-        deployment. The context bar must include it, otherwise the displayed usage
-        hides the very tokens that actually overflow the window.
+        The system prompt plus the tools schema — ~30k tokens with every tool server
+        on, most of it the tools. The context bar must include it, otherwise the
+        displayed usage hides the very tokens that actually overflow the window.
 
         Both halves are measured the way the query builds them, not approximated.
         The prompt comes from ``build_system_content_now`` in the current mode, so

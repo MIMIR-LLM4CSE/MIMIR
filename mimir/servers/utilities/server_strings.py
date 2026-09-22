@@ -59,7 +59,6 @@ def string_op(
       title_case        -> {"result": <Title Cased>}
 
     Args:
-        op:             The operation to perform (see list above).
         text:           The input string every operation acts on.
         old, new, count: For ``replace`` (count=-1 means all).
         sep, maxsplit:  For ``split`` (sep=None splits on whitespace, maxsplit=-1 unlimited).

@@ -17,6 +17,7 @@ import unittest
 
 from mimir.client.integration.server_manager import (
     _args_block_descriptions,
+    _description_without_args_block,
     _schema_with_arg_descriptions,
 )
 
@@ -115,6 +116,52 @@ class SchemaEnrichmentTests(unittest.TestCase):
             _schema_with_arg_descriptions(_Tool(None, {"properties": "not a dict"})), dict
         )
         self.assertIsInstance(_schema_with_arg_descriptions(_Tool(None, {})), dict)
+
+
+class ArgsBlockLeavesTheDescriptionTests(unittest.TestCase):
+    """Once lifted into the schema, the block is not sent a second time in prose."""
+
+    _DOC = ("Summary line.\n\n"
+            "Args:\n    path: The file to read.\n    line: 1-based,\n        inclusive.\n\n"
+            "Returns:\n    The text.")
+
+    def _cut(self, doc, names):
+        tool = _Tool(doc, _schema(*names))
+        return _description_without_args_block(doc, _schema_with_arg_descriptions(tool))
+
+    def test_a_fully_lifted_block_is_cut_and_the_rest_kept(self) -> None:
+        self.assertEqual(self._cut(self._DOC, ["path", "line"]),
+                         "Summary line.\n\nReturns:\n    The text.")
+
+    def test_an_entry_naming_a_parameter_the_schema_lacks_stays(self) -> None:
+        # Cutting it would drop the only place that text lives; the others still go.
+        self.assertEqual(
+            self._cut(self._DOC, ["path"]),
+            "Summary line.\n\nArgs:\n    line: 1-based,\n        inclusive.\n\n"
+            "Returns:\n    The text.",
+        )
+
+    def test_an_entry_a_hand_written_description_overrides_stays(self) -> None:
+        # The Field wins in the schema, so the docstring's own text for that parameter
+        # lives only in the description: cutting it would lose it.
+        schema = _schema("verdict", "path")
+        schema["properties"]["verdict"]["description"] = "written by hand"
+        doc = ("Report.\n\nArgs:\n    verdict: from the docstring,\n        and more.\n"
+               "    path: The file.\n")
+        tool = _Tool(doc, schema)
+        self.assertEqual(
+            _description_without_args_block(doc, _schema_with_arg_descriptions(tool)),
+            "Report.\n\nArgs:\n    verdict: from the docstring,\n        and more.",
+        )
+
+    def test_a_doc_without_a_block_is_unchanged(self) -> None:
+        self.assertEqual(self._cut("Just a summary.", ["path"]), "Just a summary.")
+
+    def test_anything_malformed_leaves_the_doc_alone(self) -> None:
+        self.assertEqual(_description_without_args_block(self._DOC, None), self._DOC)
+        self.assertEqual(
+            _description_without_args_block(self._DOC, {"properties": "not a dict"}), self._DOC
+        )
 
 
 if __name__ == "__main__":

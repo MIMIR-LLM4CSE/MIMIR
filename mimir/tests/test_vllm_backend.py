@@ -182,3 +182,14 @@ class TokenizeAbsenceTests(unittest.TestCase):
         with patch.dict("os.environ", {"VLLM_BASE_URL": "http://other:8000"}):
             backend.count_text_tokens("m", "second")
         self.assertEqual(len(calls), 2)
+
+    def test_the_switch_keeps_every_count_off_the_network(self) -> None:
+        # A router that times out is retried on every count: the switch is the only
+        # thing that keeps it from costing seconds, even on the first call.
+        for value in ("0", "false", "off"):
+            with self.subTest(value=value):
+                backend, calls = self._backend(200)
+                with patch.dict("os.environ", {"MIMIR_VLLM_TOKENIZE": value}):
+                    counts = self._count(backend, ["first", "second"])
+                self.assertTrue(all(c > 0 for c in counts))
+                self.assertEqual(calls, [])

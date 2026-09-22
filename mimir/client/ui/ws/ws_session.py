@@ -688,8 +688,8 @@ class _Session:
                 self.worker.model, messages, allow_network=False
             )
             # Include the fixed per-call overhead (system prompt + tools schema).
-            # Without it the bar shows only the conversation and hides the ~8–12k
-            # tokens that actually push the prompt over the model window.
+            # Without it the bar shows only the conversation and hides the tens of
+            # thousands of tokens (~30k with every tool server on) that ride on each call.
             overhead = self.worker.context_overhead_tokens()
             used = history_used + overhead
             if used == self._last_context_usage:

@@ -543,9 +543,19 @@ class VllmBackend(LLMBackend):
         definitive HTTP refusal is therefore remembered per root and later calls raise
         off the network. Timeouts, dropped connections and the "busy, retry" statuses
         stay retried: a local vLLM still loading its weights must regain exact counts.
+
+        That retry is also what a router that times out instead of refusing costs:
+        up to five seconds per count, and every new process — each sub-agent — pays
+        the first refusal again. ``MIMIR_VLLM_TOKENIZE=0`` takes the endpoint out of
+        the picture for good; the heuristic it falls back to is calibrated against
+        the server's own prompt_tokens, so it stays close without it.
         """
+        import os
+
         import httpx
 
+        if os.environ.get("MIMIR_VLLM_TOKENIZE", "").strip().lower() in ("0", "false", "off", "no"):
+            raise RuntimeError("/tokenize disabled by MIMIR_VLLM_TOKENIZE")
         base_url, api_key = self._config()
         root = base_url.rstrip("/")
         if root.endswith("/v1"):

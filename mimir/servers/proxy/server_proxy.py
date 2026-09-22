@@ -156,7 +156,6 @@ def proxy_get(
                      run_timestamp optional, defaults to the latest run)
 
     Args:
-        op: The operation to perform (see list above).
         name: Proxy name (op='proxy') or suite name (op='suite'/'report').
         run_timestamp: For 'report': timestamp tag of the suite run to show.
     """
@@ -181,7 +180,7 @@ _RUNS_OPS = ("list", "logs", "diff", "compare", "aggregate")
 @mcp.tool(**tool_caps(label="Proxy runs: {op}"))
 def proxy_runs(
     op: Annotated[str, Field(
-        description="Which operation to perform. Required — it selects everything else, and the parameters each one needs.",
+        description="Which operation to perform (default 'list'). It selects everything else, and the parameters each one needs.",
         json_schema_extra={"enum": list(_RUNS_OPS)},
     )] = 'list',
     proxy_name: str = "",
@@ -207,7 +206,6 @@ def proxy_runs(
                    computes missing field comparisons)
 
     Args:
-        op: The operation to perform (default 'list').
         proxy_name: For 'list': restrict to one proxy's runs.
         run_id: Run ID (e.g. 'my_proxy/20250101T120000Z') or absolute path.
         run_a, run_b: For 'diff': run IDs or absolute paths.
@@ -250,7 +248,7 @@ _EVAL_STATUS_OPS = ("status", "results", "log", "runs", "diff", "config")
 @mcp.tool(**tool_caps(label="Proxy eval status: {op}", run_outcome=_RUN_OUTCOME))
 def proxy_eval_status(
     op: Annotated[str, Field(
-        description="Which operation to perform. Required — it selects everything else, and the parameters each one needs.",
+        description="Which operation to perform (default 'status'). It selects everything else, and the parameters each one needs.",
         json_schema_extra={"enum": list(_EVAL_STATUS_OPS)},
     )] = 'status',
     proxy_name: str = "",
@@ -274,7 +272,6 @@ def proxy_eval_status(
       config  -> the current session configuration
 
     Args:
-        op: The operation to perform (default 'status').
         proxy_name: Session to observe. Defaults to the most-recently
             initialized session.
         tail: For 'log': number of lines from the end (1-500, default 50).
@@ -357,7 +354,6 @@ def proxy_manage(
     (extra scalar keys for the report).
 
     Args:
-        op: The operation to perform (see list above).
         name: Proxy name ([A-Za-z0-9_-]) or suite name, depending on op.
         executable_path: Absolute path to the proxy executable or script.
         run_cmd_template: Command template (see placeholders above).
@@ -480,7 +476,6 @@ def proxy_exec(
     For Slurm submission of the same work, use proxy_slurm instead.
 
     Args:
-        op: The operation to perform (see list above).
         proxy_name: Name of a registered proxy.
         reference_name: Name for the sealed reference ('reference').
         suite_name: Suite to run ('suite').
@@ -624,7 +619,6 @@ async def proxy_eval(
                        optimize further. Refuses while a run is still active.
 
     Args:
-        op: The operation to perform (see list above).
         proxy_name: Registered proxy to optimize. For ops other than 'init',
             defaults to the most-recently initialized session.
         benchmark_name: Name of a defined benchmark suite.
@@ -655,10 +649,7 @@ async def proxy_eval(
         min_improvement: Relative margin a run must beat the incumbent by to count
             as an improvement (default 0.02, i.e. 2%). A FLOOR, not the answer: once
             the baseline has been measured more than once, the spread across its own
-            replicates is known and the larger of the two is used. A constant alone
-            cannot guard noise it never measured — on a shared node this was set to
-            2% while two runs of one untouched tree differed by 3.1%, and a kernel
-            rewrite worth nothing was accepted on a 2.8% "gain".
+            replicates is known and the larger of the two is used.
         max_stall: Consecutive non-improving feasible runs before 'converged'.
         repeat: How many times each case is measured before its metrics are believed;
             the median is what the ratchet compares, never the best of them. 0
@@ -770,7 +761,6 @@ def proxy_slurm(
                turn instead of polling; you are auto-resumed when the job finishes.
 
     Args:
-        op: The operation to perform (see list above).
         partition: Slurm partition (required for every op).
         proxy_name: For 'run' (required) and 'eval' (defaults to the
             most-recently initialized session).
