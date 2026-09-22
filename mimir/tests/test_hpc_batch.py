@@ -434,6 +434,79 @@ class NodeProfileTests(unittest.TestCase):
         self.assertTrue(res["node_types"][0]["profiled"])
         self.assertFalse(os.listdir(server_hpc._HPC_JOBS_DIR) if os.path.isdir(
             server_hpc._HPC_JOBS_DIR) else [])
+class SlurmCancelTests(unittest.TestCase):
+    """One job of the user's, approved as such: never a sweep, never someone else's."""
+
+    def setUp(self) -> None:
+        self._orig = (server_hpc._run_argv, server_hpc._current_user)
+        self.argvs: list[list[str]] = []
+        self.queue = "alice|RUNNING"
+        server_hpc._current_user = lambda: "alice"
+
+        def fake_argv(argv, timeout):
+            self.argvs.append(argv)
+            if argv[0] == "squeue":
+                return {"status": "ok", "stdout": self.queue, "stderr": "", "returncode": 0}
+            return {"status": "ok", "stdout": "", "stderr": "", "returncode": 0}
+        server_hpc._run_argv = fake_argv
+
+    def tearDown(self) -> None:
+        server_hpc._run_argv, server_hpc._current_user = self._orig
+
+    def _cancels(self) -> list[list[str]]:
+        return [a for a in self.argvs if a[0] == "scancel"]
+
+    def test_an_own_running_job_is_cancelled_by_id_alone(self) -> None:
+        res = server_hpc.slurm_cancel(job_id="1234", confirm=True)
+        self.assertEqual(res["status"], "ok")
+        self.assertEqual(res["was"], "RUNNING")
+        self.assertEqual(self._cancels(), [["scancel", "1234"]])
+
+    def test_an_array_task_is_one_job(self) -> None:
+        server_hpc.slurm_cancel(job_id="1234_5", confirm=True)
+        self.assertEqual(self._cancels(), [["scancel", "1234_5"]])
+
+    def test_anything_wider_than_one_job_is_refused_before_slurm(self) -> None:
+        for job_id in ("", "-u alice", "1234 1235", "1234,1235", "--partition=gpu", "abc"):
+            with self.subTest(job_id=job_id):
+                res = server_hpc.slurm_cancel(job_id=job_id, confirm=True)
+                self.assertEqual(res["status"], "error")
+        self.assertEqual(self.argvs, [])
+
+    def test_nothing_happens_without_confirm(self) -> None:
+        res = server_hpc.slurm_cancel(job_id="1234")
+        self.assertEqual(res["status"], "error")
+        self.assertEqual(self.argvs, [])
+
+    def test_someone_elses_job_is_refused(self) -> None:
+        self.queue = "bob|PENDING"
+        res = server_hpc.slurm_cancel(job_id="1234", confirm=True)
+        self.assertEqual(res["status"], "error")
+        self.assertIn("bob", res["error"])
+        self.assertEqual(self._cancels(), [])
+
+    def test_a_job_out_of_the_queue_says_how_it_ended(self) -> None:
+        self.queue = ""
+        orig = server_hpc._run_bash
+        server_hpc._run_bash = _canned({"squeue": ("ok", ""), "sacct": ("ok", "COMPLETED")})
+        self.addCleanup(setattr, server_hpc, "_run_bash", orig)
+        res = server_hpc.slurm_cancel(job_id="1234", confirm=True)
+        self.assertEqual(res["status"], "error")
+        self.assertIn("COMPLETED", res.get("hint", ""))
+        self.assertEqual(self._cancels(), [])
+
+    def test_it_is_approved_and_not_held_like_a_submission(self) -> None:
+        # Irreversible, so the client raises a card; not CLUSTER_SUBMIT, so the
+        # local-validation hold on submissions does not apply to stopping a job.
+        import asyncio
+        from mimir.client.context.capabilities import (
+            CLUSTER_SUBMIT, PLAN_BLOCKED, SENSITIVE, infer_tool_caps,
+        )
+        tools = asyncio.run(server_hpc.mcp.list_tools())
+        caps = infer_tool_caps(next(t for t in tools if t.name == "slurm_cancel")).capabilities
+        self.assertIn(SENSITIVE, caps)
+        self.assertIn(PLAN_BLOCKED, caps)
+        self.assertNotIn(CLUSTER_SUBMIT, caps)
 
 
 if __name__ == "__main__":

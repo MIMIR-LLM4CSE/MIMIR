@@ -76,6 +76,13 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - An optimization session is pinned to the machine its baseline ran on. A timing
   taken on another kind of machine is reported as `incomparable` and moves neither
   the best nor the stall count.
+- `mimir.maxModelLen` sets the context window (tokens) for a vLLM or Ray Serve
+  endpoint that does not report `max_model_len`, so the client no longer stays on
+  its static 200K default. `0` (the default) leaves the reported window in charge.
+  It forwards to `MIMIR_VLLM_MAX_MODEL_LEN` and `MIMIR_RAY_MAX_MODEL_LEN`.
+- MIMIR can cancel a Slurm job. `slurm_cancel` takes one job ID of yours, pending
+  or running, and asks your approval first. `scancel` stays refused in the shell,
+  where `scancel -u` would cancel far more than one card shows.
 - `mimir.vllmTokenize` (`MIMIR_VLLM_TOKENIZE=0`) stops every call to `/tokenize`,
   sub-agents included. A router that does not serve it, or answers it slowly, then
   costs nothing: a timeout used to be retried on every count, up to 5 s each.
@@ -99,11 +106,21 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   serve several kinds of machines. `PYTHON=...` still selects your own interpreter.
   An existing install keeps working until you run `install.sh` again.
 
+### Changed
+- The context window the server reports now wins over the `MIMIR_VLLM_MAX_MODEL_LEN`
+  / `MIMIR_RAY_MAX_MODEL_LEN` override. Those variables are the fallback for an
+  endpoint that reports no `max_model_len`, not a value that supersedes one that
+  does — so pinning stock `vllm` (e.g. 32768) is no longer overridden by a stale
+  escape-hatch value.
+
 ### Fixed
 - On a host whose locale is not English, `platform_probe` reported no CPU model and
   no SIMD at all: `lscpu` translates its field names. Probes now run in the C locale.
 - `srun` from a login node started a job without the approval and the validation
   hold that `sbatch` gets. It now gets both. Inside an allocation it is unchanged.
+- The run timer of a proxy evaluation starts at zero on every run. A second run of
+  the same proxy used to continue from the first run's card, which went on counting
+  from the earlier start.
 - The context bar splits a prompt the way the server does. Without `/tokenize`,
   the history was counted at a fixed 4 characters per token, and the error landed in
   the fixed overhead: on one DeepSeek session the bar showed ~48k of system prompt
@@ -112,7 +129,7 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Every tool parameter was sent twice on every call: once in the schema, and again
   in the description, which still carried the docstring's `Args:` block. It now
   leaves the description once the schema carries it word for word — a fifth of the
-  tools schema, 35k tokens down to 28k with every server on.
+  tools schema, 31k tokens down to 25k with every server on.
 - A single step can no longer overrun the context window. Tool results are now
   bounded before they enter the history — per result, and per step together — so
   several calls returning at once cannot do what four fetches did to one session:

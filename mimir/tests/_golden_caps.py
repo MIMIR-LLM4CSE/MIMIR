@@ -34,7 +34,7 @@ _BUILD_DESCRIPTOR_PARAMS = frozenset(inspect.signature(srv.build_descriptor).par
 # --- golden expected classification (independent literal snapshots) ----------
 SENSITIVE_TOOLS = {
     "delete_file", "bash_run", "bash_job_stop", "http_post",
-    "salloc_submit", "sbatch_submit", "slurm_probe_node", "memory_delete",
+    "salloc_submit", "sbatch_submit", "slurm_cancel", "slurm_probe_node", "memory_delete",
     "memory_clear", "todo_delete_plan",
     "proxy_manage", "proxy_exec", "proxy_eval", "proxy_slurm",
     "env_pip_install", "env_pip_uninstall", "env_create", "env_delete",
@@ -47,14 +47,14 @@ PLAN_BLOCKED_TOOLS = {
     "replace_all_in_file", "replace_lines", "write_file", "salloc_submit",
     "http_post", "memory_delete", "memory_clear",
     "proxy_manage", "proxy_exec", "proxy_eval", "proxy_slurm",
-    "salloc_submit", "sbatch_submit",
+    "salloc_submit", "sbatch_submit", "slurm_cancel",
     "env_pip_install", "env_pip_uninstall", "env_create", "env_delete",
 }
 
 NON_BATCH_TOOLS = {
     "bash_job_stop",
     "proxy_manage", "proxy_exec", "proxy_eval", "proxy_slurm",
-    "salloc_submit", "sbatch_submit", "slurm_probe_node",
+    "salloc_submit", "sbatch_submit", "slurm_cancel", "slurm_probe_node",
     "bash_run", "http_post", "memory_delete",
     "memory_clear", "todo_delete_plan",
     "env_pip_install", "env_pip_uninstall", "env_create", "env_delete",
@@ -218,7 +218,7 @@ RISK_NOTE_TOOLS = {
     "replace_all_in_file",
     "bash_run", "bash_job_stop", "http_get", "http_post",
     "env_pip_install", "env_pip_uninstall", "env_create", "env_delete",
-    "salloc_submit", "sbatch_submit", "memory_delete",
+    "salloc_submit", "sbatch_submit", "slurm_cancel", "memory_delete",
     "memory_clear", "todo_delete_plan", "proxy_slurm", "slurm_probe_node",
 }
 

@@ -70,11 +70,23 @@ class BackgroundDescriptorTests(_TmpStorageTest):
         job = res.get("background_job")
         self.assertIsInstance(job, dict)
         self.assertEqual(job["server"], "proxy")
-        self.assertEqual(job["job_key"], "fast")
+        self.assertEqual(job["job_key"], os.path.basename(res["run_dir"]))
         self.assertEqual(job["status_op"]["tool"], "proxy_eval_status")
         self.assertEqual(job["summary_op"]["args"]["op"], "results")
         # Stop the detached run so it doesn't linger.
         _eval(op="stop", proxy_name="fast", confirm=True)
+
+    def test_successive_runs_get_distinct_job_keys(self) -> None:
+        self._init_session()
+        first = _eval(op="run", proxy_name="fast", background=True, confirm=True)
+        _eval(op="stop", proxy_name="fast", confirm=True)
+        second = _eval(op="run", proxy_name="fast", background=True, confirm=True)
+        _eval(op="stop", proxy_name="fast", confirm=True)
+        key1 = first["background_job"]["job_key"]
+        key2 = second["background_job"]["job_key"]
+        self.assertEqual(key1, os.path.basename(first["run_dir"]))
+        self.assertEqual(key2, os.path.basename(second["run_dir"]))
+        self.assertNotEqual(key1, key2)
 
     def test_background_false_has_no_descriptor(self) -> None:
         self._init_session()
@@ -673,7 +685,7 @@ class ProxySlurmBackgroundTests(_TmpStorageTest):
         job = res.get("background_job")
         self.assertIsInstance(job, dict)
         self.assertEqual(job["server"], "proxy")
-        self.assertEqual(job["job_key"], "fast")
+        self.assertEqual(job["job_key"], os.path.basename(res["run_dir"]))
         self.assertEqual(job["status_op"]["tool"], "proxy_eval_status")
 
     def test_eval_without_background_has_no_descriptor(self) -> None:

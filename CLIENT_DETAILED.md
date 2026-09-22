@@ -470,9 +470,9 @@ The pluggable LLM backends behind one interface, plus token counting.
   `(endpoint, model)` so two servers offering the same model name do not share a window.
 - **Ray** inherits the request shaping, reasoning profiles and tool-call handling unchanged —
   Ray Serve orchestrates GPUs and drives vLLM engines behind the same API. What it overrides
-  is what the *router* may not serve: `_fetch_context_window()` honours
-  `MIMIR_RAY_MAX_MODEL_LEN` first, since the plain `/v1/models` shape carries no
-  `max_model_len`, and `_tokenize_text()` latches after the first failure so a router
+  is what the *router* may not serve: `_fetch_context_window()` detects the router's
+  `max_model_len` first and falls back to `MIMIR_RAY_MAX_MODEL_LEN` only when the plain
+  `/v1/models` shape carries none, and `_tokenize_text()` latches after the first failure so a router
   without `/tokenize` costs one round trip rather than one per count. The `ray` package is
   not a client dependency — it runs on the cluster.
 

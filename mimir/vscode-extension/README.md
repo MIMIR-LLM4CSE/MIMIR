@@ -107,6 +107,7 @@ Every setting has a working default. Most only set the value the Connect form st
 | `mimir.rayBaseUrl` | `http://127.0.0.1:8000` | Ray Serve address the form starts on |
 | `mimir.ollamaUrl` | `http://127.0.0.1:11434` | Ollama address the form starts on |
 | `mimir.vllmVerifySsl` | `true` | Untick for an HTTPS vLLM or Ray endpoint signed by a private CA |
+| `mimir.maxModelLen` | `0` | Context window (tokens) when the endpoint does not report `max_model_len`. `0` keeps the reported window, else 200000 |
 | `mimir.anthropicAvailableModels` | current Claude models | Models offered for the Anthropic backend |
 | `mimir.pythonPath` | empty (auto) | Python that runs the server. See below |
 | `mimir.wsUrl` | empty (auto) | Attach to a server you started yourself; the extension then starts none |

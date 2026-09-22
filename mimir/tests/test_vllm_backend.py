@@ -1,5 +1,6 @@
 """Tests for the vLLM backend's request-shaping helpers and stop signal."""
 
+import os
 import types
 import unittest
 from unittest.mock import patch

@@ -106,7 +106,7 @@
         "mimir.maxModelLen": {
           "type": "number",
           "default": 0,
-          "description": "Context window (max_model_len) of the served model, in tokens. Leave at 0 to detect it from the endpoint's /v1/models. Set it when that endpoint does not publish max_model_len \u2014 an OpenAI-compatible router in front of vLLM usually does not \u2014 otherwise MIMIR falls back to a static 200000-token assumption, and its context bar, trimming and compaction all size themselves to that instead of your model. A window published by the endpoint always wins over this setting. Sets MIMIR_VLLM_MAX_MODEL_LEN for the server."
+          "description": "Context window (max_model_len) of the served model, in tokens. Leave at 0 to detect it from the endpoint's /v1/models. Set it when that endpoint does not publish max_model_len \u2014 an OpenAI-compatible router in front of vLLM usually does not \u2014 otherwise MIMIR falls back to a static 200000-token assumption, and its context bar, trimming and compaction all size themselves to that instead of your model. A window published by the endpoint always wins over this setting. Sets MIMIR_VLLM_MAX_MODEL_LEN and MIMIR_RAY_MAX_MODEL_LEN for the server."
         },
         "mimir.vllmTokenize": {
           "type": "boolean",

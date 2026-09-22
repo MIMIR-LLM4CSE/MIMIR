@@ -52,8 +52,9 @@ including by absolute path and behind a wrapper (``timeout 5 /bin/sh -c x`` is r
 on ``sh``). ``source`` is the deliberate exception: its operand is a *file*, confined
 like any other path, and it is the only way to set the environment the rest of a chain
 runs in (``source venv/bin/activate && pytest``). The ``.`` spelling stays refused.
-Job submission has one route, the typed cluster tools, which return a handle this
-session tracks; ``squeue``/``sinfo``/``sacct`` run here freely. Deletion (``rm``) is
+Job submission and cancellation have one route, the typed cluster tools: submitting
+returns a handle this session tracks, and cancelling takes one job of the user's at a
+time; ``squeue``/``sinfo``/``sacct`` run here freely. Deletion (``rm``) is
 *not* refused — destructive but reviewable, so it runs under the approval prompt with
 its operands confined, like any other write.
 
@@ -317,10 +318,11 @@ _DENIAL_HINTS = {
         "checked."
     ),
     "cluster": (
-        "'{name}' submits a job, which goes through the cluster submission tool "
-        "instead: it returns a job handle this session tracks, resuming on its own "
-        "when the job ends. A job submitted from a shell is tracked by nothing. "
-        "'squeue'/'sinfo'/'sacct' are available here for inspection."
+        "'{name}' submits or cancels a Slurm job, which goes through the cluster tools "
+        "instead: submitting returns a job handle this session tracks, resuming on its "
+        "own when the job ends, and cancelling takes one job of yours at a time. A job "
+        "submitted from a shell is tracked by nothing. 'squeue'/'sinfo'/'sacct' are "
+        "available here for inspection."
     ),
 }
 

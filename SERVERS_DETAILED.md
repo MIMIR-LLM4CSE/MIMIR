@@ -43,7 +43,7 @@ below with the arguments and the behaviour.
 | `external/server_system.py` | `system` |
 | `external/server_web.py` | `http_get`, `http_post`, `parse_json`, `json_extract` |
 | `hpc/server_env.py` | `env_pip_install`, `env_pip_uninstall`, `env_create`, `env_delete` |
-| `hpc/server_hpc.py` | `slurm_partitions`, `slurm_nodes`, `slurm_queue`, `salloc_submit`, `slurm_job_status`, `sbatch_submit`, `slurm_probe_node`, `slurm_node_profile` |
+| `hpc/server_hpc.py` | `slurm_partitions`, `slurm_nodes`, `slurm_queue`, `salloc_submit`, `slurm_job_status`, `sbatch_submit`, `slurm_cancel`, `slurm_probe_node`, `slurm_node_profile` |
 | `hpc/server_platform.py` | `platform_probe`, `platform_get_profile`, `platform_search`, `platform_catalogue_status` |
 | `proxy/server_proxy.py` | `proxy_get`, `proxy_runs`, `proxy_eval_status`, `proxy_manage`, `proxy_exec`, `proxy_eval`, `proxy_slurm` |
 
@@ -534,6 +534,7 @@ Tools:
 - `slurm_probe_node(partition, constraint="", nodelist="", account="", confirm=False)` — submits a job of a few seconds that runs `server_platform.py --profile-json` **on the node**, so the node gets the same profile as the host. The job picks its own Python (`.venv-<os>-<arch>`); with none, a shell fallback still reads `lscpu`, `-march`, GPU and OS, and the profile is marked `partial`. Irreversible (approval prompt) but not `CLUSTER_SUBMIT`: it runs no user code, so the local-validation hold does not apply.
 - `slurm_node_profile(partition="", node="")` — read-only. Harvests finished probes into `state_dir()/hpc/node_profiles/<node>.json`, then returns each node kind of the partition with its profile, or `profiled: false`. A profile is kept until Slurm's description of the node changes (no TTL). `matches_this_host` lists what differs from the host MIMIR runs on (arch, CPU model, SIMD, OS, glibc). Inside an allocation, the current node is profiled on the spot, with no job.
 - `slurm_job_status(job_id)` — normalized per-job state (running|pending|done|crashed|unknown) via squeue (active) + sacct (terminal); the poll target the background-job watcher uses.
+- `slurm_cancel(job_id, confirm=False)` — cancels **one** job of the user's, pending or running (an array task as `1234_5`). The ID is the only input, so a card never approves a sweep: `scancel -u`, `--partition` or a list of IDs cannot be expressed. A job owned by someone else, or no longer in the queue, is refused with its state. Launched as argv. It declares `IRREVERSIBLE` (approval card, blocked in plan/ask) but not `CLUSTER_SUBMIT`: stopping a job spends no allocation, so the local-validation hold does not apply. A watched job that is cancelled ends like any other (`CANCELLED` → `crashed`), and the watcher resumes the agent. `scancel` itself stays refused in `bash_run`, whose refusal points here.
 
 > **Three contexts.** `none` (no Slurm), `login` (Slurm, but this host is not an allocated node) and `in_allocation` (`SLURM_JOB_ID` set and this host in the nodelist). Computed by `_shared/cpu_facts.execution_context` and reported by `platform_probe` and `slurm_node_profile`. `local` stays a valid target from all three.
 >

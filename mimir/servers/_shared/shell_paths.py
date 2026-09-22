@@ -191,7 +191,8 @@ DESTRUCTIVE_COMMANDS = frozenset({
 
 # Job submission has one route: the typed HPC tools, which return the background-job
 # descriptor the client's watcher polls. A second route through bash would submit jobs
-# nothing tracks.
+# nothing tracks. Cancellation goes the same way, to a tool that takes one job the user
+# owns: `scancel -u me` or `--partition` would cancel far more than one card shows.
 CLUSTER_SUBMIT_COMMANDS = frozenset({"sbatch", "salloc", "scancel"})
 
 DENIED_COMMANDS = (
