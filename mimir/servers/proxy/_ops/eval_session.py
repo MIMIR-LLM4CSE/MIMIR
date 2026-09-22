@@ -591,7 +591,7 @@ def _background_descriptor(name: str, run_dir: str) -> dict:
     return {
         "server":     "proxy",
         "run_dir":    run_dir,
-        "job_key":    name,
+        "job_key":    os.path.basename(run_dir),
         "kind":       "proxy-optimization",
         "status_op":  {"tool": "proxy_eval_status", "args": {"proxy_name": name}},
         "summary_op": {"tool": "proxy_eval_status",

@@ -1,5 +1,6 @@
 """Tests for the vLLM backend's request-shaping helpers and stop signal."""
 
+import os
 import types
 import unittest
 from unittest.mock import patch
@@ -193,3 +194,57 @@ class TokenizeAbsenceTests(unittest.TestCase):
                     counts = self._count(backend, ["first", "second"])
                 self.assertTrue(all(c > 0 for c in counts))
                 self.assertEqual(calls, [])
+
+
+class ContextWindowPriorityTests(unittest.TestCase):
+    """Priority: the server's reported window, then the override, then unknown.
+
+    The reported ``max_model_len`` is authoritative; ``MIMIR_VLLM_MAX_MODEL_LEN``
+    is the fallback for servers whose /v1/models reports none, and None lets the
+    caller keep its static budget when neither is available.
+    """
+
+    _ENV = ("MIMIR_VLLM_MAX_MODEL_LEN",)
+
+    def setUp(self) -> None:
+        self._saved = {k: os.environ.get(k) for k in self._ENV}
+        for k in self._ENV:
+            os.environ.pop(k, None)
+
+    def tearDown(self) -> None:
+        for k, v in self._saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+    def _backend(self, reported):
+        import mimir.client.query_engine.backends.vllm_backend as vb
+        backend = vb.VllmBackend()
+        backend._config = lambda: ("http://x/v1", "k")
+        backend._saved_report = vb.served_model_len
+        vb.served_model_len = lambda model, config=None: reported
+        return vb, backend
+
+    def test_reported_window_wins_over_the_override(self) -> None:
+        os.environ["MIMIR_VLLM_MAX_MODEL_LEN"] = "512000"
+        vb, backend = self._backend(32768)
+        try:
+            self.assertEqual(backend._fetch_context_window("m"), 32_768)
+        finally:
+            vb.served_model_len = backend._saved_report
+
+    def test_override_is_used_when_the_server_reports_nothing(self) -> None:
+        os.environ["MIMIR_VLLM_MAX_MODEL_LEN"] = "512000"
+        vb, backend = self._backend(None)
+        try:
+            self.assertEqual(backend._fetch_context_window("m"), 512_000)
+        finally:
+            vb.served_model_len = backend._saved_report
+
+    def test_neither_reported_nor_overridden_stays_unknown(self) -> None:
+        vb, backend = self._backend(None)
+        try:
+            self.assertIsNone(backend._fetch_context_window("m"))
+        finally:
+            vb.served_model_len = backend._saved_report

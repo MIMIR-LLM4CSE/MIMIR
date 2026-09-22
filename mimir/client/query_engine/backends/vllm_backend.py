@@ -518,14 +518,27 @@ class VllmBackend(LLMBackend):
     def _fetch_context_window(self, model: str) -> int | None:
         """vLLM context window = the server's reported max_model_len.
 
-        ``MIMIR_VLLM_MAX_MODEL_LEN`` overrides it — an escape hatch for older
-        servers whose /v1/models doesn't report max_model_len.
+        Detection comes first and wins whenever it answers: what the deployment
+        publishes is true of *this* endpoint, today, and needs no maintenance — it
+        is the generic answer, and it keeps working when the endpoint is upgraded,
+        replaced or pointed elsewhere.
+
+        ``MIMIR_VLLM_MAX_MODEL_LEN`` is the fallback for the case detection cannot
+        cover: an endpoint that publishes nothing, typically an OpenAI-compatible
+        router in front of vLLM that does not republish max_model_len. Without it
+        every budget here — the context bar, the eviction, the compaction, the
+        answer allocation — sizes itself to a static assumption instead of to the
+        model. It is deliberately not an override: a value left behind from one
+        endpoint must not silently displace the next one's published window.
         """
         import os
+        served = served_model_len(model, self._config())
+        if served:
+            return served
         env = os.environ.get("MIMIR_VLLM_MAX_MODEL_LEN", "").strip()
         if env.isdigit() and int(env) > 0:
             return int(env)
-        return served_model_len(model, self._config())
+        return None
 
     def _tokenize_text(self, model: str, text: str) -> int:
         """Exact token count via vLLM's /tokenize endpoint.

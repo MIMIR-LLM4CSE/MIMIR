@@ -108,6 +108,11 @@
           "default": true,
           "description": "Count tokens exactly with the endpoint's /tokenize (vLLM or Ray Serve). Uncheck when the endpoint is a router that does not serve it, or answers it slowly: token counts then use an estimate calibrated against what the server reports for each prompt, and no request is spent on /tokenize. Sets MIMIR_VLLM_TOKENIZE=0 for the server."
         },
+        "mimir.maxModelLen": {
+          "type": "number",
+          "default": 0,
+          "description": "Context window (tokens) to use when the vLLM or Ray Serve endpoint does not report max_model_len in /v1/models. 0 means use the endpoint's reported window, falling back to 200000 when it reports none. Sets MIMIR_VLLM_MAX_MODEL_LEN and MIMIR_RAY_MAX_MODEL_LEN for the server."
+        },
         "mimir.notifications.enabled": {
           "type": "boolean",
           "default": true,

@@ -17,6 +17,9 @@ Safety model:
   queries do use a shell, for ``$USER`` expansion; their filters are quoted.
 - ``sbatch_submit`` returns a ``background_job`` descriptor that the client watcher
   polls to completion via ``slurm_job_status``.
+- ``slurm_cancel`` takes one job ID, refuses a job the user does not own, and is
+  approval-gated (irreversible) but not ``CLUSTER_SUBMIT``: stopping a job spends no
+  allocation, so the local-validation hold has nothing to protect there.
 """
 
 import os
@@ -419,6 +422,70 @@ def slurm_job_status(job_id: str) -> dict:
         return err("job_id is required.")
     state, raw = _normalized_job_state(str(job_id).strip())
     return ok({"job_id": str(job_id).strip(), "state": state, "raw_state": raw})
+
+
+# A job, or one task of a job array. Anything wider — a user, a partition, a name — is
+# what `scancel` would also take, and is not something to approve from one card.
+_JOB_ID_RE = re.compile(r"\d+(_\d+)?")
+
+
+def _current_user() -> str:
+    import getpass
+    try:
+        return getpass.getuser()
+    except Exception:
+        return os.environ.get("USER", "")
+
+
+@mcp.tool(**tool_caps(
+    caps=[PLAN_BLOCKED], reversibility=IRREVERSIBLE, non_batch=True,
+    risk_note="Cancels a Slurm job; whatever it had not written yet is lost.",
+    label="Slurm cancel {job_id}",
+))
+def slurm_cancel(job_id: str, confirm: bool = False) -> dict:
+    """Cancel one of your own Slurm jobs, pending or running (sensitive).
+
+    For a job that is wrong or no longer needed: a bad submission, a run superseded by
+    a fix, a hung job burning allocation hours. A running job stops where it is, so its
+    output is whatever it had written by then. One job per call — or one task of an
+    array, as '1234_5'; a job that is not yours, or no longer in the queue, is refused
+    with its state.
+
+    A job this session watches ends like any other: you are resumed with its end, so
+    there is nothing to poll after cancelling it.
+
+    Args:
+        job_id: The Slurm job ID, as sbatch_submit or slurm_queue gave it.
+        confirm: Must be True to cancel.
+    """
+    job_id = str(job_id or "").strip()
+    if not _JOB_ID_RE.fullmatch(job_id):
+        return err("job_id must be one Slurm job ID, e.g. '1234' or '1234_5'.",
+                   hint="List your jobs with slurm_queue().")
+    if not confirm:
+        return err("Cancellation not confirmed.",
+                   hint="Set confirm=True only after user approval.")
+
+    q = _run_argv(["squeue", "-h", "-j", job_id, "-o", "%u|%T"], _TIMEOUT_READ)
+    line = (q.get("stdout") or "").strip().splitlines()
+    if q.get("status") != "ok" or not line:
+        state, raw = _normalized_job_state(job_id)
+        return err(f"Job {job_id} is not in the queue, so there is nothing to cancel.",
+                   hint=f"Its last known state: {raw or state}.")
+    owner, _, queued_state = line[0].partition("|")
+    user = _current_user()
+    if user and owner.strip() != user:
+        return err(f"Job {job_id} belongs to '{owner.strip()}', not to you ('{user}').",
+                   hint="Only your own jobs can be cancelled from here.")
+
+    res = _run_argv(["scancel", job_id], _TIMEOUT_SUBMIT)
+    if res.get("status") != "ok":
+        return err(res.get("stderr") or res.get("error", "scancel failed"))
+    return ok({
+        "job_id": job_id,
+        "was": queued_state.strip(),
+        "note": f"Slurm job {job_id} cancelled (it was {queued_state.strip().lower()}).",
+    })
 
 
 def _sbatch_header(job_name: str, partition: str, cpus_per_task: int, gpus: int,

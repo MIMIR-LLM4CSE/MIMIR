@@ -50,18 +50,25 @@ class RayBackend(VllmBackend):
         return _get_ray_config()
 
     def _fetch_context_window(self, model: str) -> int | None:
-        """Ray Serve context window — the router's max_model_len, if it reports one.
+        """Ray Serve context window: what the router reports, else the fallback.
 
-        ``MIMIR_RAY_MAX_MODEL_LEN`` overrides it, and is the escape hatch that
-        matters here: ``max_model_len`` is a vLLM-server field, and a router that
-        answers ``/v1/models`` with the plain OpenAI shape omits it. Without a
-        window the agent falls back to its static budget, which under-uses a large
-        model — so pin it when the endpoint stays silent.
+        Detection comes first and wins whenever the router answers with a window.
+        It says what *this* router serves today, and is the generic answer.
+
+        ``MIMIR_RAY_MAX_MODEL_LEN`` is the fallback for the case detection cannot
+        cover, and it is the one that matters on Ray: ``max_model_len`` is a
+        vLLM-server field, and a router answering /v1/models with the plain OpenAI
+        shape omits it, leaving every budget on a static assumption that under-uses
+        a large model. It is deliberately not an override, so a value pinned for a
+        silent router does not displace a window another one publishes.
         """
+        served = served_model_len(model, self._config())
+        if served:
+            return served
         env = os.environ.get("MIMIR_RAY_MAX_MODEL_LEN", "").strip()
         if env.isdigit() and int(env) > 0:
             return int(env)
-        return served_model_len(model, self._config())
+        return None
 
     def _tokenize_text(self, model: str, text: str) -> int:
         """Exact token count via /tokenize, while the router still has one.

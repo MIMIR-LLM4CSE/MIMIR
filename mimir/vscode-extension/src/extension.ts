@@ -897,6 +897,13 @@ class MimirAgentViewProvider implements vscode.WebviewViewProvider {
     // A router in front of vLLM need not serve /tokenize; turning it off spares every
     // process (sub-agents included) the request, and the retries when it times out.
     const tokenizeEnv = cfg.get<boolean>("vllmTokenize", true) ? {} : { MIMIR_VLLM_TOKENIZE: "0" };
+    // An endpoint that does not report max_model_len in /v1/models leaves the client
+    // on its static 200K default; this setting is the override. The two env names are
+    // the vLLM and Ray Serve escape hatches — only the active backend reads its own.
+    const maxLen = cfg.get<number>("maxModelLen", 0) ?? 0;
+    const maxLenEnv = maxLen > 0
+      ? { MIMIR_VLLM_MAX_MODEL_LEN: String(maxLen), MIMIR_RAY_MAX_MODEL_LEN: String(maxLen) }
+      : {};
     // An HTTP proxy silently swallows requests to an on-prem endpoint, so
     // ws_server would hang on model resolution before ever binding its port.
     const noProxyEnv = backend === "anthropic" ? {} : noProxyFor(baseUrl);
@@ -909,7 +916,7 @@ class MimirAgentViewProvider implements vscode.WebviewViewProvider {
       cwd,
       // Anchor the agent's per-workspace state dir (.mimir) and the file-server
       // root to the opened workspace, regardless of the process cwd.
-      env: { ...process.env, MCP_FILES_ROOT: cwd, ...noProxyEnv, ...verifyEnv, ...tokenizeEnv, ...anthropicEnv },
+      env: { ...process.env, MCP_FILES_ROOT: cwd, ...noProxyEnv, ...verifyEnv, ...tokenizeEnv, ...maxLenEnv, ...anthropicEnv },
       stdio: ["ignore", "pipe", "pipe"],
     });
 
@@ -1231,11 +1238,19 @@ function startServer(context: vscode.ExtensionContext): void {
   // `exec` so the process we track — and later kill — is the server, not the shell.
   const spawnCmd = `exec ${pythonPath} -m mimir.client.ui.ws.ws_server --port 8765`;
 
+  // Endpoints that do not report max_model_len in /v1/models would otherwise leave
+  // the client on its static 200K default; honor the same override the Connect path
+  // applies, so the window does not depend on how the server was started.
+  const maxLen = vscode.workspace.getConfiguration("mimir").get<number>("maxModelLen", 0) ?? 0;
+  const maxLenEnv = maxLen > 0
+    ? { MIMIR_VLLM_MAX_MODEL_LEN: String(maxLen), MIMIR_RAY_MAX_MODEL_LEN: String(maxLen) }
+    : {};
+
   serverProcess = cp.spawn("bash", ["-c", spawnCmd], {
     cwd,
     // Anchor the agent's per-workspace state dir (.mimir) and the file-server
     // root to the opened workspace, regardless of the process cwd.
-    env: { ...process.env, MCP_FILES_ROOT: cwd },
+    env: { ...process.env, MCP_FILES_ROOT: cwd, ...maxLenEnv },
     stdio: ["ignore", "pipe", "pipe"],
   });
 

@@ -449,6 +449,7 @@ starts on, or when the WS server needs a specific interpreter.
 | `mimir.rayBaseUrl` | `http://127.0.0.1:8000` | Address the form opens on for Ray Serve |
 | `mimir.ollamaUrl` | `http://127.0.0.1:11434` | Address the form opens on for Ollama |
 | `mimir.vllmVerifySsl` | `true` | Uncheck for an HTTPS vLLM or Ray endpoint behind a private CA |
+| `mimir.maxModelLen` | `0` | Context window (tokens) to use when the endpoint does not report `max_model_len`. `0` keeps the reported window, falling back to 200000 |
 | `mimir.pythonPath` | *(empty → auto)* | Interpreter used to start the WS server. Leave empty — see below |
 | `mimir.wsUrl` | *(empty → auto)* | Leave empty: each window starts its own server on a free port. Set it only to attach to a server you run yourself |
 | `mimir.anthropicAvailableModels` | *(list of Claude ids)* | Models offered for the Anthropic backend |
@@ -480,8 +481,8 @@ allocate nodes to connect. On a cluster, start your vLLM, Ray Serve or Ollama se
 as usual, then give MIMIR the address of the node serving it (§3).
 
 Scheduling is instead something the **agent** can do on your behalf: the `hpc` MCP
-server exposes `salloc_submit`, `sbatch_submit`, and job-inspection tools, so you can
-ask MIMIR to submit and monitor *your* jobs. See
+server exposes `salloc_submit`, `sbatch_submit`, `slurm_cancel` and job-inspection
+tools, so you can ask MIMIR to submit, monitor and cancel *your* jobs. See
 [SERVERS_DETAILED.md](SERVERS_DETAILED.md) for that tool catalog.
 
 ---

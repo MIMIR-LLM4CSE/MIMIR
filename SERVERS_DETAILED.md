@@ -43,7 +43,7 @@ below with the arguments and the behaviour.
 | `external/server_system.py` | `system` |
 | `external/server_web.py` | `http_get`, `http_post`, `parse_json`, `json_extract` |
 | `hpc/server_env.py` | `env_pip_install`, `env_pip_uninstall`, `env_create`, `env_delete` |
-| `hpc/server_hpc.py` | `slurm_partitions`, `slurm_nodes`, `slurm_queue`, `salloc_submit`, `slurm_job_status`, `sbatch_submit` |
+| `hpc/server_hpc.py` | `slurm_partitions`, `slurm_nodes`, `slurm_queue`, `salloc_submit`, `slurm_job_status`, `sbatch_submit`, `slurm_cancel` |
 | `hpc/server_platform.py` | `platform_probe`, `platform_get_profile`, `platform_search`, `platform_catalogue_status` |
 | `proxy/server_proxy.py` | `proxy_get`, `proxy_runs`, `proxy_eval_status`, `proxy_manage`, `proxy_exec`, `proxy_eval`, `proxy_slurm` |
 
@@ -521,6 +521,7 @@ Tools:
 - `salloc_submit` — synchronous **interactive** allocation. Takes the resources as arguments (partition, nodes, ntasks, cpus, mem, time, gres, constraint, account/qos) and builds the `salloc` command itself, so the validated command is the one that runs; launched as argv, never through a shell. `confirm=False` returns the exact command as a preview instead of executing — the old two-step the server + free-form `salloc_submit(command=...)` is gone, because the validation lived entirely in the step nothing forced you to call
 - `sbatch_submit` — non-blocking Slurm **batch** submission (unlike synchronous `salloc_submit`): returns a `job_id` immediately plus a `background_job` descriptor (`BACKGROUNDABLE`), so the run is watched off the critical path and auto-resumes the agent on completion. Writes the script/log under `state_dir()/hpc_jobs/<ts>/` (env `MIMIR_HPC_JOBS_DIR`).
 - `slurm_job_status(job_id)` — normalized per-job state (running|pending|done|crashed|unknown) via squeue (active) + sacct (terminal); the poll target the background-job watcher uses.
+- `slurm_cancel(job_id, confirm=False)` — cancels **one** job of the user's, pending or running (an array task as `1234_5`). The ID is the only input, so a card never approves a sweep: `scancel -u`, `--partition` or a list of IDs cannot be expressed. A job owned by someone else, or no longer in the queue, is refused with its state. Launched as argv. It declares `IRREVERSIBLE` (approval card, blocked in plan/ask) but not `CLUSTER_SUBMIT`: stopping a job spends no allocation, so the local-validation hold does not apply. A watched job that is cancelled ends like any other (`CANCELLED` → `crashed`), and the watcher resumes the agent. `scancel` itself stays refused in `bash_run`, whose refusal points here.
 
 > `salloc_submit` / `sbatch_submit` declare the `CLUSTER_SUBMIT` capability (shared with `proxy_slurm`). The client's pre-submission guard holds the first such call each query until something has been validated locally, then lets the retry through (see `POLICY.md` → Cluster-Submission Guard). `sbatch_submit`, `proxy_eval(op='run')`, and `proxy_slurm(op='eval')` additionally declare `BACKGROUNDABLE` (see the background-jobs note under `proxy_eval`).
 

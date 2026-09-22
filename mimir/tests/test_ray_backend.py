@@ -59,19 +59,49 @@ class RayConfigTests(_EnvGuard):
 
 
 class RayContextWindowTests(_EnvGuard):
-    def test_env_override_wins_without_asking_the_router(self) -> None:
+    """Priority: the router's reported window, then the override, then unknown."""
+
+    def _patched(self, value):
+        import mimir.client.query_engine.backends.ray_backend as rb
+        original = rb.served_model_len
+        rb.served_model_len = lambda *a, **k: value
+        return rb, original
+
+    def test_reported_window_wins_over_the_override(self) -> None:
+        """The router's own max_model_len is authoritative; the override is only a
+        fallback for a router that reports none."""
         os.environ["MIMIR_RAY_MAX_MODEL_LEN"] = "131072"
-        calls = []
-        original = vllm_backend.served_model_len
-        vllm_backend.served_model_len = lambda *a, **k: calls.append(a) or 999
+        rb, original = self._patched(32768)
+        try:
+            self.assertEqual(RayBackend()._fetch_context_window("m"), 32_768)
+        finally:
+            rb.served_model_len = original
+
+    def test_override_is_used_when_the_router_reports_nothing(self) -> None:
+        os.environ["MIMIR_RAY_MAX_MODEL_LEN"] = "131072"
+        rb, original = self._patched(None)
         try:
             self.assertEqual(RayBackend()._fetch_context_window("m"), 131_072)
         finally:
-            vllm_backend.served_model_len = original
-        self.assertEqual(calls, [])
+            rb.served_model_len = original
 
-    def test_non_positive_override_falls_through_to_the_router(self) -> None:
+    def test_neither_reported_nor_overridden_stays_unknown(self) -> None:
+        """No window and no override → None, so the caller keeps its static budget."""
+        rb, original = self._patched(None)
+        try:
+            self.assertIsNone(RayBackend()._fetch_context_window("m"))
+        finally:
+            rb.served_model_len = original
+
+    def test_a_non_positive_override_never_applies(self) -> None:
         os.environ["MIMIR_RAY_MAX_MODEL_LEN"] = "0"
+        rb, original = self._patched(None)
+        try:
+            self.assertIsNone(RayBackend()._fetch_context_window("m"))
+        finally:
+            rb.served_model_len = original
+
+    def test_the_router_is_asked_with_its_own_config(self) -> None:
         os.environ["RAY_BASE_URL"] = "http://head:8000"
         seen = []
 
