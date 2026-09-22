@@ -54,6 +54,19 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   escape-hatch value.
 
 ### Fixed
+- A Slurm job submitted through `proxy_slurm` now wakes MIMIR when it finishes.
+  `sbatch` returns while the job is still queued, so the answer never carried the
+  run's result — but only `op='eval'` with `background=True` handed over a job
+  handle, and every other submission was left with nothing watching it: the model
+  was told to monitor the job by hand, ended its turn because there was nothing
+  else to do, and was never resumed when the job landed. `op='run'` and `op='eval'`
+  now always return one. (`op='suite'` submits many jobs at once and still needs
+  `proxy_get(op='report', ...)` afterwards.) `proxy_runs(op='status', run_id=...)`
+  is the new single-run state op the watcher polls.
+- Two proxy runs started in the same second no longer share one run directory. The
+  directory tag is second-resolution and was reused, so the two runs overwrote each
+  other's log, metrics and state, and answered to one job key — which left the
+  second run unwatched and its finish unreported.
 - The run timer of a proxy evaluation starts at zero on every run. A second run of
   the same proxy used to continue from the first run's card, which went on counting
   from the earlier start.

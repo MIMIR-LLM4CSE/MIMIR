@@ -25,6 +25,28 @@ from _ops.suites import _prevalidate_suite
 _OPT_RUNNER = os.path.join(_PROXY_DIR, "_proxy_runner.py")
 
 
+def _run_background_descriptor(run_dir: str) -> dict:
+    """Data-only handle a client watcher polls to completion (see eval_session's).
+
+    A Slurm submission *never* blocks: sbatch returns while the job is still queued.
+    So the handle is not optional here the way it is for a local run that can also be
+    awaited in-turn — without it the model is told to monitor a job by hand, ends its
+    turn because there is nothing left to do, and nothing ever wakes it when the job
+    lands. ``status_op`` is the single-run state op, whose ``state`` reaches
+    'done'/'crashed' through squeue; ``summary_op`` reads the log, which is all a
+    plain run records of itself.
+    """
+    return {
+        "server":     "proxy",
+        "run_dir":    run_dir,
+        "job_key":    os.path.basename(run_dir),
+        "kind":       "proxy-slurm-run",
+        "status_op":  {"tool": "proxy_runs", "args": {"op": "status", "run_id": run_dir}},
+        "summary_op": {"tool": "proxy_runs",
+                       "args": {"op": "logs", "run_id": run_dir, "tail": 40}},
+    }
+
+
 def submit_run(
     proxy_name: str,
     partition: str,
@@ -87,8 +109,10 @@ def submit_run(
         "batch_script":         os.path.join(run_dir, "batch_script.sh"),
         "log":                  _log_path(run_dir),
         "compare_to_reference": compare_to_reference or None,
-        "note": f"Slurm job {job_id} submitted to partition '{partition}'.",
-    }, "proxy_runs() to monitor completion"))
+        "background_job":       _run_background_descriptor(run_dir),
+        "note": f"Slurm job {job_id} submitted to partition '{partition}'; "
+                "this call returns while it is still queued.",
+    }, "end your turn — you are resumed when the job finishes"))
 
 
 def submit_suite(
@@ -197,7 +221,12 @@ def submit_eval(
     account: str = "",
     job_name: str = "proxy_opt",
 ) -> dict:
-    """Submit an optimization-session run as a Slurm batch job (non-blocking)."""
+    """Submit an optimization-session run as a Slurm batch job (non-blocking).
+
+    *background* is accepted for call compatibility with the local run and has no
+    effect: a submission is detached by definition, so the response always carries a
+    ``background_job`` handle.
+    """
     cfg, error, run_dir, resume_notice = _prepare_run(proxy_name)
     if error:
         return error
@@ -235,8 +264,10 @@ def submit_eval(
     }
     if resume_notice:
         payload["resume_notice"] = resume_notice
-    if background:
-        # Same descriptor as the local run: the watcher polls proxy_eval_status,
-        # whose _run_state reports Slurm state via squeue.
-        payload["background_job"] = _background_descriptor(name, run_dir)
-    return ok(_with_next(payload, "proxy_eval_status() to monitor"))
+    # Attached whatever *background* said. It distinguishes "wait for it here" from
+    # "detach it" for the local run, and sbatch has no first option: the call returns
+    # with the job still queued either way. Honouring the flag here only decided
+    # whether anything was left watching the job — and on the False side, nothing was.
+    payload["background_job"] = _background_descriptor(name, run_dir)
+    return ok(_with_next(payload,
+                         "end your turn — you are resumed when the job finishes"))
