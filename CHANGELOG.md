@@ -76,6 +76,9 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - An optimization session is pinned to the machine its baseline ran on. A timing
   taken on another kind of machine is reported as `incomparable` and moves neither
   the best nor the stall count.
+- `mimir.vllmTokenize` (`MIMIR_VLLM_TOKENIZE=0`) stops every call to `/tokenize`,
+  sub-agents included. A router that does not serve it, or answers it slowly, then
+  costs nothing: a timeout used to be retried on every count, up to 5 s each.
 - A GitHub file is read in pages. `github_get_file` takes a line range, returns at
   most 400 lines a call, and says where to resume — so the first look at a long
   source file costs a quarter of what the whole file did, and a file too large to
@@ -101,6 +104,15 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   no SIMD at all: `lscpu` translates its field names. Probes now run in the C locale.
 - `srun` from a login node started a job without the approval and the validation
   hold that `sbatch` gets. It now gets both. Inside an allocation it is unchanged.
+- The context bar splits a prompt the way the server does. Without `/tokenize`,
+  the history was counted at a fixed 4 characters per token, and the error landed in
+  the fixed overhead: on one DeepSeek session the bar showed ~48k of system prompt
+  and tools where the server charged 36k. The history's ratio is now measured from
+  the `prompt_tokens` the server reports, with no extra request.
+- Every tool parameter was sent twice on every call: once in the schema, and again
+  in the description, which still carried the docstring's `Args:` block. It now
+  leaves the description once the schema carries it word for word — a fifth of the
+  tools schema, 35k tokens down to 28k with every server on.
 - A single step can no longer overrun the context window. Tool results are now
   bounded before they enter the history — per result, and per step together — so
   several calls returning at once cannot do what four fetches did to one session:

@@ -33,31 +33,33 @@ _DOC_SECTION_RE = re.compile(
 )
 
 
-def _args_block_descriptions(doc: str) -> dict[str, str]:
-    """Parse a docstring's ``Args:`` block into ``{parameter: description}``.
+def _parse_args_block(doc: str) -> tuple[list[tuple[list[str], str, int, int]], int, int] | None:
+    """The ``Args:`` block of *doc*, entry by entry, with its line bounds.
 
-    Best-effort by design: anything it cannot read yields no entry rather than an
-    error. It runs once per tool at server registration, and a malformed docstring
-    must never stop a tool being registered.
+    Returns ``(entries, first, end)``: each entry is ``(names, text, start, stop)``,
+    and every bound is a line index, ``first`` on the header and the ends excluded,
+    so extracting the entries and cutting them out agree on where each one lies.
+    None when there is no block.
     """
     lines = (doc or "").splitlines()
     for i, line in enumerate(lines):
         if _ARGS_HEADER_RE.match(line):
             break
     else:
-        return {}
-    out: dict[str, str] = {}
-    names: list[str] = []
+        return None
+    entries: list[list] = []
     indent = ""
-    for line in lines[i + 1:]:
+    end = len(lines)
+    for j in range(i + 1, len(lines)):
+        line = lines[j]
         if _DOC_SECTION_RE.match(line):
+            end = j
             break
         m = _ARGS_ENTRY_RE.match(line)
         if m:
             indent = m.group(1)
             names = [n.strip().lstrip("*") for n in m.group(2).split(",")]
-            for n in names:
-                out[n] = m.group(3).strip()
+            entries.append([names, m.group(3).strip(), j, j + 1])
             continue
         if not line.strip():
             continue
@@ -66,12 +68,68 @@ def _args_block_descriptions(doc: str) -> dict[str, str]:
         # entry indent that is not an entry is skipped rather than ending the block:
         # one unparseable line must not discard every entry after it.
         depth = len(line) - len(line.lstrip())
-        if names and depth > len(indent):
-            for n in names:
-                out[n] = (out[n] + " " + line.strip()).strip()
+        if entries and depth > len(indent):
+            entries[-1][1] = (entries[-1][1] + " " + line.strip()).strip()
+            entries[-1][3] = j + 1
         elif depth < len(indent):
+            end = j
             break
-    return {k: v for k, v in out.items() if v}
+    return [tuple(e) for e in entries], i, end
+
+
+def _args_block_descriptions(doc: str) -> dict[str, str]:
+    """Parse a docstring's ``Args:`` block into ``{parameter: description}``.
+
+    Best-effort by design: anything it cannot read yields no entry rather than an
+    error. It runs once per tool at server registration, and a malformed docstring
+    must never stop a tool being registered.
+    """
+    parsed = _parse_args_block(doc)
+    if not parsed:
+        return {}
+    return {n: text for names, text, _, _ in parsed[0] for n in names if text}
+
+
+def _description_without_args_block(doc: str, parameters: dict) -> str:
+    """*doc* minus the ``Args:`` entries the schema already carries word for word.
+
+    The block is lifted into the parameters (:func:`_schema_with_arg_descriptions`),
+    and it was also left in the description: every parameter was sent twice, on every
+    call. On one deployment that was a fifth of a ~31k-token tools schema.
+
+    Cut entry by entry, and only what is not lost: an entry goes when every parameter
+    it names has exactly its text in the schema. One whose parameter the schema lacks,
+    or whose hand-written ``Field`` description says something else, stays, and the
+    header with it. Never raises; on anything unexpected the doc is unchanged.
+    """
+    try:
+        parsed = _parse_args_block(doc)
+        if not parsed:
+            return doc
+        entries, first, end = parsed
+        props = parameters.get("properties") if isinstance(parameters, dict) else None
+        if not entries or not isinstance(props, dict):
+            return doc
+
+        def carried(names: list[str], text: str) -> bool:
+            return bool(text) and all(
+                isinstance(props.get(n), dict) and props[n].get("description") == text
+                for n in names
+            )
+
+        drop: set[int] = set()
+        for names, text, start, stop in entries:
+            if carried(names, text):
+                drop.update(range(start, stop))
+        if not drop:
+            return doc
+        lines = doc.splitlines()
+        if all(carried(names, text) for names, text, _, _ in entries):
+            drop.update(range(first, end))  # nothing left under the header
+        kept = [line for k, line in enumerate(lines) if k not in drop]
+        return "\n".join(kept).rstrip()
+    except Exception:  # pragma: no cover - a docstring must never break registration
+        return doc
 
 
 def _schema_with_arg_descriptions(tool: Any) -> dict:
@@ -218,14 +276,18 @@ async def connect_server(*, agent: Any, name: str, script: str) -> None:
         # hardcoded tool-name lists; see context/capabilities.py.
         agent.tool_caps[tool.name] = infer_tool_caps(tool)
         # Convert MCP tool -> Ollama function-calling format.
+        # Parameter descriptions lifted out of the docstring's `Args:` block: a
+        # constraint only stated in prose does not get followed. Lifted, the block
+        # leaves the description, or every parameter is paid for twice.
+        parameters = _schema_with_arg_descriptions(tool)
         agent.tools.append({
             "type": "function",
             "function": {
                 "name": tool.name,
-                "description": tool.description or "",
-                # Parameter descriptions lifted out of the docstring's `Args:` block:
-                # a constraint only stated in prose does not get followed.
-                "parameters": _schema_with_arg_descriptions(tool),
+                "description": _description_without_args_block(
+                    tool.description or "", parameters
+                ),
+                "parameters": parameters,
             },
         })
 

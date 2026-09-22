@@ -23,6 +23,13 @@ class PromptTooLongError(ValueError):
 
 _TOKEN_CACHE_CAP = 8192
 
+# Chars-per-token calibration from the server's own prompt_tokens (see
+# LLMBackend._calibrate_chars_per_token). Below this many history tokens the fixed
+# part's estimation error outweighs the history itself; outside the bounds, the
+# figure is a measurement accident, not a tokenizer.
+_CPT_MIN_HISTORY_TOKENS = 2000
+_CPT_BOUNDS = (2.0, 8.0)
+
 
 _FINISH_REASONS = {
     # OpenAI / vLLM / Ray
@@ -123,11 +130,51 @@ class LLMBackend(ABC):
         # Maps model -> the per-call prompt overhead the server actually charged,
         # derived from a reported prompt_tokens (see :meth:`note_prompt_usage`).
         self._prompt_overhead: dict[str, int] = {}
+        # Maps model -> the history's chars-per-token, measured against the server's
+        # prompt_tokens (see :meth:`_calibrate_chars_per_token`).
+        self._calibrated_cpt: dict[str, float] = {}
 
     # ── Prompt overhead calibration ─────────────────────────────────────────────
 
+    def _calibrate_chars_per_token(
+        self, model: str, system: dict | None, history: list[dict],
+        tools: list[dict] | None, prompt_tokens: int,
+    ) -> None:
+        """Measure the history's chars-per-token against what the server charged.
+
+        Without a tokenizer every count is the chars-per-token heuristic, and history
+        is where a fixed 4 goes wrong: on a DeepSeek session it counted 106,902 for
+        118,880 charged, and the ratio drifts from 3.3 to 4.2 from one stretch of a
+        conversation to the next. The overhead absorbed that error, so the bar showed
+        ~48k of system prompt and tools where the server charged 36k. A /tokenize
+        round-trip would fix it, but an OpenAI-compatible router need not serve one.
+
+        The fixed part is where the heuristic holds: a tools schema is JSON of steady
+        density (35,024 estimated, 34,888 charged), so system prompt and tools are
+        estimated at the default ratio and the rest of the reported size is the
+        history. Its ratio is then the whole history's average, not one stretch's.
+        Pairing two calls to measure the difference between them was tried and
+        dropped: it measures only the last stretch, off by a fifth on real sessions.
+        """
+        default = chars_per_token_for(model)
+        fixed_chars = len(message_wire_form(system)) if system else 0
+        if tools:
+            fixed_chars += len(json.dumps(tools))
+        history_tokens = prompt_tokens - int(fixed_chars / default)
+        if history_tokens < _CPT_MIN_HISTORY_TOKENS:
+            return
+        ratio = sum(len(message_wire_form(m)) for m in history) / history_tokens
+        low, high = _CPT_BOUNDS
+        if low <= ratio <= high:
+            self._calibrated_cpt[model] = ratio
+
+    def calibrated_chars_per_token(self, model: str) -> float | None:
+        """The history's measured chars-per-token for *model*, or None before any."""
+        return self._calibrated_cpt.get(model)
+
     def note_prompt_usage(
-        self, model: str, messages: list[dict], prompt_tokens: int
+        self, model: str, messages: list[dict], prompt_tokens: int,
+        tools: list[dict] | None = None,
     ) -> None:
         """Record what the server said the prompt cost, as an overhead per model.
 
@@ -142,7 +189,9 @@ class LLMBackend(ABC):
         Counting the history with the same tokenizer that the bar uses is deliberate:
         whatever that count gets wrong is absorbed into the overhead, so bar and
         server agree exactly at the moment of the call instead of agreeing in
-        principle and differing in the number shown.
+        principle and differing in the number shown. The history's chars-per-token is
+        re-measured first (:meth:`_calibrate_chars_per_token`), so what is absorbed
+        is the fixed part's estimation error, a few percent, not the history's.
 
         Called by the agent loop alone (``streaming._calibrate_overhead``), never
         from inside :meth:`chat`: a side call with its own short prompt would
@@ -154,7 +203,11 @@ class LLMBackend(ABC):
         try:
             if prompt_tokens <= 0:
                 return
-            history = messages[1:] if messages and messages[0].get("role") == "system" else messages
+            has_system = bool(messages) and messages[0].get("role") == "system"
+            history = messages[1:] if has_system else messages
+            self._calibrate_chars_per_token(
+                model, messages[0] if has_system else None, history, tools, prompt_tokens
+            )
             counted = self.count_messages_tokens(model, history, allow_network=False)
             overhead = prompt_tokens - counted
             if overhead > 0:
@@ -272,9 +325,15 @@ class LLMBackend(ABC):
         return sum(self.message_token_counts(model, messages, allow_network=allow_network))
 
     def _tokenize_text(self, model: str, text: str) -> int:
-        """Exact token count for *text*. Default: heuristic; vLLM overrides."""
-        return self._heuristic_tokens(model, text)
+        """Exact token count for *text*. Default: none, so the heuristic answers.
 
-    @staticmethod
-    def _heuristic_tokens(model: str, text: str) -> int:
-        return max(1, int(len(text) / chars_per_token_for(model)))
+        Raises rather than returning the heuristic: a returned count is cached, and a
+        cached heuristic would outlive the chars-per-token calibration that later
+        corrects it.
+        """
+        raise NotImplementedError("no tokenizer")
+
+    def _heuristic_tokens(self, model: str, text: str) -> int:
+        """Chars-per-token estimate, measured against the server once it can be."""
+        ratio = self._calibrated_cpt.get(model) or chars_per_token_for(model)
+        return max(1, int(len(text) / ratio))

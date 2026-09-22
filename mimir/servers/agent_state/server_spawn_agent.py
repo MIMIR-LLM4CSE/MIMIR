@@ -1195,8 +1195,6 @@ async def spawn_agent(
                     It sees none of your conversation, so say everything it needs.
         context:    Optional extra context (findings so far, constraints) prepended
                     to the task.
-        tools:      The tools the sub-agent may use — see this argument's own
-                    description. Empty means read-only reconnaissance.
         max_steps:  Max tool-call steps the sub-agent may take (default 30).
         time_budget_secs:
                     Wall time for this run (default 600, max 1140). The sub-agent is
@@ -1208,7 +1206,6 @@ async def spawn_agent(
                     build-and-measure cycle — and leave it false when its answer is
                     your next step. A detached child's steps are not shown in your
                     rows; ask for its result if you need what it has so far.
-        model:      The model the sub-agent runs on; empty for your own.
     Returns:
         On success (the sub-agent ran to a result):
             {"status": "ok", "answer": "…", "completed": bool, "files_read": [...],
@@ -1459,7 +1456,6 @@ def subagent_job(
     get on with other work.
 
     Args:
-        op:      status | result | list (default status).
         job_key: The handle spawn_agent(background=True) returned.
     """
     op = (op or "status").strip().lower()

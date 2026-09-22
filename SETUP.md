@@ -323,6 +323,7 @@ VS Code extension sets the backend and address ones itself from the Connect form
 | `VLLM_BASE_URL` | `http://127.0.0.1:8000` | vLLM API base URL |
 | `VLLM_API_KEY` | `EMPTY` | API key for vLLM calls |
 | `MIMIR_VLLM_MAX_MODEL_LEN` | *(unset)* | Context window to use when `/v1/models` does not report `max_model_len` |
+| `MIMIR_VLLM_TOKENIZE` | *(on)* | `0` stops every call to `/tokenize` (vLLM and Ray Serve). Set it for a router that does not serve the endpoint or answers it slowly. Token counts then use an estimate calibrated against the `prompt_tokens` the server reports |
 | `VLLM_VERIFY_SSL` | `0` | Verify the TLS certificate of the vLLM **or Ray Serve** endpoint — one switch for both. Off by default so an internal HTTPS route behind a private CA works out of the box |
 | `RAY_BASE_URL` | `http://127.0.0.1:8000` | Ray Serve LLM router URL, including the app's route prefix |
 | `RAY_API_KEY` | `EMPTY` | API key for the Ray Serve router |
