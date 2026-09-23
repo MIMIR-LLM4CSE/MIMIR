@@ -482,7 +482,8 @@ class EnforceBudgetIntegrationTests(unittest.TestCase):
         emitted: list[dict] = []
         with patch.object(history_module, "emit", emitted.append), \
              patch.object(history_module, "context_budget_for",
-                          lambda model, mode: (1_000_000, 200_000, 500_000, 400_000)):
+                          lambda model, mode, ceiling=None: (
+                              1_000_000, 200_000, 500_000, 400_000)):
             history_module._enforce_context_budget(
                 messages, "sys", None, {}, "m", "full", None, lambda t: len(t) // 4,
             )

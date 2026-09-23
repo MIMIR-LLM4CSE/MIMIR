@@ -274,6 +274,21 @@ def _partial_handoff(child: dict) -> dict:
 # model's whole answer reserve, and a run that spends it is a single silent step.
 SUBAGENT_ANSWER_TOKENS = 8192
 
+# How much of the model's window one child may fill, by what the child was given.
+# Not the model's whole window: a child exists to keep its reading out of the caller's
+# context, and several of them on one endpoint each budgeting for the full window is
+# how a fan-out becomes the thing it was meant to avoid. Both numbers are ceilings —
+# a model with a smaller window still sizes the budget, and the trimming, eviction and
+# compaction all follow from the total.
+#
+# An explorer reads a handful of files and returns a conclusion, and a sweep wide
+# enough to be sure is what it is for — twice the compact budget, so breadth is not
+# what makes it hand back a half-answer. A working child is the other case — it reads
+# what it must to change code, runs it, and reports what came back — so it gets the
+# standing full-mode budget rather than a share of it.
+SUBAGENT_CONTEXT_TOKENS_EXPLORE = 64_000
+SUBAGENT_CONTEXT_TOKENS_WORKING = 200_000
+
 # What an explorer owes back. Its own mode prompt already asks for cited prose; this
 # says the part that is about the *parent*: a conclusion costs the caller a paragraph
 # of context, the file contents it read would cost the window they were meant to save.
@@ -1687,6 +1702,12 @@ async def _drive_sub_agent(
     )
     mode = "agent" if working else _READONLY_CHILD_MODE
     agent.set_mode(mode)
+    # Set here rather than with the rest of the child's setup: how much window the
+    # child may fill follows from what it was given, and that is not known until its
+    # tools have been classified just above.
+    agent.max_context_tokens = (
+        SUBAGENT_CONTEXT_TOKENS_WORKING if working else SUBAGENT_CONTEXT_TOKENS_EXPLORE
+    )
 
     brief = (
         _WORK_BRIEF.format(budget=_human_budget(budget), steps=max_steps)

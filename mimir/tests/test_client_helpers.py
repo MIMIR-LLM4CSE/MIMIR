@@ -1295,7 +1295,8 @@ class ClientHelperTests(unittest.TestCase):
         ]
         tok = lambda text: len(text) // 4  # noqa: E731
         with patch.object(history_module, "context_budget_for",
-                          lambda model, mode: (16_000, 3_200, 10_000, 8_000)), \
+                          lambda model, mode, ceiling=None: (
+                              16_000, 3_200, 10_000, 8_000)), \
              self.assertRaises(history_module.ContextOverflowError) as caught:
             history_module._enforce_context_budget(
                 messages, "S" * 40_000, None, {}, "m", "full", None, tok,
@@ -1313,7 +1314,8 @@ class ClientHelperTests(unittest.TestCase):
             {"role": "user", "content": "hi"},
         ]
         with patch.object(history_module, "context_budget_for",
-                          lambda model, mode: (16_000, 3_200, 10_000, 8_000)):
+                          lambda model, mode, ceiling=None: (
+                              16_000, 3_200, 10_000, 8_000)):
             history_module._enforce_context_budget(
                 messages, "sys", None, {}, "m", "full", None, lambda t: len(t) // 4,
             )

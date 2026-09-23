@@ -398,6 +398,11 @@ async def _run_agent_loop(
     _tok = lambda text: _streaming.get_backend().count_text_tokens(agent.model, text)  # noqa: E731
     compact_fn = getattr(agent, "compact_messages", None)
     context_mode = getattr(agent, "context_mode", "full")
+    # An agent may be held below the model's window (a sub-agent is: see
+    # server_spawn_agent.SUBAGENT_CONTEXT_TOKENS_*). Read once, like the mode: it is a
+    # property of the run, and re-reading it per step would let a mid-run change move
+    # the budget the history was already trimmed against.
+    context_ceiling = int(getattr(agent, "max_context_tokens", 0) or 0) or None
     # Compute the per-query tool list ONCE and reuse it every step. The list is
     # query-stable (pruning + relevance cap depend only on the query, not on the
     # evolving execution_context), so recomputing per step only churned the prompt
@@ -481,6 +486,7 @@ async def _run_agent_loop(
         _enforce_context_budget(
             messages, system_content, query_tools, execution_context,
             agent.model, context_mode, compact_fn, _tok,
+            context_ceiling=context_ceiling,
         )
 
         # Adaptive thinking budget: scale based on workflow phase.
@@ -675,6 +681,7 @@ async def _run_agent_loop(
         _enforce_context_budget(
             messages, system_content, query_tools, execution_context,
             agent.model, context_mode, compact_fn, _tok,
+            context_ceiling=context_ceiling,
         )
         step += 1
 

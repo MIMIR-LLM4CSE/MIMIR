@@ -536,6 +536,7 @@ def bound_step_results(
     model: str,
     context_mode: str,
     token_counter: Any,
+    context_ceiling: int | None = None,
 ) -> tuple[list[str], list[tuple[int, int]]]:
     """Clamp one step's tool results before they enter the history.
 
@@ -552,7 +553,8 @@ def bound_step_results(
     """
     if not results:
         return results, []
-    total, reserved, _trim, _compact = context_budget_for(model, context_mode)
+    total, reserved, _trim, _compact = context_budget_for(
+        model, context_mode, ceiling=context_ceiling)
     usable = max(1, total - reserved)
     per_result = max(512, usable // _RESULT_WINDOW_SHARE)
     per_step = max(1024, usable * _STEP_NUM // _STEP_DEN)
@@ -844,6 +846,7 @@ def _enforce_context_budget(
     context_mode: str,
     compact_fn: Any | None,
     token_counter: Any,
+    context_ceiling: int | None = None,
 ) -> None:
     """Trim/compact history so the *next* LLM prompt fits the model's window.
 
@@ -878,7 +881,8 @@ def _enforce_context_budget(
             f"  \u2702 Context: elided the arguments of {digested} failed tool "
             f"call{'s' if digested != 1 else ''} (the calls did not take effect)."
         )})
-    total, reserved, trim_budget, compact_budget = context_budget_for(model, context_mode)
+    total, reserved, trim_budget, compact_budget = context_budget_for(
+        model, context_mode, ceiling=context_ceiling)
     overhead = token_counter(json.dumps(step_tools)) if step_tools else 0
     trim_budget = max(512, trim_budget - overhead)
     compact_budget = max(512, compact_budget - overhead)

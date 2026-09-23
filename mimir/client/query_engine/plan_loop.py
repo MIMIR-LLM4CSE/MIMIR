@@ -359,6 +359,7 @@ async def _run_plan_mode(
     _tok = lambda text: _streaming.get_backend().count_text_tokens(agent.model, text)  # noqa: E731
     compact_fn = getattr(agent, "compact_messages", None)
     context_mode = getattr(agent, "context_mode", "full")
+    context_ceiling = int(getattr(agent, "max_context_tokens", 0) or 0) or None
     auto_active = getattr(agent, "thinking_depth", None) == THINKING_DEPTH_AUTO
 
     # Unbounded when the caller set no ceiling (max_steps <= 0) — plan mode gathers
@@ -458,6 +459,7 @@ async def _run_plan_mode(
         _enforce_context_budget(
             messages, _system, plan_tools, execution_context,
             agent.model, context_mode, compact_fn, _tok,
+            context_ceiling=context_ceiling,
         )
 
         try:

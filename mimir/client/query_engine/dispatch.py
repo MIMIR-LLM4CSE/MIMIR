@@ -684,6 +684,7 @@ def _bound_results(results: list[str], agent: Any) -> list[str]:
             model=agent.model,
             context_mode=getattr(agent, "context_mode", "full"),
             token_counter=lambda text: backend.count_text_tokens(agent.model, text),
+            context_ceiling=int(getattr(agent, "max_context_tokens", 0) or 0) or None,
         )
     except Exception:  # noqa: BLE001 — a budget failure must not drop the evidence
         return results
