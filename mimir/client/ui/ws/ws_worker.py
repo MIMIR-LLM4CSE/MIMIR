@@ -1471,11 +1471,21 @@ class _AgentWorker:
                     # panel: the others have already said something worth showing.
                     logger.debug("panel section %r failed: %s", tool, exc)
                     continue
+                lines = payload.get("lines") or []
+                detail = payload.get("detail") or ""
+                if not lines and not detail:
+                    # A server with nothing to say gets no heading. A section that has
+                    # something to report about having nothing — "no optimisation
+                    # session here" — says it in `detail` and still appears; one that
+                    # returns neither is a facility this machine does not have, and a
+                    # bare title is a heading the user reads to learn there is nothing
+                    # to read.
+                    continue
                 out.append({
                     "section": spec.get("section", tool),
                     "title": payload.get("title") or spec.get("section", tool),
-                    "lines": payload.get("lines") or [],
-                    "detail": payload.get("detail") or "",
+                    "lines": lines,
+                    "detail": detail,
                 })
             return out
 

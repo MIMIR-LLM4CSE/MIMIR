@@ -29,11 +29,13 @@ import shlex
 import socket
 import subprocess
 import sys
+import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '_shared'))
 
 from mcp.server.fastmcp import FastMCP
-from capabilities import tool_caps, PLAN_BLOCKED, CLUSTER_SUBMIT, BACKGROUNDABLE, IRREVERSIBLE
+from capabilities import (tool_caps, PLAN_BLOCKED, CLUSTER_SUBMIT, BACKGROUNDABLE,
+                          IRREVERSIBLE, PANEL_REPORT)
 from responses import err, ok
 from state_paths import state_dir
 from slurm_nodes import (
@@ -1041,6 +1043,150 @@ def slurm_node_profile(partition: str = "", node: str = "") -> dict:
     if pending:
         payload["pending_probes"] = pending
     return ok(payload)
+
+
+# ── Panel section ─────────────────────────────────────────────────────────────
+# What the scientific-computing drawer shows about the cluster. Deliberately not the
+# host MIMIR runs on — that is usually a login node, which is the one machine nothing
+# will be measured on. What is worth a line here is where the work actually goes: the
+# queue the user is waiting in, the partitions that have room, and the hardware of the
+# nodes their code will be built for.
+
+# The panel refreshes on a timer while a turn runs, so every line below is served from
+# a cache. Two clocks, because the facts age at different speeds: a queue moves between
+# two refreshes, a partition's shape and a node's hardware do not.
+_PANEL_QUEUE_TTL_SECS = 15
+_PANEL_CLUSTER_TTL_SECS = 300
+_PANEL_CACHE: dict = {}
+
+
+def _panel_cached(key: str, ttl: int, produce):
+    """*produce()* at most once every *ttl* seconds, per server process.
+
+    A failure serves the last good answer rather than a blank: a transient sinfo is a
+    reason to show what was true a minute ago, not to empty the section.
+    """
+    entry = _PANEL_CACHE.get(key)
+    now = time.time()
+    if entry and now - entry["at"] <= ttl:
+        return entry["value"]
+    try:
+        value = produce()
+    except Exception:
+        return entry["value"] if entry else None
+    _PANEL_CACHE[key] = {"at": now, "value": value}
+    return value
+
+
+def _queue_line() -> dict | None:
+    """The user's own jobs, counted by state. None when the queue cannot be read."""
+    payload = _panel_cached("queue", _PANEL_QUEUE_TTL_SECS,
+                            lambda: slurm_queue(user_only=True))
+    if not payload or payload.get("status") != "ok":
+        return None
+    counts: dict[str, int] = {}
+    for job in payload.get("jobs") or []:
+        counts[str(job.get("state") or "?")] = counts.get(str(job.get("state") or "?"), 0) + 1
+    if not counts:
+        return {"label": "your jobs", "value": "none queued"}
+    order = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+    return {
+        "label": "your jobs",
+        "value": ", ".join(f"{n} {state.lower()}" for state, n in order),
+        "state": "running" if counts.get("RUNNING") else "",
+    }
+
+
+def _partition_lines(limit: int = 4) -> list[dict]:
+    """Idle nodes per partition — whether a job submitted now starts now.
+
+    sinfo emits one row per (partition, state), so the rows are folded back into one
+    entry per partition here. The busiest are not the interesting ones: the partitions
+    with room come first, because that is the question being asked.
+    """
+    payload = _panel_cached("partitions", _PANEL_CLUSTER_TTL_SECS, slurm_partitions)
+    if not payload or payload.get("status") != "ok":
+        return []
+    totals: dict[str, list[int]] = {}
+    for row in payload.get("partitions") or []:
+        name = str(row.get("partition") or "").rstrip("*")
+        nodes = _as_int(row.get("nodes")) or 0
+        if not name:
+            continue
+        seen = totals.setdefault(name, [0, 0])
+        seen[0] += nodes
+        if str(row.get("state") or "").startswith("idle"):
+            seen[1] += nodes
+    ranked = sorted(totals.items(), key=lambda kv: (-kv[1][1], kv[0]))
+    # No state on these: the value already says how much room there is, and the one
+    # colour the panel has means "something of yours is running".
+    return [{"label": name, "value": f"{idle}/{total} nodes idle"}
+            for name, (total, idle) in ranked[:limit]]
+
+
+def _profiled_node_lines() -> list[dict]:
+    """The hardware of a node that was actually profiled, or how to get one.
+
+    Read straight off the profile cache rather than through ``slurm_node_profile``: the
+    panel wants one line, and that tool re-reads every node Slurm knows and harvests
+    pending probes on the way. Nothing here runs a command.
+    """
+    try:
+        names = sorted(os.listdir(_NODE_PROFILES_DIR))
+    except OSError:
+        names = []
+    records = []
+    for name in names:
+        record = _read_json(os.path.join(_NODE_PROFILES_DIR, name))
+        if record and record.get("profile"):
+            records.append(record)
+    if not records:
+        return [{"label": "compute node", "value": "none profiled — probe one",
+                 "state": "warn"}]
+    record = max(records, key=lambda r: str(r.get("probed_at") or ""))
+    profile = record.get("profile") or {}
+    cpu = profile.get("cpu") or {}
+    devices = (profile.get("gpu") or {}).get("devices") or []
+    lines = [{"label": "compute node",
+              "value": f"{record.get('node', '?')}: "
+                       f"{cpu.get('model') or cpu.get('arch') or '?'}"}]
+    simd = sorted(k for k, v in (cpu.get("simd") or {}).items() if v)
+    if simd:
+        lines.append({"label": "vector isa", "value": ", ".join(simd[-3:])})
+    if devices:
+        first = devices[0].get("name", "?")
+        lines.append({"label": "node gpu",
+                      "value": f"{len(devices)} × {first}" if len(devices) > 1 else first})
+    return lines
+
+
+@mcp.tool(**tool_caps(
+    caps=[PANEL_REPORT],
+    read_only=True,
+    panel={"section": "Cluster", "order": 30},
+    label="Cluster status",
+))
+def hpc_panel_report() -> dict:
+    """Where the work goes, in a form a panel can show: the queue, the room, the nodes.
+
+    Everything is served from the caches above, so a panel refreshing on a timer costs
+    one ``squeue`` every few seconds at most and one ``sinfo`` every few minutes. A host
+    with no Slurm returns no lines at all, and the client then shows no section — a
+    laptop should not grow an empty cluster panel.
+    """
+    lines: list[dict] = []
+    queue = _queue_line()
+    if queue:
+        lines.append(queue)
+    lines.extend(_partition_lines())
+    if not lines:
+        # No queue and no partitions: there is no scheduler here to report on. Said with
+        # no lines rather than with a row saying "unavailable", which is a section the
+        # user has to read to learn there is nothing to read.
+        return ok({"title": "Cluster", "lines": []})
+    lines.extend(_profiled_node_lines())
+    return ok({"title": "Cluster", "lines": lines,
+               "detail": "Where submitted work runs — not the host MIMIR runs on."})
 
 
 if __name__ == "__main__":

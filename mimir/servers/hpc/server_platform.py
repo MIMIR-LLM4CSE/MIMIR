@@ -1252,7 +1252,12 @@ def _panel_profile() -> dict:
     label="Machine profile",
 ))
 def platform_panel_report() -> dict:
-    """The machine, in a form a panel can show: a few lines, no probing of its own.
+    """The host MIMIR runs on, in a form a panel can show: a few lines, no probing.
+
+    Deliberately narrow. On a cluster this is the login node — the one machine nothing
+    is measured on — so it is a landmark, not the answer to "what will this run on";
+    the Cluster section answers that, and this one sits after it. On a laptop it is the
+    whole story, which is why it stays.
 
     The profile is probed at most once every few minutes (see ``_panel_profile``): the
     panel refreshes whenever it is opened or a turn ends, and hardware does not change
@@ -1283,11 +1288,15 @@ def platform_panel_report() -> dict:
                       "value": f"{len(devices)} × {first}" if len(devices) > 1 else first})
     elif gpu.get("available"):
         lines.append({"label": "gpu", "value": ", ".join(gpu.get("vendors") or ["present"])})
+    # No Slurm line here any more: the partitions, the queue and the hardware of the
+    # nodes work actually runs on are a section of their own, filled by the server that
+    # can read them (hpc_panel_report). Repeating the partition names here said nothing
+    # about them and invited the login node's CPU to be read as the cluster's.
+    detail = "The host MIMIR runs on."
     if slurm.get("available"):
-        lines.append({"label": "slurm",
-                      "value": ", ".join(slurm.get("partitions") or []) or "available"})
+        detail += " Submitted work runs on the cluster's nodes, not here — see Cluster."
     return ok({"title": "Machine", "lines": lines,
-               "detail": f"Probed {profile.get('timestamp', '?')}."})
+               "detail": f"{detail} Probed {profile.get('timestamp', '?')}."})
 
 
 if __name__ == "__main__":

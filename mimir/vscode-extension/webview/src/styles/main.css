@@ -3604,6 +3604,9 @@ body.vscode-light .hljs-deletion, body.vscode-high-contrast-light .hljs-deletion
 }
 
 .science-line-value.is-running { color: var(--vscode-charts-blue, #4aa3ff); }
+/* Something a server wants read before the next run, not an error: a node that was
+   never profiled, a measurement pinned to another machine. */
+.science-line-value.is-warn { color: var(--vscode-charts-yellow, #d7a441); }
 
 .science-detail { font-size: 10px; color: var(--fg-dim); margin-top: 4px; }
 

@@ -226,6 +226,7 @@ def submit_eval(
     account: str = "",
     job_name: str = "proxy_opt",
     target: dict | None = None,
+    axis: str = "",
 ) -> dict:
     """Submit an optimization-session run as a Slurm batch job (non-blocking).
 
@@ -233,7 +234,7 @@ def submit_eval(
     effect: a submission is detached by definition, so the response always carries a
     ``background_job`` handle.
     """
-    cfg, error, run_dir, resume_notice = _prepare_run(proxy_name)
+    cfg, error, run_dir, resume_notice = _prepare_run(proxy_name, axis)
     if error:
         return error
     name       = cfg["proxy_name"]

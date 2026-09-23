@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import subprocess
 import sys
 import time
 from datetime import datetime, timezone
@@ -32,7 +33,7 @@ import run_channel
 from _lib import build, procs, tree_snapshot
 from _lib.store import (
     cache_dir,
-    _load_registry_or_err, _load_suite,
+    _load_registry, _load_registry_or_err, _load_suite,
     _opt_config_file, _opt_session_runs_dir,
     _opt_ledger_file, _opt_best_file,
     _resolve_proxy_name, _write_active_session, _clear_active_session,
@@ -101,6 +102,25 @@ def _opt_tail_log(run_dir: str, n: int) -> list[str]:
 def _workspace_root() -> str:
     """The workspace the servers were started against (see server_bash's own copy)."""
     return os.path.realpath(os.path.abspath(os.environ.get("MCP_FILES_ROOT") or os.getcwd()))
+
+
+def _workspace_branch() -> str:
+    """The git branch the workspace is on, or "" when there is none to read.
+
+    Recorded with an optimisation session so an axis can be traced back to the work
+    that produced it. A sub-agent given a writing tool runs in a COPY of the repository
+    on a branch of its own and registers a proxy pointing at that copy, so this is what
+    says which of several parallel axes a ledger belongs to — otherwise the runs of a
+    fan-out are anonymous and only their numbers distinguish them.
+    """
+    try:
+        done = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=_workspace_root(),
+            capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    branch = (done.stdout or "").strip()
+    return "" if done.returncode != 0 or branch == "HEAD" else branch
 
 
 def opt_git_dir() -> str:
@@ -309,6 +329,10 @@ def init(
         "repeat":            int(repeat),
         "stall":             0,
         "convergence":       convergence or {},
+        # Where this axis is being worked. Empty outside a git repository, and equal to
+        # the main branch for an ordinary session — it earns its keep when several
+        # sub-agents each optimise a copy of their own.
+        "branch":            _workspace_branch(),
         "initialized_at":    datetime.now(timezone.utc).isoformat(),
     }
     _save_opt_config(cfg)
@@ -502,6 +526,7 @@ def _resume_notice(cfg: dict, name: str, paths: list[str]) -> str:
 
 def _prepare_run(
     proxy_name: str,
+    axis: str = "",
 ) -> tuple[dict | None, dict | None, str | None, str]:
     """Shared preamble for local/Slurm eval runs.
 
@@ -561,6 +586,12 @@ def _prepare_run(
         "convergence":       cfg.get("convergence") or {},
         "primary_metric":    cfg.get("primary_metric", "time_s"),
         "repeat":            _effective_repeat(cfg),
+        # What this run is trying, in the caller's words. Recorded with the run rather
+        # than derived at settle time: by then the edit is measured and nothing on disk
+        # says what it was for. It is the only field of the ledger the machine cannot
+        # supply, and without it a session's runs are a list of numbers with no account
+        # of which ideas produced them.
+        "axis":              (axis or "").strip()[:80],
         "started_at":        datetime.now(timezone.utc).isoformat(),
     })
     # Freeze what is about to run. The accepted state must be the code that PRODUCED
@@ -599,14 +630,19 @@ def _background_descriptor(name: str, run_dir: str) -> dict:
     }
 
 
-def run(proxy_name: str = "", background: bool = False) -> dict:
+def run(proxy_name: str = "", background: bool = False, axis: str = "") -> dict:
     """Launch a background optimization run (non-blocking).
 
     ``background=True`` attaches a ``background_job`` descriptor so a client watcher
     monitors completion off the agent's critical path and auto-resumes the agent with
     the results — the agent should end its turn instead of polling.
+
+    ``axis`` names what this run is trying, in a few words ("tiling", "vectorise the
+    inner loop", "memory layout"). It is recorded in the session ledger beside the
+    number the run produced, which is what later lets the attempts be read as a set of
+    ideas with outcomes rather than a column of timings.
     """
-    cfg, error, run_dir, resume_notice = _prepare_run(proxy_name)
+    cfg, error, run_dir, resume_notice = _prepare_run(proxy_name, axis)
     if error:
         return error
     name       = cfg["proxy_name"]
@@ -694,7 +730,7 @@ async def _await_terminal_state(
 
 async def run_awaited(
     proxy_name: str = "", background: bool = False,
-    wait_s: float = _RUN_WAIT_BUDGET_S,
+    wait_s: float = _RUN_WAIT_BUDGET_S, axis: str = "",
 ) -> dict:
     """Launch an optimization run and wait for its verdict (the default for op='run').
 
@@ -709,7 +745,7 @@ async def run_awaited(
     watcher on its own. Either way the response carries a ``background_job``
     descriptor and tells the agent to end its turn — it is resumed with the results.
     """
-    launched = run(proxy_name, background=background)
+    launched = run(proxy_name, background=background, axis=axis)
     if background or launched.get("status") != "ok":
         return launched
 
@@ -982,6 +1018,185 @@ def _ratchet_state(proxy_name: str, run_dir: str, final_metrics: dict, cfg: dict
         return _ratchet_settle_locked(name, run_dir, final_metrics, cfg, outcome_path)
 
 
+# ── The shape of a session's attempts ─────────────────────────────────────────
+# A ledger is a column of numbers; what a later run needs is the account of which
+# ideas produced them and which have already been ruled out. These read that back.
+#
+# The edge is `best_run_id`: the incumbent a run was measured against, recorded at
+# settle. NOT `launch_tree` — two runs sharing one launch tree measured the SAME code,
+# which is a repeat, not a pair of independent ideas. `launch_tree` is each node's own
+# identity: the state that actually ran, and the one a restore can return to.
+
+
+def _read_ledger(proxy_name: str) -> list[dict]:
+    """Every settled run of *proxy_name*, oldest first.
+
+    One JSON object per line, appended as runs settle. A line that does not parse is
+    dropped rather than failing the read: the file is written by another process and
+    its last line can be half there. Entries from before an axis was recorded simply
+    carry none — the old format stays readable.
+    """
+    rows = []
+    try:
+        with open(_opt_ledger_file(proxy_name), encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rows.append(json.loads(line))
+                except ValueError:
+                    continue
+    except OSError:
+        return []
+    return rows
+
+
+def graph(proxy_name: str = "") -> dict:
+    """Every axis tried, what it measured, and which attempts started from one point.
+
+    Read-only. Covers every registered proxy by default — a fan-out of sub-agents is
+    several sessions, one per axis, and the picture is only useful whole.
+
+    What it reports is STRUCTURE, never causality. Two attempts measured against the
+    same incumbent are independent of each other, which makes them candidates for being
+    combined; whether they actually compose is a question only a run that combines them
+    can answer, and this says so in ``note`` rather than scoring it.
+    """
+    names = [proxy_name] if proxy_name else sorted(_load_registry().keys())
+    axes, nodes, edges = [], [], []
+    for name in names:
+        cfg = _load_opt_config(name) or {}
+        ledger = _read_ledger(name)
+        if not cfg and not ledger:
+            continue
+        best = _load_best(name) or {}
+        accepted = sum(1 for row in ledger if row.get("verdict") == "accept")
+        axes.append({
+            "proxy":           name,
+            "branch":          cfg.get("branch", ""),
+            "metric":          cfg.get("primary_metric", ""),
+            "goal":            cfg.get("primary_goal", ""),
+            "baseline_run_id": cfg.get("baseline_run_id", ""),
+            "best_run_id":     best.get("run_id", ""),
+            "best_value":      best.get("primary_value"),
+            "runs":            len(ledger),
+            "accepted":        accepted,
+        })
+        for row in ledger:
+            run_id = row.get("run_id", "")
+            nodes.append({
+                "proxy":         name,
+                "run_id":        run_id,
+                "axis":          row.get("axis", ""),
+                "verdict":       row.get("verdict", ""),
+                "feasible":      bool(row.get("feasible")),
+                "primary_value": row.get("primary_value"),
+                "launch_tree":   row.get("launch_tree", ""),
+                "ts":            row.get("ts", ""),
+            })
+            parent = row.get("best_run_id")
+            if parent and parent != run_id:
+                edges.append({"proxy": name, "from": parent, "to": run_id})
+
+    # Attempts that were judged against the same incumbent: each was made without the
+    # others in the tree, so none of them contains another's edit.
+    from_same: dict[tuple, list[dict]] = {}
+    for edge in edges:
+        from_same.setdefault((edge["proxy"], edge["from"]), []).append(edge["to"])
+    by_id = {(n["proxy"], n["run_id"]): n for n in nodes}
+    siblings = [
+        {"proxy": proxy, "incumbent": parent,
+         "attempts": [{k: by_id[(proxy, run)][k]
+                       for k in ("run_id", "axis", "verdict", "primary_value")}
+                      for run in runs if (proxy, run) in by_id]}
+        for (proxy, parent), runs in sorted(from_same.items()) if len(runs) > 1
+    ]
+
+    return ok({
+        "axes":  axes,
+        "nodes": nodes,
+        "edges": edges,
+        "from_the_same_point": siblings,
+        "note": (
+            "An edge points from the incumbent a run was measured against to the run "
+            "itself. Attempts under one incumbent were each made without the others, "
+            "so they are independent — candidates for being combined, never a promise "
+            "that they add up. Only a run that combines them measures that. Use the "
+            "rejected axes too: they are the ideas already ruled out on this code."
+        ),
+    })
+
+
+# How much of the picture rides back with every settled run. Small on purpose: this is
+# appended to a payload the agent reads after each run, not a report it asked for.
+_AXES_SHOWN = 8
+
+
+def axes_tried(proxy_name: str = "") -> dict:
+    """The account of this session's attempts, compact enough to travel with a result.
+
+    Built and attached automatically, never asked for: the agent that most needs to
+    know what has already been ruled out is the one about to choose the next edit, and
+    a call it has to remember to make is one it will not make. The full picture —
+    every node, every edge, every session — is ``graph()``.
+
+    Best effort: a session whose ledger cannot be read reports nothing, which costs
+    context and breaks no run.
+    """
+    try:
+        rows = _read_ledger(_resolve_proxy_name(proxy_name) or "")
+    except Exception:
+        return {}
+    if not rows:
+        return {}
+    accepted = [{"run_id": r.get("run_id", ""), "axis": r.get("axis", ""),
+                 "primary_value": r.get("primary_value")}
+                for r in rows if r.get("verdict") == "accept"]
+    # Names only, and deduplicated: what this is for is stopping an idea being paid
+    # for twice, so the same word said three times is one fact.
+    rejected, seen = [], set()
+    for row in rows:
+        axis = (row.get("axis") or "").strip()
+        if row.get("verdict") == "reject" and axis and axis not in seen:
+            seen.add(axis)
+            rejected.append(axis)
+    out = {
+        "tried": len(rows),
+        "accepted": accepted[-_AXES_SHOWN:],
+        "rejected": rejected[-_AXES_SHOWN:],
+    }
+    # Attempts judged against one incumbent were each made without the others in the
+    # tree, so no one of them contains another's edit.
+    from_same: dict[str, list[str]] = {}
+    for row in rows:
+        parent, axis = row.get("best_run_id"), (row.get("axis") or "").strip()
+        if parent and parent != row.get("run_id") and row.get("verdict") == "accept" and axis:
+            from_same.setdefault(parent, []).append(axis)
+    pairs = [sorted(set(axes)) for axes in from_same.values() if len(set(axes)) > 1]
+    if pairs:
+        out["independent"] = pairs[-_AXES_SHOWN:]
+        out["note"] = (
+            "Axes under one incumbent were each measured without the others, so none "
+            "contains another's edit — worth a run that combines them, never a promise "
+            "that they add up. The rejected ones are ideas already ruled out on this "
+            "code: choose something else rather than paying for them again."
+        )
+    elif rejected:
+        out["note"] = ("Already ruled out on this code — choose something else rather "
+                       "than paying for them again.")
+    return out
+
+
+def _run_axis(run_dir: str) -> str:
+    """What the run in *run_dir* said it was trying, or "".
+
+    Read back from the run's own config at settle time, because settling happens in the
+    runner process minutes or hours after the launch that knew it.
+    """
+    return str((_read_json(os.path.join(run_dir, "config.json")) or {}).get("axis") or "")
+
+
 def _ratchet_settle_locked(
     name: str, run_dir: str, final_metrics: dict, cfg: dict, outcome_path: str,
 ) -> dict:
@@ -1061,6 +1276,11 @@ def _ratchet_settle_locked(
     _append_ledger(name, {
         "run_id":        run_id,
         "ts":            datetime.now(timezone.utc).isoformat(),
+        # What this run was and where it started. The snapshot is the edge: a run whose
+        # launch tree is the state another run produced descends from it, which is what
+        # makes the session's attempts a shape rather than a list.
+        "axis":          _run_axis(run_dir),
+        "launch_tree":   launch_tree,
         "feasible":      feasible,
         "primary_value": primary_value,
         "wall_value":    wall_value,
@@ -1114,6 +1334,9 @@ def _settle_incomparable(
     run_id = os.path.basename(os.path.normpath(run_dir))
     _append_ledger(name, {
         "run_id": run_id, "ts": datetime.now(timezone.utc).isoformat(),
+        "axis": _run_axis(run_dir),
+        "launch_tree": (_read_json(os.path.join(run_dir, "tree_at_launch.json"))
+                        or {}).get("snapshot_id", ""),
         "feasible": feasible, "primary_value": primary_value, "wall_value": wall_value,
         "verdict": "incomparable", "stall": int(cfg.get("stall", 0)),
         "machine": machine.get("host", ""),
@@ -1303,6 +1526,8 @@ def results(proxy_name: str = "") -> dict:
     build_s = (final_metrics or {}).get("build_s") or 0.0
     recommendation += _long_build_note(build_s)
 
+    tried = axes_tried(proxy_name)
+
     return ok(_with_next({
         "run_dir":        run_dir,
         **({"build_s": build_s} if build_s else {}),
@@ -1318,6 +1543,9 @@ def results(proxy_name: str = "") -> dict:
         "best":           {"run_id": best_id, "primary_value": best_val},
         "stall":          r["stall"],
         "recommendation": recommendation,
+        # Attached rather than asked for: the moment the next edit is chosen is right
+        # here, and a call the agent has to remember to make is one it will not make.
+        **({"axes_tried": tried} if tried else {}),
         **({"timing_warning": r["timing_warning"]} if r.get("timing_warning") else {}),
     }, next_step))
 

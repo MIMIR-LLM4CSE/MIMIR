@@ -87,6 +87,7 @@ from __future__ import annotations
 
 import os
 import sys
+import time
 from typing import Annotated
 
 from pydantic import Field
@@ -249,7 +250,7 @@ _RUN_OUTCOME = {
     "measured_when": {"state": ["done"]},
 }
 
-_EVAL_STATUS_OPS = ("status", "results", "log", "runs", "diff", "config")
+_EVAL_STATUS_OPS = ("status", "results", "log", "runs", "diff", "config", "graph")
 
 
 @mcp.tool(**tool_caps(label="Proxy eval status: {op}", run_outcome=_RUN_OUTCOME))
@@ -277,10 +278,15 @@ def proxy_eval_status(
       diff    -> config + metric diff between two optimization runs (run_a/
                  run_b default to the two newest)
       config  -> the current session configuration
+      graph   -> every axis tried and what it measured, across all sessions:
+                 which attempts came from the same incumbent (so are independent
+                 of each other) and which were rejected. Read it before choosing
+                 what to try next — a rejected axis is an idea already ruled out
+                 on this code, and repeating it costs a full run to learn nothing.
 
     Args:
         proxy_name: Session to observe. Defaults to the most-recently
-            initialized session.
+            initialized session — and, for 'graph', to every session at once.
         tail: For 'log': number of lines from the end (1-500, default 50).
         run_a, run_b: For 'diff': run IDs or absolute paths.
     """
@@ -296,6 +302,10 @@ def proxy_eval_status(
         return eval_session.runs_diff(run_a, run_b, proxy_name)
     if op == "config":
         return eval_session.config_get(proxy_name)
+    if op == "graph":
+        # No proxy_name: every session, because a fan-out of sub-agents is one session
+        # per axis and the picture is only worth anything whole.
+        return eval_session.graph(proxy_name)
     return _unknown_op(op, _EVAL_STATUS_OPS)
 
 
@@ -568,6 +578,7 @@ async def proxy_eval(
     convergence: dict | None = None,
     repeat: int = 0,
     background: bool = False,
+    axis: str = "",
     confirm: bool = False,
 ) -> dict:
     """Drive an iterative proxy-optimization session as a monotone ratchet (sensitive).
@@ -669,6 +680,12 @@ async def proxy_eval(
             tracks completion and auto-resumes you with the results (end your turn;
             do not poll). Use it when the run is known to be long; otherwise leave it
             False and let the call answer directly.
+        axis: For op='run': what this run is TRYING, in a few words — "tiling",
+            "vectorise the inner loop", "cache-friendly layout". Recorded in the
+            session ledger beside the number the run produced. It is the one thing
+            about an attempt that cannot be measured, and without it the session's
+            history is a column of timings with no account of which ideas made them:
+            a later run cannot tell what has already been tried and rejected.
         confirm: Must be True to apply any operation.
     """
     if op not in _EVAL_OPS:
@@ -692,7 +709,8 @@ async def proxy_eval(
         return eval_session.configure(proxy_name, requirements, benchmark_name,
                                       python_executable, max_hours)
     if op == "run":
-        return await eval_session.run_awaited(proxy_name, background=background)
+        return await eval_session.run_awaited(proxy_name, background=background,
+                                              axis=axis)
     if op == "stop":
         return eval_session.stop(proxy_name)
     if op == "reset":
@@ -835,6 +853,96 @@ def proxy_slurm(
                              target=target)
 
 
+# A session is pinned to the machine its baseline ran on: a timing describes the
+# machine as much as the code, so a run taken elsewhere is settled as "incomparable"
+# and moves neither the best nor the stall counter (_ops.eval_session._settle_incomparable).
+# That verdict arrives after the run — after the build, the measurement and the wait.
+# The same comparison costs nothing before it, which is what this says.
+_PANEL_MACHINE_TTL_SECS = 300
+_PANEL_MACHINE: dict = {"at": 0.0, "value": {}}
+
+
+def _this_machine() -> dict:
+    """This host's identity, probed at most once every few minutes.
+
+    ``local_machine`` shells out to lscpu and nvidia-smi; the panel refreshes on a
+    timer, and neither answer changes between two refreshes.
+    """
+    now = time.time()
+    if not _PANEL_MACHINE["value"] or now - _PANEL_MACHINE["at"] > _PANEL_MACHINE_TTL_SECS:
+        try:
+            import cpu_facts
+            _PANEL_MACHINE["value"] = cpu_facts.local_machine()
+            _PANEL_MACHINE["at"] = now
+        except Exception:
+            return dict(_PANEL_MACHINE["value"])
+    return dict(_PANEL_MACHINE["value"])
+
+
+# The ledger parsed for the drawer, keyed on the file's own mtime. The panel refreshes
+# on a timer while a turn runs; the ledger changes only when a run settles, which is
+# minutes apart at best. Keyed on mtime rather than on a clock so there is no staleness
+# to reason about: the moment the file changes, the next refresh re-reads it.
+_PANEL_AXES: dict = {"key": None, "value": []}
+
+
+def _axes_lines(proxy_name: str) -> list[dict]:
+    """What has been tried on this session, for the drawer.
+
+    Built from the ledger, so the user sees the shape of the search without the agent
+    having to report it — and without anyone having to ask for it.
+    """
+    from _lib.store import _opt_ledger_file
+    try:
+        key = (proxy_name, os.path.getmtime(_opt_ledger_file(proxy_name)))
+    except OSError:
+        key = None                      # no ledger yet; nothing to cache or to show
+    if key is not None and key == _PANEL_AXES["key"]:
+        return _PANEL_AXES["value"]
+    try:
+        axes = eval_session.axes_tried(proxy_name)
+    except Exception:
+        return []
+    if not axes.get("tried"):
+        return []
+    lines: list[dict] = [{"label": "axes tried",
+              "value": f"{axes['tried']}, {len(axes.get('accepted') or [])} accepted"}]
+    rejected = [a for a in (axes.get("rejected") or []) if a]
+    if rejected:
+        lines.append({"label": "ruled out", "value": ", ".join(rejected[-4:])})
+    for pair in (axes.get("independent") or [])[-2:]:
+        lines.append({"label": "independent", "value": " + ".join(pair)})
+    if key is not None:
+        _PANEL_AXES.update({"key": key, "value": lines})
+    return lines
+
+
+def _comparability_lines(cfg: dict, metric: str) -> list[dict]:
+    """Where this session's numbers were taken, and whether a run here would join them.
+
+    Only for a metric whose value depends on the machine: an accuracy is reproducible
+    anywhere, so pinning would be noise. Nothing is said at all until a baseline has
+    pinned a machine — before that there is nothing to differ from.
+    """
+    from _ops.eval_session import _NOISY_METRICS
+
+    pinned = cfg.get("machine") or {}
+    signature = pinned.get("machine_signature") or ""
+    if not signature or metric not in _NOISY_METRICS:
+        return []
+    host = pinned.get("host") or pinned.get("cpu_model") or "another machine"
+    here = _this_machine()
+    if not here.get("machine_signature"):
+        return [{"label": "measured on", "value": host}]
+    if here["machine_signature"] == signature:
+        return [{"label": "measured on", "value": f"{host} (this machine)"}]
+    return [
+        {"label": "measured on", "value": host},
+        {"label": "here", "value": "different machine — a run taken here would be "
+                                   "incomparable", "state": "warn"},
+    ]
+
+
 @mcp.tool(**tool_caps(
     caps=[PANEL_REPORT],
     read_only=True,
@@ -871,6 +979,8 @@ def proxy_panel_report() -> dict:
                       "value": f"{best.get('primary_value')} ({best.get('run_id', '?')})"})
     if cfg.get("benchmark_name"):
         lines.append({"label": "benchmark", "value": cfg["benchmark_name"]})
+    lines.extend(_comparability_lines(cfg, metric))
+    lines.extend(_axes_lines(name))
     registry_names = sorted(_load_registry().keys())
     if len(registry_names) > 1:
         lines.append({"label": "other proxies",
