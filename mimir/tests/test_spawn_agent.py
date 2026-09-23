@@ -75,9 +75,19 @@ class _FakeAgent:
         }
         self._answer = answer
 
-        self.approvals = types.SimpleNamespace(
-            approval_mode="manual", unattended=False, mode_blocked=[],
-            _allowed_paths=set())
+        # The real manager, not a stand-in: what a session grant is worth is decided
+        # by its scope logic, and a namespace with a `approved_scopes` set would agree
+        # with whatever the server did to it.
+        from mimir.client.guardrails.policy.approval import ApprovalManager
+        self.approvals = ApprovalManager()
+
+    def approval_scope(self, tool_name: str, arguments: dict) -> str:
+        """As MimirAgent derives it — the key a session grant is recorded under."""
+        try:
+            return self.approvals._approval_scope(
+                tool_name, self.tool_owner.get(tool_name, "unknown"), arguments)
+        except Exception:
+            return ""
 
     def set_mode(self, mode): self.mode = mode
     def set_approval_mode(self, mode): self.approvals.approval_mode = mode
@@ -445,6 +455,44 @@ class UserChannelTests(unittest.TestCase):
         self.assertIn(order, (["a:in", "a:out", "b:in", "b:out"],
                               ["b:in", "b:out", "a:in", "a:out"]))
 
+    def test_allow_for_the_session_is_actually_recorded(self):
+        """A grant has to outlive the card that asked for it.
+
+        Recorded nowhere, "allow for the session" means the same question again at the
+        next step — and the only sign of it is the user being asked twice.
+        """
+        answered: dict = {}
+
+        class _Ctx:
+            def __init__(self):
+                self.session = self
+
+            async def elicit_form(self, message, requestedSchema):
+                answered["asked"] = True
+                return types.SimpleNamespace(
+                    action="accept",
+                    content={"answers": json.dumps(
+                        [{"selected": ["Allow for the session"]}])},
+                )
+
+        agent = _FakeAgent()
+        agent.tool_owner["bash_run"] = "bash"
+        loop = asyncio.new_event_loop()
+        threading.Thread(target=loop.run_forever, daemon=True).start()
+        spawn._install_user_channel(agent, _Ctx(), loop, "build the axis")
+        approved, note = agent._request_tool_approval("bash_run", {"command": "make -j"})
+        loop.call_soon_threadsafe(loop.stop)
+
+        self.assertTrue(answered.get("asked"))
+        self.assertTrue(approved)
+        self.assertIn("session", note)
+        # The next call of the same kind must not ask again: that is what the grant is.
+        self.assertTrue(
+            agent.approvals._is_scope_approved(
+                "bash_run", "bash",
+                agent.approval_scope("bash_run", {"command": "make -j"})),
+            f"nothing was recorded: {agent.approvals.approved_scopes}")
+
     def test_a_card_says_which_sub_agent_is_asking(self):
         asked: dict = {}
 
@@ -650,6 +698,85 @@ class SubAgentLevelTests(unittest.TestCase):
         """Nothing to isolate: it cannot write, so it costs no branch."""
         agent, _ = _run_child(["read_file_lines"], level="explore")
         self.assertEqual(agent.server_env.get("MCP_FILES_ROOT"), None)
+
+
+class ForgottenJobTests(unittest.TestCase):
+    """A detached sub-agent outlives the process that started it.
+
+    ``_JOBS`` is this server's memory; the card the child left is the record. A spawn
+    server restarted since the run was detached must answer from the card rather than
+    claim the handle never existed — the answer it is being asked for is right there.
+    """
+
+    def _with_card(self, card: dict, job_key: str = "sub-abcd1234"):
+        import state_paths
+        tmp = tempfile.mkdtemp()
+        directory = os.path.join(tmp, "sessions", "parent-1", "subagents", job_key)
+        os.makedirs(directory, exist_ok=True)
+        with open(os.path.join(directory, "subagent.json"), "w", encoding="utf-8") as fh:
+            json.dump(card, fh)
+        self.addCleanup(shutil.rmtree, tmp, True)
+        return mock.patch.object(state_paths, "state_dir", return_value=tmp), \
+            mock.patch.object(state_paths, "active_session_id", return_value="parent-1")
+
+    def _ask(self, card: dict, op: str = "result", job_key: str = "sub-abcd1234"):
+        state, session = self._with_card(card, job_key)
+        with state, session, mock.patch.dict(spawn._JOBS, {}, clear=True):
+            return spawn.subagent_job(op=op, job_key=job_key)
+
+    def test_a_finished_run_answers_from_its_card(self):
+        out = self._ask({
+            "session": "parent-1/subagents/sub-abcd1234", "task": "measure the tiling",
+            "state": "finished", "completed": True, "answer": "3.4x on the inner loop",
+            "tools": ["bash_run"], "model": "m", "files_written": ["kernel.c"],
+            "started_at": "2026-09-23T10:00:00", "ended_at": "2026-09-23T10:04:00",
+        })
+        self.assertEqual(out["status"], "ok")
+        self.assertEqual(out["state"], "done")
+        self.assertEqual(out["answer"], "3.4x on the inner loop")
+        self.assertTrue(out["completed"])
+        self.assertEqual(out["files_written"], ["kernel.c"])
+        self.assertEqual(out["elapsed_secs"], 240)
+
+    def test_the_cards_own_word_travels_beside_the_watchers(self):
+        """"abandoned" is terminal and delivered nothing, which is "crashed" to a
+        watcher — but a caller told only that would look for a crash there was not."""
+        out = self._ask({"state": "abandoned", "answer": "got as far as X",
+                         "task": "t", "started_at": "2026-09-23T10:00:00"})
+        self.assertEqual(out["state"], "crashed")
+        self.assertEqual(out["outcome"], "abandoned")
+
+    def test_a_card_left_running_by_a_dead_process_is_not_still_running(self):
+        """Its state is only ever written by the process that spawned it. Reported as
+        running, a watcher would poll a thread that no longer exists for ever."""
+        out = self._ask({"state": "running", "pid": 2 ** 22, "task": "t",
+                         "started_at": "2026-09-23T10:00:00"})
+        self.assertEqual(out["state"], "unknown")
+
+    def test_a_card_left_running_by_a_living_process_still_is(self):
+        out = self._ask({"state": "running", "pid": os.getpid(), "task": "t",
+                         "started_at": "2026-09-23T10:00:00"}, op="status")
+        self.assertEqual(out["state"], "running")
+
+    def test_a_handle_with_no_card_at_all_is_still_refused(self):
+        state, session = self._with_card({"state": "finished"}, "sub-aaaa1111")
+        with state, session, mock.patch.dict(spawn._JOBS, {}, clear=True):
+            out = spawn.subagent_job(op="result", job_key="sub-bbbb2222")
+        self.assertEqual(out["status"], "error")
+        self.assertIn("sub-bbbb2222", out["error"])
+
+    def test_a_job_this_process_still_holds_is_never_read_off_disk(self):
+        """The card is written once, at the end; the entry is live. Preferring the card
+        would answer a running child's question with a blank."""
+        entry = {"state": "running", "started": time.time(), "budget": 600,
+                 "task": "live", "session": "s", "model": "m", "tools": [],
+                 "phase": "reading", "result": None, "child": {}}
+        state, session = self._with_card({"state": "finished", "answer": "stale"})
+        with state, session, mock.patch.dict(
+                spawn._JOBS, {"sub-abcd1234": entry}, clear=True):
+            out = spawn.subagent_job(op="status", job_key="sub-abcd1234")
+        self.assertEqual(out["state"], "running")
+        self.assertEqual(out["phase"], "reading")
 
 
 class SubSessionTests(unittest.TestCase):

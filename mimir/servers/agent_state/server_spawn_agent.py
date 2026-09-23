@@ -709,9 +709,15 @@ def _install_user_channel(agent, ctx: Context, loop, task: str) -> None:
             _APPROVAL_OPTIONS,
         )
         if answer.startswith("Allow for the session"):
-            agent.approvals.approve_scope(
-                tool_name, agent.tool_owner.get(tool_name, "unknown"), arguments) \
-                if hasattr(agent.approvals, "approve_scope") else None
+            # Recorded under the same key a front-end "always" uses, so a grant given
+            # here narrows the way theirs does — a command family rather than the whole
+            # tool. A call whose scope cannot be derived falls back to trusting the tool
+            # itself, which is what the coarse path has always meant.
+            scope = agent.approval_scope(tool_name, arguments)
+            if scope:
+                agent.approvals.approved_scopes.add(scope)
+            else:
+                agent.approvals.trust_tool(tool_name, agent.tool_owner.get(tool_name))
             return True, "approved for this session"
         if answer.startswith("Allow"):
             return True, "approved once"
@@ -1156,6 +1162,84 @@ def _settle_job(job_key: str, state: str, result: dict | None) -> None:
             entry["ended"] = time.time()
 
 
+# What a card's own word means to a watcher, whose vocabulary is running/done/
+# crashed/unknown and nothing else (ws_worker._watch_job: any other word is read as
+# "still going" and polled for ever). "abandoned" maps to crashed because that is what
+# it is from here — a run that ended without delivering; the card's own word travels
+# beside it as `outcome`, so the report never loses what actually happened.
+_CARD_STATE_TO_JOB = {
+    "finished": "done",
+    "failed": "crashed",
+    "abandoned": "crashed",
+}
+
+
+def _card_epoch(stamp: str | None) -> float:
+    """A card's timestamp as seconds, or 0 when it has none that parses.
+
+    The cards write local time without an offset, and both ends of an elapsed time come
+    from the same card — so a naive parse subtracts correctly, and a stamp that does not
+    parse yields 0 rather than failing a read.
+    """
+    try:
+        return time.mktime(time.strptime(str(stamp), "%Y-%m-%dT%H:%M:%S"))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _entry_from_card(job_key: str) -> dict | None:
+    """Rebuild a forgotten job from the card its sub-agent left, or None.
+
+    ``_JOBS`` is this process's memory: a spawn server restarted since the run was
+    detached knows nothing about it, while the card on disk still holds the task, the
+    grant, the final state and the whole answer. The card is reachable without an index
+    because the job key IS the last segment of the child's session
+    (``<parent>/subagents/<job_key>``), so the parent session is the only thing to
+    resolve.
+
+    A card still saying "running" is judged by its pid like everywhere else here: the
+    process that would have finished it is gone, so the honest state is "unknown", not
+    a run the watcher would poll for ever.
+    """
+    if not job_key:
+        return None
+    try:
+        from state_paths import active_session_id, state_dir
+        parent = active_session_id()
+        path = os.path.join(state_dir(), "sessions", parent, "subagents", job_key,
+                            "subagent.json")
+        with open(path, encoding="utf-8") as fh:
+            card = json.load(fh)
+    except Exception:
+        return None
+    state = str(card.get("state") or "unknown")
+    if state == "running":
+        job_state = "running" if _card_is_live(card) else "unknown"
+    else:
+        job_state = _CARD_STATE_TO_JOB.get(state, "unknown")
+    return {
+        "state": job_state,
+        "outcome": state,
+        "started": _card_epoch(card.get("started_at")),
+        "ended": _card_epoch(card.get("ended_at")) or None,
+        "budget": card.get("budget_secs", SUBAGENT_HARD_CAP_SECS),
+        "task": card.get("task", ""),
+        "session": card.get("session", ""),
+        "model": card.get("model", ""),
+        "tools": card.get("tools", []),
+        "phase": "",
+        "from_card": True,
+        "result": None if job_state == "running" else {
+            "answer": card.get("answer", ""),
+            "completed": bool(card.get("completed")),
+            "files_read": [],
+            "files_written": card.get("files_written", []),
+            "blocked_by_mode": [],
+            "workspace": card.get("workspace", {}),
+        },
+    }
+
+
 def _job_state(entry: dict) -> str:
     """The state the watcher acts on: running, done, crashed — or unknown past the budget.
 
@@ -1164,6 +1248,10 @@ def _job_state(entry: dict) -> str:
     """
     if entry.get("state") != "running":
         return entry["state"]
+    if entry.get("from_card"):
+        # Read off a card, not off this process's clock: its pid said the run is still
+        # being written, and there is no start time here to time it out against.
+        return "running"
     if time.time() - entry.get("started", 0) > entry.get("budget", SUBAGENT_HARD_CAP_SECS):
         return "unknown"
     return "running"
@@ -1248,10 +1336,13 @@ async def spawn_agent(
                                   was given a writing or running tool it worked in a
                                   COPY of the repository: the ``branch`` its work was
                                   committed to, the ``path`` of that copy, the files it
-                                  changed and a ``diffstat``. ``kept`` says whether the
-                                  copy is still on disk — it is only when the run did
-                                  not finish. Read the branch, compare the axes, and
-                                  merge the one you keep yourself.
+                                  changed and a ``diffstat``. The copy is kept either
+                                  way — it holds the build tree the axis paid for — and
+                                  the oldest go when a later sub-agent needs the room;
+                                  what tells a finished axis from an interrupted one is
+                                  ``committed`` and the ``note``, not ``kept``. Read the
+                                  branch, compare the axes, and merge the one you keep
+                                  yourself.
         On failure (the sub-agent crashed or ran out of time):
             {"status": "error", "error": "…", "answer": "<partial>", ...}
             — distinct ``status`` so the orchestrator can branch on failure without
@@ -1466,6 +1557,10 @@ def subagent_job(
                 gives back. While it still runs, this is what it has done so far.
         list    every sub-agent of this session, newest first.
 
+    A handle this server no longer holds in memory — it was restarted since the run was
+    detached — is answered from the card the sub-agent left, which carries its whole
+    answer. ``outcome`` then says how the card itself put it, next to the state above.
+
     You are resumed automatically when a background sub-agent finishes, so do not poll
     its status: ask for its ``result`` if you need what it has so far, and otherwise
     get on with other work.
@@ -1485,11 +1580,11 @@ def subagent_job(
         jobs.sort(key=lambda j: j["elapsed_secs"])
         return ok({"jobs": jobs, "count": len(jobs)})
 
-    entry = _job_snapshot(job_key)
+    entry = _job_snapshot(job_key) or _entry_from_card(job_key)
     if entry is None:
-        return err(f"unknown sub-agent job {job_key!r}: it was never started here, or "
-                   f"this session has since forgotten it. Use op='list' to see the "
-                   f"ones it still holds.")
+        return err(f"unknown sub-agent job {job_key!r}: no sub-agent of this session "
+                   f"was started under that handle, and none left a card under it. Use "
+                   f"op='list' to see the ones this server still holds.")
     state = _job_state(entry)
     base = {
         "state": state,
@@ -1498,12 +1593,21 @@ def subagent_job(
         "session": entry.get("session", ""),
         "model": entry.get("model", ""),
         "tools": entry.get("tools", []),
-        "elapsed_secs": int((entry.get("ended") or time.time()) - entry.get("started", 0)),
+        # 0 when the start time is unknown — a card whose stamp did not parse would
+        # otherwise report the seconds since 1970 as this run's duration.
+        "elapsed_secs": int((entry.get("ended") or time.time()) - entry["started"])
+                        if entry.get("started") else 0,
         # What it is doing, in the words of its own last tool row. The watcher passes
         # this on as the job's phase, which is the only sign of life a detached child
         # has once its call has returned.
         "phase": entry.get("phase", ""),
     }
+    if entry.get("from_card"):
+        # Rebuilt from the card: say so, and keep the card's own word for how it ended.
+        # "abandoned" has no place in the watcher's vocabulary but every place in a
+        # report, and a caller told only "crashed" would look for a crash there was not.
+        base["outcome"] = entry.get("outcome", "")
+        base["from_card"] = True
     if op != "result":
         return ok(base)
     result = entry.get("result")
@@ -1583,8 +1687,9 @@ async def _run_sub_agent(
         return result
     finally:
         if worktree is not None:
-            # Committed and dropped on a clean run, kept when the run did not finish:
-            # an unfinished axis has its state nowhere else.
+            # Committed on a clean run, left staged when it did not finish: an
+            # unfinished axis has its state nowhere else. The copy itself stays either
+            # way — see _finish_worktree.
             clean = bool(result) and not result.get("error")
             record["workspace"] = _finish_worktree(worktree, task, clean)
             if result is not None:
