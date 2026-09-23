@@ -686,7 +686,14 @@ class VllmBackend(LLMBackend):
         # 400s anyway, so raise a clear error instead. Last-resort net; the agent loop's
         # context budgeting should prevent reaching here.
         max_tokens = options.get("max_tokens") or options.get("num_predict")
-        mml = served_model_len(model, config)
+        # The window every other budget here is sized against, not the raw /v1/models
+        # reading: `context_window` consults detection first and the configured window
+        # second, so an endpoint that publishes no max_model_len is still measured by
+        # what the user declared. Reading the publication alone made a declared window
+        # invisible at the one place that bounds generation — the context bar, the
+        # eviction and the compaction all sized themselves to 512K while the answer
+        # fell through to the unknown-window reserve.
+        mml = self.context_window(model)
         if mml:
             import json as _json
             prompt_text = _json.dumps(prepared_messages)
@@ -699,8 +706,13 @@ class VllmBackend(LLMBackend):
                     f"window ({mml} tokens) for {model!r}. Reduce the conversation "
                     f"(/context compact, /clear) or use a model with a larger window."
                 )
-            if max_tokens is None:
-                max_tokens = _answer_max_tokens(mml, prompt_tokens)
+            # A caller's max_tokens is a ceiling, not an instruction. Callers set it
+            # from what the work needs (a sub-agent caps its own steps), knowing
+            # nothing about the window this endpoint serves; sent verbatim, any
+            # allocation larger than the window is a 400 rather than a shorter answer.
+            # Whichever of the two is smaller is the one that fits.
+            sized = _answer_max_tokens(mml, prompt_tokens)
+            max_tokens = sized if max_tokens is None else min(int(max_tokens), sized)
         if max_tokens is not None:
             create_kwargs["max_tokens"] = max(1, int(max_tokens))
 
