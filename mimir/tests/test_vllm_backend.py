@@ -270,3 +270,51 @@ class WindowPrecedenceTests(unittest.TestCase):
 
     def test_neither_leaves_the_window_unknown(self) -> None:
         self.assertIsNone(self._window(None, None))
+
+
+class DeclaredWindowBoundsTheAnswerTests(unittest.TestCase):
+    """The window that bounds generation is the one every other budget uses.
+
+    Incident (2026-09-22): a router publishing no ``max_model_len``, with the window
+    declared as 512K in the settings. ``_fetch_context_window`` honoured the
+    declaration, so the context bar, the eviction and the compaction all sized
+    themselves to 512K — but the request shaper read ``served_model_len`` directly,
+    which consults only /v1/models. The declaration was invisible at the one place
+    that caps a generation, so a README-writing step fell through to the
+    unknown-window reserve, ran for minutes, and died on the router's 500.
+    """
+
+    def _sent(self, options, declared=None, served=None):
+        import mimir.client.query_engine.backends.vllm_backend as vb
+        sent: dict = {}
+        message = types.SimpleNamespace(role="assistant", content="ok", tool_calls=None)
+        response = types.SimpleNamespace(
+            choices=[types.SimpleNamespace(finish_reason="stop", message=message)])
+        env = {"MIMIR_VLLM_MAX_MODEL_LEN": str(declared)} if declared is not None else {}
+
+        def _create(client, kwargs):
+            sent.update(kwargs)
+            return response
+
+        with patch.dict("os.environ", env, clear=False), \
+             patch.object(vb, "_create", _create), \
+             patch.object(vb, "served_model_len", lambda model, config=None: served):
+            if declared is None:
+                os.environ.pop("MIMIR_VLLM_MAX_MODEL_LEN", None)
+            FinishReasonTests._backend().chat(
+                "m", [{"role": "user", "content": "q"}], [], False, False, options)
+        return sent
+
+    def test_a_declared_window_sizes_the_answer_when_none_is_published(self) -> None:
+        sent = self._sent({}, declared=524_288)
+        self.assertEqual(sent["max_tokens"], int(524_288 * CTX_RESERVED_RATIO))
+
+    def test_a_callers_ceiling_is_clamped_to_what_the_window_allows(self) -> None:
+        # A caller sizes its ceiling from the work, not from this endpoint; sent
+        # verbatim, a 200K allocation on a 32K model is a 400 rather than a cap.
+        sent = self._sent({"max_tokens": 200_000}, served=32_768)
+        self.assertEqual(sent["max_tokens"], int(32_768 * CTX_RESERVED_RATIO))
+
+    def test_a_ceiling_under_the_window_is_left_alone(self) -> None:
+        self.assertEqual(self._sent({"max_tokens": 4_096}, served=262_144)["max_tokens"],
+                         4_096)
