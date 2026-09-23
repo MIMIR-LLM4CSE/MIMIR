@@ -167,6 +167,19 @@ export interface ModelsMessage {
   error?: string;
 }
 
+/**
+ * What the endpoint serves, reported by the agent server once connected.
+ *
+ * Distinct from `ModelsMessage`, which is the extension host's own probe of an
+ * address typed into the connect form: this one comes from the process that holds
+ * the endpoint and its key, so the picker has a list even when that probe never got
+ * through (a corporate proxy with no route to the cluster swallows it).
+ */
+export interface ServedModelsMessage {
+  type: "served_models";
+  models: string[];
+}
+
 /** The served model changed mid-session — the status bar and derived controls follow. */
 export interface ModelChangedMessage {
   type: "model_changed";
@@ -584,6 +597,7 @@ export type ServerMessage =
   | ConfigMessage
   | AutoConnectMessage
   | ModelsMessage
+  | ServedModelsMessage
   | ModelChangedMessage
   | DiffMessage
   | SteerInjectedMessage

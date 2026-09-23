@@ -351,6 +351,15 @@ export const App: React.FC = () => {
         setModelsProbed(true);
         return;
 
+      case "served_models":
+        // The agent server's own answer about its endpoint. It wins over the
+        // extension host's probe — same question, asked by the process that is
+        // actually connected — and arrives even when that probe was swallowed.
+        setEndpointModels(msg.models);
+        setModelsError(null);
+        setModelsProbed(true);
+        return;
+
       case "model_changed":
         // The served model switched mid-session — follow the status bar, and
         // re-sync the model-derived controls (thinking profile, enforcement).

@@ -142,6 +142,39 @@ class SessionFencingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["enforcement"], "light")
         self.assertEqual(payload["temperature"], {"supported": True, "value": 0.6})
 
+    async def test_served_models_reach_the_client_so_a_choice_can_be_offered(self):
+        # The panel's model picker exists only when it knows of more than one model.
+        # Learning that from the extension host's own probe of the address made the
+        # picker hostage to a corporate proxy with no route to the cluster; the agent
+        # server is connected to the endpoint either way.
+        w = _bare_worker()
+        w.served_models = lambda: ["a", "b"]
+        sess = self._session(w)
+        await sess._send_served_models()
+        payload = json.loads(sess.ws.sent[0])
+        self.assertEqual(payload["type"], "served_models")
+        self.assertEqual(payload["models"], ["a", "b"])
+
+    async def test_an_endpoint_that_names_nothing_sends_nothing(self):
+        # An empty list is not a choice, and would replace a list the extension
+        # host's probe may have got through with on its own.
+        w = _bare_worker()
+        w.served_models = lambda: []
+        sess = self._session(w)
+        await sess._send_served_models()
+        self.assertEqual(sess.ws.sent, [])
+
+    async def test_a_failing_lookup_does_not_break_the_connection(self):
+        # This runs inside the greeting sequence; raising here would abort a session
+        # that is otherwise perfectly usable at its default model.
+        w = _bare_worker()
+        def _boom():
+            raise RuntimeError("endpoint down")
+        w.served_models = _boom
+        sess = self._session(w)
+        await sess._send_served_models()
+        self.assertEqual(sess.ws.sent, [])
+
     async def test_set_model_with_no_name_sends_an_error_not_a_change(self):
         sess = self._session(_bare_worker())
         await sess._handle_set_model({"model": "  "})

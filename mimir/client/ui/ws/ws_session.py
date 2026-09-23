@@ -204,6 +204,8 @@ class _Session:
         # Last, so the card lands under a chat that is already on screen.
         await self._resend_parked_prompt()
 
+        await self._send_served_models()
+
         # The greeting above may have said "not ready" and the worker may have come
         # up since. It announces that once, by queueing a second ``ready`` on out_q —
         # and ``_drop_stale_events`` empties that queue when the worker is idle, which
@@ -2086,6 +2088,34 @@ class _Session:
         if name:
             self.worker.set_nudge_enabled(name, bool(msg.get("enabled", True)))
         await self._send_toggles()
+
+    async def _send_served_models(self) -> None:
+        """Tell the client what the endpoint serves, so it can offer a choice.
+
+        The agent process is the one authority on this: it holds the address and the
+        API key, and it reaches the cluster the way the rest of the client does. The
+        VS Code panel used to learn the list only from its own probe in the extension
+        host — so a probe a corporate proxy swallowed left the user connected to a
+        working endpoint with no way to switch model, the list missing rather than
+        the capability.
+
+        Sent after the greeting, not inside it: asking the endpoint is a network
+        round trip, and the greeting is what takes the webview out of "connecting".
+        Off-thread for the same reason — a slow endpoint must not hold the event loop
+        that serves every other message. An endpoint that cannot enumerate itself
+        sends nothing; the client keeps naming the active model.
+        """
+        try:
+            models = await asyncio.get_event_loop().run_in_executor(
+                None, self.worker.served_models)
+        except Exception:
+            return
+        if not models:
+            return
+        try:
+            await self.ws.send(json.dumps({"type": "served_models", "models": models}))
+        except Exception:
+            pass
 
     async def _handle_set_model(self, msg: dict) -> None:
         """Switch the served model mid-session.

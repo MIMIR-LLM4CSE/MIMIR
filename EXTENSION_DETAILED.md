@@ -111,6 +111,11 @@ side takes at every cluster call (`httpx.Client(trust_env=False)`, `_direct_open
 and any future host-side request to an endpoint belongs on `directGet` for that reason.
 The deadline is 30 s: these endpoints are often slow to *answer*, not absent.
 
+The model picker does not depend on that probe getting through. Once connected, the agent
+server — which holds the address and the key — reports what its endpoint serves as a
+`served_models` message (`_send_served_models`, off-thread so a slow endpoint never holds
+the event loop), and the webview prefers it over the host's own answer.
+
 The Python `ready` message then carries a `thinking` descriptor —
 `{mechanism, levels, can_disable}` from `thinking_profile()` in
 `client/config/models.py` — and `AgentSettings.buildScale()` turns it into the depth
