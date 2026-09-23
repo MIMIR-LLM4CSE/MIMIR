@@ -127,8 +127,16 @@ def _compute_tree_summary(root: str, max_depth: int, max_entries: int) -> tuple[
 
         for fn in sorted(filenames):
             fp = os.path.join(dirpath, fn)
-            size_kb = round(os.path.getsize(fp) / 1024, 1)
-            lines.append(f"{indent}  {fn} [{size_kb} KB]")
+            # os.walk lists a dangling symlink among the filenames, and sizing one
+            # raises — which took the whole summary down rather than the one entry.
+            # A venv whose base interpreter moved leaves a directory full of them, so
+            # this is the ordinary case, not the exotic one. Reported without a size,
+            # the way list_files already reports what it cannot size.
+            try:
+                size = f"[{round(os.path.getsize(fp) / 1024, 1)} KB]"
+            except OSError:
+                size = "[broken link]" if os.path.islink(fp) else "[unreadable]"
+            lines.append(f"{indent}  {fn} {size}")
             if len(lines) >= max_entries:
                 truncated = True
                 break
