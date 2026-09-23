@@ -77,6 +77,19 @@ export const ConnectForm: React.FC<Props> = ({
     return () => clearTimeout(t);
   }, [backend, url, anthropic, onFetchModels]);
 
+  // A probe waits up to 30 s on the endpoint, because a reachable one behind a VPN
+  // or still loading weights often takes several seconds to answer. Past a few of
+  // them, an unchanging "Asking…" reads as a hang, and the user retypes an address
+  // that was working: say that the wait is expected rather than leaving them to
+  // guess. Reset whenever a new probe starts, so the line tracks this attempt.
+  const [slow, setSlow] = useState(false);
+  useEffect(() => {
+    setSlow(false);
+    if (anthropic || modelsProbed || modelsError) return;
+    const t = setTimeout(() => setSlow(true), 4000);
+    return () => clearTimeout(t);
+  }, [backend, url, anthropic, modelsProbed, modelsError]);
+
   // The model is picked from what the endpoint serves. The remembered model wins
   // over the first entry, so a reconnect lands on the same model as last time —
   // and the control below shows that choice rather than making it silently.
@@ -178,7 +191,10 @@ export const ConnectForm: React.FC<Props> = ({
           <div className="connect-field-hint">
             {modelsProbed
               ? "This address answered but named no model — connecting will let the server pick."
-              : "Asking this address what it serves…"}
+              : slow
+                ? "Still asking this address what it serves — a slow network or a server "
+                  + "that is still starting can take up to 30 seconds."
+                : "Asking this address what it serves…"}
           </div>
         </div>
       ) : null}

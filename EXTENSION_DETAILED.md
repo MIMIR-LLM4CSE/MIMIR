@@ -100,6 +100,22 @@ the host dials the port that socket owns. It names the IPv4 socket when there is
 only `connect-src ws://localhost:*`; the fetch itself lives in `src/modelList.ts`
 (`modelsUrl` / `parseModels` are pure and unit-tested in `src/modelList.test.ts`).
 
+That request goes through `src/directHttp.ts`, which speaks HTTP/1.1 over a `net`/`tls`
+socket instead of calling `http.get`. VS Code patches http/https in the extension host to
+route through the proxy it resolves (`http.proxySupport`, `"override"` by default —
+it replaces even an agent the caller passes). A corporate proxy has no route to a cluster
+address: it accepts the CONNECT and holds it, so a proxied probe hangs until its own
+deadline and the form reports "did not answer in time" about a server that answers in
+under a second. `net`/`tls` are off that patch's path. It is the same posture the Python
+side takes at every cluster call (`httpx.Client(trust_env=False)`, `_direct_opener()`),
+and any future host-side request to an endpoint belongs on `directGet` for that reason.
+The deadline is 30 s: these endpoints are often slow to *answer*, not absent.
+
+The model picker does not depend on that probe getting through. Once connected, the agent
+server — which holds the address and the key — reports what its endpoint serves as a
+`served_models` message (`_send_served_models`, off-thread so a slow endpoint never holds
+the event loop), and the webview prefers it over the host's own answer.
+
 The Python `ready` message then carries a `thinking` descriptor —
 `{mechanism, levels, can_disable}` from `thinking_profile()` in
 `client/config/models.py` — and `AgentSettings.buildScale()` turns it into the depth

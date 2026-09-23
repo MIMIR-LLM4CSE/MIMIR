@@ -1197,6 +1197,29 @@ class _AgentWorker:
         self.model = model
         return ""
 
+    def served_models(self) -> list[str]:
+        """Model ids the endpoint is serving, or [] if it cannot say.
+
+        The agent process is the one authority on this: it holds the address and the
+        API key, and it reaches the cluster with the proxy posture the whole client
+        uses. The VS Code panel used to learn the list only from its own probe in the
+        extension host, so a probe that a corporate proxy swallowed left the user
+        connected to a working endpoint with no way to switch model — the list was
+        missing, not the capability. Reporting it from here makes the panel's picker
+        independent of whether that probe got through.
+
+        Never raises: a backend that cannot enumerate itself, or an endpoint that
+        does not answer, reads as "nothing to offer" and the caller falls back to
+        naming the active model.
+        """
+        if self._agent is None:
+            return []
+        try:
+            from ...query_engine.backends.factory import get_backend
+            return [m for m in get_backend().served_models() if isinstance(m, str) and m.strip()]
+        except Exception:
+            return []
+
     def set_batch(self, enabled: bool) -> None:
         if self._agent is not None:
             self._agent.set_batch_mode(enabled)

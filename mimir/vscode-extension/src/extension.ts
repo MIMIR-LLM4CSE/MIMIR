@@ -435,6 +435,13 @@ class MimirAgentViewProvider implements vscode.WebviewViewProvider {
    */
   private _modelLog: vscode.OutputChannel | undefined;
   /**
+   * Which model probe the webview is still waiting on. A probe now waits up to
+   * 30 s, and the form fires one per address the user pauses on: a slow reply for
+   * an address that has since been retyped would otherwise land last and replace
+   * a good list with its own failure. Only the newest probe may post.
+   */
+  private _modelProbeSeq = 0;
+  /**
    * Endpoint we auto-connected to, kept until a webview has actually been told.
    * The React app is what shows the connecting state, and it mounts long after we
    * start — so this is replayed on every `get_config` (its mount handshake) until
@@ -525,8 +532,11 @@ class MimirAgentViewProvider implements vscode.WebviewViewProvider {
     const verifySsl = vscode.workspace.getConfiguration("mimir").get<boolean>("vllmVerifySsl", true);
     this._autoConnectProbing = true;
     try {
+      // Longer than the form's own probe is short: nothing waits on this — the
+      // connect form is already usable — and the address is one that worked
+      // before, so a slow VPN or a still-starting node is worth waiting out.
       const models = await fetchModels(
-        saved.backend as DiscoverableBackend, saved.baseUrl, verifySsl, 5000);
+        saved.backend as DiscoverableBackend, saved.baseUrl, verifySsl, 30000);
       this._autoConnectModels = { backend: saved.backend, models };
     } catch {
       // Endpoint not up — leave the user on the connect form. The attempt is not
@@ -973,11 +983,14 @@ class MimirAgentViewProvider implements vscode.WebviewViewProvider {
       return;
     }
     const verifySsl = vscode.workspace.getConfiguration("mimir").get<boolean>("vllmVerifySsl", true);
+    const seq = ++this._modelProbeSeq;
+    const current = () => seq === this._modelProbeSeq;
     try {
       const models = await fetchModels(backend as DiscoverableBackend, baseUrl, verifySsl);
       (this._modelLog ??= vscode.window.createOutputChannel("MIMIR Model Discovery")).appendLine(
         `Model list from ${baseUrl}: ${models.length ? models.join(", ") : "(none named)"}`,
       );
+      if (!current()) return;
       this._view?.webview.postMessage({ type: "models", backend, models });
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
@@ -987,6 +1000,7 @@ class MimirAgentViewProvider implements vscode.WebviewViewProvider {
       (this._modelLog ??= vscode.window.createOutputChannel("MIMIR Model Discovery")).appendLine(
         `Model list from ${baseUrl} failed: ${reason}`,
       );
+      if (!current()) return;
       // The panel gets the plain-words version; the raw reason stays in the log.
       this._view?.webview.postMessage({
         type: "models", backend, models: [], error: explainFetchError(err, baseUrl),
