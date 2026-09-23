@@ -71,13 +71,40 @@ def _subagents_dir(session_id: str) -> str:
     return os.path.join(_sessions_dir(), os.path.basename(session_id), _SUBAGENTS_DIRNAME)
 
 
+def _still_running(card: dict) -> bool:
+    """Whether a card that says "running" belongs to a process that still exists.
+
+    A card's state is only ever finished by the process that wrote it, so a spawn
+    server killed mid-run leaves one saying "running" for good — and the badge counting
+    those never comes back down, however often the panel refreshes. The pid the card
+    records is the test, applied here the way the spawn server applies it to its own
+    copies (``_card_is_live``).
+
+    Erring towards alive: a card from before pids were recorded, or one owned by another
+    user's process, counts as running. A child shown as working for a moment too long is
+    a smaller lie than one shown as dead while it works.
+    """
+    pid = card.get("pid")
+    if not isinstance(pid, int):
+        return True
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:
+        return True
+    return True
+
+
 def list_subagents(session_id: str) -> list[dict]:
     """The sub-agents this session spawned, newest first.
 
     Each is the card the spawn server left (``subagent.json``): what it was asked, what
     it was given, how it ended. A directory without one is a child that died before
     writing anything, reported as such rather than hidden — an axis that vanished is
-    precisely what the user needs to see.
+    precisely what the user needs to see. A card still saying "running" is checked
+    against its own pid (:func:`_still_running`), so a process that was killed mid-run
+    reports as abandoned instead of working for ever.
 
     The answer is clipped here and only here: it is the one field that can run to
     kilobytes, this list carries every card of the session at once, and the panel shows
@@ -98,6 +125,11 @@ def list_subagents(session_id: str) -> list[dict]:
         except (OSError, json.JSONDecodeError):
             pass
         card["id"] = name           # the directory is the identity, not the file
+        # Said to be working, by a process that is gone: it was abandoned mid-run, and
+        # nothing will ever write its ending. Reported as such rather than left running
+        # for the life of the session.
+        if card.get("state") == "running" and not _still_running(card):
+            card["state"] = "abandoned"
         answer = card.get("answer") or ""
         if len(answer) > _CARD_ANSWER_CHARS:
             card["answer"] = answer[:_CARD_ANSWER_CHARS] + "…"

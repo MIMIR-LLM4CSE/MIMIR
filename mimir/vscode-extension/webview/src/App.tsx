@@ -89,6 +89,15 @@ function makeId(): string {
 /** How often the rendered transcript is checkpointed to the server mid-turn. */
 const TRANSCRIPT_CHECKPOINT_MS = 5000;
 
+/**
+ * How often the sub-agent cards are re-read while any of them may be working.
+ *
+ * They are files another process writes, so there is nothing to subscribe to. Cheap
+ * enough at this cadence to keep the count on the button honest: a session that never
+ * delegated has no directory to list at all.
+ */
+const SUBAGENT_POLL_MS = 2000;
+
 function modelDisplayName(value: string): string {
   const trimmed = value.trim();
   if (!trimmed) return "MIMIR";
@@ -666,12 +675,31 @@ export const App: React.FC = () => {
     if (chatState.busy || !wasBusy) return;
     const timer = setTimeout(sendTranscript, 1000);
     // A turn that delegated left new cards on disk. Ask again rather than watch: the
-    // panel is a reader of files another process writes.
-    if (showSubAgentsPanel) refreshSubAgents();
+    // panel is a reader of files another process writes. Unconditionally for the cards
+    // — the count on the button is shown whether the drawer is open or not, and a
+    // refresh gated on the drawer left it holding a number from minutes ago. The
+    // heavier whole-drawer report stays gated: it calls every server that fills a
+    // section, which is not worth doing for a panel nobody is looking at.
+    refreshSubAgents();
     if (showSciencePanel) refreshPanel();
     return () => clearTimeout(timer);
-  }, [chatState.busy, sendTranscript, showSubAgentsPanel, refreshSubAgents,
+  }, [chatState.busy, sendTranscript, refreshSubAgents,
       showSciencePanel, refreshPanel]);
+
+  // While a turn is running, or while any sub-agent is still working, keep asking.
+  // Children start and finish inside a turn, and a detached one lands after it; the
+  // badge has to follow both, so this lives here rather than in the drawer that used
+  // to own it. It stops on its own once the turn ends and the count reaches zero, and
+  // a session that never delegated pays a directory that does not exist.
+  //
+  // The interface polls, never the model: the agent is woken when a run lands, and
+  // asking it "are we there yet" is the one thing it must not do.
+  const pollCards = showSciencePanel ? refreshPanel : refreshSubAgents;
+  useEffect(() => {
+    if (!chatState.busy && runningSubAgents === 0) return;
+    const timer = setInterval(pollCards, SUBAGENT_POLL_MS);
+    return () => clearInterval(timer);
+  }, [chatState.busy, runningSubAgents, pollCards]);
 
   // And during it. The end of the turn used to be the only handover, which made every
   // long run a window where the work on screen existed nowhere else: a dropped

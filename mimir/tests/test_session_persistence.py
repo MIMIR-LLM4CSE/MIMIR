@@ -238,6 +238,46 @@ class SubAgentCardTests(unittest.TestCase):
                                  "chi >= 8, colouring exact.")
 
 
+class StaleRunningCardTests(unittest.TestCase):
+    """A card only its own process can finish, read after that process is gone.
+
+    The badge on the sub-agents button counts the cards saying "running". One left
+    behind by a killed spawn server said it for the life of the session, and no amount
+    of refreshing brought the count back down.
+    """
+
+    def _card(self, tmp, card):
+        directory = os.path.join(tmp, "s1", "subagents", "sub-1")
+        os.makedirs(directory, exist_ok=True)
+        with open(os.path.join(directory, "subagent.json"), "w", encoding="utf-8") as fh:
+            json.dump({"started_at": "2026-09-20T11:41:51", **card}, fh)
+
+    def _state(self, card):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._card(tmp, card)
+            with mock.patch("mimir.client.ui.ws.session_store._sessions_dir",
+                            return_value=tmp):
+                return list_subagents("s1")[0]["state"]
+
+    def test_running_by_a_process_that_is_gone_reads_as_abandoned(self):
+        self.assertEqual(
+            self._state({"state": "running", "pid": 2 ** 22}), "abandoned")
+
+    def test_running_by_a_living_process_is_left_alone(self):
+        self.assertEqual(
+            self._state({"state": "running", "pid": os.getpid()}), "running")
+
+    def test_a_card_with_no_pid_is_given_the_benefit_of_the_doubt(self):
+        """Written before pids were recorded. Showing a working child as dead is the
+        worse of the two mistakes."""
+        self.assertEqual(self._state({"state": "running"}), "running")
+
+    def test_a_finished_card_is_never_re_judged(self):
+        """Its pid is long gone by definition; the state it wrote is the answer."""
+        self.assertEqual(
+            self._state({"state": "finished", "pid": 2 ** 22}), "finished")
+
+
 class TranscriptHandlerTests(unittest.IsolatedAsyncioTestCase):
     async def test_a_client_transcript_replaces_the_text_only_messages(self):
         sess = _session()

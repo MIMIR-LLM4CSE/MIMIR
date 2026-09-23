@@ -45,18 +45,16 @@ export const SubAgentsPanel: React.FC<Props> = ({
     onRefresh();
   }, [onRefresh]);
 
-  // While something is working, keep the view live — and only then. The interface
-  // polls, never the model: the agent is woken when a run lands, and asking it "are
-  // we there yet" is the one thing it must not do.
+  // While something is working, keep the OPEN card live. The list itself is refreshed
+  // by App, which polls for as long as a sub-agent is working whether this drawer is
+  // open or not — the count on the button has to come down too, and a panel that owns
+  // the only interval cannot make that happen while it is closed.
   const watching = anyRunning(subAgents);
   useEffect(() => {
-    if (!watching) return;
-    const timer = setInterval(() => {
-      onRefresh();
-      if (expandedId) onOpen(expandedId);
-    }, 2000);
+    if (!watching || !expandedId) return;
+    const timer = setInterval(() => onOpen(expandedId), 2000);
     return () => clearInterval(timer);
-  }, [watching, expandedId, onRefresh, onOpen]);
+  }, [watching, expandedId, onOpen]);
 
   const toggle = (id: string) => {
     if (expandedId === id) {
