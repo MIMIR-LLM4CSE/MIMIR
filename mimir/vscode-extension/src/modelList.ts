@@ -8,8 +8,7 @@
  * The fetch lives in the extension host, not the webview: the webview's CSP only
  * allows `connect-src ws://localhost:*`, so React cannot reach an HTTP endpoint.
  */
-import * as http from "http";
-import * as https from "https";
+import { directGet } from "./directHttp";
 
 /** Endpoints that can enumerate their own models. Anthropic keeps a static list. */
 export type DiscoverableBackend = "vllm" | "ollama" | "ray";
@@ -57,99 +56,38 @@ export function parseModels(backend: DiscoverableBackend, body: unknown): string
 /**
  * GET the model list from *baseUrl*.
  *
- * Uses Node's http/https with an agent of our own. The env vars are ignored either
- * way, but `http.proxySupport` (VS Code's default) patches these modules in the
- * extension host to inject a proxy agent — which black-holes the on-prem endpoint
- * this asks about. Passing an explicit agent leaves nothing for that patch to fill
- * in, so the request goes straight to the address the user typed. `verifySsl`
- * mirrors the `mimir.vllmVerifySsl` setting — one switch for both OpenAI-compatible
- * endpoints — for internal HTTPS routes served behind a private CA.
+ * The request goes through `directGet`, not `http.get`: see `directHttp.ts` for why
+ * the extension host must reach a cluster address without the proxy VS Code would
+ * otherwise impose. `verifySsl` mirrors the `mimir.vllmVerifySsl` setting — one
+ * switch for both OpenAI-compatible endpoints — for HTTPS routes behind a private CA.
  *
- * The deadline is enforced by a timer of our own, not by the `timeout` request
- * option. That option only arms `socket.setTimeout`, and only once a socket has been
- * assigned: a name that never resolves, a connection that never completes, or a
- * proxy CONNECT that never answers leaves the request with no socket, no timer and
- * no error — a promise that never settles. The caller then waits forever on a
- * question that will never be answered, which is the one outcome a discovery call
- * must not produce. The rejection names the last phase reached, because "it hung"
- * and "it hung before DNS even answered" call for different fixes.
+ * The default deadline is generous (30 s) because the endpoints this asks about are
+ * often slow to *answer*, not absent: a cluster route behind a VPN, a gateway that
+ * queues the first request, a vLLM server still loading weights. A short deadline
+ * turns "it is coming" into "it is broken" — the user reads a failure under the
+ * address field and retypes an address that was right all along.
  */
-export function fetchModels(
+export async function fetchModels(
   backend: DiscoverableBackend,
   baseUrl: string,
   verifySsl = true,
-  timeoutMs = 5000,
+  timeoutMs = 30000,
 ): Promise<string[]> {
-  return new Promise((resolve, reject) => {
-    let url: URL;
-    try {
-      url = new URL(modelsUrl(backend, baseUrl));
-    } catch {
-      reject(new Error(`invalid URL: ${baseUrl}`));
-      return;
-    }
-    const secure = url.protocol === "https:";
-    const mod = secure ? https : http;
-    // Explicit, so VS Code's proxy patching has no default agent to substitute.
-    const agent = secure
-      ? new https.Agent({ rejectUnauthorized: verifySsl })
-      : new http.Agent();
-
-    // How far the request got, for the message if it gets no further.
-    let phase = "no socket assigned (name resolution, connection or proxy CONNECT)";
-    let settled = false;
-    const finish = (fn: () => void) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(deadline);
-      fn();
-    };
-    const deadline = setTimeout(() => {
-      finish(() => {
-        req.destroy();
-        reject(new Error(`timed out after ${timeoutMs} ms — ${phase}`));
-      });
-    }, timeoutMs);
-
-    const req = mod.get(
-      url,
-      { agent, rejectUnauthorized: verifySsl, timeout: timeoutMs },
-      (res) => {
-        phase = `response started (HTTP ${res.statusCode ?? 0})`;
-        const status = res.statusCode ?? 0;
-        if (status < 200 || status >= 300) {
-          res.resume();
-          finish(() => reject(new Error(`HTTP ${status} from ${url.href}`)));
-          return;
-        }
-        let raw = "";
-        res.setEncoding("utf8");
-        res.on("data", (chunk: string) => { raw += chunk; });
-        res.on("end", () => {
-          finish(() => {
-            try {
-              resolve(parseModels(backend, JSON.parse(raw)));
-            } catch {
-              reject(new Error(`unreadable response from ${url.href}`));
-            }
-          });
-        });
-      },
-    );
-
-    // Each step the request clears, so a hang can say where it stopped rather than
-    // only that it stopped. A socket assigned but never connected is a blocked route
-    // or a proxy holding the CONNECT; a connection made but no response is the
-    // endpoint itself going quiet.
-    req.on("socket", (socket) => {
-      phase = "socket assigned, connecting";
-      socket.on("lookup", () => { phase = "name resolved, connecting"; });
-      socket.on("connect", () => { phase = "connected, waiting for a response"; });
-      socket.on("secureConnect", () => { phase = "TLS established, waiting for a response"; });
-    });
-    req.on("timeout", () => req.destroy(new Error(`timed out after ${timeoutMs} ms — ${phase}`)));
-    req.on("error", (err) => finish(() => reject(err)));
-  });
+  let url: URL;
+  try {
+    url = new URL(modelsUrl(backend, baseUrl));
+  } catch {
+    throw new Error(`invalid URL: ${baseUrl}`);
+  }
+  const res = await directGet(url, { verifySsl, timeoutMs });
+  if (res.status < 200 || res.status >= 300) {
+    throw new Error(`HTTP ${res.status} from ${url.href}`);
+  }
+  try {
+    return parseModels(backend, JSON.parse(res.body));
+  } catch {
+    throw new Error(`unreadable response from ${url.href}`);
+  }
 }
 
 /** Node's codes for a certificate the client would not trust. */
