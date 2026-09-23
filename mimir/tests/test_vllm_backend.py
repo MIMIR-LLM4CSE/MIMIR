@@ -251,6 +251,46 @@ class ContextWindowPriorityTests(unittest.TestCase):
 
 
 
+class UnknownWindowTests(unittest.TestCase):
+    """A server that publishes no max_model_len must still bound the answer.
+
+    Incident (2026-09-20): an OpenAI-compatible router served the model but
+    reported no ``max_model_len``, so no ``max_tokens`` was sent and vLLM defaulted
+    it to the whole remaining window — a >600K-token allowance. A sub-agent's
+    report-writing step ran until the router gave up with a 500, three identical
+    retries deep, ~90s apiece, with nothing to show for the six minutes.
+    """
+
+    def _sent(self, options, window=None):
+        import mimir.client.query_engine.backends.vllm_backend as vb
+        sent: dict = {}
+        message = types.SimpleNamespace(role="assistant", content="ok", tool_calls=None)
+        response = types.SimpleNamespace(
+            choices=[types.SimpleNamespace(finish_reason="stop", message=message)])
+
+        def _create(client, kwargs):
+            sent.update(kwargs)
+            return response
+
+        with patch.object(vb, "_create", _create), \
+             patch.object(vb, "served_model_len", lambda model, config=None: window):
+            FinishReasonTests._backend().chat(
+                "m", [{"role": "user", "content": "q"}], [], False, False, options)
+        return sent
+
+    def test_no_published_window_still_caps_the_answer(self) -> None:
+        from mimir.client.config.constants import CTX_TOTAL_FULL
+        sent = self._sent({})
+        self.assertEqual(sent["max_tokens"], int(CTX_TOTAL_FULL * CTX_RESERVED_RATIO))
+
+    def test_an_explicit_ceiling_still_wins(self) -> None:
+        self.assertEqual(self._sent({"max_tokens": 128})["max_tokens"], 128)
+
+    def test_a_published_window_sizes_the_answer_as_before(self) -> None:
+        sent = self._sent({}, window=262_144)
+        self.assertEqual(sent["max_tokens"], int(262_144 * CTX_RESERVED_RATIO))
+
+
 class DeclaredWindowBoundsTheAnswerTests(unittest.TestCase):
     """The window that bounds generation is the one every other budget uses.
 

@@ -142,6 +142,16 @@ def _answer_max_tokens(mml: int, prompt_tokens: int) -> int:
     return min(remaining, int(mml * CTX_RESERVED_RATIO))
 
 
+def _unknown_window_answer_tokens() -> int:
+    """Answer allocation to request when the server reports no max_model_len.
+
+    The reserve the context budget already sets aside for the answer on the assumed
+    window — the one number here that does not pretend to know the real window.
+    """
+    from ...config.constants import CTX_RESERVED_RATIO, CTX_TOTAL_FULL
+    return max(1, int(CTX_TOTAL_FULL * CTX_RESERVED_RATIO))
+
+
 # Models whose chat template rejected `chat_template_kwargs` outright, so we stop
 # sending them. Keyed by model name; populated by `_create` on the one 400 it takes
 # to find out. Most templates ignore a kwarg they don't know, so this stays empty.
@@ -713,6 +723,16 @@ class VllmBackend(LLMBackend):
             # Whichever of the two is smaller is the one that fits.
             sized = _answer_max_tokens(mml, prompt_tokens)
             max_tokens = sized if max_tokens is None else min(int(max_tokens), sized)
+        elif max_tokens is None:
+            # No served window to size the answer against, and none requested: vLLM
+            # then defaults max_tokens to (max_model_len - prompt_tokens), which on a
+            # large window is an all-but-unbounded generation. Observed against an
+            # OpenAI-compatible router that reports no max_model_len and serves a
+            # >600K window: a report-writing step ran until the router gave up and
+            # answered 500, three identical retries deep, ~90s each. Fall back to the
+            # same answer reserve the budget assumes when the window is unknown, so an
+            # unmeasurable endpoint bounds the answer instead of not bounding it.
+            max_tokens = _unknown_window_answer_tokens()
         if max_tokens is not None:
             create_kwargs["max_tokens"] = max(1, int(max_tokens))
 
