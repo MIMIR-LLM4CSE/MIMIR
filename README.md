@@ -80,7 +80,9 @@ git clone https://github.com/MIMIR-LLM4CSE/MIMIR.git && cd MIMIR
 
 `install.sh` fetches a portable Python 3.10, creates `.venv-<os>-<arch>` (e.g.
 `.venv-linux-x86_64`), installs the package with a smoke test, and — when
-`npm` is available — builds and installs the VS Code extension.
+`npm` is available — builds and installs the VS Code extension. No npm? The CLI
+still works; [SETUP.md §6a](SETUP.md#6a-get-nodejs-and-npm) explains how to get
+Node.js and npm, then re-run `./install.sh` for the panel.
 
 **In VS Code:** reload the window, open the MIMIR panel, pick a backend, and type
 the address of your server (`http://<host>:8000` for vLLM or Ray Serve,
@@ -452,7 +454,7 @@ The agent runs in a background thread with its own asyncio loop, so blocking app
 never freeze the WebSocket.
 
 ```bash
-# 1. Build and install the extension (needs Node.js >= 18)
+# 1. Build and install the extension (needs Node.js >= 18 + npm; SETUP.md #6a)
 cd mimir/vscode-extension
 npm install && npm run deploy      # installs it, or updates it in place
 #    then reload the VS Code window (Ctrl+Shift+P -> Developer: Reload Window)

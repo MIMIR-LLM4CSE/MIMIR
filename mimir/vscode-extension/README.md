@@ -14,6 +14,16 @@ already run: vLLM, Ray Serve, Ollama, or the hosted Claude API.
 
 ## Install
 
+Building the extension needs **Node.js ≥ 18 and npm** (`node -v`, `npm -v`). If
+they are missing: `sudo apt install nodejs npm` (Debian/Ubuntu), `sudo dnf
+install nodejs npm` (RHEL/Fedora), `brew install node` (macOS), or the installer
+from [nodejs.org](https://nodejs.org/en/download) (Windows). Without root — on a
+cluster node, say — install [nvm](https://github.com/nvm-sh/nvm) and run `nvm
+install --lts`, which puts Node and npm under your home directory. Distribution
+packages are sometimes older than Node 18; check `node -v`. Full instructions,
+including the VS Code terminal caveat, are in
+[SETUP.md §6a](https://github.com/MIMIR-LLM4CSE/MIMIR/blob/main/SETUP.md#6a-get-nodejs-and-npm).
+
 ```bash
 cd mimir/vscode-extension
 npm install

@@ -32,6 +32,10 @@ don't reformat code you are not otherwise touching.
 
 ## VS Code extension
 
+Needs Node.js ≥ 18 and npm (`node -v`, `npm -v`). If you don't have them,
+[SETUP.md §6a](SETUP.md#6a-get-nodejs-and-npm) covers the options — including
+[nvm](https://github.com/nvm-sh/nvm) when you have no root access.
+
 ```bash
 cd mimir/vscode-extension
 npm install
