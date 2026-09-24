@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import queue as _queue
 import threading
+from collections import OrderedDict
 import types
 import unittest
 from unittest.mock import patch
@@ -35,8 +36,8 @@ _PROMPT = {"type": "approval", "id": "card-1", "tool": "bash_run"}
 def _worker() -> _AgentWorker:
     w = object.__new__(_AgentWorker)
     w.out_q = _queue.Queue()
-    w._approval_q = _queue.Queue()
-    w._question_q = _queue.Queue()
+    w._prompts = OrderedDict()
+    w._prompts_lock = threading.Lock()
     w._pending_prompt = None
     w._pending_questions = None
     w._defer = threading.Event()
@@ -53,7 +54,7 @@ class WorkerDeferralTests(unittest.TestCase):
         self.assertTrue(w.defer())
         token = CURRENT_CALL_ID.set("call-7")
         try:
-            self.assertIsNone(w._await_response(w._approval_q))
+            self.assertIsNone(w._await_response(_PROMPT["id"]))
         finally:
             CURRENT_CALL_ID.reset(token)
         self.assertEqual(w._agent._deferred_prompts,
@@ -73,7 +74,7 @@ class WorkerDeferralTests(unittest.TestCase):
         w._preanswer = {"type": "approval", "response": {"choice": "y"}}
         w._emit_prompt(dict(_PROMPT))
         self.assertTrue(w.out_q.empty())
-        self.assertEqual(w._await_response(w._approval_q), {"choice": "y"})
+        self.assertEqual(w._await_response(_PROMPT["id"]), {"choice": "y"})
         # One answer, one card: the next one is asked for real.
         self.assertIsNone(w._preanswer)
         w._emit_prompt(dict(_PROMPT))
@@ -228,8 +229,10 @@ class _FakeWorker:
     def submit_resume(self, record, answer, history, session_id=None) -> None:
         self.resumed = (record, answer, history, session_id)
 
-    def resolve_approval(self, choice, approved_files=None) -> None:
-        self.calls.append(("resolve", choice))
+    def resolve_approval(self, choice, approved_files=None, req_id="") -> None:
+        # The id travels now: an answer is delivered to the card it names, not to
+        # whatever happens to be listening.
+        self.calls.append(("resolve", choice, req_id))
 
 
 def _session(worker) -> _Session:
@@ -279,13 +282,14 @@ class SessionDeferralTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(history), 1)          # placeholder gone from the window
         self.assertEqual(len(sess.history_full), 1)  # …and from the record
         self.assertIsNone(sess._pending_interaction)
-        self.assertNotIn(("resolve", "y"), w.calls)
+        self.assertFalse([c for c in w.calls if c[0] == "resolve"])
 
     async def test_a_live_card_is_still_answered_live(self) -> None:
         w = _FakeWorker(parked=True)
         sess = _session(w)
         await sess._handle_approval_response({"id": "other", "choice": "n"})
-        self.assertEqual(w.calls, [("resolve", "n")])
+        # Answered live, and the card it names travels with it.
+        self.assertEqual(w.calls, [("resolve", "n", "other")])
 
     async def test_an_answer_to_a_card_moved_past_goes_nowhere(self) -> None:
         w = _FakeWorker(parked=True)

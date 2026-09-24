@@ -16,8 +16,16 @@ from mimir.tests.test_session_isolation import _FakeWS, _bare_worker, SessionFen
 
 
 def _parked_worker(prompt: dict | None = None) -> _AgentWorker:
+    """A worker parked on *prompt*, or on nothing.
+
+    The card is raised the way the shims raise it and then drained, which is the state
+    a reconnect finds: shown to a socket that has since gone. Planting one straight
+    into the slot would skip the queue that decides what is on screen.
+    """
     w = _bare_worker()
-    w._pending_prompt = prompt
+    if prompt is not None:
+        w._emit_prompt(prompt)
+        w.out_q.get_nowait()
     return w
 
 
@@ -40,8 +48,9 @@ class PendingPromptTests(unittest.TestCase):
     def test_an_answer_ends_the_park(self):
         w = _parked_worker({"type": "approval", "id": "a1"})
         w._agent = None
-        w._approval_q.put({"choice": "y"})
-        self.assertEqual(w._await_response(w._approval_q), {"choice": "y"})
+        w.resolve_approval("y", None, "a1")
+        self.assertEqual(w._await_response("a1"),
+                         {"choice": "y", "approved_files": None})
         self.assertIsNone(w.pending_prompt())
 
     def test_a_cancelled_wait_ends_the_park(self):
@@ -54,7 +63,7 @@ class PendingPromptTests(unittest.TestCase):
 
         w = _parked_worker({"type": "approval", "id": "a1"})
         w._agent = _Cancelled()
-        self.assertIsNone(w._await_response(w._approval_q))
+        self.assertIsNone(w._await_response("a1"))
         self.assertIsNone(w.pending_prompt())
 
     def test_a_card_still_on_its_way_out_is_not_handed_out_twice(self):

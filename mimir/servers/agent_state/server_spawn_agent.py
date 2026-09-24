@@ -63,14 +63,30 @@ mcp = FastMCP("spawn_agent")
 # question, it does not draft a plan.
 _READONLY_CHILD_MODE = "ask"
 
-# Wall for one sub-agent run, enforced here and set per call by the caller. What the
-# tool DECLARES to the dispatcher is the maximum plus a margin, so this cap fires
-# first and hands back what the child had instead of the parent killing the call with
-# nothing to show. The maximum stays under the client's own ceiling on a declared
-# timeout (config.constants.TOOL_CALL_TIMEOUT_MAX_SECS, 1200s).
-SUBAGENT_DEFAULT_BUDGET_SECS = 600
+# Wall for one sub-agent run, by what the child was actually given to do. A child that
+# only reads answers a question and stops; a child that edits, compiles and measures is
+# doing the work this whole apparatus exists for, and ten minutes of it is a run cut off
+# for a reason that has nothing to do with the task.
+#
+# The rung the user set decides which applies, through the same test that decides
+# whether the child gets a copy of the repository — so "works in its own copy" and "has
+# hours to do it" can never disagree.
+SUBAGENT_EXPLORE_BUDGET_SECS = 600            # 10 min: read, search, conclude
+SUBAGENT_WORKING_BUDGET_SECS = 7200           # 2 h:   edit, build, measure, repeat
 SUBAGENT_MIN_BUDGET_SECS = 60
+
+# The longest a BLOCKING sub-agent call can last. The client caps any timeout a tool
+# declares at config.constants.TOOL_CALL_TIMEOUT_MAX_SECS (1200s, see
+# context.capabilities), so a call cannot hold a child for longer whatever this server
+# declares — a longer budget is detached instead (see spawn_agent). The margin below
+# that ceiling is what lets this server's own cap fire first and hand back what the
+# child had, rather than the dispatcher killing the call with nothing to show.
 SUBAGENT_HARD_CAP_SECS = 1140
+
+# What one child may spend in tool-call steps: nothing. A step ceiling cut a long run
+# off for a reason unrelated to its difficulty, and the wall that matters is the clock.
+# The agent loop reads 0 as "no ceiling" (query_engine.agent_loop).
+SUBAGENT_MAX_STEPS = 0
 
 # The request-_meta key the client sends its approval mode under (client
 # guardrails.policy.approval.APPROVAL_MODE_META). A child runs in that mode; absent or
@@ -145,6 +161,11 @@ _TOOLS_DESCRIPTION = (
 
 
 def _human_budget(secs: int) -> str:
+    """The budget as a person would say it. "about 120 minutes" is a number to convert
+    before it means anything, and a working child's budget is now measured in hours."""
+    if secs >= 5400:
+        hours = secs / 3600
+        return f"about {hours:.0f} hours" if hours >= 1.75 else "about an hour and a half"
     minutes = secs // 60
     return f"about {minutes} minutes" if minutes >= 2 else f"{secs} seconds"
 
@@ -230,6 +251,22 @@ def _abandon_child(child: dict) -> None:
     except Exception as exc:  # a child mid-teardown must not fail its caller
         print(f"spawn_agent: could not stop abandoned sub-agent: {exc}",
               file=sys.stderr)
+
+
+def _overrun_note(budget: int) -> str:
+    """Why this run ended, said once and used by both paths.
+
+    A run stopped by its clock is not a run that finished, and a caller told only
+    "here is what it did" reads the handoff as a conclusion. The distinction has to be
+    in the words, because ``completed: False`` alone is a flag the model may not weigh.
+    """
+    return (
+        f"This sub-agent was stopped after {_human_budget(budget)} — its time budget, "
+        f"not the end of its work. What follows is where it had got to, not a "
+        f"conclusion. Carry it on from here (its session holds its todo list and its "
+        f"scratchpad) rather than starting the task again: a full budget has just been "
+        f"spent on it and nothing about it has changed."
+    )
 
 
 def _final_state(child: dict | None, result: dict | None) -> str:
@@ -325,10 +362,11 @@ _WORK_BRIEF = (
     "You are a working sub-agent: one self-contained piece of a larger task, with your "
     "own context and your own todo list. Only the tools listed for you are available — "
     "nothing else is connected, so plan within them and say so if the task truly needs "
-    "more. You have {budget} and at most {steps} tool-call steps: before they run out, "
-    "STOP and finish with a HANDOFF — what you established and how you verified it, what "
-    "is left, and where it is (files, branch, scratchpad). A caller who gets your handoff "
-    "can carry the work on; a caller who gets nothing pays for it twice."
+    "more. Take as many tool-call steps as the work needs; what bounds you is the "
+    "clock, and you have {budget}. Well before it runs out, STOP and finish with a "
+    "HANDOFF — what you established and how you verified it, what is left, and where it "
+    "is (files, branch, scratchpad). A caller who gets your handoff can carry the work "
+    "on; a caller who gets nothing pays for it twice."
 )
 
 # ── Sub-agent output routing ──────────────────────────────────────────────────
@@ -622,16 +660,20 @@ def _sub_session_id() -> str:
 
 # ── Reaching the user from inside a sub-agent ─────────────────────────────────
 # A child that needs an approval, or has a question, must be able to reach the person
-# — otherwise the work stops on a step nobody was asked about. The route exists while
-# the delegating call is open: this server may elicit on that call's session, and the
-# client renders the card it already renders for any other server.
+# — otherwise the work stops on a step nobody was asked about. The route is the MCP
+# session, which is one per stdio connection and not one per request: it is there for
+# a detached child exactly as much as for a blocking one, and the client renders the
+# card it already renders for any other server.
 #
-# Two rules the relay owes the user, both enforced here rather than hoped for:
+# Two rules the relay owes the user:
 #   * ONE AT A TIME. Several children can be working at once; several cards at once is
 #     a pile nobody can answer in order. They queue on this lock, so a card is shown,
-#     answered, and only then is the next one raised.
-#   * WHO IS ASKING. Every card names the sub-agent and its task, because "allow this
-#     command?" from an unnamed process is a question the user cannot weigh.
+#     answered, and only then is the next one raised. The client enforces the same rule
+#     across every source (ws_worker._show_next) — this lock keeps a fan-out from
+#     filling that queue in the first place.
+#   * WHO IS ASKING. Every card carries its sub-agent and its task as `origin`,
+#     because "allow this command?" from an unnamed process is a question the user
+#     cannot weigh.
 _ASK_LOCK = asyncio.Lock()
 
 _APPROVAL_OPTIONS = [
@@ -642,13 +684,19 @@ _APPROVAL_OPTIONS = [
 ]
 
 
-async def _ask_the_user(ctx: Context, header: str, question: str,
-                        options: list[dict]) -> str:
+async def _ask_the_user(session, header: str, question: str, options: list[dict],
+                        origin: dict | None = None) -> str:
     """Put one card to the user and return the label they chose, or "" .
 
     Queued behind every other sub-agent's card, so the answers cannot be attributed to
     the wrong question. A channel that fails is silence, not an answer: the caller
     reads "" as "they did not say", which every caller here treats as a refusal.
+
+    *session* is the MCP ``ServerSession`` — one per stdio connection, not one per
+    request — which is why this still reaches the user after the delegating call has
+    returned. *origin* says who is asking, and travels as data rather than as a prefix
+    glued to the question text: the front end shows it as a badge, and a badge is
+    something a person can read at a glance and the interface can style.
     """
     spec_questions = [{
         "question": question,
@@ -656,16 +704,19 @@ async def _ask_the_user(ctx: Context, header: str, question: str,
         "options": options,
         "multi_select": False,
     }]
+    x_mimir: dict = {"kind": "user_question", "questions": spec_questions}
+    if origin:
+        x_mimir["origin"] = origin
     schema = {
         "type": "object",
         "title": header[:24] or "Sub-agent",
-        "x_mimir": {"kind": "user_question", "questions": spec_questions},
+        "x_mimir": x_mimir,
         "properties": {"answers": {"type": "array", "items": {"type": "object"}}},
         "required": [],
     }
     async with _ASK_LOCK:
         try:
-            result = await ctx.session.elicit_form(message=question, requestedSchema=schema)
+            result = await session.elicit_form(message=question, requestedSchema=schema)
         except Exception as exc:
             print(f"spawn_agent: could not reach the user: {exc}", file=sys.stderr)
             return ""
@@ -680,32 +731,65 @@ async def _ask_the_user(ctx: Context, header: str, question: str,
         return ""
 
 
-def _install_user_channel(agent, ctx: Context, loop, task: str) -> None:
+# Seconds a child has spent in front of the user, by session. A card can sit for as
+# long as the person takes, and that wait happens outside every clock that would
+# normally exempt it: `human_pause` is thread-local and the wait lands on whichever
+# thread the client's elicitation callback runs on. Uncounted, a child parked on a
+# question ages out of its own budget and is reported lost while its card is still on
+# screen. This is where the cards are raised, so this is where the clock is kept.
+_PAUSED: dict[str, float] = {}
+_PAUSED_LOCK = threading.Lock()
+
+
+def _record_pause(session: str, seconds: float) -> None:
+    if not session or seconds <= 0:
+        return
+    with _PAUSED_LOCK:
+        _PAUSED[session] = _PAUSED.get(session, 0.0) + seconds
+
+
+def _paused_secs(session: str) -> float:
+    with _PAUSED_LOCK:
+        return _PAUSED.get(session, 0.0)
+
+
+def _install_user_channel(agent, session, loop, task: str) -> None:
     """Route this child's approvals and questions to the user, through the caller.
 
-    Installed only for a child whose delegating call is still open: the elicitation
-    rides that call's session, and a detached child has none — it keeps running
-    unattended and reports what its mode refused, as before.
+    Installed for every child, detached or not. *session* is the MCP ``ServerSession``
+    — one per stdio connection, not one per request — so it still reaches the user
+    after the delegating call has returned; the client registers its elicitation
+    callback on connect, not per call, and routes whatever arrives to the front end.
 
     The child runs in its own thread with its own event loop, so each relay hops back
     onto the server's loop and blocks its own thread until the user answers. Blocking
     is correct here: the child has nothing to do until it has its answer.
     """
     label = task.strip().splitlines()[0][:60] if task.strip() else "a sub-agent"
+    # Who is asking, as data. Every card carries it, because "allow this command?" from
+    # an unnamed process is a question the user cannot weigh — and because several
+    # children can be working at once.
+    origin = {"kind": "subagent", "label": label,
+              "session": getattr(agent, "session_id", "") or ""}
 
     def _ask(header: str, question: str, options: list[dict]) -> str:
         future = asyncio.run_coroutine_threadsafe(
-            _ask_the_user(ctx, header, question, options), loop)
+            _ask_the_user(session, header, question, options, origin), loop)
+        started = time.monotonic()
         try:
             return future.result(timeout=SUBAGENT_HARD_CAP_SECS)
         except Exception:
             return ""
+        finally:
+            _record_pause(origin["session"], time.monotonic() - started)
 
     def _approve_tool(tool_name: str, arguments: dict, max_attempts: int = 3):
         detail = json.dumps(arguments, ensure_ascii=False, default=str)[:400]
+        # The name of the child is in `origin`, not repeated here: the card shows it as
+        # a badge, and saying it twice on one card reads as two different facts.
         answer = _ask(
             "Sub-agent",
-            f"Sub-agent «{label}» wants to run {tool_name}.\n{detail}",
+            f"Run {tool_name}?\n{detail}",
             _APPROVAL_OPTIONS,
         )
         if answer.startswith("Allow for the session"):
@@ -727,7 +811,7 @@ def _install_user_channel(agent, ctx: Context, loop, task: str) -> None:
         shown = ", ".join(paths[:5]) + ("…" if len(paths) > 5 else "")
         answer = _ask(
             "Outside",
-            f"Sub-agent «{label}» wants to reach outside the workspace: {shown}",
+            f"Reach outside the workspace: {shown}",
             _APPROVAL_OPTIONS,
         )
         if answer.startswith("Allow for the session"):
@@ -739,7 +823,7 @@ def _install_user_channel(agent, ctx: Context, loop, task: str) -> None:
         for q in questions or []:
             chosen = _ask(
                 str(q.get("header") or "Sub-agent"),
-                f"Sub-agent «{label}» asks: {q.get('question') or ''}",
+                str(q.get("question") or ""),
                 list(q.get("options") or []),
             )
             answers.append({"header": q.get("header", ""),
@@ -1118,6 +1202,69 @@ _JOBS_LOCK = threading.Lock()
 _JOBS_MAX = 64
 
 
+# ── How many at once ──────────────────────────────────────────────────────────
+# Nothing else bounds a fan-out: the client dispatches every non-writing call of one
+# model step concurrently, so a model that emits eight delegations gets eight — eight
+# threads, their MCP server subprocesses, and eight concurrent streams on one endpoint,
+# each budgeting for its own share of the window. The prompt asks for one to three;
+# that is guidance, and this is the bound.
+#
+# It lives here rather than in the client's dispatcher because this process owns what
+# is being protected, and because it sees a DETACHED child for its whole life — a
+# dispatcher-side limit would lose sight of one the moment its call returned.
+SUBAGENT_MAX_CONCURRENT = int(os.environ.get("MIMIR_SUBAGENT_MAX_CONCURRENT") or 3)
+
+# How long a call waits for a slot before giving up. Working children run for hours, so
+# a full house can stay full for hours; a caller that simply queued behind that would
+# freeze the turn it belongs to with nothing on screen to explain it. Better to say
+# what is running and let the model do something else meanwhile.
+SUBAGENT_SLOT_WAIT_SECS = 20
+
+# A threading semaphore, not an asyncio one. A detached child gives its slot back from
+# its own thread, long after the loop its call ran on has gone; an asyncio semaphore
+# would have to be released through that loop, and releasing through a closed loop
+# silently leaks the slot until the server is restarted. This one is released from
+# wherever the child happens to end.
+_SLOTS = threading.Semaphore(SUBAGENT_MAX_CONCURRENT)
+# Who holds a slot: {session: (task, started_at)}. Kept beside the semaphore rather
+# than read off _JOBS, which only knows the detached ones — a refusal that listed half
+# of what is running would send the caller looking for the rest.
+_SLOT_HOLDERS: dict[str, tuple[str, float]] = {}
+
+
+def _take_slot(session: str, task: str) -> None:
+    with _JOBS_LOCK:
+        _SLOT_HOLDERS[session] = (task.strip().splitlines()[0][:60], time.time())
+
+
+async def _wait_for_slot() -> bool:
+    """Take a slot, waiting up to SUBAGENT_SLOT_WAIT_SECS. False when none came free.
+
+    The blocking acquire runs on a worker thread so this server's loop keeps answering
+    while a caller queues — including the very calls that would free a slot.
+    """
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(
+        None, _SLOTS.acquire, True, SUBAGENT_SLOT_WAIT_SECS)
+
+
+def _free_slot(session: str) -> None:
+    """Give the slot back. Called once, from the child's thread, whatever happened."""
+    with _JOBS_LOCK:
+        _SLOT_HOLDERS.pop(session, None)
+    _SLOTS.release()
+
+
+def _busy_with() -> str:
+    """What is holding the slots right now, for a caller that could not get one."""
+    with _JOBS_LOCK:
+        held = list(_SLOT_HOLDERS.values())
+    if not held:
+        return "nothing this server still remembers"
+    now = time.time()
+    return "; ".join(f"{task!r} ({int(now - started)}s so far)" for task, started in held)
+
+
 def _job_descriptor(job_key: str) -> dict:
     """The handle the client's watcher polls.
 
@@ -1252,7 +1399,12 @@ def _job_state(entry: dict) -> str:
         # Read off a card, not off this process's clock: its pid said the run is still
         # being written, and there is no start time here to time it out against.
         return "running"
-    if time.time() - entry.get("started", 0) > entry.get("budget", SUBAGENT_HARD_CAP_SECS):
+    # Time the child spent in front of the user is not time it spent working. Without
+    # this, a run parked on its own approval card ages out of its budget and is
+    # reported lost to the watcher — which treats "unknown" as terminal — while the
+    # card it is waiting on is still on screen.
+    working = (time.time() - entry.get("started", 0)) - _paused_secs(entry.get("session", ""))
+    if working > entry.get("budget", SUBAGENT_HARD_CAP_SECS):
         return "unknown"
     return "running"
 
@@ -1280,8 +1432,8 @@ async def spawn_agent(
     task: str,
     context: str = "",
     tools: Annotated[list[str], Field(description=_TOOLS_DESCRIPTION)] = [],
-    max_steps: int = 30,
-    time_budget_secs: int = SUBAGENT_DEFAULT_BUDGET_SECS,
+    max_steps: int = SUBAGENT_MAX_STEPS,
+    time_budget_secs: int = 0,
     background: bool = False,
     model: Annotated[str, Field(description=_MODEL_DESCRIPTION)] = "",
     ctx: Context | None = None,
@@ -1298,10 +1450,17 @@ async def spawn_agent(
                     It sees none of your conversation, so say everything it needs.
         context:    Optional extra context (findings so far, constraints) prepended
                     to the task.
-        max_steps:  Max tool-call steps the sub-agent may take (default 30).
+        max_steps:  A ceiling on tool-call steps. 0 (the default) is no ceiling —
+                    what bounds a sub-agent is its clock, not a step count, and a
+                    count cut long work off for a reason unrelated to its difficulty.
         time_budget_secs:
-                    Wall time for this run (default 600, max 1140). The sub-agent is
-                    told its budget and is asked to hand over before it runs out.
+                    Wall time for this run. 0 (the default) takes the whole budget its
+                    rung allows: 10 minutes for reconnaissance, 2 hours for a
+                    sub-agent given a writing or executing tool — which is work that
+                    builds and measures, and ten minutes of it is a run cut short for
+                    no reason to do with the task. Pass a smaller number to bound a
+                    run you expect to be short; a larger one is clamped. The sub-agent
+                    is told its budget and is asked to hand over before it runs out.
         background: True detaches the sub-agent: this call returns a handle at once and
                     you are resumed with its answer when it finishes, so you can work
                     on something else meanwhile. Use it for a long piece of work you
@@ -1361,9 +1520,16 @@ async def spawn_agent(
             answer="", completed=False, files_read=[], files_written=[],
         )
     level = _subagent_level(ctx)
+    # What the child was given decides how long it gets, through the same test that
+    # decides whether it gets a copy of the repository below: a child with a writing or
+    # executing tool is working, everything else is reconnaissance. Computed here
+    # because the budget has to be known before the run starts, and the tool
+    # classification that _drive_sub_agent uses is not available until it has connected.
+    working = _level_allows(level, "parallel") and bool(set(requested) & _caller_writers(ctx))
+    ceiling = (SUBAGENT_WORKING_BUDGET_SECS if working
+               else SUBAGENT_EXPLORE_BUDGET_SECS)
     budget = max(SUBAGENT_MIN_BUDGET_SECS,
-                 min(int(time_budget_secs or SUBAGENT_DEFAULT_BUDGET_SECS),
-                     SUBAGENT_HARD_CAP_SECS))
+                 min(int(time_budget_secs or ceiling), ceiling))
 
     caller_model = _caller_model(ctx)
     model = (model or "").strip()
@@ -1378,7 +1544,35 @@ async def spawn_agent(
     approval_mode = _caller_approval_mode(ctx)
     session = _sub_session_id()
     child_key = session.rsplit("/", 1)[-1]
+    # A run longer than a blocking call can hold is detached whether or not it was
+    # asked for. The client caps any timeout a tool declares at
+    # TOOL_CALL_TIMEOUT_MAX_SECS, so a two-hour child held in a blocking call would be
+    # killed at twenty minutes with nothing to show — and the model, which knows
+    # nothing of that ceiling, cannot choose correctly here.
+    detached_for_length = budget > SUBAGENT_HARD_CAP_SECS
+    background = background or detached_for_length
     job_key = child_key if background else ""
+
+    # A slot, before anything is created and before any clock starts: the wait for one
+    # is not the child's time, and a copy of the repository cut for a child that never
+    # gets to run is litter.
+    if not await _wait_for_slot():
+        return err(
+            f"no room to start another sub-agent: {SUBAGENT_MAX_CONCURRENT} are already "
+            f"running ({_busy_with()}). Do something else and delegate this when one "
+            f"lands — you are resumed as each finishes — or do it yourself. Do not "
+            f"retry this call immediately: nothing will have changed.",
+            answer="", completed=False, files_read=[], files_written=[],
+        )
+    slot_held = True
+    _take_slot(session, task)
+
+    def _release_slot() -> None:
+        """Give the slot back exactly once, whichever way the run ended."""
+        nonlocal slot_held
+        if slot_held:
+            slot_held = False
+            _free_slot(session)
 
     # A child that was granted anything writing or executing gets a copy of the
     # repository — always, and not because it asked. Several of them editing one tree
@@ -1386,9 +1580,10 @@ async def spawn_agent(
     # a separate worktree does, by construction. A reading child stays in these files,
     # where it can do no harm.
     worktree: dict | None = None
-    if set(requested) & _caller_writers(ctx):
+    if working:
         worktree, refusal = _create_worktree(child_key, session)
         if worktree is None:
+            _release_slot()
             return err(refusal, answer="", completed=False, files_read=[], files_written=[])
 
     # The child runs in a dedicated thread with its own event loop: its MCP exit
@@ -1405,6 +1600,12 @@ async def spawn_agent(
     # caller was told only that the time was up. Read defensively: whatever is in it
     # is being written by another thread.
     child: dict = {}
+    # Taken here, on the server's own loop, not inside the child's thread: this is the
+    # long-lived MCP session (one per stdio connection), and reading it where it is
+    # known to be valid says plainly that it is not the request that travels.
+    # getattr, not attribute access: a caller that hands over no session hands over no
+    # channel, and the child then runs unattended exactly as it always did.
+    ask_session = getattr(ctx, "session", None)
 
     def _thread_main() -> None:
         try:
@@ -1413,10 +1614,12 @@ async def spawn_agent(
                 on_event=_make_child_sink(events, counters, job_key, session),
                 model=model, session=session, budget=budget, child=child,
                 level=level, worktree=worktree,
-                # A detached child gets no channel: its call has returned, and there
-                # is no session left to raise a card on.
-                ask_ctx=None if background else ctx,
-                ask_loop=None if background else loop,
+                # Detached or not, the child can reach the person. What ends when the
+                # delegating call returns is the REQUEST; the session it rode on
+                # outlives it, and the client registers its elicitation callback on
+                # connect rather than per call.
+                ask_session=ask_session,
+                ask_loop=loop,
             ))
             future.set_result(result)
             if job_key:
@@ -1427,6 +1630,11 @@ async def spawn_agent(
             if job_key:
                 _settle_job(job_key, "crashed", {"answer": "", "completed": False,
                                                  "error": str(exc)})
+        finally:
+            # From the child's own thread, so a detached one keeps its slot for its
+            # whole life rather than handing it back when its call returns — and
+            # directly, because the loop its call ran on may be long gone by now.
+            _release_slot()
 
     if job_key:
         # Registered before the thread starts: the caller is handed the key on the next
@@ -1451,14 +1659,19 @@ async def spawn_agent(
             "background_job": _job_descriptor(job_key),
             "workspace": {"branch": worktree["branch"], "path": worktree["path"]}
                          if worktree else {},
-            "note": "Started in the background; this call returns before the sub-agent "
-                    "finishes. You are resumed with its answer when it does.",
+            "note": (
+                ("Detached automatically: its budget is longer than a blocking call "
+                 "can hold, so waiting on it here was never possible. "
+                 if detached_for_length else "")
+                + "Started in the background; this call returns before the sub-agent "
+                  "finishes. You are resumed with its answer when it does."
+            ),
         })
 
     started = time.monotonic()
     state["last_activity"] = started
     deadline = loop.time() + budget
-    while not future.done() and loop.time() < deadline:
+    while not future.done() and loop.time() < deadline + _paused_secs(session):
         await _forward_pending(ctx, events, state)
         await _maybe_heartbeat(ctx, state, started)
         await asyncio.sleep(_POLL_SECS)
@@ -1477,12 +1690,9 @@ async def spawn_agent(
         _abandon_child(child)
         partial = _partial_handoff(child)
         return err(
-            f"sub-agent ran out of its {budget}s budget before handing over, and was "
-            f"stopped. Its work so far is below. Do not spawn the same task again as "
-            f"it stands — a full budget has just been spent on it, and nothing about "
-            f"it has changed. Either carry it on yourself, or delegate one narrower "
-            f"step of it with a larger time_budget_secs, saying in the task what this "
-            f"run already established and which approaches not to retry.",
+            _overrun_note(budget) + " Either carry it on yourself, or delegate one "
+            "narrower step of it, saying in the task what this run established and "
+            "which approaches not to retry.",
             answer=partial.pop("answer", ""), completed=False, model=model,
             tools=requested, session=session, workspace=child.get("workspace", {}),
             **partial,
@@ -1586,6 +1796,13 @@ def subagent_job(
                    f"was started under that handle, and none left a card under it. Use "
                    f"op='list' to see the ones this server still holds.")
     state = _job_state(entry)
+    if state == "unknown" and not entry.get("from_card"):
+        # Past its budget and still going in its own thread. Nothing else notices:
+        # the blocking path stops a child on its deadline, this one had no deadline to
+        # sit on, so a detached run that overran carried on spending model calls and
+        # tool budget on an answer nobody would ever read. Stopped here, at the first
+        # read that sees the wall crossed — the watcher polls this, so that is soon.
+        _abandon_child(entry.get("child") or {})
     base = {
         "state": state,
         "job_key": job_key,
@@ -1612,9 +1829,16 @@ def subagent_job(
         return ok(base)
     result = entry.get("result")
     if result is None:
-        # Still working: what it has touched so far is real, its answer is not yet.
-        return ok({**base, **_partial_handoff(entry.get("child") or {}),
-                   "completed": False})
+        # Still working, or stopped on its wall a moment ago: what it has touched is
+        # real, its answer is not. A run the clock ended says so in as many words —
+        # `completed: False` alone is a flag a reader can skim past, and a handoff read
+        # as a conclusion is the whole failure this guards against.
+        partial = _partial_handoff(entry.get("child") or {})
+        if state == "unknown":
+            budget = int(entry.get("budget") or SUBAGENT_HARD_CAP_SECS)
+            partial["answer"] = (_overrun_note(budget) + " " + partial["answer"]).strip()
+            partial["ended_on_budget"] = True
+        return ok({**base, **partial, "completed": False})
     return ok({**base, **result, "completed": bool(result.get("completed"))})
 
 
@@ -1628,11 +1852,11 @@ async def _run_sub_agent(
     on_event: Callable[[dict], None] | None = None,
     model: str = "",
     session: str = "",
-    budget: int = SUBAGENT_DEFAULT_BUDGET_SECS,
+    budget: int = SUBAGENT_EXPLORE_BUDGET_SECS,
     child: dict | None = None,
     level: str = _DEFAULT_SUBAGENT_LEVEL,
     worktree: dict | None = None,
-    ask_ctx: Context | None = None,
+    ask_session=None,
     ask_loop=None,
 ) -> dict:
     """Async implementation: create MimirAgent, wire tools, run query.
@@ -1683,7 +1907,7 @@ async def _run_sub_agent(
         result = await _drive_sub_agent(
             agent, task, context, requested, grantable, max_steps, on_event,
             approval_mode=approval_mode, budget=budget, level=level, worktree=worktree,
-            ask_ctx=ask_ctx, ask_loop=ask_loop)
+            ask_session=ask_session, ask_loop=ask_loop)
         return result
     finally:
         if worktree is not None:
@@ -1733,10 +1957,10 @@ async def _drive_sub_agent(
     max_steps: int,
     on_event: Callable[[dict], None] | None = None,
     approval_mode: str = "manual",
-    budget: int = SUBAGENT_DEFAULT_BUDGET_SECS,
+    budget: int = SUBAGENT_EXPLORE_BUDGET_SECS,
     level: str = _DEFAULT_SUBAGENT_LEVEL,
     worktree: dict | None = None,
-    ask_ctx: Context | None = None,
+    ask_session=None,
     ask_loop=None,
 ) -> dict:
     """Configure the child agent, run it, and report what it did."""
@@ -1759,10 +1983,10 @@ async def _drive_sub_agent(
     # does not cover is refused without a prompt and reported back as blocked.
     agent.set_approval_mode(approval_mode)
     agent.approvals.unattended = True
-    if ask_ctx is not None and ask_loop is not None:
+    if ask_session is not None and ask_loop is not None:
         # There is a person at the end of this call: its approvals and its questions go
         # to them, queued behind any other child's and saying which child is asking.
-        _install_user_channel(agent, ask_ctx, ask_loop, task)
+        _install_user_channel(agent, ask_session, ask_loop, task)
     # The child writes the shared path allowlist too; starting from what is already
     # there keeps its writes from erasing the caller's grants.
     agent.approvals._allowed_paths.update(approved_roots())
@@ -1815,7 +2039,7 @@ async def _drive_sub_agent(
     )
 
     brief = (
-        _WORK_BRIEF.format(budget=_human_budget(budget), steps=max_steps)
+        _WORK_BRIEF.format(budget=_human_budget(budget))
         if working else _EXPLORE_BRIEF
     )
     if worktree:

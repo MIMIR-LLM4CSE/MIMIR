@@ -140,11 +140,18 @@ def _parse_answer(raw_answer: Any) -> dict[str, Any]:
     return {"selected": selected, "other_text": other_text}
 
 
-# Grantable: a sub-agent whose delegating call is still open reaches the user through
-# it, queued behind any other child's card and saying which child is asking (see
-# server_spawn_agent._install_user_channel). A DETACHED child has no such session, and
-# this tool already answers that case — no interactive frontend, empty answers, and a
-# result telling the model to ask in its reply instead of deciding for the user.
+# How long this question stays in front of the user before the agent is told to decide
+# for itself. Read from the client so there is one number, and defaulted here so the
+# server still runs when imported on its own (tests, a bare subprocess).
+try:
+    from mimir.client.config.constants import USER_QUESTION_TIMEOUT_SECS
+except ImportError:  # pragma: no cover - running without the client package on the path
+    USER_QUESTION_TIMEOUT_SECS = 300
+
+
+# Grantable: any agent — the orchestrator or a sub-agent — reaches the user through it.
+# A sub-agent's card is queued behind any other child's and says which child is asking
+# (see server_spawn_agent._install_user_channel).
 @mcp.tool(**tool_caps(read_only=True, label="Asking the user"))
 async def ask_user_question(
     questions: list[dict[str, Any]],
@@ -205,6 +212,11 @@ async def ask_user_question(
         "x_mimir": {
             "kind": "user_question",
             "questions": clean_questions,
+            # Declared by the asker, not imposed on every card alike: an approval and
+            # a plan decision ride this same channel and must never expire (one would
+            # authorise a command nobody saw, the other would execute a plan nobody
+            # approved). A clarification can expire, because the agent can decide it.
+            "timeout_secs": USER_QUESTION_TIMEOUT_SECS,
         },
         "properties": {
             "answers": {
@@ -250,6 +262,23 @@ async def ask_user_question(
         )
 
     if result.action != "accept" or not result.content:
+        # Nobody answered in time is not the same fact as nobody would answer, and the
+        # two call for opposite behaviour. A question left unanswered used to return
+        # "do not choose for them" — correct for a refusal, and what stopped an
+        # overnight run dead on a card nobody would read until morning.
+        if (result.content or {}).get("reason") == "timeout":
+            minutes = max(1, USER_QUESTION_TIMEOUT_SECS // 60)
+            return ok({
+                "answers": [],
+                "timed_out": True,
+                "note": (
+                    f"the user did not reply within {minutes} minutes. Do NOT ask "
+                    "again and do NOT stop: choose the option you judge best and carry "
+                    "on. Say in your answer which way you went, that it was your call "
+                    "for want of a reply, and what would change if they had picked the "
+                    "other one."
+                ),
+            })
         return ok({
             "answers": [],
             "note": (

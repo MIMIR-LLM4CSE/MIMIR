@@ -1593,12 +1593,13 @@ class _Session:
         answer = {"choice": msg.get("choice", "n"), "approved_files": msg.get("approved_files")}
         if await self._answer_deferred(msg, answer):
             return
-        self.worker.resolve_approval(answer["choice"], answer["approved_files"])
+        self.worker.resolve_approval(answer["choice"], answer["approved_files"],
+                                     str(msg.get("id") or ""))
 
     async def _handle_user_question_response(self, msg: dict) -> None:
         if await self._answer_deferred(msg, {"answers": msg.get("answers") or []}):
             return
-        self.worker.resolve_question(msg.get("answers"))
+        self.worker.resolve_question(msg.get("answers"), str(msg.get("id") or ""))
 
     async def _resend_deferred_prompt(self) -> None:
         """Put the card a deferred turn of this session waits on back on screen."""

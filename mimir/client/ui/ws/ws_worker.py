@@ -25,7 +25,10 @@ import logging
 import os
 import queue as _queue
 import threading
+import time
 import uuid
+from collections import OrderedDict
+from dataclasses import dataclass
 from typing import Any, NamedTuple
 
 from ... import human_pause
@@ -69,6 +72,21 @@ def _labelled_questions(questions: list, prefix: str) -> list:
     return out
 
 
+@dataclass
+class _Prompt:
+    """One card put to the user, and the slot the thread that raised it waits on.
+
+    Each card carries its own answer slot rather than sharing a queue per kind: with
+    two cards in flight, a shared queue hands an answer to whichever thread happens to
+    be listening, which is not necessarily the one whose card the user was reading.
+    """
+
+    payload: dict
+    questions: list | None
+    answer: "_queue.Queue[dict]"
+    shown: bool = False
+
+
 class _Watch(NamedTuple):
     """A live background-job watcher: the polling task, and what it is watching.
 
@@ -102,12 +120,15 @@ class _AgentWorker:
 
         # Queues for cross-thread communication.
         self.out_q: _queue.Queue[dict] = _queue.Queue()   # agent → WS
-        self._approval_q: _queue.Queue[dict] = _queue.Queue()  # WS → approval shim
-        self._question_q: _queue.Queue[dict] = _queue.Queue()  # WS → question shim
         self._query_q: _queue.Queue[dict | None] = _queue.Queue()  # WS → query loop
         self._steer_q: _queue.Queue[str] = _queue.Queue()  # WS → running agent (mid-run steering)
-        # The card a parked turn is waiting on, set for exactly as long as it waits.
-        # Read by a connection that arrives while the wait is on (see _emit_prompt).
+        # Cards waiting on the user, oldest first, each holding the slot the thread
+        # that raised it blocks on. One is shown at a time and each is answered by its
+        # own id — see _emit_prompt for why that is not the single slot it used to be.
+        self._prompts: "OrderedDict[str, _Prompt]" = OrderedDict()
+        self._prompts_lock = threading.Lock()
+        # The card currently on screen, set for exactly as long as it is up. Read by a
+        # connection that arrives while the wait is on (see _emit_prompt).
         self._pending_prompt: dict | None = None
         # Event signalled whenever a new item is placed on _query_q so the
         # background loop wakes up immediately instead of waiting out the poll interval.
@@ -603,7 +624,7 @@ class _AgentWorker:
         self._query_event.set()
 
     def _emit_prompt(self, payload: dict, questions: list | None = None) -> None:
-        """Send a card the turn is about to park on, and remember it while it waits.
+        """Register a card the caller is about to park on, and show it when its turn comes.
 
         One worker serves every connection, and it outlives them: a socket that drops
         while the agent is parked leaves the card on a client that no longer exists,
@@ -611,14 +632,75 @@ class _AgentWorker:
         queues behind that wait — the query loop is serial — so the session reads as
         hung, with nothing on screen to explain it. Kept here, the card can be put
         back in front of whoever reconnects (``_Session._resend_parked_prompt``).
+
+        Cards queue rather than overwrite one another. Every prompt of a turn is raised
+        from the worker thread, so they have always come one at a time on their own;
+        a sub-agent still running after its delegating call has returned raises its own
+        from another thread entirely, and two cards in the single slot this used to
+        keep meant the second erased the first while an answer went to whichever waiter
+        happened to be listening. So: one card on screen at a time, in the order they
+        were raised, each answered by its own id (:meth:`_deliver`).
         """
-        self._pending_prompt = dict(payload)
-        self._pending_questions = questions
-        # Nobody is there to read it (deferring), or the answer is already in hand
-        # (resuming): the wait below settles it without a card.
-        if self._deferring() or self._preanswer_for(payload) is not None:
-            return
+        with self._prompts_lock:
+            self._prompts[str(payload.get("id") or "")] = _Prompt(
+                payload=dict(payload), questions=questions,
+                answer=_queue.Queue(maxsize=1))
+        self._show_next()
+
+    def _show_next(self) -> None:
+        """Put the oldest card that has not been shown on screen, if none is up.
+
+        Called whenever the set changes — a card raised, a card answered — so the queue
+        advances on its own. Nothing is shown while the turn is deferring (nobody is
+        there to read it) or while the head card is pre-answered (the wait settles it
+        without a card): both are dropped a moment later, and this runs again for the
+        one behind them.
+        """
+        with self._prompts_lock:
+            if any(p.shown for p in self._prompts.values()):
+                return
+            nxt = next((p for p in self._prompts.values() if not p.shown), None)
+            if nxt is None:
+                self._pending_prompt = None
+                self._pending_questions = None
+                return
+            if self._deferring() or self._preanswer_for(nxt.payload) is not None:
+                return
+            nxt.shown = True
+            self._pending_prompt = dict(nxt.payload)
+            self._pending_questions = nxt.questions
+            payload = nxt.payload
         self.out_q.put(payload)
+
+    def _drop_prompt(self, req_id: str) -> None:
+        """Forget a card that is answered, cancelled or set aside; show the next."""
+        with self._prompts_lock:
+            self._prompts.pop(req_id, None)
+        self._show_next()
+
+    def _deliver(self, req_id: str, response: dict, kind: str) -> None:
+        """Hand *response* to the card that asked for it, or drop it.
+
+        Matched by id — which the front-end has always sent back and this had always
+        thrown away. An answer put on a queue shared by kind settles whatever prompt is
+        listening, which with two cards in flight is not necessarily the one the user
+        was reading. ``_Session._answer_deferred`` already refuses a stale answer on
+        exactly this reasoning; this is the same rule for a live one.
+
+        An answer carrying no id at all goes to the card on screen of that kind — the
+        only one it could have been meant for.
+        """
+        with self._prompts_lock:
+            prompt = self._prompts.get(req_id) if req_id else None
+            if prompt is None and not req_id:
+                prompt = next((p for p in self._prompts.values()
+                               if p.shown and p.payload.get("type") == kind), None)
+            if prompt is None:
+                return      # a card that is gone: answering it would settle another
+            try:
+                prompt.answer.put_nowait(response)
+            except _queue.Full:
+                pass        # answered twice (a copy of the card on screen): the first wins
 
     def _deferring(self) -> bool:
         defer = getattr(self, "_defer", None)
@@ -647,25 +729,40 @@ class _AgentWorker:
             queued = [ev.get("id") for ev in self.out_q.queue if isinstance(ev, dict)]
         return None if prompt.get("id") in queued else prompt
 
-    def _await_response(self, q: "_queue.Queue[dict]") -> dict | None:
-        """Block until a WS response lands on ``q`` — with no wall-clock timeout.
+    def _await_response(self, req_id: str,
+                        timeout_secs: float | None = None) -> dict | None:
+        """Block until the answer to card *req_id* lands. ``None`` when it does not.
 
-        An unanswered approval/question must keep the agent *parked*: it
-        must never silently proceed just because the user was slow to respond.
-        So we wait indefinitely instead of timing out. To stay responsive to the
-        Stop button, we poll in short slices and bail the moment the agent's
-        cancel flag is set (from the WS thread), returning ``None`` for cancelled.
+        An unanswered approval must keep the agent *parked*: it must never silently
+        proceed just because the user was slow to respond, so it waits with no
+        wall-clock limit at all. To stay responsive to the Stop button, we poll in
+        short slices and bail the moment the agent's cancel flag is set (from the WS
+        thread), returning ``None`` for cancelled.
+
+        *timeout_secs* gives up waiting after that long and returns ``None``. Only a
+        clarification question passes one — whoever raised the card decides, because
+        the same seam carries approvals (a deadline would authorise a command nobody
+        saw) and plan decisions (one would execute a plan nobody approved). The caller
+        tells a timeout from a cancellation by whether the deadline had passed.
 
         This is the single seam every WS prompt (approval, out-of-workspace path,
         question) blocks on, so it is where the wait is marked as *human*
         time — excluded from the tool-call timeout budget it sits inside.
+
+        Waits on this card's own slot, so a thread only ever wakes on the answer to the
+        card it raised.
         """
-        pre = self._preanswer_for(getattr(self, "_pending_prompt", None))
+        with self._prompts_lock:
+            prompt = self._prompts.get(req_id)
+        if prompt is None:
+            return None     # already flushed: the turn it belonged to was abandoned
+        pre = self._preanswer_for(prompt.payload)
         if pre is not None:
             # One answer, one prompt: a second card in the resumed step is asked live.
             self._preanswer = None
-            self._pending_prompt = None
+            self._drop_prompt(req_id)
             return pre.get("response") or {}
+        deadline = None if timeout_secs is None else time.monotonic() + timeout_secs
         try:
             with human_pause.human_pause():
                 while True:
@@ -673,29 +770,34 @@ class _AgentWorker:
                     if agent is not None and agent._cancel_flag.is_set():
                         return None
                     if self._deferring():
-                        self._record_deferral()
+                        self._record_deferral(prompt)
+                        return None
+                    if deadline is not None and time.monotonic() >= deadline:
                         return None
                     try:
-                        return q.get(timeout=0.25)
+                        return prompt.answer.get(timeout=0.25)
                     except _queue.Empty:
                         continue
         finally:
-            # Answered, cancelled or raised through: the turn is not parked any more,
-            # and a card resent past this point would be one nothing is waiting on.
-            self._pending_prompt = None
-            self._pending_questions = None
+            # Answered, cancelled, expired or raised through: this card is not waiting
+            # on anyone any more, and one resent past this point would be unheld.
+            self._drop_prompt(req_id)
 
-    def _record_deferral(self) -> None:
-        """Note the prompt being set aside, and which call it holds up."""
+    def _record_deferral(self, prompt: "_Prompt") -> None:
+        """Note the prompt being set aside, and which call it holds up.
+
+        Takes the card rather than reading the one on screen: they are the same for a
+        turn's own prompt, and for a card still queued behind another they are not.
+        """
         from ...query_engine.deferral import CURRENT_CALL_ID
 
         agent = self._agent
-        if agent is None or self._pending_prompt is None:
+        if agent is None:
             return
         agent._deferred_prompts = [*(getattr(agent, "_deferred_prompts", None) or []), {
             "call_id": CURRENT_CALL_ID.get(),
-            "prompt": dict(self._pending_prompt),
-            "questions": list(self._pending_questions or []),
+            "prompt": dict(prompt.payload),
+            "questions": list(prompt.questions or []),
         }]
 
     def _approval_shim(
@@ -704,7 +806,7 @@ class _AgentWorker:
         """Sync approval — blocks background thread until WS client responds.
 
         The WS event loop (main thread) is unaffected; it forwards the approval
-        prompt to the client and puts the response in _approval_q.
+        prompt to the client and answers this card's own slot (see _deliver).
         """
         from ...context.capabilities import (
             label_for, preview_spec, reversibility_of,
@@ -752,7 +854,7 @@ class _AgentWorker:
 
         # Block background thread (not WS event loop) until the client responds.
         # No timeout: an unanswered prompt keeps the agent parked (Stop cancels).
-        response = self._await_response(self._approval_q)
+        response = self._await_response(req_id)
         if response is None:
             return False, "cancelled"
 
@@ -817,7 +919,7 @@ class _AgentWorker:
             "oow_path": paths[0],
         })
         # No timeout: keep the agent parked until answered (Stop cancels).
-        response = self._await_response(self._approval_q)
+        response = self._await_response(req_id)
         if response is None:
             return (False, False)
         choice = response.get("choice", "n")
@@ -827,25 +929,42 @@ class _AgentWorker:
             return (True, False)
         return (False, False)
 
-    def _question_shim(self, questions: list) -> dict:
-        """Sync clarification questions — blocks the worker thread until answered.
+    def _question_shim(self, questions: list, origin: dict | None = None,
+                       timeout_secs: float | None = None) -> dict:
+        """Sync clarification questions — blocks the calling thread until answered.
 
         Mirrors ``_approval_shim``: emits a ``user_question`` card carrying the whole
-        batch of questions to the client and blocks the agent worker thread (not the
+        batch of questions to the client and blocks the thread that raised it (not the
         WS event loop) until a ``user_question_response`` arrives. The frontend shows
         the questions one at a time and returns all ``answers`` together. A cancel
         returns no answers so the agent proceeds with its best judgment.
+
+        *origin* names the asker when it is not the turn on screen — a sub-agent
+        working alongside it, which since it can be one of several is not something
+        the user can infer. It travels as data so the card can render it as a badge,
+        and it is what tells the front end this card does not belong to the main turn.
+
+        *timeout_secs* is how long the asker is willing to wait. When it runs out the
+        answer comes back empty and flagged ``timed_out``, which the asking server
+        reads as "decide for yourself" — as against an empty answer with no flag,
+        which is a refusal and means "do not choose for them". Getting those two
+        confused is what left a long run stopped on a card nobody would read.
         """
         req_id = str(uuid.uuid4())
+        started = time.monotonic()
         self._emit_prompt({
             "type": "user_question",
             "id": req_id,
             "questions": _labelled_questions(list(questions), self._detached_prefix()),
+            **({"origin": origin} if origin else {}),
         }, questions=list(questions))
-        # No timeout: keep the agent parked until answered (Stop cancels).
-        response = self._await_response(self._question_q)
+        response = self._await_response(req_id, timeout_secs)
         if response is None:
-            return {"answers": []}
+            # Stop, a session switch, or the wall. Only the wall means "carry on
+            # without me"; the others mean the person is no longer there at all.
+            expired = (timeout_secs is not None
+                       and time.monotonic() - started >= timeout_secs)
+            return {"answers": [], "timed_out": True} if expired else {"answers": []}
         answers: list[dict] = []
         for a in response.get("answers") or []:
             a = a or {}
@@ -957,13 +1076,10 @@ class _AgentWorker:
         queued answer left behind would be handed to the *next* turn's prompt,
         approving something the user never saw.
         """
+        with self._prompts_lock:
+            self._prompts.clear()
         self._pending_prompt = None
-        for q in (self._approval_q, self._question_q):
-            while True:
-                try:
-                    q.get_nowait()
-                except _queue.Empty:
-                    break
+        self._pending_questions = None
         self._drain_steer_q()
 
     def _detached_prefix(self) -> str:
@@ -1163,11 +1279,15 @@ class _AgentWorker:
         })
         self._bg_jobs.pop(job_key, None)
 
-    def resolve_approval(self, choice: str, approved_files: list | None = None) -> None:
-        self._approval_q.put({"choice": choice, "approved_files": approved_files})
+    def resolve_approval(self, choice: str, approved_files: list | None = None,
+                         req_id: str = "") -> None:
+        """Answer one approval card. *req_id* is the id it was sent with."""
+        self._deliver(req_id, {"choice": choice, "approved_files": approved_files},
+                      "approval")
 
-    def resolve_question(self, answers: list | None) -> None:
-        self._question_q.put({"answers": answers or []})
+    def resolve_question(self, answers: list | None, req_id: str = "") -> None:
+        """Answer one question card. *req_id* is the id it was sent with."""
+        self._deliver(req_id, {"answers": answers or []}, "user_question")
 
     def set_mode(self, mode: str) -> str:
         """Apply *mode*, returning "" on success or the reason it was rejected.

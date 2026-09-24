@@ -7,6 +7,8 @@ turn to the session it started in.
 """
 import json
 import queue as _queue
+import threading
+from collections import OrderedDict
 import unittest
 
 from mimir.client.ui.ws.ws_worker import _AgentWorker
@@ -17,13 +19,15 @@ def _bare_worker() -> _AgentWorker:
     """A worker with only the queue/state fields the tests touch (no agent, no loop)."""
     w = object.__new__(_AgentWorker)
     w.out_q = _queue.Queue()
-    w._approval_q = _queue.Queue()
-    w._continue_q = _queue.Queue()
-    w._question_q = _queue.Queue()
     w._steer_q = _queue.Queue()
+    w._prompts = OrderedDict()
+    w._prompts_lock = threading.Lock()
     w.active_session_id = None
     w._query_session_id = None
     w._pending_prompt = None
+    w._pending_questions = None
+    w._defer = threading.Event()
+    w._preanswer = None
     return w
 
 
@@ -45,14 +49,20 @@ class WorkerStampTests(unittest.TestCase):
         w.out_q.put({"type": "output", "text": "x"})
         self.assertIsNone(w.drain()[0]["session_id"])
 
-    def test_flush_prompts_drops_every_pending_answer(self):
+    def test_flush_prompts_drops_every_pending_card(self):
+        """A card left behind would be answered by the next turn's response.
+
+        The answers used to sit on a queue shared by kind; they now sit in each card's
+        own slot, so dropping the cards is what drops the answers with them.
+        """
         w = _bare_worker()
-        w._approval_q.put({"choice": "y"})
-        w._question_q.put({"answers": [{"selected": ["Accept & start"]}]})
+        w._emit_prompt({"type": "approval", "id": "a1"})
+        w._emit_prompt({"type": "user_question", "id": "q1"}, questions=[])
         w._steer_q.put("hurry up")
         w.flush_prompts()
-        for q in (w._approval_q, w._question_q, w._steer_q):
-            self.assertTrue(q.empty())
+        self.assertEqual(dict(w._prompts), {})
+        self.assertIsNone(w.pending_prompt())
+        self.assertTrue(w._steer_q.empty())
 
 
 class _FakeWS:

@@ -424,8 +424,12 @@ export function createChatReducer(makeId: () => string) {
       // The turn parked on a question for the user: a plan awaiting approval or a
       // clarification batch. Rendering the card is App's business; what belongs
       // here is that the turn stopped producing.
+      //
+      // Unless the card came from somewhere else. A sub-agent runs alongside the turn,
+      // not inside it, so its question says nothing about whether the turn is still
+      // producing — parking on it would show the agent as idle while it works.
       case "user_question":
-        return parkOnPrompt(state, makeId);
+        return action.origin ? state : parkOnPrompt(state, makeId);
 
       case "session_loaded_messages":
         return {

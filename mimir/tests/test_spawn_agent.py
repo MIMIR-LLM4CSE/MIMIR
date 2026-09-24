@@ -295,12 +295,32 @@ class ChildVisibilityTests(unittest.TestCase):
         self.assertEqual(counters["dropped"], 1)
 
 
+class _ElicitSession:
+    """The long-lived MCP session a card rides on, recording what was put to the user."""
+
+    def __init__(self, answer: str = ""):
+        self.asked: list[dict] = []
+        self._answer = answer
+
+    async def elicit_form(self, message, requestedSchema):
+        self.asked.append({"message": message, "schema": requestedSchema})
+        if not self._answer:
+            return types.SimpleNamespace(action="decline", content=None)
+        return types.SimpleNamespace(
+            action="accept",
+            content={"answers": json.dumps([{"selected": [self._answer]}])},
+        )
+
+
 class _RecordingCtx:
     """A caller that listens: records what the tool reports while the child runs."""
 
     def __init__(self, fail: bool = False):
         self.reports: list[tuple] = []
         self._fail = fail
+        # One per stdio connection, not one per request — which is the whole reason a
+        # detached child can still raise a card.
+        self.session = _ElicitSession()
 
     async def report_progress(self, progress, total=None, message=None):
         if self._fail:
@@ -407,27 +427,49 @@ class UserChannelTests(unittest.TestCase):
                      "_request_user_question"):
             self.assertTrue(callable(getattr(agent, hook, None)), hook)
 
-    def test_a_detached_child_has_nobody_to_ask(self):
-        """Its call has returned: there is no session left to raise a card on, so it
-        runs unattended and reports what its mode refused."""
+    def test_a_detached_child_can_reach_the_user_too(self):
+        """What ends when the delegating call returns is the REQUEST, not the session.
+
+        The MCP session is one per stdio connection, and the client registers its
+        elicitation callback on connect rather than per call — so a card raised after
+        the call has returned still reaches the person. A detached child used to run
+        unattended for want of this, which made the longest work the only work that
+        could not ask a question.
+        """
         agent = _FakeAgent()
         done = threading.Event()
         seen: dict = {}
+        ctx = _GrantCtx()
 
         async def _drive(child, *a, **kw):
-            # No session to raise a card on, so no channel is handed down; the real
-            # driver then leaves the child unattended, as it always did.
-            seen["ask_ctx"] = kw.get("ask_ctx")
+            seen["ask_session"] = kw.get("ask_session")
             seen["ask_loop"] = kw.get("ask_loop")
             done.set()
             return {"answer": "x", "completed": True, "files_read": [],
                     "files_written": [], "blocked_by_mode": [], "error": None}
 
         with _patched_agent(agent), mock.patch.object(spawn, "_drive_sub_agent", _drive):
-            asyncio.run(spawn.spawn_agent("axis", ctx=_GrantCtx(), background=True))
+            asyncio.run(spawn.spawn_agent("axis", ctx=ctx, background=True))
             self.assertTrue(done.wait(5))
-        self.assertIsNone(seen["ask_ctx"])
-        self.assertIsNone(seen["ask_loop"])
+        self.assertIs(seen["ask_session"], ctx.session)
+        self.assertIsNotNone(seen["ask_loop"])
+
+    def test_a_caller_with_no_session_hands_over_no_channel(self):
+        """Then the child runs unattended, exactly as it always did."""
+        agent = _FakeAgent()
+        done = threading.Event()
+        seen: dict = {}
+
+        async def _drive(child, *a, **kw):
+            seen["ask_session"] = kw.get("ask_session")
+            done.set()
+            return {"answer": "x", "completed": True, "files_read": [],
+                    "files_written": [], "blocked_by_mode": [], "error": None}
+
+        with _patched_agent(agent), mock.patch.object(spawn, "_drive_sub_agent", _drive):
+            asyncio.run(spawn.spawn_agent("axis", ctx=None, background=True))
+            self.assertTrue(done.wait(5))
+        self.assertIsNone(seen["ask_session"])
 
     def test_the_cards_of_two_children_are_asked_one_at_a_time(self):
         """Several children work at once; several cards at once is a pile nobody can
@@ -494,27 +536,81 @@ class UserChannelTests(unittest.TestCase):
             f"nothing was recorded: {agent.approvals.approved_scopes}")
 
     def test_a_card_says_which_sub_agent_is_asking(self):
-        asked: dict = {}
+        """As data, not as a prefix glued to the question.
 
-        class _Ctx:
-            session = None
+        "Allow this command?" from an unnamed process is a question the user cannot
+        weigh, and several children can be working at once. The name used to be pasted
+        into the question text, where the interface can neither style it nor tell it
+        apart from what is being asked; it travels in `x_mimir.origin` instead, and the
+        card renders it as a badge.
+        """
+        session = _ElicitSession()
+        agent = _FakeAgent()
+        agent.session_id = "parent-1/subagents/sub-abc"
+        loop = asyncio.new_event_loop()
+        threading.Thread(target=loop.run_forever, daemon=True).start()
+        spawn._install_user_channel(agent, session, loop, "vectorise the inner loop")
+        approved, _ = agent._request_tool_approval("write_file", {"path": "/w/a.c"})
+        loop.call_soon_threadsafe(loop.stop)
 
-            def __init__(self):
-                self.session = self
+        self.assertFalse(approved)          # a declined card is not an approval
+        origin = session.asked[0]["schema"]["x_mimir"]["origin"]
+        self.assertEqual(origin["kind"], "subagent")
+        self.assertEqual(origin["label"], "vectorise the inner loop")
+        self.assertEqual(origin["session"], "parent-1/subagents/sub-abc")
+        # The question is about the action; who is asking is the badge's job.
+        self.assertIn("write_file", session.asked[0]["message"])
 
-            async def elicit_form(self, message, requestedSchema):
-                asked["message"] = message
-                return types.SimpleNamespace(action="decline", content=None)
-
+    def test_the_questions_of_a_child_carry_its_origin_too(self):
+        """Not only approvals: a child that asks something must be attributable."""
+        session = _ElicitSession(answer="Option A")
         agent = _FakeAgent()
         loop = asyncio.new_event_loop()
         threading.Thread(target=loop.run_forever, daemon=True).start()
-        spawn._install_user_channel(agent, _Ctx(), loop, "vectorise the inner loop")
-        approved, _ = agent._request_tool_approval("write_file", {"path": "/w/a.c"})
+        spawn._install_user_channel(agent, session, loop, "measure the tiling")
+        out = agent._request_user_question(
+            [{"header": "Layout", "question": "Row or column major?",
+              "options": [{"label": "Option A"}]}])
         loop.call_soon_threadsafe(loop.stop)
-        self.assertFalse(approved)          # a declined card is not an approval
-        self.assertIn("vectorise the inner loop", asked["message"])
-        self.assertIn("write_file", asked["message"])
+
+        self.assertEqual(out["answers"][0]["selected"], ["Option A"])
+        self.assertEqual(session.asked[0]["schema"]["x_mimir"]["origin"]["label"],
+                         "measure the tiling")
+
+
+class ParkedChildBudgetTests(unittest.TestCase):
+    """Time in front of the user is not time the child spent working.
+
+    A card sits for as long as the person takes, and that wait lands on whichever
+    thread the client's elicitation callback runs on — so `human_pause`, which is
+    thread-local, never sees it. Counted against the budget, a child parked on its own
+    approval is declared lost to the watcher (which reads "unknown" as terminal) while
+    the card it is waiting on is still on screen.
+    """
+
+    def setUp(self):
+        spawn._PAUSED.clear()
+        self.addCleanup(spawn._PAUSED.clear)
+
+    def _entry(self, elapsed: float):
+        return {"state": "running", "started": time.time() - elapsed, "budget": 60,
+                "session": "s/subagents/sub-1"}
+
+    def test_a_child_past_its_budget_is_reported_lost(self):
+        self.assertEqual(spawn._job_state(self._entry(120)), "unknown")
+
+    def test_the_same_child_parked_on_a_card_is_not(self):
+        spawn._record_pause("s/subagents/sub-1", 100)
+        self.assertEqual(spawn._job_state(self._entry(120)), "running")
+
+    def test_the_wait_is_added_up_across_cards(self):
+        for _ in range(4):
+            spawn._record_pause("s/subagents/sub-1", 30)
+        self.assertEqual(spawn._paused_secs("s/subagents/sub-1"), 120)
+
+    def test_another_child_s_wait_is_not_this_one_s(self):
+        spawn._record_pause("s/subagents/sub-2", 100)
+        self.assertEqual(spawn._job_state(self._entry(120)), "unknown")
 
     def test_no_or_unknown_mode_falls_back_to_manual(self):
         self.assertEqual(spawn._caller_approval_mode(None), "manual")
@@ -608,6 +704,19 @@ class SubAgentModelTests(unittest.TestCase):
             _SERVED.extend(saved)
         self.assertEqual(built, ["m"])
         self.assertEqual(out["status"], "ok")
+
+
+@contextlib.contextmanager
+def _no_real_worktree():
+    """Keep a child that writes from cutting an actual branch of this repository.
+
+    Granting a writing tool is what earns a copy of the repository; tests about what
+    else that grant earns (its budget, its detachment) have no business creating one.
+    """
+    wt = {"repo": "/repo", "branch": "mimir/sub-test", "path": "/tmp/copy", "base": "b0"}
+    with mock.patch.object(spawn, "_create_worktree", return_value=(wt, "")), \
+            mock.patch.object(spawn, "_finish_worktree", return_value={"kept": True}):
+        yield
 
 
 class _GrantCtx(_RecordingCtx):
@@ -824,18 +933,127 @@ class SubSessionTests(unittest.TestCase):
 
 
 class TimeBudgetTests(unittest.TestCase):
-    def test_the_budget_is_clamped_to_what_the_tool_declares(self):
+    """How long a child gets, by what it was given to do.
+
+    Ten minutes is right for a sweep that reads and concludes, and wrong for a child
+    that has to build, measure and try again — a run cut off there ends for a reason
+    with nothing to do with the task. The rung decides, through the same test that
+    decides whether the child gets a copy of the repository, so "works in its own copy"
+    and "has hours to do it" cannot disagree.
+    """
+
+    def _budget(self, ctx, **kwargs):
+        """The budget the run was actually given.
+
+        A long budget detaches the child, so its driver runs on a thread of its own:
+        wait for it before reading, or the next test's patch catches a stray call from
+        this one's thread and the two answers swap.
+        """
         agent = _FakeAgent()
         seen: dict = {}
+        entered = threading.Event()
 
-        async def _slow(*a, **kw):
+        async def _drive(*a, **kw):
             seen.update(kw)
+            entered.set()
             return {"answer": "done", "completed": True, "files_read": [],
                     "files_written": [], "blocked_by_mode": [], "error": None}
 
-        with _patched_agent(agent), mock.patch.object(spawn, "_drive_sub_agent", _slow):
-            asyncio.run(spawn.spawn_agent("find X", ctx=_GrantCtx(), time_budget_secs=99999))
-        self.assertEqual(seen["budget"], spawn.SUBAGENT_HARD_CAP_SECS)
+        with _patched_agent(agent), mock.patch.object(spawn, "_drive_sub_agent", _drive), \
+                _no_real_worktree():
+            out = asyncio.run(spawn.spawn_agent("find X", ctx=ctx, **kwargs))
+            self.assertTrue(entered.wait(5), "the sub-agent never started")
+        return seen.get("budget"), out
+
+    def test_a_reconnaissance_gets_ten_minutes(self):
+        budget, _ = self._budget(_GrantCtx())
+        self.assertEqual(budget, spawn.SUBAGENT_EXPLORE_BUDGET_SECS)
+        self.assertEqual(budget, 600)
+
+    def test_a_child_that_writes_gets_two_hours(self):
+        budget, _ = self._budget(_GrantCtx(level="parallel"), tools=["write_file"])
+        self.assertEqual(budget, spawn.SUBAGENT_WORKING_BUDGET_SECS)
+        self.assertEqual(budget, 7200)
+
+    def test_at_explore_a_writing_tool_buys_no_extra_time(self):
+        """The rung is the user's decision; a grant that slipped through does not
+        rewrite it, exactly as it does not buy a copy of the repository."""
+        budget, _ = self._budget(_GrantCtx(level="explore"), tools=["write_file"])
+        self.assertEqual(budget, spawn.SUBAGENT_EXPLORE_BUDGET_SECS)
+
+    def test_a_caller_may_ask_for_less(self):
+        budget, _ = self._budget(_GrantCtx(), time_budget_secs=120)
+        self.assertEqual(budget, 120)
+
+    def test_but_not_for_more_than_its_rung_allows(self):
+        budget, _ = self._budget(_GrantCtx(), time_budget_secs=99999)
+        self.assertEqual(budget, spawn.SUBAGENT_EXPLORE_BUDGET_SECS)
+
+    def test_nor_for_less_than_a_run_can_use(self):
+        budget, _ = self._budget(_GrantCtx(), time_budget_secs=1)
+        self.assertEqual(budget, spawn.SUBAGENT_MIN_BUDGET_SECS)
+
+    def test_no_ceiling_on_tool_call_steps(self):
+        """A step count cut long work off for a reason unrelated to its difficulty.
+        The agent loop reads 0 as unbounded."""
+        self.assertEqual(spawn.SUBAGENT_MAX_STEPS, 0)
+        agent = _FakeAgent()
+        seen: dict = {}
+
+        async def _drive(*a, **kw):
+            seen["max_steps"] = a[5] if len(a) > 5 else kw.get("max_steps")
+            return {"answer": "done", "completed": True, "files_read": [],
+                    "files_written": [], "blocked_by_mode": [], "error": None}
+
+        with _patched_agent(agent), mock.patch.object(spawn, "_drive_sub_agent", _drive):
+            asyncio.run(spawn.spawn_agent("find X", ctx=_GrantCtx()))
+        self.assertEqual(seen["max_steps"], 0)
+
+    def test_the_brief_no_longer_promises_a_step_ceiling(self):
+        self.assertNotIn("tool-call steps:", spawn._WORK_BRIEF)
+        self.assertIn("as many tool-call steps as the work needs", spawn._WORK_BRIEF)
+
+
+class ForcedDetachmentTests(unittest.TestCase):
+    """A run longer than a blocking call can hold is detached, asked for or not.
+
+    The client caps any wall a tool declares at TOOL_CALL_TIMEOUT_MAX_SECS, so a
+    two-hour child held in a blocking call would be killed at twenty minutes with
+    nothing to show — and the model, which knows nothing of that ceiling, cannot make
+    this choice correctly.
+    """
+
+    def _spawn(self, ctx, **kwargs):
+        agent = _FakeAgent()
+        done = threading.Event()
+
+        async def _drive(*a, **kw):
+            done.set()
+            return {"answer": "done", "completed": True, "files_read": [],
+                    "files_written": [], "blocked_by_mode": [], "error": None}
+
+        with _patched_agent(agent), mock.patch.object(spawn, "_drive_sub_agent", _drive), \
+                _no_real_worktree():
+            out = asyncio.run(spawn.spawn_agent("axis", ctx=ctx, **kwargs))
+            done.wait(5)
+        return out
+
+    def test_a_two_hour_child_is_detached_even_when_not_asked(self):
+        out = self._spawn(_GrantCtx(level="parallel"), tools=["write_file"],
+                          background=False)
+        self.assertIn("background_job", out)
+        self.assertIn("Detached automatically", out["note"])
+
+    def test_a_short_child_still_answers_in_place(self):
+        out = self._spawn(_GrantCtx())
+        self.assertNotIn("background_job", out)
+        self.assertEqual(out["answer"], "done")
+
+    def test_the_blocking_cap_stays_under_what_the_client_allows(self):
+        """Or the dispatcher kills the call before this server's own cap can hand back
+        what the child had."""
+        from mimir.client.config.constants import TOOL_CALL_TIMEOUT_MAX_SECS
+        self.assertLess(spawn.SUBAGENT_HARD_CAP_SECS, TOOL_CALL_TIMEOUT_MAX_SECS)
 
     def test_a_child_out_of_time_hands_back_where_it_got_to(self):
         """Its answer is gone with the thread; what it touched is not, and that is what
@@ -1314,15 +1532,49 @@ class StatusForwardingTests(unittest.TestCase):
 
 
 class BudgetTimeoutAdviceTests(unittest.TestCase):
-    def test_the_timeout_line_refuses_an_identical_respawn(self):
+    """What a caller is told when a run ends on its clock rather than on its work."""
+
+    def test_it_says_the_clock_ended_it_and_not_the_work(self):
+        """A handoff read as a conclusion is the failure this guards against:
+        `completed: False` alone is a flag a reader skims past."""
+        note = spawn._overrun_note(7200)
+        self.assertIn("about 2 hours", note)
+        self.assertIn("time budget, not the end of its work", note)
+        self.assertIn("not a conclusion", note)
+
+    def test_it_refuses_an_identical_respawn(self):
         """The caller reads this line and acts on it. Told only to use a fresh
         sub-agent, it respawned the same task verbatim and burned a second budget on
         it — so the line has to say that repeating it unchanged is the wrong move."""
-        src = Path(spawn.__file__).read_text()
-        _, _, tail = src.partition("ran out of its")
-        advice = tail[:600]
-        self.assertIn("Do not spawn the same task again", advice)
-        self.assertIn("time_budget_secs", advice)
+        note = spawn._overrun_note(600)
+        self.assertIn("rather than starting the task again", note)
+        self.assertIn("nothing about it has changed", note)
+
+    def test_a_detached_run_that_overran_says_it_in_those_words_too(self):
+        """A blocking run and a detached one end the same way; a caller should not have
+        to learn two vocabularies for one fact.
+
+        The detached path had no words at all: it reported "unknown" and handed over a
+        list of files, which reads exactly like a finished run that touched nothing
+        interesting.
+        """
+        child = {"agent": types.SimpleNamespace(
+            _carry_context={"read_files": {"/w/a.py"}, "last_query_written_files": set()})}
+        entry = {"state": "running", "started": time.time() - 9000, "budget": 7200,
+                 "task": "optimise the kernel", "session": "s/subagents/sub-1",
+                 "model": "m", "tools": ["write_file"], "phase": "", "result": None,
+                 "child": child}
+        with mock.patch.dict(spawn._JOBS, {"sub-1": entry}, clear=True):
+            out = spawn.subagent_job(op="result", job_key="sub-1")
+
+        self.assertEqual(out["state"], "unknown")
+        self.assertFalse(out["completed"])
+        self.assertTrue(out["ended_on_budget"])
+        self.assertIn("about 2 hours", out["answer"])
+        self.assertIn("not a conclusion", out["answer"])
+        # And it is stopped, rather than left spending model calls on an answer nobody
+        # will read: that was the whole cost of the silence.
+        self.assertTrue(child["abandoned"])
 
 
 class DeclaredBudgetTests(unittest.TestCase):
@@ -1342,13 +1594,18 @@ class DeclaredBudgetTests(unittest.TestCase):
         self.assertGreater(timeout_for("spawn_agent", registry), TOOL_CALL_TIMEOUT_SECS)
         self.assertEqual(timeout_for("other_tool", registry), TOOL_CALL_TIMEOUT_SECS)
 
-    def test_the_declared_budget_covers_the_largest_the_tool_accepts(self):
-        """The caller picks the wall per call; the dispatcher's own timeout must stay
-        above the largest one, or a long axis is killed from outside with nothing to
-        show."""
-        self.assertGreater(spawn.SUBAGENT_HARD_CAP_SECS, spawn.SUBAGENT_DEFAULT_BUDGET_SECS)
+    def test_the_declared_budget_covers_every_blocking_run(self):
+        """The dispatcher's timeout must stay above the longest run it can actually
+        hold, or such a run is killed from outside with nothing to show.
+
+        It does NOT cover a working child's two hours, and cannot: the client clamps
+        any declared wall to its own ceiling. That is precisely why a budget past the
+        blocking cap is detached instead of waited on.
+        """
         from mimir.client.config.constants import TOOL_CALL_TIMEOUT_MAX_SECS
+        self.assertGreater(spawn.SUBAGENT_HARD_CAP_SECS, spawn.SUBAGENT_EXPLORE_BUDGET_SECS)
         self.assertLessEqual(self._descriptor().timeout_secs, TOOL_CALL_TIMEOUT_MAX_SECS)
+        self.assertGreater(spawn.SUBAGENT_WORKING_BUDGET_SECS, spawn.SUBAGENT_HARD_CAP_SECS)
 
     def test_delegation_is_no_longer_dual_use_by_argument(self):
         """Its read-only-ness is not an argument any more: in a read-only mode the
@@ -1358,3 +1615,109 @@ class DeclaredBudgetTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ConcurrencyBoundTests(unittest.TestCase):
+    """How many sub-agents may work at once.
+
+    The client dispatches every non-writing call of one model step concurrently, so a
+    model that emits eight delegations got eight: eight threads, their MCP server
+    subprocesses, and eight concurrent streams on one endpoint, each budgeting for its
+    own share of the window. The prompt asks for one to three; this is the bound.
+    """
+
+    def setUp(self):
+        self._saved = spawn.SUBAGENT_MAX_CONCURRENT
+        spawn.SUBAGENT_MAX_CONCURRENT = 2
+        spawn._SLOTS = threading.Semaphore(2)
+        spawn._SLOT_HOLDERS.clear()
+        self.addCleanup(self._restore)
+
+    def _restore(self):
+        spawn.SUBAGENT_MAX_CONCURRENT = self._saved
+        spawn._SLOTS = threading.Semaphore(self._saved)
+        spawn._SLOT_HOLDERS.clear()
+
+    def _spawn_many(self, count: int, hold: float = 0.4):
+        """*count* children at once, each holding its slot for *hold* seconds."""
+        inside = {"now": 0, "peak": 0}
+        guard = threading.Lock()
+
+        async def _drive(*a, **kw):
+            with guard:
+                inside["now"] += 1
+                inside["peak"] = max(inside["peak"], inside["now"])
+            await asyncio.sleep(hold)
+            with guard:
+                inside["now"] -= 1
+            return {"answer": "done", "completed": True, "files_read": [],
+                    "files_written": [], "blocked_by_mode": [], "error": None}
+
+        async def _all():
+            return await asyncio.gather(*[
+                spawn.spawn_agent(f"axis {i}", ctx=_GrantCtx()) for i in range(count)
+            ])
+
+        with _patched_agent(_FakeAgent()), \
+                mock.patch.object(spawn, "_drive_sub_agent", _drive):
+            results = asyncio.run(_all())
+        return inside["peak"], results
+
+    def test_never_more_than_the_bound_run_at_once(self):
+        peak, results = self._spawn_many(4)
+        self.assertLessEqual(peak, 2)
+        self.assertTrue(all(r["status"] == "ok" for r in results), results)
+
+    def test_the_ones_that_waited_still_run(self):
+        """Bounded, not dropped: the fan-out is slower, not smaller."""
+        _, results = self._spawn_many(4)
+        self.assertEqual(len(results), 4)
+        self.assertTrue(all(r["answer"] == "done" for r in results))
+
+    def test_a_slot_is_given_back_when_a_child_fails(self):
+        async def _boom(*a, **kw):
+            raise RuntimeError("the child blew up")
+
+        with _patched_agent(_FakeAgent()), \
+                mock.patch.object(spawn, "_drive_sub_agent", _boom):
+            for _ in range(3):        # more runs than slots
+                out = asyncio.run(spawn.spawn_agent("axis", ctx=_GrantCtx()))
+                self.assertEqual(out["status"], "error")
+        self.assertEqual(spawn._SLOT_HOLDERS, {})
+
+    def test_a_full_house_is_refused_rather_than_queued_for_ever(self):
+        """Working children run for hours, so a full house can stay full for hours; a
+        caller that simply queued would freeze its turn with nothing to explain it."""
+        spawn._SLOTS = threading.Semaphore(0)         # every slot taken
+        spawn._SLOT_HOLDERS["s/subagents/sub-1"] = ("optimise the kernel", time.time())
+        with mock.patch.object(spawn, "SUBAGENT_SLOT_WAIT_SECS", 0.2):
+            out = asyncio.run(spawn.spawn_agent("another axis", ctx=_GrantCtx()))
+        self.assertEqual(out["status"], "error")
+        self.assertIn("no room to start another sub-agent", out["error"])
+        # It names what is running, so the caller can decide rather than guess.
+        self.assertIn("optimise the kernel", out["error"])
+        self.assertIn("Do not retry this call immediately", out["error"])
+
+    def test_a_detached_child_keeps_its_slot_after_its_call_returns(self):
+        """The call returning is not the run ending — that is the whole point of
+        detaching, and a slot handed back at the call would bound nothing."""
+        started, release = threading.Event(), threading.Event()
+
+        async def _drive(*a, **kw):
+            started.set()
+            release.wait(5)
+            return {"answer": "done", "completed": True, "files_read": [],
+                    "files_written": [], "blocked_by_mode": [], "error": None}
+
+        with _patched_agent(_FakeAgent()), \
+                mock.patch.object(spawn, "_drive_sub_agent", _drive):
+            out = asyncio.run(spawn.spawn_agent("axis", ctx=_GrantCtx(), background=True))
+            self.assertIn("background_job", out)
+            self.assertTrue(started.wait(5))
+            self.assertEqual(len(spawn._SLOT_HOLDERS), 1)   # still held
+            release.set()
+            for _ in range(50):
+                if not spawn._SLOT_HOLDERS:
+                    break
+                time.sleep(0.05)
+        self.assertEqual(spawn._SLOT_HOLDERS, {})

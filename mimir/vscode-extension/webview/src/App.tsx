@@ -13,6 +13,7 @@ import type {
   ServerMessage,
   SessionMeta,
   PanelSection,
+  PromptOrigin,
   SubAgent,
   SubAgentLevel,
   WatchedRun,
@@ -200,6 +201,10 @@ export const App: React.FC = () => {
   const [userQuestion, setUserQuestion] = useState<{
     id: string;
     questions: QuestionSpec[];
+    // Set when the card was raised by something other than the turn on screen — a
+    // sub-agent working alongside it. Rendered as a badge, because several can be
+    // working and an unattributed approval is one the user cannot weigh.
+    origin?: PromptOrigin;
   } | null>(null);
   // Batch review: accumulated file diffs across queries; persists until user accepts/reverts.
   const [batchFiles, setBatchFiles] = useState<DiffEntry[]>([]);
@@ -484,6 +489,7 @@ export const App: React.FC = () => {
         setUserQuestion({
           id: msg.id,
           questions: msg.questions,
+          origin: msg.origin,
         });
         dispatch(msg);
         scrollToBottom();
@@ -1384,6 +1390,7 @@ export const App: React.FC = () => {
         {userQuestion && (
           <UserQuestion
             questions={userQuestion.questions}
+            origin={userQuestion.origin}
             onSubmit={(answers) => {
               send({
                 type: "user_question_response",

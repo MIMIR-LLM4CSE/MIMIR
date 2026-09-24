@@ -739,11 +739,16 @@ class MimirAgent:
             return (True, False)
         return (False, False)
 
-    def _request_user_question(self, questions: list) -> dict:
+    def _request_user_question(self, questions: list, origin: dict | None = None,
+                               timeout_secs: float | None = None) -> dict:
         """Ask the user one or more clarifying questions (``ask_user_question`` tool).
 
         ``questions`` is a list of ``{header, question, multiSelect, options}`` specs
-        to ask in order. Returns ``{"answers": [{"selected": [<labels>],
+        to ask in order. *origin* names the asker when it is not the turn on screen —
+        a sub-agent running alongside it — so a front-end can say whose question this
+        is; None for the ordinary case. *timeout_secs* is how long the asker is willing
+        to wait before being told to decide for itself; None means it waits, which is
+        what an approval and a plan decision do. Returns ``{"answers": [{"selected": [<labels>],
         "other_text": <str|None>}, ...]}`` — one entry per question. The default
         (non-interactive) behaviour returns no answers, which the elicitation callback
         maps to a ``decline`` so the model proceeds with its best judgment. Interactive

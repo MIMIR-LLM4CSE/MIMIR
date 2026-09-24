@@ -92,6 +92,21 @@ TOOL_CALL_TIMEOUT_SECS: int = 120
 # rather than a bare "timed out".
 TOOL_CALL_TIMEOUT_MAX_SECS: int = 1200
 
+# How long a CLARIFICATION question stays in front of the user before the agent is told
+# to decide for itself. A long run — an optimisation left overnight, a build-and-measure
+# cycle — used to stop dead on a question nobody would read until morning, and never
+# resume: an unanswered question and a refused one returned the same "do not choose for
+# them", which is the right answer to a refusal and the wrong one to an empty room.
+#
+# Deliberately NOT applied to the other two cards that travel the same channel:
+#   * an APPROVAL that expired into "go ahead" would authorise, after a coffee break, a
+#     command nobody ever saw;
+#   * a PLAN approval left unanswered already resolves to "deliver the plan, execute
+#     nothing" — a deadline that executed would invert what the card is for.
+# So the wall is declared by whoever asks (see the interaction server), never imposed
+# here on every card alike.
+USER_QUESTION_TIMEOUT_SECS: int = 300
+
 # Separate budget for the post-write auto-validation ladder (syntax/imports/lint/
 # typecheck/format + completeness + cross-file grep). It runs AFTER the write has
 # already hit disk, so it is purely advisory: exceeding this budget drops the

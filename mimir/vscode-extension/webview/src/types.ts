@@ -580,10 +580,24 @@ export interface QuestionSpec {
   multiSelect: boolean;
 }
 
+/**
+ * Who raised a card, when it is not the turn on screen.
+ *
+ * A sub-agent works alongside the turn rather than inside it, and several can be
+ * working at once — so "allow this command?" is a question the user cannot weigh
+ * without knowing which piece of work it unblocks.
+ */
+export interface PromptOrigin {
+  kind: string;
+  label: string;
+  session?: string;
+}
+
 export interface UserQuestionMessage {
   type: "user_question";
   id: string;
   questions: QuestionSpec[];
+  origin?: PromptOrigin;
 }
 
 export interface QuestionAnswer {

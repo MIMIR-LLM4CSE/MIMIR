@@ -198,6 +198,11 @@ def _make_elicitation_callback(agent: Any):
         if not isinstance(questions, list) or not questions:
             return types.ElicitResult(action="decline")
 
+        declared = spec.get("timeout_secs")
+        timeout_secs = (float(declared)
+                        if isinstance(declared, (int, float)) and declared > 0
+                        else None)
+
         loop = asyncio.get_running_loop()
         try:
             # With the caller's context: the handler reads which tool call is asking
@@ -207,12 +212,25 @@ def _make_elicitation_callback(agent: Any):
                 contextvars.copy_context().run,
                 agent._request_user_question,
                 questions,
+                # Who is asking, when the asker is not the turn the user is watching:
+                # a sub-agent names itself here so the card can say so. Absent for the
+                # ordinary case, where the asker IS the turn on screen.
+                spec.get("origin") if isinstance(spec.get("origin"), dict) else None,
+                # How long the asker is willing to wait. Declared per question rather
+                # than set here, because the same channel carries approvals and plan
+                # decisions, and neither may ever expire.
+                timeout_secs,
             )
         except Exception:
             return types.ElicitResult(action="cancel")
 
         answers = list((result or {}).get("answers") or [])
         if not answers:
+            # Nobody answered in time, or nobody was going to: the asker must be able
+            # to tell the two apart, because they call for opposite behaviour.
+            if (result or {}).get("timed_out"):
+                return types.ElicitResult(action="decline",
+                                          content={"reason": "timeout"})
             return types.ElicitResult(action="decline")
 
         # ``ElicitResult.content`` is typed by the MCP SDK as

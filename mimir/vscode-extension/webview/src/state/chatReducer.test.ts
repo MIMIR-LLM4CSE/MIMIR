@@ -815,6 +815,27 @@ describe("background-job wake", () => {
   });
 });
 
+describe("a question raised by something other than the turn", () => {
+  it("leaves the turn producing, because it is still producing", () => {
+    // A sub-agent works alongside the turn, not inside it: it can ask while the agent
+    // is mid-step, and several can be working at once. Parking on its card showed the
+    // agent as idle — spinner gone, transcript handed back — while it was still
+    // running, and the next token then arrived into a turn the UI had closed.
+    const state = run([
+      { type: "submit_query", text: "do it" },
+      { type: "token", text: "working" },
+      {
+        type: "user_question",
+        id: "q2",
+        questions: [],
+        origin: { kind: "subagent", label: "vectorise the inner loop" },
+      },
+    ]);
+
+    expect(state.busy).toBe(true);
+  });
+});
+
 describe("a turn parked on a question", () => {
   const plan = { type: "user_question" as const, id: "q1", questions: [] };
 

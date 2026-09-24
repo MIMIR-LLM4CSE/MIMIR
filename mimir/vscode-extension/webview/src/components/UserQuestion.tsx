@@ -1,9 +1,11 @@
 import React, { useState } from "react";
-import type { QuestionAnswer, QuestionSpec } from "../types";
+import type { PromptOrigin, QuestionAnswer, QuestionSpec } from "../types";
 
 interface Props {
   questions: QuestionSpec[];
   onSubmit: (answers: QuestionAnswer[]) => void;
+  /** Who raised this card, when it was not the turn on screen (a sub-agent). */
+  origin?: PromptOrigin;
 }
 
 /**
@@ -16,7 +18,7 @@ interface Props {
  * toggle and a Submit button confirms. A free-text "Other" field is always
  * available. A progress indicator ("2 / 3") shows when there are several questions.
  */
-export const UserQuestion: React.FC<Props> = ({ questions, onSubmit }) => {
+export const UserQuestion: React.FC<Props> = ({ questions, onSubmit, origin }) => {
   const [index, setIndex] = useState(0);
   const [answers, setAnswers] = useState<QuestionAnswer[]>([]);
   const [selected, setSelected] = useState<string[]>([]);
@@ -70,6 +72,14 @@ export const UserQuestion: React.FC<Props> = ({ questions, onSubmit }) => {
         {total > 1 && (
           <div className="uq-progress">
             {index + 1} / {total}
+          </div>
+        )}
+        {/* Whose question this is, when it is not the turn on screen. Above the
+            header, because "which piece of work is this?" has to be read before the
+            question can be weighed at all. */}
+        {origin && (
+          <div className="uq-origin" title={origin.session || undefined}>
+            ⑂ {origin.label}
           </div>
         )}
         {header && <div className="uq-header">{header}</div>}

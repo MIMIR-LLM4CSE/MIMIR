@@ -117,7 +117,8 @@ def _cli_ask_one(
         print(f"   Enter a number between 1 and {other_idx}.")
 
 
-def _cli_request_question(questions: list) -> dict:
+def _cli_request_question(questions: list, origin: dict | None = None,
+                          timeout_secs: float | None = None) -> dict:
     """Ask the user one or more clarifying questions sequentially via stdin.
 
     Each item is a ``{header, question,
@@ -126,14 +127,21 @@ def _cli_request_question(questions: list) -> dict:
     ...}, ...]}``; an all-empty result means the user declined and the agent should
     proceed with its best judgment.
     """
+    # *timeout_secs* is accepted and not honoured: a terminal `input()` cannot be
+    # interrupted after a delay without taking over the terminal, and a wall that only
+    # some front-ends enforce is worse than one stated plainly. The CLI waits.
     total = len(questions)
     answers: list[dict] = []
+    # Who is asking, when it is not the turn the user is watching. The terminal has no
+    # badge to put it in, so it goes in front of the question — which is worse than a
+    # badge and much better than an unattributed "allow this?".
+    who = f"[{origin.get('label') or 'sub-agent'}] " if origin else ""
     for i, q in enumerate(questions, 1):
         q = q or {}
         progress = f" ({i}/{total})" if total > 1 else ""
         answers.append(
             _cli_ask_one(
-                str(q.get("question", "")),
+                who + str(q.get("question", "")),
                 str(q.get("header", "")),
                 q.get("options") or [],
                 bool(q.get("multiSelect") or q.get("multi_select")),

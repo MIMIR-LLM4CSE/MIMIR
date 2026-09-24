@@ -208,7 +208,7 @@ class ElicitationTransportTests(unittest.TestCase):
             {"selected": ["Auth", "Cache"], "other_text": None},
         ]
         agent = types.SimpleNamespace(
-            _request_user_question=lambda questions: {"answers": answers}
+            _request_user_question=lambda questions, origin=None, timeout_secs=None: {"answers": answers}
         )
         params = types.SimpleNamespace(
             requestedSchema={
@@ -233,7 +233,7 @@ class ElicitationTransportTests(unittest.TestCase):
             {"selected": ["Ray Serve"], "other_text": "Ray Serve"},
         ]
         agent = types.SimpleNamespace(
-            _request_user_question=lambda questions: {"answers": answers}
+            _request_user_question=lambda questions, origin=None, timeout_secs=None: {"answers": answers}
         )
         params = types.SimpleNamespace(
             requestedSchema={
@@ -263,3 +263,131 @@ class ElicitationTransportTests(unittest.TestCase):
 
         self.assertEqual(payload["status"], "error")
         self.assertIn("could not be put to the user", payload["error"])
+
+
+class ElicitationOriginTests(unittest.TestCase):
+    """Who raised a card travels with it, from the server that asked to the front end.
+
+    An ordinary question comes from the turn the user is watching, so there is nothing
+    to say. A sub-agent's does not: it works alongside that turn, several can be
+    working at once, and an approval the user cannot attribute is one they cannot
+    weigh. The bridge carries whatever the asking server declared and understands none
+    of it — the same way it already refuses a spec it does not recognise.
+    """
+
+    def _callback(self, x_mimir: dict, seen: dict):
+        from mimir.client.integration.server_manager import _make_elicitation_callback
+
+        def _ask(questions, origin=None, timeout_secs=None):
+            seen["questions"] = questions
+            seen["origin"] = origin
+            seen["timeout_secs"] = timeout_secs
+            return {"answers": [{"selected": ["ok"], "other_text": None}]}
+
+        agent = types.SimpleNamespace(_request_user_question=_ask)
+        params = types.SimpleNamespace(requestedSchema={"x_mimir": x_mimir})
+        return asyncio.run(_make_elicitation_callback(agent)(None, params))
+
+    def test_a_declared_origin_reaches_the_handler(self):
+        seen: dict = {}
+        origin = {"kind": "subagent", "label": "vectorise the inner loop",
+                  "session": "parent-1/subagents/sub-abc"}
+        result = self._callback(
+            {"kind": "user_question", "questions": [_Q_DB], "origin": origin}, seen)
+        self.assertEqual(result.action, "accept")
+        self.assertEqual(seen["origin"], origin)
+
+    def test_a_question_from_the_turn_itself_declares_none(self):
+        seen: dict = {}
+        self._callback({"kind": "user_question", "questions": [_Q_DB]}, seen)
+        self.assertIsNone(seen["origin"])
+
+    def test_an_origin_that_is_not_an_object_is_ignored_rather_than_passed_on(self):
+        """It is read off the wire; a front end handed a string where it expects a
+        label would render whatever that string says."""
+        seen: dict = {}
+        self._callback(
+            {"kind": "user_question", "questions": [_Q_DB], "origin": "sub-agent"}, seen)
+        self.assertIsNone(seen["origin"])
+
+
+class QuestionDeadlineTests(unittest.TestCase):
+    """A clarification expires; nothing else on this channel does.
+
+    A run left to work overnight used to stop dead on a question nobody would read
+    until morning, and never resume: an unanswered question and a refused one came
+    back as the same "do not choose for them", which is right for a refusal and wrong
+    for an empty room.
+    """
+
+    def _callback(self, seen: dict, answer: dict):
+        from mimir.client.integration.server_manager import _make_elicitation_callback
+
+        def _ask(questions, origin=None, timeout_secs=None):
+            seen["timeout_secs"] = timeout_secs
+            return answer
+
+        agent = types.SimpleNamespace(_request_user_question=_ask)
+        params = types.SimpleNamespace(requestedSchema={
+            "x_mimir": {"kind": "user_question", "questions": [_Q_DB],
+                        "timeout_secs": 300},
+        })
+        return asyncio.run(_make_elicitation_callback(agent)(None, params))
+
+    def test_the_asker_s_deadline_reaches_the_front_end(self):
+        seen: dict = {}
+        self._callback(seen, {"answers": [{"selected": ["Postgres"]}]})
+        self.assertEqual(seen["timeout_secs"], 300.0)
+
+    def test_a_card_with_no_declared_deadline_waits(self):
+        """An approval and a plan decision travel this same channel."""
+        from mimir.client.integration.server_manager import _make_elicitation_callback
+
+        seen: dict = {}
+
+        def _ask(questions, origin=None, timeout_secs=None):
+            seen["timeout_secs"] = timeout_secs
+            return {"answers": [{"selected": ["Postgres"]}]}
+
+        agent = types.SimpleNamespace(_request_user_question=_ask)
+        params = types.SimpleNamespace(requestedSchema={
+            "x_mimir": {"kind": "user_question", "questions": [_Q_DB]}})
+        asyncio.run(_make_elicitation_callback(agent)(None, params))
+        self.assertIsNone(seen["timeout_secs"])
+
+    def test_an_expiry_is_declined_with_its_reason(self):
+        result = self._callback({}, {"answers": [], "timed_out": True})
+        self.assertEqual(result.action, "decline")
+        self.assertEqual(result.content, {"reason": "timeout"})
+
+    def test_a_refusal_carries_no_reason_and_must_not_read_as_one(self):
+        result = self._callback({}, {"answers": []})
+        self.assertEqual(result.action, "decline")
+        self.assertIsNone(result.content)
+
+
+class ExpiredQuestionAnswerTests(unittest.TestCase):
+    """What the asking agent is told, which is the whole point of the distinction."""
+
+    def _answer(self, elicit_result):
+        payload, _ = _run([_Q_DB], elicit_result)
+        return payload
+
+    def test_an_expiry_tells_the_agent_to_decide_and_say_so(self):
+        import mcp.types as mcp_types
+        payload = self._answer(
+            mcp_types.ElicitResult(action="decline", content={"reason": "timeout"}))
+        self.assertTrue(payload.get("timed_out"))
+        self.assertEqual(payload["answers"], [])
+        note = payload["note"]
+        self.assertIn("did not reply", note)
+        self.assertIn("your call", note)
+        self.assertNotIn("Do not choose for them", note)
+
+    def test_a_refusal_still_tells_it_to_stop(self):
+        """Unchanged, and it must stay unchanged: a person who said no has not
+        delegated the decision."""
+        import mcp.types as mcp_types
+        payload = self._answer(mcp_types.ElicitResult(action="decline"))
+        self.assertNotIn("timed_out", payload)
+        self.assertIn("Do not choose for them", payload["note"])

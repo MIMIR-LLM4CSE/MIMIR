@@ -2616,6 +2616,24 @@ body {
   border-radius: 10px;
 }
 
+/* Whose question this is, when it is not the turn on screen. Quieter than the header
+   — it is context for the question, not the question — and it carries the sub-agents
+   glyph so it reads as the same thing the ⑂ button counts. */
+.uq-origin {
+  align-self: flex-start;
+  font-size: 10px;
+  letter-spacing: 0.02em;
+  color: var(--vscode-descriptionForeground, #9a9a9a);
+  border: 1px solid var(--vscode-widget-border, rgba(128, 128, 128, 0.35));
+  border-radius: 10px;
+  padding: 1px 8px;
+  margin-bottom: 4px;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .uq-options {
   display: flex;
   flex-direction: column;
