@@ -12,7 +12,7 @@ Step-by-step instructions to go from a fresh clone to a running agent.
 |-------------|-------|
 | Python ≥ 3.10 | Any CPython distribution |
 | Git | For cloning and the GitHub MCP server |
-| Node.js ≥ 18 + npm | Only for the VS Code extension |
+| Node.js ≥ 18 + npm | Only for the VS Code extension — [how to install it](#6a-get-nodejs-and-npm) |
 | An LLM server | A running vLLM, Ray Serve or Ollama endpoint you can reach over HTTP, or an Anthropic API key (see §3) |
 
 ---
@@ -395,7 +395,55 @@ Type `/help` at the prompt for the in-session commands (`/mode`, `/think`,
 The extension provides a chat panel with model selection, streaming output,
 approval dialogs, and tool-status indicators.
 
-### 6a. Install It
+### 6a. Get Node.js and npm
+
+The extension is built with npm, which ships with Node.js. Check what you have:
+
+```bash
+node -v      # want v18.0.0 or later
+npm -v
+```
+
+If either command prints `command not found`, install Node.js first. Pick the row
+that matches your machine:
+
+| Situation | How |
+|---|---|
+| **No root access** (a cluster node, a shared workstation) — recommended | [nvm](https://github.com/nvm-sh/nvm), see below |
+| Debian / Ubuntu, with sudo | `sudo apt install nodejs npm` |
+| RHEL / Rocky / Fedora, with sudo | `sudo dnf install nodejs npm` |
+| macOS, with [Homebrew](https://brew.sh) | `brew install node` |
+| Windows | The installer from [nodejs.org](https://nodejs.org/en/download) (it includes npm) |
+
+**nvm** installs Node into your home directory, so it needs no administrator
+rights and never touches the system packages — the same reason `install.sh`
+fetches its own Python:
+
+```bash
+curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash
+exec $SHELL -l              # or: source ~/.bashrc
+nvm install --lts           # installs Node + npm into ~/.nvm
+node -v && npm -v           # confirm
+```
+
+Distribution packages are often older than Node 18 — check `node -v` after
+installing, and fall back to nvm if it is behind.
+
+**Two caveats.**
+
+- `nvm` is a shell function, not a program, so it exists only in an interactive
+  shell that sourced `~/.nvm/nvm.sh`. `command -v nvm` printing nothing after a
+  fresh login usually means your shell reads `~/.bash_profile` rather than
+  `~/.bashrc`; source it there too.
+- The VS Code **integrated terminal** inherits the environment of the process
+  that started VS Code. After installing Node, restart VS Code (not just the
+  terminal) or `node` will still be missing there.
+
+You do not need Node.js to run the agent itself: `install.sh` skips the
+extension when npm is absent and the CLI works regardless. Install Node and
+re-run `./install.sh` (or §6b) whenever you want the panel.
+
+### 6b. Install It
 
 ```bash
 cd mimir/vscode-extension
@@ -417,7 +465,7 @@ Other scripts: `npm run dev` rebuilds on save, `npm test` runs the unit tests, a
 opening `mimir/vscode-extension` in VS Code and pressing `F5` launches a second
 window running it from source.
 
-### 6b. Connect
+### 6c. Connect
 
 Open the MIMIR panel, and in the Connect form:
 
@@ -437,7 +485,7 @@ Open the MIMIR panel, and in the Connect form:
 
 That is the whole configuration: a working setup needs **no `.vscode/settings.json`**.
 
-### 6c. Optional Settings
+### 6d. Optional Settings
 
 Everything below has a usable default; set one only to change the value the panel
 starts on, or when the WS server needs a specific interpreter.

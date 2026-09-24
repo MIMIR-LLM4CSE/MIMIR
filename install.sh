@@ -166,6 +166,10 @@ if [ "${MIMIR_SKIP_EXTENSION:-0}" = "1" ]; then
   echo "==> Skipping VS Code extension (MIMIR_SKIP_EXTENSION=1)"
 elif ! command -v npm >/dev/null 2>&1; then
   echo "==> Skipping VS Code extension (npm not found)"
+  echo "   Install Node.js >= 18 (it ships npm), then re-run ./install.sh."
+  echo "   No root? curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash"
+  echo "            exec \$SHELL -l && nvm install --lts"
+  echo "   Details: SETUP.md section 6a."
 elif [ ! -d "$ext_dir" ]; then
   echo "==> Skipping VS Code extension (not found at $ext_dir)"
 else
