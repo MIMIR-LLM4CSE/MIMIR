@@ -1,0 +1,39 @@
+name: Build extension
+
+# Standalone from ci.yml so the .vsix can be produced without waiting on the
+# Python test matrix — needed to install the extension on networks where
+# registry.npmjs.org is unreachable.
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "mimir/vscode-extension/**"
+      - ".github/workflows/build-extension.yml"
+
+jobs:
+  vsix:
+    name: Package VS Code extension
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: mimir/vscode-extension
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: mimir/vscode-extension/package-lock.json
+      - name: Install
+        run: npm ci
+      - name: Test
+        run: npm test
+      - name: Package
+        run: npm run package
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mimir-vsix
+          path: mimir/vscode-extension/*.vsix
+          if-no-files-found: error
+          retention-days: 30
