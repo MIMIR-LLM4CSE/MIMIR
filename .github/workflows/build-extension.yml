@@ -6,7 +6,7 @@ name: Build extension
 on:
   workflow_dispatch:
   push:
-    branches: [main]
+    branches: [main, "ci/**"]
     paths:
       - "mimir/vscode-extension/**"
       - ".github/workflows/build-extension.yml"
