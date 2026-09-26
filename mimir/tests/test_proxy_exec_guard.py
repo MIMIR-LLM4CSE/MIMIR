@@ -98,7 +98,9 @@ class ProxyExecGuardTests(unittest.TestCase):
         self._init_session()
         self._assert_blocked(self._check("bash_run", command=self.exe))
 
-    def test_code_execute_executable_blocked(self) -> None:
+    def test_the_executable_with_arguments_is_blocked(self) -> None:
+        # Named for what it runs: the guard keys on the command position, and every
+        # exec tool reaches it through the same shell-command argument.
         self._init_session()
         self._assert_blocked(self._check("bash_run", command=self.exe + " --fast"))
 

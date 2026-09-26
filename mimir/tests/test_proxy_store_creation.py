@@ -13,6 +13,7 @@ Run:
 """
 
 import os
+import shutil
 import sys
 import tempfile
 import unittest
@@ -59,26 +60,21 @@ class StoreCreationTests(unittest.TestCase):
 
     # -- reads create nothing ------------------------------------------------
 
-    def test_get_proxies_creates_nothing(self) -> None:
-        res = server_proxy.proxy_get(op="proxies")
-        self.assertEqual(res.get("status"), "ok")
-        self._assert_untouched()
-
-    def test_get_suites_creates_nothing(self) -> None:
-        self.assertEqual(server_proxy.proxy_get(op="suites").get("status"), "ok")
-        self._assert_untouched()
-
-    def test_get_references_creates_nothing(self) -> None:
-        self.assertEqual(server_proxy.proxy_get(op="references").get("status"), "ok")
-        self._assert_untouched()
-
-    def test_inspect_missing_proxy_creates_nothing(self) -> None:
-        self.assertEqual(server_proxy.proxy_get(op="proxy", name="absent").get("status"), "error")
-        self._assert_untouched()
-
-    def test_runs_list_creates_nothing(self) -> None:
-        server_proxy.proxy_runs(op="list", proxy_name="absent")
-        self._assert_untouched()
+    def test_reads_create_nothing(self) -> None:
+        for label, call, expect in (
+            ("get/proxies",    lambda: server_proxy.proxy_get(op="proxies"),    "ok"),
+            ("get/suites",     lambda: server_proxy.proxy_get(op="suites"),     "ok"),
+            ("get/references", lambda: server_proxy.proxy_get(op="references"), "ok"),
+            ("get/proxy",      lambda: server_proxy.proxy_get(op="proxy", name="absent"),
+             "error"),
+            ("runs/list",      lambda: server_proxy.proxy_runs(op="list", proxy_name="absent"),
+             None),
+        ):
+            with self.subTest(op=label):
+                res = call()
+                if expect:
+                    self.assertEqual(res.get("status"), expect)
+                self._assert_untouched()
 
     def test_failed_mutations_create_nothing(self) -> None:
         """update/unregister on an absent proxy: an error, and still no store."""
@@ -104,6 +100,35 @@ class StoreCreationTests(unittest.TestCase):
         listed = server_proxy.proxy_get(op="proxies")
         self.assertEqual(listed.get("status"), "ok")
         self.assertIn("tiny", str(listed))
+
+
+
+class StoreLocationTests(unittest.TestCase):
+    """Where the root lands. Read at import, so each case reloads the module.
+
+    A store outside the workspace outlives the project: deleting a project left the
+    registry and an "in progress" optimisation behind, and a fresh start silently
+    resumed it.
+    """
+
+    def test_the_default_is_under_the_workspace(self) -> None:
+        import importlib
+        wt = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, wt, True)
+        os.environ["MCP_FILES_ROOT"] = wt
+        os.environ.pop("MIMIR_PROXY_BENCH_DIR", None)
+        self.addCleanup(os.environ.pop, "MCP_FILES_ROOT", None)
+        from _lib import store
+        importlib.reload(store)
+        self.assertEqual(store.cache_dir(), os.path.join(wt, "proxy_bench"))
+
+    def test_the_env_override_still_wins(self) -> None:
+        import importlib
+        os.environ["MIMIR_PROXY_BENCH_DIR"] = "/tmp/explicit_store"
+        self.addCleanup(os.environ.pop, "MIMIR_PROXY_BENCH_DIR", None)
+        from _lib import store
+        importlib.reload(store)
+        self.assertEqual(store.cache_dir(), "/tmp/explicit_store")
 
 
 if __name__ == "__main__":

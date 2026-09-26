@@ -1,10 +1,13 @@
-"""The optimization ratchet: verdicts, best-so-far tracking, and the ledger.
+"""The optimization ratchet: verdicts, best-so-far tracking, ledger, and the
+measurement policy underneath them.
 
 Pure decision logic plus its persistence.  A completed run is *accepted* when
 it is feasible (all requirement constraints pass) and improves the primary
 metric; regressions are *rejected*.  The session-level settle (stall counter,
-frozen ratchet.json, flock serialization) lives in ``_ops/eval_session.py``;
-this module owns the reusable pieces under it.
+frozen ratchet.json, flock serialization) lives in ``_ops/_eval_ratchet.py``;
+this module owns the reusable pieces under it — including how many times a case
+is measured and what margin an improvement has to clear, which are decisions
+about measurement rather than about any one session.
 """
 
 from __future__ import annotations
@@ -156,3 +159,48 @@ def _append_ledger(proxy_name: str, entry: dict) -> None:
     except OSError:
         pass
 
+
+# ── measurement policy ────────────────────────────────────────────────────────
+
+# Metrics whose value moves between two runs of identical code. A timing metric on a
+# shared node is the whole reason this file needed a notion of noise; an accuracy metric
+# against a sealed reference is reproducible to the bit, and repeating it buys nothing.
+_NOISY_METRICS = ("time_s", "wall_time_s", "elapsed_s", "runtime_s", "gflops_per_s",
+                  "bandwidth_gbytes_per_s")
+
+# Replicates per case when the primary metric is a noisy one and the caller expressed no
+# preference. Three is the smallest number with a middle — enough for a median to mean
+# something, cheap enough to be the default.
+_AUTO_REPEAT = 3
+
+
+def _effective_repeat(cfg: dict) -> int:
+    """How many times to measure each case: what was asked, or what the metric needs.
+
+    ``repeat=0`` means "decide for me", and the decision is made on the metric rather
+    than on a constant: repeating a bit-reproducible accuracy check is pure cost, and
+    not repeating a timing on a shared node is how an edit worth nothing gets accepted
+    on that node's own noise.
+    """
+    asked = int(cfg.get("repeat", 0) or 0)
+    if asked > 0:
+        return asked
+    return _AUTO_REPEAT if cfg.get("primary_metric", "time_s") in _NOISY_METRICS else 1
+
+
+def _effective_min_improvement(cfg: dict) -> tuple[float, str]:
+    """The margin a run must clear, and where that number came from.
+
+    A caller-supplied constant annotated "guards timing noise" is an assertion about a
+    machine nobody has measured; where the real floor is higher, the guard admits
+    exactly the changes it exists to exclude.
+
+    So the configured value is a floor, not the answer. Once the baseline has been
+    measured more than once, the spread of those measurements is known, and the margin
+    is whichever of the two is larger.
+    """
+    configured = float(cfg.get("min_improvement", 0.0) or 0.0)
+    floor = cfg.get("noise_floor")
+    if not isinstance(floor, (int, float)) or floor <= configured:
+        return configured, "configured"
+    return float(floor), "measured noise floor"

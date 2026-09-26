@@ -2,12 +2,13 @@
 
 Locks in the behavior of the consolidated helpers (_seal_reference,
 _diff_run_dirs), the correctness fixes (_select_best_case, the _fallback_scan
-leak, per-case timeout plumbing), the integrity guards (reserved metrics,
-time_s plausibility, returncode gate), and the frozen
-``MIMIR_PROXY_BENCH_DIR`` root override.
+leak, per-case timeout plumbing), and the integrity guards (reserved metrics,
+time_s plausibility, returncode gate). Slurm submission is in
+test_proxy_slurm.py, the store root in test_proxy_store_creation.py, and build
+progress in test_proxy_build.py.
 
 Run:
-    python -m unittest tests.test_proxy_helpers -v
+    python -m unittest mimir.tests.test_proxy_helpers -v
 """
 
 import json
@@ -25,30 +26,35 @@ for _p in (SERVERS_DIR / "_shared", SERVERS_DIR / "proxy"):
         sys.path.insert(0, _ps)
 
 from _lib import execute, metrics, procs, ratchet, report, store  # noqa: E402
+from mimir.tests._proxy_fixtures import _TmpStorageTest  # noqa: E402
 
 try:
-    import numpy as _np_top  # noqa: F401  (availability probe)
-    _HAVE_NUMPY_TOP = True
+    import numpy as _np
+    _HAVE_NUMPY = True
 except ImportError:
-    _HAVE_NUMPY_TOP = False
+    _np = None
+    _HAVE_NUMPY = False
 
 
 class CoerceTests(unittest.TestCase):
-    def test_bool_int_float_str(self) -> None:
-        self.assertIs(metrics._coerce("true"), True)
-        self.assertIs(metrics._coerce("FALSE"), False)
-        self.assertEqual(metrics._coerce("42"), 42)
-        self.assertEqual(metrics._coerce("3.5"), 3.5)
-        self.assertEqual(metrics._coerce("/abs/path"), "/abs/path")
+    """Which strings become which Python values, and the two that used to be wrong."""
+
+    def test_words_are_flags_and_numbers_are_numbers(self) -> None:
+        for text, want in (("true", True), ("True", True), ("yes", True),
+                           ("false", False), ("False", False), ("no", False)):
+            with self.subTest(text=text):
+                self.assertIs(metrics._coerce(text), want)
+        for text, want in (("42", 42), ("3.5", 3.5), ("/abs/path", "/abs/path")):
+            with self.subTest(text=text):
+                self.assertEqual(metrics._coerce(text), want)
 
     def test_zero_and_one_stay_numbers(self) -> None:
         """The values a numerics tool most needs to keep were read as flags.
 
-        "1" and "0" used to sit in the boolean word sets, tested ahead of the int
-        branch. A summary line ``cases_passed=0 cases_total=1`` therefore reached the
-        model as ``cases_passed: false, cases_total: true``, and a case ``returncode=0``
-        — a success — read as ``false``. Observed in a recorded run, where the model
-        re-read that payload 157 times rather than act on it.
+        With "1" and "0" in the boolean word sets, tested ahead of the int branch, a
+        summary line ``cases_passed=0 cases_total=1`` reached the model as
+        ``cases_passed: false, cases_total: true``, and a case ``returncode=0`` — a
+        success — read as ``false``.
         """
         for text in ("0", "1"):
             got = metrics._coerce(text)
@@ -56,31 +62,16 @@ class CoerceTests(unittest.TestCase):
             self.assertEqual(got, int(text))
 
     def test_a_one_second_measurement_survives_the_plausibility_guard(self) -> None:
-        """`time_s=1` is a plausible second, and it is the ratchet's default objective.
+        """`time_s=1` is a plausible second, and the ratchet's default objective.
 
-        Coerced to True it failed `_normalize_time_metrics`'s deliberate bool exclusion, so
-        the reported time was discarded and wall time substituted — silently rewriting
-        the objective for any run landing on exactly one second.
+        Coerced to True it failed `_normalize_time_metrics`'s deliberate bool
+        exclusion, so the reported time was discarded and wall time substituted —
+        silently rewriting the objective for any run landing on exactly one second.
         """
         m = {"time_s": metrics._coerce("1")}
         metrics._normalize_time_metrics(m, 1.2)
         self.assertEqual(m["time_s"], 1)
         self.assertNotIn("time_s_ignored", m)
-
-    def test_word_booleans_are_still_booleans(self) -> None:
-        # The runner prints Python bools, so genuine flags arrive as words.
-        for text in ("true", "True", "yes"):
-            self.assertIs(metrics._coerce(text), True)
-        for text in ("false", "False", "no"):
-            self.assertIs(metrics._coerce(text), False)
-
-    def test_a_one_valued_requirement_still_passes(self) -> None:
-        # `finite == 1` is a real requirement; the engine compares through float().
-        out = metrics._evaluate_requirements(
-            {"finite": metrics._coerce("1")},
-            [{"metric": "finite", "operator": "eq", "threshold": 1}],
-        )
-        self.assertTrue(out["passed"])
 
 
 class ParseMetricsBlockTests(unittest.TestCase):
@@ -191,15 +182,12 @@ class DiffRunDirsTests(unittest.TestCase):
             self.assertEqual(md["label"], {"a": "old", "b": "new"})
 
 
-class SealReferenceTests(unittest.TestCase):
+class SealReferenceTests(_TmpStorageTest):
     """Integration test for _seal_reference using a tiny real proxy subprocess."""
 
     def setUp(self) -> None:
-        self._tmp = tempfile.TemporaryDirectory()
-        root = self._tmp.name
-        # Redirect all cache I/O into the temp dir (every path derives from the root).
-        self._saved_root = store._CACHE_DIR
-        store._CACHE_DIR = root
+        super().setUp()
+        root = self.root
 
         # A minimal proxy: emits a metrics block + writes an .npz field.
         self._proxy = os.path.join(root, "tiny_proxy.py")
@@ -216,10 +204,6 @@ class SealReferenceTests(unittest.TestCase):
                 print(f"output_file={a.output}")
                 print("PROXY_METRICS_END")
             """))
-
-    def tearDown(self) -> None:
-        store._CACHE_DIR = self._saved_root
-        self._tmp.cleanup()
 
     def test_seal_reference_stores_metrics_and_output(self) -> None:
         entry = {
@@ -251,8 +235,8 @@ class SealReferenceTests(unittest.TestCase):
         self.assertIn("error", error)
 
 
-@unittest.skipUnless(_HAVE_NUMPY_TOP, "numpy required")
-class PostRunFinalizeTests(unittest.TestCase):
+@unittest.skipUnless(_HAVE_NUMPY, "numpy required")
+class PostRunFinalizeTests(_TmpStorageTest):
     """A detached run must settle with the same metrics a synchronous one gets.
 
     The invariants (`finite`, lifted error norms, `conservation_residual`) are
@@ -261,10 +245,7 @@ class PostRunFinalizeTests(unittest.TestCase):
     """
 
     def setUp(self) -> None:
-        self._tmp = tempfile.TemporaryDirectory()
-        self.root = self._tmp.name
-        self._saved_root = store._CACHE_DIR
-        store._CACHE_DIR = self.root
+        super().setUp()
 
         # Sealed reference: a field plus a conserved quantity to compare against.
         import numpy as np
@@ -278,10 +259,6 @@ class PostRunFinalizeTests(unittest.TestCase):
             "run_cmd_template": "true", "output_format": "npz",
             "conserved_metric": "mass",
         }})
-
-    def tearDown(self) -> None:
-        store._CACHE_DIR = self._saved_root
-        self._tmp.cleanup()
 
     def _run_dir(self, mass: float = 120.0) -> str:
         import numpy as np
@@ -323,26 +300,7 @@ class PostRunFinalizeTests(unittest.TestCase):
         self.assertNotIn("conservation_residual", m)   # needs conserved_metric
 
 
-class ValidateSlurmArgsTests(unittest.TestCase):
-    def test_valid_args_pass(self) -> None:
-        self.assertIsNone(procs._validate_slurm_args("gpu", 1, 8, "32G", "04:00:00"))
-        self.assertIsNone(procs._validate_slurm_args("cpu", 0, 1, "64000M", "1-12:00:00"))
-
-    def test_invalid_args_rejected(self) -> None:
-        self.assertIn("partition", procs._validate_slurm_args("", 0, 8, "32G", "04:00:00"))
-        self.assertIn("gpus", procs._validate_slurm_args("p", -1, 8, "32G", "04:00:00"))
-        self.assertIn("mem", procs._validate_slurm_args("p", 0, 8, "lots", "04:00:00"))
-        self.assertIn("wall_time", procs._validate_slurm_args("p", 0, 8, "32G", "4 hours"))
-
-
-class RunLifecycleTests(unittest.TestCase):
-    def setUp(self) -> None:
-        self._tmp = tempfile.TemporaryDirectory()
-        self.root = self._tmp.name
-
-    def tearDown(self) -> None:
-        self._tmp.cleanup()
-
+class RunLifecycleTests(_TmpStorageTest):
     def test_new_run_dir_creates_start_time_and_suffix(self) -> None:
         base = os.path.join(self.root, "runs", "p")
         d = procs._new_run_dir(base, tag_suffix="scase_0")
@@ -384,64 +342,6 @@ class RunLifecycleTests(unittest.TestCase):
         self.assertNotIn("cancelled", result)
 
 
-class SubmitSbatchTests(unittest.TestCase):
-    """Uses a fake `sbatch` on PATH so no real scheduler is ever touched."""
-
-    def setUp(self) -> None:
-        self._tmp = tempfile.TemporaryDirectory()
-        self.root = self._tmp.name
-        self.bin_dir = os.path.join(self.root, "bin")
-        os.makedirs(self.bin_dir)
-        self._saved_path = os.environ["PATH"]
-
-    def tearDown(self) -> None:
-        os.environ["PATH"] = self._saved_path
-        self._tmp.cleanup()
-
-    def _fake_sbatch(self, script: str) -> None:
-        p = os.path.join(self.bin_dir, "sbatch")
-        with open(p, "w") as fh:
-            fh.write(script)
-        os.chmod(p, 0o755)
-
-    def test_success_parses_and_records_job_id(self) -> None:
-        self._fake_sbatch("#!/bin/sh\necho 'Submitted batch job 4242'\n")
-        os.environ["PATH"] = self.bin_dir
-        d = procs._new_run_dir(self.root)
-        job_id, error = procs._submit_sbatch(d, "#!/bin/bash\ntrue\n")
-        self.assertIsNone(error)
-        self.assertEqual(job_id, 4242)
-        self.assertEqual(procs._read_slurm_id(d), 4242)
-        self.assertTrue(os.path.isfile(os.path.join(d, "batch_script.sh")))
-
-    def test_sbatch_failure_returns_err(self) -> None:
-        self._fake_sbatch("#!/bin/sh\necho 'bad partition' >&2\nexit 1\n")
-        os.environ["PATH"] = self.bin_dir
-        d = procs._new_run_dir(self.root)
-        job_id, error = procs._submit_sbatch(d, "#!/bin/bash\ntrue\n")
-        self.assertIsNone(job_id)
-        self.assertIn("sbatch failed", error["error"])
-
-    def test_sbatch_missing_suggests_local_alternative(self) -> None:
-        os.environ["PATH"] = self.bin_dir  # empty dir: no sbatch
-        d = procs._new_run_dir(self.root)
-        job_id, error = procs._submit_sbatch(
-            d, "#!/bin/bash\ntrue\n",
-            local_alternative="proxy_exec(op='run', confirm=True)",
-        )
-        self.assertIsNone(job_id)
-        self.assertIn("sbatch not found", error["error"])
-        self.assertIn("proxy_exec(op='run'", error["hint"])
-
-
-try:
-    import numpy as _np
-    _HAVE_NUMPY = True
-except ImportError:
-    _HAVE_NUMPY = False
-
-
-@unittest.skipUnless(_HAVE_NUMPY, "numpy required")
 class FieldNormsTests(unittest.TestCase):
     def test_identical_fields_have_zero_error(self) -> None:
         a = _np.array([1.0, 2.0, 3.0])
@@ -551,17 +451,8 @@ class RatchetVerdictTests(unittest.TestCase):
         self.assertIsNone(ratchet._ratchet_verdict(False, 4.0, None, "min"))
 
 
-class RatchetStoreTests(unittest.TestCase):
+class RatchetStoreTests(_TmpStorageTest):
     """best.json / ledger.jsonl persistence."""
-
-    def setUp(self) -> None:
-        self._tmp = tempfile.TemporaryDirectory()
-        self._saved_root = store._CACHE_DIR
-        store._CACHE_DIR = self._tmp.name
-
-    def tearDown(self) -> None:
-        store._CACHE_DIR = self._saved_root
-        self._tmp.cleanup()
 
     def test_save_and_load_best_points_at_a_tree(self) -> None:
         """The best is one id for the WHOLE tracked set, not a copy of one file.
@@ -745,19 +636,10 @@ class RunBenchmarkCaseIntegrityTests(unittest.TestCase):
                 store._CACHE_DIR = old_root
 
 
-class RegistryLockThreadingTests(unittest.TestCase):
+class RegistryLockThreadingTests(_TmpStorageTest):
     """The re-entrancy depth is thread-local: same-thread nesting must not
     deadlock, while two threads must still exclude each other via flock
     (a shared depth counter would let the second thread skip the lock)."""
-
-    def setUp(self) -> None:
-        self._tmp = tempfile.TemporaryDirectory()
-        self._saved_root = store._CACHE_DIR
-        store._CACHE_DIR = self._tmp.name
-
-    def tearDown(self) -> None:
-        store._CACHE_DIR = self._saved_root
-        self._tmp.cleanup()
 
     def test_reentrant_in_one_thread(self) -> None:
         with store._registry_lock():
@@ -794,113 +676,5 @@ class RegistryLockThreadingTests(unittest.TestCase):
         self.assertEqual(len(acquired), 1)
 
 
-class StorageContractTests(unittest.TestCase):
-    """Frozen external contract, checked in a fresh interpreter: the storage
-    root honors ``MIMIR_PROXY_BENCH_DIR``, which is read at import time.
-    """
-
-    _PATH_SETUP = (f"import sys; sys.path[:0] = ["
-                   f"{str(SERVERS_DIR / 'proxy')!r}, {str(SERVERS_DIR / '_shared')!r}]; ")
-
-    def _run(self, code: str, env_extra: dict | None = None) -> str:
-        import subprocess
-        env = dict(os.environ, **(env_extra or {}))
-        res = subprocess.run([sys.executable, "-c", self._PATH_SETUP + code],
-                             capture_output=True, text=True, timeout=60, env=env)
-        self.assertEqual(res.returncode, 0, msg=res.stderr)
-        return res.stdout.strip()
-
-    def test_cache_root_env_override(self) -> None:
-        out = self._run("from _lib import store; print(store.cache_dir())",
-                        env_extra={"MIMIR_PROXY_BENCH_DIR": "/tmp/proxy_bench_env_test"})
-        self.assertEqual(out, "/tmp/proxy_bench_env_test")
-
-
 if __name__ == "__main__":
     unittest.main()
-
-
-class RunProgressTests(unittest.TestCase):
-    """What a run says it is doing, read off the run dir while it is still going.
-
-    A blocking call cannot report on itself — it does not answer until the run is
-    over. Both halves of the answer are therefore read from disk: the phase from the
-    sidecar the runner writes at its own boundaries, and the percentage from the
-    build's own output, because the runner is blocked inside the build for its whole
-    duration and is in no position to count it.
-    """
-
-    def setUp(self) -> None:
-        self.run_dir = tempfile.mkdtemp(prefix="mimir-progress-")
-
-    def _write_phase(self, **fields) -> None:
-        with open(procs._phase_path(self.run_dir), "w") as fh:
-            json.dump(fields, fh)
-
-    def _write_build_log(self, text: str) -> None:
-        with open(procs._build_log_path(self.run_dir), "w") as fh:
-            fh.write(text)
-
-    # ── the build's own percentage ────────────────────────────────────────────
-    def test_the_newest_percentage_wins(self) -> None:
-        self._write_build_log("[  6%] Building A\n[ 50%] Building B\n[ 13%] Building C\n")
-        # Not the largest: a suite of several builds restarts the count, and the run
-        # is wherever the compiler last said it was.
-        self.assertEqual(procs._build_percent(self.run_dir), 13.0)
-
-    def test_padding_and_three_digits_are_read(self) -> None:
-        self._write_build_log("[  7%] a\n")
-        self.assertEqual(procs._build_percent(self.run_dir), 7.0)
-        self._write_build_log("[100%] a\n")
-        self.assertEqual(procs._build_percent(self.run_dir), 100.0)
-
-    def test_a_build_that_counts_nothing_reports_nothing(self) -> None:
-        # None is a real answer. Showing 0% for a build that never says how far
-        # along it is would invent a fact about it.
-        self._write_build_log("compiling everything, quietly\n")
-        self.assertIsNone(procs._build_percent(self.run_dir))
-
-    def test_an_absent_build_log_reports_nothing(self) -> None:
-        self.assertIsNone(procs._build_percent(self.run_dir))
-
-    def test_a_token_cut_in_half_by_the_tail_is_not_read(self) -> None:
-        # The tail starts mid-line on any real build log. A partial "[ 1" must not
-        # become a percentage.
-        self._write_build_log("x" * 4096 + "[ 42%] done\n")
-        self.assertEqual(procs._build_percent(self.run_dir, max_bytes=8), None)
-
-    # ── the phase sidecar ─────────────────────────────────────────────────────
-    def test_no_sidecar_means_the_run_says_nothing(self) -> None:
-        self.assertEqual(procs._run_progress(self.run_dir), {})
-
-    def test_a_corrupt_sidecar_is_silent(self) -> None:
-        with open(procs._phase_path(self.run_dir), "w") as fh:
-            fh.write("{not json")
-        self.assertEqual(procs._run_progress(self.run_dir), {})
-
-    def test_a_build_phase_carries_the_percentage(self) -> None:
-        self._write_phase(kind="build", text="building tiny (1/2)")
-        self._write_build_log("[ 34%] Building A\n")
-        out = procs._run_progress(self.run_dir)
-        self.assertEqual(out["phase"], "building tiny (1/2)")
-        self.assertEqual(out["percent"], 34.0)
-
-    def test_a_measurement_phase_carries_no_percentage(self) -> None:
-        # The build log still holds the last thing the compiler said. Carrying it
-        # into the measurement would leave a bar frozen at 98% for the rest of the
-        # run, describing work that finished long ago.
-        self._write_phase(kind="measure", text="case shock (2/3)")
-        self._write_build_log("[ 98%] Building Z\n")
-        out = procs._run_progress(self.run_dir)
-        self.assertEqual(out["phase"], "case shock (2/3)")
-        self.assertNotIn("percent", out)
-
-    def test_the_phase_reaches_run_state(self) -> None:
-        # One merge point, so the blocking wait, the status op and the detached
-        # watcher all learn it at once.
-        self._write_phase(kind="build", text="building tiny")
-        self._write_build_log("[ 12%] a\n")
-        st = procs._run_state(self.run_dir)
-        self.assertEqual(st["phase"], "building tiny")
-        self.assertEqual(st["percent"], 12.0)
-        self.assertIn("state", st)

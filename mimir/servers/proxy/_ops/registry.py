@@ -35,6 +35,25 @@ _METADATA_DEFAULTS: dict = {
     # (default: 30 min). See _lib/build.py for why the server runs the build itself.
     "build_cwd": "",
     "build_timeout_s": 0.0,
+    # Where the build is *submitted*, on a cluster. Naming a build_partition here is
+    # what splits proxy_slurm(op='eval') into a build job and a run job: the compile
+    # goes to a machine made for compiling, the measurement to the one being
+    # measured. It belongs on the registration rather than on each call because it is
+    # a property of the proxy — the ratchet submits the same run hundreds of times,
+    # and re-deciding this every iteration is how it comes out wrong once.
+    # Left empty, nothing changes: one job, both phases, as before.
+    # The zero/empty values below mean "whatever the run phase was given".
+    # Variables pinned for the build, merged over the inherited environment. What is
+    # inherited is the MCP server's environment, not the shell the user builds in by
+    # hand; when the two disagree on the compiler or on CCACHE_DIR, each build
+    # invalidates the other's artifacts and the project recompiles in full every time
+    # it changes hands. Empty means inherit everything, as before.
+    "build_env": {},
+    "build_partition": "",
+    "build_constraint": "",
+    "build_cpus_per_task": 0,
+    "build_mem": "",
+    "build_wall_time": "",
     "source_url": "",
     "notes": "",
     "input_description": "",
@@ -58,6 +77,11 @@ def _check_metadata(metadata: dict | None) -> str | None:
     bad = build.check_cmd(str(metadata.get("build_cmd") or ""))
     if bad:
         return bad
+    # Same reason as above: a malformed variable name surfaces as a build that fails
+    # to launch, half an hour in, with a message about something else.
+    bad_env = build.check_env(metadata.get("build_env"))
+    if bad_env:
+        return bad_env
     return None
 
 
@@ -96,11 +120,24 @@ def _proxy_readme(entry: dict) -> str:
             lines.append(f"- **build_cwd:** `{entry['build_cwd']}`")
         if entry.get("build_timeout_s"):
             lines.append(f"- **build_timeout_s:** {entry['build_timeout_s']}")
+        for key in ("build_partition", "build_constraint", "build_cpus_per_task",
+                    "build_mem", "build_wall_time"):
+            if entry.get(key):
+                lines.append(f"- **{key}:** {entry[key]}")
+        if entry.get("build_env"):
+            pinned = " ".join(f"{k}={v}"
+                              for k, v in sorted(entry["build_env"].items()))
+            lines.append(f"- **build_env:** {pinned}")
         lines.append("")
         lines.append("Run by the server once per evaluation run, before any case is "
                      "measured, as argv (no shell). A build that fails ends the run "
                      "with no verdict. Build time is outside the measurement budget, "
                      "and is paid once per run whatever `repeat` is set to.")
+        if entry.get("build_partition"):
+            lines.append("")
+            lines.append("On Slurm, the build is a job of its own on "
+                         f"`{entry['build_partition']}`, and the measurement job runs "
+                         "only after it succeeds.")
         lines.append("")
 
     if entry.get("input_description"):
@@ -384,11 +421,10 @@ def clean(name: str) -> dict:
     """Delete a proxy's runs, optimisation state and snapshots. Returns what survived.
 
     ``unregister`` drops the registry entry and keeps everything else, which is correct
-    but was the whole story: there was no way to remove a proxy's state at all. Deleting
-    the workspace did not do it either, because the store used to live outside it — a
-    user who deleted a project and started again was silently resumed into the old
-    optimisation, since ``active_session`` still named the proxy and the registry still
-    held a run command pointing at a file that no longer existed.
+    and is not enough on its own: without this, a proxy's state cannot be removed at
+    all, and starting again is silently resumed into the old optimisation —
+    ``active_session`` still names the proxy, the registry still holds a run command
+    pointing at a file that is gone.
 
     It deliberately does NOT cascade into references and suites: a sealed reference costs
     real compute and can be shared by a suite this proxy has nothing to do with. Instead
@@ -412,10 +448,10 @@ def clean(name: str) -> dict:
     # The shadow snapshot repository and its fallback copies live beside the store root —
     # ONE of them, written by every proxy, with no per-proxy identity inside it to remove
     # (a single branch, a shared index, and each commit carrying the union of every path
-    # ever tracked). So the choice is all or nothing, and cleaning one proxy used to take
-    # the other proxies' history with it: their `best.json` kept a snapshot id pointing
-    # into a repository that no longer existed, and `reset_to_best` failed with "Could not
-    # restore the best tree" — a rollback lost by tidying up something else.
+    # ever tracked). So the choice is all or nothing: removing it for one proxy takes
+    # every other proxy's history with it — their `best.json` keeps a snapshot id
+    # pointing into a repository that no longer exists, and `reset_to_best` fails with
+    # "Could not restore the best tree", a rollback lost by tidying up something else.
     #
     # The rule is the one this function already states for references and suites: what is
     # shared is not removed on behalf of one proxy. Applied here, it was simply missing.

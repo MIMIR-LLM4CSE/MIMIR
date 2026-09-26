@@ -10,6 +10,9 @@ way to satisfy both.
 The cost is not the manual port afterwards: the ratchet's accuracy constraints then hold
 for the duplicate and for nothing that ships. These tests pin the contract that makes
 that shape inexpressible, and the atomicity that lets it generalize past one file.
+
+Run:
+    python -m unittest mimir.tests.test_proxy_tree_ratchet -v
 """
 from __future__ import annotations
 
@@ -22,6 +25,8 @@ import unittest
 _PROXY = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "servers", "proxy")
 sys.path.insert(0, os.path.abspath(_PROXY))
 sys.path.insert(0, os.path.abspath(os.path.join(_PROXY, "..", "_shared")))
+
+from _lib import ratchet, store, tree_snapshot  # noqa: E402
 
 
 class _Workspace(unittest.TestCase):
@@ -39,7 +44,6 @@ class _Workspace(unittest.TestCase):
         # then answered with another test's leftovers. Repointed the same way
         # `test_proxy_ops._TmpStorageTest` does, at the path `TreeAtomicityTests` already
         # spells out by hand.
-        from _lib import store
         self._saved_cache = store._CACHE_DIR
         store._CACHE_DIR = os.path.join(self.wt, "proxy_bench")
         self.addCleanup(setattr, store, "_CACHE_DIR", self._saved_cache)
@@ -65,8 +69,8 @@ class HarnessContractTests(_Workspace):
     """init refuses the shape that produced the duplicate."""
 
     def _check(self, paths, src=None):
-        from _ops import eval_session
-        return eval_session._check_optimize_paths(paths, src or self.harness)
+        from _ops import _eval_validate
+        return _eval_validate._check_optimize_paths(paths, src or self.harness)
 
     def test_no_optimize_paths_is_refused(self) -> None:
         msg = self._check([])
@@ -97,17 +101,21 @@ class TreeAtomicityTests(_Workspace):
     """A restore puts back a state that was measured — never a mix of runs."""
 
     def _snap(self, message: str) -> str:
-        from _lib import tree_snapshot
         sid = tree_snapshot.snapshot(
             os.path.join(self.wt, "proxy_bench", "opt.git"), self.wt,
             [self.a, self.b], message)
         self.assertTrue(sid, "snapshot failed")
         return sid
 
-    def _restore(self, sid: str) -> bool:
-        from _lib import tree_snapshot
-        return tree_snapshot.restore(
+    def _restore(self, sid: str) -> list[str]:
+        """Restore and assert it worked; returns the files it actually rewrote.
+
+        None is the only failure — an empty list means the tree was already right.
+        """
+        rewritten = tree_snapshot.restore(
             os.path.join(self.wt, "proxy_bench", "opt.git"), self.wt, [self.a, self.b], sid)
+        self.assertIsNotNone(rewritten, "restore failed")
+        return rewritten
 
     def _scenario(self) -> None:
         """baseline -> an accepted run -> a regression touching ONE file."""
@@ -119,7 +127,7 @@ class TreeAtomicityTests(_Workspace):
 
     def test_reset_to_best_restores_every_tracked_file(self) -> None:
         self._scenario()
-        self.assertTrue(self._restore(self.accepted))
+        self._restore(self.accepted)
         # Both files at the accepted run. Restoring only the file that changed would
         # leave B at B1 by luck here — and assemble a never-measured pair as soon as the
         # regression had touched B instead.
@@ -127,55 +135,30 @@ class TreeAtomicityTests(_Workspace):
 
     def test_reset_goes_all_the_way_back(self) -> None:
         self._scenario()
-        self.assertTrue(self._restore(self.baseline))
+        self._restore(self.baseline)
         self.assertEqual((self._read(self.a), self._read(self.b)), ("A0", "B0"))
 
     def test_a_snapshot_is_immune_to_edits_made_after_it(self) -> None:
         """`source_at_launch`'s property, generalised: what ran is what is kept."""
         launch = self._snap("launch")
         self._write(self.a, "EDITED_MID_FLIGHT\n")
-        self.assertTrue(self._restore(launch))
+        self._restore(launch)
         self.assertEqual(self._read(self.a), "A0")
 
     def test_the_fallback_has_the_same_semantics(self) -> None:
         # Same suite with git unavailable: a machine without git must degrade, not lose
         # the invariant.
-        from _lib import tree_snapshot
         real = tree_snapshot.git_available
         tree_snapshot.git_available = lambda: False
         self.addCleanup(setattr, tree_snapshot, "git_available", real)
         self._scenario()
-        self.assertTrue(self._restore(self.accepted))
+        self._restore(self.accepted)
         self.assertEqual((self._read(self.a), self._read(self.b)), ("A1", "B1"))
 
     def test_the_fingerprint_notices_a_changed_tree(self) -> None:
-        from _lib import tree_snapshot
         before = tree_snapshot.fingerprint(self.wt, [self.a, self.b])
         self._write(self.b, "CHANGED\n")
         self.assertNotEqual(before, tree_snapshot.fingerprint(self.wt, [self.a, self.b]))
-
-
-class StoreLocationTests(unittest.TestCase):
-    def test_the_default_is_under_the_workspace(self) -> None:
-        # It used to be ~/.cache/proxy_bench: deleting a project left the registry and
-        # an "in progress" optimisation behind, and a fresh start silently resumed it.
-        import importlib
-        wt = tempfile.mkdtemp()
-        self.addCleanup(shutil.rmtree, wt, True)
-        os.environ["MCP_FILES_ROOT"] = wt
-        os.environ.pop("MIMIR_PROXY_BENCH_DIR", None)
-        self.addCleanup(os.environ.pop, "MCP_FILES_ROOT", None)
-        from _lib import store
-        importlib.reload(store)
-        self.assertEqual(store.cache_dir(), os.path.join(wt, "proxy_bench"))
-
-    def test_the_env_override_still_wins(self) -> None:
-        import importlib
-        os.environ["MIMIR_PROXY_BENCH_DIR"] = "/tmp/explicit_store"
-        self.addCleanup(os.environ.pop, "MIMIR_PROXY_BENCH_DIR", None)
-        from _lib import store
-        importlib.reload(store)
-        self.assertEqual(store.cache_dir(), "/tmp/explicit_store")
 
 
 class GuidanceTests(unittest.TestCase):
@@ -212,76 +195,6 @@ class GuidanceTests(unittest.TestCase):
         self.assertIn("clean", skill)
 
 
-class ProxyCleanCommandTests(unittest.TestCase):
-    """`/proxy clean <name>` — housekeeping the user can do without asking the model.
-
-    `clean` is reachable as a tool op, but a person who wants to start an optimisation
-    over should not have to ask the model to tidy up first. Before this the only recourse
-    was `rm -rf` on a store whose path nobody has a reason to know — which is how a
-    deleted project came back with a finished checklist and an optimisation still marked
-    "in progress".
-    """
-
-    def _run(self, query: str, payload: dict | None):
-        import asyncio
-        from unittest import mock
-        from mimir.client.ui.cli import chat_commands
-
-        async def _fake(agent, tool, arguments):
-            self.assertEqual(tool, "proxy_manage")
-            self.assertEqual(arguments.get("op"), "clean")
-            self.assertTrue(arguments.get("confirm"))
-            return payload
-
-        with mock.patch.object(chat_commands, "_call_platform_tool", _fake):
-            return asyncio.run(chat_commands.handle_chat_command(
-                query=query, mode="agent", thinking=False, streaming=False,
-                batch_mode=False, set_mode=lambda v: None, set_thinking=lambda v: None,
-                set_streaming=lambda v: None, set_batch_mode=lambda v: None,
-                agent=object(),
-            ))
-
-    def test_it_reports_what_was_removed_and_what_survived(self) -> None:
-        handled, msg = self._run("/proxy clean wave2d", {
-            "status": "ok",
-            "removed": ["runs", "optimisation state"],
-            "kept": ["sealed references wave2d_ref — shared with suites"],
-        })
-        self.assertTrue(handled)
-        self.assertIn("wave2d", msg)
-        self.assertIn("runs", msg)
-        # The surviving half is the answer to "I deleted everything and it still
-        # remembers" — printing only what was removed would reproduce the confusion.
-        self.assertIn("kept", msg)
-        self.assertIn("sealed references", msg)
-
-    def test_a_disconnected_proxy_server_says_so(self) -> None:
-        handled, msg = self._run("/proxy clean wave2d", None)
-        self.assertTrue(handled)
-        self.assertIn("not connected", msg)
-
-    def test_usage_without_a_name(self) -> None:
-        from mimir.client.ui.cli import chat_commands
-        import asyncio
-        handled, msg = asyncio.run(chat_commands.handle_chat_command(
-            query="/proxy", mode="agent", thinking=False, streaming=False,
-            batch_mode=False, set_mode=lambda v: None, set_thinking=lambda v: None,
-            set_streaming=lambda v: None, set_batch_mode=lambda v: None, agent=object()))
-        self.assertTrue(handled)
-        self.assertIn("/proxy clean <name>", msg)
-
-    def test_the_command_is_listed_in_help(self) -> None:
-        from mimir.client.ui.cli import chat_commands
-        import asyncio
-        _handled, msg = asyncio.run(chat_commands.handle_chat_command(
-            query="/help", mode="agent", thinking=False, streaming=False,
-            batch_mode=False, set_mode=lambda v: None, set_thinking=lambda v: None,
-            set_streaming=lambda v: None, set_batch_mode=lambda v: None))
-        self.assertIn("/proxy clean", msg)
-
-
-if __name__ == "__main__":
-    unittest.main()
 
 
 class RebaselineTests(_Workspace):
@@ -297,7 +210,6 @@ class RebaselineTests(_Workspace):
 
     def _session(self) -> tuple:
         from _ops import eval_session
-        from _lib import store
         cfg = {
             "proxy_name": "p", "benchmark_name": "b", "requirements": [],
             "proxy_source_path": self.harness,
@@ -308,7 +220,7 @@ class RebaselineTests(_Workspace):
             "max_stall": 5, "stall": 3,
         }
         os.makedirs(store._opt_session_runs_dir("p"), exist_ok=True)
-        eval_session._save_opt_config(cfg)
+        store._save_opt_config(cfg)
         with open(store._opt_ledger_file("p"), "w", encoding="utf-8") as fh:
             fh.write('{"run_id": "r0", "primary_value": 0.0894}\n')
             fh.write('{"run_id": "r1", "primary_value": 0.0538}\n')
@@ -339,13 +251,12 @@ class RebaselineTests(_Workspace):
         out = eval_session.rebaseline("p")
         self.assertNotEqual(out["baseline_id"], "ORIGINAL")
         self.assertEqual(out["previous_baseline_id"], "ORIGINAL")
-        cfg = eval_session._load_opt_config("p")
+        cfg = store._load_opt_config("p")
         self.assertEqual(cfg["baseline_id"], out["baseline_id"])
         self.assertEqual(cfg["stall"], 0)   # a new baseline is not a stalled one
         # And it restores to the tree that was there, not the original.
         self._write(self.a, "SCRATCH\n")
-        from _lib import tree_snapshot
-        tree_snapshot.restore(eval_session.opt_git_dir(), self.wt,
+        tree_snapshot.restore(store.opt_git_dir(), self.wt,
                               [self.a, self.b], out["baseline_id"])
         self.assertEqual(self._read(self.a), "A_OPTIMISED")
 
@@ -359,7 +270,7 @@ class RebaselineTests(_Workspace):
     def test_init_still_refuses_to_move_a_baseline_and_names_the_route(self) -> None:
         """The invariant stays; what changes is that the exit is signposted."""
         eval_session, _ = self._session()
-        cfg = eval_session._load_opt_config("p")
+        cfg = store._load_opt_config("p")
         self.assertEqual(cfg["baseline_id"], "ORIGINAL")  # untouched by anything but rebaseline
 
     def test_rebaseline_without_a_session_is_a_structured_error(self) -> None:
@@ -386,25 +297,22 @@ class NoiseFloorTests(unittest.TestCase):
         return cfg
 
     def test_the_configured_margin_stands_until_something_is_measured(self) -> None:
-        from _ops import eval_session
-        margin, source = eval_session._effective_min_improvement(self._cfg())
+        margin, source = ratchet._effective_min_improvement(self._cfg())
         self.assertAlmostEqual(margin, 0.02)
         self.assertEqual(source, "configured")
 
     def test_a_measured_floor_above_the_configured_one_wins(self) -> None:
-        from _ops import eval_session
-        margin, source = eval_session._effective_min_improvement(
+        margin, source = ratchet._effective_min_improvement(
             self._cfg(noise_floor=0.031))
         self.assertAlmostEqual(margin, 0.031)
         self.assertIn("measured", source)
 
     def test_the_session_that_produced_this_would_now_reject_its_own_step(self) -> None:
         """The regression this whole lane exists for, with its real numbers."""
-        from _ops import eval_session
         from _lib.ratchet import _is_improvement
         baseline, fused = 0.179888, 0.17491          # what the two runs measured
         floor = abs(0.179888 - 0.174488) / 0.179888  # 3.1%, from the two baseline runs
-        margin, _ = eval_session._effective_min_improvement(
+        margin, _ = ratchet._effective_min_improvement(
             self._cfg(noise_floor=floor))
         self.assertTrue(_is_improvement(fused, baseline, "min", 0.02),
                         "premise: the old 2% margin accepted it")
@@ -413,24 +321,21 @@ class NoiseFloorTests(unittest.TestCase):
 
     def test_a_real_gain_still_clears_the_measured_floor(self) -> None:
         """The floor rejects noise, not results: float32 was a 22% win."""
-        from _ops import eval_session
         from _lib.ratchet import _is_improvement
-        margin, _ = eval_session._effective_min_improvement(
+        margin, _ = ratchet._effective_min_improvement(
             self._cfg(noise_floor=0.031))
         self.assertTrue(_is_improvement(0.136145, 0.17491, "min", margin))
 
     def test_repeat_is_decided_from_the_metric_when_unset(self) -> None:
-        from _ops import eval_session
-        self.assertEqual(eval_session._effective_repeat({"primary_metric": "time_s"}), 3)
+        self.assertEqual(ratchet._effective_repeat({"primary_metric": "time_s"}), 3)
         # An accuracy metric against a sealed reference is bit-reproducible.
-        self.assertEqual(eval_session._effective_repeat({"primary_metric": "l2_rel"}), 1)
+        self.assertEqual(ratchet._effective_repeat({"primary_metric": "l2_rel"}), 1)
 
     def test_an_explicit_repeat_is_obeyed(self) -> None:
-        from _ops import eval_session
         self.assertEqual(
-            eval_session._effective_repeat({"primary_metric": "time_s", "repeat": 1}), 1)
+            ratchet._effective_repeat({"primary_metric": "time_s", "repeat": 1}), 1)
         self.assertEqual(
-            eval_session._effective_repeat({"primary_metric": "l2_rel", "repeat": 7}), 7)
+            ratchet._effective_repeat({"primary_metric": "l2_rel", "repeat": 7}), 7)
 
 
 class ReplicateAggregationTests(unittest.TestCase):
@@ -492,12 +397,11 @@ class CleanKeepsSharedSnapshotsTests(_Workspace):
 
     def _optimisation(self, name: str, marker: str) -> None:
         from _ops import eval_session
-        from _lib import store, tree_snapshot
         os.makedirs(store._opt_session_runs_dir(name), exist_ok=True)
         self._write(self.a, f"{marker}\n")
         snap = tree_snapshot.snapshot(
-            eval_session.opt_git_dir(), self.wt, [self.a, self.b], f"{name} best")
-        eval_session._save_opt_config({
+            store.opt_git_dir(), self.wt, [self.a, self.b], f"{name} best")
+        store._save_opt_config({
             "proxy_name": name, "benchmark_name": "b", "requirements": [],
             "proxy_source_path": self.harness, "optimize_paths": [self.a, self.b],
             "baseline_id": snap, "baseline_run_id": "r0", "primary_metric": "time_s",
@@ -538,7 +442,7 @@ class CleanKeepsSharedSnapshotsTests(_Workspace):
         from _ops import registry, eval_session
         self._optimisation("bench", "BENCH_BEST")
         registry.clean("bench")
-        self.assertFalse(os.path.isdir(eval_session.opt_git_dir()))
+        self.assertFalse(os.path.isdir(store.opt_git_dir()))
 
     def test_the_last_one_reports_the_removal(self) -> None:
         from _ops import registry
@@ -552,7 +456,7 @@ class CleanKeepsSharedSnapshotsTests(_Workspace):
         self._optimisation("bench", "BENCH_BEST")
         self._optimisation("abc", "ABC_BEST")
         registry.clean("bench")
-        self.assertTrue(os.path.isdir(eval_session.opt_git_dir()))
+        self.assertTrue(os.path.isdir(store.opt_git_dir()))
 
 
 class ResumeNoticeTests(_Workspace):
@@ -572,12 +476,12 @@ class ResumeNoticeTests(_Workspace):
 
     def _session(self, *, measured: bool = True) -> None:
         from _ops import eval_session
-        from _lib import store, procs, tree_snapshot
+        from _lib import procs
         self._write(self.a, "MEASURED_STATE\n")
         os.makedirs(store._opt_session_runs_dir("bench"), exist_ok=True)
         snap = tree_snapshot.snapshot(
-            eval_session.opt_git_dir(), self.wt, [self.a], "baseline")
-        eval_session._save_opt_config({
+            store.opt_git_dir(), self.wt, [self.a], "baseline")
+        store._save_opt_config({
             "proxy_name": "bench", "benchmark_name": "b", "requirements": [],
             "proxy_source_path": self.harness, "optimize_paths": [self.a],
             "baseline_id": snap,
@@ -594,11 +498,10 @@ class ResumeNoticeTests(_Workspace):
 
     def _notice(self) -> str:
         from _ops import eval_session
-        cfg = eval_session._load_opt_config("bench")
+        cfg = store._load_opt_config("bench")
         return eval_session._resume_notice(cfg, "bench", [self.a])
 
     def _activate(self, name: str | None) -> None:
-        from _lib import store
         if name is None:
             store._clear_active_session()
         else:
@@ -654,3 +557,7 @@ class ResumeNoticeTests(_Workspace):
         from _ops import eval_session
         carried = inspect.getsource(eval_session.run_awaited)
         self.assertIn('"resume_notice"', carried)
+
+
+if __name__ == "__main__":
+    unittest.main()

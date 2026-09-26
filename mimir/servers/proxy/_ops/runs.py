@@ -16,7 +16,7 @@ from _lib.procs import (
 )
 from _lib.report import _diff_run_pair, _row_with_extra
 from _lib.store import (
-    refs_dir, runs_dir, _load_registry_or_err, _proxy_runs_dir, _read_json,
+    refs_dir, runs_dir, _entry_or_err, _load_registry_or_err, _proxy_runs_dir, _read_json,
     _run_dir_names,
 )
 
@@ -218,13 +218,9 @@ def launch_run(
     compare_to_reference: str = "",
 ) -> dict:
     """Launch a single proxy run in the background (non-blocking)."""
-    reg, _reg_err = _load_registry_or_err()
-    if _reg_err:
-        return err(_reg_err)
-    if proxy_name not in reg:
-        return err(f"Proxy '{proxy_name}' not registered.",
-                   hint="Call proxy_manage(op='register', ...) first.")
-    entry = reg[proxy_name]
+    entry, error = _entry_or_err(proxy_name)
+    if error:
+        return error
 
     if compare_to_reference and compare_to_reference not in (
         os.listdir(refs_dir()) if os.path.isdir(refs_dir()) else []

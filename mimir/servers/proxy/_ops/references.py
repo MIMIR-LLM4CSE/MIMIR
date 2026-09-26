@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import os
 
-from _ops import _check_name, _with_next, err, ok
+from _ops import _check_name, _with_next, ok
 from _lib.execute import _DEFAULT_MAX_OUTPUT_MB, _REF_RUN_TIMEOUT, _seal_reference
 from _lib.store import (
     refs_dir,
-    _load_registry_or_err,
+    _entry_or_err,
     _ref_dir, _load_ref_metrics, _ref_output_path,
     _read_json,
 )
@@ -50,13 +50,9 @@ def create(
     """Run a proxy synchronously and seal its output as an immutable reference."""
     if bad := _check_name("reference_name", reference_name):
         return bad
-    reg, _reg_err = _load_registry_or_err()
-    if _reg_err:
-        return err(_reg_err)
-    if proxy_name not in reg:
-        return err(f"Proxy '{proxy_name}' not registered.",
-                   hint="Call proxy_manage(op='register', ...) first.")
-    entry = reg[proxy_name]
+    entry, error = _entry_or_err(proxy_name)
+    if error:
+        return error
 
     result, error = _seal_reference(
         entry, reference_name,

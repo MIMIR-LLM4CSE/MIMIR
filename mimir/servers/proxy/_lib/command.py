@@ -126,11 +126,25 @@ def _sbatch_header(
     log_file: str,
     gpus: int = 0,
     account: str = "",
+    constraint: str = "",
+    nodelist: str = "",
+    dependency: str = "",
+    kill_on_invalid_dep: bool = False,
 ) -> list[str]:
     """Return the ``#!/bin/bash`` + ``#SBATCH`` directive lines (no command body).
 
     Shared by ``_build_sbatch`` and the eval Slurm submission path so the
     resource-request preamble (and its quoting) stays consistent.
+
+    ``constraint`` and ``nodelist`` are what make a partition insufficient on a
+    heterogeneous cluster: a partition says which queue, a feature expression says
+    which hardware inside it. ``dependency`` chains one job behind another, and
+    ``kill_on_invalid_dep`` is what keeps that chain from hanging — without it a job
+    whose dependency can never be satisfied sits PENDING forever and whoever is
+    watching it waits just as long.
+
+    Every optional directive is omitted when empty, so a caller that passes none of
+    them gets byte-for-byte the script it got before.
     """
     lines = [
         "#!/bin/bash",
@@ -148,6 +162,14 @@ def _sbatch_header(
         lines.append(f"#SBATCH --gres=gpu:{gpus}")
     if account:
         lines.append(f"#SBATCH --account={account}")
+    if constraint:
+        lines.append(f"#SBATCH --constraint={constraint}")
+    if nodelist:
+        lines.append(f"#SBATCH --nodelist={nodelist}")
+    if dependency:
+        lines.append(f"#SBATCH --dependency={dependency}")
+        if kill_on_invalid_dep:
+            lines.append("#SBATCH --kill-on-invalid-dep=yes")
     return lines
 
 
@@ -166,6 +188,8 @@ def _build_sbatch(
     compare_to_reference: str,
     python_exe: str,
     param_overrides: dict | None = None,
+    constraint: str = "",
+    nodelist: str = "",
 ) -> str:
     log_file = procs._log_path(run_dir)
     cmd_str  = shlex.join(shlex.split(
@@ -173,6 +197,7 @@ def _build_sbatch(
     lines = _sbatch_header(
         job_name=job_name, partition=partition, cpus_per_task=cpus_per_task,
         wall_time=wall_time, mem=mem, log_file=log_file, gpus=gpus, account=account,
+        constraint=constraint, nodelist=nodelist,
     )
     # Capture wall time + exit code around the solver so the post-run step can
     # apply the same time_s plausibility guard as local runs.

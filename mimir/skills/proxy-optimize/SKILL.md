@@ -181,6 +181,28 @@ these requirements.
 - Do NOT modify `_proxy_runner.py` — it is a stable orchestrator. Modify only the files
   listed in `optimize_paths`.
 
+## On a cluster
+
+The loop is the same; only where a run happens changes. `proxy_slurm(op='eval',
+partition=..., confirm=True)` submits it instead of running it here, and returns while
+the job is still queued — end your turn, you are resumed when it lands.
+
+Say where the **build** goes, separately from where the run goes. A node dedicated to
+GPU simulation is not a node to compile on, and compiling there burns the allocation
+you wanted the measurement from. Give the proxy a `build_partition` at registration:
+
+    proxy_manage(op='register', name=..., metadata={
+        'build_cmd': 'make -j32', 'build_partition': 'compile',
+        'build_cpus_per_task': 32}, confirm=True)
+
+From then on every `proxy_slurm(op='eval', partition='<the hardware you are measuring>')`
+sends the compile to `compile` and the measurement to the partition you named, as two
+chained jobs. Declare it once rather than repeating it per call — you will submit this
+run many times, and that is where it goes wrong. `constraint='a100'` narrows a partition
+to the nodes you actually want; without it Slurm picks any node in the queue, and a
+comparison across two different nodes is not a comparison. A failed build ends the run
+with no verdict, exactly as it does locally.
+
 ## When to stop
 
 Stop and summarize when the session reports `verdict="converged"` (constraints met

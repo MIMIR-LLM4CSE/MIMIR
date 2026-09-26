@@ -17,7 +17,7 @@ import unittest
 
 from mimir.client.context.capabilities import BACKGROUNDABLE, ToolCaps
 from mimir.client.query_engine.background import _maybe_register_background_job
-from mimir.tests.test_proxy_ops import _TmpStorageTest, server_proxy
+from mimir.tests._proxy_fixtures import _TmpStorageTest, server_proxy
 
 
 def _eval(*args, **kwargs):
@@ -675,7 +675,7 @@ class ProxySlurmBackgroundTests(_TmpStorageTest):
 
     def test_eval_background_attaches_descriptor(self) -> None:
         from unittest import mock
-        from mimir.tests.test_proxy_ops import slurm as slurm_ops
+        from mimir.tests._proxy_fixtures import slurm as slurm_ops
         self._init_session()
         with mock.patch.object(slurm_ops, "_submit_sbatch", return_value=(4242, None)):
             res = server_proxy.proxy_slurm(op="eval", partition="cpu",
@@ -698,7 +698,7 @@ class ProxySlurmBackgroundTests(_TmpStorageTest):
         never resumed when the job landed.
         """
         from unittest import mock
-        from mimir.tests.test_proxy_ops import slurm as slurm_ops
+        from mimir.tests._proxy_fixtures import slurm as slurm_ops
         self._init_session()
         with mock.patch.object(slurm_ops, "_submit_sbatch", return_value=(4243, None)):
             res = server_proxy.proxy_slurm(op="eval", partition="cpu",
@@ -715,7 +715,7 @@ class ProxySlurmBackgroundTests(_TmpStorageTest):
         shape the watcher tests for a terminal value.
         """
         from unittest import mock
-        from mimir.tests.test_proxy_ops import slurm as slurm_ops
+        from mimir.tests._proxy_fixtures import slurm as slurm_ops
         self._init_session()
         with mock.patch.object(slurm_ops, "_submit_sbatch", return_value=(4244, None)):
             res = server_proxy.proxy_slurm(op="run", partition="cpu",
