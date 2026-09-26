@@ -396,7 +396,6 @@ class CleanKeepsSharedSnapshotsTests(_Workspace):
     """
 
     def _optimisation(self, name: str, marker: str) -> None:
-        from _ops import eval_session
         os.makedirs(store._opt_session_runs_dir(name), exist_ok=True)
         self._write(self.a, f"{marker}\n")
         snap = tree_snapshot.snapshot(
@@ -439,7 +438,7 @@ class CleanKeepsSharedSnapshotsTests(_Workspace):
 
     def test_cleaning_the_last_one_still_removes_them(self) -> None:
         """Conservative, not hoarding: with nothing left to point in, they go."""
-        from _ops import registry, eval_session
+        from _ops import registry
         self._optimisation("bench", "BENCH_BEST")
         registry.clean("bench")
         self.assertFalse(os.path.isdir(store.opt_git_dir()))
@@ -452,7 +451,7 @@ class CleanKeepsSharedSnapshotsTests(_Workspace):
 
     def test_an_unregistered_proxy_still_counts_as_needing_them(self) -> None:
         """State on disk is what keeps a snapshot store alive, not registration."""
-        from _ops import registry, eval_session
+        from _ops import registry
         self._optimisation("bench", "BENCH_BEST")
         self._optimisation("abc", "ABC_BEST")
         registry.clean("bench")
@@ -475,7 +474,6 @@ class ResumeNoticeTests(_Workspace):
     """
 
     def _session(self, *, measured: bool = True) -> None:
-        from _ops import eval_session
         from _lib import procs
         self._write(self.a, "MEASURED_STATE\n")
         os.makedirs(store._opt_session_runs_dir("bench"), exist_ok=True)
