@@ -221,10 +221,6 @@ class BashBackgroundTests(unittest.TestCase):
         self.assertEqual(keys[:2], [second, first])
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class BlockingRunTests(unittest.TestCase):
     """The blocking path, which runs a job and waits on it.
 
@@ -418,3 +414,7 @@ class FinishedOutputClipTests(unittest.TestCase):
         text, cut = _bash_jobs._clip(self.path, 4096, "ends")
         self.assertFalse(cut)
         self.assertEqual(len(text.splitlines()), 10)
+
+
+if __name__ == "__main__":
+    unittest.main()

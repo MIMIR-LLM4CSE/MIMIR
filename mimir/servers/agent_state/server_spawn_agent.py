@@ -1231,6 +1231,11 @@ _SLOTS = threading.Semaphore(SUBAGENT_MAX_CONCURRENT)
 # of what is running would send the caller looking for the rest.
 _SLOT_HOLDERS: dict[str, tuple[str, float]] = {}
 
+# Child threads carry this prefix. A slot is released from the child's own thread,
+# which can outlive the call that started it, so "no live thread with this prefix"
+# is the only reliable way to know every release has already landed.
+_THREAD_NAME_PREFIX = "mimir-subagent-"
+
 
 def _take_slot(session: str, task: str) -> None:
     with _JOBS_LOCK:
@@ -1647,7 +1652,11 @@ async def spawn_agent(
         })
 
     loop = asyncio.get_running_loop()
-    t = threading.Thread(target=_thread_main, daemon=True)
+    # Named so a straggler is identifiable: the slot is released from this thread
+    # after the caller's future has resolved, so a child can still be finishing when
+    # its call has already returned.
+    t = threading.Thread(target=_thread_main, daemon=True,
+                         name=_THREAD_NAME_PREFIX + child_key)
     t.start()
 
     if job_key:

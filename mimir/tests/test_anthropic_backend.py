@@ -161,10 +161,6 @@ class CacheUsageLogTests(unittest.TestCase):
         _log_cache_usage(types.SimpleNamespace())  # must not raise
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class StopReasonTests(unittest.TestCase):
     """Both paths converge on the same ``final`` message, so one read covers both."""
 
@@ -200,3 +196,7 @@ class StopReasonTests(unittest.TestCase):
 
     def test_no_stop_reason_adds_no_key(self) -> None:
         self.assertNotIn("finish_reason", self._run(self._final(None)))
+
+
+if __name__ == "__main__":
+    unittest.main()

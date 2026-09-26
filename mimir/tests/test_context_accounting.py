@@ -491,10 +491,6 @@ class EnforceBudgetIntegrationTests(unittest.TestCase):
         self.assertTrue(any("failed tool call" in e.get("text", "") for e in emitted))
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class InterruptedQueryStateTests(unittest.TestCase):
     """A query that dies still says what it left behind.
 
@@ -579,3 +575,7 @@ class PlanModeToolCatalogTests(unittest.TestCase):
         catalog = self._catalog()
         self.assertIn("proxy_eval", catalog)
         self.assertNotIn("—", catalog)
+
+
+if __name__ == "__main__":
+    unittest.main()

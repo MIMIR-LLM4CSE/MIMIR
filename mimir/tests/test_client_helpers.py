@@ -2698,9 +2698,6 @@ class ClientHelperTests(unittest.TestCase):
             os.unlink(tmp_path)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 class ModulesCommandTests(unittest.TestCase):
     """/modules — the user's own handle on the module catalogue.
 
@@ -2814,3 +2811,7 @@ class ModulesCommandTests(unittest.TestCase):
     def test_modules_is_advertised_in_help(self):
         _handled, message = self._run("/help", None)
         self.assertIn("/modules", message)
+
+
+if __name__ == "__main__":
+    unittest.main()

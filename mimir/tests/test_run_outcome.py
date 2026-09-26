@@ -228,10 +228,6 @@ class MeasuredTierTests(unittest.TestCase):
         self.assertEqual(workflow.unmeasured_proxy_source_lines(self.ec), [])
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 # The command that produced the report this class exists to prevent: a heredoc the
 # server refused outright, whose C++ body carries two `//` comments. Kept verbatim,
 # comments included, because both are load-bearing.
@@ -314,3 +310,7 @@ class RefusedCallTests(unittest.TestCase):
             "python solver.py", "error",
             {"status": "error", "error": "Command timed out after 300s.", "cwd": "/tmp/ws"})
         self.assertIn("python solver.py", failed_runs(self.ec))
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -2052,10 +2052,6 @@ class HeldDraftTests(RunAgentQueryNonInteractiveTests):
         self.assertIn("narration", streamed)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class IdenticalSuccessRepeatTests(unittest.TestCase):
     """A call that keeps returning the same answer is told so, and never blocked.
 
@@ -2134,3 +2130,7 @@ class IdenticalSuccessRepeatTests(unittest.TestCase):
             self._dispatch(agent, messages, ec, args={"command": "find . -name '*.x'"})
         other = self._dispatch(agent, messages, ec, args={"command": "find . -name '*.y'"})
         self.assertNotIn("IDENTICAL_REPEAT", other)
+
+
+if __name__ == "__main__":
+    unittest.main()

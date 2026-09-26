@@ -185,10 +185,6 @@ class TwoCardsAtOnceTests(unittest.TestCase):
         self.assertEqual(results.get("c1"), {"answers": [{"selected": ["a"]}]})
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class DeadlineTests(unittest.TestCase):
     """A clarification gives up on the user; an approval never does.
 
@@ -254,3 +250,7 @@ class ExpiryIsNotRefusalTests(unittest.TestCase):
         w = _make_worker()
         w._agent._cancel_flag.set()
         self.assertEqual(w._question_shim([{"question": "which?"}]), {"answers": []})
+
+
+if __name__ == "__main__":
+    unittest.main()

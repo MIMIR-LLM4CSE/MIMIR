@@ -226,10 +226,6 @@ class ServerDeclarationTest(unittest.TestCase):
         self.assertNotIn("preview", desc)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class ReversibilityDerivationTest(unittest.TestCase):
     """`SENSITIVE` is derived from reversibility, so the derivation *is* the gate.
 
@@ -330,3 +326,7 @@ class ReversibilityDerivationTest(unittest.TestCase):
                     gates._check_cluster_submit(agent, "submit", ctx),
                     "an irreversible action was softened by the enforcement dial",
                 )
+
+
+if __name__ == "__main__":
+    unittest.main()

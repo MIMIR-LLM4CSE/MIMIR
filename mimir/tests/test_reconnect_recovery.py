@@ -120,10 +120,6 @@ class ReconnectTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(w.out_q.empty())
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class AgentReadinessTests(unittest.TestCase):
     """The socket opens long before the agent exists, and both greetings say "ready".
 
@@ -273,3 +269,7 @@ class ReadinessAnnouncementTests(unittest.IsolatedAsyncioTestCase):
         greetings = [json.loads(p) for p in sess.ws.sent if json.loads(p)["type"] == "ready"]
         self.assertEqual(len(greetings), 1)
         self.assertTrue(greetings[0]["agent_ready"])
+
+
+if __name__ == "__main__":
+    unittest.main()

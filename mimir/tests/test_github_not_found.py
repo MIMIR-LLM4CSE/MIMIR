@@ -153,10 +153,6 @@ class GithubGetFileNotFoundTests(unittest.TestCase):
         self.assertEqual(seen, [{"ref": "devel"}, {"ref": "devel"}])
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class GithubFileWindowTests(unittest.TestCase):
     """A GitHub file is read in pages, with the keys the local read established.
 
@@ -211,3 +207,7 @@ class GithubFileWindowTests(unittest.TestCase):
         w = server_github._line_window("", 1, 0)
         self.assertEqual(w["total_lines"], 0)
         self.assertEqual(w["content"], "")
+
+
+if __name__ == "__main__":
+    unittest.main()

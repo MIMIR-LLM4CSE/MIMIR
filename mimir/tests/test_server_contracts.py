@@ -1915,8 +1915,16 @@ class BashServerTests(unittest.TestCase):
     def test_bash_run_runs_git(self) -> None:
         # git ran through a dedicated server only because bash refused it; that
         # server is gone, and git is an ordinary approval-gated command here.
-        payload = server_bash.bash_run("git status --short")
+        #
+        # `git --version` rather than `git status`: what this pins is that git reaches
+        # the shell instead of being refused by name, and `git status` answers that only
+        # where the workspace happens to be a repository — it failed on returncode 128
+        # anywhere else, which is the suite depending on its surroundings rather than on
+        # the behaviour it tests. That the validator allows `git status` in particular is
+        # already pinned by test_an_unlisted_command_runs.
+        payload = server_bash.bash_run("git --version")
         self.assertEqual(payload["status"], "ok", payload)
+        self.assertIn("git version", payload["stdout"])
 
     def test_bash_run_allows_python_as_code_fallback(self) -> None:
         # python is now an allowed build/exec tool so the code server can fall
@@ -2238,10 +2246,6 @@ class ToolSchemaHonestyTests(unittest.TestCase):
         self.assertNotIn("150", server_files.write_file.__doc__ or "")
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class BinaryBodyTests(unittest.TestCase):
     """A fetch that lands on bytes must not spend the window on them.
 
@@ -2289,3 +2293,7 @@ class BinaryBodyTests(unittest.TestCase):
         body, note = self._read("<html><body><p>hello</p></body></html>", "text/html")
         self.assertIn("hello", body)
         self.assertNotIn("binary", note)
+
+
+if __name__ == "__main__":
+    unittest.main()

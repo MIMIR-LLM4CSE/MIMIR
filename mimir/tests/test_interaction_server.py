@@ -184,10 +184,6 @@ class AskUserQuestionTests(unittest.TestCase):
         self.assertEqual(payload["status"], "error")
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class ElicitationTransportTests(unittest.TestCase):
     """The answer must survive the *real* MCP result type, not a stand-in.
 
@@ -391,3 +387,7 @@ class ExpiredQuestionAnswerTests(unittest.TestCase):
         payload = self._answer(mcp_types.ElicitResult(action="decline"))
         self.assertNotIn("timed_out", payload)
         self.assertIn("Do not choose for them", payload["note"])
+
+
+if __name__ == "__main__":
+    unittest.main()

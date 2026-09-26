@@ -319,10 +319,6 @@ class ForkBaseStemTests(unittest.TestCase):
         self.assertEqual(ex._fork_base_stem("a_b"), "")
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class BashEffectTests(unittest.TestCase):
     """What a shell command changed, reported back because nothing else reports it.
 
@@ -465,3 +461,7 @@ class RepeatedBlockTests(unittest.TestCase):
 
     def test_blank_lines_do_not_break_the_period(self) -> None:
         self.assertEqual(be.repeated_block(["a", "", "b", "c", "a", "b", "", "c"]), (3, 2))
+
+
+if __name__ == "__main__":
+    unittest.main()

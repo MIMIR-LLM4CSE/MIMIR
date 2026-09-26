@@ -1056,10 +1056,6 @@ class DetachedSessionResumeTests(unittest.TestCase):
         self.assertTrue(self.session._running_turn_is_ours())
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 # ── 6. A burst of finished jobs is one turn, not one turn apiece ───────────────
 
 class WakeCoalescingTests(unittest.TestCase):
@@ -1260,3 +1256,7 @@ class WakeCoalescingTests(unittest.TestCase):
         self.assertEqual(self.worker.steered, [], "that turn is not its conversation")
         self.assertEqual(len(self.worker.submitted), 1)
         self.assertEqual(self.worker.submitted[0][2], other.id)
+
+
+if __name__ == "__main__":
+    unittest.main()

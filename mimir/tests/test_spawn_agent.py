@@ -1180,7 +1180,11 @@ class WorktreeTests(unittest.TestCase):
         self.base = tempfile.mkdtemp(prefix="mimir-wt-")
         self.addCleanup(shutil.rmtree, self.repo, ignore_errors=True)
         self.addCleanup(shutil.rmtree, self.base, ignore_errors=True)
-        for args in (["init", "-q", "-b", "main"],
+        # `git init -b` is git >= 2.28, and the clusters MIMIR runs on ship older
+        # (RHEL 8 is on 2.27), which made this whole class unrunnable there rather
+        # than failing on anything it tests. symbolic-ref names the unborn branch the
+        # same way and has worked since long before either.
+        for args in (["init", "-q"], ["symbolic-ref", "HEAD", "refs/heads/main"],
                      ["config", "user.email", "t@t"], ["config", "user.name", "t"]):
             subprocess.run(["git", *args], cwd=self.repo, check=True,
                            capture_output=True)
@@ -1211,10 +1215,16 @@ class WorktreeTests(unittest.TestCase):
             return {"answer": "3.2s → 1.9s", "completed": True, "files_read": [],
                     "files_written": [], "blocked_by_mode": [], "error": None}
 
+        # An explicit budget under SUBAGENT_HARD_CAP_SECS, because what these tests
+        # read is the workspace report — and that is only on the answer of a call that
+        # waited for it. A writing child left to the default takes the working ceiling
+        # (2 h), which is over the cap, so it is detached for length and the call
+        # returns a background_job with no report on it yet.
         with _patched_agent(agent), mock.patch.object(spawn, "_drive_sub_agent", _drive):
             out = asyncio.run(spawn.spawn_agent(
-                "vectorise the loop", tools=["write_file"],
+                "vectorise the loop", tools=["write_file"], time_budget_secs=300,
                 ctx=_GrantCtx(level="parallel")))
+        self.assertNotIn("background_job", out)   # premise: this call waited
         return out, agent
 
     def test_the_copy_is_its_own_checkout_outside_the_scratchpad(self):
@@ -1613,8 +1623,18 @@ class DeclaredBudgetTests(unittest.TestCase):
         self.assertIsNone(self._descriptor().readonly_when)
 
 
-if __name__ == "__main__":
-    unittest.main()
+
+
+def _drain_child_threads(timeout: float = 10.0) -> None:
+    """Wait for every sub-agent thread to end, so no slot release is still in flight."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        alive = [t for t in threading.enumerate()
+                 if t.name.startswith(spawn._THREAD_NAME_PREFIX) and t.is_alive()]
+        if not alive:
+            return
+        for t in alive:
+            t.join(max(0.0, deadline - time.monotonic()))
 
 
 class ConcurrencyBoundTests(unittest.TestCase):
@@ -1627,6 +1647,13 @@ class ConcurrencyBoundTests(unittest.TestCase):
     """
 
     def setUp(self):
+        # Before rebinding the semaphore, not after: a child releases its slot from its
+        # own thread, which by design outlives the call that started it (a detached one
+        # holds its slot for its whole life). A release still in flight from an earlier
+        # test would land on the semaphore installed here and raise its count above the
+        # bound — which is a bound that never failed, measured against a semaphore that
+        # was no longer the one being tested.
+        _drain_child_threads()
         self._saved = spawn.SUBAGENT_MAX_CONCURRENT
         spawn.SUBAGENT_MAX_CONCURRENT = 2
         spawn._SLOTS = threading.Semaphore(2)
@@ -1634,6 +1661,7 @@ class ConcurrencyBoundTests(unittest.TestCase):
         self.addCleanup(self._restore)
 
     def _restore(self):
+        _drain_child_threads()
         spawn.SUBAGENT_MAX_CONCURRENT = self._saved
         spawn._SLOTS = threading.Semaphore(self._saved)
         spawn._SLOT_HOLDERS.clear()
@@ -1721,3 +1749,7 @@ class ConcurrencyBoundTests(unittest.TestCase):
                     break
                 time.sleep(0.05)
         self.assertEqual(spawn._SLOT_HOLDERS, {})
+
+
+if __name__ == "__main__":
+    unittest.main()

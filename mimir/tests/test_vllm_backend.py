@@ -41,10 +41,6 @@ class AnswerMaxTokensTests(unittest.TestCase):
         self.assertLessEqual(_answer_max_tokens(262_144, 261_000), 0)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class FinishReasonTests(unittest.TestCase):
     """The stop signal rides on the *choice*, not the delta or the message.
 
@@ -318,3 +314,7 @@ class DeclaredWindowBoundsTheAnswerTests(unittest.TestCase):
     def test_a_ceiling_under_the_window_is_left_alone(self) -> None:
         self.assertEqual(self._sent({"max_tokens": 4_096}, served=262_144)["max_tokens"],
                          4_096)
+
+
+if __name__ == "__main__":
+    unittest.main()
