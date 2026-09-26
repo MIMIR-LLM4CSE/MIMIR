@@ -24,6 +24,17 @@ this store's business to honour it.
 FALLBACK. Where git is unavailable the same API copies the tracked paths into a directory
 per snapshot. Same semantics including atomicity, more disk, no diff. A fallback, not a
 design: it exists so an unusual machine degrades instead of failing.
+
+WHAT A RESTORE WRITES. Only the files whose content actually differs from the snapshot.
+That is not an optimisation of disk writes — a restored file is deliberately stamped with
+the current time, because a build system decides what to recompile by comparing mtimes,
+and a file dated before the artifact built from it would be skipped. A fresh mtime is
+therefore an *instruction to recompile*, and giving it to a file whose bytes never
+changed is a false one. Writing the whole tracked set, as both backends used to, made
+every reset_to_best after a one-file edit cost a full rebuild. Both backends now decide
+by content, never by stat: git by blob sha via ls-tree/hash-object, the fallback by
+reading both files. Not ``filecmp`` — its cache is keyed on (size, mtime), so an edit
+landing in the same filesystem tick as a restore would come back "identical".
 """
 
 from __future__ import annotations
@@ -94,9 +105,82 @@ def _git_snapshot(git_dir: str, work_tree: str, paths: list[str], message: str) 
     return h.stdout.strip() if h.returncode == 0 else None
 
 
-def _git_restore(git_dir: str, work_tree: str, paths: list[str], snapshot_id: str) -> bool:
+def _snapshot_blobs(git_dir: str, work_tree: str, snapshot_id: str,
+                    rels: list[str]) -> dict[str, str] | None:
+    """Each tracked path's blob sha *in the snapshot*, or None if git would not say.
+
+    ``ls-tree`` reads the commit and nothing else, so no index is consulted and a
+    stale one in the shadow repository cannot colour the answer.
+    """
+    r = _git(git_dir, work_tree, "ls-tree", "-r", "-z", snapshot_id, "--", *rels)
+    if r.returncode != 0:
+        return None
+    out: dict[str, str] = {}
+    for record in r.stdout.split("\0"):
+        if not record:
+            continue
+        # "<mode> <type> <sha>\t<path>"
+        meta, _, path = record.partition("\t")
+        fields = meta.split()
+        if len(fields) == 3 and path:
+            out[path] = fields[2]
+    return out
+
+
+def _worktree_blobs(git_dir: str, work_tree: str,
+                    rels: list[str]) -> dict[str, str] | None:
+    """Each existing path's blob sha *on disk*, hashed from its bytes.
+
+    ``hash-object`` is a pure function of the file's content — it touches neither the
+    index nor the object store — so comparing these to the snapshot's is a content
+    comparison and never a stat comparison.
+    """
+    present = [rel for rel in rels if os.path.isfile(os.path.join(work_tree, rel))]
+    if not present:
+        return {}
+    r = _git(git_dir, work_tree, "hash-object", "--", *present)
+    if r.returncode != 0:
+        return None
+    shas = r.stdout.split()
+    if len(shas) != len(present):
+        return None
+    return dict(zip(present, shas))
+
+
+def _git_restore(git_dir: str, work_tree: str, paths: list[str],
+                 snapshot_id: str) -> list[str] | None:
+    """Check out only the tracked paths whose content actually differs.
+
+    ``git checkout <commit> -- <pathspec>`` rewrites every path it is handed, whether
+    or not the content changed, and a rewritten file carries the current time. Handing
+    it the whole tracked set — which is what this did — told the build system that
+    every one of those files was new, so a reset_to_best undoing a one-file edit cost a
+    rebuild of all of them, and of everything downstream of a header among them.
+
+    So the set is narrowed first, by content. A path that is byte-identical to the
+    snapshot needs no write at all: whatever artifact exists was built from exactly
+    those bytes, and leaving its mtime alone is the correct answer rather than a
+    shortcut. Anything missing from disk is restored, since "identical" is meaningless
+    there.
+
+    Either probe failing falls back to the unconditional checkout: degrading towards
+    "rebuilt more than necessary" is acceptable, degrading towards "did not restore"
+    is not.
+    """
     rels = _rel(work_tree, paths)
-    return _git(git_dir, work_tree, "checkout", snapshot_id, "--", *rels).returncode == 0
+    snapshot = _snapshot_blobs(git_dir, work_tree, snapshot_id, rels)
+    current = _worktree_blobs(git_dir, work_tree, rels) if snapshot is not None else None
+    if snapshot is None or current is None:
+        if _git(git_dir, work_tree, "checkout", snapshot_id, "--", *rels).returncode != 0:
+            return None
+        return list(rels)
+
+    stale = [rel for rel, sha in snapshot.items() if current.get(rel) != sha]
+    if not stale:
+        return []
+    if _git(git_dir, work_tree, "checkout", snapshot_id, "--", *stale).returncode != 0:
+        return None
+    return stale
 
 
 def _git_diff(git_dir: str, work_tree: str, a: str, b: str) -> str:
@@ -130,42 +214,74 @@ def _copy_snapshot(git_dir: str, work_tree: str, paths: list[str], message: str)
     return snap_id
 
 
-def _copy_restore(git_dir: str, work_tree: str, paths: list[str], snapshot_id: str) -> bool:
+def _same_bytes(p1: str, p2: str) -> bool:
+    """Whether two files hold the same bytes. False if either cannot be read."""
+    try:
+        if os.path.getsize(p1) != os.path.getsize(p2):
+            return False
+        with open(p1, "rb") as f1, open(p2, "rb") as f2:
+            while True:
+                b1, b2 = f1.read(65536), f2.read(65536)
+                if b1 != b2:
+                    return False
+                if not b1:
+                    return True
+    except OSError:
+        return False
+
+
+def _copy_restore(git_dir: str, work_tree: str, paths: list[str],
+                  snapshot_id: str) -> list[str] | None:
     src_root = os.path.join(_copy_root(git_dir), snapshot_id)
     if not os.path.isdir(src_root):
-        return False
+        return None
     # Two passes: stage every file beside its target first, then rename them all. A
     # restore that fails halfway would leave a tree that was never measured — the exact
     # thing this module exists to prevent.
-    staged: list[tuple[str, str]] = []
+    staged: list[tuple[str, str, str]] = []
     try:
         for rel in _rel(work_tree, paths):
             src = os.path.join(src_root, rel)
             if not os.path.isfile(src):
                 continue
             final = os.path.join(work_tree, rel)
+            # Compared by reading both files, never by stat and never through
+            # ``filecmp``: its module-level cache is keyed on (size, mtime), and an edit
+            # landing in the same filesystem tick as a restore leaves that key unchanged
+            # while the content differs — so a cached "identical" would skip a file that
+            # genuinely needs restoring. Editing immediately after reset_to_best is the
+            # normal loop, not a corner case.
+            if _same_bytes(src, final):
+                continue
             os.makedirs(os.path.dirname(final), exist_ok=True)
             tmp = final + ".mimir_restore_tmp"
             shutil.copy2(src, tmp)
-            staged.append((tmp, final))
-        for tmp, final in staged:
+            staged.append((tmp, final, rel))
+        for tmp, final, _rel_name in staged:
             os.replace(tmp, final)
             # copy2 carried the snapshot's mtime across, which would date a
             # restored file to before the artifact built from it. `make` reads
             # exactly that comparison and would skip the rebuild, so the next
             # run would measure the binary of the attempt this restore is
             # undoing. Stamping the file as new is what lets the build system
-            # decide correctly -- and it is also what keeps the rebuild
-            # incremental instead of forcing a full one.
+            # decide correctly.
+            #
+            # Which is precisely why only the files above reach this loop. A
+            # fresh mtime is an instruction to recompile, and handing it to a
+            # file whose bytes never changed is a false one: the artifact beside
+            # it was built from exactly these bytes. Stamping the whole tracked
+            # set — which is what this did — turned every reset_to_best after a
+            # one-file edit into a full rebuild, and into a rebuild of
+            # everything downstream when a header was among them.
             os.utime(final, None)
     except OSError:
-        for tmp, _ in staged:
+        for tmp, _final, _rel_name in staged:
             try:
                 os.remove(tmp)
             except OSError:
                 pass
-        return False
-    return True
+        return None
+    return [rel for _tmp, _final, rel in staged]
 
 
 # ── public API ───────────────────────────────────────────────────────────────
@@ -181,10 +297,22 @@ def snapshot(git_dir: str, work_tree: str, paths: list[str], message: str) -> st
     return _copy_snapshot(git_dir, work_tree, paths, message)
 
 
-def restore(git_dir: str, work_tree: str, paths: list[str], snapshot_id: str) -> bool:
-    """Put *paths* back to *snapshot_id*, all of them or none."""
+def restore(git_dir: str, work_tree: str, paths: list[str],
+            snapshot_id: str) -> list[str] | None:
+    """Put *paths* back to *snapshot_id*, all of them or none.
+
+    Returns the work-tree-relative paths it actually had to write, or None on failure.
+    **An empty list is a success**, not a failure: it means the tree was already in that
+    state and nothing needed touching — so ``if not restore(...)`` is the one way to
+    read this wrong, and callers test ``is None``.
+
+    Only files whose content differs are written, because writing one is how this tells
+    the build system to recompile it (see ``_git_restore`` and ``_copy_restore``). The
+    end state is the snapshot either way; what changes is how much of the project has to
+    be rebuilt to measure it.
+    """
     if not snapshot_id or not paths:
-        return False
+        return None
     # A copy-backed id is a short hex tag with a directory to match; anything else is a
     # git object. Checked by existence rather than by shape, so the two never disagree.
     if os.path.isdir(os.path.join(_copy_root(git_dir), snapshot_id)):

@@ -17,7 +17,11 @@ Sensitive (confirm=True required):
                                 (init/run/stop/reset/reset_to_best)
 
 Cluster (confirm=True required; consumes allocation hours):
-  proxy_slurm(op, ...)        — submit single/suite/eval runs as Slurm batch jobs
+  proxy_slurm(op, ...)        — submit single/suite/eval runs as Slurm batch jobs.
+                                op='eval' with build_partition splits into two
+                                chained jobs, so the build goes to a machine made
+                                for compiling and the measurement to the hardware
+                                under test.
 
 Typical flows
 -------------
@@ -77,9 +81,9 @@ runs/<proxy>/<timestamp>/, suites/<name>/, opt_runs/<proxy>/, scaffolds/, harnes
 and the ``opt.git`` snapshot repository). ``harnesses/`` is where a hand-written
 ``proxy_source_path`` belongs, beside the generated ones — a harness put elsewhere gives
 a project a second directory for the same activity, and nothing then says which of the
-two holds what. It sits with the project it belongs to, so deleting
-the project resets the experiment; it used to live in ``~/.cache`` and a deleted project
-came back with its registry, an "in progress" optimisation and a stale run command.
+two holds what. It sits with the project it belongs to, so deleting the project resets
+the experiment — a store outside the workspace survives the project and brings its
+registry, an "in progress" optimisation and a stale run command back with it.
 Override the root with the ``MIMIR_PROXY_BENCH_DIR`` environment variable.
 """
 
@@ -101,7 +105,7 @@ from capabilities import (tool_caps, CODE_EXEC, PLAN_BLOCKED, CLUSTER_SUBMIT,
                           PANEL_REPORT)
 from responses import err, ok
 from _lib.execute import _DEFAULT_MAX_OUTPUT_MB, _REF_RUN_TIMEOUT
-from _lib.procs import _validate_slurm_args
+from _lib.procs import _validate_slurm_args, _validate_slurm_token
 from slurm_script import validate_target
 from _ops import eval_session, references, registry, runs, scaffold as scaffold_ops, slurm, suites
 
@@ -383,20 +387,31 @@ def proxy_manage(
         metadata: Optional fields for register/update: arch, backend,
             parallelism, peak_gflops_per_s, peak_bandwidth_gbytes_per_s, tags,
             version, source_url, notes, input_description, output_description,
-            usage_examples, conserved_metric — plus the build triple below.
-            build_cmd is NOT documentation: the server runs it, once per
-            evaluation run, before any case is measured, so the binary measured
-            is always the one the current sources produce. It is argv, never a
-            shell line ('make -C <dir> <target>' is fine; a sequence, a module
-            load or a redirect belongs in a wrapper script named here).
-            build_cwd defaults to the workspace root, build_timeout_s to 7200.
-            A proxy that declares a build may be registered before its
-            executable exists — the build is what produces it.
-            The target and job count are fixed here: a run cannot override
-            them, so name them once, at registration. Changing build_cmd
-            changes the build for every later run: change it to fix it, never
-            to narrow one task's build — the build system already recompiles
-            only what changed.
+            usage_examples, conserved_metric — plus the build fields below.
+            build_cmd is NOT documentation: the server runs it once per
+            evaluation run, before any case, so the binary measured is the one
+            the current sources produce. It is argv, never a shell line
+            ('make -C <dir> <target>' is fine; a sequence, a module load or a
+            redirect belongs in a wrapper script named here). The target and
+            job count are fixed here — a run cannot override them — so changing
+            build_cmd changes the build for every later run: change it to fix
+            it, never to narrow one task's build. A proxy that declares a build
+            may be registered before its executable exists; the build is what
+            produces it.
+            build_cwd defaults to the workspace root and is used AS SPELLED,
+            symlinks unresolved, because CMake compares against the path it was
+            configured with. build_env pins variables for the build (e.g.
+            {'CCACHE_DIR': ..., 'CC': ...}) over the inherited environment,
+            which is the MCP server's and not the shell you build in by hand —
+            when the two disagree on the compiler or on ccache, each build
+            invalidates the other's artifacts. build_timeout_s defaults to 7200.
+            build_partition (with build_constraint, build_cpus_per_task,
+            build_mem, build_wall_time) says WHERE the build is submitted:
+            naming one splits proxy_slurm(op='eval') into a build job and a run
+            job chained behind it, so a compile does not run on a node
+            dedicated to simulation. It belongs here rather than on each call
+            because the ratchet submits the same run hundreds of times;
+            proxy_slurm can still override it per call.
         cases: For suite_define/suite_update: list of case dicts (see schema above).
         proxy_path: For 'scaffold': absolute path to the proxy source file.
         component_hint: For 'scaffold': function/subroutine/class name to target.
@@ -768,9 +783,15 @@ def proxy_slurm(
     wall_time: str = "04:00:00",
     account: str = "",
     job_name: str = "",
-    background: bool = False,
     constraint: str = "",
     nodelist: str = "",
+    build_partition: str = "",
+    build_constraint: str = "",
+    build_cpus_per_task: int = 0,
+    build_mem: str = "",
+    build_wall_time: str = "",
+    build_gpus: int = 0,
+    background: bool = False,
     ntasks: int = 1,
     exclusive: bool | None = None,
     confirm: bool = False,
@@ -792,7 +813,8 @@ def proxy_slurm(
                with proxy_runs()
       suite -> one job per case×sweep point of a suite (requires: suite_name);
                aggregate afterwards with proxy_get(op='report', ...)
-      eval  -> one job for an optimization-session run
+      eval  -> an optimization-session run: one job, or two when the build is sent
+               to a partition of its own (see build_partition)
 
     Every op returns while its job is still queued, and a watcher tracks the job
     from there: end your turn instead of polling, and you are auto-resumed with the
@@ -814,6 +836,29 @@ def proxy_slurm(
         wall_time: Wall-clock limit HH:MM:SS or D-HH:MM:SS (default '04:00:00').
         account: Slurm account to charge (optional).
         job_name: Slurm job name (optional; a sensible default is derived).
+        constraint: Slurm feature expression selecting which nodes of the
+            partition may run this (e.g. 'a100', 'bigmem&avx512'). A partition
+            says which queue; this says which hardware inside it.
+        nodelist: Explicit nodes to run on (e.g. 'node[01-04]').
+        build_partition: For 'eval': send the build to this partition instead of
+            building on the node that measures. A node dedicated to GPU
+            simulation is not a node to compile on. Setting it splits the run
+            into a build job and a run job chained behind it with
+            --dependency=afterok, both sharing one run directory — so the build
+            node and the run node must see the same filesystem. A failed build
+            kills the run job rather than leaving it queued. Defaults to the
+            proxy's registered 'build_partition' metadata; empty on both means
+            one job that builds and measures, as before.
+        build_constraint: For 'eval': feature expression for the build job. Never
+            inherited from `constraint` — that would pin the build to the very
+            hardware the split exists to keep it off.
+        build_cpus_per_task: For 'eval': cores for the build job (0 = reuse
+            cpus_per_task). A build is usually the phase that wants many cores.
+        build_mem: For 'eval': memory for the build job ('' = reuse mem).
+        build_wall_time: For 'eval': wall-clock limit for the build job
+            ('' = reuse wall_time).
+        build_gpus: For 'eval': GPUs for the build job (default 0 — nothing
+            compiles faster for holding one).
         background: Accepted for symmetry with proxy_eval and ignored — a
             submitted job is detached either way, and is watched either way.
         constraint: Slurm feature expression selecting the kind of node
@@ -836,6 +881,22 @@ def proxy_slurm(
         "ntasks": ntasks, "constraint": constraint, "nodelist": nodelist,
         "exclusive": (op != "run") if exclusive is None else bool(exclusive),
     }
+    # The build fields are not part of a node target, so they are checked here. They
+    # land in #SBATCH directive lines rather than in a shell, so what has to be refused
+    # is a newline: one of those turns the rest of the value into directives of the
+    # caller's choosing.
+    for value, field in ((build_partition, "build_partition"),
+                         (build_constraint, "build_constraint")):
+        token_err = _validate_slurm_token(value, field)
+        if token_err:
+            return err(token_err)
+    if build_partition or build_mem or build_wall_time or build_cpus_per_task:
+        build_err = _validate_slurm_args(
+            build_partition or partition, build_gpus,
+            build_cpus_per_task or cpus_per_task, build_mem or mem,
+            build_wall_time or wall_time)
+        if build_err:
+            return err(build_err, hint="This is about the build job's resources.")
 
     if op == "run":
         return (_missing_args(op, proxy_name=proxy_name)
@@ -850,7 +911,11 @@ def proxy_slurm(
     # op == "eval"
     return slurm.submit_eval(partition, proxy_name, background, gpus, cpus_per_task,
                              mem, wall_time, account, job_name or "proxy_opt",
-                             target=target)
+                             target=target, build_partition=build_partition,
+                             build_constraint=build_constraint,
+                             build_cpus_per_task=build_cpus_per_task,
+                             build_mem=build_mem, build_wall_time=build_wall_time,
+                             build_gpus=build_gpus)
 
 
 # A session is pinned to the machine its baseline ran on: a timing describes the
@@ -924,7 +989,7 @@ def _comparability_lines(cfg: dict, metric: str) -> list[dict]:
     anywhere, so pinning would be noise. Nothing is said at all until a baseline has
     pinned a machine — before that there is nothing to differ from.
     """
-    from _ops.eval_session import _NOISY_METRICS
+    from _lib.ratchet import _NOISY_METRICS
 
     pinned = cfg.get("machine") or {}
     signature = pinned.get("machine_signature") or ""

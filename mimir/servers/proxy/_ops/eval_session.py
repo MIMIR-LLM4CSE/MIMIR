@@ -18,34 +18,30 @@ import time
 from datetime import datetime, timezone
 
 from _ops import _PROXY_DIR, _with_next, err, ok
-from _lib.metrics import _VALID_OPT_OPERATORS, _coerce
 from _lib.procs import (
-    _log_path, _read_log, _run_state,
+    _log_path, _read_log, _run_state, background_descriptor,
     _new_run_dir, _write_run_config, _launch_detached, _cancel_run,
     _opt_active_run_dir, _update_opt_active_link,
 )
-from _lib.ratchet import (
-    _load_best, _save_best, _append_ledger, _ratchet_verdict,
-    _run_primary_value,
+from _lib.ratchet import _effective_repeat, _load_best
+from _lib.report import _diff_run_pair, parse_runner_log
+from _ops._eval_ratchet import _ratchet_state
+from _ops._eval_validate import (
+    _check_optimize_paths, _check_reference_requirements, _check_requirements,
 )
-from _lib.report import _diff_run_pair
+import build_progress
 import run_channel
 from _lib import build, procs, tree_snapshot
 from _lib.store import (
-    cache_dir,
-    _load_registry, _load_registry_or_err, _load_suite,
-    _opt_config_file, _opt_session_runs_dir,
-    _opt_ledger_file, _opt_best_file,
+    cache_dir, opt_git_dir, workspace_root,
+    _entry_or_err, _load_registry, _load_suite,
+    _load_opt_config, _save_opt_config,
+    _opt_session_runs_dir, _opt_ledger_file, _opt_best_file,
     _resolve_proxy_name, _write_active_session, _clear_active_session,
-    _read_json, _write_json_atomic, _file_lock, _run_dir_names,
+    _read_json, _write_json_atomic, _run_dir_names,
 )
 
 _OPT_RUNNER = os.path.join(_PROXY_DIR, "_proxy_runner.py")
-
-# Computed server-side from a sealed reference, so a requirement on one of these
-# can never be satisfied when a case has no reference — refuse it up front.
-_REFERENCE_METRICS = ("conservation_residual", "l2_abs", "l2_rel",
-                      "linf_abs", "linf_rel")
 
 _NEXT_RUN       = "proxy_eval(op='run', confirm=True)"
 _NEXT_STATUS    = "proxy_eval_status() to monitor (state 'done' means finished)"
@@ -78,30 +74,9 @@ _RUN_WAIT_BUDGET_S = 1100.0
 _LONG_BUILD_S = 60.0
 
 
-# ── session config helpers ────────────────────────────────────────────────────
-
-def _load_opt_config(proxy_name: str = "") -> dict:
-    name = _resolve_proxy_name(proxy_name)
-    if not name:
-        return {}
-    return _read_json(_opt_config_file(name), {}) or {}
-
-
-def _save_opt_config(cfg: dict, proxy_name: str = "") -> None:
-    name = proxy_name or cfg.get("proxy_name", "")
-    if not name:
-        return
-    _write_json_atomic(_opt_config_file(name), cfg)
-
-
 def _opt_tail_log(run_dir: str, n: int) -> list[str]:
     lines = _read_log(run_dir).splitlines()
     return lines[-n:]
-
-
-def _workspace_root() -> str:
-    """The workspace the servers were started against (see server_bash's own copy)."""
-    return os.path.realpath(os.path.abspath(os.environ.get("MCP_FILES_ROOT") or os.getcwd()))
 
 
 def _workspace_branch() -> str:
@@ -115,7 +90,7 @@ def _workspace_branch() -> str:
     """
     try:
         done = subprocess.run(
-            ["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=_workspace_root(),
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=workspace_root(),
             capture_output=True, text=True, timeout=10)
     except (OSError, subprocess.SubprocessError):
         return ""
@@ -123,108 +98,62 @@ def _workspace_branch() -> str:
     return "" if done.returncode != 0 or branch == "HEAD" else branch
 
 
-def opt_git_dir() -> str:
-    """Shadow repository for the tracked tree, inside the proxy store."""
-    return os.path.join(cache_dir(), "opt.git")
-
-
-def _check_optimize_paths(paths: list[str], proxy_source_path: str) -> str | None:
-    """The proxy is a HARNESS; the code under optimisation is somewhere else.
-
-    Nothing here is language-specific: an entry is checked for being a file, inside
-    the workspace, and not the harness itself. A compiled project lists its sources
-    and declares a build_cmd; the harness then exercises the binary the build
-    produces. What must not be listed is a generated file, which a build would
-    rewrite underneath the snapshot.
-
-    Nothing used to say so, and twice running the model answered the gap the cheapest
-    way available: it wrote a self-contained script that reproduced the solver it was
-    meant to accelerate — 189 lines mirroring a 307-line package — and the ratchet
-    optimised the copy. The cost is not the manual port afterwards. The ratchet's whole
-    guarantee (l2_rel against a sealed reference) then holds for the duplicate and for
-    nothing that ships, and a standalone script does not even have the imports, the
-    module-level initialisation or the memory layout of the package it mirrors: what got
-    measured was not the thing.
-
-    So the shape is refused rather than discouraged. The lesson of the tool-schema work
-    is that prose is not followed and refusals are: this same skill already says "do NOT
-    poll a backgrounded run", and a recorded session polled 157 times.
-
-    Returns an error string, or None when the declared shape is sound.
-    """
-    root = _workspace_root()
-    if not paths:
-        return ("optimize_paths is required: name the file(s) the ratchet may edit. "
-                "The proxy at proxy_source_path is a HARNESS — it runs the code and "
-                "prints metrics — and optimize_paths is the code it exercises, which "
-                "the harness should use rather than reproduce: import it, link it or "
-                "load it, in whatever language it is written.")
-    src_real = os.path.realpath(os.path.abspath(proxy_source_path))
-    seen: set[str] = set()
-    for raw in paths:
-        p = os.path.realpath(os.path.abspath(raw))
-        if not os.path.isfile(p):
-            return f"optimize_paths entry not found: {raw}"
-        if os.path.commonpath([p, root]) != root:
-            return (f"optimize_paths entry is outside the workspace: {raw}. "
-                    "The ratchet only edits code inside the workspace.")
-        if p == src_real:
-            return ("proxy_source_path cannot be one of optimize_paths. The harness "
-                    "must not be its own subject: optimising the program that measures "
-                    "means optimising a copy, and the accuracy constraints then say "
-                    "nothing about the code you ship. Point optimize_paths at the real "
-                    "source(s) and have the harness exercise them.")
-        seen.add(p)
-    return None
-
-
-def _check_requirements(requirements: list[dict]) -> str | None:
-    for i, req in enumerate(requirements):
-        if not req.get("metric"):
-            return f"requirements[{i}] is missing 'metric'."
-        if req.get("operator") not in _VALID_OPT_OPERATORS:
-            return (f"requirements[{i}] has invalid operator '{req.get('operator')}'. "
-                    "Use one of: lt, gt, lte, gte, eq.")
-        if req.get("threshold") is None:
-            return f"requirements[{i}] is missing 'threshold'."
-    return None
-
-
-def _check_reference_requirements(
-    requirements: list[dict], suite: dict, entry: dict,
-) -> str | None:
-    """Reject requirements that can never be satisfied with this setup.
-
-    Reference-dependent metrics (see ``_REFERENCE_METRICS``) are computed
-    server-side against a sealed reference; ``conservation_residual``
-    additionally needs the registration to name the conserved scalar. Failing
-    fast here turns a dead-end session into an actionable setup error.
-    """
-    needed = sorted({r.get("metric") for r in requirements}
-                    & set(_REFERENCE_METRICS))
-    if not needed:
-        return None
-    cases = suite.get("cases") or []
-    no_ref = [str(c.get("case_id", "?")) for c in cases
-              if not c.get("reference_name")]
-    if not cases or no_ref:
-        which = ", ".join(no_ref) if no_ref else "(no cases defined)"
-        return (f"Requirement(s) {', '.join(needed)} are computed server-side "
-                f"against a sealed reference, but benchmark case(s) {which} "
-                "have no reference_name — they could never pass. Create the "
-                "benchmark with proxy_exec(op='benchmark_create', "
-                "reference_params=...), which seals a reference, or add "
-                "reference_name to every case. Values printed by the proxy "
-                "for these metrics are ignored.")
-    if "conservation_residual" in needed and not entry.get("conserved_metric"):
-        return ("Requirement conservation_residual needs the proxy "
-                "registration to declare which scalar is conserved: "
-                "proxy_manage(op='update', metadata="
-                "{'conserved_metric': '<metric name>'}, confirm=True).")
-    return None
-
-
 # ── act ops (confirm already checked by the dispatch tool) ────────────────────
+
+def _init_payload(*, proxy_name, benchmark_name, abs_src, abs_paths, baseline_id,
+                  baseline_existed, requirements, primary_goal, primary_metric,
+                  min_improvement, cfg) -> dict:
+    """What init answers with: the session as recorded, and how to work in it.
+
+    Separated from the persistence above because it is prose, and because it is the
+    only place the loop's rules are stated to the caller — what to edit, what the
+    first run has to be, and what an edit must beat.
+    """
+    repeat = _effective_repeat(cfg)
+    edited = ", ".join(os.path.basename(p) for p in abs_paths)
+    payload = {
+        "proxy_name":        proxy_name,
+        "benchmark_name":    benchmark_name,
+        "proxy_source_path": abs_src,
+        "optimize_paths":    abs_paths,
+        "baseline_id":       baseline_id,
+        "baseline_existed":  baseline_existed,
+        "requirements":      requirements,
+        "objective":         f"{primary_goal}imize {primary_metric} subject to the requirements",
+        # What a run costs and what it has to beat. Both were once silent, and the
+        # threshold was a constant asserting a property of a machine nobody had measured.
+        "repeat":            repeat,
+        "min_improvement":   float(min_improvement),
+        "margin_note": (
+            f"Each case is measured {repeat}x and reduced to its median. A run must "
+            f"beat the incumbent by {min_improvement:.1%} OR by the spread measured "
+            f"across the baseline's own replicates, whichever is larger — so an edit "
+            f"cannot be accepted on a difference this machine produces without it."
+        ),
+        # Names optimize_paths, never proxy_source_path: pointing a model at the
+        # harness is what makes it optimise a copy of the thing instead of the thing.
+        "note": ("Baseline already recorded — kept, not moved. " if baseline_existed
+                 else "Baseline tree snapshotted. ")
+            + f"Edit {edited} between runs — never the harness at "
+            + os.path.basename(abs_src) + ", which only runs the code and prints "
+            "metrics. The FIRST run must be launched with those files untouched: it is "
+            "the baseline every later number is compared against, and until it exists "
+            "no run can be accepted. Feasible runs that improve the objective are "
+            "accepted; regressions are rejected — revert them with "
+            "proxy_eval(op='reset_to_best', confirm=True).",
+    }
+    if baseline_existed:
+        # Said on the reply rather than buried in a doc: this is the moment a model
+        # discovers its harness was wrong, and the unsupported route out of it
+        # (end + clean + init) moves the baseline by destroying the ledger.
+        payload["baseline_note"] = (
+            "This baseline was taken by an earlier init and has NOT been moved — "
+            "comparisons still run against the original tree. If the harness itself "
+            "was wrong and the baseline must be re-measured from the tree as it "
+            "stands, use proxy_eval(op='rebaseline', confirm=True): it archives the "
+            "ledger and best-so-far instead of discarding them.")
+    return payload
+
 
 def init(
     proxy_name: str,
@@ -241,12 +170,9 @@ def init(
     convergence: dict | None = None,
     repeat: int = 0,
 ) -> dict:
-    reg, _reg_err = _load_registry_or_err()
-    if _reg_err:
-        return err(_reg_err)
-    if proxy_name not in reg:
-        return err(f"Proxy '{proxy_name}' not registered.",
-                   hint="Call proxy_manage(op='register', ...) first.")
+    entry, error = _entry_or_err(proxy_name)
+    if error:
+        return error
 
     suite = _load_suite(benchmark_name)
     if suite is None:
@@ -258,7 +184,7 @@ def init(
     if req_err:
         return err(req_err)
 
-    ref_err = _check_reference_requirements(requirements, suite, reg[proxy_name])
+    ref_err = _check_reference_requirements(requirements, suite, entry)
     if ref_err:
         return err(ref_err)
 
@@ -299,14 +225,14 @@ def init(
         baseline_run = prior.get("baseline_run_id", "")
     else:
         baseline_id = tree_snapshot.snapshot(
-            opt_git_dir(), _workspace_root(), abs_paths,
+            opt_git_dir(), workspace_root(), abs_paths,
             f"baseline: {proxy_name} before optimisation",
         )
         if not baseline_id:
             return err("Could not snapshot the baseline tree.",
                        hint="Check that optimize_paths are readable and the proxy store "
                             "is writable.")
-        baseline_fp  = tree_snapshot.fingerprint(_workspace_root(), abs_paths)
+        baseline_fp  = tree_snapshot.fingerprint(workspace_root(), abs_paths)
         baseline_run = ""
 
     cfg = {
@@ -338,53 +264,12 @@ def init(
     _save_opt_config(cfg)
     _write_active_session(proxy_name)
 
-    return ok(_with_next({
-        "proxy_name":        proxy_name,
-        "benchmark_name":    benchmark_name,
-        "proxy_source_path": abs_src,
-        "optimize_paths":    abs_paths,
-        "baseline_id":       baseline_id,
-        "baseline_existed":  baseline_existed,
-        # Said on the reply, not buried in a doc: this is exactly the moment a model
-        # discovers its harness was wrong, and the only route it used to find from
-        # here was end + clean + init, which moves the baseline by destroying the
-        # ledger. Naming the supported one costs a line.
-        **({"baseline_note":
-            "This baseline was taken by an earlier init and has NOT been moved — "
-            "comparisons still run against the original tree. If the harness itself "
-            "was wrong and the baseline must be re-measured from the tree as it "
-            "stands, use proxy_eval(op='rebaseline', confirm=True): it archives the "
-            "ledger and best-so-far instead of discarding them."}
-           if baseline_existed else {}),
-        "requirements":      requirements,
-        "objective":         f"{primary_goal}imize {primary_metric} subject to the requirements",
-        # What each run will actually cost, and what the accept threshold is until
-        # the machine has been measured. Both were previously silent, and the
-        # second one was a constant asserting a property of a machine nobody had
-        # checked — it read "2% guards timing noise" on a node whose noise was 3.1%.
-        "repeat":            _effective_repeat(cfg),
-        "min_improvement":   float(min_improvement),
-        "margin_note": (
-            f"Each case is measured {_effective_repeat(cfg)}x and reduced to its "
-            f"median. A run must beat the incumbent by {min_improvement:.1%} OR by "
-            f"the spread measured across the baseline's own replicates, whichever "
-            f"is larger — so an edit cannot be accepted on a difference this "
-            f"machine produces without it."
-        ),
-        # Names optimize_paths, never proxy_source_path. The old wording here said
-        # "Modify '<proxy_source_path>' between runs", which pointed the model at the
-        # harness and is what produced a self-contained copy of the solver twice over.
-        "note": ("Baseline already recorded — kept, not moved. " if baseline_existed
-                 else "Baseline tree snapshotted. ") + "Edit "
-            + ", ".join(os.path.basename(p) for p in abs_paths)
-            + " between runs — never the harness at "
-            + os.path.basename(abs_src) + ", which only runs the code and prints "
-            "metrics. The FIRST run must be launched with those files untouched: it is "
-            "the baseline every later number is compared against, and until it exists "
-            "no run can be accepted. Feasible runs that improve the objective are "
-            "accepted; regressions are rejected — revert them with "
-            "proxy_eval(op='reset_to_best', confirm=True).",
-    }, _NEXT_RUN))
+    return ok(_with_next(_init_payload(
+        proxy_name=proxy_name, benchmark_name=benchmark_name, abs_src=abs_src,
+        abs_paths=abs_paths, baseline_id=baseline_id,
+        baseline_existed=baseline_existed, requirements=requirements,
+        primary_goal=primary_goal, primary_metric=primary_metric,
+        min_improvement=min_improvement, cfg=cfg), _NEXT_RUN))
 
 
 def configure(
@@ -421,10 +306,9 @@ def configure(
     # Re-check reference-dependent requirements against the (possibly new)
     # suite and registration — same dead-end guard as init.
     final_suite = _load_suite(cfg.get("benchmark_name", "")) or {}
-    reg, reg_err = _load_registry_or_err()
-    if reg_err:
-        return err(reg_err)
-    entry = (reg or {}).get(cfg.get("proxy_name", ""), {})
+    entry, error = _entry_or_err(cfg.get("proxy_name", ""))
+    if error:
+        return error
     ref_err = _check_reference_requirements(
         cfg.get("requirements") or [], final_suite, entry)
     if ref_err:
@@ -435,60 +319,13 @@ def configure(
     return ok(_with_next({"config": cfg}, _NEXT_RUN))
 
 
-# Metrics whose value moves between two runs of identical code. A timing metric on a
-# shared node is the whole reason this file needed a notion of noise; an accuracy metric
-# against a sealed reference is reproducible to the bit, and repeating it buys nothing.
-_NOISY_METRICS = ("time_s", "wall_time_s", "elapsed_s", "runtime_s", "gflops_per_s",
-                  "bandwidth_gbytes_per_s")
-
-# Replicates per case when the primary metric is a noisy one and the caller expressed no
-# preference. Three is the smallest number with a middle — enough for a median to mean
-# something, cheap enough to be the default.
-_AUTO_REPEAT = 3
-
-
-def _effective_repeat(cfg: dict) -> int:
-    """How many times to measure each case: what was asked, or what the metric needs.
-
-    ``repeat=0`` means "decide for me", and the decision is made on the metric rather
-    than on a constant: repeating a bit-reproducible accuracy check is pure cost, and
-    not repeating a timing on a 192-core shared node is how a 2.8% edit gets accepted
-    against a 3.1% noise floor.
-    """
-    asked = int(cfg.get("repeat", 0) or 0)
-    if asked > 0:
-        return asked
-    return _AUTO_REPEAT if cfg.get("primary_metric", "time_s") in _NOISY_METRICS else 1
-
-
-def _effective_min_improvement(cfg: dict) -> tuple[float, str]:
-    """The margin a run must clear, and where that number came from.
-
-    ``min_improvement`` was a caller-supplied constant, defaulted to 0.02 and annotated
-    "guards timing noise" — an assertion about a machine nobody had measured. Where the
-    real floor is higher, the guard admits exactly the changes it exists to exclude:
-    observed at 2% configured against 3.1% measured, with a kernel rewrite worth nothing
-    accepted on a 2.8% "gain".
-
-    So the configured value becomes a floor, not the answer. Once the baseline has been
-    measured more than once, the spread of those measurements is known, and the margin
-    is whichever of the two is larger.
-    """
-    configured = float(cfg.get("min_improvement", 0.0) or 0.0)
-    floor = cfg.get("noise_floor")
-    if not isinstance(floor, (int, float)) or floor <= configured:
-        return configured, "configured"
-    return float(floor), "measured noise floor"
-
-
 def _resume_notice(cfg: dict, name: str, paths: list[str]) -> str:
     """Say when a run is resuming a session whose code moved on without it.
 
-    Two guards used to cover one question between them, and left a gap in the middle.
-    ``_prepare_run`` refuses a first run on an already-edited tree — but only while no
-    baseline run is on record. Once one is, nothing checks anything again, so coming back
-    to a finished optimisation months later ran it against a best measured on code that no
-    longer exists, and said nothing about it.
+    ``_prepare_run`` refuses a first run on an already-edited tree, but only while no
+    baseline run is on record; once one is, nothing checks again. That leaves a gap in
+    the middle: coming back to a finished optimisation later measures against a best
+    taken on code that is no longer there, and says nothing about it.
 
     The hard part is not noticing that the tree changed: during an optimisation it changes
     on every iteration, which is the loop working. What distinguishes the two cases is
@@ -513,7 +350,7 @@ def _resume_notice(cfg: dict, name: str, paths: list[str]) -> str:
         return ""
     measured = (_read_json(os.path.join(last_run, "tree_at_launch.json")) or {}).get(
         "fingerprint", "")
-    if not measured or measured == tree_snapshot.fingerprint(_workspace_root(), paths):
+    if not measured or measured == tree_snapshot.fingerprint(workspace_root(), paths):
         return ""
     return (
         "Resuming a session whose tracked files have changed since it was last measured. "
@@ -566,7 +403,7 @@ def _prepare_run(
     # was an assertion rather than a comparison.
     paths = list(cfg.get("optimize_paths") or [])
     if paths and not cfg.get("baseline_run_id"):
-        current = tree_snapshot.fingerprint(_workspace_root(), paths)
+        current = tree_snapshot.fingerprint(workspace_root(), paths)
         if current != cfg.get("baseline_fingerprint", current):
             return None, err(
                 "No baseline run on record, and the tracked files have already been "
@@ -600,34 +437,26 @@ def _prepare_run(
     # comparison. Recorded as a tree snapshot, so a multi-file edit is captured whole.
     paths = list(cfg.get("optimize_paths") or [])
     launch_id = tree_snapshot.snapshot(
-        opt_git_dir(), _workspace_root(), paths,
+        opt_git_dir(), workspace_root(), paths,
         f"launch: {name} {os.path.basename(run_dir)}",
     ) if paths else None
     if launch_id:
         _write_json_atomic(os.path.join(run_dir, "tree_at_launch.json"), {
             "snapshot_id": launch_id,
             "paths":       paths,
-            "fingerprint": tree_snapshot.fingerprint(_workspace_root(), paths),
+            "fingerprint": tree_snapshot.fingerprint(workspace_root(), paths),
             "is_baseline": launch_id == cfg.get("baseline_id", ""),
         })
     return cfg, None, run_dir, notice
 
 
 def _background_descriptor(name: str, run_dir: str) -> dict:
-    """Data-only handle a client watcher polls to completion (no tool name in loop code).
-
-    ``status_op``/``summary_op`` name the read-only ops the watcher calls generically;
-    the client augments the model's view and, on completion, auto-resumes.
-    """
-    return {
-        "server":     "proxy",
-        "run_dir":    run_dir,
-        "job_key":    os.path.basename(run_dir),
-        "kind":       "proxy-optimization",
-        "status_op":  {"tool": "proxy_eval_status", "args": {"proxy_name": name}},
-        "summary_op": {"tool": "proxy_eval_status",
-                       "args": {"op": "results", "proxy_name": name}},
-    }
+    """The watcher handle for an optimization run: it polls the session, not the run."""
+    return background_descriptor(
+        run_dir, kind="proxy-optimization",
+        status_op={"tool": "proxy_eval_status", "args": {"proxy_name": name}},
+        summary_op={"tool": "proxy_eval_status",
+                    "args": {"op": "results", "proxy_name": name}})
 
 
 def run(proxy_name: str = "", background: bool = False, axis: str = "") -> dict:
@@ -798,6 +627,27 @@ def stop(proxy_name: str = "") -> dict:
     return ok(_with_next({"run_dir": run_dir, **result}, _NEXT_RUN + " to start a new run"))
 
 
+def _restored_payload(paths: list[str], rewritten: list[str]) -> dict:
+    """What a restore actually did, rather than what it was asked to cover.
+
+    Listing every tracked file whatever happened is untrue the moment most of them were
+    byte-identical and never touched. Naming only the rewritten ones makes the answer
+    match the tree, and makes the next build's size predictable from it: those are
+    exactly the files the build system now sees as new.
+    """
+    names = [os.path.basename(p) for p in rewritten]
+    return {"restored": names, "unchanged": max(0, len(paths) - len(names))}
+
+
+def _rebuild_note(rewritten: list[str]) -> str:
+    """The sentence that tells the caller what this costs to rebuild."""
+    if not rewritten:
+        return (" Nothing was written: the tree was already in that state, so the "
+                "next run has nothing to rebuild.")
+    return (f" {len(rewritten)} file(s) were rewritten; the build system will "
+            "recompile those and what depends on them, not the whole set.")
+
+
 def reset(proxy_name: str = "") -> dict:
     """Restore every tracked file to the baseline tree taken at init."""
     cfg = _load_opt_config(proxy_name)
@@ -811,15 +661,18 @@ def reset(proxy_name: str = "") -> dict:
         return err("No baseline tree recorded for this session.",
                    hint="Call proxy_eval(op='init', ...) again.")
 
-    if not tree_snapshot.restore(opt_git_dir(), _workspace_root(), paths, baseline_id):
+    rewritten = tree_snapshot.restore(
+        opt_git_dir(), workspace_root(), paths, baseline_id)
+    if rewritten is None:
         return err("Could not restore the baseline tree.",
                    hint="The snapshot store may be missing or unwritable.")
 
     return ok(_with_next({
-        "restored":  [os.path.basename(p) for p in paths],
+        **_restored_payload(paths, rewritten),
         "from":      "baseline",
         "note": "Every tracked file is back to the baseline taken at init. "
-                "Try a different modification approach.",
+                "Try a different modification approach."
+                + _rebuild_note(rewritten),
     }, _NEXT_RUN + " to verify the baseline"))
 
 
@@ -852,16 +705,19 @@ def reset_to_best(proxy_name: str = "") -> dict:
 
     # All of them or none: restoring a per-file best would assemble a combination that
     # was never measured together.
-    if not tree_snapshot.restore(opt_git_dir(), _workspace_root(), paths, snapshot):
+    rewritten = tree_snapshot.restore(
+        opt_git_dir(), workspace_root(), paths, snapshot)
+    if rewritten is None:
         return err("Could not restore the best tree.",
                    hint="Use proxy_eval(op='reset', confirm=True) to restore the baseline.")
 
     return ok(_with_next({
-        "restored":     [os.path.basename(p) for p in paths],
+        **_restored_payload(paths, rewritten),
         "from_best":    best.get("run_id"),
         "primary_value": best.get("primary_value"),
         "note": "Every tracked file is back to the state of the best accepted run. "
-                "Try a different modification approach from there.",
+                "Try a different modification approach from there."
+                + _rebuild_note(rewritten),
     }, _NEXT_RUN + " to verify, or summarize if converged"))
 
 
@@ -875,15 +731,13 @@ def rebaseline(proxy_name: str = "") -> dict:
     wrong, measure again from here* — had no supported answer at all, and a harness is
     sealed before anyone has seen it produce a number.
 
-    So it got an unsupported one. Observed twice in three minutes in session
-    ``7d322a3b``::
+    So it got an unsupported one::
 
         end -> proxy_manage(op='clean') -> init -> run
 
-    which is the only sequence that moves a baseline, and it moves it by destroying the
-    ledger to get there. The run it discarded the second time was a real result: a
-    boundary condition measured 40% better than the incumbent, gone from the record
-    while its code stayed on disk, uncredited.
+    the only sequence that moves a baseline, and it moves it by destroying the ledger to
+    get there — accepted runs and their numbers gone from the record while their code
+    stays on disk, uncredited.
 
     This op is that sequence made honest. The ledger and the best-so-far are *archived*
     under a timestamp rather than deleted, the new baseline is taken from the tree as it
@@ -910,7 +764,7 @@ def rebaseline(proxy_name: str = "") -> dict:
     archived = _archive_session_history(name, stamp)
 
     baseline_id = tree_snapshot.snapshot(
-        opt_git_dir(), _workspace_root(), paths,
+        opt_git_dir(), workspace_root(), paths,
         f"rebaseline: {name} at {stamp}",
     )
     if not baseline_id:
@@ -920,7 +774,7 @@ def rebaseline(proxy_name: str = "") -> dict:
 
     previous = cfg.get("baseline_id", "")
     cfg["baseline_id"] = baseline_id
-    cfg["baseline_fingerprint"] = tree_snapshot.fingerprint(_workspace_root(), paths)
+    cfg["baseline_fingerprint"] = tree_snapshot.fingerprint(workspace_root(), paths)
     cfg["baseline_run_id"] = ""
     # The next baseline run pins the session to wherever it executes.
     cfg.pop("machine", None)
@@ -988,34 +842,6 @@ def end(proxy_name: str = "") -> dict:
         "note": "Optimization session ended; source/snapshots/ledger kept for history. "
                 "The proxy can be run directly again. Re-init to optimize further.",
     }, "proxy_eval(op='init', ...) to start a new session, or you are done."))
-
-
-def _ratchet_state(proxy_name: str, run_dir: str, final_metrics: dict, cfg: dict) -> dict:
-    """Compute the ratchet outcome for a completed run, persisting it once.
-
-    Whichever of the runner or ``results`` gets here first wins: the verdict is
-    frozen to ``<run_dir>/ratchet.json`` under a per-session flock and re-checked
-    inside it, so best/ledger/stall never move twice for the same run.
-    """
-    name = cfg.get("proxy_name") or proxy_name
-    outcome_path = os.path.join(run_dir, "ratchet.json")
-
-    def _frozen() -> dict | None:
-        frozen = _read_json(outcome_path)  # None when missing or unreadable
-        if frozen is None:
-            return None  # recompute under the lock
-        frozen["best"] = _load_best(name)
-        return frozen
-
-    out = _frozen()
-    if out is not None:
-        return out
-
-    with _file_lock(os.path.join(_opt_session_runs_dir(name), ".ratchet.lock")):
-        out = _frozen()
-        if out is not None:
-            return out
-        return _ratchet_settle_locked(name, run_dir, final_metrics, cfg, outcome_path)
 
 
 # ── The shape of a session's attempts ─────────────────────────────────────────
@@ -1188,178 +1014,6 @@ def axes_tried(proxy_name: str = "") -> dict:
     return out
 
 
-def _run_axis(run_dir: str) -> str:
-    """What the run in *run_dir* said it was trying, or "".
-
-    Read back from the run's own config at settle time, because settling happens in the
-    runner process minutes or hours after the launch that knew it.
-    """
-    return str((_read_json(os.path.join(run_dir, "config.json")) or {}).get("axis") or "")
-
-
-def _ratchet_settle_locked(
-    name: str, run_dir: str, final_metrics: dict, cfg: dict, outcome_path: str,
-) -> dict:
-    primary_metric  = cfg.get("primary_metric", "time_s")
-    goal            = cfg.get("primary_goal", "min")
-    max_stall       = int(cfg.get("max_stall", 5))
-    # The tree as it stood when this run was LAUNCHED — what actually ran, immune to
-    # edits made while it was in flight.
-    launch = _read_json(os.path.join(run_dir, "tree_at_launch.json")) or {}
-    launch_tree = launch.get("snapshot_id", "")
-
-    feasible      = bool(final_metrics.get("all_passed"))
-    primary_value = _run_primary_value(final_metrics, primary_metric)
-    wall_value    = _run_primary_value(final_metrics, "wall_time_s")
-    run_id        = os.path.basename(os.path.normpath(run_dir))
-    best          = _load_best(name)
-
-    # A timing describes the machine as much as the code. The session is pinned to the
-    # machine its baseline ran on, and a run elsewhere is not compared at all: judged
-    # against a baseline from the login node, a compute node's run would be accepted
-    # or rejected on the hardware difference. An accuracy metric is reproducible
-    # across machines, so it is never held back.
-    machine = _read_json(os.path.join(run_dir, "machine.json")) or {}
-    pinned = (cfg.get("machine") or {}).get("machine_signature", "")
-    if (primary_metric in _NOISY_METRICS and pinned
-            and machine.get("machine_signature") not in ("", None, pinned)):
-        return _settle_incomparable(name, run_dir, cfg, outcome_path, machine, feasible,
-                                    primary_value, wall_value, primary_metric, goal,
-                                    max_stall, best)
-
-    # The baseline is the one run whose spread describes the machine rather than the
-    # change, so it is where the noise floor comes from — recorded once, then applied
-    # to every comparison after it.
-    spread = _run_primary_value(final_metrics, "primary_spread")
-    if not cfg.get("baseline_run_id") and isinstance(spread, (int, float)):
-        cfg["noise_floor"] = float(spread)
-
-    min_improvement, margin_source = _effective_min_improvement(cfg)
-    verdict = _ratchet_verdict(feasible, primary_value, best, goal, min_improvement)
-
-    # An accepted time_s improvement whose measured wall time regressed is
-    # plausible I/O noise, but also the signature of a tampered timer: warn.
-    timing_warning: str | None = None
-    if verdict == "accept" and primary_metric == "time_s" and best is not None:
-        prev_wall = best.get("wall_value")
-        if (isinstance(wall_value, (int, float)) and isinstance(prev_wall, (int, float))
-                and wall_value > prev_wall * 1.10):
-            timing_warning = (
-                "Self-reported time_s improved but the server-measured wall time "
-                f"regressed ({prev_wall:.3g}s -> {wall_value:.3g}s). Verify the "
-                "proxy's timing instrumentation before trusting this acceptance, "
-                "or optimize primary_metric='wall_time_s' instead."
-            )
-
-    # The launch gate in _prepare_run guarantees the first run measured the untouched
-    # tree; this records which run that was, so the gate opens exactly once.
-    baseline_run = cfg.get("baseline_run_id", "")
-    if not baseline_run:
-        cfg["baseline_run_id"] = baseline_run = run_id
-        if machine.get("machine_signature"):
-            cfg["machine"] = machine
-
-    stall = int(cfg.get("stall", 0))
-    if verdict == "accept":
-        _save_best(name, run_id, primary_value, launch_tree, wall_value=wall_value)
-        best  = _load_best(name)
-        stall = 0
-    elif feasible:
-        stall += 1  # feasible but not an improvement — a stalled iteration
-
-    if feasible and stall >= max_stall:
-        verdict = "converged"
-
-    cfg["stall"] = stall
-    _save_opt_config(cfg)
-
-    _append_ledger(name, {
-        "run_id":        run_id,
-        "ts":            datetime.now(timezone.utc).isoformat(),
-        # What this run was and where it started. The snapshot is the edge: a run whose
-        # launch tree is the state another run produced descends from it, which is what
-        # makes the session's attempts a shape rather than a list.
-        "axis":          _run_axis(run_dir),
-        "launch_tree":   launch_tree,
-        "feasible":      feasible,
-        "primary_value": primary_value,
-        "wall_value":    wall_value,
-        "verdict":       verdict,
-        "stall":          stall,
-        "primary_spread": spread,
-        "min_improvement": min_improvement,
-        "best_run_id":   best.get("run_id") if best else None,
-        **({"timing_warning": timing_warning} if timing_warning else {}),
-    })
-
-    outcome = {
-        "baseline_run_id": baseline_run,
-        "feasible":       feasible,
-        "primary_value":  primary_value,
-        "wall_value":     wall_value,
-        "verdict":        verdict,
-        "stall":          stall,
-        "max_stall":      max_stall,
-        "primary_metric": primary_metric,
-        "goal":           goal,
-        # Said on every run, not buried in the config: the margin is what decides
-        # accept from reject, and a model that cannot see it cannot tell an edit
-        # that did nothing from one the threshold was too loose to catch.
-        "min_improvement": min_improvement,
-        "margin_source":   margin_source,
-        "primary_spread":  spread,
-        "noise_floor":     cfg.get("noise_floor"),
-        "timing_warning": timing_warning,
-    }
-    try:
-        with open(outcome_path, "w") as fh:
-            json.dump(outcome, fh, indent=2)
-    except OSError:
-        pass
-    outcome["best"] = best
-    return outcome
-
-
-def _settle_incomparable(
-    name: str, run_dir: str, cfg: dict, outcome_path: str, machine: dict,
-    feasible: bool, primary_value, wall_value, primary_metric: str, goal: str,
-    max_stall: int, best: dict | None,
-) -> dict:
-    """Freeze the outcome of a run taken on another machine than the baseline's.
-
-    Neither best nor stall moves: the number says nothing about the edit. The run is
-    still ledgered, so where it ran and what it measured stay on record.
-    """
-    pinned = cfg.get("machine") or {}
-    run_id = os.path.basename(os.path.normpath(run_dir))
-    _append_ledger(name, {
-        "run_id": run_id, "ts": datetime.now(timezone.utc).isoformat(),
-        "axis": _run_axis(run_dir),
-        "launch_tree": (_read_json(os.path.join(run_dir, "tree_at_launch.json"))
-                        or {}).get("snapshot_id", ""),
-        "feasible": feasible, "primary_value": primary_value, "wall_value": wall_value,
-        "verdict": "incomparable", "stall": int(cfg.get("stall", 0)),
-        "machine": machine.get("host", ""),
-        "best_run_id": best.get("run_id") if best else None,
-    })
-    outcome = {
-        "baseline_run_id": cfg.get("baseline_run_id", ""),
-        "feasible": feasible, "primary_value": primary_value, "wall_value": wall_value,
-        "verdict": "incomparable", "stall": int(cfg.get("stall", 0)),
-        "max_stall": max_stall, "primary_metric": primary_metric, "goal": goal,
-        "min_improvement": None, "margin_source": "", "primary_spread": None,
-        "noise_floor": cfg.get("noise_floor"), "timing_warning": None,
-        "machine": {"run": machine, "baseline": pinned},
-    }
-    try:
-        with open(outcome_path, "w") as fh:
-            json.dump(outcome, fh, indent=2)
-    except OSError:
-        pass
-    outcome["best"] = best
-    return outcome
-
-
 # ── observe ops ───────────────────────────────────────────────────────────────
 
 def status(proxy_name: str = "") -> dict:
@@ -1397,6 +1051,64 @@ def status(proxy_name: str = "") -> dict:
     return ok(_with_next(payload, next_step))
 
 
+def _recommend(r: dict, summary: dict, proxy_source: str) -> tuple[str, str]:
+    """What the ratchet's verdict means for the caller, and what to do next.
+
+    A pure function of the settled outcome: five verdicts, five answers. It sits
+    apart from ``results`` because it is the loop's script — the sentences that
+    decide whether the next call is an edit, a revert, or a summary — and burying
+    it in a payload builder made it look like formatting.
+    """
+    verdict  = r["verdict"]
+    best     = r.get("best")
+    best_id  = best.get("run_id") if best else None
+    best_val = best.get("primary_value") if best else None
+    pm, pv   = r["primary_metric"], r["primary_value"]
+
+    if verdict == "incomparable":
+        ran, base = r["machine"]["run"], r["machine"]["baseline"]
+        return (
+            f"Not compared: this run executed on {ran.get('host', '?')} "
+            f"({ran.get('cpu_model') or ran.get('arch', '?')}), a different machine from "
+            f"the baseline's {base.get('host', '?')} "
+            f"({base.get('cpu_model') or base.get('arch', '?')}). "
+            f"A {pm} measured on other hardware says nothing about the edit, so best and "
+            "stall are unchanged. Run on the baseline's kind of machine again, or — if "
+            "this machine is the real target — re-measure the baseline here.",
+            "run again where the baseline ran, or proxy_eval(op='rebaseline', "
+            "confirm=True) then run on the target")
+    if verdict == "converged":
+        return (
+            f"Converged: all requirements pass and {pm} did not improve for "
+            f"{r['max_stall']} iterations (best run {best_id}, {pm}={best_val}). "
+            "Restore the best implementation and summarize.",
+            _NEXT_RESET_BEST + ", then summarize the results.")
+    if verdict == "accept":
+        return (
+            f"Accepted — new best for {pm} ({pv}) with all requirements passing. "
+            f"Try to improve {pm} further, or restore the best and summarize if "
+            f"satisfied.",
+            f"edit '{proxy_source}' to improve {pm}, then {_NEXT_RUN} "
+            f"(or {_NEXT_RESET_BEST} + summarize)")
+    if verdict == "reject":
+        if r["feasible"]:
+            why = (f"Requirements still pass but {pm}={pv} did not beat the best "
+                   f"({best_val}). This edit is not an improvement — revert to the "
+                   f"best and try a different approach.")
+        else:
+            why = ("This change regressed: requirements no longer pass. Revert to "
+                   "the best-so-far and try a different modification.")
+        return why, _NEXT_RESET_BEST + f", then edit '{proxy_source}' and {_NEXT_RUN}"
+
+    # verdict is None — not feasible yet, and no best to fall back on.
+    passed = summary.get("cases_passed", 0)
+    total  = summary.get("cases_total", 0)
+    return (
+        f"{total - passed} of {total} case(s) failed requirements. "
+        f"Read and modify '{proxy_source}' with the file tools, then run again.",
+        f"edit '{proxy_source}', then {_NEXT_RUN}")
+
+
 def results(proxy_name: str = "") -> dict:
     """Per-case benchmark results + requirements check, parsed from the run log."""
     resolved = _resolve_proxy_name(proxy_name)
@@ -1406,25 +1118,7 @@ def results(proxy_name: str = "") -> dict:
     if not run_dir:
         return err("No optimization runs found.")
 
-    content = _read_log(run_dir)
-
-    cases:   list[dict] = []
-    summary: dict       = {}
-    for line in content.splitlines():
-        line = line.strip()
-        if line.startswith("[proxy_runner] case="):
-            row: dict = {}
-            for part in line.split()[1:]:
-                if "=" in part:
-                    k, _, v = part.partition("=")
-                    row[k] = _coerce(v)
-            if row:
-                cases.append(row)
-        elif line.startswith("[proxy_runner] summary "):
-            for part in line.split()[2:]:
-                if "=" in part:
-                    k, _, v = part.partition("=")
-                    summary[k] = _coerce(v)
+    cases, summary = parse_runner_log(_read_log(run_dir))
 
     final_metrics = _read_json(os.path.join(run_dir, "metrics.json"))
 
@@ -1446,7 +1140,7 @@ def results(proxy_name: str = "") -> dict:
             state="crashed",
             build=bld,
             build_log=log_path,
-            build_log_tail=procs._read_text_tail(log_path, 8192),
+            build_log_tail=build_progress.read_tail(log_path, 8192),
             next_step="read build_log_tail, fix the build, then "
                       "proxy_eval(op='run', confirm=True)",
         )
@@ -1469,53 +1163,7 @@ def results(proxy_name: str = "") -> dict:
     best_val = best.get("primary_value") if best else None
     pm, pv   = r["primary_metric"], r["primary_value"]
 
-    if verdict == "incomparable":
-        ran, base = r["machine"]["run"], r["machine"]["baseline"]
-        recommendation = (
-            f"Not compared: this run executed on {ran.get('host', '?')} "
-            f"({ran.get('cpu_model') or ran.get('arch', '?')}), a different machine from "
-            f"the baseline's {base.get('host', '?')} ({base.get('cpu_model') or base.get('arch', '?')}). "
-            f"A {pm} measured on other hardware says nothing about the edit, so best and "
-            "stall are unchanged. Run on the baseline's kind of machine again, or — if "
-            "this machine is the real target — re-measure the baseline here."
-        )
-        next_step = ("run again where the baseline ran, or proxy_eval(op='rebaseline', "
-                     "confirm=True) then run on the target")
-    elif verdict == "converged":
-        recommendation = (
-            f"Converged: all requirements pass and {pm} did not improve for "
-            f"{r['max_stall']} iterations (best run {best_id}, {pm}={best_val}). "
-            "Restore the best implementation and summarize."
-        )
-        next_step = _NEXT_RESET_BEST + ", then summarize the results."
-    elif verdict == "accept":
-        recommendation = (
-            f"Accepted — new best for {pm} ({pv}) with all requirements passing. "
-            f"Try to improve {pm} further, or restore the best and summarize if satisfied."
-        )
-        next_step = (f"edit '{proxy_source}' to improve {pm}, then {_NEXT_RUN} "
-                     f"(or {_NEXT_RESET_BEST} + summarize)")
-    elif verdict == "reject":
-        if r["feasible"]:
-            recommendation = (
-                f"Requirements still pass but {pm}={pv} did not beat the best "
-                f"({best_val}). This edit is not an improvement — revert to the best "
-                "and try a different approach."
-            )
-        else:
-            recommendation = (
-                "This change regressed: requirements no longer pass. Revert to the "
-                "best-so-far and try a different modification."
-            )
-        next_step = _NEXT_RESET_BEST + f", then edit '{proxy_source}' and {_NEXT_RUN}"
-    else:  # verdict is None — not feasible yet and no best to fall back on
-        passed = summary.get("cases_passed", 0)
-        total  = summary.get("cases_total", 0)
-        recommendation = (
-            f"{total - passed} of {total} case(s) failed requirements. "
-            f"Read and modify '{proxy_source}' with the file tools, then run again."
-        )
-        next_step = f"edit '{proxy_source}', then {_NEXT_RUN}"
+    recommendation, next_step = _recommend(r, summary, proxy_source)
 
     if r.get("timing_warning"):
         recommendation += " WARNING: " + r["timing_warning"]

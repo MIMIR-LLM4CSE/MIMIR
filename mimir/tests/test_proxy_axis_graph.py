@@ -24,7 +24,7 @@ _PROXY = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "servers
 sys.path.insert(0, os.path.abspath(_PROXY))
 sys.path.insert(0, os.path.abspath(os.path.join(_PROXY, "..", "_shared")))
 
-from _ops import eval_session  # noqa: E402
+from _ops import _eval_ratchet, eval_session  # noqa: E402
 
 
 class _Ledgered(unittest.TestCase):
@@ -305,17 +305,21 @@ class PanelLinesTests(unittest.TestCase):
 
 
 class RecordedAxisTests(unittest.TestCase):
-    """What the launch wrote down, read back when the run settles hours later."""
+    """What the launch wrote down, read back when the run settles hours later.
+
+    The reader sits with the settle in ``_eval_ratchet``, which is its only caller:
+    settling happens in the runner process, long after the launch that knew the axis.
+    """
 
     def test_the_axis_is_read_back_from_the_runs_own_config(self):
         with tempfile.TemporaryDirectory() as run_dir:
             with open(os.path.join(run_dir, "config.json"), "w", encoding="utf-8") as fh:
                 json.dump({"axis": "cache-friendly layout"}, fh)
-            self.assertEqual(eval_session._run_axis(run_dir), "cache-friendly layout")
+            self.assertEqual(_eval_ratchet._run_axis(run_dir), "cache-friendly layout")
 
     def test_a_run_launched_without_one_settles_without_one(self):
         with tempfile.TemporaryDirectory() as run_dir:
-            self.assertEqual(eval_session._run_axis(run_dir), "")
+            self.assertEqual(_eval_ratchet._run_axis(run_dir), "")
 
 
 if __name__ == "__main__":

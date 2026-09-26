@@ -1,104 +1,19 @@
 """Unit tests for the op-dispatched proxy server (servers/proxy/server_proxy.py).
 
-Covers the dispatch layer (unknown ops, per-op required args, confirm gating),
-the `metadata` dict merge in register/update, the `next_step` contract on the
-eval loop, and the Slurm arg validation.  All storage is redirected into a
-temp dir; no scheduler or real proxy is ever touched.
+Covers the dispatch layer (unknown ops, per-op required args, confirm gating), the
+`metadata` dict merge in register/update, and the `next_step` contract on the eval
+loop. Slurm submission lives in test_proxy_slurm.py; fixtures in _proxy_fixtures.py.
 
 Run:
     python -m unittest mimir.tests.test_proxy_ops -v
 """
 
-import asyncio
-import inspect
 import os
-import sys
-import tempfile
 import unittest
-from pathlib import Path
 
-SERVERS_DIR = Path(__file__).resolve().parents[1] / "servers"
-for _p in (SERVERS_DIR / "_shared", SERVERS_DIR / "proxy"):
-    _ps = str(_p)
-    if _ps not in sys.path:
-        sys.path.insert(0, _ps)
-
-import server_proxy  # noqa: E402
-from _lib import procs, ratchet, store  # noqa: E402,F401  (procs/ratchet re-exported for test_proxy_opt_loop)
-from _ops import eval_session, references, registry, runs, scaffold, slurm, suites  # noqa: E402,F401  (re-exported for sibling test modules)
-
-
-def _eval(*args, **kwargs):
-    """Call the now-async ``proxy_eval`` from a synchronous test.
-
-    ``op='run'`` awaits the run it launches, so the tool is a coroutine function.
-    """
-    return asyncio.run(server_proxy.proxy_eval(*args, **kwargs))
-
-
-def _call(tool, **kwargs):
-    """Call a proxy tool whether or not it is a coroutine function.
-
-    The dispatch tests below sweep every tool with the same arguments; only
-    ``proxy_eval`` is async, and which ones are is not what they are testing.
-    """
-    res = tool(**kwargs)
-    return asyncio.run(res) if inspect.isawaitable(res) else res
-
-
-class _TmpStorageTest(unittest.TestCase):
-    """Base: redirects the proxy storage root into a per-test temp dir.
-
-    Every path is derived from ``store._CACHE_DIR`` at call time, so one
-    repoint makes the entire store hermetic.
-
-    The temp dir doubles as the WORKSPACE (``MCP_FILES_ROOT``): ``optimize_paths`` are
-    refused outside it, so a fixture with no workspace of its own would be measuring the
-    repository it runs from.
-    """
-
-    def setUp(self) -> None:
-        self._tmp = tempfile.TemporaryDirectory()
-        self._saved_root = store._CACHE_DIR
-        store._CACHE_DIR = self._tmp.name
-        self.root = self._tmp.name
-        self._saved_ws = os.environ.get("MCP_FILES_ROOT")
-        os.environ["MCP_FILES_ROOT"] = self._tmp.name
-
-    def _tracked(self) -> str:
-        """A file the ratchet may edit, distinct from the harness.
-
-        init refuses proxy_source_path being one of optimize_paths: a harness that is
-        its own subject means optimizing a copy, and the accuracy constraints then say
-        nothing about the code that ships.
-        """
-        path = os.path.join(self.root, "tracked.py")
-        if not os.path.exists(path):
-            with open(path, "w") as fh:
-                fh.write("TUNABLE = 1\n")
-        return path
-
-    def tearDown(self) -> None:
-        store._CACHE_DIR = self._saved_root
-        if self._saved_ws is None:
-            os.environ.pop("MCP_FILES_ROOT", None)
-        else:
-            os.environ["MCP_FILES_ROOT"] = self._saved_ws
-        self._tmp.cleanup()
-
-    # -- fixtures ------------------------------------------------------------
-
-    def _make_exe(self, name: str = "tiny.py") -> str:
-        path = os.path.join(self.root, name)
-        with open(path, "w") as fh:
-            fh.write("print('PROXY_METRICS_BEGIN')\nprint('time_s=0.1')\nprint('PROXY_METRICS_END')\n")
-        return path
-
-    def _register(self, name: str = "tiny", metadata: dict | None = None) -> dict:
-        return server_proxy.proxy_manage(
-            op="register", name=name, executable_path=self._make_exe(),
-            run_cmd_template="python3 {executable}", metadata=metadata, confirm=True,
-        )
+from mimir.tests._proxy_fixtures import (
+    _TmpStorageTest, _call, _eval, server_proxy, store,
+)
 
 
 class DispatchTests(_TmpStorageTest):
@@ -415,69 +330,53 @@ class ScaffoldTests(_TmpStorageTest):
         self.assertTrue(res.get("next_step"))
 
 class NextStepContractTests(_TmpStorageTest):
-    """Every read-only op answers with a non-empty next_step, populated or not.
+    """Every ok response carries a non-empty next_step, populated store or not.
 
-    The loop is driven by that hint, so an op that omits it is a dead end for
-    the model even when the payload is correct.
+    The loop is driven by that hint, so an op that omits it is a dead end for the
+    model even when the payload is correct. SERVERS_DETAILED states the contract
+    without exception; this holds it that way.
     """
 
-    def _read_only_calls(self) -> list[tuple[str, dict]]:
-        return [
-            ("proxy_get/proxies",       {"op": "proxies"}),
-            ("proxy_get/proxy",         {"op": "proxy", "name": "tiny"}),
-            ("proxy_get/references",    {"op": "references"}),
-            ("proxy_get/suites",        {"op": "suites"}),
-            ("proxy_get/suite",         {"op": "suite", "name": "bench"}),
-        ]
+    _READ_ONLY = [
+        (lambda: server_proxy.proxy_get(op="proxies"),                "get/proxies"),
+        (lambda: server_proxy.proxy_get(op="proxy", name="tiny"),     "get/proxy"),
+        (lambda: server_proxy.proxy_get(op="references"),             "get/references"),
+        (lambda: server_proxy.proxy_get(op="suites"),                 "get/suites"),
+        (lambda: server_proxy.proxy_get(op="suite", name="bench"),    "get/suite"),
+        (lambda: server_proxy.proxy_runs(op="list"),                  "runs/list"),
+        (lambda: server_proxy.proxy_eval_status(op="runs"),           "eval/runs"),
+        (lambda: server_proxy.proxy_eval_status(op="config"),         "eval/config"),
+    ]
 
-    def test_read_only_ops_carry_next_step(self) -> None:
-        for label, kwargs in self._read_only_calls():
-            for populated in (False, True):
-                if populated:
-                    self._register()
-                    server_proxy.proxy_manage(
-                        op="suite_define", name="bench",
-                        cases=[{"case_id": "a", "proxy_name": "tiny"}], confirm=True,
-                    )
-                with self.subTest(op=label, populated=populated):
-                    res = server_proxy.proxy_get(**kwargs)
-                    if res.get("status") != "ok":
-                        continue          # unpopulated lookups legitimately error
-                    self.assertTrue(res.get("next_step"), f"{label} has no next_step")
-
-    def test_every_ok_response_carries_next_step(self) -> None:
-        """SERVERS_DETAILED states the contract without exception; hold it that way."""
+    def _populate(self) -> None:
         self._register()
         server_proxy.proxy_manage(
             op="suite_define", name="bench",
-            cases=[{"case_id": "a", "proxy_name": "tiny"}], confirm=True,
-        )
-        calls = [
-            (server_proxy.proxy_get, {"op": "proxies"}),
-            (server_proxy.proxy_get, {"op": "proxy", "name": "tiny"}),
-            (server_proxy.proxy_get, {"op": "references"}),
-            (server_proxy.proxy_get, {"op": "suites"}),
-            (server_proxy.proxy_get, {"op": "suite", "name": "bench"}),
-            (server_proxy.proxy_runs, {"op": "list"}),
-            (server_proxy.proxy_eval_status, {"op": "runs"}),
-            (server_proxy.proxy_eval_status, {"op": "config"}),
-            (server_proxy.proxy_manage, {"op": "update", "name": "tiny",
-                                         "metadata": {"arch": "x86"}, "confirm": True}),
-            (server_proxy.proxy_manage, {"op": "suite_update", "name": "bench",
-                                         "description": "d", "confirm": True}),
-        ]
-        for tool, kwargs in calls:
-            with self.subTest(tool=tool.__name__, op=kwargs["op"]):
-                res = tool(**kwargs)
-                self.assertEqual(res.get("status"), "ok", msg=res)
-                self.assertTrue(res.get("next_step"), f"{kwargs['op']} has no next_step")
+            cases=[{"case_id": "a", "proxy_name": "tiny"}], confirm=True)
 
-    def test_runs_and_eval_status_listings_carry_next_step(self) -> None:
-        for res in (server_proxy.proxy_runs(op="list"),
-                    server_proxy.proxy_eval_status(op="runs"),
-                    server_proxy.proxy_eval_status(op="config")):
-            self.assertEqual(res.get("status"), "ok")
-            self.assertTrue(res.get("next_step"))
+    def test_read_only_ops_carry_next_step_on_an_empty_store(self) -> None:
+        for call, label in self._READ_ONLY:
+            with self.subTest(op=label):
+                res = call()
+                if res.get("status") != "ok":
+                    continue          # unpopulated lookups legitimately error
+                self.assertTrue(res.get("next_step"), f"{label} has no next_step")
+
+    def test_every_ok_response_carries_next_step(self) -> None:
+        self._populate()
+        writes = [
+            (lambda: server_proxy.proxy_manage(
+                op="update", name="tiny", metadata={"arch": "x86"}, confirm=True),
+             "manage/update"),
+            (lambda: server_proxy.proxy_manage(
+                op="suite_update", name="bench", description="d", confirm=True),
+             "manage/suite_update"),
+        ]
+        for call, label in self._READ_ONLY + writes:
+            with self.subTest(op=label):
+                res = call()
+                self.assertEqual(res.get("status"), "ok", msg=res)
+                self.assertTrue(res.get("next_step"), f"{label} has no next_step")
 
 
 class ScaffoldHarnessTypeTests(_TmpStorageTest):
@@ -509,48 +408,6 @@ class ScaffoldHarnessTypeTests(_TmpStorageTest):
         # The generated harness really does read a param file.
         with open(res["ref_harness_path"]) as fh:
             self.assertIn("_read_params(sys.argv[1])", fh.read())
-
-
-class SlurmSubmitEvalTests(_TmpStorageTest):
-    """proxy_slurm(op='eval') must not lose what _prepare_run wrote."""
-
-    def setUp(self) -> None:
-        super().setUp()
-        self.bin_dir = os.path.join(self.root, "bin")
-        os.makedirs(self.bin_dir)
-        self._saved_path = os.environ["PATH"]
-        fake = os.path.join(self.bin_dir, "sbatch")
-        with open(fake, "w") as fh:
-            fh.write("#!/bin/sh\necho 'Submitted batch job 7001'\n")
-        os.chmod(fake, 0o755)
-        os.environ["PATH"] = self.bin_dir
-
-    def tearDown(self) -> None:
-        os.environ["PATH"] = self._saved_path
-        super().tearDown()
-
-    def test_submitted_run_keeps_the_convergence_config(self) -> None:
-        self._register()
-        server_proxy.proxy_manage(
-            op="suite_define", name="bench",
-            cases=[{"case_id": "a", "proxy_name": "tiny"}], confirm=True,
-        )
-        src = self._make_exe("source.py")
-        _eval(
-            op="init", proxy_name="tiny", benchmark_name="bench",
-            requirements=[{"metric": "time_s", "operator": "lt", "threshold": 2.0}],
-            proxy_source_path=src, optimize_paths=[self._tracked()], max_hours=3.0,
-            convergence={"h_param": "n", "error_metric": "l2_rel"}, confirm=True,
-        )
-        res = server_proxy.proxy_slurm(op="eval", partition="debug", confirm=True)
-        self.assertEqual(res.get("status"), "ok", msg=res)
-
-        cfg = store._read_json(os.path.join(res["run_dir"], "config.json"))
-        # The Slurm-specific key is merged in, not written over the rest.
-        self.assertEqual(cfg["partition"], "debug")
-        self.assertEqual(cfg["convergence"], {"h_param": "n", "error_metric": "l2_rel"})
-        self.assertEqual(cfg["benchmark_name"], "bench")
-        self.assertEqual(cfg["deadline_s"], 3.0 * 3600)
 
 
 if __name__ == "__main__":

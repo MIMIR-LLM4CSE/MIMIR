@@ -51,12 +51,20 @@ def sbatch_header(
     constraint: str = "",
     nodelist: str = "",
     exclusive: bool = False,
+    dependency: str = "",
+    kill_on_invalid_dep: bool = False,
 ) -> list[str]:
     """Return the ``#!/bin/bash`` + ``#SBATCH`` directive lines (no command body).
 
     ``nodes``/``ntasks`` left at None are left to the scheduler's default. ``exclusive``
     is what a timing needs: a benchmark sharing its node with someone else's job
     measures the neighbour as much as the code.
+
+    ``dependency`` chains this job behind another, and ``kill_on_invalid_dep`` is what
+    keeps that chain from hanging: without it a job whose dependency can never be
+    satisfied sits PENDING indefinitely and whatever is watching it waits exactly as
+    long. Every optional directive is omitted when empty, so a caller that passes none
+    of them gets byte-for-byte the script it got before.
     """
     lines = [
         "#!/bin/bash",
@@ -87,6 +95,10 @@ def sbatch_header(
         lines.append(f"#SBATCH --nodelist={nodelist}")
     if exclusive:
         lines.append("#SBATCH --exclusive")
+    if dependency:
+        lines.append(f"#SBATCH --dependency={dependency}")
+        if kill_on_invalid_dep:
+            lines.append("#SBATCH --kill-on-invalid-dep=yes")
     return lines
 
 

@@ -17,6 +17,8 @@ import os
 import shutil
 import threading
 
+from responses import err
+
 # ── storage root ──────────────────────────────────────────────────────────────
 
 # Under the WORKSPACE, not ~/.cache. Everything else MIMIR persists is already scoped
@@ -41,6 +43,18 @@ _CACHE_DIR = (os.environ.get("MIMIR_PROXY_BENCH_DIR")
 
 def cache_dir() -> str:
     return _CACHE_DIR
+
+
+def workspace_root() -> str:
+    """The workspace the servers were started against, resolved, read at call time.
+
+    ``_WORKSPACE_ROOT`` above is frozen at import, which is what the store's own layout
+    wants; this is the live answer, which is what anything comparing paths against the
+    tree wants. Two spellings of one file must not read as two files, hence realpath —
+    ``build._declared_root`` deliberately does not resolve, for the opposite reason.
+    """
+    return os.path.realpath(os.path.abspath(
+        os.environ.get("MCP_FILES_ROOT") or os.getcwd()))
 
 
 def registry_path() -> str:
@@ -69,10 +83,6 @@ def scaffolds_dir() -> str:
 
 def opt_runs_dir() -> str:
     return os.path.join(_CACHE_DIR, "opt_runs")
-
-
-def opt_canonical_dir() -> str:
-    return os.path.join(opt_runs_dir(), "canonical")
 
 
 def active_session_file() -> str:
@@ -153,11 +163,11 @@ def _registry_lock(create: bool = False):
     so concurrent tool dispatch on worker threads still serializes.
 
     ``create`` says whether taking the lock may bring the store into existence.
-    It defaults to False because the lock is on the read path too: a plain
-    ``proxy_get`` on a project that has never registered a proxy used to leave a
-    ``proxy_bench/`` directory and a lock file behind in the user's tree — a read
-    tool writing, and in plan mode, where nothing should be written at all. With
-    no store on disk there is no registry to race over, so the lock is skipped
+    It defaults to False because the lock is on the read path too, and a plain
+    ``proxy_get`` on a project that has never registered a proxy must not leave a
+    ``proxy_bench/`` directory and a lock file behind in the user's tree — that is a
+    read tool writing, including in plan mode where nothing should be written at
+    all. With no store on disk there is no registry to race over, so the lock is skipped
     entirely and the read returns empty. Only :func:`registry.register` passes
     ``create=True``: registering a proxy is the act that creates the store.
     """
@@ -305,6 +315,40 @@ def _opt_ledger_file(proxy_name: str) -> str:
 def _opt_best_file(proxy_name: str) -> str:
     """Best-so-far pointer: opt_runs/<proxy>/best.json."""
     return os.path.join(_opt_session_runs_dir(proxy_name), "best.json")
+
+
+def opt_git_dir() -> str:
+    """Shadow repository for the tracked tree, inside the proxy store."""
+    return os.path.join(cache_dir(), "opt.git")
+
+
+def _load_opt_config(proxy_name: str = "") -> dict:
+    name = _resolve_proxy_name(proxy_name)
+    if not name:
+        return {}
+    return _read_json(_opt_config_file(name), {}) or {}
+
+
+def _save_opt_config(cfg: dict, proxy_name: str = "") -> None:
+    name = proxy_name or cfg.get("proxy_name", "")
+    if not name:
+        return
+    _write_json_atomic(_opt_config_file(name), cfg)
+
+
+def _entry_or_err(proxy_name: str) -> tuple[dict | None, dict | None]:
+    """A registered proxy's entry, or the ready-to-return error saying why not.
+
+    The same four lines stood in five ops with the same wording; a sixth caller
+    would have copied them again.
+    """
+    reg, reg_err = _load_registry_or_err()
+    if reg_err:
+        return None, err(reg_err)
+    if proxy_name not in reg:
+        return None, err(f"Proxy '{proxy_name}' not registered.",
+                         hint="Call proxy_manage(op='register', ...) first.")
+    return reg[proxy_name], None
 
 
 def _resolve_proxy_name(arg: str) -> str | None:

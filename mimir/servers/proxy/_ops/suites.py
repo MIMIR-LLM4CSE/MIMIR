@@ -12,7 +12,7 @@ from _ops import _check_name, _with_next, err, ok
 from _lib.execute import _REF_RUN_TIMEOUT, _run_benchmark_case, _seal_reference
 from _lib.store import (
     refs_dir, suites_dir,
-    _load_registry_or_err,
+    _entry_or_err, _load_registry_or_err,
     _suite_path, _load_suite, _save_suite,
     _suite_results_dir, _latest_suite_results,
     _read_json,
@@ -299,13 +299,9 @@ def benchmark_create(
     if bad := _check_name("benchmark_name", benchmark_name):
         return bad
 
-    reg, _reg_err = _load_registry_or_err()
-    if _reg_err:
-        return err(_reg_err)
-    if proxy_name not in reg:
-        return err(f"Proxy '{proxy_name}' not registered.",
-                   hint="Call proxy_manage(op='register', ...) first.")
-    entry = reg[proxy_name]
+    entry, error = _entry_or_err(proxy_name)
+    if error:
+        return error
 
     ps     = param_sweeps or [{}]
     ref_po = reference_params if reference_params is not None else (ps[0] if ps else {})

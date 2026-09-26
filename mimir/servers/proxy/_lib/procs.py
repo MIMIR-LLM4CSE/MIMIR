@@ -38,6 +38,15 @@ def _pid_starttime_path(run_dir: str) -> str:
 def _slurm_id_path(run_dir: str) -> str:
     return os.path.join(run_dir, "slurm_job_id")
 
+def _build_slurm_id_path(run_dir: str) -> str:
+    """The build job of a split build/run submission, when there is one.
+
+    ``slurm_job_id`` stays the *run* job — it is the one whose end is the run's end,
+    so every watcher keeps following it. This is the other half of the chain, written
+    only when the build was sent somewhere of its own.
+    """
+    return os.path.join(run_dir, "build_slurm_job_id")
+
 def _build_log_path(run_dir: str) -> str:
     return os.path.join(run_dir, "build.log")
 
@@ -62,6 +71,10 @@ def _read_slurm_id(run_dir: str) -> int | None:
     return _read_int_file(_slurm_id_path(run_dir))
 
 
+def _read_build_slurm_id(run_dir: str) -> int | None:
+    return _read_int_file(_build_slurm_id_path(run_dir))
+
+
 def _read_text_head(path: str, max_bytes: int = _MAX_LOG) -> str:
     """Return up to *max_bytes* from the start of *path* ('' if unreadable)."""
     if os.path.isfile(path):
@@ -71,25 +84,6 @@ def _read_text_head(path: str, max_bytes: int = _MAX_LOG) -> str:
         except OSError:
             pass
     return ""
-
-
-def _read_text_tail(path: str, max_bytes: int = _MAX_LOG) -> str:
-    """Return up to *max_bytes* from the END of *path* ('' if unreadable).
-
-    A build log is read to find out why a build failed, and a compiler puts the
-    error last: the head of a 200 MB ``make`` log is the banner, not the answer.
-    """
-    if not os.path.isfile(path):
-        return ""
-    try:
-        size = os.path.getsize(path)
-        with open(path, "rb") as fh:
-            if size > max_bytes:
-                fh.seek(size - max_bytes)
-            data = fh.read()
-    except OSError:
-        return ""
-    return data.decode(errors="replace")
 
 
 def _read_log(run_dir: str, max_bytes: int = _MAX_LOG) -> str:
@@ -215,13 +209,35 @@ def _run_progress(run_dir: str) -> dict:
     return out
 
 
+def _build_job_failed(run_dir: str) -> bool:
+    """Whether the split-off build job has already reported a failure.
+
+    Read from build.json rather than from the job's exit state: the build job writes
+    its verdict there before exiting, and a status a caller can act on ("which proxy,
+    and how") only exists in the report.
+    """
+    from _lib import build as build_mod
+    report = build_mod.read_report(run_dir)
+    if not report:
+        return False
+    return report.get("status") not in ("ok", "skipped")
+
+
 def _run_state(run_dir: str) -> dict:
     """Return state dict with keys: state, pid, slurm_job_id, elapsed_s."""
     metrics_path = os.path.join(run_dir, "metrics.json")
     job_id = _read_slurm_id(run_dir)
+    build_job_id = _read_build_slurm_id(run_dir)
     if job_id is not None:
         slurm_state = _squeue_state(job_id)
         if slurm_state == "done" and not os.path.isfile(metrics_path):
+            slurm_state = "crashed"
+        # A split submission holds the run job PENDING behind the build. When the
+        # build has already failed, that pending job is never going to start — Slurm
+        # will get around to killing it, but "eventually" is not an answer for
+        # something being waited on, and the run is over eitherway.
+        if (build_job_id is not None and slurm_state in ("pending", "running")
+                and _build_job_failed(run_dir)):
             slurm_state = "crashed"
         state = slurm_state
     else:
@@ -250,12 +266,34 @@ def _run_state(run_dir: str) -> dict:
     # Merged here rather than left to each caller: the blocking wait, the status op
     # and the detached watcher all read their run through this one function, so a
     # progress fact added here reaches every one of them at once.
-    return {
+    out = {
         "state":        state,
         "pid":          _read_pid(run_dir) if job_id is None else None,
         "slurm_job_id": job_id,
         "elapsed_s":    elapsed,
         **_run_progress(run_dir),
+    }
+    if build_job_id is not None:
+        out["build_slurm_job_id"] = build_job_id
+    return out
+
+
+def background_descriptor(run_dir: str, *, kind: str,
+                          status_op: dict, summary_op: dict) -> dict:
+    """Data-only handle a client watcher polls to completion.
+
+    The client loop holds no tool names of its own: they arrive here, in the ops the
+    watcher is to call. Without such a handle a detached run is a job nothing is
+    watching — the model is told to monitor it by hand, ends its turn because there is
+    nothing left to do, and is never woken when the job lands.
+    """
+    return {
+        "server":     "proxy",
+        "run_dir":    run_dir,
+        "job_key":    os.path.basename(run_dir),
+        "kind":       kind,
+        "status_op":  status_op,
+        "summary_op": summary_op,
     }
 
 
@@ -322,14 +360,19 @@ def _launch_detached(argv: list[str], run_dir: str, log_file: str | None = None)
 
 def _submit_sbatch(
     run_dir: str, script: str, *, local_alternative: str = "",
+    script_name: str = "batch_script.sh", id_file: str = "slurm_job_id",
 ) -> tuple[int | None, dict | None]:
-    """Write batch_script.sh, submit it, record the job id.
+    """Write the batch script, submit it, record the job id.
 
     Returns ``(job_id, None)`` on success or ``(None, err_response)`` where
     *err_response* is a ready-to-return ``err()`` dict.  *local_alternative*
     names the local-run call suggested when sbatch is unavailable.
+
+    *script_name* and *id_file* exist because a split build/run submission puts two
+    jobs in one run directory and neither may overwrite the other's script or id.
+    Their defaults are the single-job names, so every existing caller is unchanged.
     """
-    batch_path = os.path.join(run_dir, "batch_script.sh")
+    batch_path = os.path.join(run_dir, script_name)
     with open(batch_path, "w") as fh:
         fh.write(script)
     os.chmod(batch_path, 0o755)
@@ -353,9 +396,22 @@ def _submit_sbatch(
     if not m:
         return None, err(f"Could not parse job ID from sbatch output: {res.stdout.strip()}")
     job_id = int(m.group(1))
-    with open(_slurm_id_path(run_dir), "w") as fh:
+    with open(os.path.join(run_dir, id_file), "w") as fh:
         fh.write(str(job_id))
     return job_id, None
+
+
+def _scancel(job_id: int) -> str | None:
+    """Cancel one Slurm job; returns an error message, or None when it worked."""
+    try:
+        res = subprocess.run(["scancel", str(job_id)],
+                             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                             text=True, timeout=15)
+    except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
+        return f"scancel failed: {exc}"
+    if res.returncode != 0:
+        return f"scancel returned {res.returncode}: {res.stderr.strip()}"
+    return None
 
 
 def _cancel_run(run_dir: str) -> dict:
@@ -370,15 +426,18 @@ def _cancel_run(run_dir: str) -> dict:
 
     job_id = _read_slurm_id(run_dir)
     if job_id is not None:
-        try:
-            res = subprocess.run(["scancel", str(job_id)],
-                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                 text=True, timeout=15)
-        except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
-            return {"error": f"scancel failed: {exc}"}
-        if res.returncode != 0:
-            return {"error": f"scancel returned {res.returncode}: {res.stderr.strip()}"}
-        return {"cancelled": "slurm", "job_id": job_id}
+        # Both halves of a split submission, build first: cancelling only the run job
+        # would leave the build compiling for a run that no longer exists, on
+        # allocation hours nobody is going to look at.
+        build_job_id = _read_build_slurm_id(run_dir)
+        for jid in ([build_job_id] if build_job_id is not None else []) + [job_id]:
+            error = _scancel(jid)
+            if error:
+                return {"error": error}
+        payload = {"cancelled": "slurm", "job_id": job_id}
+        if build_job_id is not None:
+            payload["build_job_id"] = build_job_id
+        return payload
 
     pid = _read_pid(run_dir)
     if not pid:
@@ -413,6 +472,24 @@ def _validate_slurm_args(
         return "Invalid mem format. Use values like '32G', '64000M'."
     if not re.fullmatch(r"\d+(-\d{1,2}(:\d{2}(:\d{2})?)?|(:\d{2}){0,2})", wall_time):
         return "Invalid wall_time format. Use HH:MM:SS or D-HH:MM:SS."
+    return None
+
+
+# What a Slurm feature expression or node list is made of: names, the boolean
+# operators Slurm reads (&|), grouping, and the counted forms (*+). Nothing here is
+# passed to a shell — it lands in a ``#SBATCH`` directive — which is exactly why the
+# character that matters most is the newline: one of those in the value and the rest
+# of it becomes a directive line of the caller's choosing.
+_SLURM_TOKEN_RE = re.compile(r"[A-Za-z0-9_,:.&|()\[\]*+-]+")
+
+
+def _validate_slurm_token(value: str, field: str) -> str | None:
+    """Return why *value* cannot go in a #SBATCH directive, or None when it can."""
+    if not value:
+        return None
+    if not _SLURM_TOKEN_RE.fullmatch(value):
+        return (f"Invalid {field}: {value!r}. Use a plain Slurm feature expression "
+                f"or node list, e.g. 'a100', 'bigmem&avx512', 'node[01-04]'.")
     return None
 
 

@@ -71,7 +71,6 @@ class UnknownWindowTests(_WindowFixture):
 
 class SubagentCeilingsTests(unittest.TestCase):
     def _constants(self):
-        import importlib.util
         import pathlib
         path = (pathlib.Path(__file__).resolve().parents[1]
                 / "servers" / "agent_state" / "server_spawn_agent.py")

@@ -9,19 +9,13 @@ Run:
     python -m unittest mimir.tests.test_proxy_opt_loop -v
 """
 
-import asyncio
 import json
 import os
 
-from mimir.tests.test_proxy_ops import _TmpStorageTest, procs, ratchet, server_proxy, store
+from mimir.tests._proxy_fixtures import (
+    _TmpStorageTest, _eval, eval_session, procs, ratchet, server_proxy, store,
+)
 
-
-def _eval(*args, **kwargs):
-    """Call the now-async ``proxy_eval`` from a synchronous test.
-
-    ``op='run'`` awaits the run it launches, so the tool is a coroutine function.
-    """
-    return asyncio.run(server_proxy.proxy_eval(*args, **kwargs))
 
 
 class _RatchetFixture(_TmpStorageTest):
@@ -104,7 +98,7 @@ class _RatchetFixture(_TmpStorageTest):
         paths = list(cfg.get("optimize_paths") or [])
         if not paths:
             return
-        sid = tree_snapshot.snapshot(_es.opt_git_dir(), _es._workspace_root(),
+        sid = tree_snapshot.snapshot(_es.opt_git_dir(), _es.workspace_root(),
                                      paths, f"launch: {os.path.basename(run_dir)}")
         store._write_json_atomic(os.path.join(run_dir, "tree_at_launch.json"), {
             "snapshot_id": sid,
@@ -292,7 +286,6 @@ class RunnerConvergenceRequirementTests(_TmpStorageTest):
         )
         self.assertEqual(res.get("status"), "ok")
 
-        from mimir.tests.test_proxy_ops import eval_session
         cfg, err_response, run_dir, _notice = eval_session._prepare_run("conv")
         self.assertIsNone(err_response)
 
@@ -358,7 +351,6 @@ class RunnerSettlesRatchetTests(_TmpStorageTest):
     def _run_runner(self) -> str:
         import sys
         from unittest import mock
-        from mimir.tests.test_proxy_ops import eval_session
         cfg, err_response, run_dir, _notice = eval_session._prepare_run("fast")
         self.assertIsNone(err_response)
         procs._update_opt_active_link("fast", run_dir)

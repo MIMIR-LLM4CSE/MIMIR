@@ -4,12 +4,21 @@ Invoked as a subprocess by the ``proxy_eval``/``proxy_slurm`` eval ops of
 server_proxy.py; not an MCP server.
 
 Usage:
-    python _proxy_runner.py --run-dir <path>
+    python _proxy_runner.py --run-dir <path> [--phase all|build|run]
 
 Reads  <run-dir>/config.json, executes the full benchmark suite for the
 configured proxy, evaluates requirements, and writes
 <run-dir>/metrics.json on completion.
 All output goes to stdout (captured as stdout.log by the server).
+
+``--phase`` splits that in two. A compute node dedicated to GPU simulation is not
+a machine to compile on, and a node built for compiling does not have the hardware
+under test, so ``proxy_slurm(op='eval', build_partition=...)`` submits one job with
+``--phase build`` and a second, chained behind it, with ``--phase run``. Both are
+given the same run directory — build.json, tree_at_launch.json and the built
+executable are how the halves reach each other, which assumes the build node and the
+run node see the same filesystem. Without ``build_partition`` there is one job and
+one ``--phase all``, exactly as before.
 
 config.json schema
 ------------------
@@ -22,7 +31,10 @@ config.json schema
   "per_case_timeout_s": float,        # (optional) per-case cap, 0/absent = none
   "convergence":        dict,         # (optional) {h_param, error_metric} for
                                       #   the order-of-accuracy fit
-  "partition":          str           # (optional) set by proxy_slurm(op='eval')
+  "partition":          str,          # (optional) set by proxy_slurm(op='eval')
+  "placement":          dict           # (optional) where each phase was sent:
+                                       #   {"run": {...}, "build": {...}}, each with
+                                       #   partition/constraint/cpus_per_task/mem/...
 }
 
 Structured log lines emitted for agent observation
@@ -111,11 +123,9 @@ def _aggregate_replicates(replicates: list[dict]) -> dict:
 def _relative_spread(replicates: list[dict], metric: str) -> float | None:
     """How far apart repeated measurements of the SAME code landed, as a fraction.
 
-    The number the ratchet has never had. ``min_improvement`` was a constant
-    documented as guarding timing noise, chosen before any noise was measured; on
-    the machine this comes from, two runs of one untouched tree differed by 3.1%
-    while that guard stood at 2%, so an edit worth nothing was accepted as an
-    improvement and the guard had no way to know.
+    The number the accept threshold needs and did not have: a margin chosen before
+    any noise was measured cannot tell an improvement from what the node does on its
+    own.
 
     Reported as a full range rather than a standard deviation: with three or five
     replicates the range is what a threshold actually has to clear, and a
@@ -176,7 +186,8 @@ def _build_phase(build_mod, tree_snapshot, reg: dict, suite: dict,
     # Makefile, a generated header listed in optimize_paths) leaves the measured
     # tree different from the one snapshotted at launch, so the run would be
     # recorded against code that is not what ran.
-    launch = _read_json_quiet(os.path.join(run_dir, "tree_at_launch.json"))
+    from _lib.store import _read_json
+    launch = _read_json(os.path.join(run_dir, "tree_at_launch.json"), {}) or {}
     opt_paths = (cfg.get("optimize_paths") or launch.get("paths") or [])
     expected = launch.get("fingerprint", "")
     if expected and opt_paths:
@@ -197,23 +208,23 @@ def _build_phase(build_mod, tree_snapshot, reg: dict, suite: dict,
     return True
 
 
-def _read_json_quiet(path: str) -> dict:
-    try:
-        with open(path) as fh:
-            data = json.load(fh)
-    except (OSError, ValueError):
-        return {}
-    return data if isinstance(data, dict) else {}
-
-
 def main() -> None:
     parser = argparse.ArgumentParser(description="Proxy optimization runner")
     parser.add_argument(
         "--run-dir", required=True,
         help="Run directory (must contain config.json; receives metrics.json).",
     )
+    parser.add_argument(
+        "--phase", choices=("all", "build", "run"), default="all",
+        help="Which half of the run to do. 'all' (the default) builds then measures "
+             "in one process, which is what a local run does. 'build' and 'run' split "
+             "that across two Slurm jobs sharing this run directory, so a build can go "
+             "to a machine made for compiling and the measurement to the machine being "
+             "measured.",
+    )
     args = parser.parse_args()
 
+    phase      = args.phase
     run_dir    = os.path.abspath(args.run_dir)
     config_path = os.path.join(run_dir, "config.json")
 
@@ -291,9 +302,32 @@ def main() -> None:
     # Before any case, and once per run rather than once per replicate: a repeat
     # of 3 pays for one build. Nothing here runs on an edit — the loop is edit
     # freely, then run, and the run builds.
-    if not _build_phase(build_mod, tree_snapshot, reg, suite, proxy_name, entry,
-                        run_dir, cfg):
-        sys.exit(2)
+    if phase in ("all", "build"):
+        if not _build_phase(build_mod, tree_snapshot, reg, suite, proxy_name, entry,
+                            run_dir, cfg):
+            sys.exit(2)
+        if phase == "build":
+            # Deliberately no metrics.json: that file is what makes a run read as
+            # finished, and this half has measured nothing. The run job waiting on
+            # this one writes it.
+            _write_phase(run_dir, "build_done", "build finished; waiting for the run job")
+            _log("[proxy_runner] build phase complete")
+            return
+    else:
+        # The build ran in another job, on another machine. Check it actually
+        # succeeded rather than trusting the chain: a dependency edited by hand, or
+        # an 'afterany' where 'afterok' was meant, would otherwise measure whatever
+        # binary happened to be lying around and report it as this tree's number.
+        report = build_mod.read_report(run_dir)
+        if report is not None and report.get("status") not in ("ok", "skipped"):
+            _log(f"[proxy_runner] ERROR: {build_mod.failure_summary(report)}")
+            sys.exit(2)
+        if report is None and build_mod.builds_for(reg, suite, proxy_name, entry):
+            _log("[proxy_runner] ERROR: this run was split into a build job and a run "
+                 "job, but no build report is present — the build job did not run. "
+                 "Nothing has been measured.")
+            sys.exit(2)
+        _write_phase(run_dir, "measure_start", "preparing measurements")
 
     # ── iterate suite ────────────────────────────────────────────────────────
     # The budget starts after the build, so compiling never eats measurement time.
@@ -387,10 +421,8 @@ def main() -> None:
             # Evaluate requirements against this case's metrics. With replicates,
             # that is the MEDIAN of each numeric metric across them — never the
             # best. A ratchet that keeps the minimum of several draws does not
-            # measure the code, it measures how lucky the node was: in the session
-            # this was built from, four runs of one unchanged tree spread
-            # 0.0592-0.0642 s while the "best" on record was 0.0556, and the
-            # headline speed-up inherited the whole gap.
+            # measure the code, it measures how lucky the node was, and the
+            # headline speed-up inherits the whole gap.
             case_metrics = _aggregate_replicates(replicate_metrics)
             spread = _relative_spread(replicate_metrics, primary_metric)
             if spread is not None:
@@ -488,7 +520,8 @@ def main() -> None:
     # results(): settle here, at completion. results() replays the frozen
     # outcome (idempotent, flock-serialized).
     try:
-        from _ops.eval_session import _load_opt_config, _ratchet_state
+        from _lib.store import _load_opt_config
+        from _ops._eval_ratchet import _ratchet_state
         cfg = _load_opt_config(proxy_name)
         if cfg and cfg.get("proxy_name") == proxy_name:
             outcome = _ratchet_state(proxy_name, run_dir, output, cfg)

@@ -7,16 +7,18 @@ import shlex
 from datetime import datetime, timezone
 
 from _ops import _PROXY_DIR, _with_next, err, ok
+from _lib import build as build_mod
+from _lib import placement
 from _lib.command import _build_sbatch, _sbatch_header
 from slurm_script import node_python_lines
 from _lib.procs import (
-    _log_path,
+    _log_path, _scancel, background_descriptor,
     _new_run_dir, _write_run_config, _update_run_config, _submit_sbatch,
     _update_active_link, _update_opt_active_link,
 )
 from _lib.store import (
     refs_dir,
-    _load_registry_or_err, _load_suite,
+    _entry_or_err, _load_registry_or_err, _load_suite,
     _proxy_runs_dir, _suite_results_dir,
 )
 from _ops.eval_session import _prepare_run, _background_descriptor
@@ -26,25 +28,19 @@ _OPT_RUNNER = os.path.join(_PROXY_DIR, "_proxy_runner.py")
 
 
 def _run_background_descriptor(run_dir: str) -> dict:
-    """Data-only handle a client watcher polls to completion (see eval_session's).
+    """The watcher handle for a plain submitted run.
 
-    A Slurm submission *never* blocks: sbatch returns while the job is still queued.
-    So the handle is not optional here the way it is for a local run that can also be
-    awaited in-turn — without it the model is told to monitor a job by hand, ends its
-    turn because there is nothing left to do, and nothing ever wakes it when the job
-    lands. ``status_op`` is the single-run state op, whose ``state`` reaches
-    'done'/'crashed' through squeue; ``summary_op`` reads the log, which is all a
-    plain run records of itself.
+    Never optional here, the way it is for a local run that can also be awaited
+    in-turn: sbatch returns while the job is still queued, so no variant of this call
+    carries a result. ``status_op`` is the single-run state op, whose ``state`` reaches
+    'done'/'crashed' through squeue; ``summary_op`` reads the log, which is all a plain
+    run records of itself.
     """
-    return {
-        "server":     "proxy",
-        "run_dir":    run_dir,
-        "job_key":    os.path.basename(run_dir),
-        "kind":       "proxy-slurm-run",
-        "status_op":  {"tool": "proxy_runs", "args": {"op": "status", "run_id": run_dir}},
-        "summary_op": {"tool": "proxy_runs",
-                       "args": {"op": "logs", "run_id": run_dir, "tail": 40}},
-    }
+    return background_descriptor(
+        run_dir, kind="proxy-slurm-run",
+        status_op={"tool": "proxy_runs", "args": {"op": "status", "run_id": run_dir}},
+        summary_op={"tool": "proxy_runs",
+                    "args": {"op": "logs", "run_id": run_dir, "tail": 40}})
 
 
 def submit_run(
@@ -62,13 +58,9 @@ def submit_run(
     target: dict | None = None,
 ) -> dict:
     """Submit a single proxy run as a Slurm batch job (non-blocking)."""
-    reg, _reg_err = _load_registry_or_err()
-    if _reg_err:
-        return err(_reg_err)
-    if proxy_name not in reg:
-        return err(f"Proxy '{proxy_name}' not registered.",
-                   hint="Call proxy_manage(op='register', ...) first.")
-    entry = reg[proxy_name]
+    entry, error = _entry_or_err(proxy_name)
+    if error:
+        return error
 
     if compare_to_reference and compare_to_reference not in (
         os.listdir(refs_dir()) if os.path.isdir(refs_dir()) else []
@@ -215,6 +207,48 @@ def submit_suite(
        f"run_timestamp='{ts}') to aggregate results"))
 
 
+def _build_log_stdout_path(run_dir: str) -> str:
+    """The build job's own stdout, kept apart from the run job's.
+
+    Two jobs writing one stdout.log interleave into something neither of them said,
+    and the run's log is what proxy_eval_status shows the model.
+    """
+    return os.path.join(run_dir, "build_stdout.log")
+
+
+def _runner_script(
+    place: dict, *, job_name: str, log_file: str, run_dir: str,
+    python_executable: str, phase: str, dependency: str = "",
+) -> str:
+    """One sbatch script that runs _proxy_runner.py over *run_dir* for one phase."""
+    lines = _sbatch_header(
+        job_name=job_name,
+        partition=place["partition"],
+        cpus_per_task=place["cpus_per_task"],
+        wall_time=place["wall_time"],
+        mem=place["mem"],
+        log_file=log_file,
+        gpus=place.get("gpus", 0),
+        account=place.get("account", ""),
+        ntasks=place.get("ntasks", 1),
+        constraint=place.get("constraint", ""),
+        nodelist=place.get("nodelist", ""),
+        exclusive=place.get("exclusive", False),
+        dependency=dependency,
+        kill_on_invalid_dep=bool(dependency),
+    )
+    argv = [_OPT_RUNNER, "--run-dir", run_dir]
+    if phase != "all":
+        argv += ["--phase", phase]
+    # The runner starts on the node, so the interpreter is chosen there: the server's
+    # own may be a venv the node's OS cannot run.
+    return "\n".join(
+        lines + [""]
+        + node_python_lines(explicit=python_executable)
+        + ['[ -n "$_MIMIR_PY" ] || { echo "[proxy] no MIMIR Python runs on this node" >&2; exit 127; }',
+           '"$_MIMIR_PY" ' + shlex.join(argv), ""]) + "\n"
+
+
 def submit_eval(
     partition: str,
     proxy_name: str = "",
@@ -227,8 +261,21 @@ def submit_eval(
     job_name: str = "proxy_opt",
     target: dict | None = None,
     axis: str = "",
+    build_partition: str = "",
+    build_constraint: str = "",
+    build_cpus_per_task: int = 0,
+    build_mem: str = "",
+    build_wall_time: str = "",
+    build_gpus: int = 0,
 ) -> dict:
-    """Submit an optimization-session run as a Slurm batch job (non-blocking).
+    """Submit an optimization-session run as Slurm batch job(s) (non-blocking).
+
+    One job by default: it builds and measures, as it always has. When a build
+    partition is resolved — from ``build_partition`` here, or from the proxy's
+    ``build_partition`` metadata — the run is split into two jobs sharing this run
+    directory, the second chained behind the first with ``--dependency=afterok``.
+    That is what lets a compile land on a machine made for compiling while the
+    measurement lands on the hardware under test.
 
     *background* is accepted for call compatibility with the local run and has no
     effect: a submission is detached by definition, so the response always carries a
@@ -239,41 +286,96 @@ def submit_eval(
         return error
     name       = cfg["proxy_name"]
     log_file   = _log_path(run_dir)
-    # _prepare_run already wrote the full config (convergence included); only the
-    # partition is Slurm-specific, so merge it in rather than rewriting the file.
-    _update_run_config(run_dir, {"partition": partition, "slurm_target": target or {}})
-
-    script_lines = _sbatch_header(
-        job_name=job_name, partition=partition, cpus_per_task=cpus_per_task,
-        wall_time=wall_time, mem=mem, log_file=log_file, gpus=gpus, account=account,
-        **(target or {}),
+    run_place = placement.run_placement(
+        partition=partition, gpus=gpus, cpus_per_task=cpus_per_task, mem=mem,
+        wall_time=wall_time, account=account, **(target or {}),
     )
-    # The runner starts on the node, so the interpreter is chosen there: the server's
-    # own may be a venv the node's OS cannot run.
-    runner_cmd = '"$_MIMIR_PY" ' + shlex.join([_OPT_RUNNER, "--run-dir", run_dir])
-    script = "\n".join(
-        script_lines + [""]
-        + node_python_lines(explicit=cfg.get("python_executable", ""))
-        + ['[ -n "$_MIMIR_PY" ] || { echo "[proxy] no MIMIR Python runs on this node" >&2; exit 127; }',
-           runner_cmd, ""]) + "\n"
 
+    # Resolving the build's placement needs the registry entry (its standing
+    # build_* metadata) and the suite (whether there is anything to build at all).
+    # Neither is fatal if missing — _prepare_run has already established the session
+    # is sound — so a lookup that comes up empty simply means one job.
+    reg, _reg_err = _load_registry_or_err()
+    entry = (reg or {}).get(name, {}) if not _reg_err else {}
+    suite = _load_suite(cfg.get("benchmark_name", "")) or {}
+    has_build = bool(build_mod.builds_for(reg or {}, suite, name, entry)) if entry else False
+    build_place = placement.resolve_build(
+        entry, run_place,
+        build_partition=build_partition, build_constraint=build_constraint,
+        build_cpus_per_task=build_cpus_per_task, build_mem=build_mem,
+        build_wall_time=build_wall_time, build_gpus=build_gpus,
+    ) if has_build else None
+
+    # _prepare_run already wrote the full config (convergence included); only the
+    # placement is Slurm-specific, so merge it in rather than rewriting the file.
+    _update_run_config(run_dir, {
+        "partition": partition,
+        "placement": {"run": run_place, "build": build_place},
+    })
+
+    payload: dict = {
+        "run_dir":        run_dir,
+        "batch_script":   os.path.join(run_dir, "batch_script.sh"),
+        "log":            log_file,
+        "proxy_name":     name,
+        "benchmark_name": cfg["benchmark_name"],
+    }
+
+    build_job_id = None
+    if build_place is not None:
+        build_log = _build_log_stdout_path(run_dir)
+        build_script = _runner_script(
+            build_place, job_name=f"{job_name}_build"[:60], log_file=build_log,
+            run_dir=run_dir, phase="build",
+            python_executable=cfg.get("python_executable", ""),
+        )
+        build_job_id, error = _submit_sbatch(
+            run_dir, build_script,
+            local_alternative="proxy_eval(op='run', confirm=True)",
+            script_name="build_batch_script.sh", id_file="build_slurm_job_id",
+        )
+        if error:
+            return error
+        payload.update({
+            "build_job_id":     build_job_id,
+            "build_partition":  build_place["partition"],
+            "build_batch_script": os.path.join(run_dir, "build_batch_script.sh"),
+            "build_log":        build_log,
+        })
+
+    script = _runner_script(
+        run_place, job_name=job_name, log_file=log_file, run_dir=run_dir,
+        python_executable=cfg.get("python_executable", ""),
+        phase="run" if build_place is not None else "all",
+        dependency=f"afterok:{build_job_id}" if build_job_id is not None else "",
+    )
     job_id, error = _submit_sbatch(
         run_dir, script,
         local_alternative="proxy_eval(op='run', confirm=True)",
     )
     if error:
+        # The build is already queued and would compile for a run that will never
+        # exist. Cancelling it is the only thing between this failure and a node
+        # spending an hour on work nobody will read.
+        if build_job_id is not None:
+            cancel_err = _scancel(build_job_id)
+            error["hint"] = (
+                (error.get("hint", "") + " ") if error.get("hint") else ""
+            ) + (f"The build job {build_job_id} could not be cancelled "
+                 f"({cancel_err}) — cancel it by hand." if cancel_err
+                 else f"The already-submitted build job {build_job_id} was cancelled.")
         return error
     _update_opt_active_link(name, run_dir)
 
-    payload = {
-        "run_dir":        run_dir,
-        "slurm_job_id":   job_id,
-        "batch_script":   os.path.join(run_dir, "batch_script.sh"),
-        "log":            log_file,
-        "proxy_name":     name,
-        "benchmark_name": cfg["benchmark_name"],
-        "note": f"Slurm job {job_id} submitted to '{partition}'.",
-    }
+    payload["slurm_job_id"] = job_id
+    if build_job_id is not None:
+        payload["note"] = (
+            f"Build job {build_job_id} submitted to '{build_place['partition']}'; "
+            f"run job {job_id} submitted to '{partition}' and held until the build "
+            f"succeeds. A failed build kills the run job instead of leaving it queued."
+        )
+    else:
+        payload["note"] = f"Slurm job {job_id} submitted to '{partition}'."
     if resume_notice:
         payload["resume_notice"] = resume_notice
     # Attached whatever *background* said. It distinguishes "wait for it here" from
