@@ -1,12 +1,20 @@
 name: Build extension
 
-# Standalone from ci.yml so the .vsix can be produced without waiting on the
-# Python test matrix — needed to install the extension on networks where
-# registry.npmjs.org is unreachable.
+# The extension's own pipeline, deliberately not a job in ci.yml: the .vsix is
+# produced without waiting on the Python test matrix, so a flake on one matrix leg
+# cannot withhold the package, and `workflow_dispatch` can build one on demand —
+# needed to install the extension on networks where registry.npmjs.org is
+# unreachable and the package cannot be built locally.
 on:
   workflow_dispatch:
   push:
     branches: [main, "ci/**"]
+    paths:
+      - "mimir/vscode-extension/**"
+      - ".github/workflows/build-extension.yml"
+  pull_request:
+    branches: [main]
+    # Kept in step with the push filter above; Actions does not expand YAML anchors.
     paths:
       - "mimir/vscode-extension/**"
       - ".github/workflows/build-extension.yml"
@@ -29,6 +37,8 @@ jobs:
         run: npm ci
       - name: Test
         run: npm test
+      # `package` builds first: vsce runs the vscode:prepublish script, which is
+      # `npm run build`. No separate build step to keep the two in one place.
       - name: Package
         run: npm run package
       - uses: actions/upload-artifact@v4
