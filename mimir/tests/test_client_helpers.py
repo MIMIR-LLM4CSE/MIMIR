@@ -1126,6 +1126,18 @@ class ClientHelperTests(unittest.TestCase):
             self.assertEqual(constants_module.chars_per_token_for("llama-3"), 4.0)
 
     def test_vllm_tokenize_exact_then_fallback_on_error(self) -> None:
+        # The tokenize path must be live for the exact-count assertion below:
+        # a site or job environment may have MIMIR_VLLM_TOKENIZE=0 (or some
+        # previous code may have marked this root as not serving /tokenize),
+        # which would make _tokenize_text raise and fall back to the heuristic.
+        env_vars = {
+            "MIMIR_VLLM_TOKENIZE": "1",
+            "VLLM_BASE_URL": "http://127.0.0.1:8000",
+        }
+        with patch.dict(os.environ, env_vars, clear=False):
+            self._run_tokenize_paths()
+
+    def _run_tokenize_paths(self) -> None:
         backend = VllmBackend()
 
         # Exact path: /tokenize returns a count.

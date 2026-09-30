@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import asyncio
 import os
 import sys
@@ -11,12 +12,14 @@ if __package__ in {None, ""}:
     if project_root_str not in sys.path:
         sys.path.insert(0, project_root_str)
 
+    from mimir import __version__
     from mimir.client.agent_core import MimirAgent
     from mimir.client.ui.cli.chat_session import run_chat_session
     from mimir.client.config import DEFAULT_MODEL
     from mimir.client.extensions import all_servers
     from mimir.client import human_pause
 else:
+    from .... import __version__
     from ...agent_core import MimirAgent
     from .chat_session import run_chat_session
     from ...config import DEFAULT_MODEL
@@ -24,10 +27,8 @@ else:
     from ... import human_pause
 
 
-async def main() -> None:
-    model = DEFAULT_MODEL
-    if len(sys.argv) >= 3 and sys.argv[1] == "--model":
-        model = sys.argv[2]
+async def main(model: str | None = None) -> None:
+    model = model or DEFAULT_MODEL
 
     print(f"Using model: {model} ({os.environ.get('LLM_BACKEND', 'vllm')})")
     agent = MimirAgent(model=model)
@@ -148,7 +149,22 @@ def _cli_request_question(questions: list) -> dict:
 
 def main_sync() -> None:
     """Synchronous entry point for the ``mimir`` console script."""
-    asyncio.run(main())
+    parser = argparse.ArgumentParser(
+        prog="mimir",
+        description="MIMIR — interactive CLI agent (math, code, HPC).",
+    )
+    parser.add_argument(
+        "--model",
+        default=argparse.SUPPRESS,
+        help="LLM model to use (default: $MIMIR_DEFAULT_MODEL).",
+    )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"%(prog)s {__version__}",
+    )
+    args = parser.parse_args()
+    asyncio.run(main(model=getattr(args, "model", None)))
 
 
 __all__ = ["main", "main_sync"]

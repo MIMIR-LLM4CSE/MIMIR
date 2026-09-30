@@ -304,13 +304,13 @@ class RefusedCallTests(unittest.TestCase):
     def test_a_real_red_exit_is_still_a_failing_run(self) -> None:
         """Non-regression: same error status, no `refused`, so it is a real finding."""
         self._observe_bash(
-            "python solver.py", "error",
+            "python3 solver.py", "error",
             {"status": "error", "returncode": 1, "cwd": "/tmp/ws", "stderr": "boom"})
-        self.assertIn("python solver.py", failed_runs(self.ec))
+        self.assertIn("python3 solver.py", failed_runs(self.ec))
 
     def test_a_timeout_is_still_a_failing_run(self) -> None:
         """It reached a shell and hit a wall there, which is a finding like any other."""
         self._observe_bash(
-            "python solver.py", "error",
+            "python3 solver.py", "error",
             {"status": "error", "error": "Command timed out after 300s.", "cwd": "/tmp/ws"})
-        self.assertIn("python solver.py", failed_runs(self.ec))
+        self.assertIn("python3 solver.py", failed_runs(self.ec))

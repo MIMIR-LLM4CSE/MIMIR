@@ -381,6 +381,7 @@ class ReplicateAggregationTests(unittest.TestCase):
         self.assertIsNone(runner._relative_spread([{"time_s": 1.0}], "time_s"))
 
 
+@unittest.skipUnless(shutil.which("git"), "git not available — shared-snapshot semantics exercise the git-backed shadow repo")
 class CleanKeepsSharedSnapshotsTests(_Workspace):
     """Tidying one optimisation must not break another's rollback.
 

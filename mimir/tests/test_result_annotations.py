@@ -323,6 +323,7 @@ if __name__ == "__main__":
     unittest.main()
 
 
+@unittest.skipUnless(shutil.which("git"), "git not available — BashEffect tests exercise a real git repo")
 class BashEffectTests(unittest.TestCase):
     """What a shell command changed, reported back because nothing else reports it.
 

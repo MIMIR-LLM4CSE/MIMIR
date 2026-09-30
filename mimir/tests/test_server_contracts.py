@@ -1,6 +1,7 @@
 import importlib.util
 import io
 import re
+import shutil
 import tempfile
 import unittest
 import urllib.error
@@ -1912,6 +1913,7 @@ class BashServerTests(unittest.TestCase):
         payload = server_bash.bash_run("ls ../../..")
         self.assertEqual(payload["status"], "error")
 
+    @unittest.skipUnless(shutil.which("git"), "git not available on this host")
     def test_bash_run_runs_git(self) -> None:
         # git ran through a dedicated server only because bash refused it; that
         # server is gone, and git is an ordinary approval-gated command here.

@@ -65,6 +65,11 @@
           "default": "",
           "description": "Python executable used to start the WS server. Leave empty: install.sh records the venv interpreter in ~/.mimir/python and the extension picks it up (the MIMIR_PYTHON environment variable also works). Set this only to override both."
         },
+        "mimir.releaseHome": {
+          "type": "string",
+          "default": "",
+          "description": "Shared site release root for enterprise deployments. When set, the extension takes its Python backend and its own updates from <releaseHome>/current. When unset, a deployment may ship the path in the extension's own site.json. Empty string disables the shared-release mode."
+        },
         "mimir.ollamaUrl": {
           "type": "string",
           "default": "http://127.0.0.1:11434",

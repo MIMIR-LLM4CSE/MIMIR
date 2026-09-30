@@ -25,3 +25,6 @@ slides/
 
 # Local environment bootstrap (site-specific)
 setup.sh
+# Site deployment marker injected into the VSIX at build time (release.sh):
+# never committed — it is the one file the deployment rebakes per release.
+mimir/vscode-extension/site.json
