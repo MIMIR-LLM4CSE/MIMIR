@@ -33,6 +33,7 @@ from ...config import (
 
 import asyncio
 import json
+import logging
 import os
 import time
 from typing import TYPE_CHECKING, Any
@@ -44,11 +45,8 @@ if TYPE_CHECKING:  # annotation-only; avoids the runtime import cycle the method
 # varies by version); kept as an untyped alias so the annotation resolves.
 _WS = Any
 
+logger = logging.getLogger(__name__)
 
-# How long a session switch waits for a cancelled turn to unwind (10 ms ticks)
-# before loading the next session anyway — bounded so the UI never hangs on a
-# tool call that ignores cancellation.
-_CANCEL_SETTLE_TICKS = 200
 
 # How much of a finished job's own summary a wake carries. Enough for an exit code
 # and the tail of a build log; short of pasting a whole test suite into the history.
@@ -143,10 +141,17 @@ class _Session:
         # what lets a divert click name the run the user is actually looking at, and
         # what the progress poller walks. Registry data passing through: nothing here
         # compares a name against a literal.
-        self._live_rows: dict[str, str] = {}
+        # Keyed by session: with turns running concurrently, two conversations can each
+        # have a divertible run in flight, and one map between them would let a divert
+        # click detach the other one's command.
+        self._live_rows: dict[str, dict[str, str]] = {}
         # Last (phase, percent) pushed per call id, so a tick that learned nothing
         # sends nothing.
-        self._sent_progress: dict[str, tuple] = {}
+        self._sent_progress: dict[str, dict[str, tuple]] = {}
+        # Transcript writers for conversations other than the one on screen, cached:
+        # binding one scans its log for the last sequence number, which is not a thing
+        # to do per event of a streaming turn.
+        self._foreign_logs: dict[str, TranscriptLog] = {}
         # The active session's deferred interaction (query_engine.deferral): the card
         # to show and what answering it resumes. Mirrors the session file.
         self._pending_interaction: dict | None = None
@@ -266,45 +271,46 @@ class _Session:
             pass
 
     def _drop_stale_events(self) -> None:
-        """Empty the worker's event queue of debris left by a previous connection.
+        """Empty every idle agent's event queue of debris left by a previous connection.
 
-        Only an idle worker's queue is debris. One worker serves every connection and
-        outlives them all, so a turn whose socket dropped mid-run is still working, and
-        what is queued then is that turn's own output waiting for someone to read it.
-        Emptying it regardless is what made a reconnect land in a session where the
-        agent was demonstrably busy and nothing it did ever appeared — not the card it
-        was parked on, not the answer it eventually wrote.
+        Only an *idle* agent's queue is debris, and that is now asked per conversation:
+        the agents outlive every connection, so a turn whose socket dropped mid-run is
+        still working, and what is queued for it is its own output waiting for someone
+        to read it. Emptying it regardless is what made a reconnect land in a session
+        where the agent was demonstrably busy and nothing it did ever appeared — not the
+        card it was parked on, not the answer it eventually wrote.
         """
-        if self.worker.is_busy():
-            return
-        while not self.worker.out_q.empty():
-            try:
-                self.worker.out_q.get_nowait()
-            except Exception:
-                break
+        for session_id, worker in self.pool.items():
+            if self.pool.is_busy(session_id):
+                continue
+            while not worker.out_q.empty():
+                try:
+                    worker.out_q.get_nowait()
+                except Exception:
+                    break
 
     async def _resend_parked_prompt(self) -> None:
-        """Put back the card the running turn is parked on, if there is one.
+        """Put back every card a turn is parked on — in any conversation.
 
         A turn parks on a person: an approval, a clarification, a plan awaiting
-        approval. The worker blocks on that answer with no timeout — deliberately, so
-        nothing proceeds because the user was slow — which means a connection that
-        drops while a card is up parks it forever. The query loop is serial, so every
-        later query queues behind a wait nobody can end, and the session goes quiet in
-        a way no message on screen explains.
+        approval. The agent blocks on that answer with no timeout — deliberately, so
+        nothing proceeds because the user was slow — which means a connection that drops
+        while a card is up parks that conversation for ever, with nothing on screen to
+        explain the silence.
 
-        Resending is the whole recovery: the card comes back, the user answers it, the
-        turn finishes. Nothing here judges whose session it belongs to — a card always
-        carries its own conversation label (``_detached_prefix``), and a prompt filtered
-        out as foreign is one the turn waits on for ever.
+        Every conversation, not just the one on screen: each agent runs its own turn now,
+        so several can be parked at once, and a card left out is a turn waiting for ever.
+        Nothing here judges whose conversation it belongs to — the card says so itself,
+        and that is what routes the answer back to the agent that asked.
         """
-        prompt = self.worker.pending_prompt()
-        if not prompt:
-            return
-        try:
-            await self.ws.send(json.dumps(prompt))
-        except Exception:
-            pass
+        for _sid, worker in self.pool.items():
+            prompt = worker.pending_prompt()
+            if not prompt:
+                continue
+            try:
+                await self.ws.send(json.dumps(prompt))
+            except Exception:
+                return
 
     async def _send_sessions_list(self) -> None:
         sessions = self.store.list_sessions()
@@ -316,10 +322,31 @@ class _Session:
         try:
             await self.ws.send(json.dumps({
                 "type": "sessions_list",
-                "sessions": [s.to_dict() for s in sessions],
+                "sessions": [{**s.to_dict(), **self._session_activity(s.id)}
+                             for s in sessions],
             }))
         except Exception:
             pass
+
+    def _session_activity(self, session_id: str) -> dict:
+        """What a conversation is doing right now, for its row in the panel.
+
+        The part of concurrency the user cannot do without. A turn running in a
+        conversation nobody is reading is invisible otherwise, and one *parked on a card*
+        is worse than invisible: it waits on a person, with no timeout, by design — so a
+        conversation can sit stopped for ever with nothing on screen to explain it.
+        """
+        # Guarded: this is read for every row of every listing, and the send around it
+        # swallows exceptions — so a hiccup here would blank the whole panel rather than
+        # lose one dot.
+        try:
+            return {
+                "running": self.pool.is_busy(session_id),
+                "parked": self.pool.is_parked(session_id),
+                "queued": self.pool.queued_position(session_id) is not None,
+            }
+        except Exception:
+            return {}
 
     async def _create_new_session(self) -> None:
         session = self.store.new_session()
@@ -404,6 +431,7 @@ class _Session:
         self._display_messages = list(session.display_messages)
         self._pending_interaction = session.pending_interaction
         self.transcript.bind(session.id)
+        self._publish_title(session.id, session.title)
         if not resuming_live_agent:
             # Only when this conversation has no agent yet — the snapshot is how a
             # rebuilt agent picks up where the last one left off. An agent that is
@@ -787,16 +815,23 @@ class _Session:
             describes a moment rather than recording one.
             """
             nonlocal _last_progress_tick
-            if not self._live_rows:
+            rows = self._rows_for(self._active_session_id)
+            if not rows:
                 return
             now = time.monotonic()
             if now - _last_progress_tick < 1.0:
                 return
             _last_progress_tick = now
+            # Only the conversation on screen: a bar describes a moment the user is
+            # looking at, and a turn running elsewhere has nowhere to draw one. Its
+            # progress is on its own run channel either way, and is read when the user
+            # switches to it.
+            #
             # A name serving two running rows cannot be attributed to either of them.
             # Both publishers are non_batch, so this is insurance, not a live case.
-            names = list(self._live_rows.values())
-            for call_id, name in list(self._live_rows.items()):
+            sent = self._sent_progress.setdefault(self._active_session_id or "", {})
+            names = list(rows.values())
+            for call_id, name in list(rows.items()):
                 if names.count(name) > 1:
                     continue
                 try:
@@ -812,9 +847,9 @@ class _Session:
                 # Nothing-to-say is skipped only while nothing was said: once a bar
                 # is up, its retraction (the build ended, the command went on) is a
                 # change the row must hear about, or the bar stays frozen.
-                if self._sent_progress.get(call_id, ("", None)) == (phase, percent):
+                if sent.get(call_id, ("", None)) == (phase, percent):
                     continue
-                self._sent_progress[call_id] = (phase, percent)
+                sent[call_id] = (phase, percent)
                 try:
                     await self.ws.send(json.dumps({
                         "type": "tool_progress", "id": call_id,
@@ -824,8 +859,17 @@ class _Session:
                     return
 
         while True:
-            events = self.worker.drain()
+            # Every conversation's agent, not "the" one. Per-conversation order comes
+            # free — each worker owns its own FIFO — and the interleaving between them
+            # is harmless because every event carries the session it was produced for.
+            events: list[dict] = []
+            for _sid, worker in self.pool.items():
+                events.extend(worker.drain())
             for ev in events:
+                # Which conversation this belongs to. Everything below addresses a
+                # session rather than "the session", because more than one may be
+                # producing at this instant.
+                owner = ev.get("session_id") or self._active_session_id
                 # The turn's transcript and deferral ride on its answer for the session
                 # layer only; they never go down the socket.
                 extras = self._pop_answer_extras(ev)
@@ -859,8 +903,13 @@ class _Session:
                     await self._handle_job_complete(ev, steer=steer)
                     continue
                 if self._is_foreign_event(ev):
-                    # A detached wake turn still has to leave its answer somewhere:
-                    # its own session file, since it is not this conversation's.
+                    # A turn running in a conversation that is not on screen. Its output
+                    # has nowhere to be drawn, but it still happened: written to that
+                    # conversation's own log, so switching to it shows the whole turn
+                    # rather than only the answer that ended it. (Progress is excluded
+                    # for the same reason it is below — it describes a moment.)
+                    if ev.get("type") not in ("job_progress", "token", "thinking"):
+                        self._detached_log(owner).append(ev)
                     if ev.get("type") == "answer":
                         await self._persist_detached_answer(ev, extras)
                     continue
@@ -890,15 +939,15 @@ class _Session:
                     # Only divertible rows: they are exactly the ones a channel can
                     # answer for, and the map is what both the divert click and the
                     # progress poller resolve through.
-                    self._live_rows[str(ev.get("id") or "")] = str(ev.get("name") or "")
+                    self._rows_for(owner)[str(ev.get("id") or "")] = str(ev.get("name") or "")
                 elif ev.get("type") == "tool_result":
-                    self._forget_row(str(ev.get("id") or ""))
+                    self._forget_row(str(ev.get("id") or ""), owner)
                 if ev.get("type") == "error":
                     # A turn failed (often a context-overflow 400) and no `answer`
                     # event follows, so refresh the context bar here or it keeps
                     # showing pre-failure usage and never reflects the overflow.
-                    self._live_rows.clear()
-                    self._sent_progress.clear()
+                    self._rows_for(owner).clear()
+                    self._sent_progress.setdefault(owner or "", {}).clear()
                     await self._emit_context_usage()
                 if ev.get("type") == "file_progress":
                     # Push accumulated batch_status for any files already written
@@ -929,9 +978,10 @@ class _Session:
                     self._drop_injected_wakes(str(ev.get("text") or ""))
                 if ev.get("type") == "answer":
                     # The turn is over: no row of it is still running, so nothing is
-                    # left for a channel to report on.
-                    self._live_rows.clear()
-                    self._sent_progress.clear()
+                    # left for a channel to report on. Its own conversation's rows —
+                    # another turn may be running in another one, and its rows are live.
+                    self._rows_for(owner).clear()
+                    self._sent_progress.setdefault(owner or "", {}).clear()
                     # In full-context mode keep the structured transcript (tool_calls +
                     # results + answer, chain-of-thought stripped) so the model recalls
                     # the tools it ran, matching the CLI chat loop. Falls back to the
@@ -1092,14 +1142,14 @@ class _Session:
     def _wake_steers(self, ev: dict) -> bool:
         """True when *ev* will be handed to a turn already running, not start one.
 
-        `_query_session_id` names the session of the turn in flight, which is the
-        right comparison here and `_running_turn_is_ours` is not: that one asks
-        whether the turn belongs to the session *on screen*, the correct test for a
-        message the user typed, but a wake belongs to its own conversation whether or
-        not anyone is reading it.
+        Asked of the owner's own agent, not of "the" running turn: a wake belongs to its
+        conversation whether or not anyone is reading it, and several conversations can
+        be working at once. ``_running_turn_is_ours`` answers a different question — is
+        the turn in flight the one on screen — which is the right test for a message the
+        user typed and the wrong one here.
         """
         owner = self._wake_owner(ev)
-        return bool(owner) and self.worker._query_session_id == owner
+        return bool(owner) and self.pool.is_busy(owner)
 
     async def _handle_job_complete(self, ev: dict, steer: bool | None = None) -> None:
         """Hand a finished background job to a turn — the running one where possible.
@@ -1132,7 +1182,13 @@ class _Session:
             item["told"] = True
             # Left pending deliberately: a steer is only known to have arrived when the
             # loop says so, and until then this job still needs a turn of its own.
-            self.worker.submit_steer(wake)
+            #
+            # Steered into the agent of the conversation that launched the job, which is
+            # not necessarily the one on screen: aiming at "the" agent would have injected
+            # a job's result into whatever conversation the user happened to be reading.
+            owner_worker = self.pool.get(owner)
+            if owner_worker is not None:
+                owner_worker.submit_steer(wake)
             return
         await self._flush_pending_wakes(owner)
 
@@ -1262,9 +1318,17 @@ class _Session:
         await self._send_sessions_list()
 
     def _detached_log(self, session_id: str) -> TranscriptLog:
-        """A transcript writer bound to a session other than the active one."""
-        log = TranscriptLog()
-        log.bind(session_id)
+        """A transcript writer bound to a session other than the active one.
+
+        Cached per session. Binding resumes the log's sequence numbering by reading back
+        its last line, so building one per event — which is what a concurrently running
+        turn now produces — would re-scan the file hundreds of times a turn.
+        """
+        log = self._foreign_logs.get(session_id)
+        if log is None:
+            log = TranscriptLog()
+            log.bind(session_id)
+            self._foreign_logs[session_id] = log
         return log
 
     async def _notify(self, text: str) -> None:
@@ -1413,7 +1477,10 @@ class _Session:
             })))
 
         try:
-            return await self.pool.worker_for(session_id, on_wait=_announce)
+            worker = await self.pool.worker_for(session_id, on_wait=_announce)
+            if worker is not None:
+                worker.session_title = self._session_title(session_id)
+            return worker
         except Exception as exc:
             await self.ws.send(json.dumps({
                 "type": "error",
@@ -1600,10 +1667,35 @@ class _Session:
         self._autosave_session(list(self._display_messages))
         self.worker.submit_steer(text)
 
-    def _forget_row(self, call_id: str) -> None:
+    def _session_title(self, session_id: str) -> str:
+        """A conversation's name, or "" if it has none (or none saved yet)."""
+        try:
+            if self._unsaved_session_meta is not None and \
+                    self._unsaved_session_meta.id == session_id:
+                return self._unsaved_session_meta.title or ""
+            return self.store.load_session(session_id).title or ""
+        except Exception:
+            return ""
+
+    def _publish_title(self, session_id: str | None, title: str) -> None:
+        """Tell a conversation's agent what that conversation is called.
+
+        Only so a card it raises while the user is reading elsewhere can say who is
+        asking. The agent has no other use for it, and never sees it in its own prompt.
+        """
+        worker = self.pool.get(session_id)
+        if worker is not None:
+            worker.session_title = title or ""
+
+    def _rows_for(self, session_id: str | None) -> dict[str, str]:
+        """The divertible tool rows of one conversation's running turn."""
+        return self._live_rows.setdefault(session_id or "", {})
+
+    def _forget_row(self, call_id: str, session_id: str | None = None) -> None:
         """Drop a finished row from the divert/progress bookkeeping."""
-        self._live_rows.pop(call_id, None)
-        self._sent_progress.pop(call_id, None)
+        sid = session_id if session_id is not None else self._active_session_id
+        self._rows_for(sid).pop(call_id, None)
+        self._sent_progress.setdefault(sid or "", {}).pop(call_id, None)
 
     async def _handle_divert_to_background(self, msg: dict) -> None:
         """Move the run the user pointed at into the background.
@@ -1626,7 +1718,7 @@ class _Session:
         the tool result that lands a moment later, carrying the work done so far and
         the job handle. Saying anything more here would be predicting it.
         """
-        channel = self._live_rows.get(str(msg.get("id") or ""))
+        channel = self._rows_for(self._active_session_id).get(str(msg.get("id") or ""))
         if channel is None or run_channel.request_divert(
                 channel, self._active_session_id) is None:
             await self.ws.send(json.dumps({
@@ -1634,16 +1726,45 @@ class _Session:
                 "text": "  ⓘ Nothing to move — that run had already finished.",
             }))
 
+    def _worker_for_answer(self, msg: dict) -> _AgentWorker | None:
+        """The agent an answered card belongs to, or None if it belongs to nobody.
+
+        The most consequential routing decision here. A card now says which conversation
+        asked it — several can be parked at once, and one may be asking while the user
+        reads another — so the answer must go to that conversation's agent. Pushing it at
+        "the" agent would settle a question a different conversation asked, with the user's
+        approval attached to a tool call they never saw. That is the worst failure this
+        layer can produce.
+
+        So an unknown or missing session is **dropped**, never defaulted to the one on
+        screen. A card with no session is one from before this field existed, or from a
+        client that has not been updated; falling back would make exactly the mistake the
+        field exists to prevent.
+        """
+        session_id = (msg.get("session_id") or "").strip()
+        if not session_id:
+            logger.warning("dropping an answer that names no conversation: %s",
+                           msg.get("type"))
+            return None
+        worker = self.pool.get(session_id)
+        if worker is None:
+            logger.warning("dropping an answer for %s, which has no agent", session_id)
+        return worker
+
     async def _handle_approval_response(self, msg: dict) -> None:
         answer = {"choice": msg.get("choice", "n"), "approved_files": msg.get("approved_files")}
         if await self._answer_deferred(msg, answer):
             return
-        self.worker.resolve_approval(answer["choice"], answer["approved_files"])
+        worker = self._worker_for_answer(msg)
+        if worker is not None:
+            worker.resolve_approval(answer["choice"], answer["approved_files"])
 
     async def _handle_user_question_response(self, msg: dict) -> None:
         if await self._answer_deferred(msg, {"answers": msg.get("answers") or []}):
             return
-        self.worker.resolve_question(msg.get("answers"))
+        worker = self._worker_for_answer(msg)
+        if worker is not None:
+            worker.resolve_question(msg.get("answers"))
 
     async def _resend_deferred_prompt(self) -> None:
         """Put the card a deferred turn of this session waits on back on screen."""
@@ -1786,25 +1907,23 @@ class _Session:
         await self.ws.send(json.dumps({"type": "todo", "items": []}))
 
     def _running_turn_is_ours(self) -> bool:
-        """True when the worker's in-flight turn belongs to the session on screen.
+        """True when the conversation on screen has a turn in flight.
 
-        One worker serves every session, and a background-job wake runs a turn for the
-        session that launched the job — which may not be the one being read. Steering
-        aims at whatever turn is in flight, so without this check a message typed here
-        would be injected into that other conversation.
+        Asked of that conversation's own agent. Several can be working at once, so
+        "is a turn running" is no longer a question with one answer — and the one that
+        matters for a message the user typed is whether *this* conversation is busy, in
+        which case the message steers its turn instead of starting one.
         """
-        if not self.worker.is_busy():
-            return False
-        running = self.worker._query_session_id
-        return running is None or running == self._active_session_id
+        return self.pool.is_busy(self._active_session_id)
 
     def _is_foreign_event(self, ev: dict) -> bool:
         """True when *ev* was produced for a session other than the active one.
 
-        The worker stamps every event of a running turn with the session it began
-        in; one worker serves every session, so a turn that outlives a switch would
-        otherwise stream into the conversation now on screen. Unstamped events
-        (produced outside a query) always pass.
+        Every event of a running turn is stamped with the session it was produced for.
+        Several conversations can be producing at once, and only one of them is on
+        screen, so the stamp is what keeps one conversation's output out of another's
+        chat — it goes to that conversation's own transcript instead. Unstamped events
+        (produced outside any conversation) always pass.
 
         So do the interaction events. Each one is a question the agent is parked on,
         and a background-job wake runs turns in sessions the user is not looking at:
@@ -1817,60 +1936,31 @@ class _Session:
         ev_session = ev.get("session_id")
         return ev_session is not None and ev_session != self._active_session_id
 
-    async def _abandon_running_turn(self) -> str | None:
-        """Set aside or cancel the in-flight turn before leaving its session.
+    def _detach_running_turn(self) -> None:
+        """Note where the turn being left stood, then leave it running.
 
-        Returns ``"deferred"`` when the turn was parked on the user: it is set aside,
-        not stopped (query_engine.deferral), and its card comes back with the session.
-        Returns ``"cancelled"`` for a turn that was working, ``None`` when idle.
+        Leaving a conversation used to cancel its turn, or defer it if it was parked on
+        a person. That was not a policy but a consequence: one worker served every
+        session, so a turn that outlived a switch had nowhere to stream and a card it
+        was parked on would have been answered from the next conversation's UI. With an
+        agent per conversation neither is true — the turn streams into its own
+        transcript and its card carries the session it belongs to.
 
-        Either way the turn's answer is written to the session it belongs to, which
-        is no longer the one on screen by the time it arrives.
-
-        Leaving a session cuts the turn loose: the single shared worker cannot keep
-        streaming it anywhere the user can see, and a parked approval/question would
-        answer the *old* turn from the new session's UI — which is how a reworked
-        plan ended up written into another session's plans/ directory. Cancelling
-        here, before the active-session pointer moves, closes that window; we then
-        give the worker a moment to actually unwind so a tool call still in flight
-        cannot land in the session we are about to make active.
+        What survives is the one useful line of that path: recording where this
+        conversation's history stood when the turn was submitted, so the answer, landing
+        after the user has moved on, is still applied to the right conversation and can
+        tell its own messages from the prefix it inherited.
         """
-        if not self.worker.is_busy():
-            return None
         leaving = self._active_session_id
-        ours = leaving is not None and self._running_turn_is_ours()
-        if ours:
+        if leaving and self._running_turn_is_ours():
             self._detached_turns[leaving] = getattr(self, "_submitted_len", 0)
-        # No await on this path: the session pointer must move before the drain loop
-        # can see the answer, or it would be applied to the conversation being left.
-        if ours and self.worker.defer():
-            return "deferred"
-        self.worker.cancel()
-        self.worker.flush_prompts()
-        for _ in range(_CANCEL_SETTLE_TICKS):
-            if not self.worker.is_busy():
-                break
-            await asyncio.sleep(0.01)
-        return "cancelled"
 
     async def _handle_create_session(self, msg: dict) -> None:
-        outcome = await self._abandon_running_turn()
+        self._detach_running_turn()
         # Save current session before creating a new one.
         self._autosave_session(list(self._display_messages))
         await self._create_new_session()
-        if outcome == "cancelled":
-            await self._notify_turn_abandoned()
         await self._send_sessions_list()
-
-    async def _notify_turn_abandoned(self) -> None:
-        """Tell the user the turn they left behind was stopped, not lost silently."""
-        try:
-            await self.ws.send(json.dumps({
-                "type": "output",
-                "text": "  ⏹ Previous turn cancelled — session changed.\n",
-            }))
-        except Exception:
-            pass
 
     async def _handle_switch_session(self, msg: dict) -> None:
         target_id = (msg.get("session_id") or "").strip()
@@ -1878,12 +1968,10 @@ class _Session:
             return
         if target_id == self._active_session_id:
             return
-        outcome = await self._abandon_running_turn()
+        self._detach_running_turn()
         # Save current before switching.
         self._autosave_session(list(self._display_messages))
         await self._load_session(target_id)
-        if outcome == "cancelled":
-            await self._notify_turn_abandoned()
         await self._send_sessions_list()
 
     def _live_jobs_of(self, session_id: str) -> list[str]:
@@ -1967,6 +2055,7 @@ class _Session:
         session.title = new_title
         session.title_custom = True  # a hand-picked title outranks the generated description
         self.store.save_session(session)
+        self._publish_title(target_id, new_title)
         await self._send_sessions_list()
 
     async def _handle_command_msg(self, msg: dict) -> None:

@@ -56,18 +56,6 @@ def _direct_opener():
 _UNREADABLE_POLL_LIMIT = 5
 
 
-def _labelled_questions(questions: list, prefix: str) -> list:
-    """Mark each question with *prefix* (empty prefix: the list, untouched)."""
-    if not prefix:
-        return questions
-    out = []
-    for q in questions:
-        if isinstance(q, dict) and q.get("question"):
-            q = {**q, "question": f"{prefix}{q['question']}"}
-        out.append(q)
-    return out
-
-
 class _Watch(NamedTuple):
     """A live background-job watcher: the polling task, and what it is watching.
 
@@ -142,6 +130,9 @@ class _AgentWorker:
         # None only for the ends that have no session (tests, standalone construction);
         # everything session-scoped then falls back the way it always did.
         self.session_id: str | None = session_id
+        # This conversation's title, for cards raised while the user is reading another.
+        # Pushed in by _Session, which is the side that knows what the session is called.
+        self.session_title: str = ""
         self._loop: asyncio.AbstractEventLoop | None = None
         self._agent: Any = None
         self._ready = threading.Event()
@@ -661,13 +652,24 @@ class _AgentWorker:
     def _emit_prompt(self, payload: dict, questions: list | None = None) -> None:
         """Send a card the turn is about to park on, and remember it while it waits.
 
-        One worker serves every connection, and it outlives them: a socket that drops
-        while the agent is parked leaves the card on a client that no longer exists,
-        and the turn waiting on an answer nobody can give any more. Every later query
-        queues behind that wait — the query loop is serial — so the session reads as
-        hung, with nothing on screen to explain it. Kept here, the card can be put
-        back in front of whoever reconnects (``_Session._resend_parked_prompt``).
+        An agent outlives the connections that read it: a socket that drops while it is
+        parked leaves the card on a client that no longer exists, and the turn waiting on
+        an answer nobody can give any more. This agent's query loop is serial, so every
+        later query of *this conversation* queues behind that wait, and it reads as hung
+        with nothing on screen to explain it. Kept here, the card can be put back in
+        front of whoever reconnects (``_Session._resend_parked_prompt``).
         """
+        # Which conversation is asking. Structured, not spelled into the label or the
+        # question text: that text is also what the model sees, so a "background
+        # session" marker written there ended up in the conversation's own history. The
+        # client renders the attribution from these, and — the part that is not
+        # cosmetic — sends them back on the answer, which is how the answer reaches the
+        # agent that asked rather than whichever one is on screen.
+        payload = {
+            **payload,
+            "session_id": self._query_session_id or self.session_id,
+            "session_title": self.session_title or "",
+        }
         self._pending_prompt = dict(payload)
         self._pending_questions = questions
         # Nobody is there to read it (deferring), or the answer is already in hand
@@ -802,7 +804,7 @@ class _AgentWorker:
             # instead of keyword-sniffing the risk sentence for "destructive".
             "reversibility": reversibility_of(tool_name, agent.tool_caps),
             "scope": scope_label,
-            "label": f"{self._detached_prefix()}{label}" if label else label,
+            "label": label,
         }
         self._emit_prompt(payload)
 
@@ -896,7 +898,7 @@ class _AgentWorker:
         self._emit_prompt({
             "type": "user_question",
             "id": req_id,
-            "questions": _labelled_questions(list(questions), self._detached_prefix()),
+            "questions": list(questions),
         }, questions=list(questions))
         # No timeout: keep the agent parked until answered (Stop cancels).
         response = self._await_response(self._question_q)
@@ -1011,18 +1013,6 @@ class _AgentWorker:
                     break
         self._drain_steer_q()
 
-    def _detached_prefix(self) -> str:
-        """A marker for a prompt raised by a turn the user is not currently reading.
-
-        A background-job wake resumes the session that launched the job, which may not
-        be the one on screen. Its approval and question cards still have to be shown —
-        the turn is parked until they are answered — so they say which conversation
-        they belong to instead of appearing to come from the one being read.
-        """
-        running = self._query_session_id
-        if running and running != self.active_session_id:
-            return "⏱ background session · "
-        return ""
 
     def _drain_steer_q(self) -> list[str]:
         """Pop and return all queued steer messages (the agent's ``_poll_steer``)."""

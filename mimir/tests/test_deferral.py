@@ -1,9 +1,15 @@
 """A turn waiting on the user survives the user leaving its conversation.
 
-Switching session used to cancel the turn outright: a plan up for approval, or a
-command waiting for its go-ahead, was gone when the user came back. Now the wait is
-set aside (``query_engine.deferral``), the card is stored with the conversation, and
-answering it resumes the turn from the exact call it stopped on.
+Switching session used to cancel the turn outright: a plan up for approval, or a command
+waiting for its go-ahead, was gone when the user came back. Deferral was the first answer
+— set the wait aside, store the card with the conversation, and resume the turn from the
+exact call it stopped on when the card is answered.
+
+With an agent per conversation, leaving no longer disturbs the turn at all: it keeps
+running, and its card stays up carrying the conversation that raised it. Deferral remains
+for the cases that still need it — the user explicitly moving past a card, and a
+conversation deleted while one of its turns is parked — and this covers both halves: the
+worker's side of setting a wait aside, and the session's side of resuming on the answer.
 """
 from __future__ import annotations
 
@@ -44,6 +50,9 @@ def _worker() -> _AgentWorker:
     w._defer = threading.Event()
     w._preanswer = None
     w._current_task = object()
+    w.session_id = "s1"
+    w.session_title = ""
+    w._query_session_id = "s1"
     w._agent = types.SimpleNamespace(_cancel_flag=threading.Event(), _deferred_prompts=[])
     return w
 
@@ -58,8 +67,11 @@ class WorkerDeferralTests(unittest.TestCase):
             self.assertIsNone(w._await_response(w._approval_q))
         finally:
             CURRENT_CALL_ID.reset(token)
-        self.assertEqual(w._agent._deferred_prompts,
-                         [{"call_id": "call-7", "prompt": _PROMPT, "questions": []}])
+        self.assertEqual(
+            w._agent._deferred_prompts,
+            [{"call_id": "call-7",
+              "prompt": {**_PROMPT, "session_id": "s1", "session_title": ""},
+              "questions": []}])
 
     def test_nothing_to_set_aside_when_not_parked(self) -> None:
         self.assertFalse(_worker().defer())
@@ -248,23 +260,24 @@ def _session(worker) -> _Session:
 
 
 class SessionDeferralTests(unittest.IsolatedAsyncioTestCase):
-    async def test_leaving_a_parked_turn_defers_it(self) -> None:
+    async def test_leaving_a_parked_turn_leaves_it_parked(self) -> None:
+        """Deferral was how a parked turn survived a switch when one worker served
+        every session: its card could not stay up, because answering it from the next
+        conversation's UI would have settled the wrong turn. The card now carries the
+        conversation that raised it, so it can simply stay up and be answered."""
         w = _FakeWorker(parked=True)
         sess = _session(w)
-        self.assertEqual(await sess._abandon_running_turn(), "deferred")
-        self.assertEqual(w.calls, ["defer"])
-        # Its answer is written to the session it belongs to.
+        sess._detach_running_turn()
+        self.assertEqual(w.calls, [])
+        # Where it stood is still recorded: its answer lands after the user has moved on.
         self.assertEqual(sess._detached_turns, {"s1": 3})
 
-    async def test_leaving_a_working_turn_still_cancels_it(self) -> None:
+    async def test_leaving_a_working_turn_leaves_it_working(self) -> None:
         w = _FakeWorker(parked=False)
-
-        def _idle():
-            return w.parked is not None
-        w.is_busy = _idle
         sess = _session(w)
-        self.assertEqual(await sess._abandon_running_turn(), "cancelled")
-        self.assertEqual(w.calls, ["defer", "cancel", "flush"])
+        sess._detach_running_turn()
+        self.assertEqual(w.calls, [])
+        self.assertEqual(sess._detached_turns, {"s1": 3})
 
     async def test_answering_the_card_resumes_the_turn(self) -> None:
         w = _FakeWorker(parked=True)
@@ -286,8 +299,26 @@ class SessionDeferralTests(unittest.IsolatedAsyncioTestCase):
     async def test_a_live_card_is_still_answered_live(self) -> None:
         w = _FakeWorker(parked=True)
         sess = _session(w)
-        await sess._handle_approval_response({"id": "other", "choice": "n"})
+        await sess._handle_approval_response(
+            {"id": "other", "choice": "n", "session_id": "s1"})
         self.assertEqual(w.calls, [("resolve", "n")])
+
+    async def test_an_answer_naming_no_conversation_is_dropped(self) -> None:
+        """The worst failure this layer can produce is settling a question a different
+        conversation asked, with the user's approval attached to a call they never saw.
+        So an unattributed answer goes nowhere — never to whoever is on screen."""
+        w = _FakeWorker(parked=True)
+        sess = _session(w)
+        await sess._handle_approval_response({"id": "other", "choice": "y"})
+        self.assertEqual(w.calls, [])
+
+    async def test_an_answer_for_a_conversation_with_no_agent_is_dropped(self) -> None:
+        w = _FakeWorker(parked=True)
+        sess = _session(w)
+        sess.pool.worker = None
+        await sess._handle_approval_response(
+            {"id": "other", "choice": "y", "session_id": "gone"})
+        self.assertEqual(w.calls, [])
 
     async def test_an_answer_to_a_card_moved_past_goes_nowhere(self) -> None:
         w = _FakeWorker(parked=True)

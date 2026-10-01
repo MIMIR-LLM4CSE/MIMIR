@@ -1,4 +1,4 @@
-"""One worker serves every session — events and prompts must not cross over.
+"""An agent per conversation — events and prompts must not cross over.
 
 A turn parked on a plan-approval prompt used to survive a session switch: its
 card stayed on screen, its answer resolved the old turn, and its `open_editor`
@@ -24,6 +24,7 @@ def _bare_worker(session_id: str | None = None) -> _AgentWorker:
     w._question_q = _queue.Queue()
     w._steer_q = _queue.Queue()
     w.session_id = session_id
+    w.session_title = ""
     w.active_session_id = None
     w._query_session_id = None
     w._pending_prompt = None
@@ -112,41 +113,52 @@ class SessionFencingTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(sess._is_foreign_event({"type": "open_editor", "session_id": "s1"}))
         self.assertFalse(sess._is_foreign_event({"type": "output"}))  # unstamped
 
-    async def test_idle_worker_is_not_cancelled(self):
-        w = _bare_worker()
-        w.is_busy = lambda: False
-        w.cancel = lambda: self.fail("idle worker must not be cancelled")
-        self.assertFalse(await self._session(w)._abandon_running_turn())
+    async def test_leaving_a_conversation_leaves_its_turn_running(self):
+        """The property the whole feature is for.
 
-    async def test_busy_worker_is_cancelled_and_its_prompts_flushed(self):
-        w = _bare_worker()
-        calls = []
-        busy = [True]
-        w.is_busy = lambda: busy[0]
-        w.cancel = lambda: (calls.append("cancel"), busy.__setitem__(0, False), True)[2]
-        w.flush_prompts = lambda: calls.append("flush")
-        self.assertTrue(await self._session(w)._abandon_running_turn())
-        self.assertEqual(calls, ["cancel", "flush"])
-
-    async def test_switch_cancels_before_the_active_session_pointer_moves(self):
-        """Order matters: a late tool call must never write into the new session."""
-        w = _bare_worker()
-        order = []
-        busy = [True]
-        w.is_busy = lambda: busy[0]
-        w.cancel = lambda: (order.append("cancel"), busy.__setitem__(0, False), True)[2]
-        w.flush_prompts = lambda: None
+        Leaving used to cancel the turn, or defer it if it was parked on a person. That
+        was a consequence of one worker serving every session — a turn that outlived a
+        switch had nowhere to stream, and a card it was parked on would have been
+        answered from the next conversation's UI. With an agent per conversation neither
+        holds: the turn streams into its own transcript, and its card carries the
+        conversation that raised it.
+        """
+        w = _bare_worker(session_id="s1")
+        w._query_session_id = "s1"
+        w.is_busy = lambda: True
+        w.cancel = lambda: self.fail("the turn of the conversation being left was cancelled")
+        w.defer = lambda: self.fail("the turn of the conversation being left was deferred")
+        w.flush_prompts = lambda: self.fail("its pending card was thrown away")
         sess = self._session(w)
         sess._autosave_session = lambda msgs: None
         sess._send_sessions_list = _noop_async
-        sess._notify_turn_abandoned = _noop_async
-
-        async def _load(sid):
-            order.append("load")
-
-        sess._load_session = _load
+        sess._load_session = _noop_async
         await sess._handle_switch_session({"session_id": "s2"})
-        self.assertEqual(order, ["cancel", "load"])
+
+    async def test_leaving_records_where_the_running_turn_stood(self):
+        """So its answer, landing after the user has moved on, is still applied to the
+        conversation it belongs to, and can tell its own messages from the prefix it
+        inherited."""
+        w = _bare_worker(session_id="s1")
+        w._query_session_id = "s1"
+        w.is_busy = lambda: True
+        sess = self._session(w)
+        sess._submitted_len = 7
+        sess._autosave_session = lambda msgs: None
+        sess._send_sessions_list = _noop_async
+        sess._load_session = _noop_async
+        await sess._handle_switch_session({"session_id": "s2"})
+        self.assertEqual(sess._detached_turns, {"s1": 7})
+
+    async def test_leaving_an_idle_conversation_records_nothing(self):
+        w = _bare_worker(session_id="s1")
+        w.is_busy = lambda: False
+        sess = self._session(w)
+        sess._autosave_session = lambda msgs: None
+        sess._send_sessions_list = _noop_async
+        sess._load_session = _noop_async
+        await sess._handle_switch_session({"session_id": "s2"})
+        self.assertEqual(sess._detached_turns, {})
 
     async def test_set_model_reports_the_new_model_and_derived_settings(self):
         w = _bare_worker()

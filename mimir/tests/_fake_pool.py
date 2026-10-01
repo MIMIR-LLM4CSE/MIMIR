@@ -42,7 +42,19 @@ class FakePool:
         return 0 if self.worker is None else 1
 
     def is_busy(self, session_id: str | None) -> bool:
-        return bool(self.worker is not None and self.worker.is_busy())
+        """Busy *with that conversation's* turn.
+
+        The real pool looks the session up and asks its own worker, and a worker only
+        ever runs its own session's turn. This stand-in has one worker for every
+        session, so it emulates that lookup by comparing against the turn the worker
+        says it is running — otherwise it would report every conversation as busy
+        whenever any one of them was.
+        """
+        busy = getattr(self.worker, "is_busy", None)
+        if self.worker is None or busy is None or not busy():
+            return False
+        running = getattr(self.worker, "_query_session_id", None)
+        return running is None or session_id is None or running == session_id
 
     def is_parked(self, session_id: str | None) -> bool:
         return getattr(self.worker, "_pending_prompt", None) is not None
