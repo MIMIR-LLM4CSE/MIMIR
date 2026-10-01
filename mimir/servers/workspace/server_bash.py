@@ -1125,8 +1125,27 @@ def bash_job(
         return err("A job_key from bash_run(background=True) is required.",
                    hint="Use op='list' to see the jobs this host knows about.")
     if op == "status":
-        return ok(_bash_jobs.state(job_key))
-    return ok(_bash_jobs.output(job_key, _MAX_OUTPUT, running_max_bytes=_RUNNING_OUTPUT))
+        return _job_payload(_bash_jobs.state(job_key))
+    return _job_payload(
+        _bash_jobs.output(job_key, _MAX_OUTPUT, running_max_bytes=_RUNNING_OUTPUT))
+
+
+def _job_payload(payload: dict) -> dict:
+    """Wrap a job-layer answer, letting "no such job" stay an error.
+
+    ``valid_key`` checks the *shape* of a handle, not that it names anything, so a
+    well-formed key for a job this host does not have reaches the job layer and comes
+    back carrying ``error``. Wrapping that in ``ok()`` produced a payload that said both
+    at once — and a caller reading ``status`` first was told the stop succeeded when
+    nothing had been stopped. Which is no longer a hypothetical: job directories are per
+    session, so a handle from another conversation is exactly a well-formed key naming
+    nothing here.
+    """
+    reason = payload.pop("error", "")
+    if reason:
+        return err(reason, hint="Use bash_job(op='list') to see this session's jobs.",
+                   **payload)
+    return ok(payload)
 
 
 @mcp.tool(**tool_caps(
@@ -1149,7 +1168,7 @@ def bash_job_stop(job_key: str) -> dict:
     """
     if not _bash_jobs.valid_key(job_key):
         return err("A job_key from bash_run(background=True) is required.")
-    return ok(_bash_jobs.stop(job_key))
+    return _job_payload(_bash_jobs.stop(job_key))
 
 
 _VERDICT_VALUES = ("pass", "fail", "unknown", "blocked", "rejected")

@@ -220,6 +220,25 @@ class BashBackgroundTests(unittest.TestCase):
                 self.assertEqual(payload["status"], "error")
         self.assertEqual(server_bash.bash_job(op="nonsense")["status"], "error")
 
+    def test_a_well_formed_handle_naming_nothing_is_an_error_not_an_ok(self) -> None:
+        """``valid_key`` checks the shape of a handle, not that it names anything.
+
+        So a well-formed key for a job this host does not have reached the job layer and
+        came back carrying ``error`` — which was then wrapped in ``ok()``, producing a
+        payload that said both at once. A caller reading ``status`` first was told the
+        stop had succeeded while nothing was stopped. No longer hypothetical: job
+        directories are per session, so a handle from another conversation is exactly a
+        well-formed key naming nothing here.
+        """
+        absent = "20200101T000000Z-abcd"
+        self.assertTrue(_bash_jobs.valid_key(absent))
+        for payload in (server_bash.bash_job(op="status", job_key=absent),
+                        server_bash.bash_job(op="output", job_key=absent),
+                        server_bash.bash_job_stop(job_key=absent)):
+            self.assertEqual(payload["status"], "error")
+            self.assertIn("No such job", payload["error"])
+            self.assertIn("op='list'", payload.get("hint", ""))
+
     def test_a_redirected_job_says_where_its_output_went(self) -> None:
         # A command with its own redirect writes nothing to the job's log, so the
         # completion summary would read as "finished, said nothing" for a run that
