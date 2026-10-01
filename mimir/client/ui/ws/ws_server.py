@@ -10,8 +10,11 @@ across sibling modules:
   - ``_ws_runtime`` — shared foundation (cwd bootstrap, stdout router, todo helpers,
     context-budget constants).
   - ``ws_worker``   — ``_AgentWorker``, the background agent thread.
+  - ``ws_pool``     — ``_AgentPool``, one worker per conversation: built on that
+                      conversation's first query, released when it goes idle.
   - ``ws_session``  — ``_Session``, one WebSocket connection.
-``_AgentWorker`` and ``_Session`` are re-exported here for backward compatibility.
+``_AgentWorker``, ``_AgentPool`` and ``_Session`` are re-exported here for
+backward compatibility.
 
 Protocol — all messages are JSON objects, one per send/recv:
 
@@ -103,6 +106,7 @@ from ._ws_runtime import (
     get_backend,
 )
 from .ws_worker import _AgentWorker
+from .ws_pool import _AgentPool
 from .ws_session import _Session
 
 import asyncio
@@ -118,7 +122,7 @@ except ImportError as exc:
     ) from exc
 
 
-__all__ = ["serve", "main", "_AgentWorker", "_Session"]
+__all__ = ["serve", "main", "_AgentWorker", "_AgentPool", "_Session"]
 
 
 # Ceiling on an inbound frame. Sized for the client transcript, the only message that
@@ -231,11 +235,21 @@ async def serve(
     print(f"MIMIR WS server starting on {host}  (model: {_model})", file=_ORIGINAL_STDOUT)
     print("Initialising agent connections…", file=_ORIGINAL_STDOUT)
 
-    worker = _AgentWorker(_model)
-    print("Agent ready.", file=_ORIGINAL_STDOUT)
+    # The pool, not an agent: one agent per conversation, built on that conversation's
+    # first query. Process-global and shared by every connection, because two webviews on
+    # one port must see the same live turns — which is what the single shared worker gave
+    # for free, and the one property of it worth keeping.
+    #
+    # Nothing is built here any more, so the socket is listening in milliseconds instead
+    # of after the backend wait plus ~19 server spawns. That cost did not disappear; it
+    # moved to the first query of each conversation, which is the only place that can say
+    # which session is paying it.
+    pool = _AgentPool(_model)
+    print(f"Agent pool ready (up to {pool.cap} live conversations).",
+          file=_ORIGINAL_STDOUT)
 
     async def _handler(ws: Any) -> None:
-        session = _Session(ws, worker)
+        session = _Session(ws, pool)
         await session.run()
 
     # The default 1 MiB frame cap is below what a client transcript weighs once it

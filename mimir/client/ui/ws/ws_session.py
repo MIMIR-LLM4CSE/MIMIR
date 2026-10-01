@@ -24,6 +24,7 @@ from ...query_engine.history import (
     carries_compaction_summary, reconcile_tool_pairs,
 )
 from .ws_worker import _AgentWorker
+from .ws_pool import _AgentPool
 from ...tool_execution import run_channel
 from ...config import (
     TEMPERATURE_MAX, TEMPERATURE_MIN, THINKING_DEPTH_LABELS, parse_temperature,
@@ -94,9 +95,9 @@ def _reconcile(messages: list[dict]) -> list[dict]:
 class _Session:
     """One WebSocket connection — owns a chat history and talks to the worker."""
 
-    def __init__(self, ws: "_WS", worker: _AgentWorker) -> None:
+    def __init__(self, ws: "_WS", pool: "_AgentPool") -> None:
         self.ws = ws
-        self.worker = worker
+        self.pool = pool
         self.history: list[dict] = []  # LLM history — the working window, trimmed to fit
         # The same conversation, never trimmed. `history` is cut down whenever the
         # budget demands it, and it is `history` that used to be all we saved; this is
@@ -157,6 +158,24 @@ class _Session:
         # make the conversation undeletable, and the second click is the confirmation.
         self._delete_refused: set[str] = set()
 
+    @property
+    def worker(self) -> _AgentWorker:
+        """The agent of the conversation on screen, or None if it has none yet.
+
+        A property rather than a field because there is no longer one worker: there is one
+        per conversation, built on that conversation's first query. Every existing
+        ``self.worker.*`` call site asks about the session being read, which is exactly
+        what this answers — so they all stayed as they were.
+
+        Before that first query there is no worker, which is why this answers with the
+        pool's detached stand-in rather than None: every getter on it already gives the
+        right pre-agent answer, and every setter is already a no-op. The exceptions are
+        the two things that must not be silently dropped — submitting a query, and a
+        setting that has to survive into the next worker built — and both go through the
+        pool explicitly instead.
+        """
+        return self.pool.worker_or_detached(self._active_session_id)
+
     def _greeting(self) -> dict:
         """The ``ready`` sent the moment the socket is accepted.
 
@@ -168,16 +187,7 @@ class _Session:
         into an agent that could not answer. The worker's own says True; this one
         says what is actually so.
         """
-        return {
-            "type": "ready",
-            "model": self.worker.model,
-            "context_mode": self.worker.get_context_mode(),
-            "enforcement": self.worker.get_enforcement(),
-            "approval_mode": self.worker.get_approval_mode(),
-            "thinking": self.worker.get_thinking_profile(),
-            "temperature": self.worker.get_temperature_state(),
-            "agent_ready": self.worker.agent_ready(),
-        }
+        return {"type": "ready", **self.pool.ui_state(self._active_session_id)}
 
     async def run(self) -> None:
         # Send ready immediately so the webview transitions out of "connecting".
@@ -316,7 +326,7 @@ class _Session:
         # Don't save to disk yet — wait until there are messages to avoid
         # accumulating empty "New session" entries on every reconnect.
         self._active_session_id = session.id
-        self.worker.active_session_id = session.id
+        self.pool.set_active(session.id)
         _write_active_session(session.id)
         self.history = []
         self.history_full = []
@@ -324,8 +334,11 @@ class _Session:
         self._display_messages = []
         self._pending_interaction = None
         self.transcript.bind(session.id)
-        self.worker.load_agent_state({})
-        self.worker.reset_session_guards()  # fresh session → drop grants + repeat guard
+        # No agent state to load and no grants to drop: a new conversation has no agent
+        # yet, and the one built for it on its first query starts empty by construction.
+        # This used to clear the shared worker's carry context and truncate the one
+        # workspace-wide approved-paths file — which is how starting a conversation
+        # revoked another one's live grants.
         try:
             from .session_store import SessionMeta as _SM
         except ImportError:
@@ -351,12 +364,18 @@ class _Session:
 
     async def _load_session(self, session_id: str) -> None:
         session = self.store.load_session(session_id)
-        switching = self.worker.active_session_id not in (None, session.id)
+        # Whether this conversation already has an agent decides what gets restored
+        # below: an agent that has been working holds the live carry context, and
+        # reloading the saved snapshot over it would throw away everything it learned
+        # since. Read before the pointer moves, while `worker` still resolves the one
+        # being left.
+        resuming_live_agent = self.pool.get(session.id) is not None
         self._active_session_id = session.id
         self._unsaved_session_meta = None  # switching to a persisted session
-        self.worker.active_session_id = session.id
-        if switching:  # different session → drop prior grants + repeat guard
-            self.worker.reset_session_guards()
+        self.pool.set_active(session.id)
+        # Nothing is reset on a switch. Each conversation's approved paths are its own
+        # file, so there is nothing of another conversation's to drop — and dropping
+        # this one's would revoke grants its own turn may still be writing under.
         _write_active_session(session.id)
         # The untrimmed record is always the archive, whatever the model resumes on.
         # Sessions saved before this field existed only have the trimmed window — that
@@ -385,7 +404,11 @@ class _Session:
         self._display_messages = list(session.display_messages)
         self._pending_interaction = session.pending_interaction
         self.transcript.bind(session.id)
-        self.worker.load_agent_state({"carry_context": session.carry_context})
+        if not resuming_live_agent:
+            # Only when this conversation has no agent yet — the snapshot is how a
+            # rebuilt agent picks up where the last one left off. An agent that is
+            # already live has moved past it.
+            self.worker.load_agent_state({"carry_context": session.carry_context})
 
         # If session had todos, restore them to disk so agent picks them up —
         # unless what is already on disk is newer than this snapshot (see below).
@@ -1347,6 +1370,65 @@ class _Session:
         })
         return True
 
+    def _apply_setting(self, name: str, *args: Any) -> str:
+        """Apply a UI knob to every live conversation, and to the next agent built.
+
+        Both halves are needed. Pushing it to the live workers is what makes the change
+        take effect now; recording it in the pool is what makes a conversation started
+        afterwards come up on it, rather than quietly reverting to the default — which is
+        new, because an agent is now built long after the user set these.
+
+        Returns the first rejection a live worker reported, or "". Nothing to reject when
+        none exists yet: the setting is recorded and validated when it is replayed.
+        """
+        for result in self.pool.apply_setting(name, *args):
+            if isinstance(result, str) and result:
+                return result
+        return ""
+
+    async def _ensure_worker(self) -> _AgentWorker | None:
+        """This conversation's agent, built now if it has none and there is room.
+
+        None means the pool is full of conversations that are working, waiting on the
+        user, or watching a job — none of which may be evicted to make room. The caller
+        queues instead, and the user is told, because a queue nobody can see reads as a
+        hang.
+
+        The build is where the startup cost went when it stopped being paid up front:
+        the LLM backend, then ~19 MCP servers. It runs off the event loop, so the other
+        conversations keep streaming, and this one says what it is doing first.
+        """
+        session_id = self._active_session_id
+        if not session_id:
+            return None
+        existing = self.pool.get(session_id)
+        if existing is not None:
+            return existing
+
+        def _announce() -> None:
+            self._schedule(self.ws.send(json.dumps({
+                "type": "status",
+                "session_id": session_id,
+                "text": "  ⏳ Starting an agent for this conversation…",
+            })))
+
+        try:
+            return await self.pool.worker_for(session_id, on_wait=_announce)
+        except Exception as exc:
+            await self.ws.send(json.dumps({
+                "type": "error",
+                "session_id": session_id,
+                "text": f"Could not start an agent for this conversation: {exc}",
+            }))
+            return None
+
+    def _schedule(self, coro: Any) -> None:
+        """Fire a send without awaiting it, for callers that are not coroutines."""
+        try:
+            asyncio.get_running_loop().create_task(coro)
+        except RuntimeError:
+            coro.close()
+
     async def _handle_query(self, msg: dict) -> None:
         text = (msg.get("text") or "").strip()
         if not text:
@@ -1413,12 +1495,19 @@ class _Session:
         # the attachment is per-turn. Caveat: in full-context mode the augmented message
         # persists in the worker's `_last_full_messages`.
         effective_text = text
-        try:
-            effective_text, attached_uris = await asyncio.wrap_future(
-                self.worker.resolve_resources(text)
-            )
-        except Exception:
-            attached_uris = []
+        # Built here, before anything is submitted: resolving @-mentions needs the
+        # worker's own loop, where the MCP sessions live. None means the pool is full,
+        # and the turn is queued below with the mentions left unresolved — the text is
+        # still exactly what the user wrote.
+        worker = await self._ensure_worker()
+        attached_uris: list[str] = []
+        if worker is not None:
+            try:
+                effective_text, attached_uris = await asyncio.wrap_future(
+                    worker.resolve_resources(text)
+                )
+            except Exception:
+                attached_uris = []
         if attached_uris:
             await self.ws.send(json.dumps({
                 "type": "output",
@@ -1434,11 +1523,26 @@ class _Session:
         # would wipe the chat on the frontend.
         self._autosave_session(list(self._display_messages))
         self._submitted_len = len(self.history)
-        self.worker.submit_query(
-            effective_text,
-            list(self.history[:-1]) + [{"role": "user", "content": effective_text}],
-            session_id=self._active_session_id,
-        )
+        messages = list(self.history[:-1]) + [{"role": "user", "content": effective_text}]
+        session_id = self._active_session_id
+
+        def _submit(worker: _AgentWorker) -> None:
+            worker.submit_query(effective_text, messages, session_id=session_id)
+
+        if worker is not None:
+            _submit(worker)
+            return
+        # Every slot is held by a conversation that is working, waiting on the user, or
+        # watching a job. Wait for one rather than evicting: taking a slot from a
+        # conversation mid-task trades a visible wait for silently lost work.
+        position = self.pool.enqueue(session_id, _submit)
+        await self.ws.send(json.dumps({
+            "type": "queued",
+            "session_id": session_id,
+            "position": position,
+            "text": (f"  ⏸ Waiting for a free agent slot (#{position} in line). "
+                     f"At most {self.pool.cap} conversations run at once."),
+        }))
 
     @staticmethod
     def _text_count(messages: list) -> int:
@@ -1837,6 +1941,9 @@ class _Session:
             return
         self._delete_refused.discard(target_id)
         was_active = (target_id == self._active_session_id)
+        # Its agent goes with it, freeing a slot — and whatever it was queued to run,
+        # which would otherwise be admitted into a conversation that no longer exists.
+        await self.pool.close(target_id)
         self.store.delete_session(target_id)
         # Remove the session's sidecar directory (todo_list.md, plan.md, …).
         session_dir = os.path.join(_MIMIR_DIR_WS, "sessions", target_id)
@@ -1848,6 +1955,7 @@ class _Session:
                 pass
         if was_active:
             await self._create_new_session()
+        await self.pool.pump()   # a freed slot may admit a conversation that was waiting
         await self._send_sessions_list()
 
     async def _handle_rename_session(self, msg: dict) -> None:
@@ -1949,7 +2057,7 @@ class _Session:
         """
         if text.startswith("/mode "):
             mode = text[6:].strip()
-            error = self.worker.set_mode(mode)
+            error = self._apply_setting("set_mode", mode)
             if error:
                 await self.ws.send(json.dumps({"type": "error", "text": f"  ✗ {error}\n"}))
             else:
@@ -1959,11 +2067,11 @@ class _Session:
                 await self.ws.send(json.dumps({"type": "mode", "mode": mode}))
         elif text.startswith("/batch "):
             flag = text[7:].strip().lower()
-            self.worker.set_batch(flag in ("on", "true", "1", "yes"))
+            self._apply_setting("set_batch", flag in ("on", "true", "1", "yes"))
         elif text.startswith("/thinking "):
             flag = text[10:].strip().lower()
             on = flag in ("on", "true", "1", "yes")
-            self.worker.set_thinking(on)
+            self._apply_setting("set_thinking", on)
             await self._send_thinking_state()
         elif text.startswith("/thinking-depth "):
             arg = text[16:].strip()
@@ -1972,17 +2080,17 @@ class _Session:
                 usage = f"Usage: /thinking-depth 0-{len(THINKING_DEPTH_LABELS) - 1} ({'|'.join(THINKING_DEPTH_LABELS)})"
                 await self.ws.send(json.dumps({"type": "error", "text": usage}))
                 return
-            self.worker.set_thinking_depth(level)
+            self._apply_setting("set_thinking_depth", level)
             await self._send_thinking_state()
         elif text.startswith("/streaming "):
             flag = text[11:].strip().lower()
             on = flag in ("on", "true", "1", "yes")
-            self.worker.set_streaming(on)
+            self._apply_setting("set_streaming", on)
             await self._send_streaming_state()
         elif text.startswith("/context "):
             mode = text[9:].strip().lower()
             if mode in ("compact", "full"):
-                self.worker.set_context_mode(mode)
+                self._apply_setting("set_context_mode", mode)
                 await self.ws.send(json.dumps({"type": "context_mode", "mode": mode}))
             else:
                 await self.ws.send(json.dumps({"type": "error", "text": f"Unknown context mode: {mode}. Use compact or full."}))
@@ -1991,14 +2099,14 @@ class _Session:
             raw = text[11:].strip().lower()
             mode = {"all": "auto_all", "auto-all": "auto_all"}.get(raw, raw)
             if mode in ("manual", "auto", "auto_all"):
-                self.worker.set_approval_mode(mode)
+                self._apply_setting("set_approval_mode", mode)
                 await self.ws.send(json.dumps({"type": "approval_mode", "mode": mode}))
             else:
                 await self.ws.send(json.dumps({"type": "error", "text": f"Unknown approval mode: {raw}. Use manual, auto, or all."}))
         elif text.startswith("/enforcement "):
             level = text[13:].strip().lower()
             if level in ("strict", "light", "off"):
-                self.worker.set_enforcement(level)
+                self._apply_setting("set_enforcement", level)
                 await self.ws.send(json.dumps({"type": "enforcement", "mode": level}))
             else:
                 await self.ws.send(json.dumps({"type": "error", "text": f"Unknown enforcement level: {level}. Use strict, light, or off."}))
@@ -2009,7 +2117,7 @@ class _Session:
                 # Bare command: report, change nothing.
                 pass
             elif ok:
-                self.worker.set_temperature(value)
+                self._apply_setting("set_temperature", value)
             else:
                 await self.ws.send(json.dumps({"type": "error", "text": (
                     f"Invalid temperature: {raw}. Use a number from "
@@ -2161,19 +2269,19 @@ class _Session:
     async def _handle_toggle_server(self, msg: dict) -> None:
         name = msg.get("name")
         if name:
-            self.worker.set_server_enabled(name, bool(msg.get("enabled", True)))
+            self._apply_setting("set_server_enabled", name, bool(msg.get("enabled", True)))
         await self._send_toggles()
 
     async def _handle_toggle_skill(self, msg: dict) -> None:
         name = msg.get("name")
         if name:
-            self.worker.set_skill_enabled(name, bool(msg.get("enabled", True)))
+            self._apply_setting("set_skill_enabled", name, bool(msg.get("enabled", True)))
         await self._send_toggles()
 
     async def _handle_toggle_nudge(self, msg: dict) -> None:
         name = msg.get("name")
         if name:
-            self.worker.set_nudge_enabled(name, bool(msg.get("enabled", True)))
+            self._apply_setting("set_nudge_enabled", name, bool(msg.get("enabled", True)))
         await self._send_toggles()
 
     async def _send_served_models(self) -> None:
@@ -2218,13 +2326,13 @@ class _Session:
                 "type": "error", "text": "  ✗ No model name given.\n",
             }))
             return
-        error = self.worker.set_model(model)
+        error = next(iter(self.pool.set_model(model)), "")
         if error:
             await self.ws.send(json.dumps({"type": "error", "text": f"  ✗ {error}\n"}))
             return
         await self.ws.send(json.dumps({
             "type": "model_changed",
-            "model": self.worker.model,
+            "model": self.pool.model,
             "thinking": self.worker.get_thinking_profile(),
             "enforcement": self.worker.get_enforcement(),
             "temperature": self.worker.get_temperature_state(),

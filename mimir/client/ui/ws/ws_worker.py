@@ -92,7 +92,46 @@ class _AgentWorker:
     Thread-safe queues carry events to the WS layer and approval responses back.
     """
 
+    @classmethod
+    def detached(cls, model: str) -> "_AgentWorker":
+        """A worker that never builds an agent: no thread, no servers, no LLM wait.
+
+        The stand-in for "this conversation has no agent yet", which is now a normal
+        state — agents are built on a conversation's first query. It is a real
+        ``_AgentWorker`` rather than a parallel null class on purpose: every getter here
+        already answers for ``_agent is None`` (``get_context_mode`` → "compact",
+        ``get_temperature_state`` → the stored preference, ``toggles_state`` → empty) and
+        every setter is already a no-op in that state. A separate class would restate all
+        of those, and then drift from them.
+
+        What it must never be given is a query: ``submit_query`` would put it on a queue
+        no loop is reading. The session resolves a real worker through the pool for that.
+        """
+        worker = object.__new__(cls)
+        worker._init_fields(model, None)
+        return worker
+
     def __init__(self, model: str, session_id: str | None = None) -> None:
+        self._init_fields(model, session_id)
+        self._thread = threading.Thread(target=self._main, name="mimir-worker", daemon=True)
+        self._thread.start()
+        # Wait for server connections. The timeout is long to accommodate vLLM
+        # cold-start (model load + torch.compile can exceed 3 min); a separate
+        # backend-health poll runs first and surfaces progress to the client.
+        timeout = int(os.environ.get("MIMIR_INIT_TIMEOUT", "600"))
+        if not self._ready.wait(timeout=timeout):
+            raise RuntimeError(
+                f"MimirAgent worker failed to initialise within {timeout} s"
+            )
+        if self._error:
+            raise self._error
+
+    def _init_fields(self, model: str, session_id: str | None) -> None:
+        """Every field, and nothing that starts running.
+
+        Split from ``__init__`` so :meth:`detached` can have the state without the
+        thread, the backend wait and the ~19 server spawns.
+        """
         self.model = model
         # The conversation this worker exists for, fixed for its whole life. It used to
         # be one worker for every session, time-multiplexed, which is why leaving a
@@ -145,18 +184,7 @@ class _AgentWorker:
         # matched to the call that asked it.
         self._pending_questions: list | None = None
 
-        self._thread = threading.Thread(target=self._main, name="mimir-worker", daemon=True)
-        self._thread.start()
-        # Wait for server connections. The timeout is long to accommodate vLLM
-        # cold-start (model load + torch.compile can exceed 3 min); a separate
-        # backend-health poll runs first and surfaces progress to the client.
-        timeout = int(os.environ.get("MIMIR_INIT_TIMEOUT", "600"))
-        if not self._ready.wait(timeout=timeout):
-            raise RuntimeError(
-                f"MimirAgent worker failed to initialise within {timeout} s"
-            )
-        if self._error:
-            raise self._error
+        self._thread: threading.Thread | None = None
 
     # ── Background thread ─────────────────────────────────────────────────────
 
@@ -966,17 +994,6 @@ class _AgentWorker:
         """True while a query task is in flight (used to route steer vs. new query)."""
         return self._current_task is not None
 
-    def reset_session_guards(self) -> None:
-        """Clear session-scoped guard state on session change.
-
-        Out-of-workspace approvals are session-scoped: a new session starts with a
-        clean slate.
-        """
-        if self._agent is not None:
-            try:
-                self._agent.approvals.reset_allowed_paths()
-            except Exception:
-                pass
 
     def flush_prompts(self) -> None:
         """Drop every pending human-pause answer and steer message.
@@ -1657,5 +1674,5 @@ class _AgentWorker:
             return
         # The sentinel last: the loop had to still be running to host the close above.
         self.shutdown()
-        if self._thread.is_alive():
+        if self._thread is not None and self._thread.is_alive():
             self._thread.join(timeout=5.0)

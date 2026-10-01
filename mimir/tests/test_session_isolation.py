@@ -9,6 +9,8 @@ import json
 import queue as _queue
 import unittest
 
+from mimir.tests._fake_pool import FakePool
+
 from mimir.client.ui.ws.ws_worker import _AgentWorker
 from mimir.client.ui.ws.ws_session import _Session
 
@@ -96,7 +98,7 @@ class SessionFencingTests(unittest.IsolatedAsyncioTestCase):
     def _session(self, worker, active="s1"):
         sess = object.__new__(_Session)
         sess.ws = _FakeWS()
-        sess.worker = worker
+        sess.pool = FakePool(worker, active=active)
         sess.store = _FakeStore(["s1", "s2"])
         sess._active_session_id = active
         sess._display_messages = []

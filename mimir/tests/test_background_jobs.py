@@ -15,6 +15,8 @@ import os
 import types
 import unittest
 
+from mimir.tests._fake_pool import FakePool
+
 from mimir.client.context.capabilities import BACKGROUNDABLE, ToolCaps
 from mimir.client.query_engine.background import _maybe_register_background_job
 from mimir.tests._proxy_fixtures import _TmpStorageTest, server_proxy
@@ -912,7 +914,7 @@ class DetachedSessionResumeTests(unittest.TestCase):
             self.addCleanup(patcher.stop)
 
         self.ws, self.worker = _FakeWS(), _FakeWorker()
-        self.session = _Session(self.ws, self.worker)
+        self.session = _Session(self.ws, FakePool(self.worker))
 
         # A: the conversation that launched the job. B: the one being read now.
         self.a = self.session.store.new_session()
@@ -1055,7 +1057,7 @@ class WakeCoalescingTests(unittest.TestCase):
             self.addCleanup(patcher.stop)
 
         self.ws, self.worker = _FakeWS(), _FakeWorker()
-        self.session = _Session(self.ws, self.worker)
+        self.session = _Session(self.ws, FakePool(self.worker))
         self.here = self.session.store.new_session()
         self.session.store.save_session(self.here)
         self.session._active_session_id = self.here.id

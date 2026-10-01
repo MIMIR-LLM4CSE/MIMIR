@@ -12,6 +12,8 @@ import queue as _queue
 import threading
 import types
 import unittest
+
+from mimir.tests._fake_pool import FakePool
 from unittest.mock import patch
 
 from mimir.client.query_engine import agent_loop as agent_loop_module
@@ -234,7 +236,7 @@ class _FakeWorker:
 
 def _session(worker) -> _Session:
     sess = object.__new__(_Session)
-    sess.worker = worker
+    sess.pool = FakePool(worker)
     sess._active_session_id = "s1"
     sess._detached_turns = {}
     sess._submitted_len = 3

@@ -17,6 +17,8 @@ import concurrent.futures
 import os
 import tempfile
 import unittest
+
+from mimir.tests._fake_pool import FakePool
 from datetime import datetime, timezone
 from unittest import mock
 
@@ -80,13 +82,10 @@ class _FakeWorker:
     def load_agent_state(self, state):
         pass
 
-    def reset_session_guards(self):
-        pass
-
 
 def _session(active="s1"):
     sess = object.__new__(_Session)
-    sess.worker = _FakeWorker()
+    sess.pool = FakePool(_FakeWorker(), active=active)
     sess.store = _FakeStore()
     sess._active_session_id = active
     sess._unsaved_session_meta = None
@@ -266,7 +265,7 @@ class AnswerDeltaTests(unittest.TestCase):
     @staticmethod
     def _sess(turn_start, submitted_len):
         sess = _session()
-        sess.worker = _FakeWorker(turn_start=turn_start)
+        sess.pool = FakePool(_FakeWorker(turn_start=turn_start))
         sess._submitted_len = submitted_len
         return sess
 
