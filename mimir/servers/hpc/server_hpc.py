@@ -128,6 +128,9 @@ def _run_bash(script: str, timeout: int) -> dict:
     try:
         res = subprocess.run(
             ["bash", "-lc", script],
+            # Never the server's own stdin: that is its MCP protocol pipe, and a script
+            # that reads it (``ssh`` without ``-n``, ``cat``) eats the client's traffic.
+            stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
@@ -334,7 +337,8 @@ def _run_argv(argv: list[str], timeout: int) -> dict:
     """Run a command as argv — no shell, so no argument can inject a second command."""
     try:
         res = subprocess.run(
-            argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=timeout,
+            argv, stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=timeout,
         )
         return {
             "status": "ok" if res.returncode == 0 else "error",

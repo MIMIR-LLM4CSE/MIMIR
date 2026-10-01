@@ -142,7 +142,7 @@ def _squeue_state(job_id: int) -> str:
     try:
         res = subprocess.run(
             ["squeue", "-j", str(job_id), "-h", "-o", "%T"],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             text=True, timeout=10,
         )
         state = res.stdout.strip().upper()
@@ -344,7 +344,10 @@ def _launch_detached(argv: list[str], run_dir: str, log_file: str | None = None)
     When *log_file* is given, stdout/stderr are redirected into it; otherwise
     the child manages its own output (e.g. the local-run wrapper script).
     """
-    kwargs: dict = {"close_fds": True, "start_new_session": True}
+    # stdin is never inherited: it is this server's MCP protocol pipe, and a child that
+    # reads it eats the client's JSON-RPC traffic.
+    kwargs: dict = {"close_fds": True, "start_new_session": True,
+                    "stdin": subprocess.DEVNULL}
     if log_file:
         kwargs["stdout"] = open(log_file, "w")
         kwargs["stderr"] = subprocess.STDOUT
@@ -379,6 +382,7 @@ def _submit_sbatch(
 
     try:
         res = subprocess.run(["sbatch", batch_path],
+                             stdin=subprocess.DEVNULL,
                              stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                              text=True, timeout=30)
     except FileNotFoundError:
@@ -405,6 +409,7 @@ def _scancel(job_id: int) -> str | None:
     """Cancel one Slurm job; returns an error message, or None when it worked."""
     try:
         res = subprocess.run(["scancel", str(job_id)],
+                             stdin=subprocess.DEVNULL,
                              stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                              text=True, timeout=15)
     except (FileNotFoundError, subprocess.TimeoutExpired) as exc:

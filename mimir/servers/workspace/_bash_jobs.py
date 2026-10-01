@@ -238,6 +238,11 @@ def launch(command: str, cwd: str, env: dict, preamble: str = "",
                 ["bash", "--noprofile", "--norc", "-c", script],
                 cwd=cwd,
                 env=env,
+                # Never the server's own stdin: that is the MCP protocol pipe, and a job
+                # that reads it (``ssh`` without ``-n``, ``cat``) eats the client's
+                # JSON-RPC traffic — swallowing requests whole, or desynchronising the
+                # framing, while the server still looks healthy.
+                stdin=subprocess.DEVNULL,
                 stdout=log_fh,
                 stderr=err_fh if err_fh is not None else subprocess.STDOUT,
                 close_fds=True,

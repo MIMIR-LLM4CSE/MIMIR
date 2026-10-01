@@ -189,6 +189,7 @@ def _run_ctags(extra: list[str]) -> str:
     try:
         proc = subprocess.run(
             cmd, capture_output=True, text=True, timeout=120, cwd=SEARCH_ROOT,
+            stdin=subprocess.DEVNULL,   # never the server's MCP pipe
         )
     except (OSError, subprocess.TimeoutExpired):
         return ""

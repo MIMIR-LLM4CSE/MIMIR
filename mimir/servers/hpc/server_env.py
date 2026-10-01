@@ -56,6 +56,7 @@ def _run(cmd: list[str], timeout: int = _TIMEOUT) -> dict:
     try:
         res = subprocess.run(
             cmd,
+            stdin=subprocess.DEVNULL,   # never the server's MCP pipe
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
