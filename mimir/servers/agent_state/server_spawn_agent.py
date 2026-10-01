@@ -403,10 +403,17 @@ async def _run_sub_agent(
 
     # Always use the same model as the parent process — the backend (Ollama or
     # vLLM) only serves one model at a time, so using a different one would fail.
-    # The model is read from MIMIR_DEFAULT_MODEL (set by the parent before
-    # spawning servers) or from the config DEFAULT_MODEL.
+    # The model is read from MIMIR_DEFAULT_MODEL (stamped into this server's env at
+    # spawn, from the parent agent's own model) or from the config DEFAULT_MODEL.
+    #
+    # The session comes the same way, and the child must be told: it acts inside the
+    # parent's conversation, so its scratchpad, todo list, plans and approved paths are
+    # that conversation's. Without it the child would fall back to the active-session
+    # pointer — the session the user is *looking at*, which under concurrency is
+    # routinely a different one — and write its working state into someone else's.
     _model = os.environ.get("MIMIR_DEFAULT_MODEL", "").strip() or DEFAULT_MODEL
-    agent = MimirAgent(model=_model)
+    _session = (os.environ.get("MIMIR_SESSION_ID") or "").strip() or None
+    agent = MimirAgent(model=_model, session_id=_session)
     try:
         return await _drive_sub_agent(
             agent, task, context, role, exploring, max_steps, on_event,

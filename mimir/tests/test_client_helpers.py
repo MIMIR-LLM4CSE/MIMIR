@@ -56,13 +56,31 @@ class ClientHelperTests(unittest.TestCase):
         self.assertEqual(client_module.SERVERS, client_config_module.SERVERS)
         self.assertEqual(client_module._BASE, client_config_module.SERVER_BASE)
 
-    def test_set_model_switches_the_active_model_and_environment(self) -> None:
+    def test_set_model_switches_the_active_model_without_touching_the_environment(self) -> None:
+        """The model is the agent's own, not the process's.
+
+        Several agents live in one process — one per concurrent session, plus every
+        sub-agent — and they share one ``os.environ``, so publishing the model there
+        made one session's switch retarget what every other session's servers were
+        told. The model reaches a server through its own spawn environment instead,
+        built from ``agent.model`` (integration/server_manager.connect_server).
+        """
+        before = os.environ.get("MIMIR_DEFAULT_MODEL")
         agent = client_module.MimirAgent()
         original = agent.model
         self.assertNotEqual(original, "qwen3:30b")
         agent.set_model("qwen3:30b")
         self.assertEqual(agent.model, "qwen3:30b")
-        self.assertEqual(os.environ.get("MIMIR_DEFAULT_MODEL"), "qwen3:30b")
+        self.assertEqual(os.environ.get("MIMIR_DEFAULT_MODEL"), before)
+
+    def test_two_agents_in_one_process_keep_their_own_models(self) -> None:
+        """What the removed environment write made impossible."""
+        first = client_module.MimirAgent(model="qwen3:30b")
+        second = client_module.MimirAgent(model="some-other-model")
+        self.assertEqual(first.model, "qwen3:30b")
+        self.assertEqual(second.model, "some-other-model")
+        first.set_model("a-third-model")
+        self.assertEqual(second.model, "some-other-model")
 
     def test_set_model_re_resolves_enforcement_from_the_profile(self) -> None:
         agent = client_module.MimirAgent()

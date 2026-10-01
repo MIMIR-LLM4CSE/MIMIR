@@ -15,6 +15,13 @@ server republishes so a blocking call can show what it is doing.
 being diverted, which carries it as registry data — this module never tests it
 against a literal, and the name is never shown to the user.
 
+*session_id* says whose run is meant. Sessions run turns concurrently, so two of them
+can each have a ``bash_run`` blocking, and the channel directory lives under each
+session's own state dir; a divert addressed to no session in particular would detach
+whichever command happened to announce itself there. It is passed in rather than read
+from the environment because this half runs in the client, where every session shares
+one ``os.environ``.
+
 Two small files, one format, and the two ends of it are pinned together by
 tests/test_run_channel.py.
 
@@ -28,8 +35,9 @@ import os
 from ..config.constants import STATE_DIR
 
 
-def _dir(channel: str) -> str:
-    return os.path.join(STATE_DIR, "runs", channel)
+def _dir(channel: str, session_id: str | None = None) -> str:
+    from ...servers._shared.state_paths import session_state_dir
+    return os.path.join(session_state_dir(STATE_DIR, session_id), "runs", channel)
 
 
 def _server_alive(run: dict) -> bool:
@@ -50,10 +58,10 @@ def _server_alive(run: dict) -> bool:
     return os.path.exists(f"/proc/{pid}")
 
 
-def current_run(channel: str) -> dict | None:
+def current_run(channel: str, session_id: str | None = None) -> dict | None:
     """The foreground run the server is waiting on for *channel*, if there is one."""
     try:
-        with open(os.path.join(_dir(channel), "current.json"), encoding="utf-8") as fh:
+        with open(os.path.join(_dir(channel, session_id), "current.json"), encoding="utf-8") as fh:
             run = json.load(fh)
     except (OSError, ValueError):
         return None
@@ -62,18 +70,18 @@ def current_run(channel: str) -> dict | None:
     return run if _server_alive(run) else None
 
 
-def request_divert(channel: str) -> dict | None:
+def request_divert(channel: str, session_id: str | None = None) -> dict | None:
     """Ask the server to detach the current run; return what was targeted.
 
     ``None`` means there was nothing to divert — almost always because the command
     finished between the click and the read. The caller says so rather than
     pretending something happened.
     """
-    run = current_run(channel)
+    run = current_run(channel, session_id)
     if run is None:
         return None
     try:
-        base = _dir(channel)
+        base = _dir(channel, session_id)
         os.makedirs(base, exist_ok=True)
         path = os.path.join(base, "divert")
         tmp = f"{path}.tmp{os.getpid()}"

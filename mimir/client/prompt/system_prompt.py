@@ -569,18 +569,22 @@ def _workspace_root_for_prompt() -> str:
     return os.environ.get("SEARCH_ROOT") or os.getcwd()
 
 
-def _scratch_dir_for_prompt() -> str:
+def _scratch_dir_for_prompt(session_id: str | None = None) -> str:
     """The scratchpad path to advertise, or "" if it cannot resolve.
 
     The session-scoped directory, not ``standing_roots()[0]``: the standing grant is
     the scratchpad *home* (it has to cover a mid-run session switch), so advertising it
     would point the model one level above where its own working files belong.
     STATE_DIR is passed explicitly — see tool_execution.validation.scratch_roots.
+
+    *session_id* names the conversation this prompt is for. It has to be passed, not
+    looked up: several sessions build prompts in this one process, and the active-session
+    pointer would advertise one conversation's scratchpad to all of them.
     """
     try:
         from ...servers._shared.state_paths import scratch_dir
         from ..config.constants import STATE_DIR
-        return scratch_dir(STATE_DIR)
+        return scratch_dir(STATE_DIR, session_id)
     except Exception:
         return ""
 
@@ -658,6 +662,7 @@ def build_system_content(
     thinking_depth: int = 0,
     delegation_available: bool = False,
     tool_descriptions: dict[str, str] | None = None,
+    session_id: str | None = None,
 ) -> str:
     system_content = build_base_system_content(context_file)
 
@@ -693,7 +698,7 @@ def build_system_content(
     # own searches and reads, and hardware detail is on demand from the platform tools.
     system_content += _section(
         f"Workspace root (absolute): {_workspace_root_for_prompt()}\n"
-        f"Scratchpad (yours, outside the workspace, no approval needed): {_scratch_dir_for_prompt()}\n"
+        f"Scratchpad (yours, outside the workspace, no approval needed): {_scratch_dir_for_prompt(session_id)}\n"
         "Nothing there counts as produced work or is reported to the user. Where a check goes "
         "follows from how long it has to live:\n"
         "- Run once — not a file at all: the code inline as a quoted `-c` argument, steps chained "

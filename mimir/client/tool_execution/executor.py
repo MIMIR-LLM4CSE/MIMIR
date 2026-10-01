@@ -261,7 +261,10 @@ def _build_fork_hint(
     parent = os.path.dirname(path)
     from ...servers._shared.state_paths import scratch_dir
     from ..config.constants import STATE_DIR
-    scratch = scratch_dir(STATE_DIR)
+    # This agent's scratchpad, named by its own session: the hint compares where the
+    # file landed against where *this* conversation's throwaway work belongs, and the
+    # active-session pointer would hand a concurrent session another one's directory.
+    scratch = scratch_dir(STATE_DIR, getattr(agent, "session_id", None))
 
     base = _fork_base_stem(stem)
     if base:

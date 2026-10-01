@@ -13,7 +13,7 @@ file the server's wait loop consumes on its next tick. The server also republish
 what the run is *doing*, which is what lets a blocking call show a live phase
 instead of a mute spinner.
 
-Two files, under ``<state_dir>/runs/<channel>/``:
+Two files, under ``<session_state_dir>/runs/<channel>/``:
 
 ``current.json``  written by the server the moment it starts waiting, so the client
                   can learn which job a blocking run is, without the key ever
@@ -26,8 +26,11 @@ Two files, under ``<state_dir>/runs/<channel>/``:
 registry data on both ends: the server passes the name it registered, and the client
 reads it off the tool row it is diverting. Neither end ever tests it against a
 literal. One file each is unambiguous because at most one foreground call per tool
-can be in flight at any instant — that is the same blocking property stated above,
-read as a guarantee rather than a limitation.
+can be in flight *per session* at any instant — that is the same blocking property
+stated above, read as a guarantee rather than a limitation. Per session is what makes
+it a guarantee at all now that sessions run concurrently: two conversations can each
+have a ``bash_run`` blocking, and with one channel directory between them a divert
+click would have detached the other one's command.
 
 Everything here is best-effort and fail-open: a missing, stale or corrupt sidecar
 must leave the run behaving exactly as it did before this module existed.
@@ -43,8 +46,8 @@ _STALE_S = 60.0
 
 
 def _dir(channel: str) -> str:
-    from state_paths import state_dir
-    return os.path.join(state_dir(), "runs", channel)
+    from state_paths import session_state_dir
+    return os.path.join(session_state_dir(), "runs", channel)
 
 
 def _write_atomic(path: str, text: str) -> None:

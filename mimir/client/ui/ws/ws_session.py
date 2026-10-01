@@ -773,7 +773,7 @@ class _Session:
                 if names.count(name) > 1:
                     continue
                 try:
-                    run = run_channel.current_run(name)
+                    run = run_channel.current_run(name, self._active_session_id)
                 except Exception:
                     continue
                 if not run:
@@ -1519,7 +1519,8 @@ class _Session:
         the job handle. Saying anything more here would be predicting it.
         """
         channel = self._live_rows.get(str(msg.get("id") or ""))
-        if channel is None or run_channel.request_divert(channel) is None:
+        if channel is None or run_channel.request_divert(
+                channel, self._active_session_id) is None:
             await self.ws.send(json.dumps({
                 "type": "status",
                 "text": "  ⓘ Nothing to move — that run had already finished.",

@@ -138,13 +138,21 @@ def _mirrored_carry_fields() -> tuple[str, ...]:
 class MimirAgent:
     """Multi-server MCP agent backed by a local Ollama model."""
 
-    def __init__(self, model: str = DEFAULT_MODEL):
+    def __init__(self, model: str = DEFAULT_MODEL, session_id: str | None = None):
         self.model = model
         import os
-        # Publish the active model to the environment so sub-agents (spawned via
-        # server_spawn_agent.py in a separate thread) inherit the same model.
-        if model:
-            os.environ["MIMIR_DEFAULT_MODEL"] = model
+        # The conversation this agent works for, for its whole life. Several agents run
+        # in this one process — one per concurrent session, plus every sub-agent — and
+        # they share one `os.environ`, so an id in the environment could only ever name
+        # one of them. Everything session-scoped on the client side therefore reads it
+        # from here and passes it down explicitly (approvals, scratchpad, todo file,
+        # run channels); the server subprocesses get their own copy stamped into their
+        # frozen environment at spawn (see integration/server_manager.connect_server).
+        # None for the ends that have no session: the CLI, the benchmark runner, tests.
+        self.session_id: str | None = session_id
+        # Deliberately NOT published to os.environ: a second session on another model
+        # would retarget every already-spawned server's idea of the default. The model
+        # travels per server instead, in connect_server's env, read from `self.model`.
         # Resolve the scratchpad home once, here, and publish it: the ownership check
         # on a world-writable /tmp must happen in exactly one place, and both this
         # process and the server subprocesses then read the same answer from the
@@ -197,7 +205,7 @@ class MimirAgent:
         # Use default non_batch_tools for immediate approval of execution/compilation tools
         # Constructed empty; classification is seeded from the live per-agent
         # registry after servers connect (seed_classification_from_caps).
-        self.approvals = ApprovalManager()
+        self.approvals = ApprovalManager(session_id=session_id)
         self.session_approved_scopes = self.approvals.approved_scopes
 
         self.plan_todos: list[str] = []
@@ -294,16 +302,21 @@ class MimirAgent:
 
         The model is read live at every LLM call (``agent.model`` is passed to the
         backend per step), so mutating it here is enough for the next call to use
-        the new model — no reconnect is needed. The environment is refreshed so
-        sub-agents (spawned in a separate thread) inherit the new model, and
-        ``enforcement`` is re-derived from the new model's profile, matching how it
-        is resolved once at ``__init__``.
+        the new model — no reconnect is needed. ``enforcement`` is re-derived from the
+        new model's profile, matching how it is resolved once at ``__init__``.
+
+        Nothing is written to ``os.environ``: a server's environment is a copy frozen at
+        spawn, so writing there never reached the already-connected ``agent`` server
+        anyway — and with concurrent sessions in one process it would have changed what
+        *another* session's servers were told. Sub-agents of this agent inherit the model
+        through their own server's env, built from ``self.model`` at connect time; a
+        model switched after that point applies to this agent's own calls, not to a
+        sub-agent spawned by a server already running.
         """
         model = (model or "").strip()
         if not model:
             raise ValueError("Model name must not be empty.")
         self.model = model
-        os.environ["MIMIR_DEFAULT_MODEL"] = model
         self.enforcement = enforcement_level(model)
         from .config.preferences import load_temperature
         self.temperature = load_temperature(model)
@@ -496,23 +509,21 @@ class MimirAgent:
 
 
     def _get_todo_file(self) -> str:
-        """Return the absolute path to the active todo_list.md, or '' if not available."""
+        """This agent's own todo_list.md, or '' when it has no planning tool.
+
+        ``self.session_id``, never the active-session pointer directly. This path goes
+        into the system prompt, so reading the pointer here pointed every concurrently
+        running agent at the checklist of whichever conversation the user happened to be
+        looking at. An agent with no session of its own (CLI, benchmark runner) passes
+        None and so resolves as it always did — through the pointer, falling back to the
+        shared file at the state-dir root.
+        """
         if not names_with_cap(TASK_PLANNING, self.tool_caps):
             return ""
-        mimir_dir = STATE_DIR
-        sidecar = os.path.join(mimir_dir, "active_session")
-        todo_file = ""
-        try:
-            if os.path.exists(sidecar):
-                with open(sidecar, "r", encoding="utf-8") as _f:
-                    _sid = _f.read().strip()
-                if _sid:
-                    todo_file = os.path.join(mimir_dir, "sessions", _sid, "todo_list.md")
-        except OSError:
-            pass
-        if not todo_file:
-            todo_file = os.path.join(mimir_dir, "todo_list.md")
-        return todo_file
+        from ..servers._shared.state_paths import session_state_dir
+        return os.path.join(
+            session_state_dir(STATE_DIR, self.session_id), "todo_list.md"
+        )
 
     async def _build_system_content(self, active_mode: str) -> str:
         return self.build_system_content_now(active_mode)
@@ -538,6 +549,7 @@ class MimirAgent:
             todo_file=todo_file,
             plan_todos=self.plan_todos,
             thinking_depth=self.thinking_depth,
+            session_id=self.session_id,
             delegation_available=bool(names_with_cap(DELEGATE, self.tool_caps)),
             # Read from the live schemas rather than restated anywhere: the server that
             # declares a tool owns what it does, and a catalog copied by hand is a

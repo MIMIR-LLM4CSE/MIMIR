@@ -9,6 +9,15 @@ so the whole stack agrees on one location.
 When ``MIMIR_STATE_DIR`` is unset — standalone runs and the hermetic test suite,
 which only set ``MCP_FILES_ROOT`` — we fall back to the legacy in-workspace
 ``<workspace>/.mimir`` so those callers keep working unchanged.
+
+Two tiers, and which one a path belongs to is the whole question:
+
+* ``state_dir()`` — what belongs to the *workspace*: the memory store, the Python
+  environments, the module catalogue. Common property, shared by every conversation,
+  and expensive to rebuild.
+* ``session_state_dir()`` — what belongs to one *conversation*: its todo list, plans,
+  transcript, approved paths, run channels, job directories. Several sessions run turns
+  at the same time, so anything here must not be readable or truncatable by another one.
 """
 
 import hashlib
@@ -42,18 +51,51 @@ def state_dir() -> str:
 
 
 def active_session_id(base: str | None = None) -> str:
-    """The session the client is currently driving, or "" outside a session.
+    """The session this process is working for, or "" outside a session.
 
-    Reads the ``active_session`` sidecar the client rewrites on every session
-    switch. The servers' environment is frozen at spawn, so a file on the shared
-    state dir is the only live client→server channel (same mechanism the approved
-    -paths allowlist uses). Best-effort: any read error means "no session".
+    ``MIMIR_SESSION_ID`` first. Several sessions now run turns at the same time, each
+    with its own agent and therefore its own set of server subprocesses, so the session
+    a server belongs to is fixed for its whole life and is stamped into its environment
+    at spawn (see client/integration/server_manager.py). That is what makes the answer
+    *correct* under concurrency: a file naming "the" session can only ever name one, and
+    every other live session would read it and act for the wrong conversation.
+
+    The ``active_session`` sidecar remains the fallback, for the ends that genuinely have
+    a single session: the CLI, standalone server runs, and the test suite. It is the
+    session the user is *looking at*, which is the right answer only when there is
+    nothing else running.
+
+    Best-effort: any read error means "no session".
     """
+    env = (os.environ.get("MIMIR_SESSION_ID") or "").strip()
+    if env:
+        return env
     try:
         with open(os.path.join(base or state_dir(), "active_session"), encoding="utf-8") as fh:
             return fh.read().strip()
     except OSError:
         return ""
+
+
+def session_state_dir(base: str | None = None, session_id: str | None = None) -> str:
+    """Where everything belonging to one *conversation* lives.
+
+    ``<state_dir>/sessions/<sid>/`` — the todo list, the plans, the transcript, the
+    approved-path allowlist, the run channels, the detached job directories. One
+    directory per conversation, so N sessions working at once cannot read or truncate
+    each other's state, and deleting a conversation takes its working files with it.
+
+    Falls back to ``state_dir()`` itself outside any session (CLI, standalone servers,
+    tests). That fallback is what lets every caller here switch to this function without
+    a behaviour change for the single-session ends: the paths they resolved before are
+    exactly the paths they resolve now.
+
+    Not created here — callers that write create it, so a read-only path check never
+    materialises a directory (the same rule :func:`scratch_dir` follows).
+    """
+    root = base or state_dir()
+    sid = session_id if session_id is not None else active_session_id(root)
+    return os.path.join(root, "sessions", sid) if sid else root
 
 
 def scratch_home() -> str:
@@ -76,7 +118,7 @@ def scratch_home() -> str:
     return os.path.join(os.path.abspath(tmp), f"mimir-{os.getuid()}-{workspace_id(root)}")
 
 
-def scratch_dir(base: str | None = None) -> str:
+def scratch_dir(base: str | None = None, session_id: str | None = None) -> str:
     """The agent's scratchpad: a writable directory *outside* the workspace.
 
     Somewhere to put throwaway probe scripts, intermediate data, and working files
@@ -95,8 +137,12 @@ def scratch_dir(base: str | None = None) -> str:
     *base* overrides the *state* dir, which is consulted only for the active-session
     sidecar: the client passes its own ``STATE_DIR`` because ``MIMIR_STATE_DIR`` is
     placed only in the server subprocesses' environment, never its own.
+
+    *session_id* names the session outright and wins over both. The client process runs
+    several sessions in one ``os.environ``, so there the id can only come from the object
+    that knows it — the agent — and never from the environment or the sidecar.
     """
-    sid = active_session_id(base or state_dir())
+    sid = session_id if session_id is not None else active_session_id(base or state_dir())
     home = scratch_home()
     return os.path.join(home, sid) if sid else home
 

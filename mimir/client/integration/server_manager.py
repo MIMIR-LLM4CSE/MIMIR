@@ -243,12 +243,28 @@ async def connect_server(*, agent: Any, name: str, script: str) -> None:
     # is deliberately distinct from the file/search sandbox — see config.constants.
     # The scratchpad travels the same way: the client vetted that path at startup
     # (ensure_scratch_home), so servers must use its answer, not re-derive one.
+    #
+    # MIMIR_SESSION_ID is what makes a server's state per-conversation. One agent serves
+    # one session for its whole life, so the session is fixed at spawn and the frozen
+    # environment is the right place for it: every state path the server resolves
+    # (todo list, plans, approved paths, run channels, job dirs) then names its own
+    # session, whatever other sessions are doing at the same moment. Empty for the ends
+    # that have no session — the CLI, standalone runs, tests — which fall back to the
+    # active-session pointer.
+    #
+    # MIMIR_DEFAULT_MODEL travels per server rather than through the client's own
+    # environment: server_spawn_agent reads it out of this frozen copy to build its
+    # child, and a second session on another model must not change what an
+    # already-spawned server would pass on.
     server_env = {
         **os.environ,
         "MCP_FILES_ROOT": os.getcwd(),
         "SEARCH_ROOT": os.getcwd(),
         "MIMIR_STATE_DIR": STATE_DIR,
         "MIMIR_SCRATCH_DIR": scratch_home(),
+        "MIMIR_SESSION_ID": getattr(agent, "session_id", "") or "",
+        "MIMIR_DEFAULT_MODEL": getattr(agent, "model", "") or "",
+        "LLM_BACKEND": getattr(agent, "backend", "") or os.environ.get("LLM_BACKEND", ""),
     }
     params = StdioServerParameters(command=command, args=[script], env=server_env)
 
