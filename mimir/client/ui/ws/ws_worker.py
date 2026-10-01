@@ -513,6 +513,10 @@ class _AgentWorker:
                     current = fh.read()
             except OSError:
                 current = ""
+            # What the user is about to be shown, recorded so a later revert can tell
+            # whether the file still holds it. Anything else on disk by then was written
+            # by something outside this review — another session, or the user's editor.
+            agent.approvals.note_reviewed(path, current)
             before_lines = original.splitlines(keepends=True) if original is not None else []
             after_lines  = current.splitlines(keepends=True)
             if before_lines == after_lines:

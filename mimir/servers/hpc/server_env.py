@@ -261,10 +261,27 @@ def env_create(name: str, kind: str = "venv", packages=None, python_executable: 
             return error
         os.makedirs(_ENV_HOME, exist_ok=True)
         target = os.path.join(_ENV_HOME, name)
-        if os.path.exists(target):
-            return err(f"Path already exists: {target}", hint="Choose another name or delete the existing env first.")
+        # Claim the name with mkdir rather than testing then creating. The environment
+        # home is workspace-global, so two sessions asking for the same name raced
+        # between the test and the create and then ran `venv` into each other's tree —
+        # mkdir is the one operation the filesystem makes atomic for us. `venv` is happy
+        # to populate an existing empty directory.
+        try:
+            os.mkdir(target)
+        except FileExistsError:
+            return err(f"Path already exists: {target}",
+                       hint="Choose another name or delete the existing env first.")
+        except OSError as exc:
+            return err(f"Could not create {target}: {exc}")
         created = _run([base_py, "-m", "venv", target])
         if not created["ok"]:
+            # Leave nothing behind for the name to be blocked by: the claim was ours and
+            # it did not work out. Only the directory we just made, and only if `venv`
+            # left it empty — a partial tree is evidence the user may want.
+            try:
+                os.rmdir(target)
+            except OSError:
+                pass
             return err(created["stderr"].strip() or "venv creation failed", returncode=created["returncode"])
         new_py = os.path.join(target, "bin", "python")
         if pkgs:

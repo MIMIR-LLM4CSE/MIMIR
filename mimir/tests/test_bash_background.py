@@ -19,6 +19,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 SERVERS_DIR = Path(__file__).resolve().parents[1] / "servers"
@@ -30,7 +31,15 @@ import run_channel  # noqa: E402
 import _bash_jobs  # noqa: E402
 import server_bash  # noqa: E402
 
-from mimir.servers._shared.trusted_read_roots import TRUSTED_CACHE_ROOTS  # noqa: E402
+from mimir.servers._shared.trusted_read_roots import trusted_read_roots  # noqa: E402
+
+
+def _jobs_on_disk() -> list[str]:
+    """What the jobs root holds — a root that was never created holds nothing."""
+    try:
+        return os.listdir(_bash_jobs.jobs_root())
+    except FileNotFoundError:
+        return []
 
 
 def _wait_terminal(job_key: str, timeout: float = 15.0) -> dict:
@@ -45,17 +54,22 @@ def _wait_terminal(job_key: str, timeout: float = 15.0) -> dict:
 
 class BashBackgroundTests(unittest.TestCase):
     def setUp(self) -> None:
-        # Jobs land in a real cache dir; point it at a temp tree so a test run neither
-        # reads nor leaves state in the user's own.
-        self._tmp = tempfile.mkdtemp(prefix="mimir-bash-jobs-")
-        self._orig_root = _bash_jobs.JOBS_ROOT
-        _bash_jobs.JOBS_ROOT = self._tmp
+        # Jobs land under the session's own state dir; point the state dir at a temp
+        # tree so a test run neither reads nor leaves state in the user's own. Set
+        # through the environment rather than by patching a module constant, so what
+        # the test exercises is the real resolution (state_paths.session_state_dir).
+        self._tmp = tempfile.mkdtemp(prefix="mimir-bash-state-")
+        self._orig_state = os.environ.get("MIMIR_STATE_DIR")
+        os.environ["MIMIR_STATE_DIR"] = self._tmp
 
     def tearDown(self) -> None:
         for payload in _bash_jobs.listing():
             if payload["state"] == "running":
                 _bash_jobs.stop(payload["job_key"])
-        _bash_jobs.JOBS_ROOT = self._orig_root
+        if self._orig_state is None:
+            os.environ.pop("MIMIR_STATE_DIR", None)
+        else:
+            os.environ["MIMIR_STATE_DIR"] = self._orig_state
         shutil.rmtree(self._tmp, ignore_errors=True)
 
     def test_launch_returns_immediately_with_a_watchable_handle(self) -> None:
@@ -164,13 +178,40 @@ class BashBackgroundTests(unittest.TestCase):
     def test_job_logs_live_under_a_trusted_read_root(self) -> None:
         # The model reads the log with the ordinary file tools while the run goes on;
         # that only works if the location is one the read servers and the policy gate
-        # both already trust.
-        self.assertTrue(
-            any(root.rstrip("/").endswith("mimir_bash") for root in TRUSTED_CACHE_ROOTS),
-            TRUSTED_CACHE_ROOTS,
-        )
-        self.assertTrue(self._orig_root.startswith(
-            os.path.expanduser("~/.cache/mimir_bash")))
+        # both already trust. The state dir is such a root, and is where jobs live now:
+        # a fixed root under ~/.cache was outside every session, so one conversation
+        # listed — and could kill — another's jobs, and nothing ever reclaimed the space.
+        self.assertIn(self._tmp, trusted_read_roots())
+        self.assertTrue(_bash_jobs.jobs_root().startswith(self._tmp))
+
+    def test_jobs_of_one_session_are_invisible_to_another(self) -> None:
+        # Scoped by resolving the root, not by filtering: each session's jobs sit in
+        # its own directory, so there is nothing to filter and no way to name a job
+        # that is not yours.
+        with patch.dict(os.environ, {"MIMIR_SESSION_ID": "session-a"}):
+            launched = server_bash.bash_run("sleep 30", background=True)["job_key"]
+            self.assertIn(launched, [j["job_key"] for j in _bash_jobs.listing()])
+            mine = _bash_jobs.jobs_root()
+            with patch.dict(os.environ, {"MIMIR_SESSION_ID": "session-b"}):
+                # Session B cannot see it, and so cannot reach it: the handle names no
+                # job of B's, and A's run is untouched by B asking to stop it.
+                self.assertEqual(_bash_jobs.listing(), [])
+                self.assertNotEqual(_bash_jobs.jobs_root(), mine)
+                self.assertEqual(_bash_jobs.state(launched)["error"], "No such job.")
+                server_bash.bash_job_stop(job_key=launched)
+            self.assertEqual(_bash_jobs.state(launched)["state"], "running")
+            # Stopped from its own session, where it is addressable. Done inside the
+            # patch: tearDown's sweep resolves the root too, and would not find it.
+            self.assertEqual(server_bash.bash_job_stop(job_key=launched)["status"], "ok")
+
+    def test_nothing_is_written_outside_the_state_dir(self) -> None:
+        # The point of the move: MIMIR writes under its own state dir, the workspace,
+        # and the /tmp scratchpad — never a cache root of its own in $HOME.
+        legacy = os.path.expanduser("~/.cache/mimir_bash")
+        before = os.path.isdir(legacy)
+        job_key = server_bash.bash_run("echo hi", background=True)["job_key"]
+        _wait_terminal(job_key)
+        self.assertEqual(os.path.isdir(legacy), before)
 
     def test_an_unknown_handle_is_refused_with_a_way_forward(self) -> None:
         for job_key in ("", "../../etc", "nope"):
@@ -233,10 +274,10 @@ class BlockingRunTests(unittest.TestCase):
     """
 
     def setUp(self) -> None:
-        self._tmp = tempfile.mkdtemp(prefix="mimir-bash-jobs-")
-        self._orig_root = _bash_jobs.JOBS_ROOT
-        _bash_jobs.JOBS_ROOT = self._tmp
+        # One temp state dir now covers both: the job directories AND the divert
+        # channel live under it, which is the point — they belong to the same session.
         self._state = tempfile.mkdtemp(prefix="mimir-bash-state-")
+        self._tmp = self._state
         self._orig_state = os.environ.get("MIMIR_STATE_DIR")
         os.environ["MIMIR_STATE_DIR"] = self._state
 
@@ -244,7 +285,6 @@ class BlockingRunTests(unittest.TestCase):
         for payload in _bash_jobs.listing():
             if payload["state"] == "running":
                 _bash_jobs.stop(payload["job_key"])
-        _bash_jobs.JOBS_ROOT = self._orig_root
         if self._orig_state is None:
             os.environ.pop("MIMIR_STATE_DIR", None)
         else:
@@ -291,12 +331,12 @@ class BlockingRunTests(unittest.TestCase):
 
     def test_a_timeout_leaves_no_job_directory(self) -> None:
         server_bash.bash_run("sleep 30", timeout=1)
-        self.assertEqual(os.listdir(_bash_jobs.JOBS_ROOT), [])
+        self.assertEqual(_jobs_on_disk(), [])
 
     def test_a_completed_blocking_run_leaves_no_job_directory(self) -> None:
         # A job dir per `ls` would grow the cache without anyone holding a handle.
         server_bash.bash_run("echo hi")
-        self.assertEqual(os.listdir(_bash_jobs.JOBS_ROOT), [])
+        self.assertEqual(_jobs_on_disk(), [])
 
     def test_a_refused_command_creates_no_job(self) -> None:
         # The blocking mirror of test_backgrounding_does_not_bypass_validation:
@@ -305,7 +345,7 @@ class BlockingRunTests(unittest.TestCase):
             with self.subTest(command=command):
                 result = server_bash.bash_run(command, timeout=5)
                 self.assertEqual(result["status"], "error")
-        self.assertEqual(os.listdir(_bash_jobs.JOBS_ROOT), [])
+        self.assertEqual(_jobs_on_disk(), [])
 
     def test_foreground_stderr_stays_separate_from_stdout(self) -> None:
         # The job launcher merges the two by default, which a tailed log wants and a
@@ -364,7 +404,7 @@ class BlockingRunTests(unittest.TestCase):
 
         threading.Thread(target=divert, daemon=True).start()
         result = server_bash.bash_run("sleep 4", timeout=60)
-        self.assertIn(result["job_key"], os.listdir(_bash_jobs.JOBS_ROOT))
+        self.assertIn(result["job_key"], _jobs_on_disk())
 
     def test_a_divert_naming_another_run_is_not_consumed(self) -> None:
         # Two clients share one state dir. A request must name the run it meant.

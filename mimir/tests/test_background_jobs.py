@@ -234,11 +234,15 @@ class LiveRegistrySeamTests(unittest.TestCase):
         import tempfile
         from mimir.tests.test_bash_background import server_bash, _bash_jobs
         self.server_bash, self._bash_jobs = server_bash, _bash_jobs
-        self._tmp = tempfile.mkdtemp(prefix="mimir-seam-jobs-")
-        self._orig_root = _bash_jobs.JOBS_ROOT
-        _bash_jobs.JOBS_ROOT = self._tmp
+        # Jobs live under the session's state dir now, so pointing the state dir at a
+        # temp tree is what sandboxes them (state_paths.session_state_dir).
+        self._tmp = tempfile.mkdtemp(prefix="mimir-seam-state-")
+        self._orig_state = os.environ.get("MIMIR_STATE_DIR")
+        os.environ["MIMIR_STATE_DIR"] = self._tmp
         self.addCleanup(shutil.rmtree, self._tmp, ignore_errors=True)
-        self.addCleanup(setattr, _bash_jobs, "JOBS_ROOT", self._orig_root)
+        self.addCleanup(
+            lambda: os.environ.pop("MIMIR_STATE_DIR", None) if self._orig_state is None
+            else os.environ.__setitem__("MIMIR_STATE_DIR", self._orig_state))
 
     def _live_registry(self, tool_name: str) -> dict:
         """The capabilities the client would resolve for *tool_name*, over the wire."""

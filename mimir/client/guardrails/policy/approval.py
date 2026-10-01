@@ -248,6 +248,11 @@ class ApprovalManager:
         self._pending_review: list[dict] = []
         # path → original content (None means file did not exist before the batch)
         self._file_snapshots: dict[str, str | None] = {}
+        # Digest of each reviewed file as it stood when its diff was last shown to the
+        # user — see note_reviewed. What a revert is allowed to undo is what was
+        # reviewed; anything the file gained since came from somewhere this agent cannot
+        # see, and under concurrent sessions that somewhere is another conversation.
+        self._reviewed_digests: dict[str, str] = {}
 
     # ------------------------------------------------------------------
     # Basic metadata helpers
@@ -570,6 +575,46 @@ class ApprovalManager:
             self._file_snapshots[path] = None  # file will be created by this batch
         except OSError:
             pass  # can't snapshot; skip gracefully
+
+    @staticmethod
+    def _digest(text: str) -> str:
+        import hashlib
+        return hashlib.sha1(text.encode("utf-8", "replace")).hexdigest()
+
+    def note_reviewed(self, path: str, content: str) -> None:
+        """Record *content* as the state of *path* the user was just shown.
+
+        Called while the review diff is built, which is the only moment at which what is
+        on disk and what the user is looking at are known to be the same thing.
+        """
+        self._reviewed_digests[path] = self._digest(content)
+
+    def reviewed_matches(self, path: str) -> bool | None:
+        """Whether *path* on disk is still what was reviewed. None = cannot tell.
+
+        None when nothing was recorded, or the file cannot be read: the caller then
+        proceeds, which is what every other best-effort check in this module does — a
+        guard that cannot read must not block the user's own undo.
+        """
+        expected = self._reviewed_digests.get(path)
+        if expected is None:
+            return None
+        try:
+            with open(path, "r", encoding="utf-8", errors="replace") as fh:
+                return self._digest(fh.read()) == expected
+        except FileNotFoundError:
+            # Gone since the review. Restoring would recreate it from a baseline nobody
+            # asked for, so this counts as moved.
+            return False
+        except OSError:
+            return None
+
+    def forget_reviewed(self, path: str | None = None) -> None:
+        """Drop the reviewed digest for *path*, or all of them."""
+        if path is None:
+            self._reviewed_digests.clear()
+        else:
+            self._reviewed_digests.pop(path, None)
 
     def flush_pending_review(
         self,

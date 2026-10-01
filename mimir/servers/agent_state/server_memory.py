@@ -157,6 +157,22 @@ def _load() -> list:
     return entries
 
 
+def _write_text_atomic(path: str, text: str) -> None:
+    """Write *text* to *path* via a temp file and one rename.
+
+    The memory store is workspace-global, and several sessions now write to it at the
+    same time. A plain ``open(..., "w")`` truncates first, so a concurrent reader saw a
+    half-written index or note — and two concurrent writers could interleave into one.
+    The rename is what makes a reader see either the old file or the new one. The temp
+    name carries the pid so two writers do not share it.
+    """
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    tmp = f"{path}.tmp{os.getpid()}"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        fh.write(text)
+    os.replace(tmp, path)
+
+
 def _write_index(entries: list) -> None:
     """Rewrite MEMORY.md — the human/agent-scannable index, newest first."""
     lines = ["# Memory Index", ""]
@@ -164,9 +180,7 @@ def _write_index(entries: list) -> None:
         desc = e.get("description") or e.get("name", "")
         date = (e.get("date") or "")[:10]
         lines.append(f"- [{desc}]({e['name']}.md) — {date}")
-    os.makedirs(MEMORY_DIR, exist_ok=True)
-    with open(INDEX_FILE, "w", encoding="utf-8") as f:
-        f.write("\n".join(lines) + "\n")
+    _write_text_atomic(INDEX_FILE, "\n".join(lines) + "\n")
 
 
 def _word_set(text: str) -> set[str]:
@@ -212,9 +226,7 @@ def _load_embeddings() -> dict:
 
 def _save_embeddings(store: dict) -> None:
     try:
-        os.makedirs(MEMORY_DIR, exist_ok=True)
-        with open(EMBEDDINGS_FILE, "w", encoding="utf-8") as f:
-            json.dump(store, f)
+        _write_text_atomic(EMBEDDINGS_FILE, json.dumps(store))
     except OSError:
         pass
 
@@ -347,9 +359,7 @@ def memory_add(text: str, description: str = None, tags: list = None) -> dict:
         "text":        text,
     }
 
-    os.makedirs(MEMORY_DIR, exist_ok=True)
-    with open(os.path.join(MEMORY_DIR, f"{name}.md"), "w", encoding="utf-8") as f:
-        f.write(_serialize(entry))
+    _write_text_atomic(os.path.join(MEMORY_DIR, f"{name}.md"), _serialize(entry))
     memory.append(entry)
 
     # Aging: trim oldest memories beyond the cap.
@@ -461,9 +471,7 @@ def memory_update(
         entry["tags"] = tags
     entry["date"] = _now_display()
 
-    os.makedirs(MEMORY_DIR, exist_ok=True)
-    with open(os.path.join(MEMORY_DIR, f"{name}.md"), "w", encoding="utf-8") as f:
-        f.write(_serialize(entry))
+    _write_text_atomic(os.path.join(MEMORY_DIR, f"{name}.md"), _serialize(entry))
     _write_index(memory)
     _upsert_embedding(name, entry)
     return ok({"name": name, "updated": entry})

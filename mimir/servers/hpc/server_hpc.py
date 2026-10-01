@@ -33,7 +33,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'
 from mcp.server.fastmcp import FastMCP
 from capabilities import tool_caps, PLAN_BLOCKED, CLUSTER_SUBMIT, BACKGROUNDABLE, IRREVERSIBLE
 from responses import err, ok
-from state_paths import state_dir
+from state_paths import session_state_dir, state_dir
 from slurm_nodes import (
     aggregate_node_types as _aggregate_node_types,
     as_int as _as_int,
@@ -52,10 +52,76 @@ _TIMEOUT_ALLOC = 20
 _TIMEOUT_SUBMIT = 30
 _MAX_OUTPUT = 128 * 1024
 
-# Where async batch jobs stash their script + Slurm log: under the agent's own state
-# dir like every other persistent artefact, not a second home-relative location
+# Where async batch jobs stash their script + Slurm log: under the submitting session's
+# own state dir, like every other artefact belonging to a conversation
 # (env-overridable for tests).
-_HPC_JOBS_DIR = os.environ.get("MIMIR_HPC_JOBS_DIR", os.path.join(state_dir(), "hpc_jobs"))
+#
+# Per session, resolved per call. A Slurm job outlives its session, sometimes by days,
+# which is the one way these differ from detached shell jobs — so a job is never
+# *unreachable* from another conversation: _find_job_dir below looks in the sibling
+# sessions read-only and says where it came from. What per-session buys is that two
+# conversations submitting at the same moment cannot land on each other's directory, and
+# that a conversation's submissions go with it when it is deleted.
+def _hpc_jobs_dir() -> str:
+    env = os.environ.get("MIMIR_HPC_JOBS_DIR")
+    if env:
+        return env
+    return os.path.join(session_state_dir(), "hpc_jobs")
+
+
+def _new_job_dir_name() -> str:
+    """A sortable, collision-free directory name for one submission.
+
+    Shares ``_bash_jobs``' key shape — UTC stamp plus four random hex — because the
+    stamp alone collides: it resolves to the second, and ``makedirs(exist_ok=True)``
+    then let two submissions share one directory and overwrite each other's
+    batch_script.sh, slurm.log and slurm_job_id. One second is a long time when two
+    sessions are working at once.
+    """
+    import time as _time
+    stamp = _time.strftime("%Y%m%dT%H%M%SZ", _time.gmtime())
+    base = _hpc_jobs_dir()
+    while True:
+        name = f"{stamp}-{os.urandom(2).hex()}"
+        if not os.path.exists(os.path.join(base, name)):
+            return name
+
+
+def _find_job_dir(job_id: str) -> tuple[str, str]:
+    """Where *job_id* was recorded, and which session recorded it ("" for this one).
+
+    Looks in this session's directory first, then — read-only — in the sibling sessions'.
+    A Slurm job can outlive the conversation that submitted it and still need checking
+    from another one; filing it per session must not make it unfindable. Returns
+    ``("", "")`` when no session recorded it.
+    """
+    def _match(base: str) -> str:
+        try:
+            names = os.listdir(base)
+        except OSError:
+            return ""
+        for name in names:
+            try:
+                with open(os.path.join(base, name, "slurm_job_id")) as fh:
+                    if fh.read().strip() == job_id:
+                        return os.path.join(base, name)
+            except OSError:
+                continue
+        return ""
+
+    found = _match(_hpc_jobs_dir())
+    if found:
+        return found, ""
+    sessions = os.path.join(state_dir(), "sessions")
+    try:
+        others = sorted(os.listdir(sessions))
+    except OSError:
+        return "", ""
+    for sid in others:
+        found = _match(os.path.join(sessions, sid, "hpc_jobs"))
+        if found:
+            return found, sid
+    return "", ""
 
 
 def _run_bash(script: str, timeout: int) -> dict:
@@ -451,8 +517,20 @@ def slurm_job_status(job_id: str) -> dict:
     """
     if not str(job_id).strip():
         return err("job_id is required.")
-    state, raw = _normalized_job_state(str(job_id).strip())
-    return ok({"job_id": str(job_id).strip(), "state": state, "raw_state": raw})
+    job_id = str(job_id).strip()
+    state, raw = _normalized_job_state(job_id)
+    payload = {"job_id": job_id, "state": state, "raw_state": raw}
+    # Where the submission was recorded, so the script and the log stay reachable. A
+    # Slurm job outlives its conversation, and a job dir filed under a session it was
+    # not submitted from would otherwise be unfindable — so the sibling sessions are
+    # searched too, and the answer says when the job came from another one.
+    job_dir, from_session = _find_job_dir(job_id)
+    if job_dir:
+        payload["job_dir"] = job_dir
+        payload["log"] = os.path.join(job_dir, "slurm.log")
+        if from_session:
+            payload["submitted_by_another_session"] = from_session
+    return ok(payload)
 
 
 # A job, or one task of a job array. Anything wider — a user, a partition, a name — is
@@ -598,8 +676,7 @@ def sbatch_submit(
         return err("Submission not confirmed.",
                    hint="Set confirm=True only after user approval.")
 
-    import time as _time
-    job_dir = os.path.join(_HPC_JOBS_DIR, _time.strftime("%Y%m%dT%H%M%SZ", _time.gmtime()))
+    job_dir = os.path.join(_hpc_jobs_dir(), _new_job_dir_name())
     os.makedirs(job_dir, exist_ok=True)
     log_file    = os.path.join(job_dir, "slurm.log")
     script_path = os.path.join(job_dir, "batch_script.sh")

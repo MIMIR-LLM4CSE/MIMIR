@@ -178,12 +178,27 @@ class OutOfWorkspaceGateTests(_TmpStateDir):
         self.assertEqual(len(agent.prompts), 1)   # "always" → no re-prompt
 
     def test_trusted_read_root_not_prompted_for_reads(self) -> None:
+        """A job log the agent itself produced is read without asking.
+
+        The trusted root is the state dir. It used to be three fixed ``~/.cache``
+        locations as well; all three are gone, because nothing writes there any more —
+        the proxy store moved into the workspace, and both kinds of job directory moved
+        under the state dir, per session.
+        """
         agent = self._agent(cap=READ)
-        log = os.path.expanduser("~/.cache/proxy_bench/opt_runs/x/stdout.log")
+        log = os.path.join(self._tmp.name, "sessions", "s1", "jobs", "k", "job.log")
         out = engine._check_out_of_workspace_access(
             agent, "read_file_lines", {"path": log}, {})
         self.assertIsNone(out)
-        self.assertEqual(agent.prompts, [])   # item 1: silent read of proxy cache
+        self.assertEqual(agent.prompts, [])
+
+    def test_no_home_cache_root_is_trusted_any_more(self) -> None:
+        """MIMIR writes under its state dir, the workspace and /tmp — nowhere else."""
+        from mimir.servers._shared.trusted_read_roots import trusted_read_roots
+        home = os.path.expanduser("~")
+        for root in trusted_read_roots():
+            self.assertFalse(
+                os.path.realpath(root).startswith(os.path.join(home, ".cache")), root)
 
     def test_state_dir_is_trusted_without_the_env_var(self) -> None:
         """The client must trust STATE_DIR from its own config, not from the env.

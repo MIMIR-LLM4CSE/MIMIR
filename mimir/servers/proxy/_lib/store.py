@@ -85,8 +85,35 @@ def opt_runs_dir() -> str:
     return os.path.join(_CACHE_DIR, "opt_runs")
 
 
-def active_session_file() -> str:
-    return os.path.join(opt_runs_dir(), "active_session")
+def active_session_file(session_id: str | None = None) -> str:
+    """The pointer naming the proxy a nameless ``proxy_eval`` op acts on.
+
+    One file per MIMIR session. The store itself is shared — references, scaffolds and
+    sealed fields are build artefacts of the project, and locking them is what
+    ``_registry_lock`` is for — but *which optimisation a conversation is currently
+    driving* is the conversation's own. With a single pointer, a ``proxy_eval(op='init')``
+    in one session retargeted every nameless op in all the others, so a run meant for
+    ``foo`` was measured against ``bar``.
+
+    Unsuffixed when there is no session (the CLI, standalone runs, tests), which is also
+    the name it has always had.
+    """
+    sid = session_id if session_id is not None else _mimir_session_id()
+    name = f"active_session.{sid}" if sid else "active_session"
+    return os.path.join(opt_runs_dir(), name)
+
+
+def _mimir_session_id() -> str:
+    """The MIMIR session this process is acting for, or "".
+
+    Best-effort: a store reachable without the shared state helpers (a bare test
+    fixture) must keep working, and "no session" is the pre-existing behaviour.
+    """
+    try:
+        from state_paths import active_session_id
+        return active_session_id()
+    except Exception:
+        return ""
 
 
 # ── generic atomic IO ─────────────────────────────────────────────────────────
@@ -351,11 +378,15 @@ def _entry_or_err(proxy_name: str) -> tuple[dict | None, dict | None]:
     return reg[proxy_name], None
 
 
-def _resolve_proxy_name(arg: str) -> str | None:
-    """Return *arg* if non-empty, else read the active_session file, else None."""
+def _resolve_proxy_name(arg: str, session_id: str | None = None) -> str | None:
+    """Return *arg* if non-empty, else read this session's pointer, else None.
+
+    *session_id* is for callers in the client process, where N sessions share one
+    environment and the id can only come from the agent that is acting.
+    """
     if arg:
         return arg
-    path = active_session_file()
+    path = active_session_file(session_id)
     if os.path.isfile(path):
         try:
             name = open(path).read().strip()
@@ -366,17 +397,17 @@ def _resolve_proxy_name(arg: str) -> str | None:
     return None
 
 
-def _write_active_session(proxy_name: str) -> None:
-    """Persist *proxy_name* as the most-recently initialized session."""
-    _write_text_atomic(active_session_file(), proxy_name)
+def _write_active_session(proxy_name: str, session_id: str | None = None) -> None:
+    """Persist *proxy_name* as this MIMIR session's most-recently initialized proxy."""
+    _write_text_atomic(active_session_file(session_id), proxy_name)
 
 
-def _clear_active_session() -> None:
+def _clear_active_session(session_id: str | None = None) -> None:
     """Drop the active-session pointer (best-effort). Leaves opt_config/runs intact
     for history; only the "current session" marker is removed, so nameless ops no
     longer resolve to it and the client's proxy-exec guard lifts."""
     try:
-        os.remove(active_session_file())
+        os.remove(active_session_file(session_id))
     except FileNotFoundError:
         pass
     except OSError:

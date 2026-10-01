@@ -152,6 +152,10 @@ class _Session:
         # Ids of deferred cards the user moved past without answering. Their card may
         # still be on screen; an answer to one must not reach the next live prompt.
         self._stale_prompt_ids: set[str] = set()
+        # Sessions whose deletion was refused once because work of theirs was still
+        # running. Asking again goes through: the warning is there to be read, not to
+        # make the conversation undeletable, and the second click is the confirmation.
+        self._delete_refused: set[str] = set()
 
     def _greeting(self) -> dict:
         """The ``ready`` sent the moment the socket is accepted.
@@ -1578,23 +1582,59 @@ class _Session:
         # User accepted all pending file edits — keep them on disk, clear snapshots.
         if self.worker._agent is not None:
             self.worker._agent.approvals._file_snapshots.clear()
+            self.worker._agent.approvals.forget_reviewed()
         await self.ws.send(json.dumps({"type": "batch_status", "files": []}))
 
     async def _handle_batch_review_revert(self, msg: dict) -> None:
         # User wants to undo all pending file edits — restore originals.
+        moved: list[str] = []
         if self.worker._agent is not None:
-            for path, original in list(self.worker._agent.approvals._file_snapshots.items()):
-                abs_path = os.path.abspath(path)
-                try:
-                    if original is None:
-                        os.remove(abs_path)
-                    else:
-                        with open(abs_path, "w", encoding="utf-8") as fh:
-                            fh.write(original)
-                except OSError:
-                    pass
-            self.worker._agent.approvals._file_snapshots.clear()
+            approvals = self.worker._agent.approvals
+            for path, original in list(approvals._file_snapshots.items()):
+                if not self._revert_one(path, original):
+                    moved.append(os.path.relpath(path))
+            approvals._file_snapshots.clear()
+            approvals.forget_reviewed()
         await self.ws.send(json.dumps({"type": "batch_status", "files": []}))
+        await self._report_unreverted(moved)
+
+    def _revert_one(self, path: str, original: str | None) -> bool:
+        """Restore *path* to *original*, unless it no longer holds what was reviewed.
+
+        A revert undoes the diff the user looked at. If the file changed since then, the
+        change came from outside this review — another session working on the same file,
+        or the user's own editor — and writing the baseline over it would destroy work
+        nobody asked to discard. The file is left alone and reported instead.
+
+        Returns False only for that case; a file it could not write is a failure of the
+        same best-effort kind the rest of this path has always been.
+        """
+        approvals = self.worker._agent.approvals
+        if approvals.reviewed_matches(path) is False:
+            return False
+        abs_path = os.path.abspath(path)
+        try:
+            if original is None:
+                os.remove(abs_path)
+            else:
+                with open(abs_path, "w", encoding="utf-8") as fh:
+                    fh.write(original)
+        except OSError:
+            pass
+        return True
+
+    async def _report_unreverted(self, moved: list[str]) -> None:
+        """Say which files were left as they are, and why — never silently."""
+        if not moved:
+            return
+        try:
+            await self.ws.send(json.dumps({
+                "type": "status",
+                "text": ("  ⚠ Left unchanged — changed since you were shown the diff, so "
+                         "reverting would discard that too: " + ", ".join(sorted(moved))),
+            }))
+        except Exception:
+            pass
 
     async def _handle_batch_review_accept_file(self, msg: dict) -> None:
         # Accept a single file — remove its snapshot, keep file on disk.
@@ -1608,6 +1648,7 @@ class _Session:
             )
             if key is not None:
                 del snapshots[key]
+                self.worker._agent.approvals.forget_reviewed(key)
         self.worker._push_batch_status()
 
     async def _handle_batch_review_revert_file(self, msg: dict) -> None:
@@ -1622,15 +1663,10 @@ class _Session:
             )
             if key is not None:
                 original = snapshots.pop(key)
-                abs_key = os.path.abspath(key)
-                try:
-                    if original is None:
-                        os.remove(abs_key)
-                    else:
-                        with open(abs_key, "w", encoding="utf-8") as fh:
-                            fh.write(original)
-                except OSError:
-                    pass
+                reverted = self._revert_one(key, original)
+                self.worker._agent.approvals.forget_reviewed(key)
+                if not reverted:
+                    await self._report_unreverted([os.path.relpath(key)])
         self.worker._push_batch_status()
 
     async def _handle_resume_plan(self, msg: dict) -> None:
@@ -1746,10 +1782,60 @@ class _Session:
             await self._notify_turn_abandoned()
         await self._send_sessions_list()
 
+    def _live_jobs_of(self, session_id: str) -> list[str]:
+        """Commands of *session_id* still running, as far as the job dirs can say.
+
+        A session's detached shell jobs and submitted Slurm jobs live in its own
+        directory now, which is what gives them a retention policy — they go when the
+        conversation goes. The flip side is that deleting a conversation would take the
+        log of a process that is still running, and for a Slurm job still queued, the
+        only record of what was submitted. So the deletion asks first.
+
+        Read off the files rather than any in-memory registry: the job outlives the
+        worker that launched it, and may outlive the server. A shell job is live when it
+        wrote no ``exit_code``; a Slurm submission is live when it recorded an id and no
+        exit code — neither is a certainty, which is why this reports and does not act.
+        """
+        base = os.path.join(_MIMIR_DIR_WS, "sessions", session_id)
+        live: list[str] = []
+        for kind in ("jobs", "hpc_jobs"):
+            root = os.path.join(base, kind)
+            try:
+                keys = sorted(os.listdir(root))
+            except OSError:
+                continue
+            for key in keys:
+                job = os.path.join(root, key)
+                if os.path.exists(os.path.join(job, "exit_code")):
+                    continue
+                label = key
+                try:
+                    with open(os.path.join(job, "meta.json"), encoding="utf-8") as fh:
+                        label = (json.load(fh).get("command") or key)[:80]
+                except (OSError, ValueError):
+                    pass
+                live.append(label)
+        return live
+
     async def _handle_delete_session(self, msg: dict) -> None:
         target_id = (msg.get("session_id") or "").strip()
         if not target_id:
             return
+        running = self._live_jobs_of(target_id)
+        if running and not msg.get("force") and target_id not in self._delete_refused:
+            self._delete_refused.add(target_id)
+            # Said rather than done: the user may well want it gone anyway, and the
+            # answer is theirs. Nothing is deleted in the meantime.
+            await self.ws.send(json.dumps({
+                "type": "status",
+                "text": ("  ⚠ Not deleted — that conversation still has work running: "
+                         + "; ".join(running[:3])
+                         + (f" (+{len(running) - 3} more)" if len(running) > 3 else "")
+                         + ". Stop it first, or delete again to discard its logs."),
+            }))
+            await self._send_sessions_list()
+            return
+        self._delete_refused.discard(target_id)
         was_active = (target_id == self._active_session_id)
         self.store.delete_session(target_id)
         # Remove the session's sidecar directory (todo_list.md, plan.md, …).

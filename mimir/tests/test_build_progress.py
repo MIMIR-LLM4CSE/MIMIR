@@ -151,10 +151,10 @@ class TeeInjectionTests(unittest.TestCase):
 
 class _JobsSandbox(unittest.TestCase):
     def setUp(self) -> None:
-        self._tmp = tempfile.mkdtemp(prefix="mimir-bash-jobs-")
-        self._orig_root = _bash_jobs.JOBS_ROOT
-        _bash_jobs.JOBS_ROOT = self._tmp
+        # One temp state dir covers both the job directories and the run channel: they
+        # belong to the same session, which is the point of filing them together.
         self._state = tempfile.mkdtemp(prefix="mimir-bash-state-")
+        self._tmp = self._state
         self._orig_state = os.environ.get("MIMIR_STATE_DIR")
         os.environ["MIMIR_STATE_DIR"] = self._state
 
@@ -162,12 +162,11 @@ class _JobsSandbox(unittest.TestCase):
         for payload in _bash_jobs.listing():
             if payload["state"] == "running":
                 _bash_jobs.stop(payload["job_key"])
-        _bash_jobs.JOBS_ROOT = self._orig_root
         if self._orig_state is None:
             os.environ.pop("MIMIR_STATE_DIR", None)
         else:
             os.environ["MIMIR_STATE_DIR"] = self._orig_state
-        shutil.rmtree(self._tmp, ignore_errors=True)
+        shutil.rmtree(self._state, ignore_errors=True)
         shutil.rmtree(self._state, ignore_errors=True)
 
 
