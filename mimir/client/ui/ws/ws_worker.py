@@ -134,6 +134,9 @@ class _AgentWorker:
         self._loop: asyncio.AbstractEventLoop | None = None
         self._agent: Any = None
         self._ready = threading.Event()
+        # Set once this worker's MCP servers are closed, so a caller that asked for the
+        # close can wait for the subprocesses to actually be gone.
+        self._closed = threading.Event()
         self._error: Exception | None = None
 
         # Queues for cross-thread communication.
@@ -182,11 +185,42 @@ class _AgentWorker:
         asyncio.set_event_loop(loop)
         self._loop = loop
         try:
-            loop.run_until_complete(self._setup())
-            if self._error is None:
-                loop.run_until_complete(self._query_loop())
+            loop.run_until_complete(self._live())
         finally:
             loop.close()
+
+    async def _live(self) -> None:
+        """Connect, serve queries, close the servers — all in one task.
+
+        One task, not three, because of where ``stdio_client`` keeps its cancel scope:
+        anyio anchors it to the task that entered the context, and exiting it anywhere
+        else raises ``RuntimeError: Attempted to exit cancel scope in a different task``.
+        The exit stack is then left half-unwound — the streams closed, the subprocess
+        alive — so the next tool call of a turn still running on this agent fails with
+        ``ClosedResourceError`` and no server is reaped. Setup, the query loop and the
+        close therefore share the task that owns the stack, and the close runs when the
+        query loop has returned, which is when no turn can be in flight.
+        """
+        await self._setup()
+        try:
+            if self._error is None:
+                await self._query_loop()
+        finally:
+            await self._close_agent()
+
+    async def _close_agent(self) -> None:
+        """Close the agent's MCP servers. Runs in :meth:`_live`, which opened them."""
+        agent, self._agent = self._agent, None
+        if agent is None:
+            self._closed.set()
+            return
+        try:
+            await agent.cleanup()
+        except Exception:
+            logger.warning("worker %s: closing MCP servers failed",
+                           self.session_id or "<no session>", exc_info=True)
+        finally:
+            self._closed.set()
 
     async def _wait_for_backend(self) -> None:
         """Poll the LLM backend until it answers, or fail fast when it never will.
@@ -321,6 +355,10 @@ class _AgentWorker:
             await asyncio.sleep(poll)
 
     async def _setup(self) -> None:
+        # Holds the agent for as long as it is half-built, so a failure partway through
+        # the ~19 connects still has something to close. ``self._agent`` cannot serve
+        # that: every getter reads it, and it means "ready", not "under construction".
+        building: Any = None
         try:
             await self._wait_for_backend()
             try:
@@ -332,7 +370,7 @@ class _AgentWorker:
             except ImportError:
                 from mimir.client.extensions import all_servers
 
-            agent = MimirAgent(model=self.model, session_id=self.session_id)
+            agent = building = MimirAgent(model=self.model, session_id=self.session_id)
             for name, script in all_servers().items():
                 await agent.connect_server(name, script)
             agent.seed_classification_from_caps()
@@ -358,6 +396,14 @@ class _AgentWorker:
             self.out_q.put({"type": "ready", "model": self.model, "agent_ready": True})
         except Exception as exc:
             self._error = exc
+            if self._agent is None and building is not None:
+                # Whatever connected before the failure is holding subprocesses, and
+                # this task is the only one that may close them.
+                try:
+                    await building.cleanup()
+                except Exception:
+                    logger.warning("worker %s: closing a half-built agent failed",
+                                   self.session_id or "<no session>", exc_info=True)
         finally:
             self._ready.set()
             # Pre-warm the model in the background so VRAM is ready for the first
@@ -994,6 +1040,16 @@ class _AgentWorker:
         """True while a query task is in flight (used to route steer vs. new query)."""
         return self._current_task is not None
 
+    def has_work_pending(self) -> bool:
+        """True while a turn is running here *or* queued to run. What eviction reads.
+
+        ``is_busy`` answers a different question — is there a run to steer into — and is
+        False for the stretch between a turn being submitted and the query loop picking it
+        up. Releasing the agent in that gap closes the MCP servers under a turn that is
+        about to start, and every tool call it makes then fails on a dead stream.
+        """
+        return self._current_task is not None or not self._query_q.empty()
+
 
     def flush_prompts(self) -> None:
         """Drop every pending human-pause answer and steer message.
@@ -1620,44 +1676,35 @@ class _AgentWorker:
         quiet must close it, or each release strands a full set of servers and a few hours
         of use exhausts the machine rather than freeing anything.
 
-        The close runs on the worker's own loop. ``stdio_client`` is an anyio context
-        entered in that loop, and closing it from another task trips anyio's cancel-scope
-        check and leaks the subprocess it was meant to reap — the same reason
-        ``server_spawn_agent`` closes a child's stack in the very task that opened it.
+        The close itself belongs to :meth:`_live`, the task that opened those servers;
+        this asks for it and waits. ``stdio_client`` is an anyio context whose cancel
+        scope is anchored to the entering task, and exiting it from any other task raises
+        and leaves the stack half-unwound: streams closed, subprocess alive, and a turn
+        still running on that agent failing its next tool call with
+        ``ClosedResourceError``. So the sentinel is the whole mechanism — the query loop
+        returns, and its own ``finally`` closes the servers.
+
+        A turn in flight is cancelled first. Without that the sentinel waits behind it:
+        shutdown would cost the rest of a turn per conversation, and a turn allowed to
+        run into the close would be the one that hits the dead streams.
 
         Best-effort and bounded: a server wedged in its own shutdown must not hold the
         pool, and the subprocess dies with this process in the worst case.
         """
-        agent, loop = self._agent, self._loop
-        settled = True
-        if agent is not None and loop is not None and not loop.is_closed():
-            done = threading.Event()
-
-            async def _close() -> None:
-                try:
-                    await agent.cleanup()
-                except Exception:
-                    logger.warning("worker %s: closing MCP servers failed",
-                                   self.session_id or "<no session>", exc_info=True)
-                finally:
-                    done.set()
-
-            try:
-                asyncio.run_coroutine_threadsafe(_close(), loop)
-                settled = done.wait(timeout)
-            except RuntimeError:
-                pass  # loop already gone; nothing of ours is left to close
-        if not settled:
-            # Deliberately no sentinel and no join. The sentinel ends the query loop,
-            # whose return closes the event loop — which would destroy the close still
-            # running on it, abandoning the very subprocess reaping it was waiting for.
+        loop = self._loop
+        if self._agent is None or loop is None or loop.is_closed():
+            self.shutdown()
+            if self._thread is not None and self._thread.is_alive():
+                self._thread.join(timeout=5.0)
+            return
+        self.cancel()        # no-op when nothing is running
+        self.shutdown()      # the sentinel: ends the query loop, whose finally closes
+        if not self._closed.wait(timeout):
             # The caller is already free; this worker's thread is left to finish on its
             # own, and the OS reaps what is left when the process exits.
             logger.warning("worker %s: MCP servers did not close within %.1fs; letting "
                            "its thread finish on its own",
                            self.session_id or "<no session>", timeout)
             return
-        # The sentinel last: the close above needs the loop still running to host it.
-        self.shutdown()
         if self._thread is not None and self._thread.is_alive():
             self._thread.join(timeout=5.0)

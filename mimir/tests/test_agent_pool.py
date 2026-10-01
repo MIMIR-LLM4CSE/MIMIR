@@ -36,12 +36,16 @@ class _StubWorker:
         self.active_session_id: str | None = None
         self.closed = False
         self.busy = False
+        self.queued = False
         self._bg_jobs: dict = {}
         self._pending_prompt: dict | None = None
         self.applied: list[tuple] = []
 
     def is_busy(self) -> bool:
         return self.busy
+
+    def has_work_pending(self) -> bool:
+        return self.busy or self.queued
 
     def aclose(self) -> None:
         self.closed = True
@@ -207,6 +211,26 @@ class ReleaseTests(_PoolCase):
         pool = self._pool(idle_ttl=0.0)
         (await pool.worker_for("s1")).busy = True
         self.assertEqual(await pool.release_idle(), [])
+
+    async def test_a_worker_with_a_queued_turn_is_never_released(self) -> None:
+        """Submitted but not yet picked up: releasing here kills the turn's servers.
+
+        The turn then starts on a closed agent and every tool call it makes fails with
+        ``ClosedResourceError``. ``is_busy`` is still False in that gap, which is why
+        the pool asks ``has_work_pending``.
+        """
+        pool = self._pool(idle_ttl=0.0)
+        worker = await pool.worker_for("s1")
+        worker.queued = True
+        self.assertEqual(await pool.release_idle(), [])
+        self.assertFalse(worker.closed)
+
+    async def test_a_queued_turn_also_blocks_eviction_for_a_slot(self) -> None:
+        """The same answer on the path that evicts to make room, not on the TTL."""
+        pool = self._pool(cap=1)
+        (await pool.worker_for("s1")).queued = True
+        self.assertIsNone(await pool.worker_for("s2"),
+                          "evicted a conversation whose turn was about to start")
 
     async def test_a_worker_watching_a_job_is_never_released(self) -> None:
         """Its loop hosts the watcher; evicting it loses the wake the build is owed."""

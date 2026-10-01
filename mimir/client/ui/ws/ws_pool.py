@@ -287,7 +287,7 @@ class _AgentPool:
 
         Each clause is a thing that would be lost:
 
-        * **busy** — a turn is running.
+        * **busy** — a turn is running, or is queued and about to.
         * **watching a background job** — a two-hour build's watcher lives on this
           worker's loop. Evicting it loses the wake that watcher exists to deliver, so
           the build finishes and nothing ever says so.
@@ -301,7 +301,7 @@ class _AgentPool:
         if session_id == self.active_session_id:
             return False
         try:
-            if worker.is_busy():
+            if worker.has_work_pending():
                 return False
         except Exception:
             return False

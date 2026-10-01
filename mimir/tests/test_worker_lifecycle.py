@@ -11,9 +11,10 @@ see, which is what would force leaving a conversation to stop its turn.
 **It can be closed.** ``shutdown`` ends the query loop and nothing else; the agent's
 ``exit_stack`` holds ~19 MCP server subprocesses, and a worker released when its
 conversation goes quiet must close it or every release strands a full set of servers.
-``aclose`` must close on the worker's own loop — ``stdio_client`` is an anyio context
-entered there, and closing it from another task leaks the subprocess it was meant to
-reap.
+``aclose`` only asks: the close belongs to the task that opened those servers, because
+``stdio_client`` anchors its anyio cancel scope there and exiting it from any other task
+raises and leaves the stack half-unwound — streams closed, subprocess alive. So the
+sentinel is the mechanism, and the query loop's own ``finally`` does the closing.
 
 Pure-Python (no live model/servers): runs on x86 and ARM.
 """
@@ -34,6 +35,7 @@ class _FakeAgent:
         self.closed = False
         self.closed_on: int | None = None
         self._hang = hang
+        self._cancel_flag = threading.Event()
 
     async def cleanup(self) -> None:
         if self._hang:
@@ -52,27 +54,36 @@ def _worker_with_loop(agent: object | None) -> tuple[_AgentWorker, threading.Thr
     w._bg_jobs = {}
     w._query_q = _queue.Queue()
     w._query_event = threading.Event()
+    w._closed = threading.Event()
+    w._current_task = None
     w.out_q = _queue.Queue()
 
     loop = asyncio.new_event_loop()
     started = threading.Event()
     ident: dict[str, int] = {}
 
-    async def _query_loop() -> None:
-        """The shape of _AgentWorker._main: run until the shutdown sentinel arrives."""
-        while True:
-            try:
-                if w._query_q.get_nowait() is None:
-                    return
-            except _queue.Empty:
-                await asyncio.sleep(0.01)
+    async def _live() -> None:
+        """The shape of _AgentWorker._live: serve until the sentinel, then close.
+
+        One task for both halves, which is the property under test: the close runs where
+        the servers were opened.
+        """
+        try:
+            while True:
+                try:
+                    if w._query_q.get_nowait() is None:
+                        return
+                except _queue.Empty:
+                    await asyncio.sleep(0.01)
+        finally:
+            await w._close_agent()
 
     def _run() -> None:
         asyncio.set_event_loop(loop)
         ident["id"] = threading.get_ident()
         loop.call_soon(started.set)
         try:
-            loop.run_until_complete(_query_loop())
+            loop.run_until_complete(_live())
         finally:
             loop.close()
 
@@ -120,10 +131,9 @@ class ACloseTests(unittest.TestCase):
     def test_a_wedged_server_does_not_hold_the_caller_for_ever(self):
         """A server stuck in its own shutdown must not hold the pool.
 
-        And the close it is still attempting must survive the way out: the shutdown
-        sentinel ends the query loop, whose return closes the event loop, killing the
-        pending close and abandoning the subprocess reaping it waits for. So a timed-out
-        close queues no sentinel and the thread is left to finish.
+        And the close it is still attempting must survive the way out, so the caller
+        returns and the thread is left running it rather than being joined out from under
+        it — the loop closing would abandon the very subprocess the close waits for.
         """
         import time
         agent = _FakeAgent(hang=True)
@@ -135,7 +145,6 @@ class ACloseTests(unittest.TestCase):
         self.assertLess(waited, 2.0, f"held the caller for {waited:.1f}s")
         self.assertFalse(agent.closed)
         self.assertIn("did not close", "\n".join(log.output))
-        self.assertTrue(w._query_q.empty(), "queued a sentinel that would kill the close")
         self.assertTrue(thread.is_alive(), "stopped the thread mid-close")
 
     def test_the_thread_is_gone_after_a_clean_close(self):
