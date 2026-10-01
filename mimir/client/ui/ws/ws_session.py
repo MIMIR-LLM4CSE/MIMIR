@@ -97,9 +97,9 @@ class _Session:
         self.ws = ws
         self.pool = pool
         self.history: list[dict] = []  # LLM history — the working window, trimmed to fit
-        # The same conversation, never trimmed. `history` is cut down whenever the
-        # budget demands it, and it is `history` that used to be all we saved; this is
-        # what a resume reloads so a session continues with everything it ever said.
+        # The same conversation, never trimmed. `history` is cut down whenever the budget
+        # demands it, so saving that alone would lose whatever the window dropped; this is
+        # what a resume reloads, so a session continues with everything it ever said.
         self.history_full: list[dict] = []
 
         try:
@@ -701,14 +701,13 @@ class _Session:
                        start: Any = None) -> list[dict]:
         """The slice of *full* this turn produced — what the archive has yet to record.
 
-        The boundary comes from the loop, which is the only place it is knowable. Ours
-        was the length we submitted, and that stopped being an index into *full* the
-        moment the in-turn budget pass rewrote the list: it evicts old tool results,
-        replaces the middle with a summary and then repairs the assistant↔tool pairing
-        those break. Every such rewrite shifts the prefix, and a stale boundary then
-        re-archives whatever it shifted past or drops whatever it shifted over — and
-        cuts through an assistant↔tool pair on the way, which is how tool results with
-        no call in front of them ended up in a record whose source cannot contain one.
+        The boundary comes from the loop, which is the only place it is knowable. The
+        length we submitted is not an index into *full* once the in-turn budget pass has
+        rewritten the list: it evicts old tool results, replaces the middle with a summary
+        and then repairs the assistant↔tool pairing those break. Every such rewrite shifts
+        the prefix, and a stale boundary re-archives whatever it shifted past or drops
+        whatever it shifted over — cutting through an assistant↔tool pair on the way, which
+        is how a record ends up holding tool results with no call in front of them.
 
         Falls back to the submitted length, and then to the answer alone, when the loop
         cannot place the boundary — a turn long enough to have its own opening message
@@ -1703,9 +1702,9 @@ class _Session:
         Which run is decided by the row the user clicked: the message carries the call
         id, and the row's tool name is the channel the owning server publishes under.
         Resolved here rather than shipped by the webview, which has no business
-        knowing a tool name. Before this the request went to the shell's channel
-        whatever had been clicked, so a proxy run reported "nothing to move" while a
-        perfectly innocent shell command was the one that got detached.
+        knowing a tool name. Sending the request to the shell's channel whatever was
+        clicked has a proxy run report "nothing to move" while a perfectly innocent shell
+        command is the one that gets detached.
 
         Nothing worker- or agent-side is touched: the confirmation the user sees is
         the tool result that lands a moment later, carrying the work done so far and
@@ -2069,8 +2068,8 @@ class _Session:
 
         Structured, not pre-formatted. A listing of twenty memories and a one-line
         result want different shapes on screen, and a frontend cannot lay out what
-        reaches it as an already-indented blob of text — which is all it used to get,
-        so the best any of them could do was print the blob.
+        reaches it as an already-indented blob of text: the best any frontend can do with
+        a blob is print it.
 
         ``tone`` says how the result should read: ``ok`` for routine, ``warn`` for
         something irreversible that just happened, ``empty`` for a listing with
@@ -2204,8 +2203,9 @@ class _Session:
                 {"type": "temperature", **self.worker.get_temperature_state()}))
         elif text.startswith("/proxy"):
             # Housekeeping the person running the session may need without asking the
-            # model for it: a proxy's runs and optimisation state used to be removable
-            # only by deleting a store directory whose path nobody has a reason to know.
+            # model for it. Without these the only way to remove a proxy's runs and
+            # optimisation state is to delete a store directory whose path nobody has a
+            # reason to know.
             parts = text.split()
             if len(parts) >= 2 and parts[1] == "list":
                 # "clean <name>" needs a name, and the only way to learn one was to

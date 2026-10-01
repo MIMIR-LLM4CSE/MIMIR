@@ -174,10 +174,10 @@ class ValidationCommandTests(unittest.TestCase):
 class ExecEffectTests(unittest.TestCase):
     """What a successful EXEC segment would *prove*, declared rather than inferred.
 
-    The effect used to be derived by elimination — a head the validator table did not
-    know was taken to have run the project's code — so `source env.sh` was recorded as
-    a run owing a verdict. The four groups are declared instead, and the invariants
-    below are what keeps them from drifting apart from the tables that read them.
+    The four groups are declared, not derived by elimination: taking a head the validator
+    table does not know to have run the project's code records `source env.sh` as a run
+    owing a verdict. The invariants below are what keep the declarations from drifting
+    apart from the tables that read them.
     """
 
     def _effect(self, command, index=0):

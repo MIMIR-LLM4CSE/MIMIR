@@ -1237,11 +1237,11 @@ class SteerInjectionInLoopTests(RunAgentQueryNonInteractiveTests):
         """A steer is a real user turn, so it must hold the last position.
 
         The last message is what the model answers — that is what the position is for.
-        The checklist used to be appended after the steer, just before the call, and
-        both being plain string `user` turns, the backend's consecutive-user merge
-        folded them into ONE turn ending in a status block: the model answered the
-        block and the instruction was buried. Measured worst on exactly this shape.
-        The checklist now lives in messages[0], so a steer stays last.
+        Appending the checklist after the steer, just before the call, has the backend's
+        consecutive-user merge fold both plain string `user` turns into ONE ending in a
+        status block: the model answers the block and the instruction is buried. Measured
+        worst on exactly this shape. The checklist lives in messages[0], so a steer stays
+        last.
         """
         import tempfile
         agent = self._query_agent()

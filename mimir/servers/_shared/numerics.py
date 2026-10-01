@@ -11,14 +11,13 @@ as evidence and raised the validation tier for it; that rewarded a string, since
 value can never be interpreted from outside the process — the very reason the proxy
 seals references server-side. What a run printed is the model's to read and report.
 
-It used to keep one client-only function here as well — the ``check=fail`` verdict
-grammar — which is why this module was imported across the client/server line at all.
-Two failures hid in that arrangement for as long as it lasted: the grammar was written
-to mirror the metrics parser's strictness rather than to match what harnesses actually
-print, and no test exercised it against a real one. It now lives beside the other ways
-a run reports on itself, in ``client.guardrails.runner_output``, which owns that
-question. What is left here is the proxy's reserved vocabulary, which is all this
-module was ever for.
+Nothing client-only belongs here, and in particular not the ``check=fail`` verdict
+grammar: that lives beside the other ways a run reports on itself, in
+``client.guardrails.runner_output``, which owns the question. Keeping it here is what
+drags this module across the client/server line, and it hides two failures while it does
+— a grammar written to mirror the metrics parser's strictness rather than what harnesses
+actually print, with no test exercising it against a real one. What belongs here is the
+proxy's reserved vocabulary, which is all this module is for.
 
 Lives in ``_shared`` for the flat ``sys.path`` import the servers use
 (``from numerics import RESERVED_METRICS``).

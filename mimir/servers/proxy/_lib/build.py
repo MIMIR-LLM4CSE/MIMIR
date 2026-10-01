@@ -194,8 +194,8 @@ def _toolchain_facts(env) -> dict:
     ``ccache`` is resolved against the build's own PATH rather than reported from a
     variable: "CCACHE_DIR is set" and "ccache is reachable" are different claims, and
     only the second one makes a rebuild cheap. A null here is the answer to a whole
-    class of "why does it recompile everything" — and it was previously invisible,
-    since the log recorded the command and the directory and nothing else.
+    class of "why does it recompile everything", and a log recording the command and the
+    directory and nothing else cannot show it.
     """
     facts = {k: env[k] for k in _ENV_OF_INTEREST if env.get(k)}
     facts["ccache"] = shutil.which("ccache", path=env.get("PATH"))

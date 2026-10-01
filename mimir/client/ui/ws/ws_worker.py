@@ -1424,8 +1424,8 @@ class _AgentWorker:
         This is what lets a slash command do housekeeping directly. These ops are
         reachable by the model too, but the person who wants to start an optimisation
         over — or to drop a memory that has gone stale and keeps being recalled into
-        every prompt — should not have to ask the model to do it. Before this the only
-        recourse was deleting files under a store whose path they had no reason to know.
+        every prompt — should not have to ask the model to do it. The alternative is deleting
+        files under a store whose path they have no reason to know.
 
         The call goes STRAIGHT to the owning MCP session, around the guardrail
         pipeline — the same bypass the CLI surface makes in

@@ -22,10 +22,9 @@ class ProxyCleanCommandTests(unittest.TestCase):
     """`/proxy clean <name>` — housekeeping the user can do without asking the model.
 
     `clean` is reachable as a tool op, but a person who wants to start an optimisation
-    over should not have to ask the model to tidy up first. Before this the only recourse
-    was `rm -rf` on a store whose path nobody has a reason to know — which is how a
-    deleted project came back with a finished checklist and an optimisation still marked
-    "in progress".
+    over should not have to ask the model to tidy up first. The alternative is `rm -rf` on
+    a store whose path nobody has a reason to know — which is how a deleted project comes
+    back with a finished checklist and an optimisation still marked "in progress".
     """
 
     def _run(self, query: str, payload: dict | None):

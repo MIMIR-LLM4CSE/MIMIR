@@ -211,8 +211,8 @@ class DefaultBaseShapeTests(unittest.TestCase):
         # target platform) were removed, and with them the two prompt lines that
         # referred to them; what came back in their place is the pair of
         # non-negotiables naming the allocation and optimization-session gates, whose
-        # rules previously existed only in a violation payload the model read after
-        # being blocked. Base sat at 13004 against the old ceiling.
+        # rules otherwise reach the model only in a violation payload, after it is
+        # blocked. Base sat at 13004 against the old ceiling.
         # Raised 13500 -> 14500 for four rules that survived the pin's removal. The
         # discovery pin used to restate the session's paths at every step; deleting it
         # moved the burden onto the prompt, which now has to say once what the pin was
@@ -308,9 +308,9 @@ class CoreNudgeCoverageTests(unittest.TestCase):
         "unexercised": "judging presupposes running",
         "unfinished_plan": "closed by saying so in your answer, not by ticking it",
     }
-    # No exemption. `unfinished_plan` used to be exempt on the ground that the nudge
-    # states both acceptable endings, so it asks for nothing told in advance. That
-    # covered the nudge and not the blocker: `needs_incomplete_finalization` refuses to
+    # No exemption. Exempting `unfinished_plan` on the ground that the nudge states both
+    # acceptable endings — so it asks for nothing told in advance — covers the nudge and
+    # not the blocker: `needs_incomplete_finalization` refuses to
     # conclude while a non-optional step is open, which is a contract about an artifact
     # — the checklist — that only ## Planning & todo describes. While that section sat
     # in the overridable doctrine half, an application prompt deleted it and the loop

@@ -180,10 +180,9 @@ class OutOfWorkspaceGateTests(_TmpStateDir):
     def test_trusted_read_root_not_prompted_for_reads(self) -> None:
         """A job log the agent itself produced is read without asking.
 
-        The trusted root is the state dir. It used to be three fixed ``~/.cache``
-        locations as well; all three are gone, because nothing writes there any more —
-        the proxy store moved into the workspace, and both kinds of job directory moved
-        under the state dir, per session.
+        The state dir is the one trusted root, which is where everything the agent
+        produces lives: the proxy store sits in the workspace, and both kinds of job
+        directory under the state dir, per session. Nothing of MIMIR's is in ``~/.cache``.
         """
         agent = self._agent(cap=READ)
         log = os.path.join(self._tmp.name, "sessions", "s1", "jobs", "k", "job.log")
@@ -357,9 +356,9 @@ class ShellPathApprovalTests(_TmpStateDir):
         self.assertEqual(agent.prompts, [])
 
     def test_path_beside_a_flag_expansion_still_reaches_the_user(self) -> None:
-        # A bare $VAR makes a command opaque to *classification*, which used to mean
-        # no targets were extracted at all — so a real out-of-workspace path sitting
-        # beside the flag was refused by the server with no way to grant it.
+        # A bare $VAR makes a command opaque to *classification*. Letting that stop target
+        # extraction has a real out-of-workspace path sitting beside the flag refused by
+        # the server with no way for the user to grant it.
         agent = self._agent(script=(True, False))
         engine._check_out_of_workspace_access(
             agent, "run_shell", {"command": "gcc -I$CUDA_HOME/include /tmp/x.c -o a.out"}, {})
@@ -523,9 +522,9 @@ class SingleApprovalPerCallTests(_TmpStateDir):
 class OneCardPerCallTests(_TmpStateDir):
     """A command naming several outside paths raises exactly ONE approval.
 
-    It used to raise one per path: ``cd /data && python /opt/x.py > /var/log/y.log``
-    put three cards in front of the user, in sequence, for a decision they had already
-    taken when they read the command.
+One per path would put three cards in front of the user for
+    ``cd /data && python /opt/x.py > /var/log/y.log``, in sequence, for a decision they
+    have already taken by the time they read the command.
     """
 
     COMMAND = "cd /tmp/one && python /opt/one/x.py > /var/tmp/one/y.log"

@@ -826,8 +826,8 @@ def _run(
     its output lands in a file rather than a pipe. That is the whole point: bytes on
     disk survive the process, so a run that is stopped at the cap still reports what it
     printed, and one the user moves to the background keeps everything it has done.
-    Before this, output lived in a pipe read only by the final communicate(), and a
-    timeout discarded every byte of it.
+    Output living in a pipe read only by the final communicate() is output a timeout
+    discards every byte of.
 
     Three ways out, and only one of them leaves a process alive:
       * the command ended        — the ordinary payload, byte-for-byte as before;

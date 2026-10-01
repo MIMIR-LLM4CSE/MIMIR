@@ -325,10 +325,10 @@ class BlockingRunTests(unittest.TestCase):
         self.fail("the server never announced a foreground run")
 
     def test_a_timeout_returns_the_output_produced_before_the_kill(self) -> None:
-        # The headline property. Before this, a timeout killed the process group AND
-        # threw away everything it had written, so the whole wait bought nothing and
-        # the model re-ran from scratch. The kill stays — it is what bounds a command
-        # gone astray — but the bytes now come back with it.
+        # The headline property. A timeout that kills the process group and throws away
+        # everything it wrote buys nothing for the whole wait, and the model re-runs from
+        # scratch. The kill is what bounds a command gone astray; the bytes come back
+        # with it.
         captured = {}
         watcher = threading.Thread(
             target=lambda: captured.update(self._await_current()), daemon=True)

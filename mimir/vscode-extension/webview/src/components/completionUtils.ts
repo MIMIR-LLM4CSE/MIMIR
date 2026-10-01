@@ -4,9 +4,9 @@
 // the answer behind a marker comment so the model's history keeps it, and the webview
 // lifts it out of the prose to render it as a collapsed panel (CompletionReport).
 //
-// The report used to be concatenated *ahead* of the answer as bare prose, with no
-// marker to lift it by — so the whole of it rendered as body text and the model's own
-// words arrived underneath. Folding it is all that changed; nothing is dropped.
+// The marker is what makes that possible: concatenated ahead of the answer as bare prose,
+// the report has nothing to lift it by, so the whole of it renders as body text with the
+// model's own words underneath. Nothing is dropped, only folded.
 
 export type CompletionStatus = "incomplete" | "handback" | "refused-only";
 

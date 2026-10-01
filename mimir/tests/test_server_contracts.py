@@ -427,8 +427,8 @@ class RepresentativeServerContractTests(unittest.TestCase):
         self.assertLess(server_web._ERROR_BODY_READ, server_web._MAX_BYTES)
 
     def test_web_success_notes_never_use_the_reserved_hint_key(self) -> None:
-        """`hint` belongs to error payloads: responses.ok() strips it. Every note this
-        module wrote under that key had been addressed to a model that never got it."""
+        """`hint` belongs to error payloads: responses.ok() strips it, so a note written
+        under that key is addressed to a model that never receives it."""
         src = Path(server_web.__file__).read_text()
         head = src.split("# \u2500\u2500 tools")[0]
         self.assertNotIn('note["hint"]', head)
@@ -1002,9 +1002,9 @@ class BashServerTests(unittest.TestCase):
         self.assertIn("outside workspace", payload["error"])
 
     def test_find_exec_allows_a_read_only_nested_command(self) -> None:
-        # `-exec` used to be denied on the token alone, without ever inspecting what
-        # was nested — and the rejection hint pointed at `xargs`, which is itself
-        # permanently banned, so read-only fan-out had no spelling at all.
+        # Denying `-exec` on the token alone, without inspecting what is nested, leaves
+        # read-only fan-out no spelling at all: the obvious alternative hint is `xargs`,
+        # which is itself permanently banned.
         cwd = server_bash._WORKSPACE_ROOT
         for cmd in (
             r'find . -name "*.py" -exec grep -l pattern {} \;',
@@ -1017,8 +1017,8 @@ class BashServerTests(unittest.TestCase):
     def test_find_exec_still_refuses_anything_not_read_only(self) -> None:
         # The grant must not widen: a nested command's operands include `{}`, whose
         # expansion cannot be resolved here, so a nested write/exec targets unknown
-        # paths. `python f.py` was already directly invocable, so nothing that was
-        # previously unreachable becomes reachable.
+        # paths. `python f.py` is directly invocable anyway, so the allowance reaches
+        # nothing that was out of reach.
         cwd = server_bash._WORKSPACE_ROOT
         for cmd in (
             r"find . -exec rm {} \;",
@@ -1484,10 +1484,9 @@ class BashServerTests(unittest.TestCase):
 
     def test_a_workspace_script_can_be_made_executable_and_run(self) -> None:
         # Running a workspace script by path is already supported, but a script
-        # without the x bit (fresh checkout, or one the agent just wrote) used to be
-        # a dead end: './build.sh' failed with "Permission denied", 'chmod' was
-        # refused and 'bash build.sh' is refused by design, so nothing could grant it.
-        # Both halves must stay available for the sequence to work.
+        # without the x bit (fresh checkout, or one the agent just wrote) is a dead end
+        # unless both halves stay available: './build.sh' fails with "Permission denied",
+        # 'bash build.sh' is refused by design, so `chmod` is the only way to grant it.
         cwd = server_bash._WORKSPACE_ROOT
         for cmd in ("chmod +x ./build.sh", "chmod 755 tools/run.sh", "./build.sh"):
             self.assertEqual(server_bash._validate_command(cmd, cwd)["status"], "ok", cmd)
@@ -2004,10 +2003,9 @@ class ToolSchemaContractTests(unittest.IsolatedAsyncioTestCase):
 
     Observed defect: a live session dropped `verdict` from two report_verdict calls,
     sending only {reason, run}. vLLM parsed the call fine — the rejection was pydantic's,
-    and the model saw a raw dump. The schema it had been given described all three
-    parameters as bare `{"type": "string"}` with no description and no enum: three
-    indistinguishable slots, with the closed four-value set stated only in the
-    docstring's prose. `reason` and `run` have obvious semantic anchors in that prose;
+    and the model saw a raw dump. Its schema described all three parameters as bare
+    `{"type": "string"}` with no description and no enum: three indistinguishable slots,
+    with the closed four-value set stated only in the docstring's prose. `reason` and `run` have obvious semantic anchors in that prose;
     `verdict` is the abstract one, and it is the one that went missing.
 
     The `Args:` block was written and is discarded — the bundled FastMCP builds its

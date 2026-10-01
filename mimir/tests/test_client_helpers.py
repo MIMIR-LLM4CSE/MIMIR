@@ -1183,8 +1183,8 @@ class ClientHelperTests(unittest.TestCase):
         execution_context = {"read_files": set(), "tool_msg_files": {}}
         # token_counter=len over the wire form -> 100 of content plus its JSON
         # envelope each, so the budget that keeps exactly the two newest is
-        # derived from the measure rather than hard-coded to the content length
-        # it used to equal.
+        # derived from the measure rather than hard-coded to the content length it
+        # happens to equal.
         each = len(message_wire_form(messages[-1]))
         history_module._trim_tool_history(
             messages, execution_context=execution_context,
@@ -1314,9 +1314,9 @@ class ClientHelperTests(unittest.TestCase):
 
     def test_enforce_context_budget_raises_when_the_prompt_cannot_be_made_to_fit(self) -> None:
         # System message + current query are both protected; when they alone exceed
-        # the window the force-fit pass fails. It used to fail silently, print a
-        # status claiming the history had been trimmed to fit, and let the backend
-        # answer with an opaque 400.
+        # the window the force-fit pass fails, and must say so: failing silently prints a
+        # status claiming the history was trimmed to fit and leaves the backend to answer
+        # with an opaque 400.
         messages = [
             {"role": "system", "content": "S" * 40_000},
             {"role": "assistant", "content": "", "tool_calls": [{"id": "c1"}]},
@@ -2540,10 +2540,9 @@ class ClientHelperTests(unittest.TestCase):
     # ── foundational context injection ────────────────────────────────────────
     #
     # Two absolute paths, and nothing describing the repo's contents or the machine.
-    # The repo-structure snapshot and the hardware probe that used to be injected here
-    # are gone: the snapshot pre-filled a discovery-evidence field, so a gate could be
-    # satisfied before the model had done anything, and neither block told the model
-    # what its task actually touches.
+    # No repo-structure snapshot and no hardware probe: a snapshot pre-fills a
+    # discovery-evidence field, so a gate is satisfied before the model has done anything,
+    # and neither block tells the model what its task actually touches.
 
     def test_no_repo_or_hardware_description_is_injected(self) -> None:
         for mode in ("agent", "plan", "ask"):

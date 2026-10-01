@@ -37,7 +37,7 @@ except ImportError:
 
 
 class CoerceTests(unittest.TestCase):
-    """Which strings become which Python values, and the two that used to be wrong."""
+    """Which strings become which Python values."""
 
     def test_words_are_flags_and_numbers_are_numbers(self) -> None:
         for text, want in (("true", True), ("True", True), ("yes", True),

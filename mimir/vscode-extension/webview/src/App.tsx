@@ -678,11 +678,11 @@ export const App: React.FC = () => {
     return () => clearTimeout(timer);
   }, [chatState.busy, sendTranscript]);
 
-  // And during it. The end of the turn used to be the only handover, which made every
-  // long run a window where the work on screen existed nowhere else: a dropped
-  // connection, a reloaded window or a VS Code restart inside it came back to a
-  // conversation holding the questions and nothing that was done about them. A turn
-  // can run for many minutes, so that window was most of the session.
+  // And during it. With the end of the turn as the only handover, every long run is a
+  // window where the work on screen exists nowhere else: a dropped connection, a reloaded
+  // window or a VS Code restart inside it comes back to a conversation holding the
+  // questions and nothing that was done about them. A turn can run for many minutes, so
+  // that window would be most of the session.
   //
   // Streaming prose is not in `messages` — it is held in `draft` until the loop accepts
   // it — so this fires at step boundaries (a tool card frozen, a card answered) rather

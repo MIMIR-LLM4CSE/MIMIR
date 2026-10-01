@@ -45,8 +45,8 @@ class RatchetLoopTests(_TmpStorageTest):
     def _baseline_run(self, feasible: bool = True) -> None:
         """Measure the untouched code, which the ratchet now requires before accepting.
 
-        The first FEASIBLE run used to become the best, so a session whose first run was
-        already an edit had nothing to compare against — every later number was an
+        Taking the first FEASIBLE run as the best leaves a session whose first run is
+        already an edit with nothing to compare against, and every later number an
         assertion. The run is recorded as the baseline whether or not it passed: what
         matters is that the original was measured.
         """

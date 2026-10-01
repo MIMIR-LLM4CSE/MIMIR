@@ -49,9 +49,9 @@ _SECTION_IDENTITY = (
     "Execute tasks with precision, determinism, and verifiable correctness."
 )
 
-# The hard floor. These are the rules whose violation is not self-correcting, hoisted
-# out of the sections where they used to be restated. They are stated once, here, and
-# the sections below no longer repeat them.
+# The hard floor: the rules whose violation is not self-correcting. Stated once, here,
+# and deliberately not restated by the sections below — what is repeated three times is
+# noise, and a rule that lives in several places drifts between them.
 _SECTION_NON_NEGOTIABLES = (
     "## Non-negotiables\n"
     "These are absolute. Every other section is a default you may adapt; these you may not.\n"

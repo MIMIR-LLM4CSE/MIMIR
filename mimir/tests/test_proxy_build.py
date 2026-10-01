@@ -70,8 +70,8 @@ class BuildCwdSpellingTests(_TmpStorageTest):
 
         Popen chdir()s, and getcwd() comes back resolved whichever spelling it was
         handed — so keeping build_cwd unresolved buys nothing on its own. PWD is the
-        only channel that carries it, and it used to be inherited: it named the MCP
-        server's directory rather than the one the build was running in.
+        only channel that carries it, and inherited it names the MCP server's directory
+        rather than the one the build is running in.
         """
         real, link = self._linked_tree()
         sh = _script(os.path.join(self.root, "b.sh"), 'echo "at=$(pwd)"\n')

@@ -298,13 +298,13 @@ def _check_cluster_submit(
     requires some local-validation evidence (``validated_files`` — a file that passed a
     check) before it may run.
 
-    **The hold is not one-shot.** It used to set a flag and let the very next retry
-    through, which made it a reminder rather than a guard: against a model that simply
-    calls again — the normal reaction to an error — it cost one round trip and
-    constrained nothing, on the single most expensive action in the system. The
-    condition is a fact about the session (was anything validated?), not a nagging
-    budget, so it holds until that fact changes. The error names exactly what would
-    clear it, so this is a precondition with a stated exit, not a wall.
+    **The hold is not one-shot.** Setting a flag and letting the next retry through would
+    make it a reminder rather than a guard: against a model that simply calls again — the
+    normal reaction to an error — it costs one round trip and constrains nothing, on the
+    single most expensive action in the system. The condition is a fact about the session
+    (was anything validated?), not a nagging budget, so it holds until that fact changes.
+    The error names exactly what would clear it, so this is a precondition with a stated
+    exit, not a wall.
 
     **A session that wrote nothing is exempt**, and that is what keeps the exit
     reachable. ``validated_files`` is credited only by a checker run against a file the

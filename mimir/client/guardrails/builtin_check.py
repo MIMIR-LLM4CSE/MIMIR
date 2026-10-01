@@ -1,15 +1,15 @@
 """The mandatory check, performed here rather than by a tool on the machine.
 
-The check every modified file owes before the run may conclude used to be an external
-binary named in the prompt (``ruff``, ``mypy``, ``py_compile``, a compiler). That made
-the one blocking axis of the loop depend on what happened to be installed — a missing
-linter silently turned a file "unverifiable" — and on the handful of languages those
-binaries covered; anything else (``.js``, ``.rs``, ``.go``, ``.sh``) was never checked at
-all. So the floor moved in here: it needs nothing but the standard library, it reads
-every text file, and it answers the same on every machine.
+The check every modified file owes before the run may conclude lives here, not in an
+external binary named in the prompt (``ruff``, ``mypy``, ``py_compile``, a compiler).
+Leaning on one of those makes the loop's single blocking axis depend on what happens to be
+installed — a missing linter silently turns a file "unverifiable" — and on the handful of
+languages those binaries cover, leaving ``.js``, ``.rs``, ``.go`` and ``.sh`` unchecked.
+This floor needs nothing but the standard library, reads every text file, and answers the
+same on every machine.
 
-External checkers did not go away — a ``ruff check`` the model runs still credits the
-file and *raises* its tier (``structural`` → ``static``). They are a bonus now, never a
+External checkers still count — a ``ruff check`` the model runs credits the file and
+*raises* its tier (``structural`` → ``static``). They are a bonus, never a
 requirement, and nothing in the prompts names one.
 
 Two storeys, both keyed by extension so adding a language is adding a line:

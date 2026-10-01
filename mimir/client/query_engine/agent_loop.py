@@ -262,10 +262,10 @@ async def _sync_checklist(
     reminders, the empty-turn retry — belongs in the last position, because asking for
     the next turn IS its function, and it measured harmless there. STATE goes in
     messages[0]. Nothing here tests the model or the template: the placement is
-    unconditional, which is the point. It replaces a per-model workaround — the block
-    used to be a tail ``user`` turn specifically because a tail ``system`` turn broke
-    one template's generation prompt, a distinction that measured irrelevant to the
-    real failure (7/40 vs 8/40) and that no longer has to be maintained.
+    unconditional, which is the point: a per-model workaround here — a tail ``user`` turn
+    rather than a tail ``system`` one, because a tail ``system`` turn breaks one template's
+    generation prompt — is a distinction that measures irrelevant to the real failure
+    (7/40 vs 8/40) and has to be maintained for ever.
 
     Two gates, cheapest first. The trigger is the file's mtime rather than the
     ``todo_update`` tool because the tool is not its only writer (``todo_write``, a
@@ -315,11 +315,11 @@ def _drain_steer(agent: Any, messages: list[dict]) -> None:
     post-dispatch nudge) are reconciled downstream by the backend's
     consecutive-user-message merge, so no folding is needed here.
 
-    Nothing may be appended after a steer before the call: it is a real user turn, and
-    the last position is what the model answers. The checklist used to be appended
-    there — after this, just before the call — so a mid-run instruction was merged into
-    one user turn ending in a status block, and the model answered the block. That is
-    the same defect as :func:`_sync_checklist` documents, in its most visible form.
+    Nothing may be appended after a steer before the call: it is a real user turn, and the
+    last position is what the model answers. Appending the checklist there — after this,
+    just before the call — merges a mid-run instruction into one user turn ending in a
+    status block, and the model answers the block. That is the defect
+    :func:`_sync_checklist` documents, in its most visible form.
     """
     poll = getattr(agent, "_poll_steer", None)
     if not poll:
@@ -557,11 +557,10 @@ async def _run_agent_loop(
                 if hold:
                     hold.discard()
                 # Unconditionally, before any branch below decides what happens next.
-                # This used to sit inside the retry arm only, so every turn that
-                # exhausted the retry budget — and every one the nudge and handback
-                # paths below sent round again — left its empty message behind. One
-                # session ended up carrying nine of them, showing the model, over and
-                # over, that an empty message is an acceptable answer to a reminder.
+                # Inside the retry arm alone it would miss every turn that exhausts the
+                # retry budget, and every one the nudge and handback paths below send round
+                # again — each leaving its empty message behind, showing the model over and
+                # over that an empty message is an acceptable answer to a reminder.
                 if messages and messages[-1].get("role") == "assistant":
                     messages.pop()
                 _note_empty_turn(msg, messages, execution_context, step)

@@ -812,8 +812,8 @@ describe("session command replies", () => {
 
 describe("background-job wake", () => {
   // A wake starts a turn nobody pressed send for. `busy` is what puts the composer
-  // in stop mode, and only `submit_query` sets it — so before this the agent ran on
-  // with the button still offering "send", and the user could not interrupt it.
+  // in stop mode, and only `submit_query` sets it — so without this the agent runs on
+  // with the button still offering "send", and the user cannot interrupt it.
   it("marks the turn busy when the wake resumes this conversation", () => {
     const state = run([
       {

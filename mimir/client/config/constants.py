@@ -206,10 +206,10 @@ LLM_RETRY_MAX_DELAY_SECS: float = 20.0
 
 
 # ── Nudge frequency caps & thresholds ──────────────────────────────────────────
-# Central home for the previously-inline "magic numbers" that govern how often a
-# workflow nudge may fire and the situational gates that trigger it. Values are
-# unchanged from the former literals — centralised here so the whole nudge cadence
-# can be read and tuned in one place instead of hunting through nudge_logic.py.
+# Central home for the "magic numbers" that govern how often a workflow nudge may fire
+# and the situational gates that trigger it. Here rather than inline at each guard, so the
+# whole nudge cadence can be read and tuned in one place instead of hunting through
+# nudge_logic.py.
 
 # Per-category max fires per query (the guarding branch checks
 # ``nudge_counts[cat] < NUDGE_MAX_<CAT>``). A cap of 1 means "one reminder only".

@@ -30,9 +30,9 @@ class ContextOverflowError(RuntimeError):
     Raised by :func:`_enforce_context_budget` when eviction, compaction and the
     force-fit backstop have all run and the irreducible core — the system message
     plus the current query, neither of which may be reduced — still exceeds the
-    usable window. Without it the oversized prompt went to the backend anyway and
-    came back as an opaque provider 400 (vLLM: ``max_tokens must be at least 1,
-    got -N``), after a status line claiming the history had been trimmed to fit.
+    usable window. Without it the oversized prompt goes to the backend anyway and comes
+    back as an opaque provider 400 (vLLM: ``max_tokens must be at least 1, got -N``),
+    behind a status line claiming the history was trimmed to fit.
     """
 
 

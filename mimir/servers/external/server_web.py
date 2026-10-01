@@ -53,23 +53,23 @@ _TIMEOUT = 10   # seconds
 # session over it with no single call doing anything unusual. A ceiling
 # expressed only in socket bytes cannot see that; this one is sized against the
 # window it has to share.
-# Raising this used to be unaffordable: what we read and what we handed the model were
-# one and the same, so a bigger read meant a bigger prompt. The two ceilings below
-# decoupled them — prose, no-prose and error bodies are each bounded on their own — so
-# the read now costs time and memory, not context. It matters because metadata lives in
-# <head> and a page can put a great deal in front of it: on the thesis record page that
-# prompted all this, <meta name="description"> sits at byte 700 336, behind ~700 KB of
-# inline CSS. At 512 KB the abstract was not slow to reach, it was unreachable.
+# Generous because the two ceilings below are separate: what is read off the wire and what
+# is handed to the model are bounded independently — prose, no-prose and error bodies each
+# on their own — so the read costs time and memory, not context. A single ceiling for both
+# makes a bigger read mean a bigger prompt, and the read has to be big: metadata lives in
+# <head> and a page can put a great deal in front of it. On one thesis record page
+# <meta name="description"> sits at byte 700 336, behind ~700 KB of inline CSS, so at
+# 512 KB the abstract is not slow to reach but unreachable.
 _MAX_BYTES = 2 * 1024 * 1024   # 2 MB — what we will read off the wire
 _MAX_TEXT_CHARS = 128 * 1024   # 128 KB — what we will hand back to the model
 
-# What a document the parser found NO prose in may spend. It used to share the
-# ceiling above, on the reasoning that markup beats nothing; measured, that is
-# backwards. A thesis record page: 754 KB, 92% of it one inline <style>. The socket
-# read stops at 512 KB, entirely inside that block, so the body never arrives, the
-# parser correctly reports no text — and the fallback then spent 131 072 chars,
-# ~34k tokens, on CSS. Empty extraction is the strongest evidence there is that the
-# markup holds no prose; the only thing it is still good for is showing the caller
+# What a document the parser found NO prose in may spend. Far below the ceiling above,
+# because "markup beats nothing" measures backwards. A thesis record page: 754 KB, 92% of
+# it one inline <style>. The socket read stops at 512 KB, entirely inside that block, so
+# the body never arrives and the parser correctly reports no text — at which point the
+# fallback would spend 131 072 chars, ~34k tokens, on CSS. Empty extraction is the
+# strongest evidence there is that the markup holds no prose; the only thing it is still
+# good for is showing the caller
 # what kind of page this is, which costs a sample and not a window.
 _MARKUP_FALLBACK_CHARS = 8 * 1024
 
@@ -370,8 +370,8 @@ def _readable_body(body: str, content_type: str, raw: bool) -> tuple[str, dict]:
                 note["from_metadata"] = bool(summary)
                 note["embedded_data"] = bool(data)
                 # body_note, not hint: `hint` is a reserved protocol key that
-                # responses.ok() strips from success payloads, so every one of these
-                # lines had been written for a model that never received it.
+                # responses.ok() strips from success payloads, so a line put there is
+                # written for a model that never receives it.
                 note["body_note"] = (
                     "No readable text could be extracted from this page — it is a "
                     "script shell, or its body did not arrive. What is below is the "
@@ -396,11 +396,11 @@ def _readable_body(body: str, content_type: str, raw: bool) -> tuple[str, dict]:
 def _fit_body(body: str, note: dict, offset: int = 0) -> str:
     """Apply the text ceiling, and say where to resume.
 
-    Deliberately the LAST step, after any targeting. It used to live at the end of
-    `_readable_body`, which meant the document was cut to 128 KB before `offset` was
-    applied to it — so page two of a long read came back empty, and the resume this
-    ceiling exists to enable could never actually be taken. `next_offset` is absolute
-    for the same reason: it is handed straight back as the next call's `offset`.
+    Deliberately the LAST step, after any targeting. Applied at the end of
+    `_readable_body` instead, it cuts the document to 128 KB before `offset` reaches it —
+    so page two of a long read comes back empty and the resume this ceiling exists to
+    enable can never be taken. `next_offset` is absolute for the same reason: it is handed
+    straight back as the next call's `offset`.
     """
     if len(body) <= _MAX_TEXT_CHARS:
         return body

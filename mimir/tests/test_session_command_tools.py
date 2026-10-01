@@ -1,10 +1,10 @@
 """A slash command must not be judged as if the model had asked for it.
 
 `call_session_tool` is what `/memory list`, `/memory clear` and `/proxy clean` run
-on. It used to go through `agent._run_tool` — the full policy pipeline: approvals,
-plan-shape gates, write policy. Those exist to weigh what the MODEL proposed. Applied
-to a command the user typed themselves, the plan gate answered with a refusal string
-in plan or ask mode, so the command did nothing, and each one scattered tool cards
+on, and it deliberately bypasses `agent._run_tool` — the full policy pipeline of
+approvals, plan-shape gates and write policy. Those exist to weigh what the MODEL
+proposed. Applied to a command the user typed themselves, the plan gate answers with a
+refusal string in plan or ask mode, so the command does nothing, and scatters tool cards
 through the transcript on its way there.
 
 The CLI surface always bypassed the pipeline (`chat_commands._call_platform_tool`);

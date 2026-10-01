@@ -161,8 +161,8 @@ class RegisterBackgroundJobTests(unittest.TestCase):
         self.assertEqual(out, "not json")
         self.assertFalse(registered)
 
-    # ── The three ways registration fails, which used to be indistinguishable ──
-    # from success. Each one promised the model a resume nobody was holding.
+    # ── The three ways registration fails, each of which must be distinguishable ──
+    # from success: reported as success, it promises the model a resume nobody holds.
 
     def test_declined_registration_promises_nothing(self) -> None:
         agent = _FakeAgent(cap=True, with_hook=True, outcome=False)

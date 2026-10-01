@@ -33,7 +33,7 @@ single channel directory between them would let a divert click detach the other 
 command.
 
 Everything here is best-effort and fail-open: a missing, stale or corrupt sidecar
-must leave the run behaving exactly as it did before this module existed.
+must leave the run behaving exactly as it does when nothing asks it to detach.
 """
 
 import json

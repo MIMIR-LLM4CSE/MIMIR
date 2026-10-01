@@ -88,7 +88,7 @@ export function detectSlashQuery(text: string, caret: number): SlashQuery | null
  * Case-insensitive filter over BOTH kinds of slash: session commands first, then skills.
  *
  * Session commands lead because they act on the session immediately, while a skill only
- * steers the next query — and because they are the half that used to be invisible.
+ * steers the next query — and because they are the half with no other way to be found.
  */
 export function filterSlashItems(skills: ToggleItem[], query: string): ToggleItem[] {
   const q = query.trim().toLowerCase();

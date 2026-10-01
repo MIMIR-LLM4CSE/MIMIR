@@ -25,8 +25,8 @@ one ``os.environ``.
 Two small files, one format, and the two ends of it are pinned together by
 tests/test_run_channel.py.
 
-Best-effort throughout: if anything here fails, the run simply carries on blocking,
-which is what it did before this existed.
+Best-effort throughout: if anything here fails, the run simply carries on blocking, which
+is what it does when nothing asks it to detach.
 """
 
 import json
