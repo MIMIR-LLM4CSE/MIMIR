@@ -823,6 +823,9 @@ class MimirAgentViewProvider implements vscode.WebviewViewProvider {
   // Timestamp of the last notification, used to throttle bursts (e.g. several
   // approvals arriving back-to-back should not spam a stack of toasts).
   private _lastNotifyAt = 0;
+  // Cards already announced, so two conversations asking together get a toast each and
+  // neither is announced twice. Keyed by card id, which is a uuid.
+  private _notifiedPrompts = new Set<string>();
 
   /**
    * Show a native VS Code notification for milestone events (task finished or
@@ -830,6 +833,21 @@ class MimirAgentViewProvider implements vscode.WebviewViewProvider {
    * chat. "Not looking" means the VS Code window is unfocused OR the chat view
    * is hidden. Clicking the notification focuses the chat.
    */
+  /** Open a conversation from outside the webview — the notification's own action.
+   *
+   *  Sent straight down the socket rather than asked of the webview: the pane may not be
+   *  loaded, which is the situation that produced the notification in the first place.
+   *  The webview learns of the switch the usual way, from the session_loaded that follows.
+   */
+  private _switchTo(sessionId: string): void {
+    const frame = JSON.stringify({ type: "switch_session", session_id: sessionId });
+    if (this._ws && this._ws.readyState === WebSocket.OPEN) {
+      this._ws.send(frame);
+    } else {
+      this._pendingMessages.push(frame);
+    }
+  }
+
   private _maybeNotify(payload: string): void {
     const cfg = vscode.workspace.getConfiguration("mimir");
     if (!(cfg.get<boolean>("notifications.enabled") ?? true)) {
@@ -838,7 +856,8 @@ class MimirAgentViewProvider implements vscode.WebviewViewProvider {
 
     let msg: {
       type?: string; text?: string; cancelled?: boolean; summary?: string;
-      job_key?: string; state?: string;
+      job_key?: string; state?: string; id?: string;
+      session_id?: string; session_title?: string;
     };
     try {
       msg = JSON.parse(payload);
@@ -864,8 +883,20 @@ class MimirAgentViewProvider implements vscode.WebviewViewProvider {
         title = "MIMIR a terminé la tâche.";
         kind = "info";
         break;
+      // A card names the conversation that raised it, because several conversations run
+      // at once and one may be asking while the user reads another — or while the pane is
+      // closed, which is the case this notification exists for. "MIMIR attend votre
+      // approbation" was unambiguous when only one conversation could be waiting.
       case "approval":
-        title = "MIMIR attend votre approbation.";
+        title = msg.session_title
+          ? `« ${msg.session_title} » attend votre approbation.`
+          : "MIMIR attend votre approbation.";
+        kind = "warn";
+        break;
+      case "user_question":
+        title = msg.session_title
+          ? `« ${msg.session_title} » a une question pour vous.`
+          : "MIMIR a une question pour vous.";
         kind = "warn";
         break;
       case "todo_prompt":
@@ -892,19 +923,43 @@ class MimirAgentViewProvider implements vscode.WebviewViewProvider {
         return;
     }
 
-    // Coalesce rapid-fire notifications into one (2s window).
-    const now = Date.now();
-    if (now - this._lastNotifyAt < 2000) {
-      return;
+    // A card is announced once per card, not once per 2s window. The window exists to
+    // stop a burst of progress turning into a burst of toasts; applied to cards it would
+    // swallow the second of two conversations asking together, and that one waits for
+    // ever with nothing said about it.
+    const isPrompt = msg.type === "approval" || msg.type === "user_question";
+    if (isPrompt) {
+      const key = `${msg.type}:${msg.id ?? ""}:${msg.session_id ?? ""}`;
+      if (this._notifiedPrompts.has(key)) {
+        return;
+      }
+      this._notifiedPrompts.add(key);
+      // Bounded: the ids are uuids and never recur, so the set is pure growth otherwise.
+      if (this._notifiedPrompts.size > 200) {
+        this._notifiedPrompts.clear();
+      }
+    } else {
+      const now = Date.now();
+      if (now - this._lastNotifyAt < 2000) {
+        return;
+      }
+      this._lastNotifyAt = now;
     }
-    this._lastNotifyAt = now;
 
+    // Two ways in, because a card raised elsewhere needs more than the pane: focusing
+    // the chat shows whichever conversation was last open, which may not be the one
+    // asking.
     const open = "Ouvrir le chat";
+    const goThere = "Ouvrir la conversation";
+    const actions = isPrompt && msg.session_id ? [goThere, open] : [open];
     const show = kind === "warn"
       ? vscode.window.showWarningMessage
       : vscode.window.showInformationMessage;
-    show(title, open).then((choice) => {
-      if (choice === open) {
+    show(title, ...actions).then((choice) => {
+      if (choice === goThere && msg.session_id) {
+        this._switchTo(msg.session_id);
+      }
+      if (choice === goThere || choice === open) {
         vscode.commands.executeCommand("mimir.chatView.focus");
       }
     });

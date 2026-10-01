@@ -18,6 +18,47 @@ function run(actions: Parameters<ReturnType<typeof makeReducer>>[1][]): ChatStat
 }
 
 describe("chatReducer", () => {
+  it("keeps two conversations' approval cards apart", () => {
+    // Matching on kind alone merged them into one card carrying both agents' ids, and
+    // one choice then answered both — one of them for a call the user never saw. With
+    // conversations running turns at once this is a live case, not a corner.
+    const base = { type: "approval" as const, tool: "bash_run", server: "bash",
+                   args: { command: "echo hi" }, risk: "", scope: "" };
+    const state = run([
+      { ...base, id: "a1", session_id: "s1", session_title: "Install the toolchain" },
+      { ...base, id: "a2", session_id: "s2", session_title: "Port the solver" },
+    ]);
+    const cards = state.messages.filter((m) => m.kind === "approval");
+    expect(cards).toHaveLength(2);
+    expect(cards[0].approval?.ids).toEqual(["a1"]);
+    expect(cards[1].approval?.ids).toEqual(["a2"]);
+  });
+
+  it("still merges concurrent cards within one conversation", () => {
+    // The merge exists because one step can park on several calls at once, and the user
+    // judges the step. Scoping it per conversation must not take that away.
+    const base = { type: "approval" as const, tool: "bash_run", server: "bash",
+                   args: { command: "echo hi" }, risk: "", scope: "" };
+    const state = run([
+      { ...base, id: "a1", session_id: "s1" },
+      { ...base, id: "a2", session_id: "s1" },
+    ]);
+    const cards = state.messages.filter((m) => m.kind === "approval");
+    expect(cards).toHaveLength(1);
+    expect(cards[0].approval?.ids).toEqual(["a1", "a2"]);
+  });
+
+  it("renders the queue notice rather than dropping it", () => {
+    // Other transient status is dropped; this one is not. A queue nobody can see reads
+    // as a hang, which is the one thing a bounded pool must never look like.
+    const state = run([
+      { type: "queued", position: 2, text: "  ⏸ Waiting for a free agent slot (#2 in line).",
+        session_id: "s1" },
+    ]);
+    const texts = state.messages.map((m) => m.text ?? "");
+    expect(texts.some((t) => t.includes("Waiting for a free agent slot"))).toBe(true);
+  });
+
   it("does not answer a card twice when it is put back over its saved copy", () => {
     // Coming back to a session whose turn was set aside: the saved transcript still
     // holds the card, and the server sends it again with the same id.

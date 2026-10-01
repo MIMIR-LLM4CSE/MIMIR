@@ -41,10 +41,23 @@ Protocol — all messages are JSON objects, one per send/recv:
                                                                 # settings that own a control
                                                                 # report state instead
     {"type": "approval",       "id": "...", "tool": "...", "server": "...",
-                               "args": {}, "risk": "...", "scope": "..."}
+                               "args": {}, "risk": "...", "scope": "...",
+                               "session_id": "...", "session_title": "..."}
     {"type": "user_question",  "id": "...", "questions": [
                                {"question": "...", "header": "...", "multiSelect": false,
-                                "options": [{"label": "...", "description": "..."}]}]}
+                                "options": [{"label": "...", "description": "..."}]}],
+                               "session_id": "...", "session_title": "..."}
+                                                       # Every card says which
+                                                       # conversation raised it. Several
+                                                       # run turns at once, so one may ask
+                                                       # while the user reads another —
+                                                       # and the answer must come back
+                                                       # with that id (below).
+    {"type": "queued",         "session_id": "...", "position": 1, "text": "..."}
+                                                       # every agent slot is taken; this
+                                                       # conversation's turn starts when
+                                                       # one frees. Rendered, not dropped:
+                                                       # an invisible queue reads as a hang
     {"type": "tool_progress",  "id": "...", "phase": "...", "percent": 0.0}
                                                        # what a blocking run is doing,
                                                        # read off its run channel once a
@@ -62,7 +75,11 @@ Protocol — all messages are JSON objects, one per send/recv:
     {"type": "todo",           "items": [{"text": "...", "done": false}]}
     {"type": "error",          "text": "..."}
     {"type": "sessions_list",  "sessions": [{"id": "...", "title": "...",
-                               "created_at": "...", "updated_at": "...", "preview": "..."}]}
+                               "created_at": "...", "updated_at": "...", "preview": "...",
+                               "running": false,   # a turn of it is in flight
+                               "parked": false,    # its turn waits on a card: no timeout,
+                                                   # so it stays stopped until answered
+                               "queued": false}]}  # waiting for an agent slot
     {"type": "session_loaded", "session_id": "...", "title": "...",
                                "display_messages": [...], "todos": [...]}
     {"type": "context_usage",  "used_tokens": 0, "total_tokens": 0, "reserved_tokens": 0,
@@ -79,9 +96,15 @@ Protocol — all messages are JSON objects, one per send/recv:
                                   # the client's rendered chat, stored verbatim as the
                                   # session's display messages (see _handle_transcript)
     {"type": "list_resources"}                     # request the attachable-resource list
-    {"type": "approval_response", "id": "...", "choice": "y"|"n"|"a"}
-    {"type": "user_question_response", "id": "...", "answers": [
+    {"type": "approval_response", "id": "...", "session_id": "...",
+                               "choice": "y"|"n"|"a"}
+    {"type": "user_question_response", "id": "...", "session_id": "...", "answers": [
                                {"selected": ["..."], "otherText": "..."}]}
+                                  # session_id names the conversation that asked, copied
+                                  # off the card. An answer without one is DROPPED rather
+                                  # than given to whichever conversation is on screen:
+                                  # that would settle a question another one asked, with
+                                  # the user's approval on a call they never saw.
     {"type": "divert_to_background", "id": "..."}   # detach the run now blocking the
                                   # turn, keeping what it has already done. The id names
                                   # the row, whose tool name is the run channel its

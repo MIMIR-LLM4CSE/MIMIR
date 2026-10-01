@@ -15,6 +15,8 @@ import type {
   TodoItem,
   DiffEntry,
   QuestionSpec,
+  ApprovalMessage,
+  UserQuestionMessage,
   ToggleItem,
   ResourceItem,
   AgentMode,
@@ -27,6 +29,7 @@ import { createChatReducer, initialChatState } from "./state/chatReducer";
 import { useWebSocket, vscodePostMessage } from "./hooks/useWebSocket";
 import { useStickToBottom } from "./hooks/useStickToBottom";
 import { ChatThread } from "./components/ChatThread";
+import { ForeignPromptStrip } from "./components/ForeignPromptStrip";
 import { PlanBar } from "./components/PlanBar";
 import { AgentSettings } from "./components/AgentSettings";
 import { ApprovalSwitcher } from "./components/ApprovalSwitcher";
@@ -185,6 +188,8 @@ export const App: React.FC = () => {
   const [userQuestion, setUserQuestion] = useState<{
     id: string;
     questions: QuestionSpec[];
+    // Which conversation asked, so the answer reaches the agent that is parked on it.
+    sessionId?: string;
   } | null>(null);
   // Batch review: accumulated file diffs across queries; persists until user accepts/reverts.
   const [batchFiles, setBatchFiles] = useState<DiffEntry[]>([]);
@@ -202,7 +207,43 @@ export const App: React.FC = () => {
   // Ref kept in sync so the WS handler always reads the current session ID
   // without stale-closure issues.
   const activeSessionIdRef = useRef<string | null>(null);
+
+  /** Whether a card belongs to a conversation other than the one on screen.
+   *
+   *  A card with no session_id comes from a server that predates the attribution; it is
+   *  treated as this conversation's, which is what that server meant. */
+  const rememberForeign = useCallback(
+    (msg: ApprovalMessage | UserQuestionMessage) => {
+      // One per conversation: the newest card is the one its turn is parked on, and a
+      // conversation only ever waits on one at a time.
+      setForeignPrompts((prev) => ({ ...prev, [msg.session_id as string]: msg }));
+    },
+    []
+  );
+
+  const forgetForeign = useCallback((sessionId: string) => {
+    setForeignPrompts((prev) => {
+      if (!(sessionId in prev)) return prev;
+      const next = { ...prev };
+      delete next[sessionId];
+      return next;
+    });
+  }, []);
+
+  const isForeign = useCallback(
+    (msg: { session_id?: string }) =>
+      !!msg.session_id && msg.session_id !== activeSessionIdRef.current,
+    []
+  );
   const [showSessionsPanel, setShowSessionsPanel] = useState(false);
+  // Cards raised by conversations the user is not reading, newest per conversation.
+  // They do not belong in this chat's thread — that is another transcript — but they
+  // cannot be hidden either: each one is a turn parked on a person with no timeout, so
+  // an unanswered card is a conversation stopped for ever. They are shown in a strip
+  // above the thread, and answering one sends its own session_id.
+  const [foreignPrompts, setForeignPrompts] = useState<
+    Record<string, ApprovalMessage | UserQuestionMessage>
+  >({});
 
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -435,9 +476,16 @@ export const App: React.FC = () => {
       // told the turn stopped producing (see parkOnPrompt) — which is also what
       // hands the transcript, plan included, back to the server.
       case "user_question":
+        if (isForeign(msg)) {
+          // Not this chat's: it must not enter the thread, and must not clear `busy`
+          // (parkOnPrompt does) — this conversation may well still be working.
+          rememberForeign(msg);
+          return;
+        }
         setUserQuestion({
           id: msg.id,
           questions: msg.questions,
+          sessionId: msg.session_id ?? activeSessionIdRef.current ?? undefined,
         });
         dispatch(msg);
         scrollToBottom();
@@ -460,6 +508,10 @@ export const App: React.FC = () => {
         const prevSessionId = activeSessionIdRef.current;
         activeSessionIdRef.current = msg.session_id;
         setActiveSessionId(msg.session_id);
+        // Its card is no longer foreign: if its turn is still parked, the server resends
+        // the card into this conversation on arrival, and leaving the strip entry up
+        // would show the same question twice.
+        forgetForeign(msg.session_id);
         const prevMessages = chatStateRef.current.messages;
         // Reconnecting to the session already on screen is the case that used to
         // lose a turn: the stored copy is whatever the server had assembled by
@@ -512,6 +564,10 @@ export const App: React.FC = () => {
     // Remaining message-state types (output/status/token/file_progress/
     // approval/thinking*/answer/error) are handled by the reducer; dispatch and
     // run the matching scroll side-effect afterwards.
+    if (msg.type === "approval" && isForeign(msg)) {
+      rememberForeign(msg);
+      return;
+    }
     dispatch(msg);
     if (msg.type === "approval") {
       scrollToApproval();
@@ -929,10 +985,15 @@ export const App: React.FC = () => {
         (m) => m.kind === "approval" && m.approval?.id === id
       );
       const allIds = card?.approval?.ids ?? [id];
+      // The conversation that asked, read off the card. The server drops an answer
+      // without one rather than guessing, and falling back to the session on screen
+      // would be exactly the wrong guess for a card raised elsewhere.
+      const sessionId = card?.approval?.session_id ?? activeSessionIdRef.current ?? undefined;
       for (const aid of allIds) {
-        const payload: { type: "approval_response"; id: string; choice: "y" | "n" | "a"; approved_files?: string[] } = {
-          type: "approval_response", id: aid, choice,
-        };
+        const payload: {
+          type: "approval_response"; id: string; choice: "y" | "n" | "a";
+          session_id?: string; approved_files?: string[];
+        } = { type: "approval_response", id: aid, choice, session_id: sessionId };
         if (approvedFiles !== undefined) payload.approved_files = approvedFiles;
         send(payload);
       }
@@ -1109,6 +1170,28 @@ export const App: React.FC = () => {
           )}
         </div>
 
+        {/* Conversations other than this one that are waiting on the user. Above the
+            thread rather than in it: the card belongs to another transcript, and each
+            one is a turn blocked on a person with no timeout — so it must be visible
+            without being mistaken for part of this conversation. */}
+        <ForeignPromptStrip
+          prompts={foreignPrompts}
+          onOpen={(sessionId) => {
+            forgetForeign(sessionId);
+            setSessionLoading(true);
+            switchSession(sessionId);
+          }}
+          onApprove={(prompt, choice) => {
+            send({
+              type: "approval_response",
+              id: prompt.id,
+              session_id: prompt.session_id,
+              choice,
+            });
+            forgetForeign(prompt.session_id as string);
+          }}
+        />
+
         {/* Chat thread, with the progress dock anchored to its bottom-left. The
             wrapper exists for the anchor: absolute inside `.main` would put the
             dock over the composer, whose height changes as the user types. */}
@@ -1249,6 +1332,7 @@ export const App: React.FC = () => {
               send({
                 type: "user_question_response",
                 id: userQuestion.id,
+                session_id: userQuestion.sessionId,
                 answers,
               });
               // Whatever was chosen, the agent goes back to work: even a rejected

@@ -82,7 +82,20 @@ export interface CommandOutputMessage {
   tone?: CommandTone;
 }
 
-export interface ApprovalMessage {
+/** Which conversation a card belongs to.
+ *
+ *  Several conversations run turns at once, and one may raise a card while the user is
+ *  reading another. The id is what routes the answer back to the agent that asked: the
+ *  server drops an answer that names no conversation rather than handing it to whoever
+ *  is on screen, which would attach the user's approval to a call they never saw.
+ *  Optional so a card from an older server still renders — it simply cannot be
+ *  attributed, and is treated as the active conversation's. */
+export interface Attributed {
+  session_id?: string;
+  session_title?: string;
+}
+
+export interface ApprovalMessage extends Attributed {
   type: "approval";
   id: string;
   /** All approval IDs when multiple concurrent approvals are merged into one card. */
@@ -105,6 +118,16 @@ export interface ApprovalMessage {
   oow_paths?: string[];
   /** First of `oow_paths`, kept for a card built by an older server. */
   oow_path?: string;
+}
+
+/** Every agent slot is taken; this conversation's turn starts when one frees.
+ *
+ *  Rendered rather than dropped like other transient status: a queue nobody can see
+ *  reads as a hang, which is the one thing a bounded pool must never look like. */
+export interface QueuedMessage extends Attributed {
+  type: "queued";
+  position: number;
+  text: string;
 }
 
 export interface AnswerMessage {
@@ -396,6 +419,14 @@ export interface SessionMeta {
   summary?: string;
   /** True once the user renamed the session by hand — the title then wins. */
   title_custom?: boolean;
+  /** A turn of this conversation is in flight. Several run at once, so a conversation
+   *  the user is not reading can be working — invisible without this. */
+  running?: boolean;
+  /** Its turn is parked on a card. Worse than invisible: the wait has no timeout, so
+   *  the conversation stays stopped until somebody answers. */
+  parked?: boolean;
+  /** It asked for a turn but every agent slot is taken; it starts when one frees. */
+  queued?: boolean;
 }
 
 export interface SessionsListMessage {
@@ -492,7 +523,7 @@ export interface QuestionSpec {
   multiSelect: boolean;
 }
 
-export interface UserQuestionMessage {
+export interface UserQuestionMessage extends Attributed {
   type: "user_question";
   id: string;
   questions: QuestionSpec[];
@@ -619,7 +650,8 @@ export type ServerMessage =
   | ResourcesMessage
   | ActiveEditorMessage
   | OpenEditorMessage
-  | UserQuestionMessage;
+  | UserQuestionMessage
+  | QueuedMessage;
 
 // ── Message types (client → server) ──────────────────────────────────────────
 
@@ -656,6 +688,9 @@ export interface DivertToBackgroundMessage {
 export interface ApprovalResponseMessage {
   type: "approval_response";
   id: string;
+  /** The conversation that asked. Required in practice: the server drops an answer
+   *  without one rather than guessing which agent it belongs to. */
+  session_id?: string;
   choice: "y" | "n" | "a";
   approved_files?: string[];
 }
@@ -663,6 +698,7 @@ export interface ApprovalResponseMessage {
 export interface UserQuestionResponseMessage {
   type: "user_question_response";
   id: string;
+  session_id?: string;
   answers: QuestionAnswer[];
 }
 

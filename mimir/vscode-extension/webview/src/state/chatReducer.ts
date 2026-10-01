@@ -699,9 +699,15 @@ export function createChatReducer(makeId: () => string) {
         const base = s.messages.map((m) =>
           m.kind === "editing" && m.live ? { ...m, live: false } : m
         );
+        // The newest card of THIS conversation. Matching on kind alone merged cards
+        // from different conversations into one — two agents' ids in a single `ids[]`,
+        // then both answered by one choice, one of them for a call the user never saw.
+        // Conversations run turns at once now, so that is a live case, not a corner.
         let existingIdx = -1;
         for (let i = base.length - 1; i >= 0; i--) {
-          if (base[i].kind === "approval" && base[i].approval !== undefined) { existingIdx = i; break; }
+          const card = base[i].approval;
+          if (base[i].kind === "approval" && card !== undefined &&
+              (card.session_id ?? "") === (action.session_id ?? "")) { existingIdx = i; break; }
         }
         let messages: ChatMessage[];
         if (existingIdx >= 0) {
@@ -1067,6 +1073,20 @@ export function createChatReducer(makeId: () => string) {
           },
         ];
         return { ...s, messages };
+      }
+
+      // Every agent slot is taken. Rendered rather than dropped like other transient
+      // status, and deliberately leaving `busy` set: the turn was accepted and will
+      // run, so the chat must keep reading as working rather than invite a second send.
+      case "queued": {
+        const s = flushLive({ ...state, toolCallAfterToken: false }, makeId);
+        return {
+          ...s,
+          messages: [
+            ...s.messages,
+            { id: makeId(), role: "agent", kind: "text", text: action.text },
+          ],
+        };
       }
 
       case "error": {
