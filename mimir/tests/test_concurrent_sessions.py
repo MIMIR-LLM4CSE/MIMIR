@@ -192,6 +192,48 @@ class WhatIsRunningTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self.b.out_q.empty())
 
 
+class DeletingAConversationTests(unittest.IsolatedAsyncioTestCase):
+    """Deleting closes the agent, so a turn in flight is cut short — and said first."""
+
+    def _session(self) -> _Session:
+        self.a = _worker("s1")
+        pool = _ManyPool({"s1": self.a})
+        sess = _session(pool, active="s2")
+        sess._delete_refused = set()
+        return sess
+
+    def test_a_turn_in_progress_is_reported(self) -> None:
+        sess = self._session()
+        self.a._query_session_id = "s1"
+        self.assertEqual(sess._live_work_of("s1"), ["a turn in progress"])
+
+    def test_a_turn_waiting_on_the_user_is_reported_as_such(self) -> None:
+        """Parked is work waiting to continue, not work that has stopped."""
+        sess = self._session()
+        self.a._query_session_id = "s1"
+        self.a._pending_prompt = {"id": "card-a"}
+        self.assertEqual(sess._live_work_of("s1"), ["a turn waiting for your answer"])
+
+    def test_an_idle_conversation_has_nothing_to_report(self) -> None:
+        sess = self._session()
+        self.assertEqual(sess._live_work_of("s1"), [])
+
+    async def test_the_first_delete_of_a_working_conversation_is_refused(self) -> None:
+        sess = self._session()
+        self.a._query_session_id = "s1"
+        sess.store = type("S", (), {"delete_session": lambda self, sid: 1 / 0})()
+        sess._send_sessions_list = lambda: _noop()
+        await sess._handle_delete_session({"session_id": "s1"})
+        self.assertIn("still has work running", sess.ws.sent[0]["text"])
+        # And asking again goes through: the warning is to be read, not to make the
+        # conversation undeletable.
+        self.assertIn("s1", sess._delete_refused)
+
+
+async def _noop() -> None:
+    pass
+
+
 class LeavingAConversationTests(unittest.IsolatedAsyncioTestCase):
     def test_divertible_rows_are_kept_per_conversation(self) -> None:
         """Two conversations can each have a blocking run; a divert must reach its own."""

@@ -134,6 +134,7 @@ from .ws_session import _Session
 
 import asyncio
 import os
+import signal
 import sys
 from typing import Any
 
@@ -283,7 +284,48 @@ async def serve(
         # --port 0 the argument is a placeholder, and this line is the contract the
         # VS Code extension parses to learn where to connect.
         print(f"Listening on {_announced_url(server.sockets)}", file=_ORIGINAL_STDOUT, flush=True)
-        await asyncio.Future()  # run forever
+        await _run_until_signalled(pool)
+
+
+async def _run_until_signalled(pool: _AgentPool) -> None:
+    """Serve until asked to stop, then close every agent's MCP servers.
+
+    ``stdio_client`` spawns each server with ``start_new_session=True`` — its own process
+    group, so it survives this process dying — and the only thing that terminates one is
+    closing the agent's exit stack. Dying without that leaves up to ``pool.cap`` × ~19
+    orphaned interpreters behind, each holding whatever its own child processes hold; the
+    VS Code extension kills and respawns this server on every connect, so that is the
+    ordinary path, not an edge case.
+
+    ``add_signal_handler`` rather than ``signal.signal``: the close runs on this loop, and
+    a handler that interrupts an arbitrary frame cannot await. Falls back to serving
+    forever where the loop does not support it (Windows), which is where the pool's own
+    idle release is the only reaping there is.
+    """
+    loop = asyncio.get_running_loop()
+    stop = loop.create_future()
+
+    def _ask_to_stop() -> None:
+        if not stop.done():
+            stop.set_result(None)
+
+    installed = []
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        try:
+            loop.add_signal_handler(sig, _ask_to_stop)
+            installed.append(sig)
+        except (NotImplementedError, RuntimeError, ValueError):
+            pass
+    try:
+        await stop
+        print("Stopping — closing agent connections…", file=_ORIGINAL_STDOUT, flush=True)
+    finally:
+        for sig in installed:
+            try:
+                loop.remove_signal_handler(sig)
+            except (NotImplementedError, RuntimeError, ValueError):
+                pass
+        await pool.aclose_all()
 
 
 def main() -> None:

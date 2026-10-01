@@ -361,12 +361,31 @@ class _AgentPool:
         await asyncio.get_running_loop().run_in_executor(None, worker.aclose)
 
     async def aclose_all(self) -> None:
+        """Close every agent, all at once.
+
+        Together rather than one after another: each close waits on its own MCP servers
+        going away, so in series the whole shutdown costs that wait times the number of
+        live conversations — a minute of a process that has already been asked to stop,
+        while its replacement is starting beside it. They share nothing, so there is
+        nothing for the serialisation to protect.
+        """
         if self._reaper is not None:
             self._reaper.cancel()
             self._reaper = None
         async with self._lock:
-            for session_id in list(self._workers):
-                await self._close_locked(session_id, reason="shutting down")
+            workers = list(self._workers.items())
+            self._workers.clear()
+            self._last_use.clear()
+        if not workers:
+            return
+        loop = asyncio.get_running_loop()
+        for session_id, _worker in workers:
+            logger.info("pool: releasing the agent of session %s (shutting down)",
+                        session_id)
+        await asyncio.gather(
+            *(loop.run_in_executor(None, worker.aclose) for _sid, worker in workers),
+            return_exceptions=True,
+        )
 
     # ── The reaper ────────────────────────────────────────────────────────────
 

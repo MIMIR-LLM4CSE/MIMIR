@@ -904,8 +904,10 @@ class _Session:
                     # reason it is below — it describes a moment.)
                     if ev.get("type") not in ("job_progress", "token", "thinking"):
                         self._detached_log(owner).append(ev)
-                    if ev.get("type") == "answer":
-                        await self._persist_detached_answer(ev, extras)
+                    if ev.get("type") in ("answer", "error"):
+                        if ev.get("type") == "answer":
+                            await self._persist_detached_answer(ev, extras)
+                        await self._admit_waiting()
                     continue
                 # Unwrap embedded JSON events (e.g. diff) from output lines.
                 if ev.get("type") == "output":
@@ -943,6 +945,7 @@ class _Session:
                     self._rows_for(owner).clear()
                     self._sent_progress.setdefault(owner or "", {}).clear()
                     await self._emit_context_usage()
+                    await self._admit_waiting()
                 if ev.get("type") == "file_progress":
                     # Push accumulated batch_status for any files already written
                     # in this turn so the BatchReviewBar appears/updates mid-turn.
@@ -1019,6 +1022,9 @@ class _Session:
                     # with the query the user is waiting on.
                     self._schedule_summary_refresh()
                     await self._emit_context_usage()
+                    # This conversation stopping work may let the pool release a different
+                    # idle one to make room for whoever is waiting.
+                    await self._admit_waiting()
                     # Sent directly rather than via out_q, so the snapshot dict is read
                     # *after* any batch_review_accept that arrived mid-run cleared it.
                     try:
@@ -1839,6 +1845,25 @@ class _Session:
             pass
         return True
 
+    async def _admit_waiting(self) -> None:
+        """Start the turn of a conversation that was waiting for an agent slot.
+
+        Called the moment a turn ends, because that is when its conversation stops being
+        busy and so becomes the one the pool may release to make room. Leaving it to the
+        idle sweep makes a queued conversation wait out the sweep interval after the slot
+        it needs has already freed — half a minute of nothing, having just been told it is
+        next in line.
+        """
+        try:
+            for session_id in await self.pool.pump():
+                await self.ws.send(json.dumps({
+                    "type": "status",
+                    "session_id": session_id,
+                    "text": "  ▶ An agent slot freed — this conversation is starting.",
+                }))
+        except Exception:
+            logger.warning("could not admit a queued conversation", exc_info=True)
+
     async def _report_unreverted(self, moved: list[str]) -> None:
         """Say which files were left as they are, and why — never silently."""
         if not moved:
@@ -1960,6 +1985,22 @@ class _Session:
         await self._load_session(target_id)
         await self._send_sessions_list()
 
+    def _live_work_of(self, session_id: str) -> list[str]:
+        """Everything of *session_id*'s that deleting it would cut short.
+
+        Its turn counts, not only its jobs: conversations run turns at once, so the one
+        being deleted may be mid-task somewhere the user is not looking — and deleting it
+        closes its agent under the turn, which fails its next tool call rather than ending
+        it. Its card counts too, for the same reason read the other way: a turn parked on
+        a person is work waiting to continue, not work that has stopped.
+        """
+        live: list[str] = []
+        if self.pool.is_parked(session_id):
+            live.append("a turn waiting for your answer")
+        elif self.pool.is_busy(session_id):
+            live.append("a turn in progress")
+        return live + self._live_jobs_of(session_id)
+
     def _live_jobs_of(self, session_id: str) -> list[str]:
         """Commands of *session_id* still running, as far as the job dirs can say.
 
@@ -1975,7 +2016,7 @@ class _Session:
         exit code — neither is a certainty, which is why this reports and does not act.
         """
         base = os.path.join(_MIMIR_DIR_WS, "sessions", session_id)
-        live: list[str] = []
+        live = []
         for kind in ("jobs", "hpc_jobs"):
             root = os.path.join(base, kind)
             try:
@@ -1999,7 +2040,7 @@ class _Session:
         target_id = (msg.get("session_id") or "").strip()
         if not target_id:
             return
-        running = self._live_jobs_of(target_id)
+        running = self._live_work_of(target_id)
         if running and not msg.get("force") and target_id not in self._delete_refused:
             self._delete_refused.add(target_id)
             # Said rather than done: the user may well want it gone anyway, and the
@@ -2009,7 +2050,7 @@ class _Session:
                 "text": ("  ⚠ Not deleted — that conversation still has work running: "
                          + "; ".join(running[:3])
                          + (f" (+{len(running) - 3} more)" if len(running) > 3 else "")
-                         + ". Stop it first, or delete again to discard its logs."),
+                         + ". Stop it first, or delete again to discard it."),
             }))
             await self._send_sessions_list()
             return

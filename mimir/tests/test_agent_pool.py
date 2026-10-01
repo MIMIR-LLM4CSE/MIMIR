@@ -315,3 +315,124 @@ class AddressingASessionTests(_PoolCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AdmissionLatencyTests(_PoolCase):
+    """A freed slot admits the waiting conversation at once, not on the next sweep.
+
+    The idle sweep runs every ``_REAP_INTERVAL`` seconds, so leaving admission to it makes
+    a queued conversation sit through the rest of that interval after the slot it needs
+    has already freed — having just been told it is next in line.
+    """
+
+    async def test_a_turn_ending_is_enough_to_admit_the_next(self) -> None:
+        pool = self._pool(cap=1)
+        held = await pool.worker_for("s1")
+        held.busy = True
+        ran: list[str] = []
+        pool.enqueue("s2", lambda w: ran.append(w.session_id))
+
+        # Nothing is admitted while the slot is genuinely held.
+        self.assertEqual(await pool.pump(), [])
+        # The turn ends; the conversation is idle but nowhere near any TTL.
+        held.busy = False
+        self.assertLess(pool.idle_for("s1"), pool.idle_ttl)
+        self.assertEqual(await pool.pump(), ["s2"])
+        self.assertEqual(ran, ["s2"])
+
+    async def test_the_session_reports_the_admission(self) -> None:
+        """Said out loud: the queue notice is still on screen until something replaces it."""
+        import inspect
+        from mimir.client.ui.ws import ws_session
+        source = inspect.getsource(ws_session._Session._admit_waiting)
+        self.assertIn("pool.pump()", source)
+        self.assertIn("starting", source)
+        # Both the ending of a turn in this conversation and in another one admit.
+        drain = inspect.getsource(ws_session._Session._drain_loop)
+        self.assertGreaterEqual(drain.count("_admit_waiting()"), 2)
+
+
+class ShutdownClosesEverythingAtOnceTests(_PoolCase):
+    """Closing waits on MCP servers going away, so in series it costs that wait per
+    conversation — a minute of a process already asked to stop, while its replacement
+    starts beside it."""
+
+    async def test_every_agent_is_closed(self) -> None:
+        pool = self._pool(cap=3)
+        workers = [await pool.worker_for(f"s{i}") for i in range(3)]
+        await pool.aclose_all()
+        self.assertTrue(all(w.closed for w in workers))
+        self.assertEqual(len(pool), 0)
+
+    async def test_a_slow_close_does_not_hold_up_the_others(self) -> None:
+        import time
+        pool = self._pool(cap=3)
+        workers = [await pool.worker_for(f"s{i}") for i in range(3)]
+        for w in workers:
+            original = w.aclose
+
+            def _slow(orig=original):
+                time.sleep(0.3)
+                orig()
+
+            w.aclose = _slow
+        started = time.monotonic()
+        await pool.aclose_all()
+        elapsed = time.monotonic() - started
+        self.assertTrue(all(w.closed for w in workers))
+        self.assertLess(elapsed, 0.9, f"closed in series: {elapsed:.2f}s for 3 × 0.3s")
+
+    async def test_one_failing_close_does_not_abandon_the_rest(self) -> None:
+        pool = self._pool(cap=3)
+        workers = [await pool.worker_for(f"s{i}") for i in range(3)]
+
+        def _boom():
+            raise RuntimeError("its loop was already gone")
+
+        workers[1].aclose = _boom
+        await pool.aclose_all()
+        self.assertTrue(workers[0].closed)
+        self.assertTrue(workers[2].closed)
+        self.assertEqual(len(pool), 0)
+
+
+class OpeningAConversationCostsNothingTests(_PoolCase):
+    """Reading conversations is free; only asking one something builds its agent.
+
+    The cap bounds how many conversations can be *working*, not how many exist or how many
+    the user looks at. Building on open would spend the backend wait and ~19 server spawns
+    on a conversation the user is only reading, and would have browsing a history of ten
+    hit the cap on the fourth click.
+    """
+
+    async def test_the_pool_is_empty_until_something_is_asked(self) -> None:
+        pool = self._pool(cap=1)
+        # Whatever a session layer does on open — read its activity, look it up, point the
+        # screen at it — none of it may build.
+        for sid in ("s1", "s2", "s3", "s4"):
+            pool.set_active(sid)
+            self.assertIsNone(pool.get(sid))
+            self.assertFalse(pool.is_busy(sid))
+            self.assertFalse(pool.is_parked(sid))
+            self.assertIsNone(pool.queued_position(sid))
+            pool.ui_state(sid)
+        self.assertEqual(len(pool), 0)
+        self.assertEqual(_StubWorker.built, 0)
+
+    async def test_only_the_query_path_can_build_one(self) -> None:
+        """Pinned on the code: one call site in the session layer, and it is the query."""
+        import inspect
+        from mimir.client.ui.ws import ws_session
+        source = inspect.getsource(ws_session)
+        self.assertEqual(source.count("await self._ensure_worker()"), 1)
+        self.assertIn("worker = await self._ensure_worker()",
+                      inspect.getsource(ws_session._Session._handle_query))
+
+    async def test_returning_to_a_conversation_reuses_its_agent(self) -> None:
+        """Its context is live, so coming back is instant and costs no rebuild."""
+        pool = self._pool(cap=2)
+        first = await pool.worker_for("s1")
+        pool.set_active("s2")
+        pool.set_active("s1")
+        self.assertIs(pool.get("s1"), first)
+        self.assertEqual(_StubWorker.built, 1)
