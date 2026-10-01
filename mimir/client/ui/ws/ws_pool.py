@@ -1,19 +1,16 @@
 """One agent per conversation, created when needed and released when idle.
 
-``ws_server`` used to build a single ``_AgentWorker`` and close over it in the
-connection handler, so every ``_Session`` shared one agent, one thread and one serial
-query loop. Sessions were therefore *time-multiplexed*: leaving one had to cancel or
-defer its turn, because a single worker cannot stream two conversations anywhere the
-user can see. This is what replaces that — a worker per session, so a turn keeps running
-in a conversation nobody is looking at.
+One worker per session, each with its own agent, thread and serial query loop. That is
+what lets a turn keep running in a conversation nobody is looking at: a worker shared
+between conversations can stream only one of them anywhere the user can see, which forces
+leaving a conversation to stop its turn.
 
 Three things make it affordable:
 
 **Lazily.** A worker is built on its session's first query, not when the session is
 created. Construction blocks on the LLM backend and then spawns ~19 MCP servers, which on
-a cold vLLM is minutes — a cost that used to be paid once at startup and is now paid per
-conversation. So it is paid only by a conversation that actually asks something, off the
-event loop, and the session is told it is happening.
+a cold vLLM is minutes — so that cost falls only on a conversation that actually asks
+something, is paid off the event loop, and is announced to the session paying it.
 
 **Capped.** ``MIMIR_MAX_LIVE_SESSIONS`` live workers, three by default. The binding
 constraint is processes, not tokens: three agents is some sixty Python interpreters. Past
@@ -24,8 +21,8 @@ as a hang.
 parked on a card, watching a background job, or on screen: each of those is work or
 attention that evicting would throw away.
 
-The pool is process-global, not per connection. Two webviews on one port must see the
-same live turns, exactly as they saw the one shared worker.
+The pool is process-global, not per connection: two webviews on one port must see the
+same live turns.
 
 Every mutation happens on the WS event loop, so an ``asyncio.Lock`` is the whole
 concurrency story here; nothing touches ``_workers`` from a worker thread.
@@ -77,11 +74,11 @@ def _idle_ttl() -> float:
 class _Settings:
     """The UI knobs a newly built worker must start from.
 
-    With one shared worker these lived on the agent, and the front-end read them back off
-    it. A worker built later has to arrive already configured, or a conversation started
-    after the user chose "plan mode" would quietly come up in agent mode. So each setter
-    records its argument here *and* applies it to every live worker; a new worker replays
-    the record once its agent exists.
+    A worker is built long after the user chooses these, so it has to arrive already
+    configured: without the record, a conversation started after the user picked "plan
+    mode" would quietly come up in agent mode. Each setter therefore writes its argument
+    here *and* applies it to every live worker, and a new worker replays the record once
+    its agent exists.
 
     Deliberately a recording of calls rather than a dict of values: the worker's setters
     are where the validation lives, and duplicating "what a mode may be" here is how the
@@ -120,14 +117,14 @@ class _AgentPool:
         self.model = model
         self.cap = cap if cap is not None else _cap()
         self.idle_ttl = idle_ttl if idle_ttl is not None else _idle_ttl()
-        # The session the front-end is showing. Moved here from the worker: it is a
-        # property of the view, and there is no longer one worker to hang it on.
+        # The session the front-end is showing — a property of the view, not of any one
+        # worker, which is why it lives on the pool.
         self.active_session_id: str | None = None
         self.settings = _Settings()
 
-        # The stand-in for a conversation with no agent yet — a normal state now, since
-        # agents are built on first query. One per pool, shared: it holds no session's
-        # state because it holds no state at all beyond the model.
+        # The stand-in for a conversation with no agent yet, which is the ordinary state
+        # until its first query. One per pool, shared: it holds no session's state because
+        # it holds no state at all beyond the model.
         self._detached = _AgentWorker.detached(model)
 
         self._workers: dict[str, _AgentWorker] = {}
@@ -155,10 +152,10 @@ class _AgentPool:
         """The live worker for *session_id*, or the detached stand-in.
 
         What the session reads for everything that is not a query: the settings behind
-        the greeting, a toggle panel, a mode switch typed before anything was asked.
-        Those all have a right answer with no agent — the worker's own getters give it —
-        and routing them through a stand-in is what keeps the hundred call sites that
-        address "the conversation on screen" written the way they were.
+        the greeting, a toggle panel, a mode switch typed before anything was asked. Each
+        of those has a right answer with no agent — the worker's own getters give it — so a
+        stand-in lets every call site that addresses "the conversation on screen" read it
+        directly, without a None check of its own.
         """
         return self.get(session_id) or self._detached
 
@@ -290,7 +287,7 @@ class _AgentPool:
 
         Each clause is a thing that would be lost:
 
-        * **busy** — a turn is running. Obvious, and the only one that was ever obvious.
+        * **busy** — a turn is running.
         * **watching a background job** — a two-hour build's watcher lives on this
           worker's loop. Evicting it loses the wake that watcher exists to deliver, so
           the build finishes and nothing ever says so.
@@ -441,12 +438,12 @@ class _AgentPool:
     def ui_state(self, session_id: str | None) -> dict:
         """The settings the front-end draws on connect, for the conversation on screen.
 
-        From its live worker when it has one. When it has none — the normal case on a
+        From its live worker when it has one. When it has none — the ordinary case on a
         fresh connect, since an agent is built on first query — from the stand-in's
-        pre-agent defaults, overridden by anything the user has already chosen in this
-        server's lifetime. Without that override the panel came up showing "agent mode"
-        to a user who had switched to plan, and the switch was real: the pool replays it
-        onto the agent as soon as one is built.
+        pre-agent defaults, overridden by whatever the user has already chosen in this
+        server's lifetime. The override matters because those choices are real: the pool
+        replays them onto the agent as soon as one is built, so reporting the bare default
+        would show the user a setting they had already changed.
         """
         worker = self.get(session_id)
         source = worker or self._detached

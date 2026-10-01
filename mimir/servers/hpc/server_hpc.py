@@ -59,9 +59,9 @@ _MAX_OUTPUT = 128 * 1024
 # Per session, resolved per call. A Slurm job outlives its session, sometimes by days,
 # which is the one way these differ from detached shell jobs — so a job is never
 # *unreachable* from another conversation: _find_job_dir below looks in the sibling
-# sessions read-only and says where it came from. What per-session buys is that two
-# conversations submitting at the same moment cannot land on each other's directory, and
-# that a conversation's submissions go with it when it is deleted.
+# sessions read-only and says where it came from. Per session buys two things: two
+# conversations submitting at the same moment cannot land on each other's directory, and a
+# conversation's submissions go with it when it is deleted.
 def _hpc_jobs_dir() -> str:
     env = os.environ.get("MIMIR_HPC_JOBS_DIR")
     if env:
@@ -72,9 +72,9 @@ def _hpc_jobs_dir() -> str:
 def _new_job_dir_name() -> str:
     """A sortable, collision-free directory name for one submission.
 
-    Shares ``_bash_jobs``' key shape — UTC stamp plus four random hex — because the
-    stamp alone collides: it resolves to the second, and ``makedirs(exist_ok=True)``
-    then let two submissions share one directory and overwrite each other's
+    Shares ``_bash_jobs``' key shape — UTC stamp plus four random hex — because the stamp
+    alone collides: it resolves to the second, and with ``makedirs(exist_ok=True)`` two
+    submissions in that second would share one directory and overwrite each other's
     batch_script.sh, slurm.log and slurm_job_id. One second is a long time when two
     sessions are working at once.
     """
@@ -91,9 +91,9 @@ def _find_job_dir(job_id: str) -> tuple[str, str]:
     """Where *job_id* was recorded, and which session recorded it ("" for this one).
 
     Looks in this session's directory first, then — read-only — in the sibling sessions'.
-    A Slurm job can outlive the conversation that submitted it and still need checking
-    from another one; filing it per session must not make it unfindable. Returns
-    ``("", "")`` when no session recorded it.
+    A Slurm job can outlive the conversation that submitted it and still need checking from
+    another one, so filing it per session must not make it unfindable. Returns ``("", "")``
+    when no session recorded it.
     """
     def _match(base: str) -> str:
         try:
@@ -521,9 +521,8 @@ def slurm_job_status(job_id: str) -> dict:
     state, raw = _normalized_job_state(job_id)
     payload = {"job_id": job_id, "state": state, "raw_state": raw}
     # Where the submission was recorded, so the script and the log stay reachable. A
-    # Slurm job outlives its conversation, and a job dir filed under a session it was
-    # not submitted from would otherwise be unfindable — so the sibling sessions are
-    # searched too, and the answer says when the job came from another one.
+    # Slurm job outlives its conversation, so the sibling sessions are searched too and the
+    # answer says when the job came from another one.
     job_dir, from_session = _find_job_dir(job_id)
     if job_dir:
         payload["job_dir"] = job_dir

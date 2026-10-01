@@ -167,17 +167,15 @@ class _Session:
     def worker(self) -> _AgentWorker:
         """The agent of the conversation on screen, or None if it has none yet.
 
-        A property rather than a field because there is no longer one worker: there is one
-        per conversation, built on that conversation's first query. Every existing
-        ``self.worker.*`` call site asks about the session being read, which is exactly
-        what this answers — so they all stayed as they were.
+        A property, not a field: there is one worker per conversation, built on that
+        conversation's first query, and every ``self.worker.*`` call site asks about the
+        session being read — which is what this answers.
 
-        Before that first query there is no worker, which is why this answers with the
-        pool's detached stand-in rather than None: every getter on it already gives the
-        right pre-agent answer, and every setter is already a no-op. The exceptions are
-        the two things that must not be silently dropped — submitting a query, and a
-        setting that has to survive into the next worker built — and both go through the
-        pool explicitly instead.
+        Until that first query the conversation has no worker, and this answers with the
+        pool's detached stand-in rather than None: every getter on it gives the right
+        pre-agent answer and every setter is a no-op. Two things must not be silently
+        dropped that way — submitting a query, and a setting that has to survive into the
+        next worker built — and both go through the pool explicitly.
         """
         return self.pool.worker_or_detached(self._active_session_id)
 
@@ -273,12 +271,11 @@ class _Session:
     def _drop_stale_events(self) -> None:
         """Empty every idle agent's event queue of debris left by a previous connection.
 
-        Only an *idle* agent's queue is debris, and that is now asked per conversation:
-        the agents outlive every connection, so a turn whose socket dropped mid-run is
-        still working, and what is queued for it is its own output waiting for someone
-        to read it. Emptying it regardless is what made a reconnect land in a session
-        where the agent was demonstrably busy and nothing it did ever appeared — not the
-        card it was parked on, not the answer it eventually wrote.
+        Only an *idle* agent's queue is debris, and that is asked per conversation: the
+        agents outlive every connection, so a turn whose socket dropped mid-run is still
+        working and what is queued for it is its own output waiting for someone to read it.
+        Emptying it regardless loses everything that turn did — the card it is parked on,
+        the answer it eventually writes.
         """
         for session_id, worker in self.pool.items():
             if self.pool.is_busy(session_id):
@@ -298,10 +295,10 @@ class _Session:
         while a card is up parks that conversation for ever, with nothing on screen to
         explain the silence.
 
-        Every conversation, not just the one on screen: each agent runs its own turn now,
-        so several can be parked at once, and a card left out is a turn waiting for ever.
-        Nothing here judges whose conversation it belongs to — the card says so itself,
-        and that is what routes the answer back to the agent that asked.
+        Every conversation, not just the one on screen: each agent runs its own turn, so
+        several can be parked at once, and a card left out is a turn waiting for ever.
+        Nothing here judges whose conversation it belongs to — the card says so itself, and
+        that is what routes the answer back to the agent that asked.
         """
         for _sid, worker in self.pool.items():
             prompt = worker.pending_prompt()
@@ -332,8 +329,8 @@ class _Session:
         """What a conversation is doing right now, for its row in the panel.
 
         The part of concurrency the user cannot do without. A turn running in a
-        conversation nobody is reading is invisible otherwise, and one *parked on a card*
-        is worse than invisible: it waits on a person, with no timeout, by design — so a
+        conversation nobody is reading is invisible otherwise, and one *parked on a card* is
+        worse than invisible: it waits on a person, with no timeout, by design — so a
         conversation can sit stopped for ever with nothing on screen to explain it.
         """
         # Guarded: this is read for every row of every listing, and the send around it
@@ -363,9 +360,8 @@ class _Session:
         self.transcript.bind(session.id)
         # No agent state to load and no grants to drop: a new conversation has no agent
         # yet, and the one built for it on its first query starts empty by construction.
-        # This used to clear the shared worker's carry context and truncate the one
-        # workspace-wide approved-paths file — which is how starting a conversation
-        # revoked another one's live grants.
+        # Clearing anything here would reach into another conversation's agent, and
+        # truncating an approved-paths file would revoke grants its turn is writing under.
         try:
             from .session_store import SessionMeta as _SM
         except ImportError:
@@ -392,10 +388,9 @@ class _Session:
     async def _load_session(self, session_id: str) -> None:
         session = self.store.load_session(session_id)
         # Whether this conversation already has an agent decides what gets restored
-        # below: an agent that has been working holds the live carry context, and
-        # reloading the saved snapshot over it would throw away everything it learned
-        # since. Read before the pointer moves, while `worker` still resolves the one
-        # being left.
+        # below: an agent that has been working holds the live carry context, and reloading
+        # the saved snapshot over it throws away everything it learned since. Read before
+        # the pointer moves, while `worker` still resolves the one being left.
         resuming_live_agent = self.pool.get(session.id) is not None
         self._active_session_id = session.id
         self._unsaved_session_meta = None  # switching to a persisted session
@@ -904,10 +899,10 @@ class _Session:
                     continue
                 if self._is_foreign_event(ev):
                     # A turn running in a conversation that is not on screen. Its output
-                    # has nowhere to be drawn, but it still happened: written to that
-                    # conversation's own log, so switching to it shows the whole turn
-                    # rather than only the answer that ended it. (Progress is excluded
-                    # for the same reason it is below — it describes a moment.)
+                    # has nowhere to be drawn, but it still happened: it goes to that
+                    # conversation's own log, so switching to it shows the whole turn and
+                    # not only the answer that ended it. (Progress is excluded for the same
+                    # reason it is below — it describes a moment.)
                     if ev.get("type") not in ("job_progress", "token", "thinking"):
                         self._detached_log(owner).append(ev)
                     if ev.get("type") == "answer":
@@ -1142,11 +1137,11 @@ class _Session:
     def _wake_steers(self, ev: dict) -> bool:
         """True when *ev* will be handed to a turn already running, not start one.
 
-        Asked of the owner's own agent, not of "the" running turn: a wake belongs to its
-        conversation whether or not anyone is reading it, and several conversations can
-        be working at once. ``_running_turn_is_ours`` answers a different question — is
-        the turn in flight the one on screen — which is the right test for a message the
-        user typed and the wrong one here.
+        Asked of the owner's own agent: a wake belongs to its conversation whether or not
+        anyone is reading it, and several conversations can be working at once.
+        ``_running_turn_is_ours`` answers a different question — is the turn in flight the
+        one on screen — which is the right test for a message the user typed and the wrong
+        one here.
         """
         owner = self._wake_owner(ev)
         return bool(owner) and self.pool.is_busy(owner)
@@ -1184,8 +1179,8 @@ class _Session:
             # loop says so, and until then this job still needs a turn of its own.
             #
             # Steered into the agent of the conversation that launched the job, which is
-            # not necessarily the one on screen: aiming at "the" agent would have injected
-            # a job's result into whatever conversation the user happened to be reading.
+            # not necessarily the one on screen: aiming anywhere else injects a job's
+            # result into whatever conversation the user happens to be reading.
             owner_worker = self.pool.get(owner)
             if owner_worker is not None:
                 owner_worker.submit_steer(wake)
@@ -1437,10 +1432,10 @@ class _Session:
     def _apply_setting(self, name: str, *args: Any) -> str:
         """Apply a UI knob to every live conversation, and to the next agent built.
 
-        Both halves are needed. Pushing it to the live workers is what makes the change
-        take effect now; recording it in the pool is what makes a conversation started
-        afterwards come up on it, rather than quietly reverting to the default — which is
-        new, because an agent is now built long after the user set these.
+        Both halves are needed. Pushing it to the live workers makes the change take effect
+        now; recording it in the pool makes a conversation started afterwards come up on it
+        rather than on the default, which matters because an agent is built long after the
+        user sets these.
 
         Returns the first rejection a live worker reported, or "". Nothing to reject when
         none exists yet: the setting is recorded and validated when it is replayed.
@@ -1453,14 +1448,12 @@ class _Session:
     async def _ensure_worker(self) -> _AgentWorker | None:
         """This conversation's agent, built now if it has none and there is room.
 
-        None means the pool is full of conversations that are working, waiting on the
-        user, or watching a job — none of which may be evicted to make room. The caller
-        queues instead, and the user is told, because a queue nobody can see reads as a
-        hang.
+        None means the pool is full of conversations that are working, waiting on the user,
+        or watching a job — none of which may be evicted to make room. The caller queues
+        instead, and the user is told, because a queue nobody can see reads as a hang.
 
-        The build is where the startup cost went when it stopped being paid up front:
-        the LLM backend, then ~19 MCP servers. It runs off the event loop, so the other
-        conversations keep streaming, and this one says what it is doing first.
+        The build costs the LLM backend wait plus ~19 MCP server spawns, so it runs off the
+        event loop — the other conversations keep streaming — and this one announces it.
         """
         session_id = self._active_session_id
         if not session_id:
@@ -1729,17 +1722,16 @@ class _Session:
     def _worker_for_answer(self, msg: dict) -> _AgentWorker | None:
         """The agent an answered card belongs to, or None if it belongs to nobody.
 
-        The most consequential routing decision here. A card now says which conversation
-        asked it — several can be parked at once, and one may be asking while the user
-        reads another — so the answer must go to that conversation's agent. Pushing it at
-        "the" agent would settle a question a different conversation asked, with the user's
-        approval attached to a tool call they never saw. That is the worst failure this
-        layer can produce.
+        The most consequential routing decision here. A card says which conversation asked
+        it — several can be parked at once, and one may be asking while the user reads
+        another — so the answer goes to that conversation's agent. Aiming it at whichever
+        agent is on screen would settle a question a different conversation asked, with the
+        user's approval attached to a tool call they never saw, which is the worst failure
+        this layer can produce.
 
-        So an unknown or missing session is **dropped**, never defaulted to the one on
-        screen. A card with no session is one from before this field existed, or from a
-        client that has not been updated; falling back would make exactly the mistake the
-        field exists to prevent.
+        So an unknown or missing session is **dropped**. A card carrying no session comes
+        from a client that does not send one; defaulting it to the conversation on screen
+        would make exactly the mistake the attribution exists to prevent.
         """
         session_id = (msg.get("session_id") or "").strip()
         if not session_id:
@@ -1824,15 +1816,15 @@ class _Session:
         await self._report_unreverted(moved)
 
     def _revert_one(self, path: str, original: str | None) -> bool:
-        """Restore *path* to *original*, unless it no longer holds what was reviewed.
+        """Restore *path* to *original*, unless it has moved since it was reviewed.
 
-        A revert undoes the diff the user looked at. If the file changed since then, the
-        change came from outside this review — another session working on the same file,
-        or the user's own editor — and writing the baseline over it would destroy work
-        nobody asked to discard. The file is left alone and reported instead.
+        A revert undoes the diff the user looked at. A file that changed since then
+        carries work from outside this review — another conversation editing the same file,
+        or the user's own editor — and writing the baseline over it destroys work nobody
+        asked to discard. The file is left alone and reported instead.
 
-        Returns False only for that case; a file it could not write is a failure of the
-        same best-effort kind the rest of this path has always been.
+        Returns False only for that case; a file it could not write is a best-effort
+        failure, like the rest of this path.
         """
         approvals = self.worker._agent.approvals
         if approvals.reviewed_matches(path) is False:
@@ -1909,8 +1901,7 @@ class _Session:
     def _running_turn_is_ours(self) -> bool:
         """True when the conversation on screen has a turn in flight.
 
-        Asked of that conversation's own agent. Several can be working at once, so
-        "is a turn running" is no longer a question with one answer — and the one that
+        Asked of that conversation's own agent. Several can be working at once, so what
         matters for a message the user typed is whether *this* conversation is busy, in
         which case the message steers its turn instead of starting one.
         """
@@ -1920,10 +1911,10 @@ class _Session:
         """True when *ev* was produced for a session other than the active one.
 
         Every event of a running turn is stamped with the session it was produced for.
-        Several conversations can be producing at once, and only one of them is on
-        screen, so the stamp is what keeps one conversation's output out of another's
-        chat — it goes to that conversation's own transcript instead. Unstamped events
-        (produced outside any conversation) always pass.
+        Several conversations can be producing at once, and only one of them is on screen,
+        so the stamp is what keeps one conversation's output out of another's chat — it goes
+        to that conversation's own transcript instead. Unstamped events (produced outside
+        any conversation) always pass.
 
         So do the interaction events. Each one is a question the agent is parked on,
         and a background-job wake runs turns in sessions the user is not looking at:
@@ -1939,17 +1930,13 @@ class _Session:
     def _detach_running_turn(self) -> None:
         """Note where the turn being left stood, then leave it running.
 
-        Leaving a conversation used to cancel its turn, or defer it if it was parked on
-        a person. That was not a policy but a consequence: one worker served every
-        session, so a turn that outlived a switch had nowhere to stream and a card it
-        was parked on would have been answered from the next conversation's UI. With an
-        agent per conversation neither is true — the turn streams into its own
-        transcript and its card carries the session it belongs to.
+        The turn keeps running: it streams into its own conversation's transcript, and a
+        card it is parked on carries the conversation it belongs to, so neither needs the
+        user to be looking at it.
 
-        What survives is the one useful line of that path: recording where this
-        conversation's history stood when the turn was submitted, so the answer, landing
-        after the user has moved on, is still applied to the right conversation and can
-        tell its own messages from the prefix it inherited.
+        What is recorded is where this conversation's history stood when the turn was
+        submitted, so the answer — landing after the user has moved on — is applied to the
+        right conversation and can tell its own messages from the prefix it inherited.
         """
         leaving = self._active_session_id
         if leaving and self._running_turn_is_ours():
@@ -2030,7 +2017,7 @@ class _Session:
         self._delete_refused.discard(target_id)
         was_active = (target_id == self._active_session_id)
         # Its agent goes with it, freeing a slot — and whatever it was queued to run,
-        # which would otherwise be admitted into a conversation that no longer exists.
+        # which would otherwise be admitted into a conversation that is gone.
         await self.pool.close(target_id)
         self.store.delete_session(target_id)
         # Remove the session's sidecar directory (todo_list.md, plan.md, …).

@@ -85,11 +85,11 @@ export interface CommandOutputMessage {
 /** Which conversation a card belongs to.
  *
  *  Several conversations run turns at once, and one may raise a card while the user is
- *  reading another. The id is what routes the answer back to the agent that asked: the
- *  server drops an answer that names no conversation rather than handing it to whoever
- *  is on screen, which would attach the user's approval to a call they never saw.
- *  Optional so a card from an older server still renders — it simply cannot be
- *  attributed, and is treated as the active conversation's. */
+ *  reading another. The id routes the answer back to the agent that asked: the server
+ *  drops an answer naming no conversation rather than handing it to whoever is on screen,
+ *  which would attach the user's approval to a call they never saw. Optional, so a card
+ *  from a server that does not attribute them still renders — it counts as the active
+ *  conversation's. */
 export interface Attributed {
   session_id?: string;
   session_title?: string;
@@ -419,8 +419,8 @@ export interface SessionMeta {
   summary?: string;
   /** True once the user renamed the session by hand — the title then wins. */
   title_custom?: boolean;
-  /** A turn of this conversation is in flight. Several run at once, so a conversation
-   *  the user is not reading can be working — invisible without this. */
+  /** A turn of this conversation is in flight. Several run at once, so a conversation the
+   *  user is not reading can be working — invisible without this. */
   running?: boolean;
   /** Its turn is parked on a card. Worse than invisible: the wait has no timeout, so
    *  the conversation stays stopped until somebody answers. */
@@ -689,7 +689,7 @@ export interface ApprovalResponseMessage {
   type: "approval_response";
   id: string;
   /** The conversation that asked. Required in practice: the server drops an answer
-   *  without one rather than guessing which agent it belongs to. */
+   *  carrying none rather than guessing which agent it belongs to. */
   session_id?: string;
   choice: "y" | "n" | "a";
   approved_files?: string[];

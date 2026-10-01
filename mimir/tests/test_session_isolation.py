@@ -1,9 +1,8 @@
 """An agent per conversation — events and prompts must not cross over.
 
-A turn parked on a plan-approval prompt used to survive a session switch: its
-card stayed on screen, its answer resolved the old turn, and its `open_editor`
-opened the *other* session's plan. These tests pin the three seams that fence a
-turn to the session it started in.
+A turn parked on a plan-approval prompt survives a session switch, so its card, its
+answer and its `open_editor` must all reach the conversation it started in and not the one
+now on screen. These tests pin the three seams that fence a turn to its own session.
 """
 import json
 import queue as _queue
@@ -47,10 +46,9 @@ class WorkerStampTests(unittest.TestCase):
     def test_events_outside_a_query_carry_the_workers_own_session(self):
         """Setup output belongs to its conversation as much as a turn's does.
 
-        It used to be stamped ``None``, meaning "unattributable — show it to whoever is
-        here". With one worker per session nothing is unattributable any more, and a
-        lazily built worker emits its ``ready`` and any setup failure while the user may
-        well be reading a different conversation.
+        A worker built lazily emits its ``ready``, and any setup failure, while the user
+        may well be reading a different conversation — so the stamp has to name the worker's
+        own session rather than mark the event unattributable.
         """
         w = _bare_worker(session_id="s1")
         w.out_q.put({"type": "output", "text": "x"})
@@ -116,12 +114,9 @@ class SessionFencingTests(unittest.IsolatedAsyncioTestCase):
     async def test_leaving_a_conversation_leaves_its_turn_running(self):
         """The property the whole feature is for.
 
-        Leaving used to cancel the turn, or defer it if it was parked on a person. That
-        was a consequence of one worker serving every session — a turn that outlived a
-        switch had nowhere to stream, and a card it was parked on would have been
-        answered from the next conversation's UI. With an agent per conversation neither
-        holds: the turn streams into its own transcript, and its card carries the
-        conversation that raised it.
+With an agent per conversation the turn has somewhere to go: it streams into
+        its own transcript, and a card it is parked on carries the conversation that raised
+        it, so neither needs the user to be looking at it.
         """
         w = _bare_worker(session_id="s1")
         w._query_session_id = "s1"

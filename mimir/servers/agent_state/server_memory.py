@@ -160,11 +160,11 @@ def _load() -> list:
 def _write_text_atomic(path: str, text: str) -> None:
     """Write *text* to *path* via a temp file and one rename.
 
-    The memory store is workspace-global, and several sessions now write to it at the
-    same time. A plain ``open(..., "w")`` truncates first, so a concurrent reader saw a
-    half-written index or note — and two concurrent writers could interleave into one.
-    The rename is what makes a reader see either the old file or the new one. The temp
-    name carries the pid so two writers do not share it.
+    The memory store is workspace-global and several sessions write to it at the same
+    time. A plain ``open(..., "w")`` truncates first, so a concurrent reader would see a
+    half-written index or note, and two writers could interleave into one file. The rename
+    makes a reader see either the old file or the new one; the temp name carries the pid so
+    two writers do not share it.
     """
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     tmp = f"{path}.tmp{os.getpid()}"

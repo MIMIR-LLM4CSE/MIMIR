@@ -210,12 +210,12 @@ export const App: React.FC = () => {
 
   /** Whether a card belongs to a conversation other than the one on screen.
    *
-   *  A card with no session_id comes from a server that predates the attribution; it is
-   *  treated as this conversation's, which is what that server meant. */
+   *  A card carrying no session_id comes from a server that does not attribute them, and
+   *  counts as this conversation's — which is what such a server means by it. */
   const rememberForeign = useCallback(
     (msg: ApprovalMessage | UserQuestionMessage) => {
       // One per conversation: the newest card is the one its turn is parked on, and a
-      // conversation only ever waits on one at a time.
+      // conversation waits on one at a time.
       setForeignPrompts((prev) => ({ ...prev, [msg.session_id as string]: msg }));
     },
     []
@@ -477,8 +477,8 @@ export const App: React.FC = () => {
       // hands the transcript, plan included, back to the server.
       case "user_question":
         if (isForeign(msg)) {
-          // Not this chat's: it must not enter the thread, and must not clear `busy`
-          // (parkOnPrompt does) — this conversation may well still be working.
+          // Another conversation's: it belongs in the strip, not this thread, and must not
+          // clear `busy` (parkOnPrompt does) while this conversation is still working.
           rememberForeign(msg);
           return;
         }
@@ -508,9 +508,9 @@ export const App: React.FC = () => {
         const prevSessionId = activeSessionIdRef.current;
         activeSessionIdRef.current = msg.session_id;
         setActiveSessionId(msg.session_id);
-        // Its card is no longer foreign: if its turn is still parked, the server resends
-        // the card into this conversation on arrival, and leaving the strip entry up
-        // would show the same question twice.
+        // This conversation's card belongs in the thread now, not the strip: if its turn
+        // is still parked the server resends the card on arrival, and a strip entry beside
+        // it would show the same question twice.
         forgetForeign(msg.session_id);
         const prevMessages = chatStateRef.current.messages;
         // Reconnecting to the session already on screen is the case that used to
@@ -986,8 +986,8 @@ export const App: React.FC = () => {
       );
       const allIds = card?.approval?.ids ?? [id];
       // The conversation that asked, read off the card. The server drops an answer
-      // without one rather than guessing, and falling back to the session on screen
-      // would be exactly the wrong guess for a card raised elsewhere.
+      // carrying none rather than guessing; the session on screen is exactly the wrong
+      // guess for a card raised elsewhere.
       const sessionId = card?.approval?.session_id ?? activeSessionIdRef.current ?? undefined;
       for (const aid of allIds) {
         const payload: {

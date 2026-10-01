@@ -187,9 +187,14 @@ execution plan instead of relying on a static system-prompt injection.
 Storage is **per session** under the central state dir
 (`<STATE_DIR>/sessions/<sid>/`): the checklist as a Markdown checkbox list
 (`todo_list.md`) and named plans as a history under `plans/` (one `<date>-<slug>.md` per
-plan, indexed by `PLANS.md`, with a `.active` pointer). The active session is resolved via
-`<STATE_DIR>/active_session` (written by `ws_server` on each switch); CLI/standalone runs
-fall back to the shared legacy `todo_list.md`.
+plan, indexed by `PLANS.md`, with a `.active` pointer). Which session is resolved through
+`state_paths.active_session_id()`: **`MIMIR_SESSION_ID`** first, stamped into each server's
+environment at spawn. One agent owns a server for its whole life, so the session is fixed
+and a frozen environment is the right carrier — and it is what makes the answer *correct*
+now that conversations run turns at the same time. The `<STATE_DIR>/active_session` sidecar
+remains the fallback for the ends that genuinely have one session (the CLI, standalone runs,
+the test suite), where "the session on screen" is still the right answer; CLI runs with no
+sidecar fall back to the shared legacy `todo_list.md`.
 
 Tools:
 - `todo_set_plan` — write a named plan (approach/rationale) and make it active. Declares two arg-roles so client-side consumers find its arguments without knowing its name: `plan_title` (the plan loop pins it so a revision overwrites in place) and `plan_document` (the prose body). A client-side guard used to read that body and refuse a plan whose axes were exploration steps; it was removed — see [POLICY.md](POLICY.md#why-there-is-no-plan-shape-guard) for why a verb list is the wrong instrument for a refusal
@@ -237,9 +242,10 @@ hermetic test suite), they fall back to the legacy in-workspace `<workspace>/.mi
 
 The same module owns the agent **scratchpad**, which lives under the temp dir rather than
 the state dir: `scratch_home()` → `MIMIR_SCRATCH_DIR` if set, else
-`<TMPDIR or /tmp>/mimir-<uid>-<workspace-id>`; `scratch_dir()` appends the active session
-id (from the `active_session` sidecar — the *only* thing it still needs the state dir for),
-falling back to the home outside a session. `standing_roots()` exposes the **home** as a
+`<TMPDIR or /tmp>/mimir-<uid>-<workspace-id>`; `scratch_dir()` appends the session id
+(from `MIMIR_SESSION_ID`, or the sidecar for a single-session end, or the caller's own
+answer — the client process runs several conversations in one `os.environ`, so there the id
+can only come from the agent that is acting), falling back to the home outside a session. `standing_roots()` exposes the **home** as a
 standing sandbox root, one entry covering both. `server_files._safe`,
 `server_bash._is_within_workspace` and the read servers (`server_search`,
 `server_code_intel`) all pass it as `extra_roots` alongside `approved_roots()`, so the
@@ -678,9 +684,22 @@ from one place.
 
 Backgrounding is a parameter on a command that has passed the same path checks and
 denylists, which is why the `&` operator stays refused: detaching is the server's job,
-not a shell operator the caller supplies. The job directory lives under a fixed cache
-root (`_shared/trusted_read_roots.py`), so the log is readable with the ordinary file
-tools while the run is still going.
+not a shell operator the caller supplies. The job directory lives under the submitting
+session's own state dir (`<STATE_DIR>/sessions/<sid>/jobs/`), which is a trusted read root
+(`_shared/trusted_read_roots.py`), so the log is readable with the ordinary file tools while
+the run is still going.
+
+**Per session**, and for two reasons that turn out to be the same one. These used to sit in
+a fixed `~/.cache/mimir_bash/jobs`, outside every conversation, so `bash_job(op='list')`
+enumerated every conversation's jobs — one could read, and kill, another's. Resolving the
+root per session makes the listing correct by construction: there is nothing to filter. And
+a detached job's directory is never swept, however old, so a root under `$HOME` grew for
+ever; tied to a conversation it goes when the conversation goes, which is the retention
+policy this never had. Deleting a conversation whose jobs are still running therefore asks
+first rather than taking the log of a live process with it. Slurm job directories moved the
+same way (`<STATE_DIR>/sessions/<sid>/hpc_jobs/`) — with the difference that a Slurm job
+outlives its conversation, so `slurm_job_status` searches the sibling sessions read-only and
+says which conversation a job came from: filed per session, never unfindable.
 
 States — `running` (the process is alive), `done` (exited 0), `crashed` (exited
 non-zero), `unknown`. The last is its own answer rather than a variant of the other

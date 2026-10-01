@@ -699,10 +699,9 @@ export function createChatReducer(makeId: () => string) {
         const base = s.messages.map((m) =>
           m.kind === "editing" && m.live ? { ...m, live: false } : m
         );
-        // The newest card of THIS conversation. Matching on kind alone merged cards
+        // The newest card of THIS conversation. Matching on kind alone would merge cards
         // from different conversations into one — two agents' ids in a single `ids[]`,
-        // then both answered by one choice, one of them for a call the user never saw.
-        // Conversations run turns at once now, so that is a live case, not a corner.
+        // both then answered by one choice, one of them for a call the user never saw.
         let existingIdx = -1;
         for (let i = base.length - 1; i >= 0; i--) {
           const card = base[i].approval;

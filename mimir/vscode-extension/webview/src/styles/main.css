@@ -311,8 +311,8 @@ body {
 /* ── Other conversations waiting on the user ─────────────────────────────────── */
 
 /* Above the thread, not in it: the card belongs to another transcript. Deliberately
-   loud — each row is a turn blocked on a person with no timeout, so it stays until it
-   is answered, and the strip is the level that cannot be missed with the panel open. */
+   loud — each row is a turn blocked on a person with no timeout, so it stays until it is
+   answered, and the strip is the level that cannot be missed with the panel open. */
 .foreign-prompts {
   display: flex;
   flex-direction: column;

@@ -1,9 +1,8 @@
 """The agent pool: one worker per conversation, built late and let go.
 
-``ws_server`` used to build one ``_AgentWorker`` and share it across every connection,
-which is why sessions were time-multiplexed and leaving one cancelled its turn. The pool
-replaces that. Three properties make it affordable, and each has a failure mode worth
-pinning:
+One ``_AgentWorker`` per conversation, which is what lets a turn keep running in one
+nobody is reading. Three properties make that affordable, and each has a failure mode
+worth pinning:
 
 * **lazily** — a worker is built on its conversation's first query. Build it eagerly and
   every conversation pays the backend wait plus ~19 server spawns whether it asks anything
@@ -90,8 +89,8 @@ class _PoolCase(unittest.IsolatedAsyncioTestCase):
         _StubWorker.built = 0
         self._orig = ws_pool._AgentWorker
         ws_pool._AgentWorker = _StubWorker
-        # Keep the real detached stand-in out of it: building one is cheap but it is not
-        # what these tests are about.
+        # The stub stands in for the detached worker too: building the real one is cheap
+        # but is not what these tests are about.
         self.addAsyncCleanup(self._restore)
 
     async def _restore(self) -> None:
@@ -122,8 +121,8 @@ class LazyBuildTests(_PoolCase):
         self.assertEqual(_StubWorker.built, 1)
 
     async def test_two_queries_arriving_together_build_one_agent(self) -> None:
-        """Two sends in the same tick must not each start a build: that is two sets of
-        ~19 servers for one conversation, and one of them is then orphaned."""
+        """Two sends in the same tick must not each start a build: that is two sets of ~19
+        servers for one conversation, one of which nothing would ever reap."""
         pool = self._pool()
         both = await asyncio.gather(pool.worker_for("s1"), pool.worker_for("s1"))
         self.assertIs(both[0], both[1])
@@ -135,7 +134,7 @@ class LazyBuildTests(_PoolCase):
         await pool.worker_for("s1", on_wait=lambda: calls.append(1))
         self.assertEqual(len(calls), 1)
         await pool.worker_for("s1", on_wait=lambda: calls.append(1))
-        self.assertEqual(len(calls), 1, "announced a build for a worker that existed")
+        self.assertEqual(len(calls), 1, "announced a build for a worker that exists")
 
     async def test_a_failed_build_does_not_poison_the_pool(self) -> None:
         pool = self._pool()
@@ -259,7 +258,7 @@ class SettingsTests(_PoolCase):
         self.assertIn(("set_mode", "plan"), b.applied)
 
     async def test_a_setting_survives_into_the_next_agent_built(self) -> None:
-        """New: the user chooses these long before an agent exists to receive them."""
+        """The user chooses these long before an agent exists to receive them."""
         pool = self._pool()
         pool.apply_setting("set_mode", "plan")
         pool.apply_setting("set_thinking", False)
@@ -282,8 +281,8 @@ class SettingsTests(_PoolCase):
         self.assertEqual(pool.apply_setting("set_mode", "nonsense"), ["no such mode"])
 
     async def test_the_greeting_reports_a_choice_made_before_any_agent(self) -> None:
-        """Otherwise the panel showed "agent" to a user who had switched to plan — and
-        the switch was real: the pool replays it as soon as an agent exists."""
+        """Reporting the bare default would show "agent" to a user who picked plan — and
+        the choice is real: the pool replays it as soon as an agent exists."""
         pool = _AgentPool("test-model", cap=1)
         self.addAsyncCleanup(pool.aclose_all)
         pool.apply_setting("set_context_mode", "full")

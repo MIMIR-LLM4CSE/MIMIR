@@ -914,13 +914,40 @@ the conversation on screen, so the job records its session at launch and the com
 carries it back. When it names the active session the wake lands in the live history as any
 turn would; otherwise it is appended to *that* session's stored history and submitted there.
 
-**A connection that drops does not end the turn.** One worker serves the whole server and
-outlives every session, so a socket that dies mid-run leaves a turn working with nobody
-reading it. The next connection therefore only drains the event queue when the worker is
-**idle**: what is queued under a busy worker is that turn's own output, not debris. A turn
-parked on a person records the card it is waiting on, which the next connection puts back —
-without that, the wait had no timeout by design and no card left to end it, so every later
-query queued behind a wait nobody could answer and the session read as hung.
+**A connection that drops does not end the turn.** An agent outlives the connections that
+read it, so a socket that dies mid-run leaves a turn working with nobody watching. The next
+connection therefore drains an event queue only where that conversation's agent is **idle**:
+what is queued under a busy one is that turn's own output, not debris. Every parked card
+comes back, in every conversation — each wait has no timeout by design and no card left to
+end it, so a card left out is a conversation stopped for ever with nothing on screen to say
+why.
+
+**Conversations run at the same time, one agent each.** One worker used to serve every
+session, which is why leaving a conversation had to cancel its turn — or defer it when it was
+parked on a person. That was never a policy: a single worker cannot stream two conversations
+anywhere the user can see, and a card it was parked on would have been answered from the next
+conversation's UI. `_AgentPool` gives each conversation its own agent, so leaving one leaves
+its turn running; its output goes to its own transcript, which is what makes coming back show
+the whole turn rather than only the answer that ended it.
+
+What that costs is that "the running turn", "the parked card" and "the answer" stop being
+questions with one answer, and each one got wrong fails silently rather than loudly. So
+everything addresses a conversation: busy, cancel, steer, and the divertible tool rows —
+two conversations can each have a blocking run, and one map between them would let a divert
+click detach the other's command. **An answer to a card carries the conversation that asked**,
+copied off the card; an answer naming none is dropped rather than handed to whoever is on
+screen, which would settle a question another conversation asked with the user's approval
+attached to a call they never saw.
+
+Three things make an agent per conversation affordable. It is built on that conversation's
+**first query**, not when the session is created — the backend wait plus some nineteen MCP
+servers is a cost only a conversation that asks something should pay. The number alive is
+**capped** (`MIMIR_MAX_LIVE_SESSIONS`, three): the binding constraint is processes, roughly
+sixty interpreters at that cap, and past it a turn waits for a slot and is told so, because a
+queue nobody can see reads as a hang. An idle agent is **released**, servers included — but
+never one that is busy, parked on a card, watching a background job, or on screen. When
+nothing may be released the turn queues rather than evicting: taking a slot from a
+conversation mid-task trades a visible wait for silently lost work.
 
 **Who owns the rendered chat.** `display_messages` as the server assembles it is text bubbles
 and nothing else; the tool rows, reasoning panels and diff cards are built by the webview's

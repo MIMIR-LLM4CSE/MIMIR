@@ -8,6 +8,13 @@ defined here once. Dependency-free (stdlib only) so it imports cleanly on either
 side of the client/server process boundary — flat ``from trusted_read_roots import
 ...`` in a server subprocess, packaged ``mimir.servers._shared.trusted_read_roots``
 from the client (cf. ``embed.py``).
+
+One root: the state dir. MIMIR writes there, in the workspace, and in the ``/tmp``
+scratchpad, and nowhere else — in particular nothing of its own under ``~/.cache``. The
+proxy store lives in ``<workspace>/proxy_bench/`` so deleting a project takes its registry
+and half-finished optimisation runs with it; both kinds of job directory live under the
+state dir, per session, so one conversation can neither list nor kill another's jobs and a
+job directory is reclaimed with the conversation that owns it.
 """
 
 import os

@@ -39,11 +39,11 @@ logger = logging.getLogger(__name__)
 
 PREFERENCES_FILENAME = "preferences.json"
 
-# Held across a whole read-modify-write, not just the write. The file is one per
-# workspace and several sessions now touch it at once — two of them toggling at the same
-# moment each loaded the same dict, each merged its own key in, and the second write
-# dropped the first. The individual write was already atomic; what was not atomic was the
-# cycle around it. One process writes this file, so a threading lock is the right scope.
+# Held across a whole read-modify-write, not just the write. The file is one per workspace
+# and several sessions touch it at once: without the lock, two of them toggling at the same
+# moment each load the same dict, each merge their own key in, and the second write drops
+# the first. The write itself is atomic; the cycle around it is what needs the lock. One
+# process writes this file, so a threading lock is the right scope.
 _WRITE_LOCK = threading.Lock()
 
 

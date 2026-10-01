@@ -883,10 +883,9 @@ class MimirAgentViewProvider implements vscode.WebviewViewProvider {
         title = "MIMIR a terminé la tâche.";
         kind = "info";
         break;
-      // A card names the conversation that raised it, because several conversations run
-      // at once and one may be asking while the user reads another — or while the pane is
-      // closed, which is the case this notification exists for. "MIMIR attend votre
-      // approbation" was unambiguous when only one conversation could be waiting.
+      // A card names the conversation that raised it: several conversations run at once,
+      // and one may be asking while the user reads another — or while the pane is closed,
+      // which is the case this notification exists for.
       case "approval":
         title = msg.session_title
           ? `« ${msg.session_title} » attend votre approbation.`
@@ -923,10 +922,10 @@ class MimirAgentViewProvider implements vscode.WebviewViewProvider {
         return;
     }
 
-    // A card is announced once per card, not once per 2s window. The window exists to
-    // stop a burst of progress turning into a burst of toasts; applied to cards it would
-    // swallow the second of two conversations asking together, and that one waits for
-    // ever with nothing said about it.
+    // A card is announced once per card, not once per 2s window. The window stops a burst
+    // of progress turning into a burst of toasts; applied to cards it would swallow the
+    // second of two conversations asking together, and that one waits for ever with
+    // nothing said about it.
     const isPrompt = msg.type === "approval" || msg.type === "user_question";
     if (isPrompt) {
       const key = `${msg.type}:${msg.id ?? ""}:${msg.session_id ?? ""}`;
@@ -934,7 +933,7 @@ class MimirAgentViewProvider implements vscode.WebviewViewProvider {
         return;
       }
       this._notifiedPrompts.add(key);
-      // Bounded: the ids are uuids and never recur, so the set is pure growth otherwise.
+      // Bounded: the ids are uuids and never recur, so nothing ever leaves on its own.
       if (this._notifiedPrompts.size > 200) {
         this._notifiedPrompts.clear();
       }

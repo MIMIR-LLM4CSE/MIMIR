@@ -8,11 +8,10 @@ file on the state dir is the only live client→server channel) and pass the
 entries as ``extra_roots`` to ``resolve_path_in_root``.
 
 **One file per session, not per workspace.** Consent is given inside a conversation, for
-what that conversation is doing, and several conversations now run at once. A single
-shared file made each one's grants visible to all the others — and because a session
-starts by truncating it, starting a second session silently revoked the first one's live
-grants mid-run and handed it the second's instead. A grant must widen exactly the sandbox
-of the session that was asked for it.
+what that conversation is doing, and conversations run at once. A grant widens exactly the
+sandbox of the session that was asked for it: a file shared between them would make each
+one's grants visible to all the others, and — since a session starts by truncating its
+own — would revoke another's live grants mid-run, under paths it is still writing.
 
 Read-only + best-effort: any missing/corrupt file yields ``[]`` (fail-closed —
 nothing extra is allowed), so a broken allowlist can never widen the sandbox.

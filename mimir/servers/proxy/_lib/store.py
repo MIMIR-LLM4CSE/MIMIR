@@ -91,12 +91,11 @@ def active_session_file(session_id: str | None = None) -> str:
     One file per MIMIR session. The store itself is shared — references, scaffolds and
     sealed fields are build artefacts of the project, and locking them is what
     ``_registry_lock`` is for — but *which optimisation a conversation is currently
-    driving* is the conversation's own. With a single pointer, a ``proxy_eval(op='init')``
-    in one session retargeted every nameless op in all the others, so a run meant for
-    ``foo`` was measured against ``bar``.
+    driving* is the conversation's own: under a single pointer a ``proxy_eval(op='init')``
+    in one session retargets every nameless op in all the others, and a run meant for
+    ``foo`` is measured against ``bar``.
 
-    Unsuffixed when there is no session (the CLI, standalone runs, tests), which is also
-    the name it has always had.
+    Unsuffixed when there is no session: the CLI, standalone runs, tests.
     """
     sid = session_id if session_id is not None else _mimir_session_id()
     name = f"active_session.{sid}" if sid else "active_session"

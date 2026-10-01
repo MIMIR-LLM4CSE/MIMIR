@@ -249,9 +249,9 @@ class ApprovalManager:
         # path → original content (None means file did not exist before the batch)
         self._file_snapshots: dict[str, str | None] = {}
         # Digest of each reviewed file as it stood when its diff was last shown to the
-        # user — see note_reviewed. What a revert is allowed to undo is what was
-        # reviewed; anything the file gained since came from somewhere this agent cannot
-        # see, and under concurrent sessions that somewhere is another conversation.
+        # user — see note_reviewed. A revert may undo what was reviewed and nothing else:
+        # anything the file gained since comes from somewhere this agent cannot see, which
+        # under concurrent sessions is usually another conversation.
         self._reviewed_digests: dict[str, str] = {}
 
     # ------------------------------------------------------------------
@@ -501,8 +501,8 @@ class ApprovalManager:
     def reset_allowed_paths(self) -> None:
         """Clear this session's path grants and truncate its own sidecar.
 
-        Only ever its own: the file is per session, so a conversation starting fresh
-        cannot revoke what another one was granted and is still writing under.
+        Only ever its own: the file is per session, so a conversation starting fresh cannot
+        revoke what another one was granted and is still writing under.
         """
         self._allowed_paths.clear()
         self.approved_scopes = {s for s in self.approved_scopes if not s.startswith("path:")}
@@ -511,15 +511,15 @@ class ApprovalManager:
     def approved_paths_file(self) -> str:
         """This session's allowlist sidecar — the path the servers read per call.
 
-        ``<STATE_DIR>/sessions/<sid>/approved_paths.json`` — from ``self.session_id``,
-        not from the active-session pointer: the pointer names the conversation on
-        screen, and the grant belongs to the conversation that was asked for it.
+        ``<STATE_DIR>/sessions/<sid>/approved_paths.json`` — from ``self.session_id``, not
+        from the active-session pointer: the pointer names the conversation on screen, and
+        the grant belongs to the conversation that was asked for it.
 
-        A ``session_id`` of None means this agent has no session of its own, and the
-        path then resolves the way the single-session ends resolve it — through the
-        pointer, falling back to the state-dir root when nothing wrote one (the CLI,
-        the benchmark runner, tests). Passing None through rather than coercing it to
-        "" is what keeps the writer and the servers' reader naming the same file.
+        A ``session_id`` of None means this agent has no session of its own, and the path
+        resolves the way the single-session ends resolve it — through the pointer, falling
+        back to the state-dir root when nothing wrote one (the CLI, the benchmark runner,
+        tests). Passing None through rather than coercing it to "" is what keeps the writer
+        and the servers' reader naming the same file.
         """
         from ...config.constants import STATE_DIR
         from ....servers._shared.state_paths import session_state_dir
@@ -584,8 +584,8 @@ class ApprovalManager:
     def note_reviewed(self, path: str, content: str) -> None:
         """Record *content* as the state of *path* the user was just shown.
 
-        Called while the review diff is built, which is the only moment at which what is
-        on disk and what the user is looking at are known to be the same thing.
+        Called while the review diff is built, the one moment at which what is on disk and
+        what the user is looking at are known to be the same thing.
         """
         self._reviewed_digests[path] = self._digest(content)
 
@@ -593,8 +593,8 @@ class ApprovalManager:
         """Whether *path* on disk is still what was reviewed. None = cannot tell.
 
         None when nothing was recorded, or the file cannot be read: the caller then
-        proceeds, which is what every other best-effort check in this module does — a
-        guard that cannot read must not block the user's own undo.
+        proceeds, like every other best-effort check in this module — a guard that cannot
+        read must not block the user's own undo.
         """
         expected = self._reviewed_digests.get(path)
         if expected is None:
@@ -603,8 +603,8 @@ class ApprovalManager:
             with open(path, "r", encoding="utf-8", errors="replace") as fh:
                 return self._digest(fh.read()) == expected
         except FileNotFoundError:
-            # Gone since the review. Restoring would recreate it from a baseline nobody
-            # asked for, so this counts as moved.
+            # Gone since the review: restoring recreates it from a baseline nobody asked
+            # for, so this counts as moved.
             return False
         except OSError:
             return None

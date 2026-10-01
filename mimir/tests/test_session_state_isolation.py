@@ -1,12 +1,11 @@
 """Every path that belongs to a conversation names *that* conversation.
 
-MIMIR runs several sessions at the same time now, each with its own agent and so its
-own set of server subprocesses. Before that, one session lived at a time and a single
-file — ``<STATE_DIR>/active_session`` — could stand in for "the" session everywhere.
-Under concurrency that file can only ever name one of the live sessions, so every
-other one reading it acts for the wrong conversation: it writes to another's todo
-list, reads another's plans, announces its blocking run in another's channel, and —
-the one that is not merely untidy — inherits and revokes another's approved paths.
+MIMIR runs several sessions at the same time, each with its own agent and so its own set
+of server subprocesses. A single file — ``<STATE_DIR>/active_session`` — can name only one
+of them, so every other session reading it acts for the wrong conversation: it writes to
+another's todo list, reads another's plans, announces its blocking run in another's
+channel, and — the one that is not merely untidy — inherits and revokes another's approved
+paths.
 
 So the session reaches each end the only way that is correct for it:
 
@@ -14,12 +13,11 @@ So the session reaches each end the only way that is correct for it:
   agent owns a server for its whole life, so the session is fixed and the frozen
   environment is the right carrier.
 * **the client** passes it explicitly, from the object that knows it. N sessions share
-  one ``os.environ`` in that process, so the environment could not carry it there.
+  one ``os.environ`` in that process, so the environment cannot carry it there.
 
-``session_id=None`` means "this end has no session of its own" — the CLI, the
-benchmark runner, these tests — and resolves the way it always did, through the
-pointer and then the state-dir root. That fallback is what lets every caller switch
-to ``session_state_dir()`` with no behaviour change for the single-session ends.
+``session_id=None`` means "this end has no session of its own" — the CLI, the benchmark
+runner, these tests — and resolves through the pointer and then the state-dir root. That
+fallback is what keeps the single-session ends resolving the paths they would without it.
 
 Pure-Python + temp dirs (no live model/servers): runs on x86 and ARM.
 """
@@ -66,7 +64,7 @@ class ActiveSessionResolutionTests(_StateDirCase):
         with patch.dict(os.environ, {"MIMIR_SESSION_ID": "mine"}):
             self.assertEqual(active_session_id(), "mine")
 
-    def test_the_pointer_still_answers_for_the_single_session_ends(self):
+    def test_the_pointer_answers_for_the_single_session_ends(self):
         self.write_pointer("only-session")
         self.assertEqual(active_session_id(), "only-session")
 
@@ -90,7 +88,7 @@ class SessionStateDirTests(_StateDirCase):
         self.assertEqual(a, os.path.join(self.state, "sessions", "aaa"))
 
     def test_no_session_falls_back_to_the_state_dir_itself(self):
-        """What keeps the CLI's paths exactly where they were."""
+        """What keeps the CLI's paths where the CLI expects them."""
         self.assertEqual(session_state_dir(self.state, ""), self.state)
         self.assertEqual(session_state_dir(self.state), self.state)
 
@@ -124,9 +122,9 @@ class ScratchIsolationTests(_StateDirCase):
 class ApprovedPathsAreNotSharedTests(_StateDirCase):
     """The security half: a grant widens the sandbox of the session that was asked.
 
-    One file per workspace meant a second session starting *truncated* the first one's
-    allowlist mid-run — revoking paths it was actively writing under — and then
-    inherited whatever the first had been granted.
+    One file per workspace would have a second session *truncate* the first one's
+    allowlist mid-run — revoking paths it is actively writing under — and then inherit
+    whatever the first was granted.
     """
 
     def _manager(self, session_id):
@@ -204,7 +202,7 @@ class AgentCarriesItsSessionTests(_StateDirCase):
     """The id reaches the places that used to read the pointer."""
 
     def test_the_todo_file_named_in_the_system_prompt_is_the_agents_own(self):
-        """It goes into the prompt, so the pointer pointed every agent at one list."""
+        """It goes into the prompt, so the pointer would aim every agent at one list."""
         from mimir.client.agent_core import MimirAgent
         with patch("mimir.client.config.constants.STATE_DIR", self.state), \
              patch("mimir.client.agent_core.STATE_DIR", self.state):

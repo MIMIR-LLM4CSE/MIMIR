@@ -35,10 +35,10 @@ function sessionLabel(session: SessionMeta): string {
 
 /** The badge for what a conversation is doing, or nothing when it is idle.
  *
- *  Conversations run turns at once, so a conversation the user is not reading can be
- *  working — invisible without this. "Waiting on you" outranks "running" because it is
- *  the one that needs an action: the agent blocks on that answer with no timeout, so the
- *  conversation stays stopped until somebody answers it.
+ *  Conversations run turns at once, so one the user is not reading can be working —
+ *  invisible without this. "Waiting on you" outranks "running" because it is the one that
+ *  needs an action: the agent blocks on that answer with no timeout, so the conversation
+ *  stays stopped until somebody answers it.
  */
 function activityOf(session: SessionMeta) {
   if (session.parked) {

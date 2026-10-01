@@ -3,18 +3,17 @@
 Two properties the agent pool depends on, pinned here because neither is visible from
 the pool's own code.
 
-**It knows its conversation.** One worker used to serve every session, time-multiplexed,
-which is why leaving a session had to cancel its turn — a single worker cannot stream two
-conversations anywhere the user can see. A worker with a session of its own resolves its
-own checklist and stamps its own output, whatever the user is looking at.
+**It knows its conversation.** A worker with a session of its own resolves that session's
+checklist and stamps its output with it, whatever the user happens to be looking at. A
+worker shared between conversations could only stream one of them anywhere the user can
+see, which is what would force leaving a conversation to stop its turn.
 
 **It can be closed.** ``shutdown`` ends the query loop and nothing else; the agent's
-``exit_stack``, which holds ~19 MCP server subprocesses, was never closed. Harmless while
-one worker lived as long as the process, and the opposite of harmless once workers are
-created per conversation and released when one goes quiet: every release would strand a
-full set of servers. ``aclose`` is what makes releasing a worker actually free it, and it
-must close on the worker's own loop — ``stdio_client`` is an anyio context entered there,
-and closing it from another task leaks the subprocess it was meant to reap.
+``exit_stack`` holds ~19 MCP server subprocesses, and a worker released when its
+conversation goes quiet must close it or every release strands a full set of servers.
+``aclose`` must close on the worker's own loop — ``stdio_client`` is an anyio context
+entered there, and closing it from another task leaks the subprocess it was meant to
+reap.
 
 Pure-Python (no live model/servers): runs on x86 and ARM.
 """
@@ -97,7 +96,7 @@ class OwnSessionTests(unittest.TestCase):
         self.assertEqual(self._bare("mine", active="someone-else")._own_session(), "mine")
 
     def test_a_worker_without_one_falls_back_to_the_screen(self):
-        """How the single shared worker worked, and how a bare test worker still does."""
+        """How a worker with no conversation of its own resolves: tests, standalone use."""
         self.assertEqual(self._bare(None, active="on-screen")._own_session(), "on-screen")
 
     def test_neither_is_no_session(self):
@@ -121,10 +120,10 @@ class ACloseTests(unittest.TestCase):
     def test_a_wedged_server_does_not_hold_the_caller_for_ever(self):
         """A server stuck in its own shutdown must not hold the pool.
 
-        And the close it is still attempting must not be destroyed on the way out: the
-        shutdown sentinel ends the query loop, whose return closes the event loop — which
-        would kill the pending close and abandon the subprocess reaping it was waiting
-        for. So a timed-out close queues no sentinel and the thread is left to finish.
+        And the close it is still attempting must survive the way out: the shutdown
+        sentinel ends the query loop, whose return closes the event loop, killing the
+        pending close and abandoning the subprocess reaping it waits for. So a timed-out
+        close queues no sentinel and the thread is left to finish.
         """
         import time
         agent = _FakeAgent(hang=True)

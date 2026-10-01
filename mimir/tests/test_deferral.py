@@ -1,15 +1,14 @@
 """A turn waiting on the user survives the user leaving its conversation.
 
-Switching session used to cancel the turn outright: a plan up for approval, or a command
-waiting for its go-ahead, was gone when the user came back. Deferral was the first answer
-— set the wait aside, store the card with the conversation, and resume the turn from the
-exact call it stopped on when the card is answered.
+Leaving disturbs nothing: the turn keeps running, and its card stays up carrying the
+conversation that raised it, so a plan up for approval or a command waiting for its
+go-ahead is still there when the user comes back.
 
-With an agent per conversation, leaving no longer disturbs the turn at all: it keeps
-running, and its card stays up carrying the conversation that raised it. Deferral remains
-for the cases that still need it — the user explicitly moving past a card, and a
-conversation deleted while one of its turns is parked — and this covers both halves: the
-worker's side of setting a wait aside, and the session's side of resuming on the answer.
+Deferral is for the cases where the wait really must be set aside — the user moving past a
+card, a conversation deleted while one of its turns is parked. The card is stored with the
+conversation and answering it resumes the turn from the exact call it stopped on. Both
+halves are covered here: the worker's side of setting a wait aside, and the session's side
+of resuming on the answer.
 """
 from __future__ import annotations
 
@@ -261,10 +260,8 @@ def _session(worker) -> _Session:
 
 class SessionDeferralTests(unittest.IsolatedAsyncioTestCase):
     async def test_leaving_a_parked_turn_leaves_it_parked(self) -> None:
-        """Deferral was how a parked turn survived a switch when one worker served
-        every session: its card could not stay up, because answering it from the next
-        conversation's UI would have settled the wrong turn. The card now carries the
-        conversation that raised it, so it can simply stay up and be answered."""
+        """The card carries the conversation that raised it, so it stays up and is
+        answered there — nothing has to be set aside to keep it reachable."""
         w = _FakeWorker(parked=True)
         sess = _session(w)
         sess._detach_running_turn()
@@ -305,8 +302,8 @@ class SessionDeferralTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_an_answer_naming_no_conversation_is_dropped(self) -> None:
         """The worst failure this layer can produce is settling a question a different
-        conversation asked, with the user's approval attached to a call they never saw.
-        So an unattributed answer goes nowhere — never to whoever is on screen."""
+        conversation asked, with the user's approval attached to a call they never saw. So
+        an unattributed answer goes nowhere — never to whoever is on screen."""
         w = _FakeWorker(parked=True)
         sess = _session(w)
         await sess._handle_approval_response({"id": "other", "choice": "y"})

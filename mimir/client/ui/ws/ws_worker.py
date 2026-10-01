@@ -84,16 +84,15 @@ class _AgentWorker:
     def detached(cls, model: str) -> "_AgentWorker":
         """A worker that never builds an agent: no thread, no servers, no LLM wait.
 
-        The stand-in for "this conversation has no agent yet", which is now a normal
-        state — agents are built on a conversation's first query. It is a real
-        ``_AgentWorker`` rather than a parallel null class on purpose: every getter here
-        already answers for ``_agent is None`` (``get_context_mode`` → "compact",
-        ``get_temperature_state`` → the stored preference, ``toggles_state`` → empty) and
-        every setter is already a no-op in that state. A separate class would restate all
+        The stand-in for "this conversation has no agent yet", which is the ordinary state
+        until its first query. A real ``_AgentWorker`` rather than a parallel null class, on
+        purpose: every getter here answers for ``_agent is None`` (``get_context_mode`` →
+        "compact", ``get_temperature_state`` → the stored preference, ``toggles_state`` →
+        empty) and every setter is a no-op in that state. A separate class would restate all
         of those, and then drift from them.
 
-        What it must never be given is a query: ``submit_query`` would put it on a queue
-        no loop is reading. The session resolves a real worker through the pool for that.
+        What it must never be given is a query: ``submit_query`` would put it on a queue no
+        loop is reading. The session resolves a real worker through the pool for that.
         """
         worker = object.__new__(cls)
         worker._init_fields(model, None)
@@ -117,18 +116,17 @@ class _AgentWorker:
     def _init_fields(self, model: str, session_id: str | None) -> None:
         """Every field, and nothing that starts running.
 
-        Split from ``__init__`` so :meth:`detached` can have the state without the
-        thread, the backend wait and the ~19 server spawns.
+        Split from ``__init__`` so :meth:`detached` can have the state without the thread,
+        the backend wait and the ~19 server spawns.
         """
         self.model = model
-        # The conversation this worker exists for, fixed for its whole life. It used to
-        # be one worker for every session, time-multiplexed, which is why leaving a
-        # session had to cancel its turn: a single worker cannot stream two conversations
-        # anywhere the user can see. One worker per session is what lets a turn keep
-        # running in a conversation nobody is looking at.
+        # The conversation this worker exists for, fixed for its whole life. One worker
+        # per session is what lets a turn keep running in a conversation nobody is looking
+        # at: a worker shared between conversations can stream only one of them anywhere
+        # the user can see.
         #
-        # None only for the ends that have no session (tests, standalone construction);
-        # everything session-scoped then falls back the way it always did.
+        # None only for the ends that have no session (tests, standalone construction),
+        # where everything session-scoped falls back to the active-session pointer.
         self.session_id: str | None = session_id
         # This conversation's title, for cards raised while the user is reading another.
         # Pushed in by _Session, which is the side that knows what the session is called.
@@ -653,18 +651,18 @@ class _AgentWorker:
         """Send a card the turn is about to park on, and remember it while it waits.
 
         An agent outlives the connections that read it: a socket that drops while it is
-        parked leaves the card on a client that no longer exists, and the turn waiting on
-        an answer nobody can give any more. This agent's query loop is serial, so every
-        later query of *this conversation* queues behind that wait, and it reads as hung
-        with nothing on screen to explain it. Kept here, the card can be put back in
-        front of whoever reconnects (``_Session._resend_parked_prompt``).
+        parked leaves the card on a client nobody is holding, and the turn waiting on an
+        answer nobody can give. This agent's query loop is serial, so every later query of
+        *this conversation* queues behind that wait and it reads as hung, with nothing on
+        screen to explain it. Kept here, the card goes back in front of whoever reconnects
+        (``_Session._resend_parked_prompt``).
         """
-        # Which conversation is asking. Structured, not spelled into the label or the
-        # question text: that text is also what the model sees, so a "background
-        # session" marker written there ended up in the conversation's own history. The
-        # client renders the attribution from these, and — the part that is not
-        # cosmetic — sends them back on the answer, which is how the answer reaches the
-        # agent that asked rather than whichever one is on screen.
+        # Which conversation is asking. Structured, never spelled into the label or the
+        # question text: that text is also what the model sees, so a marker written there
+        # lands in the conversation's own history. The client renders the attribution from
+        # these and — the part that is not cosmetic — sends them back on the answer, which
+        # is how the answer reaches the agent that asked rather than whichever one is on
+        # screen.
         payload = {
             **payload,
             "session_id": self._query_session_id or self.session_id,
@@ -1591,10 +1589,9 @@ class _AgentWorker:
         here rather than at the dozens of emit sites.
 
         An event produced outside a query — the ``ready`` the setup emits, an error from
-        it — falls back to this worker's own session rather than to ``None``. It belongs
-        to that conversation as much as a turn's own output does, and ``None`` used to
-        mean "unattributable, show it to whoever is here", which with one worker per
-        session is no longer true of anything.
+        it — carries this worker's own session rather than ``None``. It belongs to that
+        conversation as much as a turn's own output does, and a worker building lazily
+        emits it while the user may well be reading a different one.
         """
         events: list[dict] = []
         while True:
@@ -1618,12 +1615,10 @@ class _AgentWorker:
     def aclose(self, timeout: float = 20.0) -> None:
         """Shut the worker down AND close the agent's servers, then join the thread.
 
-        ``shutdown`` only ends the query loop; it never closed
-        ``agent.exit_stack``, which is where the ~19 MCP server subprocesses are held.
-        That was harmless while the one worker lived as long as the process. It stops
-        being harmless the moment workers are created per conversation and released when
-        a conversation goes quiet: each release would strand a full set of servers, and a
-        few hours of use would exhaust the machine rather than free anything.
+        ``shutdown`` only ends the query loop. ``agent.exit_stack`` is where the ~19 MCP
+        server subprocesses are held, and a worker released when its conversation goes
+        quiet must close it, or each release strands a full set of servers and a few hours
+        of use exhausts the machine rather than freeing anything.
 
         The close runs on the worker's own loop. ``stdio_client`` is an anyio context
         entered in that loop, and closing it from another task trips anyio's cancel-scope
@@ -1662,7 +1657,7 @@ class _AgentWorker:
                            "its thread finish on its own",
                            self.session_id or "<no session>", timeout)
             return
-        # The sentinel last: the loop had to still be running to host the close above.
+        # The sentinel last: the close above needs the loop still running to host it.
         self.shutdown()
         if self._thread is not None and self._thread.is_alive():
             self._thread.join(timeout=5.0)

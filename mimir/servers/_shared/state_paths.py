@@ -16,8 +16,8 @@ Two tiers, and which one a path belongs to is the whole question:
   environments, the module catalogue. Common property, shared by every conversation,
   and expensive to rebuild.
 * ``session_state_dir()`` — what belongs to one *conversation*: its todo list, plans,
-  transcript, approved paths, run channels, job directories. Several sessions run turns
-  at the same time, so anything here must not be readable or truncatable by another one.
+  transcript, approved paths, run channels, job directories. Sessions run turns at the
+  same time, so nothing here may be readable or truncatable by another one.
 """
 
 import hashlib
@@ -53,17 +53,17 @@ def state_dir() -> str:
 def active_session_id(base: str | None = None) -> str:
     """The session this process is working for, or "" outside a session.
 
-    ``MIMIR_SESSION_ID`` first. Several sessions now run turns at the same time, each
-    with its own agent and therefore its own set of server subprocesses, so the session
-    a server belongs to is fixed for its whole life and is stamped into its environment
-    at spawn (see client/integration/server_manager.py). That is what makes the answer
-    *correct* under concurrency: a file naming "the" session can only ever name one, and
-    every other live session would read it and act for the wrong conversation.
+    ``MIMIR_SESSION_ID`` first. Sessions run turns at the same time, each with its own
+    agent and therefore its own set of server subprocesses, so the session a server belongs
+    to is fixed for its whole life and is stamped into its environment at spawn (see
+    client/integration/server_manager.py). That is what makes the answer *correct* under
+    concurrency: a file naming "the" session can name only one, and every other live
+    session reading it would act for the wrong conversation.
 
-    The ``active_session`` sidecar remains the fallback, for the ends that genuinely have
-    a single session: the CLI, standalone server runs, and the test suite. It is the
-    session the user is *looking at*, which is the right answer only when there is
-    nothing else running.
+    The ``active_session`` sidecar is the fallback, for the ends that genuinely have a
+    single session: the CLI, standalone server runs, and the test suite. It names the
+    session the user is *looking at*, which is the right answer only when nothing else is
+    running.
 
     Best-effort: any read error means "no session".
     """
@@ -86,9 +86,7 @@ def session_state_dir(base: str | None = None, session_id: str | None = None) ->
     each other's state, and deleting a conversation takes its working files with it.
 
     Falls back to ``state_dir()`` itself outside any session (CLI, standalone servers,
-    tests). That fallback is what lets every caller here switch to this function without
-    a behaviour change for the single-session ends: the paths they resolved before are
-    exactly the paths they resolve now.
+    tests), so the single-session ends resolve the same paths they would without it.
 
     Not created here — callers that write create it, so a read-only path check never
     materialises a directory (the same rule :func:`scratch_dir` follows).
@@ -139,8 +137,8 @@ def scratch_dir(base: str | None = None, session_id: str | None = None) -> str:
     placed only in the server subprocesses' environment, never its own.
 
     *session_id* names the session outright and wins over both. The client process runs
-    several sessions in one ``os.environ``, so there the id can only come from the object
-    that knows it — the agent — and never from the environment or the sidecar.
+    several sessions in one ``os.environ``, so there the id can come only from the object
+    that knows it — the agent — never from the environment or the sidecar.
     """
     sid = session_id if session_id is not None else active_session_id(base or state_dir())
     home = scratch_home()

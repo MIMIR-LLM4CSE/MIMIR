@@ -16,14 +16,13 @@ command that has already passed the same path checks and denylists, which is why
 stays refused. Detaching is the server's job, not a shell operator the caller supplies.
 
 The job directory lives under the session's own state directory
-(``<STATE_DIR>/sessions/<sid>/jobs/``) so the log is readable with the ordinary file
-tools while the run is still going — the state dir is a trusted read root. Per session,
-for two reasons that turned out to be the same one. Sessions run turns concurrently, and
-a single jobs root meant ``bash_list`` enumerated every conversation's jobs: one could
-read, and kill, another's. And a detached job's directory is "never swept, however old",
-so a fixed root under the home grew without bound forever; tied to a conversation it
-goes when the conversation goes, which is the retention policy this never had. Nothing
-filters by session here — resolving the root already does it.
+(``<STATE_DIR>/sessions/<sid>/jobs/``) so the log is readable with the ordinary file tools
+while the run is still going — the state dir is a trusted read root. Per session, for two
+reasons that are the same one. Sessions run turns concurrently, and a shared jobs root
+would have ``bash_list`` enumerate every conversation's jobs, letting one read — and
+kill — another's. And a detached job's directory is never swept, however old, so a root
+outside any conversation grows without bound; tied to one it goes when the conversation
+goes. Nothing filters by session here: resolving the root does it.
 
 Every ``bash_run`` comes through here now, detached or not: a blocking call launches a
 job and waits on it. That is what lets a run be abandoned without being lost, since its
@@ -49,9 +48,9 @@ def jobs_root() -> str:
     """This session's job directory root, resolved per call.
 
     Per call rather than frozen at import because the session-less fallback reads the
-    active-session pointer, which a single-session client rewrites as it goes. For a
-    server spawned by an agent — the live case — ``MIMIR_SESSION_ID`` is fixed for the
-    process and the answer never moves.
+    active-session pointer, which a single-session client rewrites as it goes. For a server
+    spawned by an agent, ``MIMIR_SESSION_ID`` is fixed for the process and the answer never
+    moves.
     """
     from state_paths import session_state_dir
     return os.path.join(session_state_dir(), "jobs")

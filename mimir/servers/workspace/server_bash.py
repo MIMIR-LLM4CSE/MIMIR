@@ -1134,12 +1134,11 @@ def _job_payload(payload: dict) -> dict:
     """Wrap a job-layer answer, letting "no such job" stay an error.
 
     ``valid_key`` checks the *shape* of a handle, not that it names anything, so a
-    well-formed key for a job this host does not have reaches the job layer and comes
-    back carrying ``error``. Wrapping that in ``ok()`` produced a payload that said both
-    at once — and a caller reading ``status`` first was told the stop succeeded when
-    nothing had been stopped. Which is no longer a hypothetical: job directories are per
-    session, so a handle from another conversation is exactly a well-formed key naming
-    nothing here.
+    well-formed key for a job this host does not have reaches the job layer and comes back
+    carrying ``error``. Wrapping that in ``ok()`` would assert both at once, and a caller
+    reading ``status`` first would be told a stop succeeded with nothing stopped. Job
+    directories are per session, so a handle from another conversation is exactly a
+    well-formed key naming nothing here.
     """
     reason = payload.pop("error", "")
     if reason:

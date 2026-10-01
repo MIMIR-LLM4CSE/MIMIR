@@ -142,17 +142,17 @@ class MimirAgent:
         self.model = model
         import os
         # The conversation this agent works for, for its whole life. Several agents run
-        # in this one process — one per concurrent session, plus every sub-agent — and
-        # they share one `os.environ`, so an id in the environment could only ever name
-        # one of them. Everything session-scoped on the client side therefore reads it
-        # from here and passes it down explicitly (approvals, scratchpad, todo file,
-        # run channels); the server subprocesses get their own copy stamped into their
-        # frozen environment at spawn (see integration/server_manager.connect_server).
+        # in this one process — one per concurrent session, plus every sub-agent — sharing
+        # one `os.environ`, so an id in the environment could only ever name one of them.
+        # Everything session-scoped on the client side reads it from here and passes it
+        # down explicitly (approvals, scratchpad, todo file, run channels); the server
+        # subprocesses get their own copy stamped into their frozen environment at spawn
+        # (see integration/server_manager.connect_server).
         # None for the ends that have no session: the CLI, the benchmark runner, tests.
         self.session_id: str | None = session_id
-        # Deliberately NOT published to os.environ: a second session on another model
-        # would retarget every already-spawned server's idea of the default. The model
-        # travels per server instead, in connect_server's env, read from `self.model`.
+        # Deliberately NOT published to os.environ: one session's model would retarget
+        # every other session's servers. The model travels per server instead, in
+        # connect_server's env, read from `self.model`.
         # Resolve the scratchpad home once, here, and publish it: the ownership check
         # on a world-writable /tmp must happen in exactly one place, and both this
         # process and the server subprocesses then read the same answer from the
@@ -300,18 +300,17 @@ class MimirAgent:
     def set_model(self, model: str) -> None:
         """Switch the served model mid-session.
 
-        The model is read live at every LLM call (``agent.model`` is passed to the
-        backend per step), so mutating it here is enough for the next call to use
-        the new model — no reconnect is needed. ``enforcement`` is re-derived from the
-        new model's profile, matching how it is resolved once at ``__init__``.
+        The model is read live at every LLM call (``agent.model`` is passed to the backend
+        per step), so mutating it here is enough for the next call to use the new model — no
+        reconnect is needed. ``enforcement`` is re-derived from the new model's profile,
+        matching how it is resolved once at ``__init__``.
 
         Nothing is written to ``os.environ``: a server's environment is a copy frozen at
-        spawn, so writing there never reached the already-connected ``agent`` server
-        anyway — and with concurrent sessions in one process it would have changed what
-        *another* session's servers were told. Sub-agents of this agent inherit the model
-        through their own server's env, built from ``self.model`` at connect time; a
-        model switched after that point applies to this agent's own calls, not to a
-        sub-agent spawned by a server already running.
+        spawn, so a write there reaches no running server, and with concurrent sessions in
+        one process it would change what *another* session's servers were told. Sub-agents
+        inherit the model through their own server's env, built from ``self.model`` at
+        connect time, so a model switched after that applies to this agent's own calls and
+        not to a sub-agent spawned by a server already running.
         """
         model = (model or "").strip()
         if not model:
@@ -511,12 +510,11 @@ class MimirAgent:
     def _get_todo_file(self) -> str:
         """This agent's own todo_list.md, or '' when it has no planning tool.
 
-        ``self.session_id``, never the active-session pointer directly. This path goes
-        into the system prompt, so reading the pointer here pointed every concurrently
-        running agent at the checklist of whichever conversation the user happened to be
-        looking at. An agent with no session of its own (CLI, benchmark runner) passes
-        None and so resolves as it always did — through the pointer, falling back to the
-        shared file at the state-dir root.
+        ``self.session_id``, never the active-session pointer directly. This path goes into
+        the system prompt, and the pointer names the conversation the user is looking at —
+        which would hand every concurrently running agent that conversation's checklist. An
+        agent with no session of its own (CLI, benchmark runner) passes None and resolves
+        through the pointer, falling back to the shared file at the state-dir root.
         """
         if not names_with_cap(TASK_PLANNING, self.tool_caps):
             return ""

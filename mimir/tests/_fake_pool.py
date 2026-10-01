@@ -1,12 +1,11 @@
 """A one-worker stand-in for ``_AgentPool``, for tests that build a bare ``_Session``.
 
-``_Session.worker`` is a property now: it resolves the agent of the conversation on
-screen through the pool, because there is one agent per conversation rather than one for
-all of them. A test that used to set ``sess.worker = w`` cannot assign to a property, and
-should not need to care how the lookup works.
+``_Session.worker`` is a property: it resolves the agent of the conversation on screen
+through the pool, there being one agent per conversation. A test that only needs "a
+worker" cannot assign to that property, and should not have to care how the lookup works.
 
-This gives those tests the old shape back — one worker, whatever session is active —
-while the code under test goes through the real seam.
+This gives it the simple shape — one worker, whatever session is active — while the code
+under test goes through the real seam.
 """
 from __future__ import annotations
 
@@ -44,11 +43,11 @@ class FakePool:
     def is_busy(self, session_id: str | None) -> bool:
         """Busy *with that conversation's* turn.
 
-        The real pool looks the session up and asks its own worker, and a worker only
-        ever runs its own session's turn. This stand-in has one worker for every
-        session, so it emulates that lookup by comparing against the turn the worker
-        says it is running — otherwise it would report every conversation as busy
-        whenever any one of them was.
+        The real pool looks the session up and asks its own worker, and a worker only ever
+        runs its own session's turn. This stand-in has one worker for every session, so it
+        emulates that lookup by comparing against the turn the worker says it is running;
+        without that it would report every conversation as busy whenever any one of them
+        is.
         """
         busy = getattr(self.worker, "is_busy", None)
         if self.worker is None or busy is None or not busy():

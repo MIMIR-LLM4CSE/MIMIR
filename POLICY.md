@@ -1084,14 +1084,22 @@ Behaviour:
   parent/child collapse stays; it simply never applied to siblings, which is where the
   repetition came from.
 - With no approval hook wired the gate **fails closed**.
-- A granted path is mirrored to `<state_dir>/approved_paths.json`. The sandboxed servers
-  read that sidecar **per call** — their env is frozen at spawn, so the file is the only
-  live client→server channel — and pass the entries as `extra_roots`. Both the token check
-  and the target list work by **containment**, as the server does: once a directory is
-  approved, everything under it is allowed, and a prompt for a child could no longer deny
-  anything.
-- Grants reset on session change. A missing or corrupt sidecar yields `[]` — a broken
-  allowlist can never widen the sandbox.
+- A granted path is mirrored to `<state_dir>/sessions/<sid>/approved_paths.json`. The
+  sandboxed servers read that sidecar **per call** — their env is frozen at spawn, so the
+  file is the only live client→server channel — and pass the entries as `extra_roots`. Both
+  the token check and the target list work by **containment**, as the server does: once a
+  directory is approved, everything under it is allowed, and a prompt for a child could no
+  longer deny anything.
+- **One file per conversation, not per workspace.** Consent is given inside a conversation,
+  for what that conversation is doing, and conversations now run turns at the same time. A
+  single shared file made each one's grants visible to all the others — and because a
+  session began by truncating it, starting a second conversation silently **revoked the
+  first one's live grants mid-run**, under paths it was actively writing, and handed it the
+  second's instead. A grant widens exactly the sandbox of the conversation that was asked.
+- Grants reset when a conversation starts, and only its own file is touched — nothing is
+  cleared on a switch, because there is no longer anything of another conversation's to
+  clear. A missing or corrupt sidecar yields `[]` — a broken allowlist can never widen the
+  sandbox.
 
 **Shell commands carry their paths inside a string**, where the file-target extractor
 cannot see them. `cat /etc/passwd` used to be refused by the server with no prompt ever

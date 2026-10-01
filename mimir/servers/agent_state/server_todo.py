@@ -56,10 +56,9 @@ def _get_todo_file() -> str:
     Resolved through ``session_state_dir()`` rather than by reading the active-session
     pointer here: this server is one of the subprocesses of a single session's agent, and
     that session is stamped into its environment at spawn. Reading "the active session"
-    instead would hand every concurrently running conversation the checklist of whichever
-    one the user happens to be looking at. The pointer survives inside
-    ``session_state_dir`` as the single-session fallback (CLI, standalone, tests), where
-    it is still the right answer.
+    would hand every concurrently running conversation the checklist of whichever one the
+    user happens to be looking at. The pointer lives on inside ``session_state_dir`` as the
+    single-session fallback (CLI, standalone, tests), where it is the right answer.
     """
     base = session_state_dir(_MIMIR_DIR)
     if base == _MIMIR_DIR:
