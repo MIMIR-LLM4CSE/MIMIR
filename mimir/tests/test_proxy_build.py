@@ -13,6 +13,7 @@ Run:
 
 import json
 import os
+import shutil
 import sys
 import time
 import unittest
@@ -393,7 +394,9 @@ class SelectiveRestoreTests(_TmpStorageTest):
         """Both restore paths under one name: git, and the copy fallback.
 
         A machine without git runs the fallback, so an incrementality property that
-        holds in only one of them holds where it is not needed.
+        holds in only one of them holds where it is not needed. A machine without
+        git cannot exercise the git backend at all, so that branch is skipped rather
+        than failed (subprocess would raise FileNotFoundError on the missing binary).
         """
         git_dir = os.path.join(self.root, "opt.git")
 
@@ -405,7 +408,10 @@ class SelectiveRestoreTests(_TmpStorageTest):
             sid = tree_snapshot._copy_snapshot(git_dir, self.root, paths, snap_of)
             return git_dir, sid, tree_snapshot._copy_restore
 
-        return (("git", via_git), ("copy", via_copy))
+        backends = [("copy", via_copy)]
+        if shutil.which("git"):
+            backends.insert(0, ("git", via_git))
+        return backends
 
     def test_an_untouched_file_keeps_its_mtime(self) -> None:
         """The property the whole change exists for."""

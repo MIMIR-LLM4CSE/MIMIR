@@ -159,9 +159,14 @@ class BuiltinCheckTests(unittest.TestCase):
         # The false-positive guard that matters: every file this project tracks,
         # minified vendor bundles included.
         root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-        listing = subprocess.run(
-            ["git", "ls-files"], cwd=root, capture_output=True, text=True,
-        )
+        try:
+            listing = subprocess.run(
+                ["git", "ls-files"], cwd=root, capture_output=True, text=True,
+            )
+        except FileNotFoundError:
+            # No git on PATH (embedded venv, minimal image): nothing to index,
+            # so a tracker is irrelevant — the test simply has no subject.
+            self.skipTest("git not available")
         if listing.returncode != 0:
             self.skipTest("not a git checkout")
         rejected = []
