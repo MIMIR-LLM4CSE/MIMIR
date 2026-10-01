@@ -16,6 +16,13 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- Slurm jobs can carry a `--comment`. `proxy_slurm` (ops `run`, `suite`, `eval`),
+  `sbatch_submit` and `salloc_submit` take `comment`: free text Slurm stores with
+  the job and `sacct -j <id> -o Comment` reads back, so a queue full of MIMIR jobs
+  says what each one was for. One suite comment labels every job of the suite, and
+  a split build/run eval puts the same text on both jobs. Control characters are
+  refused — a newline in a value that lands in a `#SBATCH` line would append
+  directives of its own.
 - `mimir.maxModelLen` sets the context window (tokens) for a vLLM or Ray Serve
   endpoint that does not report `max_model_len`, so the client no longer stays on
   its static 200K default. `0` (the default) leaves the reported window in charge.

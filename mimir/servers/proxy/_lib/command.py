@@ -128,6 +128,7 @@ def _sbatch_header(
     account: str = "",
     constraint: str = "",
     nodelist: str = "",
+    comment: str = "",
     dependency: str = "",
     kill_on_invalid_dep: bool = False,
 ) -> list[str]:
@@ -141,7 +142,9 @@ def _sbatch_header(
     which hardware inside it. ``dependency`` chains one job behind another, and
     ``kill_on_invalid_dep`` is what keeps that chain from hanging — without it a job
     whose dependency can never be satisfied sits PENDING forever and whoever is
-    watching it waits just as long.
+    watching it waits just as long. ``comment`` is free text Slurm stores with the
+    job and ``sacct -o Comment`` reads back — it is how a submission says, to whoever
+    looks at the queue later, what it was for.
 
     Every optional directive is omitted when empty, so a caller that passes none of
     them gets byte-for-byte the script it got before.
@@ -166,6 +169,8 @@ def _sbatch_header(
         lines.append(f"#SBATCH --constraint={constraint}")
     if nodelist:
         lines.append(f"#SBATCH --nodelist={nodelist}")
+    if comment:
+        lines.append(f"#SBATCH --comment={shlex.quote(comment)}")
     if dependency:
         lines.append(f"#SBATCH --dependency={dependency}")
         if kill_on_invalid_dep:
@@ -190,6 +195,7 @@ def _build_sbatch(
     param_overrides: dict | None = None,
     constraint: str = "",
     nodelist: str = "",
+    comment: str = "",
 ) -> str:
     log_file = procs._log_path(run_dir)
     cmd_str  = shlex.join(shlex.split(
@@ -197,7 +203,7 @@ def _build_sbatch(
     lines = _sbatch_header(
         job_name=job_name, partition=partition, cpus_per_task=cpus_per_task,
         wall_time=wall_time, mem=mem, log_file=log_file, gpus=gpus, account=account,
-        constraint=constraint, nodelist=nodelist,
+        constraint=constraint, nodelist=nodelist, comment=comment,
     )
     # Capture wall time + exit code around the solver so the post-run step can
     # apply the same time_s plausibility guard as local runs.

@@ -129,6 +129,38 @@ class SbatchSubmitTests(unittest.TestCase):
                                        wall_time="notatime", confirm=True)
         self.assertEqual(res.get("status"), "error")
 
+    def test_comment_lands_in_the_script_quoted(self) -> None:
+        """Free text with spaces still has to be one --comment value to Slurm."""
+        server_hpc._run_argv = lambda argv, t: {
+            "status": "ok", "stdout": "Submitted batch job 7", "stderr": "",
+            "returncode": 0}
+        res = server_hpc.sbatch_submit(command="echo hi", partition="cpu",
+                                       comment="mimir ratchet iter 12", confirm=True)
+        self.assertEqual(res.get("status"), "ok", msg=res)
+        self.assertEqual(res["comment"], "mimir ratchet iter 12")
+        with open(res["batch_script"]) as fh:
+            self.assertIn("#SBATCH --comment='mimir ratchet iter 12'", fh.read())
+
+    def test_without_a_comment_the_directive_is_absent(self) -> None:
+        server_hpc._run_argv = lambda argv, t: {
+            "status": "ok", "stdout": "Submitted batch job 8", "stderr": "",
+            "returncode": 0}
+        res = server_hpc.sbatch_submit(command="echo hi", partition="cpu", confirm=True)
+        with open(res["batch_script"]) as fh:
+            self.assertNotIn("--comment", fh.read())
+
+    def test_a_newline_in_the_comment_is_refused_before_slurm(self) -> None:
+        """It would otherwise forge a #SBATCH directive line of its own."""
+        called: list = []
+        server_hpc._run_argv = lambda argv, t: called.append(argv) or {
+            "status": "ok", "stdout": "Submitted batch job 9", "stderr": "",
+            "returncode": 0}
+        res = server_hpc.sbatch_submit(
+            command="echo hi", partition="cpu", confirm=True,
+            comment="baseline\n#SBATCH --partition=everything")
+        self.assertEqual(res.get("status"), "error", msg=res)
+        self.assertEqual(called, [])
+
 
 class SallocSubmitTests(unittest.TestCase):
     """The validation has to sit on the path that executes, not beside it.
@@ -169,6 +201,14 @@ class SallocSubmitTests(unittest.TestCase):
         res = server_hpc.salloc_submit(partition="cpu; rm -rf ~", confirm=True)
         self.assertEqual(res.get("status"), "ok")
         self.assertIn("'--partition=cpu; rm -rf ~'", res["command"])
+
+    def test_comment_is_one_argv_token_and_validated(self) -> None:
+        accepted = server_hpc.salloc_submit(partition="cpu", comment="debug session",
+                                            confirm=True)
+        self.assertEqual(accepted.get("status"), "ok", msg=accepted)
+        self.assertIn("'--comment=debug session'", accepted["command"])
+        rejected = server_hpc.salloc_submit(partition="cpu", comment="a\nb", confirm=True)
+        self.assertEqual(rejected.get("status"), "error")
 
     def test_extra_args_takes_flags_only(self) -> None:
         rejected = server_hpc.salloc_submit(partition="cpu", extra_args="--x=1 rm -rf /", confirm=True)

@@ -15,6 +15,9 @@ The registration is the term that matters most in practice: the ratchet submits 
 same run hundreds of times, and a placement the model must restate every iteration
 is one that comes out wrong on some iteration.
 
+``comment`` is the exception that goes the other way: it labels the submission as a
+whole, so the build job carries the run's verbatim.
+
 ``constraint``, ``nodelist`` and ``gpus`` deliberately do NOT fall through from the
 run phase. The first two would pin the build to the exact hardware the split exists
 to keep it off; the third charges simulation hours to a compiler that is no faster
@@ -42,6 +45,7 @@ def run_placement(
     account: str = "",
     constraint: str = "",
     nodelist: str = "",
+    comment: str = "",
 ) -> dict:
     """The measurement phase's placement, as one dict to pass around and record."""
     return {
@@ -53,6 +57,7 @@ def run_placement(
         "account":       account,
         "constraint":    constraint,
         "nodelist":      nodelist,
+        "comment":       comment,
     }
 
 
@@ -90,6 +95,10 @@ def resolve_build(
                              entry.get("build_constraint", "")) or "",
         "nodelist":   "",
         "gpus":       build_gpus or 0,
+        # The comment labels the submission, not a phase of it: both jobs of a split
+        # run are the same work, and whoever reads the queue wants the same answer
+        # from either one.
+        "comment":    run.get("comment", "") or "",
     }
     overrides = {
         "cpus_per_task": (build_cpus_per_task,

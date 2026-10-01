@@ -57,6 +57,7 @@ def submit_run(
     job_name: str = "",
     constraint: str = "",
     nodelist: str = "",
+    comment: str = "",
 ) -> dict:
     """Submit a single proxy run as a Slurm batch job (non-blocking)."""
     entry, error = _entry_or_err(proxy_name)
@@ -77,6 +78,7 @@ def submit_run(
         "output_format":        entry.get("output_format", "npz"),
         "compare_to_reference": compare_to_reference,
         "partition":            partition,
+        "comment":              comment,
         "started_at":           datetime.now(timezone.utc).isoformat(),
     })
 
@@ -88,7 +90,7 @@ def submit_run(
         compare_to_reference=compare_to_reference,
         python_exe=sys.executable,
         param_overrides=param_overrides,
-        constraint=constraint, nodelist=nodelist,
+        constraint=constraint, nodelist=nodelist, comment=comment,
     )
     job_id, error = _submit_sbatch(
         run_dir, script,
@@ -104,6 +106,7 @@ def submit_run(
         "batch_script":         os.path.join(run_dir, "batch_script.sh"),
         "log":                  _log_path(run_dir),
         "compare_to_reference": compare_to_reference or None,
+        "comment":              comment or None,
         "background_job":       _run_background_descriptor(run_dir),
         "note": f"Slurm job {job_id} submitted to partition '{partition}'; "
                 "this call returns while it is still queued.",
@@ -120,6 +123,7 @@ def submit_suite(
     account: str = "",
     constraint: str = "",
     nodelist: str = "",
+    comment: str = "",
 ) -> dict:
     """Submit one Slurm job per (case × sweep point) in a suite (non-blocking)."""
     suite = _load_suite(suite_name)
@@ -162,6 +166,7 @@ def submit_suite(
                 "compare_to_reference": reference_name,
                 "suite_name":           suite_name,
                 "case_id":              case_id,
+                "comment":              comment,
                 "started_at":           datetime.now(timezone.utc).isoformat(),
             })
 
@@ -172,7 +177,7 @@ def submit_suite(
                 compare_to_reference=reference_name,
                 python_exe=sys.executable,
                 param_overrides=sweep_overrides,
-                constraint=constraint, nodelist=nodelist,
+                constraint=constraint, nodelist=nodelist, comment=comment,
             )
 
             # Record pointer before submission
@@ -201,6 +206,7 @@ def submit_suite(
         "suite":         suite_name,
         "run_timestamp": ts,
         "partition":     partition,
+        "comment":       comment or None,
         "submissions":   submissions,
         "errors":        errors,
         "note": f"{len(submissions)} jobs submitted.",
@@ -233,6 +239,7 @@ def _runner_script(
         account=place.get("account", ""),
         constraint=place.get("constraint", ""),
         nodelist=place.get("nodelist", ""),
+        comment=place.get("comment", ""),
         dependency=dependency,
         kill_on_invalid_dep=bool(dependency),
     )
@@ -254,6 +261,7 @@ def submit_eval(
     job_name: str = "proxy_opt",
     constraint: str = "",
     nodelist: str = "",
+    comment: str = "",
     build_partition: str = "",
     build_constraint: str = "",
     build_cpus_per_task: int = 0,
@@ -284,7 +292,7 @@ def submit_eval(
     run_place = placement.run_placement(
         partition=partition, gpus=gpus, cpus_per_task=cpus_per_task, mem=mem,
         wall_time=wall_time, account=account, constraint=constraint,
-        nodelist=nodelist,
+        nodelist=nodelist, comment=comment,
     )
 
     # Resolving the build's placement needs the registry entry (its standing

@@ -493,6 +493,28 @@ def _validate_slurm_token(value: str, field: str) -> str | None:
     return None
 
 
+# A comment is free text, so the token expression above would reject most real ones
+# (spaces, '/', '#'). What still cannot appear is a control character: a newline ends
+# the directive line and makes the rest of the value directives of the caller's
+# choosing, and sacct/squeue render the field on one line either way. The cap is
+# Slurm's own practical limit on the field.
+_SLURM_COMMENT_MAX = 512
+
+
+def _validate_slurm_comment(value: str, field: str = "comment") -> str | None:
+    """Return why *value* cannot be a --comment, or None when it can."""
+    if not value:
+        return None
+    if len(value) > _SLURM_COMMENT_MAX:
+        return (f"{field} is too long ({len(value)} chars). "
+                f"Keep it under {_SLURM_COMMENT_MAX}.")
+    bad = [ch for ch in value if ord(ch) < 0x20 or ord(ch) == 0x7F]
+    if bad:
+        return (f"Invalid {field}: control characters are not allowed "
+                f"(found {bad[0]!r}). Keep it to a single line of plain text.")
+    return None
+
+
 # ── active-run symlinks ───────────────────────────────────────────────────────
 
 def _update_active_link(proxy_name: str, run_dir: str) -> None:

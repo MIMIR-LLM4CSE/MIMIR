@@ -110,6 +110,28 @@ def _validate_mem(value: str) -> bool:
     return bool(re.fullmatch(r"\d+[KMGTP]", value.upper()))
 
 
+_COMMENT_MAX = 512
+
+
+def _validate_comment(value: str) -> str | None:
+    """Return why *value* cannot be a Slurm --comment, or None when it can.
+
+    Free text, so the only hard rules are a length Slurm will store and a single
+    line: a newline in a value that lands in a ``#SBATCH`` directive turns the rest
+    of it into directives of the caller's choosing, and sacct renders the field on
+    one line regardless.
+    """
+    if not value:
+        return None
+    if len(value) > _COMMENT_MAX:
+        return f"comment is too long ({len(value)} chars). Keep it under {_COMMENT_MAX}."
+    bad = [ch for ch in value if ord(ch) < 0x20 or ord(ch) == 0x7F]
+    if bad:
+        return ("Invalid comment: control characters are not allowed "
+                f"(found {bad[0]!r}). Keep it to a single line of plain text.")
+    return None
+
+
 @mcp.tool()
 def slurm_partitions() -> dict:
     """List Slurm partitions with key scheduling attributes."""
@@ -262,7 +284,8 @@ def _run_argv(argv: list[str], timeout: int) -> dict:
 
 def _salloc_argv(partition: str, account: str, qos: str, nodes: int, ntasks: int,
                  cpus_per_task: int, mem: str, time: str, gres: str, constraint: str,
-                 job_name: str, extra_args: str) -> tuple[list[str], dict | None]:
+                 job_name: str, extra_args: str,
+                 comment: str = "") -> tuple[list[str], dict | None]:
     """Build a validated salloc argv, or return the rejection."""
     if not partition.strip():
         return [], err("partition is required.", hint="Use slurm_partitions() to list them.")
@@ -272,6 +295,9 @@ def _salloc_argv(partition: str, account: str, qos: str, nodes: int, ntasks: int
         return [], err("Invalid Slurm time format", hint="Use HH:MM:SS or D-HH:MM:SS")
     if mem and not _validate_mem(mem):
         return [], err("Invalid mem format", hint="Use values like 8G, 32000M, 1T")
+    comment_err = _validate_comment(comment)
+    if comment_err:
+        return [], err(comment_err)
 
     argv = [
         "salloc",
@@ -283,7 +309,8 @@ def _salloc_argv(partition: str, account: str, qos: str, nodes: int, ntasks: int
         f"--job-name={job_name}",
     ]
     for flag, value in (("account", account), ("qos", qos), ("mem", mem),
-                        ("gres", gres), ("constraint", constraint)):
+                        ("gres", gres), ("constraint", constraint),
+                        ("comment", comment)):
         if value:
             argv.append(f"--{flag}={value}")
     if extra_args:
@@ -315,6 +342,7 @@ def salloc_submit(
     time: str = "01:00:00",
     gres: str = "",
     constraint: str = "",
+    comment: str = "",
     job_name: str = "mimir-interactive",
     confirm: bool = False,
     timeout_seconds: int = _TIMEOUT_ALLOC,
@@ -337,13 +365,16 @@ def salloc_submit(
         time: Wall-clock limit HH:MM:SS or D-HH:MM:SS.
         gres: Generic resources, e.g. 'gpu:2'.
         constraint: Node feature constraint.
+        comment: Free-text label stored with the allocation and read back by
+            `sacct -j <id> -o Comment`. Single line, under 512 characters.
         job_name: Slurm job name.
         confirm: Must be True to execute; False returns the command as a preview.
         timeout_seconds: Max time to wait for the allocation response.
         extra_args: Additional salloc flags; every token must start with '-'.
     """
     argv, error = _salloc_argv(partition, account, qos, nodes, ntasks, cpus_per_task,
-                               mem, time, gres, constraint, job_name, extra_args)
+                               mem, time, gres, constraint, job_name, extra_args,
+                               comment)
     if error:
         return error
     preview = shlex.join(argv)
@@ -489,7 +520,8 @@ def slurm_cancel(job_id: str, confirm: bool = False) -> dict:
 
 
 def _sbatch_header(job_name: str, partition: str, cpus_per_task: int, gpus: int,
-                   mem: str, wall_time: str, account: str, log_file: str) -> list[str]:
+                   mem: str, wall_time: str, account: str, log_file: str,
+                   comment: str = "") -> list[str]:
     lines = [
         "#!/bin/bash",
         f"#SBATCH --job-name={job_name}",
@@ -505,6 +537,8 @@ def _sbatch_header(job_name: str, partition: str, cpus_per_task: int, gpus: int,
         lines.append(f"#SBATCH --gres=gpu:{gpus}")
     if account:
         lines.append(f"#SBATCH --account={account}")
+    if comment:
+        lines.append(f"#SBATCH --comment={shlex.quote(comment)}")
     return lines
 
 
@@ -521,6 +555,7 @@ def sbatch_submit(
     mem: str = "",
     wall_time: str = "01:00:00",
     account: str = "",
+    comment: str = "",
     job_name: str = "mimir-batch",
     confirm: bool = False,
 ) -> dict:
@@ -539,6 +574,10 @@ def sbatch_submit(
         mem: Memory in Slurm format (e.g. '8G'); empty = scheduler default.
         wall_time: Wall-clock limit HH:MM:SS or D-HH:MM:SS (default '01:00:00').
         account: Slurm account to charge (optional).
+        comment: Free-text label stored with the job and read back by
+            `sacct -j <id> -o Comment` or `scontrol show job <id>` — what this
+            job was for, for whoever reads the queue later. Single line, under
+            512 characters.
         job_name: Slurm job name (default 'mimir-batch').
         confirm: Must be True to submit.
     """
@@ -552,6 +591,9 @@ def sbatch_submit(
         return err("Invalid mem format.", hint="Use values like 8G, 32000M, 1T")
     if cpus_per_task < 1 or gpus < 0:
         return err("cpus_per_task must be >= 1 and gpus >= 0.")
+    comment_err = _validate_comment(comment)
+    if comment_err:
+        return err(comment_err)
     if not confirm:
         return err("Submission not confirmed.",
                    hint="Set confirm=True only after user approval.")
@@ -562,7 +604,7 @@ def sbatch_submit(
     log_file    = os.path.join(job_dir, "slurm.log")
     script_path = os.path.join(job_dir, "batch_script.sh")
     header = _sbatch_header(job_name, partition, cpus_per_task, gpus, mem,
-                            wall_time, account, log_file)
+                            wall_time, account, log_file, comment)
     script = "\n".join(header + ["", command, ""]) + "\n"
     try:
         with open(script_path, "w") as fh:
@@ -591,6 +633,7 @@ def sbatch_submit(
         "batch_script": script_path,
         "log":          log_file,
         "partition":    partition,
+        "comment":      comment or None,
         "note":         f"Slurm job {job_id} submitted to '{partition}'.",
         "background_job": {
             "server":    "hpc",
