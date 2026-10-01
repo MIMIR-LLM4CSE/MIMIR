@@ -630,6 +630,14 @@ format in [POLICY.md](POLICY.md#verification-ledger).
   `asyncio.wait_for` with the wall `capabilities.timeout_for` resolves — the tool's own
   `timeout_secs` if it declared one, else `TOOL_CALL_TIMEOUT_SECS`, clamped by
   `TOOL_CALL_TIMEOUT_MAX_SECS`.
+- **A dead transport is the one failure not to retry.** Any exception from a call becomes an
+  ordinary tool error rather than killing the turn, with "retry once" as the advice — except
+  `ClosedResourceError` / `BrokenResourceError`, which mean that server's stdio transport is
+  gone: its process died, or its stack was unwound under the turn. Nothing reconnects an MCP
+  server, so every later call to any tool of that server fails identically. That failure
+  therefore names the server, lists the other tools it has just taken down, and tells the
+  model to stop and report what is unfinished instead of spending the turn on calls that
+  cannot work.
 - **Step budget** — there is none. A query runs for as many steps as the work takes: it
   ends when the model delivers an answer, when a guard stops it (empty turns, validation
   budget), or when the user interrupts. Only a caller that asks for a bound gets one —
@@ -948,6 +956,33 @@ queue nobody can see reads as a hang. An idle agent is **released**, servers inc
 never one that is busy, parked on a card, watching a background job, or on screen. When
 nothing may be released the turn queues rather than evicting: taking a slot from a
 conversation mid-task trades a visible wait for silently lost work.
+
+**A slot is admitted the moment a turn ends**, on the on-screen path and the detached one
+alike — not only in the pool's thirty-second idle sweep, which left a conversation just told
+it was next in line sitting out the rest of that interval after the slot it needed had
+already freed.
+
+**Releasing an agent closes its MCP servers, in the task that opened them.** `stdio_client`
+anchors its anyio cancel scope to the entering task: exiting the exit stack from any other
+task raises and leaves it half-unwound — the streams closed, the subprocess alive — so
+nothing is reaped and a turn still running on that agent fails its next tool call on a dead
+stream. `_AgentWorker` therefore holds setup, the query loop and the close in one task
+(`_live`), and the close runs in that loop's `finally`, which is after any turn. `aclose`
+only sends the sentinel and waits, cancelling a turn in flight first so shutdown does not
+cost the rest of a turn per conversation. Eviction asks `has_work_pending` rather than
+`is_busy` for the same reason: a turn already submitted has not set `_current_task` yet, and
+releasing in that gap closes the servers under a turn about to start.
+
+**Stopping the server stops the MCP servers.** Each is spawned with
+`start_new_session=True` — its own process group, which survives this process dying — so
+only closing the owning agent's exit stack terminates one. `serve()` installs SIGTERM/SIGINT
+handlers and closes the pool on the way out, every agent at once rather than one after
+another. The VS Code extension kills and respawns the server on every connect, which makes
+that the ordinary path rather than an edge case.
+
+**Deleting a conversation that is working says so first.** A turn in flight counts as live
+work, and so does a turn parked on a card — work waiting to continue — alongside the job
+directories. The delete is refused once, naming what is running; asking again goes through.
 
 **Who owns the rendered chat.** `display_messages` as the server assembles it is text bubbles
 and nothing else; the tool rows, reasoning panels and diff cards are built by the webview's

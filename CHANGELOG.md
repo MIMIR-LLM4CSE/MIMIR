@@ -16,6 +16,20 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- Conversations run at the same time, one agent each. Leaving a conversation now
+  leaves its turn running instead of cancelling it (or deferring it when it was
+  parked on a question), and its output goes to its own transcript, so coming back
+  shows the whole turn rather than only the answer that ended it. A card says which
+  conversation is asking, and an answer carries that back. `MIMIR_MAX_LIVE_SESSIONS`
+  (3) caps how many agents are alive — the constraint is processes, some nineteen MCP
+  servers each — and past the cap a turn waits for a slot and is told its place in
+  line. An agent is built on its conversation's first query, not when the session is
+  opened, and released with its servers once idle for `MIMIR_SESSION_IDLE_TTL` (600 s)
+  — never one that is busy, parked on a card, watching a background job, or on screen.
+- Each conversation's server state is its own. Background-job and Slurm-job
+  directories are filed per session under the state dir, so `bash_job(op='list')`
+  shows this conversation's jobs rather than every conversation's, and nothing is
+  written to `~/.cache` any more.
 - Slurm jobs can carry a `--comment`. `proxy_slurm` (ops `run`, `suite`, `eval`),
   `sbatch_submit` and `salloc_submit` take `comment`: free text Slurm stores with
   the job and `sacct -j <id> -o Comment` reads back, so a queue full of MIMIR jobs
@@ -61,6 +75,32 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   escape-hatch value.
 
 ### Fixed
+- A command run by a tool can no longer read the server's stdin, which is that
+  server's MCP protocol pipe. `ssh` without `-n` drains stdin, and `cat`/`head`
+  consume it, so such a command ate the client's own JSON-RPC traffic: a request
+  swallowed whole was never answered (a background-job watcher polling `bash_job`
+  while an `ssh` ran, waiting for ever), and a partial steal desynchronised the
+  framing until every later call on that session hung or failed with
+  `ClosedResourceError` — while the server itself looked healthy. Every spawn now
+  reads from `/dev/null`, so a command that reads stdin sees EOF.
+- Releasing a conversation's agent now closes its MCP servers. The close ran in a
+  task of its own, and `stdio_client` anchors its anyio cancel scope to the task that
+  entered it, so the exit stack was left half-unwound — streams closed, subprocess
+  alive: each release stranded some nineteen interpreters, and a turn still running on
+  that agent failed its next tool call with `ClosedResourceError`.
+- Stopping the server now closes every agent's MCP servers. Each is spawned in its own
+  process group and survives this process dying, so a stop used to leave up to
+  3 × ~19 orphaned interpreters behind — the ordinary path, since the VS Code
+  extension kills and respawns the server on every connect.
+- Deleting a conversation whose turn is still running now says so instead of cutting
+  it short silently; asking a second time goes through. A turn parked on a card counts
+  as work waiting to continue, not as work that has stopped.
+- A tool call that fails on a dead MCP transport is no longer told to retry. Nothing
+  reconnects an MCP server, so every later call to any of its tools fails the same
+  way; the error now names the server that died and the other tools it took down, and
+  says to report what is unfinished rather than spend the turn retrying.
+- A slot freed by a turn ending is admitted at once rather than at the next sweep, so a
+  conversation told it was next in line no longer waits out up to thirty seconds more.
 - A Slurm job submitted through `proxy_slurm` now wakes MIMIR when it finishes.
   `sbatch` returns while the job is still queued, so the answer never carried the
   run's result — but only `op='eval'` with `background=True` handed over a job

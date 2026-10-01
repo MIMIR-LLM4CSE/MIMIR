@@ -75,6 +75,20 @@ it did not write: `server_bash._run` and both proxy execution paths in
 compete with the very next timing the ratchet takes). Fixed-argv callers
 (`module avail`, `squeue`, the LSP) are unchanged.
 
+**No child reads a server's stdin.** Every spawn redirects it from `/dev/null`:
+`proc_run.run` by default (a caller that needs to feed one still passes its own), the bash
+job launcher every `bash_run` goes through — blocking or detached — and the fixed-argv
+callers above. A server's stdin is its MCP protocol pipe: the client's JSON-RPC requests
+arrive on it, and a child inherits it unless told otherwise, while plenty of ordinary
+commands read stdin — `ssh` without `-n` drains it, `cat` and `head` consume it outright.
+What such a command eats is the client's traffic. A whole request swallowed is never
+answered, so the call that sent it waits for ever: a background-job watcher polling
+`bash_job` while an `ssh` ran is the case that turned this up. Part of a request
+desynchronises the framing, and every later call on that session hangs or fails on a dead
+transport. Either way the server itself looks healthy, which is why the symptom reads as
+MIMIR hanging, or as `ClosedResourceError` out of nowhere. A command that does read stdin
+now sees EOF — an answer rather than a wait.
+
 Normalization is handled by `mimir/servers/_shared/responses.py`:
 - `ok(...)` always preserves `status = ok`
 - `err(...)` always preserves `status = error`
