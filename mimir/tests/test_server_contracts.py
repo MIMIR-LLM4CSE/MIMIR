@@ -1916,8 +1916,19 @@ class BashServerTests(unittest.TestCase):
     def test_bash_run_runs_git(self) -> None:
         # git ran through a dedicated server only because bash refused it; that
         # server is gone, and git is an ordinary approval-gated command here.
-        payload = server_bash.bash_run("git status --short")
+        #
+        # ``--version`` rather than ``status``: what is under test is that the call is not
+        # refused and actually runs, and ``git status`` answers 128 wherever the workspace
+        # is not a repository — which failed the test for a reason it does not test.
+        payload = server_bash.bash_run("git --version")
         self.assertEqual(payload["status"], "ok", payload)
+        self.assertIn("git version", payload["stdout"])
+        self.assertNotIn("refused", payload)
+        # And a repository is not required for the command to be allowed through: in a
+        # workspace without one, git's own non-zero status is the only thing that differs.
+        payload = server_bash.bash_run("git status --short")
+        self.assertNotIn("refused", payload)
+        self.assertIn(payload.get("returncode"), (0, 128), payload)
 
     def test_bash_run_allows_python_as_code_fallback(self) -> None:
         # python is now an allowed build/exec tool so the code server can fall
