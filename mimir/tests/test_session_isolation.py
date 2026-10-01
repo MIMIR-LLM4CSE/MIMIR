@@ -13,7 +13,7 @@ from mimir.client.ui.ws.ws_worker import _AgentWorker
 from mimir.client.ui.ws.ws_session import _Session
 
 
-def _bare_worker() -> _AgentWorker:
+def _bare_worker(session_id: str | None = None) -> _AgentWorker:
     """A worker with only the queue/state fields the tests touch (no agent, no loop)."""
     w = object.__new__(_AgentWorker)
     w.out_q = _queue.Queue()
@@ -21,6 +21,7 @@ def _bare_worker() -> _AgentWorker:
     w._continue_q = _queue.Queue()
     w._question_q = _queue.Queue()
     w._steer_q = _queue.Queue()
+    w.session_id = session_id
     w.active_session_id = None
     w._query_session_id = None
     w._pending_prompt = None
@@ -40,10 +41,30 @@ class WorkerStampTests(unittest.TestCase):
         w.out_q.put({"type": "output", "text": "x", "session_id": "s2"})
         self.assertEqual(w.drain()[0]["session_id"], "s2")
 
-    def test_events_outside_a_query_are_unstamped(self):
+    def test_events_outside_a_query_carry_the_workers_own_session(self):
+        """Setup output belongs to its conversation as much as a turn's does.
+
+        It used to be stamped ``None``, meaning "unattributable — show it to whoever is
+        here". With one worker per session nothing is unattributable any more, and a
+        lazily built worker emits its ``ready`` and any setup failure while the user may
+        well be reading a different conversation.
+        """
+        w = _bare_worker(session_id="s1")
+        w.out_q.put({"type": "output", "text": "x"})
+        self.assertEqual(w.drain()[0]["session_id"], "s1")
+
+    def test_a_worker_with_no_session_of_its_own_still_stamps_nothing(self):
+        """A bare worker (tests, standalone) has no conversation to name."""
         w = _bare_worker()
         w.out_q.put({"type": "output", "text": "x"})
         self.assertIsNone(w.drain()[0]["session_id"])
+
+    def test_a_running_turn_outranks_the_workers_own_session(self):
+        """A wake turn names the session it resumes, whoever hosts it."""
+        w = _bare_worker(session_id="s1")
+        w._query_session_id = "s2"
+        w.out_q.put({"type": "output", "text": "x"})
+        self.assertEqual(w.drain()[0]["session_id"], "s2")
 
     def test_flush_prompts_drops_every_pending_answer(self):
         w = _bare_worker()

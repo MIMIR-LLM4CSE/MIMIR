@@ -92,8 +92,17 @@ class _AgentWorker:
     Thread-safe queues carry events to the WS layer and approval responses back.
     """
 
-    def __init__(self, model: str) -> None:
+    def __init__(self, model: str, session_id: str | None = None) -> None:
         self.model = model
+        # The conversation this worker exists for, fixed for its whole life. It used to
+        # be one worker for every session, time-multiplexed, which is why leaving a
+        # session had to cancel its turn: a single worker cannot stream two conversations
+        # anywhere the user can see. One worker per session is what lets a turn keep
+        # running in a conversation nobody is looking at.
+        #
+        # None only for the ends that have no session (tests, standalone construction);
+        # everything session-scoped then falls back the way it always did.
+        self.session_id: str | None = session_id
         self._loop: asyncio.AbstractEventLoop | None = None
         self._agent: Any = None
         self._ready = threading.Event()
@@ -113,10 +122,14 @@ class _AgentWorker:
         self._query_event = threading.Event()
 
         self._current_task: asyncio.Task | None = None
-        self.active_session_id: str | None = None  # kept in sync by _Session
-        # Session a running query belongs to, captured when it starts. One worker
-        # serves every session, so events must carry the session they were produced
-        # for or a turn that outlives a switch lands in the wrong conversation.
+        # The session the front-end is currently showing. Not the same question as
+        # ``session_id``: this worker always works for its own session, and this says
+        # whether that session is the one on screen. Kept in sync by _Session.
+        self.active_session_id: str | None = None
+        # Session a running query belongs to, captured when it starts. Events carry the
+        # session they were produced for, so a turn running in a conversation that is not
+        # on screen can be told apart from the one that is — and routed to its own
+        # transcript rather than streamed into whatever the user is reading.
         self._query_session_id: str | None = None
         # Background-job watchers: job_key -> _Watch(task, descriptor), polling a
         # detached run to completion. Registered by the agent loop via _register_bg_job
@@ -302,7 +315,7 @@ class _AgentWorker:
             except ImportError:
                 from mimir.client.extensions import all_servers
 
-            agent = MimirAgent(model=self.model)
+            agent = MimirAgent(model=self.model, session_id=self.session_id)
             for name, script in all_servers().items():
                 await agent.connect_server(name, script)
             agent.seed_classification_from_caps()
@@ -382,7 +395,7 @@ class _AgentWorker:
                 return  # shutdown sentinel
 
             self._current_task = asyncio.current_task()
-            self._query_session_id = item.get("session_id") or self.active_session_id
+            self._query_session_id = item.get("session_id") or self._own_session()
             await self._run_query(item)
             self._current_task = None
             self._query_session_id = None
@@ -548,20 +561,32 @@ class _AgentWorker:
         except Exception:
             pass
 
+    def _own_session(self) -> str | None:
+        """The conversation this worker works for.
+
+        ``session_id`` when it has one, else the session on screen. The fallback is for
+        a worker built before any session was known — which is how the single shared
+        worker was built, and is still how a bare one in a test is. Reading the on-screen
+        session is only ever right for such a worker: one with a session of its own must
+        use it, or it writes another conversation's checklist the moment the user looks
+        somewhere else.
+        """
+        return self.session_id or self.active_session_id
+
     def _load_todos(self) -> list:
         try:
             try:
                 from ...prompt.system_prompt import _load_todo_items
             except ImportError:
                 from mimir.client.prompt.system_prompt import _load_todo_items
-            return _load_todo_items(_todo_file_for_session(self.active_session_id))
+            return _load_todo_items(_todo_file_for_session(self._own_session()))
         except Exception:
             return []
 
     def _clear_todos(self) -> None:
-        """Wipe the active session's todo file."""
+        """Wipe this worker's own session's todo file."""
         try:
-            todo_file = _todo_file_for_session(self.active_session_id)
+            todo_file = _todo_file_for_session(self._own_session())
             if os.path.exists(todo_file):
                 open(todo_file, "w").close()
         except Exception:
@@ -1018,7 +1043,7 @@ class _AgentWorker:
         existing = self._bg_jobs.get(job_key)
         if existing is not None and not existing.task.done():
             return True  # already watched
-        session_id = self._query_session_id or self.active_session_id
+        session_id = self._query_session_id or self._own_session()
         try:
             # get_running_loop, not get_event_loop: the latter can hand back a loop
             # that is not running, and a task created on one of those never polls
@@ -1556,8 +1581,13 @@ class _AgentWorker:
         """Drain all pending output events (non-blocking), stamped with their session.
 
         Single choke point for everything the engine emits, so the stamp is applied
-        here rather than at the dozens of emit sites. Events produced outside a query
-        carry ``None`` and are never filtered.
+        here rather than at the dozens of emit sites.
+
+        An event produced outside a query — the ``ready`` the setup emits, an error from
+        it — falls back to this worker's own session rather than to ``None``. It belongs
+        to that conversation as much as a turn's own output does, and ``None`` used to
+        mean "unattributable, show it to whoever is here", which with one worker per
+        session is no longer true of anything.
         """
         events: list[dict] = []
         while True:
@@ -1566,7 +1596,7 @@ class _AgentWorker:
             except _queue.Empty:
                 break
             if isinstance(ev, dict):
-                ev.setdefault("session_id", self._query_session_id)
+                ev.setdefault("session_id", self._query_session_id or self.session_id)
             events.append(ev)
         return events
 
@@ -1577,3 +1607,55 @@ class _AgentWorker:
                 self._loop.call_soon_threadsafe(watch.task.cancel)
         self._query_q.put(None)
         self._query_event.set()
+
+    def aclose(self, timeout: float = 20.0) -> None:
+        """Shut the worker down AND close the agent's servers, then join the thread.
+
+        ``shutdown`` only ends the query loop; it never closed
+        ``agent.exit_stack``, which is where the ~19 MCP server subprocesses are held.
+        That was harmless while the one worker lived as long as the process. It stops
+        being harmless the moment workers are created per conversation and released when
+        a conversation goes quiet: each release would strand a full set of servers, and a
+        few hours of use would exhaust the machine rather than free anything.
+
+        The close runs on the worker's own loop. ``stdio_client`` is an anyio context
+        entered in that loop, and closing it from another task trips anyio's cancel-scope
+        check and leaks the subprocess it was meant to reap — the same reason
+        ``server_spawn_agent`` closes a child's stack in the very task that opened it.
+
+        Best-effort and bounded: a server wedged in its own shutdown must not hold the
+        pool, and the subprocess dies with this process in the worst case.
+        """
+        agent, loop = self._agent, self._loop
+        settled = True
+        if agent is not None and loop is not None and not loop.is_closed():
+            done = threading.Event()
+
+            async def _close() -> None:
+                try:
+                    await agent.cleanup()
+                except Exception:
+                    logger.warning("worker %s: closing MCP servers failed",
+                                   self.session_id or "<no session>", exc_info=True)
+                finally:
+                    done.set()
+
+            try:
+                asyncio.run_coroutine_threadsafe(_close(), loop)
+                settled = done.wait(timeout)
+            except RuntimeError:
+                pass  # loop already gone; nothing of ours is left to close
+        if not settled:
+            # Deliberately no sentinel and no join. The sentinel ends the query loop,
+            # whose return closes the event loop — which would destroy the close still
+            # running on it, abandoning the very subprocess reaping it was waiting for.
+            # The caller is already free; this worker's thread is left to finish on its
+            # own, and the OS reaps what is left when the process exits.
+            logger.warning("worker %s: MCP servers did not close within %.1fs; letting "
+                           "its thread finish on its own",
+                           self.session_id or "<no session>", timeout)
+            return
+        # The sentinel last: the loop had to still be running to host the close above.
+        self.shutdown()
+        if self._thread.is_alive():
+            self._thread.join(timeout=5.0)

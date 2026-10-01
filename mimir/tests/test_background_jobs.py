@@ -465,6 +465,7 @@ class RegisterBgJobTests(unittest.TestCase):
         from mimir.client.ui.ws.ws_server import _AgentWorker
         w = _AgentWorker.__new__(_AgentWorker)   # bypass __init__ (spawns a thread)
         w._bg_jobs = {}
+        w.session_id = None
         w._query_session_id = None
         w.active_session_id = None
         w._loop = None
