@@ -77,6 +77,9 @@ def _git(root: str, *args: str) -> str | None:
         proc = subprocess.run(
             ("git", *args), cwd=root, capture_output=True, text=True,
             timeout=_GIT_TIMEOUT_SECS,
+            # git asks for a passphrase or an editor on stdin given the chance, and this
+            # runs mid-turn: with nothing to read it fails instead of holding the turn.
+            stdin=subprocess.DEVNULL,
         )
     except Exception:
         return None
