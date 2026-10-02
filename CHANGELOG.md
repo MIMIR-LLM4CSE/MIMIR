@@ -15,6 +15,8 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.1.0] — 2026-10-02
+
 ### Added
 - A background run now reports in while it runs: 30 s, 2 min, 10 min and 30 min
   after the first one of a conversation was launched, then once an hour for as long
