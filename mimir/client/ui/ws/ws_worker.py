@@ -28,6 +28,7 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass, field
+from itertools import chain, repeat
 from typing import Any
 
 from ... import human_pause
@@ -57,15 +58,20 @@ def _direct_opener():
 # intervals, so a single transient failure never trips it.
 _UNREADABLE_POLL_LIMIT = 5
 
-# When a background check-in fires, as seconds from the one before it (so T+30s, T+150s,
-# T+750s from the first launch). A detached run says nothing between its launch and its
-# end, and a two-hour build that went wrong in its third minute is found out in its
-# hundred-and-twentieth. These three break that silence early, then twice more while
-# being wrong is still cheap to act on; past the last one the completion wake is close
-# enough that another bulletin would only cost a turn. Cumulative on purpose — the
-# intervals widen the way the watcher's own backoff does, because so does the cost of
-# having been wrong for that long.
-_CHECKIN_SCHEDULE = (30.0, 120.0, 600.0)
+# When a background check-in fires, as seconds from the one before it: T+30s, T+2.5min,
+# T+12.5min, T+42.5min, and hourly from there for as long as the run lasts. A detached
+# run says nothing between its launch and its end, so a two-hour build that went wrong
+# in its third minute is found out in its hundred-and-twentieth.
+#
+# The ramp widens the way the watcher's own backoff does, and for the same reason: so
+# does the cost of having been wrong for that long. Early on, a mistake is minutes of
+# cluster time and the gap should be small; four hours in, a bulletin every few minutes
+# would be noise charged against a turn each time. The hourly tail is the floor under
+# that — an overnight job stays answerable for without ever being chatty, where a
+# schedule that simply ran out would leave the longest runs, the ones with most to
+# lose, as silent as before.
+_CHECKIN_SCHEDULE = (30.0, 120.0, 600.0, 1800.0)
+_CHECKIN_INTERVAL = 3600.0
 
 
 @dataclass
@@ -1180,11 +1186,20 @@ class _AgentWorker:
         Called on every registration, and a no-op for all but the first of a wave: a job
         joining a cycle in flight inherits what is left of it rather than restarting the
         clock, which is what keeps three jobs launched together to one bulletin apiece
-        instead of three. A wave that ends entirely clears the slot, so the next launch
-        starts a fresh schedule.
+        instead of three.
+
+        What decides is whether this registration *starts* a wave — whether it is the
+        only live run of the conversation. The cycle cannot end on its own the instant
+        the last job does: its tail is hourly, so it is asleep for up to an hour after
+        a wave finishes, and a job launched into that gap would inherit the remainder
+        of a schedule that no longer describes anything and wait out the hour for its
+        first bulletin. A new wave therefore replaces the cycle rather than joining it.
         """
+        wave_starts = len(self.watched_job_keys()) <= 1
         if self._checkin_task is not None and not self._checkin_task.done():
-            return
+            if not wave_starts:
+                return
+            self._checkin_task.cancel()
         try:
             self._checkin_task = asyncio.get_running_loop().create_task(
                 self._checkin_cycle(session_id))
@@ -1199,17 +1214,20 @@ class _AgentWorker:
         self._checkin_task.add_done_callback(self._watcher_died)
 
     async def _checkin_cycle(self, session_id: str | None) -> None:
-        """Emit ``job_checkin`` at each point of ``_CHECKIN_SCHEDULE``, then stop.
+        """Emit ``job_checkin`` down ``_CHECKIN_SCHEDULE``, then hourly while runs last.
 
         Reports what the watchers have already seen — ``_Watch.status``, written by the
         poll that is running anyway — so a check-in costs no status traffic at all. The
         turn it may start is the only cost, and the session decides whether to spend it.
 
-        Ends early the moment this conversation has no live run left: past that the
-        completion wakes have landed and there is nothing to be reassured about.
+        Ends the moment this conversation has no live run left: past that the completion
+        wakes have landed and there is nothing to be reassured about. That is the only
+        thing that ends it — the tail does not run out — so an overnight run is still
+        answered for at hour six, where a schedule with a last point would have gone
+        quiet exactly where the stakes were highest.
         """
         try:
-            for delay in _CHECKIN_SCHEDULE:
+            for delay in chain(_CHECKIN_SCHEDULE, repeat(_CHECKIN_INTERVAL)):
                 await asyncio.sleep(delay)
                 jobs = [
                     {"job_key": key, "kind": w.descriptor.get("kind"),
@@ -1224,7 +1242,12 @@ class _AgentWorker:
                     "jobs":       jobs,
                 })
         finally:
-            self._checkin_task = None
+            # Only if the slot still holds *this* cycle. A new wave cancels the old one
+            # and puts its own task in the slot, and cancellation is delivered after
+            # that — so an unconditional clear here would erase the live cycle's
+            # reference and let the next launch start a second one beside it.
+            if self._checkin_task is asyncio.current_task():
+                self._checkin_task = None
 
     def watched_job_keys(self) -> list[str]:
         """Keys of the runs this conversation still has in flight.

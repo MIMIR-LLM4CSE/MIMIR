@@ -16,14 +16,17 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
-- A background run now reports in while it runs, 30 s then 2 min then 10 min after
-  the first one of a conversation was launched; past that the completion wake is
-  close enough to be the next word. MIMIR answers a check-in in one line when there
-  is nothing to say, and says what it is doing about it when there is — so a two-hour
-  build that went wrong in its third minute is found out in its fourth rather than
-  its hundred-and-twentieth. One schedule per conversation, not per job, so three
-  jobs launched together report together; the bulletins cost no polling of their own,
-  being built from what the watcher already saw.
+- A background run now reports in while it runs: 30 s, 2 min, 10 min and 30 min
+  after the first one of a conversation was launched, then once an hour for as long
+  as it lasts. MIMIR answers a check-in in one line when there is nothing to say, and
+  says what it is doing about it when there is — so a two-hour build that went wrong
+  in its third minute is found out in its fourth rather than its hundred-and-twentieth,
+  and an overnight run is still answered for at hour six. The gaps widen because the
+  cost of having been wrong for that long widens too; the hourly floor is there because
+  a schedule that simply ran out would go quiet exactly where the stakes are highest.
+  One schedule per conversation, not per job, so jobs launched together report
+  together; the bulletins cost no polling of their own, being built from what the
+  watcher already saw.
   - It never interrupts. While the conversation is busy or waiting on a card, the
     bulletin is held and the next one replaces it, so a long turn ends with one
     current status line instead of a backlog of stale ones — and the answer the user

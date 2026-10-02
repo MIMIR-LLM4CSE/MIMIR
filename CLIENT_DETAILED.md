@@ -946,12 +946,26 @@ it can know whether it will succeed, and every way it fails — a session delete
 store that will not write, an agent released out from under it — is a finished run reported
 to nobody. So each of those puts them back, `told` preserved, for the next flush to carry.
 
-**A run that says nothing for an hour is a run going wrong unseen.** Three check-ins break
-the silence, at 30s, then 2min, then 10min from the first launch (`_CHECKIN_SCHEDULE`), after
-which the completion wake is close enough to be the next word. One cycle per conversation,
-not per job: a worker *is* a conversation, so three jobs launched in one step share a
-schedule and report together. It costs no status traffic — each bulletin is built from
-`_Watch.status`, written by the poll the watcher is running anyway.
+**A run that says nothing for an hour is a run going wrong unseen.** Check-ins break the
+silence on a ramp — 30s, 2min, 10min, 30min from the first launch (`_CHECKIN_SCHEDULE`) —
+and hourly from there (`_CHECKIN_INTERVAL`) for as long as the run lasts. The ramp widens
+the way the watcher's own backoff does, and for the same reason: so does the cost of having
+been wrong for that long. The hourly tail is the floor under it, because a schedule with a
+last point goes quiet exactly where the stakes are highest — an overnight run is the one
+with most to lose from four more unreported hours. Nothing but the run ending stops the
+cycle. One cycle per conversation, not per job: a worker *is* a conversation, so jobs
+launched in one step share a schedule and report together. It costs no status traffic —
+each bulletin is built from `_Watch.status`, written by the poll the watcher is running
+anyway.
+
+Because that tail never runs out, a cycle can be asleep for an hour after its last job
+ended, so **a registration that starts a wave replaces the cycle rather than joining it** —
+otherwise a job launched into that gap would inherit the remainder of a schedule describing
+nothing and wait out the hour for its first bulletin. Starting a wave means being the
+conversation's only live run. The cycle clears its own slot on the way out only if the slot
+still holds *it*: cancellation lands after the replacement is installed, and an
+unconditional clear would erase the live cycle and let the next launch start a second one
+beside it.
 
 **A check-in never interrupts.** A wake carries a result the running turn needs; a bulletin
 carries "nothing to report", and steering that in makes the agent answer about the job

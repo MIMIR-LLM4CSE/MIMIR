@@ -1273,49 +1273,90 @@ class CheckinScheduleTests(unittest.IsolatedAsyncioTestCase):
             out.append(self.worker.out_q.get_nowait())
         return out
 
-    async def _run_cycle(self, session_id: str = "s1") -> list[float]:
-        """Run the cycle with sleeps recorded instead of waited. Returns the delays."""
+    async def _run_cycle(self, session_id: str = "s1", ticks: int = 6) -> list[float]:
+        """Run the cycle with sleeps recorded instead of waited. Returns the delays.
+
+        The schedule has no last point — it is hourly for as long as a run lasts — so
+        the harness is what ends it: after *ticks* the jobs are taken away, which is
+        the one thing that stops it in production too.
+        """
         slept: list[float] = []
 
         async def _sleep(delay: float) -> None:
             slept.append(delay)
+            if len(slept) >= ticks:
+                self.worker._bg_jobs.clear()
 
         from unittest import mock
         with mock.patch.object(self.ws_worker.asyncio, "sleep", _sleep):
             await self.worker._checkin_cycle(session_id)
         return slept
 
-    async def test_the_schedule_is_thirty_then_two_then_ten_minutes(self) -> None:
+    async def test_the_ramp_is_thirty_seconds_then_two_ten_and_thirty_minutes(self) -> None:
         self._watch("j1")
-        slept = await self._run_cycle()
-        self.assertEqual(slept, [30.0, 120.0, 600.0])
-        self.assertEqual(len(self._emitted()), 3, "one bulletin per scheduled point")
+        slept = await self._run_cycle(ticks=4)
+        self.assertEqual(slept, [30.0, 120.0, 600.0, 1800.0])
+        self.assertEqual(len(self._emitted()), 3, "one bulletin per point reached")
 
-    async def test_it_stops_after_the_last_point(self) -> None:
-        """Past the third, the completion wake is close enough to be the next word."""
+    async def test_then_it_reports_hourly_for_as_long_as_the_run_lasts(self) -> None:
+        """A schedule with a last point goes quiet exactly where the stakes are highest."""
         self._watch("j1")
-        await self._run_cycle()
-        self.assertEqual(len(self._emitted()), 3)
+        slept = await self._run_cycle(ticks=8)
+        self.assertEqual(slept[:4], [30.0, 120.0, 600.0, 1800.0])
+        self.assertEqual(slept[4:], [3600.0] * 4)
+
+    async def test_nothing_but_the_run_ending_stops_it(self) -> None:
+        self._watch("j1")
+        slept = await self._run_cycle(ticks=30)
+        self.assertEqual(len(slept), 30, "the tail must not run out on its own")
 
     async def test_one_cycle_covers_every_job_of_the_conversation(self) -> None:
         """Three jobs launched together are one bulletin apiece, not three."""
         self._watch("jA", {"state": "running", "phase": "compile", "percent": 40})
         self._watch("jB", {"state": "running"})
         self._watch("jC", {"state": "running"})
-        await self._run_cycle()
+        await self._run_cycle(ticks=4)
         events = self._emitted()
         self.assertEqual(len(events), 3)
         for ev in events:
             self.assertEqual({j["job_key"] for j in ev["jobs"]}, {"jA", "jB", "jC"})
 
-    async def test_a_second_job_joins_the_cycle_already_running(self) -> None:
-        """Its schedule is what is left of the first one's, not a new one."""
-        self._watch("jA")
-        running = asyncio.get_event_loop().create_task(asyncio.sleep(60))
-        self.addCleanup(running.cancel)
-        self.worker._checkin_task = running
+    def _cycle_in_flight(self) -> asyncio.Task:
+        task = asyncio.get_event_loop().create_task(asyncio.sleep(60))
+        self.addCleanup(task.cancel)
+        self.worker._checkin_task = task
+        return task
+
+    async def test_a_job_joining_a_live_wave_inherits_its_schedule(self) -> None:
+        """Three launched together are one bulletin apiece, not three a minute apart."""
+        self._watch("jA")                      # already running
+        running = self._cycle_in_flight()
+        self._watch("jB")                      # joins it
         self.worker._start_checkins("s1")
         self.assertIs(self.worker._checkin_task, running, "the clock was restarted")
+
+    async def test_a_new_wave_replaces_a_cycle_left_over_from_the_last_one(self) -> None:
+        """The tail is hourly, so a spent cycle can be asleep for an hour after its
+        last job ended. A job launched into that gap must not wait out the remainder."""
+        stale = self._cycle_in_flight()        # no live job: the wave is over
+        self._watch("jNew")
+        self.worker._start_checkins("s1")
+        self.assertIsNot(self.worker._checkin_task, stale)
+        self.addCleanup(self.worker._checkin_task.cancel)
+        await asyncio.sleep(0)                 # let the cancellation be delivered
+        self.assertTrue(stale.cancelled(), "the spent cycle was left running")
+
+    async def test_a_replaced_cycle_does_not_clear_the_live_one_on_its_way_out(self) -> None:
+        """Cancellation lands after the new task is in the slot."""
+        self._cycle_in_flight()
+        self._watch("jNew")
+        self.worker._start_checkins("s1")
+        live = self.worker._checkin_task
+        self.addCleanup(live.cancel)
+        await asyncio.sleep(0)                 # let the cancellation be delivered
+        await asyncio.sleep(0)
+        self.assertIs(self.worker._checkin_task, live,
+                      "the slot was emptied, so the next launch starts a second cycle")
 
     async def test_it_ends_early_once_nothing_is_running(self) -> None:
         """A wave that finished has said everything a bulletin could."""
