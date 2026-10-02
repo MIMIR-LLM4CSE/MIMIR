@@ -90,6 +90,10 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   An existing install keeps working until you run `install.sh` again.
 
 ### Changed
+- A finished background job's record now reads as one field per line instead of a
+  single line of JSON: the key and the state the wake already named are not repeated,
+  and each value is clipped on its own, so an 800-character command built out of
+  absolute paths no longer fills the whole message.
 - The context window the server reports now wins over the `MIMIR_VLLM_MAX_MODEL_LEN`
   / `MIMIR_RAY_MAX_MODEL_LEN` override. Those variables are the fallback for an
   endpoint that reports no `max_model_len`, not a value that supersedes one that

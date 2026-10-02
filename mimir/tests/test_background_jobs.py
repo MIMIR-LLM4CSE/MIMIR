@@ -811,6 +811,31 @@ class WakeTextTests(unittest.TestCase):
         self.assertIn("Built target sem-solver", out)     # its own result, passed through
         self.assertIn("exit_code", out)
 
+    def test_the_record_reads_as_lines_not_as_one_json_string(self) -> None:
+        # What a reconnect used to show: the whole status payload dumped as JSON on one
+        # line, most of it a command built out of absolute paths, with the job key and
+        # the state said twice — once in the head line and again inside the braces.
+        out = self._wake({
+            "job_key": "20261002T113840Z-1fd3", "kind": "shell-command", "state": "done",
+            "summary": {"status": "ok", "job_key": "20261002T113840Z-1fd3",
+                        "command": "python3 " + "/very/long/path/parse.py " * 40,
+                        "pid": 1245126, "elapsed_s": 340.2, "returncode": 0,
+                        "output": "DONE\n"},
+        })
+        self.assertIn("\n  returncode: 0", out)
+        self.assertIn("\n  elapsed_s: 340.2", out)
+        self.assertNotIn('{"status"', out)
+        # The key the head line already said is not repeated in the body.
+        self.assertEqual(out.count("20261002T113840Z-1fd3"), 1)
+        # And the one oversized field is clipped on its own, not by cutting the record.
+        self.assertIn("[cut:", out)
+        self.assertIn("output: DONE", out)
+
+    def test_a_multi_line_field_is_indented_under_its_key(self) -> None:
+        out = self._wake({"job_key": "j", "state": "done",
+                          "summary": {"log_tail": "line one\nline two"}})
+        self.assertIn("  log_tail:\n    line one\n    line two", out)
+
     def test_a_crashed_shell_job_carries_its_log_not_slurm_advice(self) -> None:
         out = self._wake({
             "job_key": "j", "kind": "shell-command", "state": "crashed", "server": "bash",

@@ -52,6 +52,14 @@ logger = logging.getLogger(__name__)
 # and the tail of a build log; short of pasting a whole test suite into the history.
 _WAKE_SUMMARY_LIMIT = 2000
 
+# Per field, so one long value — a command built out of absolute paths, a log tail —
+# cannot crowd the rest of the record out of the budget above.
+_WAKE_VALUE_LIMIT = 500
+
+# Fields the body leaves out: the head line of the wake already names the job and says
+# how it ended, and repeating that as JSON is what made these messages unreadable.
+_WAKE_SUMMARY_SKIP = frozenset({"job_key", "kind", "state"})
+
 # Events that must reach the user no matter which conversation they belong to: each
 # one is a question the agent is parked on, and filtering it as "foreign" (which it is,
 # during a background-job wake in another session) would leave the turn waiting on an
@@ -69,19 +77,65 @@ _INTERACTION_EVENTS = frozenset({"approval", "user_question", "prompt_expired"})
 _DURABLE_EVENTS = frozenset({"job_complete", "job_checkin"})
 
 
+def _clip(text: str) -> str:
+    """One field's value, cut in the middle so both of its ends survive.
+
+    Which end carries the meaning depends on the field — a command says it at the
+    front, a log tail at the back — and this layer does not know which it is holding.
+    """
+    if len(text) <= _WAKE_VALUE_LIMIT:
+        return text
+    head = _WAKE_VALUE_LIMIT * 2 // 3
+    tail = _WAKE_VALUE_LIMIT - head
+    return f"{text[:head]}… [cut: {len(text)} chars] …{text[-tail:]}"
+
+
+def _render_field(key: str, value: object) -> str:
+    """One recorded field as ``key: value``, or as an indented block when it has lines."""
+    if isinstance(value, (dict, list)):
+        try:
+            text = json.dumps(value, ensure_ascii=False, default=str)
+        except (TypeError, ValueError):
+            text = str(value)
+    else:
+        text = str(value)
+    text = _clip(text).strip("\n")
+    if "\n" in text:
+        body = "\n".join(f"    {line}" for line in text.splitlines())
+        return f"  {key}:\n{body}"
+    return f"  {key}: {text}"
+
+
 def _compact_summary(payload: dict) -> str:
-    """A job's recorded result, as one line of JSON, cut to a budget.
+    """A job's recorded result, as one field per line, cut to a budget.
 
     Passed through rather than interpreted: the client does not know what kind of job
-    ran, so it hands the model what the server recorded instead of paraphrasing it.
+    ran, so it hands the model what the server recorded, under the server's own field
+    names. What it chooses is the shape — lines instead of a single JSON string, each
+    value clipped on its own — because a wake is read by a person as well as a model,
+    and one 800-character command should not be the whole of what either sees.
     """
+    lines: list[str] = []
+    budget = _WAKE_SUMMARY_LIMIT
+    dropped = 0
+    for key, value in payload.items():
+        if key in _WAKE_SUMMARY_SKIP or value is None or value == "":
+            continue
+        line = _render_field(key, value)
+        if lines and len(line) + 1 > budget:
+            dropped += 1
+            continue
+        budget -= len(line) + 1
+        lines.append(line)
+    if dropped:
+        lines.append(f"  [{dropped} more field(s) not shown]")
+    if lines:
+        return "\n".join(lines)
+    # Everything it recorded was something the head line already said.
     try:
-        text = json.dumps(payload, ensure_ascii=False, default=str)
+        return _clip(json.dumps(payload, ensure_ascii=False, default=str))
     except (TypeError, ValueError):
-        text = str(payload)
-    if len(text) <= _WAKE_SUMMARY_LIMIT:
-        return text
-    return f"{text[:_WAKE_SUMMARY_LIMIT]}… [cut: {len(text)} chars in all]"
+        return _clip(str(payload))
 
 
 def _reconcile(messages: list[dict]) -> list[dict]:
