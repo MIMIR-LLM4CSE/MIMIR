@@ -42,6 +42,30 @@ export function loadSiteConfig(
 }
 
 /**
+ * Combine the `mimir.releaseHome` setting with the site.json value into the
+ * release root to probe, before any filesystem check.
+ *
+ * An explicitly set, non-empty setting wins. Otherwise the deployment's
+ * site.json is used. Empty and unset are the same thing here — and that is the
+ * fix: the setting declares `""` as its default, so VS Code hands back `""`
+ * (not undefined) for every user who never touched it. `??` treats that empty
+ * string as a real value and site.json was never consulted — the whole
+ * shared-release mode (interpreter resolution and self-update) was dead for
+ * everyone but the users who had set the path by hand.
+ *
+ * Disabling the shared-release mode is still possible: point the setting at a
+ * path without a `current` release — the existence probe in the caller is what
+ * actually decides.
+ */
+export function resolveReleaseRoot(
+  configured: string | undefined,
+  fromSite: string | undefined
+): string {
+  const explicit = (configured ?? "").trim();
+  return (explicit || fromSite || "").replace(/\/+$/, "");
+}
+
+/**
  * Compare two dotted numeric versions ("1.0.0" vs "1.2.0"), left to right.
  * Returns a negative number when `a < b`, 0 when equal, positive when `a > b`.
  * A leading "v" is ignored; a missing segment counts as 0; a non-numeric

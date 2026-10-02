@@ -15,6 +15,27 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.1.2] — 2026-10-02
+
+### Fixed
+- The shared-release mode was dead for every user who had not set
+  `mimir.releaseHome` by hand — which is all of them. The setting declares `""`
+  as its default, so VS Code returns `""` (not *unset*) for it, and the
+  resolution used `??`, which keeps an empty string as a value: the deployment's
+  `site.json` was never consulted, `releaseRoot()` was always empty, and the
+  interpreter fell through to `python3` from the extension host's PATH — on a
+  Remote-SSH login shell, whatever python the user's profile puts there. The
+  same dead root also disabled the extension's self-update, so no release ever
+  reached an installed extension and reloading the window changed nothing.
+  Empty and unset are now the same thing — both fall back to `site.json` — and
+  an explicit setting still wins. Disabling the mode remains possible by
+  pointing the setting at a path without a `current` release.
+- The setting precedence lives in `resolveReleaseRoot` (release.ts), a plain
+  function with regression tests — the bug sat in vscode glue that no test
+  exercised, and the shipped bundle validated only against a mock whose
+  `get()` returned *undefined* for an untouched setting, where the real one
+  returns the declared default.
+
 ## [1.1.1] — 2026-10-02
 
 ### Fixed

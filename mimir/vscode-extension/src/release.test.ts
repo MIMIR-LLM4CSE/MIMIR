@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { compareVersions, loadSiteConfig } from "./release";
+import { compareVersions, loadSiteConfig, resolveReleaseRoot } from "./release";
 
 describe("compareVersions", () => {
   it("orders identical versions as equal", () => {
@@ -57,5 +57,31 @@ describe("loadSiteConfig", () => {
 
   it("does not fall back to a default when the file is absent (generic distribution)", () => {
     expect(loadSiteConfig("/opt/mimir", read(""))).toBeNull();
+  });
+});
+
+describe("resolveReleaseRoot", () => {
+  it("falls back to site.json when the setting holds its declared default (\"\")", () => {
+    // VS Code returns the declared default — "" — for every user who never
+    // touched mimir.releaseHome. This is the 1.1.1 bug: ?? kept that "" and
+    // site.json was never consulted.
+    expect(resolveReleaseRoot("", "/shared/mimir")).toBe("/shared/mimir");
+  });
+
+  it("falls back to site.json when the setting is unset (undefined)", () => {
+    expect(resolveReleaseRoot(undefined, "/shared/mimir")).toBe("/shared/mimir");
+  });
+
+  it("lets an explicit setting win over site.json", () => {
+    expect(resolveReleaseRoot("/other/release", "/shared/mimir")).toBe("/other/release");
+  });
+
+  it("yields an empty root when neither source has a path", () => {
+    expect(resolveReleaseRoot("", undefined)).toBe("");
+    expect(resolveReleaseRoot(undefined, undefined)).toBe("");
+  });
+
+  it("trims whitespace and trailing slashes before the existence probe", () => {
+    expect(resolveReleaseRoot("  /shared/mimir/  ", undefined)).toBe("/shared/mimir");
   });
 });
