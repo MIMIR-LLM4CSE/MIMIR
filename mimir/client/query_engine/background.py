@@ -57,6 +57,96 @@ def _detect_background_job(name: str, result_text: str, agent: Any) -> dict | No
     return descriptor if isinstance(descriptor, dict) else None
 
 
+def _detect_rewatchable_jobs(name: str, result_text: str, agent: Any) -> list[dict]:
+    """Descriptors of runs a tool result says are still in flight.
+
+    Shape-driven, and with no capability gate at all — like
+    ``_maybe_emit_open_editor`` and unlike ``_detect_background_job``. The tools that
+    answer this way are readers: ``BACKGROUNDABLE`` says a tool *launches* a detached
+    run, and hanging it on a status op to make a key readable would say something about
+    those tools that is not true. What is actually being recognised is the payload, so
+    the payload is what is checked.
+
+    The plural key, and the distinction from ``background_job`` is the point rather
+    than a convenience. Singular means *this call launched it*: the row it belongs to
+    is a run, not a read, and a client with no watcher has to wait it out in-turn.
+    Plural means *these are still going* — the answer a status op gives about work some
+    earlier call started. Nothing about the row changes, and nothing is awaited; the
+    only thing to do with them is put a watcher back on them.
+
+    That is what makes "where is the job at?" the gesture that restores tracking after
+    an agent restart took the watchers with it. The runs are untouched on disk the whole
+    time; it is only the promise to report them that has to be re-made, and asking is
+    the one moment a person has said they still care.
+
+    Each entry must name the op a watcher would poll and the job it speaks for. That is
+    the whole trust boundary, and it is enough of one: what registration buys is a
+    read-only poll of a named tool, which a descriptor missing either of those cannot
+    even start — ``_watch_job`` drops a watch with no ``status_op`` tool, and five
+    unreadable replies retire one whose op answers nothing it understands.
+    """
+    payload = parse_tool_payload(result_text) if isinstance(result_text, str) else None
+    if not isinstance(payload, dict):
+        return []
+    found = payload.get("background_jobs")
+    if not isinstance(found, list):
+        return []
+    return [d for d in found if _is_rewatchable(d)]
+
+
+def _is_rewatchable(descriptor: Any) -> bool:
+    """Whether *descriptor* names a run a watcher could actually poll."""
+    if not isinstance(descriptor, dict):
+        return False
+    if not (descriptor.get("job_key") or descriptor.get("run_dir")):
+        return False
+    status_op = descriptor.get("status_op")
+    return isinstance(status_op, dict) and bool(status_op.get("tool"))
+
+
+def _maybe_rewatch_background_jobs(name: str, result_text: str, agent: Any) -> str:
+    """Put watchers back on the in-flight runs a status result reported.
+
+    Silent about the ones already watched: the hook dedups on ``job_key`` and reports
+    success either way, so the note names what was re-armed only when that is news.
+    """
+    descriptors = _detect_rewatchable_jobs(name, result_text, agent)
+    if not descriptors:
+        return result_text
+    hook = getattr(agent, "_register_background_job", None)
+    if not hook:
+        return result_text   # CLI: no watcher to re-arm, and nothing was promised
+    known = set()
+    watched = getattr(agent, "_watched_background_jobs", None)
+    if callable(watched):
+        try:
+            known = {str(d.get("job_key") or d.get("run_dir") or "")
+                     for d in (watched() or []) if isinstance(d, dict)}
+        except Exception:
+            known = set()
+    rearmed = []
+    for descriptor in descriptors:
+        job_key = str(descriptor.get("job_key") or descriptor.get("run_dir") or "")
+        if job_key in known:
+            continue
+        try:
+            if hook(descriptor):
+                rearmed.append(job_key)
+        except Exception:
+            logger.warning("re-watch registration raised for job %r", job_key,
+                           exc_info=True)
+    if not rearmed:
+        return result_text
+    keys = ", ".join(f"'{k}'" for k in rearmed)
+    note = (
+        f"\n\n[background] Now tracking {keys} again. A watcher resumes you "
+        "automatically when each one finishes, so do NOT poll their status and do NOT "
+        "sleep waiting for them. Carry on with whatever else there is to do, or end "
+        "your turn saying what you are waiting for."
+    )
+    return result_text + note
+
+
 def _maybe_register_background_job(
     name: str, result_text: str, agent: Any, descriptor: dict | None = None,
 ) -> tuple[str, bool]:

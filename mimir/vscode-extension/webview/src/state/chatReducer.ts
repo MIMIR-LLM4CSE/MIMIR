@@ -588,6 +588,22 @@ export function createChatReducer(makeId: () => string) {
         };
       }
 
+      // A bulletin on runs that are still going. It settles nothing — the rows it
+      // describes are still running, which is the whole news — so unlike a wake it
+      // touches no tool call. All it can do is mark the chat busy for the short turn
+      // it may have started, for the same reason as above: nobody pressed send, and
+      // without this there is no stop button for a turn that is running.
+      case "job_checkin": {
+        if (!action.resumes_active_session) return state;
+        return {
+          ...state,
+          busy: true,
+          liveThinkingBlocks: [],
+          liveToolCalls: [],
+          toolCallAfterToken: true,
+        };
+      }
+
       // ── Server messages ────────────────────────────────────────────────────
       case "output":
       case "status": {

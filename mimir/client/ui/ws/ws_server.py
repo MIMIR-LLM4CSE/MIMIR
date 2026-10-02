@@ -71,6 +71,21 @@ Protocol — all messages are JSON objects, one per send/recv:
                                                        # the same, for a run already
                                                        # detached — from the watcher
                                                        # that polls it
+    {"type": "job_checkin",    "jobs": [{"job_key": "...", "state": "running",
+                               "phase": "...", "percent": 0.0}],
+                               "resumes_active_session": false}
+                                                       # a bulletin on runs still going,
+                                                       # 30s / 2min / 10min after the
+                                                       # first launch. Settles no row:
+                                                       # the news is that they are still
+                                                       # there
+    {"type": "job_complete",   "job_key": "...", "state": "done", "summary": {...},
+                               "resumes_active_session": false}
+                                                       # a detached run reached a
+                                                       # terminal state. The flag says a
+                                                       # turn is starting in THIS
+                                                       # conversation, which the client
+                                                       # cannot work out for itself
     {"type": "answer",         "text": "..."}          # final answer for a query
     {"type": "todo",           "items": [{"text": "...", "done": false}]}
     {"type": "error",          "text": "..."}

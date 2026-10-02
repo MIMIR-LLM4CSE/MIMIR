@@ -25,8 +25,10 @@ import logging
 import os
 import queue as _queue
 import threading
+import time
 import uuid
-from typing import Any, NamedTuple
+from dataclasses import dataclass, field
+from typing import Any
 
 from ... import human_pause
 from ...tool_execution.formatter import parse_tool_payload
@@ -55,17 +57,35 @@ def _direct_opener():
 # intervals, so a single transient failure never trips it.
 _UNREADABLE_POLL_LIMIT = 5
 
+# When a background check-in fires, as seconds from the one before it (so T+30s, T+150s,
+# T+750s from the first launch). A detached run says nothing between its launch and its
+# end, and a two-hour build that went wrong in its third minute is found out in its
+# hundred-and-twentieth. These three break that silence early, then twice more while
+# being wrong is still cheap to act on; past the last one the completion wake is close
+# enough that another bulletin would only cost a turn. Cumulative on purpose — the
+# intervals widen the way the watcher's own backoff does, because so does the cost of
+# having been wrong for that long.
+_CHECKIN_SCHEDULE = (30.0, 120.0, 600.0)
 
-class _Watch(NamedTuple):
+
+@dataclass
+class _Watch:
     """A live background-job watcher: the polling task, and what it is watching.
 
     The descriptor is kept next to the task because the dispatch guard compares an
     incoming call against the *job's own* ``status_op`` — registry data travelling on
     the descriptor, the same reason the watcher itself can poll generically. Holding
     only the task would have forced the guard to name a tool.
+
+    ``status`` is the last thing the poll learned — ``{state, phase, percent, at}``,
+    whatever the status op chose to report, shape-driven like everything else here. A
+    check-in reads it instead of polling again: the watcher is already asking, once a
+    tick, and a second asker would double every run's status traffic to say what the
+    first one already knows. It has to be mutable, which is what a dataclass buys here.
     """
     task: asyncio.Task
     descriptor: dict
+    status: dict = field(default_factory=dict)
 
 
 def _first_line(value: Any) -> str:
@@ -171,6 +191,11 @@ class _AgentWorker:
         # detached run to completion. Registered by the agent loop via _register_bg_job
         # (below) and read back by _watched_bg_jobs, which the dispatch guard uses.
         self._bg_jobs: dict[str, _Watch] = {}
+        # The check-in cycle covering every job of this conversation, or None between
+        # waves. One per worker rather than one per job: a worker *is* a conversation,
+        # so three jobs launched in the same step share a schedule and report together
+        # instead of waking it three times a minute apart.
+        self._checkin_task: asyncio.Task | None = None
         # Set by the front-end when the user leaves a conversation whose turn is parked
         # on them: every wait of that turn returns at once instead (query_engine.deferral).
         self._defer = threading.Event()
@@ -1126,8 +1151,89 @@ class _AgentWorker:
             logger.warning("background-job registration failed for %r: no running "
                            "event loop to host the watcher", job_key, exc_info=True)
             return False
+        task.add_done_callback(self._watcher_died)
         self._bg_jobs[job_key] = _Watch(task, descriptor)
+        logger.info("background job %r of session %s is now watched by %r",
+                    job_key, session_id, (descriptor.get("status_op") or {}).get("tool"))
+        self._start_checkins(session_id)
         return True
+
+    @staticmethod
+    def _watcher_died(task: asyncio.Task) -> None:
+        """Report a watcher or check-in cycle that ended on an exception.
+
+        Nothing awaits these tasks, so an exception escaping one is held until the GC
+        notices and prints "Task exception was never retrieved" — long after the run it
+        was holding finished into silence. The failure and the missing wake are the same
+        event, and this is the only place they can be named together.
+        """
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is not None:
+            logger.warning("background-job task died: %r — any run it was holding will "
+                           "not wake anyone", exc, exc_info=exc)
+
+    def _start_checkins(self, session_id: str | None) -> None:
+        """Begin a check-in cycle for this conversation, unless one is already running.
+
+        Called on every registration, and a no-op for all but the first of a wave: a job
+        joining a cycle in flight inherits what is left of it rather than restarting the
+        clock, which is what keeps three jobs launched together to one bulletin apiece
+        instead of three. A wave that ends entirely clears the slot, so the next launch
+        starts a fresh schedule.
+        """
+        if self._checkin_task is not None and not self._checkin_task.done():
+            return
+        try:
+            self._checkin_task = asyncio.get_running_loop().create_task(
+                self._checkin_cycle(session_id))
+        except RuntimeError:
+            # Same precondition as the watcher's, and the same honesty: without a loop
+            # there are no check-ins, and the run is still watched. Not a failure of the
+            # registration — the completion wake does not depend on this.
+            logger.warning("background check-ins unavailable for session %s: no running "
+                           "event loop to host the cycle", session_id)
+            self._checkin_task = None
+            return
+        self._checkin_task.add_done_callback(self._watcher_died)
+
+    async def _checkin_cycle(self, session_id: str | None) -> None:
+        """Emit ``job_checkin`` at each point of ``_CHECKIN_SCHEDULE``, then stop.
+
+        Reports what the watchers have already seen — ``_Watch.status``, written by the
+        poll that is running anyway — so a check-in costs no status traffic at all. The
+        turn it may start is the only cost, and the session decides whether to spend it.
+
+        Ends early the moment this conversation has no live run left: past that the
+        completion wakes have landed and there is nothing to be reassured about.
+        """
+        try:
+            for delay in _CHECKIN_SCHEDULE:
+                await asyncio.sleep(delay)
+                jobs = [
+                    {"job_key": key, "kind": w.descriptor.get("kind"),
+                     "server": w.descriptor.get("server"), **w.status}
+                    for key, w in self._bg_jobs.items() if not w.task.done()
+                ]
+                if not jobs:
+                    return
+                self.out_q.put({
+                    "type":       "job_checkin",
+                    "session_id": session_id,
+                    "jobs":       jobs,
+                })
+        finally:
+            self._checkin_task = None
+
+    def watched_job_keys(self) -> list[str]:
+        """Keys of the runs this conversation still has in flight.
+
+        What the session asks before delivering a check-in it held back: a bulletin on
+        runs that have since finished is worse than none, their completion wakes having
+        already said more than it could.
+        """
+        return [k for k, w in self._bg_jobs.items() if not w.task.done()]
 
     def _watched_bg_jobs(self) -> list[dict]:
         """Descriptors of the runs a watcher is currently holding (the agent's hook).
@@ -1207,6 +1313,14 @@ class _AgentWorker:
                 percent = (payload or {}).get("percent")
                 if not isinstance(percent, (int, float)):
                     percent = None
+                # What a check-in reports, written by the poll that is running anyway.
+                # The state goes with it: "running" and "its status stopped being
+                # readable" are the two things a bulletin most needs to tell apart, and
+                # only this loop knows which one it is looking at.
+                watch = self._bg_jobs.get(job_key)
+                if watch is not None:
+                    watch.status = {"state": state or "unreadable", "phase": phase,
+                                    "percent": percent, "at": time.monotonic()}
                 # Starts at ("", None), so a run that never reports is never sent,
                 # while one whose count disappears is — a retraction is news too.
                 if (phase, percent) != last_reported:
@@ -1239,10 +1353,18 @@ class _AgentWorker:
                 raw = await self._agent._run_tool(
                     summary_tool, dict(summary_op.get("args") or {}),
                     record_observations=False)
-                summary = json.loads(raw) if isinstance(raw, str) else (raw or {})
+                # parse_tool_payload for the same reason the status tick uses it: a
+                # tool result is an envelope, its text blocks and any annotation
+                # appended after them, and a bare load reads that as one broken
+                # document. A summary lost here reaches the model as "it recorded no
+                # result of its own" — the wake still lands, emptied of the thing it
+                # was carrying.
+                summary = parse_tool_payload(raw) if isinstance(raw, str) else (raw or {})
             except Exception:
                 summary = {}
 
+        logger.info("background job %r of session %s finished (%s); waking it",
+                    job_key, session_id, state)
         self.out_q.put({
             "type":       "job_complete",
             "job_key":    job_key,
@@ -1698,10 +1820,14 @@ class _AgentWorker:
         return events
 
     def shutdown(self) -> None:
-        # Cancel any in-flight background-job watchers on the worker loop.
-        for watch in list(self._bg_jobs.values()):
-            if self._loop is not None and not watch.task.done():
-                self._loop.call_soon_threadsafe(watch.task.cancel)
+        # Cancel any in-flight background-job watchers, and the check-in cycle over
+        # them, on the worker loop.
+        tasks = [w.task for w in self._bg_jobs.values()]
+        if self._checkin_task is not None:
+            tasks.append(self._checkin_task)
+        for task in tasks:
+            if self._loop is not None and not task.done():
+                self._loop.call_soon_threadsafe(task.cancel)
         self._query_q.put(None)
         self._query_event.set()
 

@@ -16,6 +16,25 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- A background run now reports in while it runs, 30 s then 2 min then 10 min after
+  the first one of a conversation was launched; past that the completion wake is
+  close enough to be the next word. MIMIR answers a check-in in one line when there
+  is nothing to say, and says what it is doing about it when there is — so a two-hour
+  build that went wrong in its third minute is found out in its fourth rather than
+  its hundred-and-twentieth. One schedule per conversation, not per job, so three
+  jobs launched together report together; the bulletins cost no polling of their own,
+  being built from what the watcher already saw.
+  - It never interrupts. While the conversation is busy or waiting on a card, the
+    bulletin is held and the next one replaces it, so a long turn ends with one
+    current status line instead of a backlog of stale ones — and the answer the user
+    asked for is never derailed into a report about a job. A bulletin whose runs have
+    since finished is dropped: their own wakes say more.
+- Asking where a run is at puts a watcher back on it. Watchers live on the agent that
+  made them and do not survive it being restarted — which reloading the editor window
+  is enough to cause — while the run itself carries on, indifferent. The status ops
+  now answer with the tracking handle as well as the state, so one question restores
+  the tracking of every run still going; opening a conversation whose runs nothing is
+  watching says so in a line, and leaves the asking to you.
 - Conversations run at the same time, one agent each. Leaving a conversation now
   leaves its turn running instead of cancelling it (or deferring it when it was
   parked on a question), and its output goes to its own transcript, so coming back
@@ -75,6 +94,31 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   escape-hatch value.
 
 ### Fixed
+- A finished background job no longer wakes the wrong conversation, or none at all.
+  Where the job's own conversation was not the one on screen, the wake was submitted
+  to the agent of whichever conversation *was* — running the turn behind that one's
+  work, or, where it had no agent yet, onto a queue no loop reads, which lost the run
+  silently. It is now resolved through the pool by the session that launched the job,
+  the way the steer path already was.
+- A wake survives the ways its delivery can fail. The flush took wakes off the pending
+  map before it could know whether the turn would start, so a session deleted under
+  it, a store that would not write, or an agent released out from under it each turned
+  a finished run into one reported to nobody. All three now put the wake back.
+- Reconnecting no longer throws away a job that finished while nothing was connected.
+  The purge of a previous connection's debris emptied every idle agent's queue, and a
+  completion wake sits on exactly such a queue — idle being what a conversation
+  waiting for a build looks like. Jobs events are kept and put back, the rest is
+  counted in the log. For the same reason the drain loop now handles one before it
+  sends it: the event has already left the queue, and a socket dying on the send took
+  the wake with it.
+- A background watcher that dies on an exception says so, instead of surfacing hours
+  later as "Task exception was never retrieved" with no sign of the run it was
+  holding. A watcher's start and the wake it emits are logged too — the mechanism was
+  silent end to end, and the only way to audit it was to notice a job with an exit
+  code on disk and no `job_wake` in the transcript.
+- A finished job's summary is parsed the way every other tool result is, so an
+  annotation appended after its JSON no longer empties the wake into "it recorded no
+  result of its own".
 - Reopening a conversation no longer costs it history. The pre-query budget check ran
   before the agent existed, so it read the context mode off a conversation that had
   none and sized the window at compact's 32k: a resumed session showed the bar

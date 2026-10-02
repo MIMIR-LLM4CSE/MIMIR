@@ -870,12 +870,13 @@ class _FakeWS:
 class _FakeWorker:
     """Records submitted turns, the way _AgentWorker's query queue would."""
 
-    def __init__(self) -> None:
+    def __init__(self, watching: list[str] | None = None) -> None:
         self.submitted: list[tuple] = []
         self.steered: list[str] = []
         self._query_session_id = None
         self._agent = types.SimpleNamespace(context_mode="flat")
         self.model = "test-model"
+        self.watching = list(watching or [])
 
     def submit_query(self, text, history, session_id=None) -> None:
         self.submitted.append((text, list(history), session_id))
@@ -889,6 +890,9 @@ class _FakeWorker:
 
     def is_busy(self) -> bool:
         return self._query_session_id is not None
+
+    def watched_job_keys(self) -> list[str]:
+        return list(self.watching)
 
 
 class DetachedSessionResumeTests(unittest.TestCase):
@@ -1231,3 +1235,472 @@ class WakeCoalescingTests(unittest.TestCase):
         self.assertEqual(self.worker.steered, [], "that turn is not its conversation")
         self.assertEqual(len(self.worker.submitted), 1)
         self.assertEqual(self.worker.submitted[0][2], other.id)
+
+
+# ── 10. The check-in cycle: a run that says nothing is a run going wrong unseen ──
+
+class CheckinScheduleTests(unittest.IsolatedAsyncioTestCase):
+    """A detached run is silent between its launch and its end.
+
+    Three bulletins break that silence while being wrong is still cheap to act on.
+    They are emitted from what the watcher has already seen, so they cost no status
+    traffic at all — only the short turn the session may spend on them.
+    """
+
+    def setUp(self) -> None:
+        from mimir.client.ui.ws import ws_worker
+        self.ws_worker = ws_worker
+        self.worker = object.__new__(ws_worker._AgentWorker)
+        self.worker._bg_jobs = {}
+        self.worker._checkin_task = None
+        self.worker.out_q = __import__("queue").Queue()
+
+    def _watch(self, key: str, status: dict | None = None, done: bool = False):
+        """A watcher entry. ``_checkin_cycle`` asks its task only whether it is done."""
+        task = asyncio.get_event_loop().create_future()
+        if done:
+            task.set_result(None)
+        else:
+            self.addCleanup(task.cancel)
+        watch = self.ws_worker._Watch(task, {"job_key": key, "kind": "shell-command"},
+                                      status or {"state": "running"})
+        self.worker._bg_jobs[key] = watch
+        return watch
+
+    def _emitted(self) -> list[dict]:
+        out = []
+        while not self.worker.out_q.empty():
+            out.append(self.worker.out_q.get_nowait())
+        return out
+
+    async def _run_cycle(self, session_id: str = "s1") -> list[float]:
+        """Run the cycle with sleeps recorded instead of waited. Returns the delays."""
+        slept: list[float] = []
+
+        async def _sleep(delay: float) -> None:
+            slept.append(delay)
+
+        from unittest import mock
+        with mock.patch.object(self.ws_worker.asyncio, "sleep", _sleep):
+            await self.worker._checkin_cycle(session_id)
+        return slept
+
+    async def test_the_schedule_is_thirty_then_two_then_ten_minutes(self) -> None:
+        self._watch("j1")
+        slept = await self._run_cycle()
+        self.assertEqual(slept, [30.0, 120.0, 600.0])
+        self.assertEqual(len(self._emitted()), 3, "one bulletin per scheduled point")
+
+    async def test_it_stops_after_the_last_point(self) -> None:
+        """Past the third, the completion wake is close enough to be the next word."""
+        self._watch("j1")
+        await self._run_cycle()
+        self.assertEqual(len(self._emitted()), 3)
+
+    async def test_one_cycle_covers_every_job_of_the_conversation(self) -> None:
+        """Three jobs launched together are one bulletin apiece, not three."""
+        self._watch("jA", {"state": "running", "phase": "compile", "percent": 40})
+        self._watch("jB", {"state": "running"})
+        self._watch("jC", {"state": "running"})
+        await self._run_cycle()
+        events = self._emitted()
+        self.assertEqual(len(events), 3)
+        for ev in events:
+            self.assertEqual({j["job_key"] for j in ev["jobs"]}, {"jA", "jB", "jC"})
+
+    async def test_a_second_job_joins_the_cycle_already_running(self) -> None:
+        """Its schedule is what is left of the first one's, not a new one."""
+        self._watch("jA")
+        running = asyncio.get_event_loop().create_task(asyncio.sleep(60))
+        self.addCleanup(running.cancel)
+        self.worker._checkin_task = running
+        self.worker._start_checkins("s1")
+        self.assertIs(self.worker._checkin_task, running, "the clock was restarted")
+
+    async def test_it_ends_early_once_nothing_is_running(self) -> None:
+        """A wave that finished has said everything a bulletin could."""
+        self._watch("j1", done=True)
+        slept = await self._run_cycle()
+        self.assertEqual(slept, [30.0], "it stops at the first point that finds nothing")
+        self.assertEqual(self._emitted(), [])
+
+    async def test_the_cycle_clears_its_slot_when_it_ends(self) -> None:
+        """So the next wave of jobs starts a fresh schedule rather than none."""
+        self._watch("j1")
+        await self._run_cycle()
+        self.assertIsNone(self.worker._checkin_task)
+
+    async def test_it_reports_what_the_watcher_already_saw(self) -> None:
+        """No second poll: the watcher is asking once a tick as it is."""
+        self._watch("j1", {"state": "running", "phase": "linking", "percent": 90})
+        await self._run_cycle()
+        job = self._emitted()[0]["jobs"][0]
+        self.assertEqual(job["phase"], "linking")
+        self.assertEqual(job["percent"], 90)
+        self.assertEqual(job["state"], "running")
+
+
+class CheckinDeliveryTests(unittest.TestCase):
+    """A bulletin never interrupts the work the user is waiting on.
+
+    A completion wake carries a result the running turn needs. A check-in carries
+    "nothing to report", and steering that into a turn makes the agent answer about
+    the job instead of the question it was asked.
+    """
+
+    def setUp(self) -> None:
+        import shutil
+        import tempfile
+        from unittest import mock
+        from mimir.client.ui.ws import session_store, transcript_log
+        from mimir.client.ui.ws.ws_session import _Session
+
+        self._tmp = tempfile.mkdtemp(prefix="mimir-checkin-")
+        self.addCleanup(shutil.rmtree, self._tmp, ignore_errors=True)
+        for target, attr in ((session_store, "STATE_DIR"), (transcript_log, "_MIMIR_DIR_WS")):
+            patcher = mock.patch.object(target, attr, self._tmp)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+        self.ws, self.worker = _FakeWS(), _FakeWorker(watching=["j1"])
+        self.session = _Session(self.ws, FakePool(self.worker))
+        self.here = self.session.store.new_session()
+        self.here.llm_history = [{"role": "user", "content": "build it"}]
+        self.here.llm_history_full = list(self.here.llm_history)
+        self.session.store.save_session(self.here)
+        self.session._active_session_id = self.here.id
+        self.session.history = list(self.here.llm_history)
+        self.session.history_full = list(self.here.llm_history)
+        self.session._display_messages = []
+        self.session._submitted_len = 1
+
+    def _event(self, *keys: str) -> dict:
+        return {"type": "job_checkin", "session_id": self.here.id,
+                "jobs": [{"job_key": k, "kind": "shell-command", "state": "running",
+                          "phase": "compile", "percent": 40} for k in (keys or ("j1",))]}
+
+    def _busy(self, on: str | None) -> None:
+        self.worker._query_session_id = on
+
+    def test_an_idle_conversation_gets_its_short_turn(self) -> None:
+        started = asyncio.run(self.session._handle_job_checkin(self._event()))
+        self.assertTrue(started)
+        self.assertEqual(len(self.worker.submitted), 1)
+        text = self.worker.submitted[0][0]
+        self.assertIn("j1", text)
+        self.assertIn("ONE short line", text)
+        self.assertEqual(self.worker.steered, [])
+
+    def test_a_busy_conversation_is_never_steered(self) -> None:
+        self._busy(self.here.id)
+        started = asyncio.run(self.session._handle_job_checkin(self._event()))
+        self.assertFalse(started)
+        self.assertEqual(self.worker.steered, [], "a bulletin is not worth a derail")
+        self.assertEqual(self.worker.submitted, [])
+        self.assertIn(self.here.id, self.session._held_checkin)
+
+    def test_a_parked_conversation_is_never_steered(self) -> None:
+        """The card is waiting on a person, not on a status line."""
+        self.worker._pending_prompt = {"type": "approval"}
+        started = asyncio.run(self.session._handle_job_checkin(self._event()))
+        self.assertFalse(started)
+        self.assertEqual(self.worker.submitted, [])
+        self.assertIn(self.here.id, self.session._held_checkin)
+
+    def test_the_held_bulletin_lands_after_the_answer(self) -> None:
+        self._busy(self.here.id)
+        asyncio.run(self.session._handle_job_checkin(self._event()))
+        self._busy(None)
+        asyncio.run(self.session._flush_held_checkin(self.here.id))
+        self.assertEqual(len(self.worker.submitted), 1)
+        self.assertIn("j1", self.worker.submitted[0][0])
+
+    def test_only_the_freshest_held_bulletin_survives(self) -> None:
+        """A long turn ends with one current status line, not a backlog of stale ones."""
+        self._busy(self.here.id)
+        asyncio.run(self.session._handle_job_checkin(self._event("jOld")))
+        asyncio.run(self.session._handle_job_checkin(self._event("jNew")))
+        self._busy(None)
+        asyncio.run(self.session._flush_held_checkin(self.here.id))
+        self.assertEqual(len(self.worker.submitted), 1)
+        self.assertIn("jNew", self.worker.submitted[0][0])
+        self.assertNotIn("jOld", self.worker.submitted[0][0])
+
+    def test_a_held_bulletin_is_dropped_once_the_job_has_finished(self) -> None:
+        """Its completion wake says everything this would have, and more."""
+        self._busy(self.here.id)
+        asyncio.run(self.session._handle_job_checkin(self._event()))
+        self._busy(None)
+        self.worker.watching = []           # the watcher let it go: the run is over
+        asyncio.run(self.session._flush_held_checkin(self.here.id))
+        self.assertEqual(self.worker.submitted, [])
+
+    def test_a_pending_wake_supersedes_a_held_bulletin(self) -> None:
+        self._busy(self.here.id)
+        asyncio.run(self.session._handle_job_checkin(self._event()))
+        self._busy(None)
+        self.session._pending_wakes[self.here.id] = [{"ev": {}, "told": False}]
+        asyncio.run(self.session._flush_held_checkin(self.here.id))
+        self.assertEqual(self.worker.submitted, [])
+
+    def test_the_transcript_tells_a_bulletin_from_a_wake(self) -> None:
+        """``job_wake`` is counted against the jobs that recorded an exit code."""
+        from unittest import mock
+        self.session.transcript = mock.Mock()
+        asyncio.run(self.session._handle_job_checkin(self._event()))
+        kinds = [c.args[0]["type"] for c in self.session.transcript.append.call_args_list
+                 if isinstance(c.args[0], dict) and "type" in c.args[0]]
+        self.assertIn("job_checkin", kinds)
+        self.assertNotIn("job_wake", kinds)
+
+
+# ── 11. The ways a finished run can reach nobody ───────────────────────────────
+
+class WakeDeliveryLossTests(unittest.TestCase):
+    """Each test here is a finished run that must not go unreported.
+
+    All three are inside the window where the *agent* is alive and well — only the
+    socket, the store or the pool moved under the wake. Losing one is a build that
+    ran for two hours into silence, with nothing on screen to say why.
+    """
+
+    def setUp(self) -> None:
+        import shutil
+        import tempfile
+        from unittest import mock
+        from mimir.client.ui.ws import session_store, transcript_log
+        from mimir.client.ui.ws.ws_session import _Session
+
+        self._tmp = tempfile.mkdtemp(prefix="mimir-wakeloss-")
+        self.addCleanup(shutil.rmtree, self._tmp, ignore_errors=True)
+        for target, attr in ((session_store, "STATE_DIR"), (transcript_log, "_MIMIR_DIR_WS")):
+            patcher = mock.patch.object(target, attr, self._tmp)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+        self.ws = _FakeWS()
+        # Two conversations, two agents — the shape production has, and the one a
+        # single shared worker cannot tell apart.
+        self.launcher, self.onscreen = _FakeWorker(), _FakeWorker()
+        self.pool = FakePool(self.onscreen)
+        self.session = _Session(self.ws, self.pool)
+
+        self.a = self.session.store.new_session()       # launched the job
+        self.a.title = "Build the toolchain"
+        self.a.llm_history = [{"role": "user", "content": "build it"}]
+        self.a.llm_history_full = list(self.a.llm_history)
+        self.session.store.save_session(self.a)
+        self.b = self.session.store.new_session()       # the one being read
+        self.session.store.save_session(self.b)
+
+        self.pool.workers = {self.a.id: self.launcher, self.b.id: self.onscreen}
+        self.pool.active_session_id = self.b.id
+        self.session._active_session_id = self.b.id
+        self.session.history = [{"role": "user", "content": "something else"}]
+        self.session.history_full = list(self.session.history)
+        self.session._display_messages = []
+
+    def _event(self, key: str = "j1") -> dict:
+        return {"type": "job_complete", "job_key": key, "kind": "shell-command",
+                "state": "done", "session_id": self.a.id,
+                "status_op": {"tool": "bash_job", "args": {}},
+                "summary": {"state": "done", "exit_code": 0, "log_tail": "Built target"}}
+
+    def test_the_wake_goes_to_the_agent_of_the_conversation_that_launched_it(self) -> None:
+        """Not the agent of whatever is on screen, which may not even have one."""
+        asyncio.run(self.session._handle_job_complete(self._event()))
+        self.assertEqual(len(self.launcher.submitted), 1)
+        self.assertEqual(self.launcher.submitted[0][2], self.a.id)
+        self.assertEqual(self.onscreen.submitted, [],
+                         "a job's result landed in a conversation that never asked")
+
+    def test_a_conversation_whose_agent_is_gone_keeps_its_wake(self) -> None:
+        """Held, not dropped: a released agent is rebuilt, a lost run is not."""
+        self.pool.workers = {self.b.id: self.onscreen}
+        asyncio.run(self.session._handle_job_complete(self._event()))
+        self.assertEqual(self.onscreen.submitted, [])
+        self.assertEqual(len(self.session._pending_wakes.get(self.a.id, [])), 1)
+
+    def test_a_store_that_will_not_write_keeps_the_wake(self) -> None:
+        from unittest import mock
+        with mock.patch.object(self.session.store, "save_session",
+                               side_effect=OSError("disk full")):
+            asyncio.run(self.session._handle_job_complete(self._event()))
+        self.assertEqual(self.launcher.submitted, [])
+        self.assertEqual(len(self.session._pending_wakes.get(self.a.id, [])), 1)
+
+    def test_a_kept_wake_is_delivered_by_the_next_flush(self) -> None:
+        from unittest import mock
+        with mock.patch.object(self.session.store, "save_session",
+                               side_effect=OSError("disk full")):
+            asyncio.run(self.session._handle_job_complete(self._event()))
+        asyncio.run(self.session._flush_pending_wakes(self.a.id))
+        self.assertEqual(len(self.launcher.submitted), 1)
+        self.assertIn("Built target", self.launcher.submitted[0][0])
+
+    def test_a_socket_that_dies_on_the_send_does_not_take_the_wake_with_it(self) -> None:
+        """The event has already left out_q; nothing re-emits it."""
+        class _DeadWS:
+            async def send(self, raw: str) -> None:
+                raise ConnectionResetError("client went away")
+
+        self.session.ws = _DeadWS()
+        started = asyncio.run(self.session._handle_durable_event(
+            self._event(), checkin=False, steer=False))
+        self.assertTrue(started)
+        self.assertEqual(len(self.launcher.submitted), 1)
+
+
+    def test_a_wake_that_started_no_turn_does_not_mark_the_chat_busy(self) -> None:
+        """``resumes_active_session`` is a claim the client acts on with a stop button."""
+        self.pool.workers = {self.b.id: self.onscreen}      # A's agent is gone
+        started = asyncio.run(self.session._handle_durable_event(
+            self._event(), checkin=False, steer=False))
+        self.assertFalse(started)
+
+    def test_a_steered_wake_starts_no_turn_either(self) -> None:
+        self.launcher._query_session_id = self.a.id         # A is mid-turn
+        started = asyncio.run(self.session._handle_durable_event(
+            self._event(), checkin=False, steer=True))
+        self.assertFalse(started)
+        self.assertEqual(len(self.launcher.steered), 1)
+
+
+class StaleEventPurgeTests(unittest.TestCase):
+    """What a reconnect may throw away, and what it may not.
+
+    A turn's output is debris once the socket drawing it is gone. A finished job is
+    not: it answers to no turn, its watcher is already finished, and the conversation
+    it belongs to is idle precisely because it is waiting for it.
+    """
+
+    def setUp(self) -> None:
+        import queue as _q
+        from unittest import mock
+        from mimir.client.ui.ws.ws_session import _Session
+
+        self.worker = _FakeWorker()
+        self.worker.out_q = _q.Queue()
+        self.session = object.__new__(_Session)
+        self.session.pool = FakePool(self.worker, active="s1")
+
+    def _purge(self, *events: dict) -> list[dict]:
+        for ev in events:
+            self.worker.out_q.put(ev)
+        self.session._drop_stale_events()
+        left = []
+        while not self.worker.out_q.empty():
+            left.append(self.worker.out_q.get_nowait())
+        return left
+
+    def test_a_finished_job_survives_the_reconnect(self) -> None:
+        left = self._purge({"type": "job_complete", "job_key": "j1"})
+        self.assertEqual(len(left), 1)
+        self.assertEqual(left[0]["job_key"], "j1")
+
+    def test_a_held_bulletin_survives_the_reconnect(self) -> None:
+        left = self._purge({"type": "job_checkin", "jobs": []})
+        self.assertEqual(len(left), 1)
+
+    def test_a_dead_turns_debris_still_goes(self) -> None:
+        left = self._purge({"type": "token", "text": "hi"},
+                           {"type": "tool_call", "id": "c1"})
+        self.assertEqual(left, [])
+
+    def test_order_is_kept_when_some_of_it_is_dropped(self) -> None:
+        left = self._purge({"type": "job_complete", "job_key": "jA"},
+                           {"type": "token", "text": "debris"},
+                           {"type": "job_complete", "job_key": "jB"})
+        self.assertEqual([e["job_key"] for e in left], ["jA", "jB"])
+
+    def test_a_busy_conversations_queue_is_not_touched_at_all(self) -> None:
+        """Its turn is still running; what is queued is that turn's own output."""
+        self.worker._query_session_id = "s1"
+        left = self._purge({"type": "token", "text": "mid-answer"})
+        self.assertEqual(len(left), 1)
+
+
+# ── 12. Re-arming tracking a restart took away ────────────────────────────────
+
+class RewatchDetectionTests(unittest.TestCase):
+    """Asking where a run is at is what puts a watcher back on it.
+
+    Watchers belong to the agent that made them and go when it goes — which an editor
+    window reload is enough to cause. The run itself carries on, indifferent, in its
+    own session directory; only the promise to report it has to be re-made, and asking
+    is the one moment a person has said they still care.
+    """
+
+    def setUp(self) -> None:
+        from mimir.client.query_engine import background
+        self.background = background
+        self.registered: list[dict] = []
+        self.agent = types.SimpleNamespace(
+            tool_caps={},
+            _register_background_job=lambda d: (self.registered.append(d), True)[1],
+            _watched_background_jobs=lambda: [],
+        )
+
+    def _result(self, *descriptors: dict) -> str:
+        return json.dumps({"status": "ok", "state": "running",
+                           "background_jobs": list(descriptors)})
+
+    def _descriptor(self, key: str) -> dict:
+        return {"server": "bash", "job_key": key, "kind": "shell-command",
+                "status_op": {"tool": "bash_job", "args": {"job_key": key}}}
+
+    def test_a_status_result_re_arms_the_run_it_reports(self) -> None:
+        out = self.background._maybe_rewatch_background_jobs(
+            "bash_job", self._result(self._descriptor("j1")), self.agent)
+        self.assertEqual([d["job_key"] for d in self.registered], ["j1"])
+        self.assertIn("Now tracking 'j1' again", out)
+        self.assertIn("do NOT poll", out)
+
+    def test_a_listing_re_arms_every_run_still_going(self) -> None:
+        out = self.background._maybe_rewatch_background_jobs(
+            "bash_job", self._result(self._descriptor("jA"), self._descriptor("jB")),
+            self.agent)
+        self.assertEqual([d["job_key"] for d in self.registered], ["jA", "jB"])
+        self.assertIn("'jA', 'jB'", out)
+
+    def test_it_needs_no_capability_only_the_shape(self) -> None:
+        """A reader is a reader: BACKGROUNDABLE says a tool *launches* a run."""
+        from mimir.client.context.capabilities import has_cap, BACKGROUNDABLE
+        self.assertFalse(has_cap("bash_job", BACKGROUNDABLE, self.agent.tool_caps))
+        self.background._maybe_rewatch_background_jobs(
+            "bash_job", self._result(self._descriptor("j1")), self.agent)
+        self.assertEqual(len(self.registered), 1)
+
+    def test_a_descriptor_naming_no_op_to_poll_is_refused(self) -> None:
+        """The whole trust boundary: a watcher must have something to ask."""
+        for bad in ({"job_key": "j1"},                       # nothing to poll
+                    {"status_op": {"tool": "bash_job"}},     # nothing it speaks for
+                    {"job_key": "j1", "status_op": {}},
+                    {"job_key": "j1", "status_op": "bash_job"},
+                    "not a descriptor"):
+            with self.subTest(bad=bad):
+                self.background._maybe_rewatch_background_jobs(
+                    "bash_job", json.dumps({"background_jobs": [bad]}), self.agent)
+        self.assertEqual(self.registered, [])
+
+    def test_a_run_already_watched_is_not_announced_again(self) -> None:
+        self.agent._watched_background_jobs = lambda: [self._descriptor("j1")]
+        out = self.background._maybe_rewatch_background_jobs(
+            "bash_job", self._result(self._descriptor("j1")), self.agent)
+        self.assertEqual(self.registered, [])
+        self.assertNotIn("Now tracking", out)
+
+    def test_the_singular_key_is_not_a_re_arm(self) -> None:
+        """``background_job`` means *this call launched it* — a different story."""
+        payload = json.dumps({"background_job": self._descriptor("j1")})
+        out = self.background._maybe_rewatch_background_jobs("bash_job", payload, self.agent)
+        self.assertEqual(self.registered, [])
+        self.assertEqual(out, payload)
+
+    def test_a_cli_with_no_watcher_hook_is_left_alone(self) -> None:
+        """Nothing was promised, so there is nothing to re-arm or to say."""
+        del self.agent._register_background_job
+        payload = self._result(self._descriptor("j1"))
+        self.assertEqual(
+            self.background._maybe_rewatch_background_jobs("bash_job", payload, self.agent),
+            payload)

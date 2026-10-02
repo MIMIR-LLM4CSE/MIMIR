@@ -1120,14 +1120,42 @@ def bash_job(
     if op not in _JOB_OPS:
         return err(f"Unknown op '{op}'.", valid_ops=list(_JOB_OPS))
     if op == "list":
-        return ok({"jobs": _bash_jobs.listing()})
+        jobs = _bash_jobs.listing()
+        return ok(_with_live_descriptors({"jobs": jobs}, jobs))
     if not _bash_jobs.valid_key(job_key):
         return err("A job_key from bash_run(background=True) is required.",
                    hint="Use op='list' to see the jobs this host knows about.")
     if op == "status":
-        return _job_payload(_bash_jobs.state(job_key))
-    return _job_payload(
-        _bash_jobs.output(job_key, _MAX_OUTPUT, running_max_bytes=_RUNNING_OUTPUT))
+        payload = _bash_jobs.state(job_key)
+        return _job_payload(_with_live_descriptors(payload, [payload]))
+    payload = _bash_jobs.output(job_key, _MAX_OUTPUT, running_max_bytes=_RUNNING_OUTPUT)
+    return _job_payload(_with_live_descriptors(payload, [payload]))
+
+
+def _with_live_descriptors(payload: dict, jobs: list[dict]) -> dict:
+    """Attach a watcher handle for every job in *jobs* that is still running.
+
+    A watcher lives on the agent that launched the run and dies with it, which an
+    editor window reload is enough to cause; the run itself carries on in its own
+    session directory, indifferent. Answering "what state is it in?" with the handle as
+    well as the state is what lets the client put a watcher back on it — so asking is
+    the gesture that restores tracking, and nothing has to re-arm runs nobody asked
+    about.
+
+    Every op that names a run, not only ``status``: reading a build's log mid-run is as
+    much a "where is it at?" as asking for its state, and the two differ only in which
+    of them the model happened to reach for.
+
+    Plural, and never ``background_job``: that key means *this call launched it*, which
+    makes the row a run and, on a client with no watcher, something to wait out in-turn.
+    A status read is neither.
+    """
+    live = [_job_descriptor(j["job_key"], _bash_jobs.job_dir(j["job_key"]))
+            for j in jobs
+            if isinstance(j, dict) and j.get("state") == "running" and j.get("job_key")]
+    if live:
+        payload["background_jobs"] = live
+    return payload
 
 
 def _job_payload(payload: dict) -> dict:

@@ -85,6 +85,9 @@ class _FakeWorker:
     def get_context_mode(self, default="full"):
         return default
 
+    def watched_job_keys(self):
+        return []
+
 
 def _session(active="s1"):
     sess = object.__new__(_Session)

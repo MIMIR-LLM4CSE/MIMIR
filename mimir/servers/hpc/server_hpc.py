@@ -533,6 +533,21 @@ def slurm_job_status(job_id: str) -> dict:
         payload["log"] = os.path.join(job_dir, "slurm.log")
         if from_session:
             payload["submitted_by_another_session"] = from_session
+    # A handle for a job of *this* conversation that is still in flight, so asking
+    # where it is at puts a watcher back on it — the watchers do not survive the agent
+    # that made them, and a window reload is enough to lose every one of them.
+    #
+    # Never for another session's job, and this is the whole reason the descriptor is
+    # withheld rather than always attached: a wake is routed to the conversation whose
+    # agent registered it, so re-arming here would deliver another conversation's
+    # result into this one. Reading a sibling's job stays allowed; adopting it does not.
+    if state in ("running", "pending") and not from_session:
+        payload["background_jobs"] = [{
+            "server":    "hpc",
+            "job_key":   job_id,
+            "kind":      "slurm-batch",
+            "status_op": {"tool": "slurm_job_status", "args": {"job_id": job_id}},
+        }]
     return ok(payload)
 
 

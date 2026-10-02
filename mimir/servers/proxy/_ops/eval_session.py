@@ -839,6 +839,13 @@ def status(proxy_name: str = "") -> dict:
     for key in ("phase", "percent"):
         if rs.get(key) is not None:
             payload[key] = rs[key]
+    # A handle for a run still going, so asking where it is at puts a watcher back on
+    # it: the watchers belong to the agent that made them and do not outlive it, while
+    # the run — a detached process with its own run dir — carries on regardless.
+    # Plural, never ``background_job``: that key says *this call launched it*, and this
+    # one only looked.
+    if rs["state"] in ("running", "pending"):
+        payload["background_jobs"] = [_background_descriptor(resolved, run_dir)]
     return ok(_with_next(payload, next_step))
 
 

@@ -856,6 +856,48 @@ describe("background-job wake", () => {
   });
 });
 
+describe("background-job check-in", () => {
+  const bulletin = (over: Record<string, unknown> = {}) => ({
+    type: "job_checkin" as const,
+    jobs: [{ job_key: "j1", kind: "shell-command", state: "running", phase: "compile", percent: 40 }],
+    ...over,
+  });
+
+  it("marks the turn busy when the bulletin starts one here", () => {
+    // Same reason as a wake: nobody pressed send, so nothing else would put the
+    // composer in stop mode for a turn that is genuinely running.
+    expect(run([bulletin({ resumes_active_session: true })]).busy).toBe(true);
+  });
+
+  it("leaves this conversation idle when no turn started", () => {
+    // Held back because the owner is busy or parked, or started elsewhere. A stop
+    // button here would stop nothing.
+    expect(run([bulletin()]).busy).toBe(false);
+    expect(run([bulletin({ resumes_active_session: false })]).busy).toBe(false);
+  });
+
+  it("settles nothing — the runs it describes are still running", () => {
+    // The whole difference from a wake. A bulletin that marked the row done would
+    // report an ending that has not happened, and drop the live progress with it.
+    const state = run([
+      { type: "tool_call", id: "c1", name: "bash_run", args: {} },
+      { type: "tool_backgrounded", id: "c1", job_key: "j1" },
+      bulletin(),
+    ]);
+    const row = state.liveToolCalls.find((t) => t.id === "c1");
+    expect(row?.jobKey).toBe("j1");
+    expect(row?.status).not.toBe("ok");
+  });
+
+  it("does not end a turn that is already running", () => {
+    const state = run([
+      { type: "submit_query", text: "go" },
+      bulletin(),
+    ]);
+    expect(state.busy).toBe(true);
+  });
+});
+
 describe("a turn parked on a question", () => {
   const plan = { type: "user_question" as const, id: "q1", questions: [] };
 

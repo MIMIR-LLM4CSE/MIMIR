@@ -477,3 +477,81 @@ class FinishedOutputClipTests(unittest.TestCase):
         text, cut = _bash_jobs._clip(self.path, 4096, "ends")
         self.assertFalse(cut)
         self.assertEqual(len(text.splitlines()), 10)
+
+
+class RewatchHandleTests(unittest.TestCase):
+    """Asking a job's state hands back the handle to track it with.
+
+    The watcher that was holding a run dies with the agent that made it, which an
+    editor window reload is enough to cause; the detached process carries on in its
+    own session directory regardless. So the state op answers with the handle as well
+    as the state, and asking becomes the way to pick tracking back up — without
+    re-arming runs nobody asked about.
+    """
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.mkdtemp(prefix="mimir-bash-rewatch-")
+        self._orig_state = os.environ.get("MIMIR_STATE_DIR")
+        os.environ["MIMIR_STATE_DIR"] = self._tmp
+
+    def tearDown(self) -> None:
+        for payload in _bash_jobs.listing():
+            if payload["state"] == "running":
+                _bash_jobs.stop(payload["job_key"])
+        if self._orig_state is None:
+            os.environ.pop("MIMIR_STATE_DIR", None)
+        else:
+            os.environ["MIMIR_STATE_DIR"] = self._orig_state
+        shutil.rmtree(self._tmp, ignore_errors=True)
+
+    def _launch(self, command: str = "sleep 30") -> str:
+        return server_bash.bash_run(command, background=True)["job_key"]
+
+    def test_the_status_of_a_running_job_carries_a_handle(self) -> None:
+        key = self._launch()
+        status = server_bash.bash_job(op="status", job_key=key)
+        self.assertEqual(status["state"], "running")
+        handles = status["background_jobs"]
+        self.assertEqual([h["job_key"] for h in handles], [key])
+        self.assertEqual(handles[0]["status_op"]["args"]["job_key"], key)
+        self.assertEqual(handles[0]["summary_op"]["args"]["op"], "output")
+
+    def test_the_plural_key_is_used_so_a_read_is_not_mistaken_for_a_launch(self) -> None:
+        """``background_job`` would make the row a run and, with no watcher, a wait."""
+        key = self._launch()
+        status = server_bash.bash_job(op="status", job_key=key)
+        self.assertNotIn("background_job", status)
+
+    def test_a_finished_job_carries_none(self) -> None:
+        key = self._launch("true")
+        _wait_terminal(key)
+        status = server_bash.bash_job(op="status", job_key=key)
+        self.assertNotEqual(status["state"], "running")
+        self.assertNotIn("background_jobs", status)
+
+    def test_a_listing_carries_one_handle_per_running_job(self) -> None:
+        live, done = self._launch(), self._launch("true")
+        _wait_terminal(done)
+        listing = server_bash.bash_job(op="list")
+        self.assertEqual([h["job_key"] for h in listing["background_jobs"]], [live])
+
+    def test_a_listing_with_nothing_running_carries_none(self) -> None:
+        _wait_terminal(self._launch("true"))
+        self.assertNotIn("background_jobs", server_bash.bash_job(op="list"))
+
+    def test_a_handle_names_the_jobs_own_directory(self) -> None:
+        key = self._launch()
+        handle = server_bash.bash_job(op="status", job_key=key)["background_jobs"][0]
+        self.assertTrue(handle["run_dir"].endswith(key))
+        self.assertTrue(os.path.isdir(handle["run_dir"]))
+
+    def test_reading_a_running_jobs_log_re_arms_it_too(self) -> None:
+        """Reading the log mid-run is as much a "where is it at?" as asking the state."""
+        key = self._launch()
+        out = server_bash.bash_job(op="output", job_key=key)
+        self.assertEqual([h["job_key"] for h in out["background_jobs"]], [key])
+
+    def test_the_log_of_a_finished_job_carries_no_handle(self) -> None:
+        key = self._launch("true")
+        _wait_terminal(key)
+        self.assertNotIn("background_jobs", server_bash.bash_job(op="output", job_key=key))

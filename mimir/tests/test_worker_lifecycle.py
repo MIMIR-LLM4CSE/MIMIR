@@ -52,6 +52,7 @@ def _worker_with_loop(agent: object | None) -> tuple[_AgentWorker, threading.Thr
     w._query_session_id = None
     w._agent = agent
     w._bg_jobs = {}
+    w._checkin_task = None
     w._query_q = _queue.Queue()
     w._query_event = threading.Event()
     w._closed = threading.Event()

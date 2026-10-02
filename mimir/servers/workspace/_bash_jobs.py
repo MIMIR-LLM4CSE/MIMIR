@@ -82,6 +82,11 @@ def _path(job_key: str, name: str) -> str:
     return os.path.join(_job_dir(job_key), name)
 
 
+def job_dir(job_key: str) -> str:
+    """This job's directory. What a descriptor carries as its ``run_dir``."""
+    return _job_dir(job_key)
+
+
 def log_path(job_key: str) -> str:
     return _path(job_key, "run.log")
 

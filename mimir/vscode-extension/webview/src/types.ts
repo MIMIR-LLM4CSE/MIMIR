@@ -511,6 +511,26 @@ export interface JobCompleteMessage {
   resumes_active_session?: boolean;
 }
 
+/** A periodic bulletin on runs still going, 30s / 2min / 10min after the first
+ *  launch. Unlike a `job_complete` it carries no result and settles no row: it only
+ *  says the runs are still there and what they were last seen doing. It may start a
+ *  short turn in the conversation that launched them (never a steer into one already
+ *  running — a bulletin is not worth derailing an answer the user is waiting on). */
+export interface JobCheckinMessage {
+  type: "job_checkin";
+  jobs: Array<{
+    job_key: string;
+    kind?: string;
+    server?: string;
+    state?: string;
+    phase?: string;
+    percent?: number | null;
+  }>;
+  /** Same meaning as on `job_complete`: a turn is starting in THIS conversation, so
+   *  the chat must mark itself busy for something nobody pressed send for. */
+  resumes_active_session?: boolean;
+}
+
 export interface QuestionOption {
   label: string;
   description?: string;
@@ -650,6 +670,7 @@ export type ServerMessage =
   | StreamingStateMessage
   | ContextUsageMessage
   | JobCompleteMessage
+  | JobCheckinMessage
   | TogglesListMessage
   | ResourcesMessage
   | ActiveEditorMessage

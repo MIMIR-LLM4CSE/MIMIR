@@ -54,6 +54,7 @@ from .background import (
     _maybe_emit_open_editor,
     _detect_background_job,
     _maybe_register_background_job,
+    _maybe_rewatch_background_jobs,
     _await_background_job,
 )
 
@@ -566,6 +567,13 @@ async def _dispatch_tool_calls(
                     # No watcher (CLI, or a registration that declined): wait it out
                     # efficiently in-turn. Costs zero model calls either way.
                     result = await _await_background_job(descriptor, agent, result)
+            elif ok and isinstance(result, str):
+                # A result reporting runs that are still going — what a status op
+                # answers about work an earlier call started. Re-arms whatever is no
+                # longer watched, which after an agent restart is all of it, and is a
+                # no-op the rest of the time. Only where the call succeeded: a failed
+                # read says nothing trustworthy about what is in flight.
+                result = _maybe_rewatch_background_jobs(name, result, agent)
             return result
 
         except asyncio.TimeoutError:

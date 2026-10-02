@@ -59,6 +59,13 @@ _WAKE_SUMMARY_LIMIT = 2000
 # say which conversation is asking.
 _INTERACTION_EVENTS = frozenset({"approval", "user_question"})
 
+# Events a reconnect may not throw away. Everything else a worker queues describes a
+# turn — its tokens, its rows, its answer — and is debris once the socket that was
+# drawing it is gone. These two describe a detached run instead: nothing re-emits them,
+# their watcher is finished by the time they are read, and the conversation they belong
+# to is idle precisely because it is waiting for them.
+_DURABLE_EVENTS = frozenset({"job_complete", "job_checkin"})
+
 
 def _compact_summary(payload: dict) -> str:
     """A job's recorded result, as one line of JSON, cut to a budget.
@@ -141,6 +148,13 @@ class _Session:
         # and three near-identical final answers, one of them contradicting the last on
         # how many jobs there even were.
         self._pending_wakes: dict[str, list[dict]] = {}
+        # The one check-in a conversation is holding back, as {session_id: job_checkin}.
+        # A check-in carries "nothing to report" and nothing else, so unlike a wake it
+        # never interrupts: while the owner is working or parked on a card, it waits
+        # here and the *next* check-in overwrites it. One slot, not a list — a bulletin
+        # is only worth reading while it is current, and a long turn that swallowed all
+        # three should end with one fresh status line, not a backlog of stale ones.
+        self._held_checkin: dict[str, dict] = {}
         # Tool rows of the running turn that publish a run channel, as
         # {call id: tool name}. The name IS the channel (see run_channel), so this is
         # what lets a divert click name the run the user is actually looking at, and
@@ -281,15 +295,34 @@ class _Session:
         working and what is queued for it is its own output waiting for someone to read it.
         Emptying it regardless loses everything that turn did — the card it is parked on,
         the answer it eventually writes.
+
+        An idle agent's queue is debris with one exception, and it is the whole reason
+        this is not a plain drain: a background job answers to nobody's turn. It finishes
+        while its conversation sits idle, puts its wake on that idle queue, and the
+        watcher that was holding it is gone the same instant. Dropping that is the run
+        finishing into silence — the socket went away, the agent never did. So the
+        durable events are set aside and put back, and the rest is counted on the way
+        out, this being the one place in the client where work disappears on purpose.
         """
         for session_id, worker in self.pool.items():
             if self.pool.is_busy(session_id):
                 continue
+            kept: list[dict] = []
+            dropped = 0
             while not worker.out_q.empty():
                 try:
-                    worker.out_q.get_nowait()
+                    ev = worker.out_q.get_nowait()
                 except Exception:
                     break
+                if isinstance(ev, dict) and ev.get("type") in _DURABLE_EVENTS:
+                    kept.append(ev)
+                else:
+                    dropped += 1
+            for ev in kept:
+                worker.out_q.put(ev)
+            if kept or dropped:
+                logger.info("reconnect: session %s kept %d background event(s) and "
+                            "dropped %d stale one(s)", session_id, len(kept), dropped)
 
     async def _resend_parked_prompt(self) -> None:
         """Put back every card a turn is parked on — in any conversation.
@@ -497,8 +530,35 @@ class _Session:
             except Exception:
                 pass
         await self._resend_deferred_prompt()
+        await self._remind_untracked_jobs(session.id)
         self._last_context_usage = None  # client cleared its bar on session_loaded
         await self._emit_context_usage()
+
+    async def _remind_untracked_jobs(self, session_id: str) -> None:
+        """Say when this conversation has runs going that nothing is watching.
+
+        A watcher lives on the agent that launched the run, so it goes when that agent
+        goes — which the VS Code extension causes on every connect, tearing the server
+        down and respawning it. The run itself does not care: it is a detached process
+        with its own session directory, and it will finish whether or not anything is
+        listening. What is lost is only the promise to say so.
+
+        Deliberately a line and not a re-registration. Re-arming every run found on disk
+        at load would poll jobs the user has long stopped caring about, in every
+        conversation they open; asking for their state is what re-arms them (the status
+        ops hand back a descriptor while a run is in flight), and that is a decision
+        that belongs to the person, not to a reconnect.
+        """
+        worker = self.pool.get(session_id)
+        if worker is not None and worker.watched_job_keys():
+            return  # a watcher is holding them; the wake is coming
+        live = self._live_jobs_of(session_id)
+        if not live:
+            return
+        what = "run is" if len(live) == 1 else "runs are"
+        await self._notify(f"⏳ {len(live)} {what} still going in this conversation, "
+                           f"untracked since the agent last restarted — ask for their "
+                           f"state to pick the tracking back up: {'; '.join(live[:3])}")
 
     def _restore_todos(
         self, todos: list[dict], todo_deps: list | None = None,
@@ -886,16 +946,25 @@ class _Session:
                 # The turn's transcript and deferral ride on its answer for the session
                 # layer only; they never go down the socket.
                 extras = self._pop_answer_extras(ev)
-                if ev.get("type") == "job_complete":
+                if ev.get("type") in _DURABLE_EVENTS:
                     # Routed by the session that launched the job rather than the one
                     # on screen, so it is handled ahead of the foreign-event filter.
+                    checkin = ev.get("type") == "job_checkin"
                     foreign = self._is_foreign_event(ev)
                     if not foreign:
                         self.transcript.append(ev)
                     # Decided once, before the send: the send yields, and a turn that
                     # ended meanwhile would otherwise have the client and the handler
                     # disagree about whether a new turn began.
-                    steer = self._wake_steers(ev)
+                    steer = False if checkin else self._wake_steers(ev)
+                    # Handled BEFORE the send, and this order is the point. The event
+                    # has already left ``out_q`` and nothing re-emits it, so a socket
+                    # that dies on the send — the ordinary end of a connection — must
+                    # not be able to take the handler down with it: the agent behind
+                    # the run is fine, and the run still has to wake it. The send is
+                    # the notification; this is the work.
+                    started = await self._handle_durable_event(ev, checkin=checkin,
+                                                               steer=steer)
                     try:
                         # A wake starts a turn nobody pressed send for. The client
                         # marks itself busy on its own submit, so without this it has
@@ -909,11 +978,10 @@ class _Session:
                         # rows — a build launched in the same step lost its row, and
                         # with it every progress update addressed to it.
                         await self.ws.send(json.dumps(
-                            {**ev, "resumes_active_session": not foreign and not steer},
+                            {**ev, "resumes_active_session": not foreign and started},
                             default=str))
                     except Exception:
                         return
-                    await self._handle_job_complete(ev, steer=steer)
                     continue
                 if self._is_foreign_event(ev):
                     # A turn running in a conversation that is not on screen. Its output
@@ -1055,6 +1123,10 @@ class _Session:
                     # wrote rather than the one it inherited. Jobs that finished during
                     # the turn and were never taken in leave together, as one turn.
                     await self._flush_pending_wakes(self._active_session_id)
+                    # And the bulletin this conversation held back while it was
+                    # working, now that the answer the user waited for has landed.
+                    # After the wakes, which supersede it.
+                    await self._flush_held_checkin(self._active_session_id)
             await asyncio.sleep(0.005)
             await _check_and_push_todos()
             await _tick_context_usage()
@@ -1170,7 +1242,118 @@ class _Session:
         owner = self._wake_owner(ev)
         return bool(owner) and self.pool.is_busy(owner)
 
-    async def _handle_job_complete(self, ev: dict, steer: bool | None = None) -> None:
+    @staticmethod
+    def _checkin_text(ev: dict) -> str:
+        """Build the check-in instruction from a job_checkin event.
+
+        Under the same rule as :meth:`_wake_text` — it names no tool of any server and
+        interprets nothing, passing on whatever the status op chose to report. What it
+        adds is a ceiling on the answer. A check-in exists so a run that went wrong in
+        its third minute is not discovered in its hundred-and-twentieth; it is not an
+        occasion to restate the plan, re-answer the question the job was launched for,
+        or go and look at something. Said plainly here because the model has no other
+        way to tell this turn apart from a completion wake, which wants the opposite.
+
+        Reading the run is still open to it where the status says something is off: the
+        dispatch guard refuses the *status* op of a watched job (this event already
+        carries that answer) and leaves the summary op alone.
+        """
+        jobs = [j for j in (ev.get("jobs") or []) if isinstance(j, dict)]
+        lines = []
+        for job in jobs:
+            key = job.get("job_key", "?")
+            kind = f" ({job['kind']})" if job.get("kind") else ""
+            state = job.get("state") or "running"
+            bits = [state]
+            if job.get("phase"):
+                bits.append(f"phase={job['phase']}")
+            if isinstance(job.get("percent"), (int, float)):
+                bits.append(f"{job['percent']}%")
+            lines.append(f"- '{key}'{kind}: {', '.join(bits)}")
+        body = "\n".join(lines) or "- (no status recorded yet)"
+        return (
+            "Background check-in. Still running in this conversation:\n"
+            f"{body}\n"
+            "If this looks healthy, say so in ONE short line and stop — no tool call, "
+            "no restating the plan, and do not re-answer the question these runs were "
+            "launched for. If it does not — no progress since the last check, a status "
+            "that stopped being readable, a phase that should have moved on by now — "
+            "say what is wrong and what you are doing about it."
+        )
+
+    async def _handle_durable_event(self, ev: dict, *, checkin: bool,
+                                    steer: bool) -> bool:
+        """Route a job event to its conversation. True when it started a turn there.
+
+        The drain loop needs that answer before it sends: the client marks itself busy
+        on its own submit, so a turn nobody pressed send for is one it can only learn
+        about from ``resumes_active_session``.
+        """
+        if checkin:
+            return await self._handle_job_checkin(ev)
+        return await self._handle_job_complete(ev, steer=steer)
+
+    async def _handle_job_checkin(self, ev: dict) -> bool:
+        """Report on runs still going, without ever interrupting. True if a turn began.
+
+        A completion wake carries a result the running turn needs; a check-in carries
+        "nothing to report". Steering that into a turn the user is waiting on makes the
+        agent answer about the job instead of the question it was asked — and the
+        silence a check-in exists to break is not there in the first place while the
+        user is watching it work. So an owner that is busy, or parked on a card a person
+        has to answer, gets nothing now: the bulletin waits in ``_held_checkin`` and the
+        next one overwrites it, so a long turn ends with one current status line rather
+        than a backlog of stale ones. :meth:`_flush_held_checkin` delivers it once the
+        turn lands.
+        """
+        owner = self._wake_owner(ev)
+        if not owner:
+            return False
+        if self.pool.is_busy(owner) or self.pool.is_parked(owner):
+            self._held_checkin[owner] = ev
+            return False
+        return await self._deliver_checkin(owner, ev)
+
+    async def _deliver_checkin(self, owner: str, ev: dict) -> bool:
+        """Start the short turn a check-in asks for. True when one was submitted."""
+        text = self._checkin_text(ev)
+        worker = self.pool.get(owner)
+        if worker is None:
+            # Nothing to wake. Unlike a completion wake there is nothing to preserve
+            # either: the run is still going and its own wake is still to come.
+            logger.warning("check-in for session %s dropped: it has no agent", owner)
+            return False
+        self._record_wake(owner, text, [ev], entry_type="job_checkin")
+        if owner != self._active_session_id:
+            try:
+                session = self.store.load_session(owner)
+            except Exception:
+                return False
+            return await self._submit_detached(session, text)
+        self.history.append({"role": "user", "content": text})
+        self.history_full.append({"role": "user", "content": text})
+        self._autosave_session(list(self._display_messages))
+        self._submitted_len = len(self.history)
+        worker.submit_query(text, list(self.history), session_id=owner)
+        return True
+
+    async def _flush_held_checkin(self, owner: str | None) -> None:
+        """Deliver the bulletin a conversation held back, if it is still worth reading.
+
+        Called where a turn of *owner* has just landed. Dropped rather than delivered
+        when the runs it described have since finished: their completion wakes say
+        everything this would have, and better — and one of them is about to be flushed
+        into the very next turn.
+        """
+        ev = self._held_checkin.pop(owner, None)
+        if ev is None or self._pending_wakes.get(owner):
+            return
+        worker = self.pool.get(owner)
+        if worker is None or not worker.watched_job_keys():
+            return
+        await self._deliver_checkin(owner, ev)
+
+    async def _handle_job_complete(self, ev: dict, steer: bool | None = None) -> bool:
         """Hand a finished background job to a turn — the running one where possible.
 
         The event was already forwarded to the client (notification) by the drain loop.
@@ -1186,6 +1369,11 @@ class _Session:
         final answer. If it does not, a turn is started, carrying every job still
         waiting — so a burst that finished during the last turn arrives as one turn
         rather than one apiece.
+
+        Returns whether a turn actually started here, which is what the drain loop puts
+        on the wire as ``resumes_active_session``: a steer starts none, and neither does
+        a flush that had to keep its wakes. Answering "yes" for either leaves the chat
+        marked busy, with a stop button, for a turn that is not running.
         """
         owner = self._wake_owner(ev)
         if steer is None:
@@ -1208,10 +1396,11 @@ class _Session:
             owner_worker = self.pool.get(owner)
             if owner_worker is not None:
                 owner_worker.submit_steer(wake)
-            return
-        await self._flush_pending_wakes(owner)
+            return False
+        return await self._flush_pending_wakes(owner)
 
-    def _record_wake(self, owner: str | None, wake: str, events: list[dict]) -> None:
+    def _record_wake(self, owner: str | None, wake: str, events: list[dict],
+                     entry_type: str = "job_wake") -> None:
         """Show a wake and log it — once per job, whichever route carried it.
 
         Deliberately does NOT touch the history: which message a turn is *given* is the
@@ -1226,7 +1415,13 @@ class _Session:
         Which conversation gets it is decided by *owner*, not by what is on screen: a
         detached session's turn can be running and absorb a second job of its own.
         """
-        entries = [{"type": "job_wake", "text": self._wake_text(e), "job": e.get("job_key")}
+        # The entry type separates a bulletin from a wake in the transcript: the count
+        # of ``job_wake`` lines is how the mechanism is audited against the jobs that
+        # recorded an exit code, and filing three check-ins under it per run would make
+        # a mechanism that lost half its wakes look like one that delivered four times
+        # too many.
+        text_of = self._checkin_text if entry_type == "job_checkin" else self._wake_text
+        entries = [{"type": entry_type, "text": text_of(e), "job": e.get("job_key")}
                    for e in events]
         note = {"role": "system", "kind": "text", "text": f"🔔 {wake}"}
         if owner == self._active_session_id:
@@ -1264,7 +1459,7 @@ class _Session:
             else:
                 self._pending_wakes.pop(owner, None)
 
-    async def _flush_pending_wakes(self, owner: str | None) -> None:
+    async def _flush_pending_wakes(self, owner: str | None) -> bool:
         """Start one turn for every job of *owner* still waiting to be reported.
 
         The turn is given every pending job, including ones already steered: a steer is
@@ -1276,34 +1471,67 @@ class _Session:
         summarised into a sentence of this layer's own: a wake may relay a next step the
         *server* wrote, and a précis would drop it — the same reason :meth:`_wake_text`
         passes the payload through rather than describing it.
+
+        Returns whether a turn started, so a caller that has to tell the client can.
         """
         items = self._pending_wakes.pop(owner, [])
         if not items:
-            return
+            return False
         events = [i["ev"] for i in items]
         fresh = [i["ev"] for i in items if not i["told"]]
         wake = "\n\n".join(self._wake_text(e) for e in events)
         if owner != self._active_session_id:
-            await self._resume_detached_session(owner, wake, fresh)
-            return
+            if await self._resume_detached_session(owner, wake, fresh):
+                return True
+            self._keep_pending(owner, items)
+            return False
+        # The agent of *owner*, which here is the conversation on screen — but asked of
+        # the pool rather than read off ``self.worker``, because a worker released while
+        # this conversation sat idle would hand back the detached stand-in, whose queue
+        # no loop reads. A wake put there is a wake that never happens.
+        worker = self.pool.get(owner)
+        if worker is None:
+            logger.warning("wake for session %s held: it has no agent to run it", owner)
+            self._keep_pending(owner, items)
+            return False
         if fresh:
             self._record_wake(owner, "\n\n".join(self._wake_text(e) for e in fresh), fresh)
         self.history.append({"role": "user", "content": wake})
         self.history_full.append({"role": "user", "content": wake})
         self._autosave_session(list(self._display_messages))
         self._submitted_len = len(self.history)
-        self.worker.submit_query(wake, list(self.history), session_id=owner)
+        worker.submit_query(wake, list(self.history), session_id=owner)
+        return True
+
+    def _keep_pending(self, owner: str | None, items: list[dict]) -> None:
+        """Put wakes back after a flush that could not deliver them.
+
+        The flush takes them off the map before it can know whether it will succeed, and
+        every way it fails — a session deleted under it, a store that will not write, an
+        agent released out from under it — is a finished run reported to nobody, which is
+        the one outcome this whole mechanism exists to prevent. Prepended: they were
+        waiting before whatever arrived while this ran.
+
+        ``told`` is preserved, so a retry re-tells the model without showing the user the
+        same notice twice.
+        """
+        if not items:
+            return
+        self._pending_wakes[owner] = items + self._pending_wakes.get(owner, [])
 
     async def _resume_detached_session(self, session_id: str, wake: str,
-                                       fresh: list[dict]) -> None:
+                                       fresh: list[dict]) -> bool:
         """Run a job wake against a stored session that is not the one on screen.
 
         The conversation lives on disk, not in this object's ``history``, so the wake
         is appended there and the turn is submitted against that copy. Its events come
         back stamped with *this* session id and are filtered out of the socket's
         stream by :meth:`_is_foreign_event`; :meth:`_persist_detached_answer` is what
-        writes the answer back. Best-effort: a session that has since been deleted is
-        dropped with a note to the client rather than resurrected.
+        writes the answer back.
+
+        False when the turn did not start — a session deleted under it, a store that
+        will not write, an agent that is gone. The caller puts the wakes back rather
+        than letting the run go unreported.
         """
         keys = ", ".join(str(e.get("job_key", "?")) for e in fresh) or "?"
         try:
@@ -1311,30 +1539,52 @@ class _Session:
         except Exception:
             await self._notify(f"Background job '{keys}' finished, but "
                                f"the session that launched it is gone.")
-            return
-        wake_msg = {"role": "user", "content": wake}
-        session.llm_history.append(wake_msg)
-        session.llm_history_full.append(dict(wake_msg))
+            return False
         if fresh:
             shown = "\n\n".join(self._wake_text(e) for e in fresh)
             session.display_messages.append(
                 {"role": "system", "kind": "text", "text": f"🔔 {shown}"})
-        try:
-            self.store.save_session(session)
-        except Exception:
-            return
+        if not await self._submit_detached(session, wake):
+            return False
         log = self._detached_log(session_id)
         for e in fresh:
             log.append({"type": "job_wake", "text": self._wake_text(e),
                         "job": e.get("job_key")})
+        await self._notify(f"🔔 “{session.title or session_id}” resumed in the "
+                           f"background: {wake.split(chr(10))[0]}")
+        await self._send_sessions_list()
+        return True
+
+    async def _submit_detached(self, session, text: str) -> bool:
+        """Append *text* to a stored conversation and run a turn of it. False if it could not.
+
+        The agent is resolved through the pool by the session that *owns* the turn, not
+        read off ``self.worker``: that property answers for the conversation on screen,
+        which by definition is not this one. It would hand back another conversation's
+        agent — running this turn behind that one's work, and leaving ``is_busy`` saying
+        the wrong thing about both — or, where the visible conversation has not been
+        asked anything yet, the detached stand-in, whose queue no loop reads.
+        """
+        session_id = session.id
+        worker = self.pool.get(session_id)
+        if worker is None:
+            logger.warning("turn for session %s not started: it has no agent", session_id)
+            return False
+        msg = {"role": "user", "content": text}
+        session.llm_history.append(msg)
+        session.llm_history_full.append(dict(msg))
+        try:
+            self.store.save_session(session)
+        except Exception:
+            logger.warning("turn for session %s not started: its session would not save",
+                           session_id, exc_info=True)
+            return False
         # What the turn was handed, so the answer path can tell the turn's own messages
         # from the prefix it inherited — the same bookkeeping ``_submitted_len`` does
         # for the active session.
         self._detached_turns[session_id] = len(session.llm_history)
-        self.worker.submit_query(wake, list(session.llm_history), session_id=session_id)
-        await self._notify(f"🔔 “{session.title or session_id}” resumed in the "
-                           f"background: {wake.split(chr(10))[0]}")
-        await self._send_sessions_list()
+        worker.submit_query(text, list(session.llm_history), session_id=session_id)
+        return True
 
     def _detached_log(self, session_id: str) -> TranscriptLog:
         """A transcript writer bound to a session other than the active one.
@@ -1416,6 +1666,7 @@ class _Session:
         # finished into this conversation while it was answering leave together now,
         # against the history this turn just wrote.
         await self._flush_pending_wakes(session_id)
+        await self._flush_held_checkin(session_id)
 
     async def _compact_history(self) -> bool:
         """Summarize the middle of the session history. True when it actually shrank.

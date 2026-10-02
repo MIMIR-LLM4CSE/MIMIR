@@ -918,6 +918,11 @@ class MimirAgentViewProvider implements vscode.WebviewViewProvider {
           kind = "info";
         }
         break;
+      case "job_checkin":
+        // A periodic bulletin, not an ending: the runs are still going. Deliberately
+        // quiet — the point of a check-in is that nothing has happened yet, and a
+        // notification every time would train the user to ignore the ones that matter.
+        return;
       default:
         return;
     }
