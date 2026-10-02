@@ -428,6 +428,14 @@ The pluggable LLM backends behind one interface, plus token counting.
   `count_messages_tokens()`, with a per-content cache and an `allow_network` flag so an
   async loop can avoid a blocking tokenize call. The default `_tokenize_text()` is a
   chars-per-token heuristic that a subclass may override with an exact tokenizer.
+- **Calibration that outlives the process** (`token_calibration.py`): the two figures
+  measured against the server's own `prompt_tokens` — the per-call prompt overhead and
+  the history's chars-per-token — are cached in `<state>/token_calibration.json`, so a
+  session reopened against a fresh server is accounted for exactly as soon as its agent
+  is up, instead of only once its first answer lands. The ratio is keyed by model; the overhead by a
+  fingerprint of everything it is made of (model, context mode, system prompt,
+  advertised tools), so a changed fixed part is a miss and the honest estimate answers
+  rather than a stale measurement.
 - `served_models()` reports the model ids an endpoint exposes, `[]` where a backend cannot
   enumerate itself. It is what lets the WS server resolve an unspecified model without
   testing which backend is active.
@@ -895,6 +903,13 @@ a fraction of the tokens — so that is what the model resumes on. Absent a summ
 window is only the tail a front-trim left, and the record is then the faithful resume.
 Reloading the record over a compacted window is what handed the model a context that was
 full before the user had typed.
+
+**A resume is budgeted as the session it was.** The window is sized from the context mode,
+which only the agent can answer for — and a resumed conversation has no agent until its
+first query. So the mode is saved with the session (`context_mode`) and is what
+`_ctx_budget` assumes until an agent answers for itself; the pre-query budget check runs
+*after* `_ensure_worker`, never before. Read too early, it answered compact for a full-mode
+session, called a 60k window an overflow, and compacted and trimmed to fit 32k.
 
 **Progress is pushed, never recorded.** A tool call that blocks the turn cannot report
 on itself, so the session polls the blocking run's channel once a second

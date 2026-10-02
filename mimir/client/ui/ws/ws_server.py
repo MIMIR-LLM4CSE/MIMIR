@@ -86,7 +86,11 @@ Protocol — all messages are JSON objects, one per send/recv:
                                "overhead_tokens": 0,
                                "overhead_measured": false,  # true once server-reported
                                "history_messages": 0,        # in the window the model sees
-                               "history_messages_full": 0}   # in the untrimmed record
+                               "history_messages_full": 0,   # in the untrimmed record
+                               "provisional": false}         # no agent yet: the fixed
+                                                             # part is not counted in
+                                                             # used_tokens, so the figure
+                                                             # is a floor, not a verdict
     {"type": "resources",      "resources": [{"uri": "...", "name": "...",
                                "description": "...", "mimeType": "..."}]}  # attachable resources
 

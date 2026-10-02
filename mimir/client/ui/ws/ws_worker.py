@@ -87,9 +87,9 @@ class _AgentWorker:
         The stand-in for "this conversation has no agent yet", which is the ordinary state
         until its first query. A real ``_AgentWorker`` rather than a parallel null class, on
         purpose: every getter here answers for ``_agent is None`` (``get_context_mode`` →
-        "compact", ``get_temperature_state`` → the stored preference, ``toggles_state`` →
-        empty) and every setter is a no-op in that state. A separate class would restate all
-        of those, and then drift from them.
+        the default its caller passes, ``get_temperature_state`` → the stored preference,
+        ``toggles_state`` → empty) and every setter is a no-op in that state. A separate
+        class would restate all of those, and then drift from them.
 
         What it must never be given is a query: ``submit_query`` would put it on a queue no
         loop is reading. The session resolves a real worker through the pool for that.
@@ -120,6 +120,11 @@ class _AgentWorker:
         the backend wait and the ~19 server spawns.
         """
         self.model = model
+        # Whether the overhead `context_overhead_tokens` last returned came from a
+        # server's own count. Recorded as it is computed rather than worked out again:
+        # answering it needs the system prompt and the tools schema, and the bar asks
+        # both questions once a second.
+        self._overhead_measured = False
         # The conversation this worker exists for, fixed for its whole life. One worker
         # per session is what lets a turn keep running in a conversation nobody is looking
         # at: a worker shared between conversations can stream only one of them anywhere
@@ -1365,10 +1370,18 @@ class _AgentWorker:
             except ValueError:
                 pass
 
-    def get_context_mode(self) -> str:
+    def get_context_mode(self, default: str = "full") -> str:
+        """The agent's context mode, or *default* while there is no agent.
+
+        The default is the caller's to give, and it matters: the context budget is
+        derived from this, and answering "compact" for a conversation that was running
+        in full mode sized its window at 32k. A session resumed before its first query
+        passes the mode it was saved with; everything else gets ``MimirAgent``'s own
+        default, which is what the agent built for it will have.
+        """
         if self._agent is not None:
-            return getattr(self._agent, "context_mode", "compact")
-        return "compact"
+            return getattr(self._agent, "context_mode", default)
+        return default
 
     def get_enforcement(self) -> str:
         if self._agent is not None:
@@ -1563,13 +1576,12 @@ class _AgentWorker:
         the prompt it is about to send, after it the server's reading of what it
         received. Saying which one is on screen turns a figure that quietly shifts
         after the first turn into one the user can account for.
+
+        Reads what :meth:`context_overhead_tokens` recorded on its last call, so ask it
+        after that one. A figure read back from the calibration cache counts as measured:
+        a server did measure it, against this very system prompt and tool set.
         """
-        try:
-            from ...query_engine.backends.factory import get_backend
-            probe = getattr(get_backend(), "measured_prompt_overhead", None)
-            return callable(probe) and probe(self.model) is not None
-        except Exception:
-            return False
+        return self._overhead_measured
 
     def context_overhead_tokens(self) -> int:
         """Fixed prompt overhead (tokens) sent on *every* LLM call besides history.
@@ -1596,6 +1608,15 @@ class _AgentWorker:
         merely close — and it is why the estimate above only has to carry the session
         as far as its first answer.
 
+        A measured figure outlives the process too: it is written to the calibration
+        cache under a fingerprint of the whole fixed part (model, mode, system prompt,
+        advertised tools) and read back on the next run. A session reopened against a
+        fresh server is therefore accounted for exactly from its first frame rather
+        than from its first answer — which is what kept the bar reading over-full on a
+        resume. The fingerprint is the safety: change a mode, a server or the prompt
+        and the entry is simply not found, so the estimate answers instead of a stale
+        measurement wearing its authority.
+
         Best-effort, cached via the backend's token cache; never raises.
         """
         agent = self._agent
@@ -1603,6 +1624,7 @@ class _AgentWorker:
             return 0
         try:
             from ...query_engine.backends.factory import get_backend
+            from ...query_engine import token_calibration
             from ...agent_core import build_base_system_content
             backend = get_backend()
             # getattr, not a direct call: a backend stub without the calibration
@@ -1610,17 +1632,32 @@ class _AgentWorker:
             # to the except below.
             probe = getattr(backend, "measured_prompt_overhead", None)
             measured = probe(self.model) if callable(probe) else None
-            if measured is not None:
-                return measured
             mode = getattr(agent, "mode", "") or ""
             build = getattr(agent, "build_system_content_now", None)
             prompt = build(mode) if callable(build) else build_base_system_content()
-            total = backend.count_text_tokens(self.model, prompt, allow_network=False)
             narrow = getattr(agent, "advertised_tools_for_mode", None)
             tools = narrow(mode) if callable(narrow) else getattr(agent, "tools", None)
-            if tools:
+            tools_json = json.dumps(tools) if tools else ""
+            key = token_calibration.overhead_key(
+                self.model, getattr(agent, "context_mode", "full"), prompt, tools_json
+            )
+            if measured is not None:
+                # Write-through, so the next run of this same configuration starts
+                # calibrated. A no-op when the figure is already on disk, which it is
+                # for all but the first call after a turn — the bar asks every second.
+                token_calibration.remember_overhead(key, measured)
+                self._overhead_measured = True
+                return measured
+            remembered = token_calibration.recall_overhead(key)
+            if remembered is not None:
+                # Measured by a server too, against this very prompt and tool set.
+                self._overhead_measured = True
+                return remembered
+            self._overhead_measured = False
+            total = backend.count_text_tokens(self.model, prompt, allow_network=False)
+            if tools_json:
                 total += backend.count_text_tokens(
-                    self.model, json.dumps(tools), allow_network=False
+                    self.model, tools_json, allow_network=False
                 )
             return total
         except Exception:

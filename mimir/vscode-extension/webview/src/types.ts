@@ -547,6 +547,10 @@ export interface ContextUsageMessage {
   /** True once `overhead_tokens` is the size the server reported for a real prompt,
    *  false while it is still this client's estimate of the prompt it will send. */
   overhead_measured?: boolean;
+  /** True while the conversation has no agent yet: the system prompt and tools schema
+   *  are not in `used_tokens` at all, so the figure is a floor and the percentage must
+   *  not be read as a verdict. */
+  provisional?: boolean;
   /** Messages in the window the model actually sees this turn. */
   history_messages?: number;
   /** Messages in the untrimmed record a resume would start from. Larger than

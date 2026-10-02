@@ -75,6 +75,24 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   escape-hatch value.
 
 ### Fixed
+- Reopening a conversation no longer costs it history. The pre-query budget check ran
+  before the agent existed, so it read the context mode off a conversation that had
+  none and sized the window at compact's 32k: a resumed session showed the bar
+  over-full and its first query compacted and front-trimmed a history that fit the real
+  window perfectly well. The check now runs once the agent is up, and the mode is saved
+  with the session so a resume has its own window to measure against before then.
+- The context bar is exact as soon as the agent is up after a restart, rather than only
+  once the first answer lands. The server-measured prompt overhead and the history's
+  chars-per-token are kept in `<state>/token_calibration.json` and read back on the next
+  run — the overhead under a fingerprint of the whole fixed part (model, mode, system
+  prompt, advertised tools), so enabling a server or switching mode is a cache miss
+  rather than a stale figure. The bar used to come back on a default heuristic and a
+  ceiling estimate, then shift on its own once the first reply re-measured it — and with
+  no `/tokenize` endpoint there is no other way back to an exact number.
+- The context bar no longer claims an overflow it cannot have measured. Before a
+  conversation has an agent, the system prompt and tools — tens of thousands of tokens —
+  are not in the figure at all, so it now reads as a floor (`≥`, neutral colour) and
+  says so, instead of drawing a red overflow from a number it knows to be incomplete.
 - A command run by a tool can no longer read the server's stdin, which is that
   server's MCP protocol pipe. `ssh` without `-n` drains stdin, and `cat`/`head`
   consume it, so such a command ate the client's own JSON-RPC traffic: a request

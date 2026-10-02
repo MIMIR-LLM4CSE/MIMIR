@@ -9,11 +9,33 @@ on the next agent step.
 from __future__ import annotations
 
 import json
+import tempfile
 import unittest
 from unittest.mock import patch
 
-from mimir.client.query_engine import streaming
+from mimir.client.config import constants
+from mimir.client.query_engine import streaming, token_calibration
 from mimir.client.query_engine.backends.base import LLMBackend, message_wire_form
+
+
+class _IsolatedCalibrationCache:
+    """Point the on-disk calibration cache at a directory of this test's own.
+
+    A measurement is remembered across runs on purpose, which makes the cache shared
+    state between tests as much as between sessions: without this, one test's ratio
+    answers for the next one's fresh backend, and the suite writes into the state
+    directory of whoever runs it.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        self._state_dir = tempfile.TemporaryDirectory()
+        patcher = patch.object(constants, "STATE_DIR", self._state_dir.name)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        token_calibration.reset_for_tests()
+        self.addCleanup(token_calibration.reset_for_tests)
+        self.addCleanup(self._state_dir.cleanup)
 
 
 class _Backend(LLMBackend):
@@ -46,7 +68,7 @@ _HISTORY = [
 ]
 
 
-class OverheadCalibrationTests(unittest.TestCase):
+class OverheadCalibrationTests(_IsolatedCalibrationCache, unittest.TestCase):
 
     def test_agent_step_calibrates_and_strips_the_figure(self) -> None:
         backend = _Backend(reported=5020)
@@ -103,7 +125,7 @@ def _history(n_turns: int, dense_turns: int = 0) -> list[dict]:
     return msgs
 
 
-class CharsPerTokenCalibrationTests(unittest.TestCase):
+class CharsPerTokenCalibrationTests(_IsolatedCalibrationCache, unittest.TestCase):
     """The history's ratio is measured from the server, with no /tokenize at all."""
 
     def _step(self, backend, messages, tools=_TOOLS):

@@ -117,6 +117,11 @@ class _Session:
         # Last `used_tokens` pushed to the client, so the periodic mid-turn refresh
         # only sends a frame when the number actually moved.
         self._last_context_usage: int | None = None
+        # The context mode of the session on screen, as saved with it. What sizes the
+        # window until this conversation has an agent to ask — a resumed session has no
+        # agent until its first query, and budgeting it as compact sized a full-mode
+        # window at 32k, which read as an overflow and trimmed history to match.
+        self._resumed_context_mode: str = "full"
         # Append-only JSONL record of the session, for resume and offline profiling.
         self.transcript = TranscriptLog()
         # Length of `history` at the moment the running turn was submitted, so the
@@ -354,6 +359,8 @@ class _Session:
         _write_active_session(session.id)
         self.history = []
         self.history_full = []
+        # Nothing to budget yet, and the agent built for it comes up in this mode.
+        self._resumed_context_mode = "full"
         self._submitted_len = 0
         self._display_messages = []
         self._pending_interaction = None
@@ -422,6 +429,9 @@ class _Session:
         # untrimmed record this line exists to preserve — the list-level protection
         # in the answer handler below cannot see through a shared reference.
         self.history = _reconcile([dict(m) for m in resumed])
+        # Before the budget is read anywhere below: it sizes the window from this until
+        # this conversation has an agent of its own to ask.
+        self._resumed_context_mode = session.context_mode or "full"
         self._submitted_len = len(self.history)
         self._display_messages = list(session.display_messages)
         self._pending_interaction = session.pending_interaction
@@ -602,6 +612,9 @@ class _Session:
             session.carry_context = agent_state.get("carry_context", {})
             session.todos = self.worker._load_todos()
             session.pending_interaction = getattr(self, "_pending_interaction", None)
+            # So a resume sizes the window the way this session was actually running,
+            # rather than falling back to a default that may not be its own.
+            session.context_mode = self.worker.get_context_mode(self._resumed_context_mode)
             # Persist deps sidecar alongside todos.
             try:
                 import json as _json
@@ -693,7 +706,7 @@ class _Session:
         For vLLM the window tracks the server's reported max_model_len (primed at
         startup so this runs against the cache, never blocking the event loop).
         """
-        mode = self.worker.get_context_mode()
+        mode = self.worker.get_context_mode(self._resumed_context_mode)
         total, reserved, _, _ = context_budget_for(self.worker.model, mode)
         return total, reserved
 
@@ -753,6 +766,12 @@ class _Session:
                 "reserved_tokens": reserved,
                 "overhead_tokens": overhead,
                 "overhead_measured": self.worker.context_overhead_is_measured(),
+                # No agent yet, so the fixed part — tens of thousands of tokens — is not
+                # in `used_tokens` at all. Said out loud rather than left to be read off
+                # a missing figure: this is the one moment the bar is too low by more
+                # than a rounding error, and a bar that claims an overflow it cannot
+                # have measured teaches the user to distrust the one that can.
+                "provisional": overhead == 0,
                 # What the model actually has this turn, against the untrimmed record
                 # kept behind it — so a trimmed window is visible, not silent.
                 "history_messages": len(self.history),
@@ -1494,18 +1513,13 @@ class _Session:
         except RuntimeError:
             coro.close()
 
-    async def _handle_query(self, msg: dict) -> None:
-        text = (msg.get("text") or "").strip()
-        if not text:
-            return
-        # Writing instead of answering moves past a deferred card: the call keeps its
-        # "not run" result, and a late answer to the card goes nowhere.
-        if self._pending_interaction is not None:
-            prompt_id = (self._pending_interaction.get("prompt") or {}).get("id")
-            if prompt_id:
-                self._stale_prompt_ids.add(prompt_id)
-            self._pending_interaction = None
+    async def _fit_history_to_budget(self) -> None:
+        """Make the window fit the budget before a new query is added to it.
 
+        Compaction first, front-trim as the fallback, and both are real losses of
+        context — so this must run against the budget the conversation actually has.
+        Its caller resolves the agent first for that reason.
+        """
         # Pre-query budget check: front-trim the oldest history so the new query fits.
         # Deliberately not compact_history — an LLM call from the event loop is unsafe
         # while the worker thread owns the agent.
@@ -1555,6 +1569,18 @@ class _Session:
             })
             await self._emit_context_usage()
 
+    async def _handle_query(self, msg: dict) -> None:
+        text = (msg.get("text") or "").strip()
+        if not text:
+            return
+        # Writing instead of answering moves past a deferred card: the call keeps its
+        # "not run" result, and a late answer to the card goes nowhere.
+        if self._pending_interaction is not None:
+            prompt_id = (self._pending_interaction.get("prompt") or {}).get("id")
+            if prompt_id:
+                self._stale_prompt_ids.add(prompt_id)
+            self._pending_interaction = None
+
         # Resolve @<uri> mentions on the worker's loop (where the MCP sessions live),
         # then submit the augmented text. History and display keep the RAW `text`, so
         # the attachment is per-turn. Caveat: in full-context mode the augmented message
@@ -1565,6 +1591,12 @@ class _Session:
         # and the turn is queued below with the mentions left unresolved — the text is
         # still exactly what the user wrote.
         worker = await self._ensure_worker()
+        # After the agent, never before it: the budget is sized from its context mode
+        # and its prompt overhead, and neither can be read off a conversation that has
+        # no agent yet. A resumed session asked too early was budgeted at compact's 32k,
+        # which read as an overflow and compacted and trimmed a history that fit the
+        # real window perfectly well.
+        await self._fit_history_to_budget()
         attached_uris: list[str] = []
         if worker is not None:
             try:
@@ -2207,6 +2239,10 @@ class _Session:
             mode = text[9:].strip().lower()
             if mode in ("compact", "full"):
                 self._apply_setting("set_context_mode", mode)
+                # Also what the budget assumes until an agent answers for itself, and
+                # what the session is saved with: a mode chosen before the first query
+                # must not be forgotten by the one piece of code that sizes the window.
+                self._resumed_context_mode = mode
                 await self.ws.send(json.dumps({"type": "context_mode", "mode": mode}))
             else:
                 await self.ws.send(json.dumps({"type": "error", "text": f"Unknown context mode: {mode}. Use compact or full."}))

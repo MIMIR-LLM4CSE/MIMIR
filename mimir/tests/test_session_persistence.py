@@ -82,6 +82,9 @@ class _FakeWorker:
     def load_agent_state(self, state):
         pass
 
+    def get_context_mode(self, default="full"):
+        return default
+
 
 def _session(active="s1"):
     sess = object.__new__(_Session)
@@ -92,6 +95,7 @@ def _session(active="s1"):
     sess._display_messages = []
     sess.history = []
     sess.history_full = []
+    sess._resumed_context_mode = "full"
     sess.transcript = mock.Mock()
     return sess
 
