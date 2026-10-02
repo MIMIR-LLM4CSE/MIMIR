@@ -53,6 +53,14 @@ Protocol — all messages are JSON objects, one per send/recv:
                                                        # while the user reads another —
                                                        # and the answer must come back
                                                        # with that id (below).
+    {"type": "prompt_expired", "id": "...", "kind": "user_question",
+                               "timeout_secs": 300,
+                               "session_id": "...", "session_title": "..."}
+                                                       # the wait behind that card gave
+                                                       # up: close it, here or in the
+                                                       # foreign-prompt strip. The turn
+                                                       # is producing again — it went on
+                                                       # with the option it recommended
     {"type": "queued",         "session_id": "...", "position": 1, "text": "..."}
                                                        # every agent slot is taken; this
                                                        # conversation's turn starts when
@@ -123,7 +131,8 @@ Protocol — all messages are JSON objects, one per send/recv:
                                   # off the card. An answer without one is DROPPED rather
                                   # than given to whichever conversation is on screen:
                                   # that would settle a question another one asked, with
-                                  # the user's approval on a call they never saw.
+                                  # the user's approval on a call they never saw. An
+                                  # answer to a card whose wait expired is dropped too.
     {"type": "divert_to_background", "id": "..."}   # detach the run now blocking the
                                   # turn, keeping what it has already done. The id names
                                   # the row, whose tool name is the run channel its

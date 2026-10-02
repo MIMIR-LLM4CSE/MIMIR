@@ -36,6 +36,12 @@ from ...tool_execution.formatter import parse_tool_payload
 
 logger = logging.getLogger(__name__)
 
+# What a bounded prompt wait returns when its wall passes with nothing answered. A
+# unique instance compared with ``is``, never read as a response: ``None`` already
+# means cancelled, and an expired card has to be taken back down rather than treated
+# as a user who said no.
+TIMED_OUT: dict = {"timed_out": True}
+
 
 def _direct_opener():
     """An opener that ignores HTTP_PROXY/HTTPS_PROXY.
@@ -211,6 +217,10 @@ class _AgentWorker:
         # The raw questions of the pending question card — how a deferred question is
         # matched to the call that asked it.
         self._pending_questions: list | None = None
+        # Cards whose wait gave up before an answer came. An answer that lands after
+        # that is dropped rather than queued: the call that asked has already moved on,
+        # and a queued answer would settle whichever prompt comes next instead.
+        self._expired_prompt_ids: set[str] = set()
 
         self._thread: threading.Thread | None = None
 
@@ -729,7 +739,7 @@ class _AgentWorker:
                            "answer": answer})
         self._query_event.set()
 
-    def _emit_prompt(self, payload: dict, questions: list | None = None) -> None:
+    def _emit_prompt(self, payload: dict, questions: list | None = None) -> dict:
         """Send a card the turn is about to park on, and remember it while it waits.
 
         An agent outlives the connections that read it: a socket that drops while it is
@@ -755,8 +765,11 @@ class _AgentWorker:
         # Nobody is there to read it (deferring), or the answer is already in hand
         # (resuming): the wait below settles it without a card.
         if self._deferring() or self._preanswer_for(payload) is not None:
-            return
+            return payload
         self.out_q.put(payload)
+        # The attributed payload, so a caller that has to take the card back down
+        # (an expired question) addresses the same conversation the card named.
+        return payload
 
     def _deferring(self) -> bool:
         defer = getattr(self, "_defer", None)
@@ -785,14 +798,21 @@ class _AgentWorker:
             queued = [ev.get("id") for ev in self.out_q.queue if isinstance(ev, dict)]
         return None if prompt.get("id") in queued else prompt
 
-    def _await_response(self, q: "_queue.Queue[dict]") -> dict | None:
-        """Block until a WS response lands on ``q`` — with no wall-clock timeout.
+    def _await_response(
+        self, q: "_queue.Queue[dict]", timeout: float | None = None
+    ) -> dict | None:
+        """Block until a WS response lands on ``q``, or until *timeout* passes.
 
-        An unanswered approval/question must keep the agent *parked*: it
-        must never silently proceed just because the user was slow to respond.
-        So we wait indefinitely instead of timing out. To stay responsive to the
-        Stop button, we poll in short slices and bail the moment the agent's
-        cancel flag is set (from the WS thread), returning ``None`` for cancelled.
+        An unanswered approval must keep the agent *parked*: it must never silently
+        proceed just because the user was slow to respond, so approvals pass no
+        timeout and wait indefinitely. To stay responsive to the Stop button, we poll
+        in short slices and bail the moment the agent's cancel flag is set (from the
+        WS thread), returning ``None`` for cancelled.
+
+        With a *timeout*, the wait gives up once it passes and returns
+        :data:`TIMED_OUT` — told apart from the cancelled ``None`` because the caller
+        has a card on screen to take back down, and the two endings read differently
+        to the model.
 
         This is the single seam every WS prompt (approval, out-of-workspace path,
         question) blocks on, so it is where the wait is marked as *human*
@@ -804,6 +824,7 @@ class _AgentWorker:
             self._preanswer = None
             self._pending_prompt = None
             return pre.get("response") or {}
+        deadline = None if timeout is None else time.monotonic() + timeout
         try:
             with human_pause.human_pause():
                 while True:
@@ -813,6 +834,8 @@ class _AgentWorker:
                     if self._deferring():
                         self._record_deferral()
                         return None
+                    if deadline is not None and time.monotonic() >= deadline:
+                        return TIMED_OUT
                     try:
                         return q.get(timeout=0.25)
                     except _queue.Empty:
@@ -822,6 +845,23 @@ class _AgentWorker:
             # and a card resent past this point would be one nothing is waiting on.
             self._pending_prompt = None
             self._pending_questions = None
+
+    def _expire_prompt(self, req_id: str, q: "_queue.Queue[dict]") -> None:
+        """Note that *req_id*'s wait gave up, and clear any answer already in flight.
+
+        The queue is drained for an answer that crossed the wall — the user clicking as
+        the wait ended — because nothing reads it any more and the next prompt would.
+        Later arrivals are refused by id in ``resolve_question``.
+        """
+        self._expired_prompt_ids.add(req_id)
+        # Bounded: the ids are uuids and never recur, so none ever leaves on its own.
+        if len(self._expired_prompt_ids) > 200:
+            self._expired_prompt_ids = {req_id}
+        while True:
+            try:
+                q.get_nowait()
+            except _queue.Empty:
+                break
 
     def _record_deferral(self) -> None:
         """Note the prompt being set aside, and which call it holds up."""
@@ -965,7 +1005,7 @@ class _AgentWorker:
             return (True, False)
         return (False, False)
 
-    def _question_shim(self, questions: list) -> dict:
+    def _question_shim(self, questions: list, timeout_secs: float | None = None) -> dict:
         """Sync clarification questions — blocks the worker thread until answered.
 
         Mirrors ``_approval_shim``: emits a ``user_question`` card carrying the whole
@@ -973,15 +1013,35 @@ class _AgentWorker:
         WS event loop) until a ``user_question_response`` arrives. The frontend shows
         the questions one at a time and returns all ``answers`` together. A cancel
         returns no answers so the agent proceeds with its best judgment.
+
+        ``timeout_secs`` bounds the wait (``ask_user_question`` passes it; plan
+        approval does not). When it passes, a ``prompt_expired`` event takes the card
+        off the client's screen — it is answering a question nobody is waiting on any
+        more — and the result says ``timed_out``, which the tool turns into "nobody
+        answered, go with what you recommended".
         """
         req_id = str(uuid.uuid4())
-        self._emit_prompt({
+        emitted = self._emit_prompt({
             "type": "user_question",
             "id": req_id,
             "questions": list(questions),
+            # So the card can show what is left of the wait. Closing it is this side's
+            # call (``prompt_expired``); the client only displays the countdown, which
+            # is what keeps the card disappearing from reading as a glitch.
+            "timeout_secs": int(timeout_secs) if timeout_secs else None,
         }, questions=list(questions))
-        # No timeout: keep the agent parked until answered (Stop cancels).
-        response = self._await_response(self._question_q)
+        response = self._await_response(self._question_q, timeout=timeout_secs)
+        if response is TIMED_OUT:
+            self._expire_prompt(req_id, self._question_q)
+            self.out_q.put({
+                "type": "prompt_expired",
+                "id": req_id,
+                "kind": "user_question",
+                "session_id": emitted.get("session_id"),
+                "session_title": emitted.get("session_title") or "",
+                "timeout_secs": int(timeout_secs or 0),
+            })
+            return {"answers": [], "timed_out": True, "timeout_secs": timeout_secs}
         if response is None:
             return {"answers": []}
         answers: list[dict] = []
@@ -1405,7 +1465,11 @@ class _AgentWorker:
     def resolve_approval(self, choice: str, approved_files: list | None = None) -> None:
         self._approval_q.put({"choice": choice, "approved_files": approved_files})
 
-    def resolve_question(self, answers: list | None) -> None:
+    def resolve_question(self, answers: list | None, prompt_id: str | None = None) -> None:
+        if prompt_id and prompt_id in self._expired_prompt_ids:
+            logger.info("dropping an answer to question %s, whose wait had expired",
+                        prompt_id)
+            return
         self._question_q.put({"answers": answers or []})
 
     def set_mode(self, mode: str) -> str:

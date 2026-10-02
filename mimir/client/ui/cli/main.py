@@ -3,7 +3,9 @@ from __future__ import annotations
 import argparse
 import asyncio
 import os
+import select
 import sys
+import time
 from pathlib import Path
 
 if __package__ in {None, ""}:
@@ -43,6 +45,40 @@ async def main(model: str | None = None) -> None:
     await agent.cleanup()
 
 
+class _QuestionExpired(Exception):
+    """Raised inside a question prompt when its answer deadline passes."""
+
+
+def _ask_line(prompt: str, deadline: float | None) -> str:
+    """Read one line from stdin, giving up at *deadline*.
+
+    With no deadline this is plain ``input()`` — readline editing and history intact,
+    which is what every other CLI prompt gets. With one, stdin is polled instead:
+    ``input()`` cannot be interrupted, and a question nobody is at the keyboard for
+    has to end by itself. Raises :class:`_QuestionExpired` when the deadline passes
+    first, ``EOFError`` when there is no stdin left to read.
+    """
+    if deadline is None:
+        return input(prompt).strip()
+    print(prompt, end="", flush=True)
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise _QuestionExpired
+        try:
+            # Sliced, so Ctrl-C lands within a second rather than at the deadline.
+            ready, _, _ = select.select([sys.stdin], [], [], min(remaining, 1.0))
+        except (OSError, ValueError):
+            # No pollable stdin (a wrapped stream, a platform without it): the wall
+            # is worth less than the prompt, so fall back to a blocking read.
+            return input().strip()
+        if ready:
+            line = sys.stdin.readline()
+            if not line:
+                raise EOFError
+            return line.strip()
+
+
 def _cli_ask_one(
     question: str,
     header: str,
@@ -50,12 +86,14 @@ def _cli_ask_one(
     multi_select: bool,
     *,
     progress: str = "",
+    deadline: float | None = None,
 ) -> dict:
     """Prompt the user with a single multiple-choice question. Returns the selection.
 
     Prints the question and numbered options (plus an "Other" free-text entry) and
     reads a selection from stdin. Returns ``{"selected": [<labels>], "other_text":
     <str|None>}``; an empty selection means the user declined for this question.
+    Raises :class:`_QuestionExpired` when *deadline* passes with nothing answered.
     """
     labels = [str((o or {}).get("label", "")).strip() for o in options]
     labels = [lbl for lbl in labels if lbl]
@@ -67,6 +105,9 @@ def _cli_ask_one(
     print(f"\n❓ {header}{progress}".rstrip())
     if question:
         print(f"   {question}")
+    if deadline is not None:
+        left = max(0, int(deadline - time.monotonic()))
+        print(f"   (answer within {left // 60 or 1} min, or I go with [1])")
     for i, lbl in enumerate(labels, 1):
         desc = descriptions.get(lbl)
         print(f"   [{i}] {lbl}" + (f" — {desc}" if desc else ""))
@@ -87,7 +128,7 @@ def _cli_ask_one(
             # `ask_user_question` is itself a tool call, so the user's thinking time
             # would otherwise burn its timeout budget (see human_pause).
             with human_pause.human_pause():
-                raw = input(prompt).strip()
+                raw = _ask_line(prompt, deadline)
         except EOFError:
             return {"selected": [], "other_text": None}
 
@@ -105,7 +146,9 @@ def _cli_ask_one(
             if idx == other_idx:
                 try:
                     with human_pause.human_pause():
-                        other_text = input("   Your answer: ").strip() or None
+                        # No deadline on the free-text entry: the user is at the
+                        # keyboard typing, which is the thing the wall was waiting for.
+                        other_text = _ask_line("   Your answer: ", None) or None
                 except EOFError:
                     other_text = None
                 if other_text:
@@ -118,7 +161,7 @@ def _cli_ask_one(
         print(f"   Enter a number between 1 and {other_idx}.")
 
 
-def _cli_request_question(questions: list) -> dict:
+def _cli_request_question(questions: list, timeout_secs: float | None = None) -> dict:
     """Ask the user one or more clarifying questions sequentially via stdin.
 
     Each item is a ``{header, question,
@@ -126,21 +169,36 @@ def _cli_request_question(questions: list) -> dict:
     are collected in order. Returns ``{"answers": [{"selected": [...], "other_text":
     ...}, ...]}``; an all-empty result means the user declined and the agent should
     proceed with its best judgment.
+
+    ``timeout_secs`` bounds the *whole* batch — it is one tool call, and the caller's
+    wall is on that call, not on each question of it. When it passes, the prompt stops
+    where it is and the result says ``timed_out``, which the tool turns into "nobody
+    answered, go with what you recommended". ``None`` waits indefinitely.
     """
     total = len(questions)
+    deadline = None if timeout_secs is None else time.monotonic() + timeout_secs
     answers: list[dict] = []
     for i, q in enumerate(questions, 1):
         q = q or {}
         progress = f" ({i}/{total})" if total > 1 else ""
-        answers.append(
-            _cli_ask_one(
-                str(q.get("question", "")),
-                str(q.get("header", "")),
-                q.get("options") or [],
-                bool(q.get("multiSelect") or q.get("multi_select")),
-                progress=progress,
+        try:
+            answers.append(
+                _cli_ask_one(
+                    str(q.get("question", "")),
+                    str(q.get("header", "")),
+                    q.get("options") or [],
+                    bool(q.get("multiSelect") or q.get("multi_select")),
+                    progress=progress,
+                    deadline=deadline,
+                )
             )
-        )
+        except _QuestionExpired:
+            # Answers already given are dropped with the rest: the tool reports a
+            # batch that nobody finished, and a half-answered batch has no shape in
+            # its result — the model goes with what it recommended for all of them.
+            print("\n   No answer — closing the question and going with "
+                  "the recommended option.\n", flush=True)
+            return {"answers": [], "timed_out": True, "timeout_secs": timeout_secs}
 
     if not any(a.get("selected") or a.get("other_text") for a in answers):
         return {"answers": []}

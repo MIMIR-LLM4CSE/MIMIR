@@ -57,7 +57,9 @@ _WAKE_SUMMARY_LIMIT = 2000
 # during a background-job wake in another session) would leave the turn waiting on an
 # answer the user was never shown. They carry their ``session_id``, so the client can
 # say which conversation is asking.
-_INTERACTION_EVENTS = frozenset({"approval", "user_question"})
+# ``prompt_expired`` rides with them: it takes one of these cards back off the screen,
+# and filtering it as foreign would leave a card up for a wait that has ended.
+_INTERACTION_EVENTS = frozenset({"approval", "user_question", "prompt_expired"})
 
 # Events a reconnect may not throw away. Everything else a worker queues describes a
 # turn — its tokens, its rows, its answer — and is debris once the socket that was
@@ -2044,7 +2046,9 @@ class _Session:
             return
         worker = self._worker_for_answer(msg)
         if worker is not None:
-            worker.resolve_question(msg.get("answers"))
+            # With the card's id: a question whose wait expired refuses its late answer
+            # rather than letting it settle the next prompt.
+            worker.resolve_question(msg.get("answers"), msg.get("id"))
 
     async def _resend_deferred_prompt(self) -> None:
         """Put the card a deferred turn of this session waits on back on screen."""

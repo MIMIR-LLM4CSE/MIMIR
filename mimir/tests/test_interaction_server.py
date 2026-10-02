@@ -253,6 +253,82 @@ class ElicitationTransportTests(unittest.TestCase):
             [["Postgres"], ["Ray Serve"]],
         )
 
+    def test_expiry_tells_the_model_to_go_with_its_recommendation(self) -> None:
+        """Nobody answered in time: proceed, not stop. The opposite of a cancel."""
+        from mimir.client.integration.server_manager import _make_elicitation_callback
+
+        agent = types.SimpleNamespace(
+            _request_user_question=lambda questions, timeout_secs=None: {
+                "answers": [], "timed_out": True, "timeout_secs": timeout_secs,
+            }
+        )
+        params = types.SimpleNamespace(
+            requestedSchema={"x_mimir": {"kind": "user_question", "questions": [_Q_DB]}}
+        )
+        elicit_result = asyncio.run(_make_elicitation_callback(agent)(None, params))
+        # An accepted result, because a decline has nowhere to carry the distinction.
+        self.assertEqual(elicit_result.action, "accept")
+
+        payload, _ = _run([_Q_DB], elicit_result)
+
+        self.assertEqual(payload["status"], "ok")
+        self.assertEqual(payload["answers"], [])
+        self.assertTrue(payload["timed_out"])
+        self.assertIn("5 min", payload["note"])
+        self.assertIn("what you recommend", payload["note"])
+        self.assertNotIn("asking the question in your reply", payload["note"])
+
+    def test_a_cancel_still_means_stop_and_ask(self) -> None:
+        """The other empty-handed ending, which must not be read as 'go ahead'."""
+        from mimir.client.integration.server_manager import _make_elicitation_callback
+
+        agent = types.SimpleNamespace(
+            _request_user_question=lambda questions, timeout_secs=None: {"answers": []}
+        )
+        params = types.SimpleNamespace(
+            requestedSchema={"x_mimir": {"kind": "user_question", "questions": [_Q_DB]}}
+        )
+        elicit_result = asyncio.run(_make_elicitation_callback(agent)(None, params))
+        self.assertEqual(elicit_result.action, "decline")
+
+        payload, _ = _run([_Q_DB], elicit_result)
+
+        self.assertEqual(payload["answers"], [])
+        self.assertNotIn("timed_out", payload)
+        self.assertIn("asking the question in your reply", payload["note"])
+
+    def test_the_handler_is_given_the_wall_it_must_answer_within(self) -> None:
+        from mimir.client.config import USER_QUESTION_TIMEOUT_SECS
+        from mimir.client.integration.server_manager import _make_elicitation_callback
+
+        seen: list = []
+
+        def _ask(questions, timeout_secs=None):
+            seen.append(timeout_secs)
+            return {"answers": [{"selected": ["Postgres"], "other_text": None}]}
+
+        params = types.SimpleNamespace(
+            requestedSchema={"x_mimir": {"kind": "user_question", "questions": [_Q_DB]}}
+        )
+        asyncio.run(_make_elicitation_callback(
+            types.SimpleNamespace(_request_user_question=_ask))(None, params))
+
+        self.assertEqual(seen, [USER_QUESTION_TIMEOUT_SECS])
+
+    def test_a_handler_without_a_wall_parameter_is_still_called(self) -> None:
+        """A frontend (or a test double) that takes only the questions keeps working."""
+        from mimir.client.integration.server_manager import _make_elicitation_callback
+
+        params = types.SimpleNamespace(
+            requestedSchema={"x_mimir": {"kind": "user_question", "questions": [_Q_DB]}}
+        )
+        result = asyncio.run(_make_elicitation_callback(types.SimpleNamespace(
+            _request_user_question=lambda questions: {
+                "answers": [{"selected": ["SQLite"], "other_text": None}]},
+        ))(None, params))
+
+        self.assertEqual(result.action, "accept")
+
     def test_channel_failure_is_an_error_not_a_free_choice(self) -> None:
         class _RaisingSession:
             async def elicit_form(self, message, requestedSchema):

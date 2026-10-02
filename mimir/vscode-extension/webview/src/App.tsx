@@ -190,6 +190,8 @@ export const App: React.FC = () => {
     questions: QuestionSpec[];
     // Which conversation asked, so the answer reaches the agent that is parked on it.
     sessionId?: string;
+    // Epoch ms the agent stops waiting at, when the question carries a wall.
+    expiresAt?: number;
   } | null>(null);
   // Batch review: accumulated file diffs across queries; persists until user accepts/reverts.
   const [batchFiles, setBatchFiles] = useState<DiffEntry[]>([]);
@@ -486,9 +488,25 @@ export const App: React.FC = () => {
           id: msg.id,
           questions: msg.questions,
           sessionId: msg.session_id ?? activeSessionIdRef.current ?? undefined,
+          expiresAt: msg.timeout_secs
+            ? Date.now() + msg.timeout_secs * 1000
+            : undefined,
         });
         dispatch(msg);
         scrollToBottom();
+        return;
+
+      // The wait behind a card ended with nothing answered. Nothing is sent back —
+      // the agent has already gone on with the option it recommended — so this only
+      // takes the card down, wherever it is showing, and marks the turn as producing
+      // again (the same tail as an answered prompt).
+      case "prompt_expired":
+        if (isForeign(msg)) {
+          forgetForeign(msg.session_id as string);
+          return;
+        }
+        setUserQuestion((prev) => (prev && prev.id !== msg.id ? prev : null));
+        dispatch({ type: "prompt_answered", resumes: true });
         return;
 
       case "context_usage":
@@ -1328,6 +1346,7 @@ export const App: React.FC = () => {
         {userQuestion && (
           <UserQuestion
             questions={userQuestion.questions}
+            expiresAt={userQuestion.expiresAt}
             onSubmit={(answers) => {
               send({
                 type: "user_question_response",

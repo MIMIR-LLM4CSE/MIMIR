@@ -278,7 +278,7 @@ The client registers 21 servers by default; the authoritative registry lives in
 | `code_intel` | Symbol navigation (ctags + LSP): definition, references, outline, hover |
 | `bash` | Workspace shell: search, compile, run, validate, test, `git`, file management — any command but a short denylist, approval-gated and path-confined |
 | `todo` | Agent task checklist: create, read, update an ordered per-session todo list |
-| `interaction` | `ask_user_question` — pause mid-run to ask a structured clarifying question |
+| `interaction` | `ask_user_question` — pause mid-run to ask a structured clarifying question (five minutes to answer, then it closes and the agent goes with the option it recommended) |
 | `agent` | `spawn_agent` — fan work out to a fresh agent: `role="explore"` (read-only recon, answers with a cited conclusion) or `role="task"` (full toolkit) |
 | `proxy` | Proxy registration, references, runs, benchmark suites, and the iterative eval loop (7 op-dispatched tools) |
 

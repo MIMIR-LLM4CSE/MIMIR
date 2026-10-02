@@ -547,6 +547,19 @@ export interface UserQuestionMessage extends Attributed {
   type: "user_question";
   id: string;
   questions: QuestionSpec[];
+  /** Seconds the agent waits for an answer before closing the card and going with
+   *  the first option. Absent on a card with no wall (plan approval). */
+  timeout_secs?: number;
+}
+
+/** The wait behind a card ended with nothing answered: close it, here or in the
+ *  foreign-prompt strip. The turn is producing again — it went on with what it
+ *  recommended — so it is not an answer and nothing is sent back. */
+export interface PromptExpiredMessage extends Attributed {
+  type: "prompt_expired";
+  id: string;
+  kind: "user_question";
+  timeout_secs?: number;
 }
 
 export interface QuestionAnswer {
@@ -676,6 +689,7 @@ export type ServerMessage =
   | ActiveEditorMessage
   | OpenEditorMessage
   | UserQuestionMessage
+  | PromptExpiredMessage
   | QueuedMessage;
 
 // ── Message types (client → server) ──────────────────────────────────────────

@@ -92,6 +92,15 @@ TOOL_CALL_TIMEOUT_SECS: int = 120
 # rather than a bare "timed out".
 TOOL_CALL_TIMEOUT_MAX_SECS: int = 1200
 
+# How long a clarification question (``ask_user_question``) waits for the user before
+# it gives up: the card is closed and the tool reports that nobody answered, so the
+# model carries on with the option it would have recommended. Human waits are excluded
+# from the tool-call budget (see ``human_pause``), so this is the only wall on them —
+# without it a question raised while nobody is at the keyboard parks the conversation
+# for ever. Plan approval keeps no wall: reading a plan legitimately takes longer than
+# picking an option, and nothing sensible happens by default there.
+USER_QUESTION_TIMEOUT_SECS: int = 300
+
 # Separate budget for the post-write auto-validation ladder (syntax/imports/lint/
 # typecheck/format + completeness + cross-file grep). It runs AFTER the write has
 # already hit disk, so it is purely advisory: exceeding this budget drops the

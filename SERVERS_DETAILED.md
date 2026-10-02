@@ -1123,7 +1123,7 @@ Purpose: let the agent pause mid-run and ask the **user** a clarifying question 
 selectable choices, then resume with the answer.
 
 Tools:
-- `ask_user_question(question, header, options, multi_select=False)`
+- `ask_user_question(questions)` — a batch of `{question, header, options, multi_select}`
 
 How it works — **MCP elicitation**:
 - The tool calls `ctx.session.elicit_form(message, requestedSchema)`, which sends an
@@ -1142,10 +1142,20 @@ How it works — **MCP elicitation**:
   aside and trailing punctuation are ignored — so real choices that merely contain those
   words ("Request changes from the reviewer") survive. A question left with no substantive
   option is dropped; a call left with no question returns a structured error.
-- Protocol outcomes: **accept** (answered), **decline** (user said no), **cancel**
-  (dismissed). Decline/cancel/timeout — or no interactive frontend connected — return an
-  empty selection, and the tool tells the model to *proceed with its best judgment* rather
-  than hang.
+- **The user gets five minutes** (`USER_QUESTION_TIMEOUT_SECS`). Both frontends bound the
+  wait — the webview card shows the countdown, the CLI polls stdin instead of blocking in
+  `input()` — and when it passes the card is closed (a `prompt_expired` event for the
+  webview, which also drops it from the foreign-prompt strip) and an answer arriving late
+  is refused by card id, so it cannot settle the next question. A human wait is excluded
+  from the tool-call budget (`human_pause`), so this is the only wall on it: without it a
+  question raised while nobody is at the keyboard parks the conversation for ever. Plan
+  approval, which goes through the same card, passes **no** wall: reading a plan takes
+  longer than picking an option, and nothing sensible happens by default there.
+- Protocol outcomes: **accept** (answered, or the wall passed), **decline** (user said no),
+  **cancel** (dismissed). The two empty-handed endings are told apart, because the model
+  must do opposite things with them: *cancelled* — or no interactive frontend connected —
+  means stop and put the question in the reply; *expired* means go on with the option
+  listed first, which is the one the model was told to recommend, saying which it took.
 
 Notes:
 - The tool is read-only and **not** approval-gated — asking a question is harmless.

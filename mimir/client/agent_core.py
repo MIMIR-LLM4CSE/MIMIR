@@ -705,14 +705,17 @@ class MimirAgent:
             return (True, False)
         return (False, False)
 
-    def _request_user_question(self, questions: list) -> dict:
+    def _request_user_question(self, questions: list, timeout_secs: float | None = None) -> dict:
         """Ask the user one or more clarifying questions (``ask_user_question`` tool).
 
         ``questions`` is a list of ``{header, question, multiSelect, options}`` specs
-        to ask in order. Returns ``{"answers": [{"selected": [<labels>],
-        "other_text": <str|None>}, ...]}`` — one entry per question. The default
-        (non-interactive) behaviour returns no answers, which the elicitation callback
-        maps to a ``decline`` so the model proceeds with its best judgment. Interactive
+        to ask in order. ``timeout_secs`` is how long to wait for the user before
+        giving up; ``None`` waits indefinitely (plan approval). Returns
+        ``{"answers": [{"selected": [<labels>], "other_text": <str|None>}, ...]}`` —
+        one entry per question — or ``{"answers": [], "timed_out": True}`` when the
+        wall passed with nothing answered. The default (non-interactive) behaviour
+        returns no answers at all, which the elicitation callback maps to a
+        ``decline`` so the model proceeds with its best judgment. Interactive
         front-ends replace this with a handler that prompts the user sequentially
         (CLI ``input()`` or a WebSocket question card).
         """

@@ -45,7 +45,9 @@ def _worker(session_id: str, title: str = "") -> _AgentWorker:
     w._pending_questions = None
     w.answered: list = []
     w.resolve_approval = lambda choice, files=None: w.answered.append(("approval", choice))
-    w.resolve_question = lambda answers: w.answered.append(("question", answers))
+    w.resolve_question = (
+        lambda answers, prompt_id=None: w.answered.append(("question", answers))
+    )
     return w
 
 

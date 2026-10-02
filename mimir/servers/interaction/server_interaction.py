@@ -7,6 +7,11 @@ or more clickable/selectable prompts to the human via MCP **elicitation**
 whatever frontend is active — the terminal CLI or the VSCode webview — and returns
 the user's selections.
 
+The frontend gives the user a bounded window to answer (five minutes — see
+``USER_QUESTION_TIMEOUT_SECS``); when it passes the card is closed and the tool says
+so, which the agent reads as "go ahead with what you recommend". Without that wall a
+question raised while nobody is at the keyboard parks the conversation for ever.
+
 Multiple questions are asked **sequentially** in a single elicitation: the frontend
 shows one question at a time and, when the user submits an answer, advances to the
 next (Claude-style), returning all answers in one shot — so the agent spends a
@@ -167,7 +172,9 @@ async def ask_user_question(
               "multi_select": false}``. ``header`` is a short label (a few words,
             e.g. "Database"); ``description`` per option is optional.
             ``multi_select`` (default false) lets the user pick several options for
-            that question. List only *substantive* choices: a free-text "Other" entry
+            that question. Put the option you would recommend first: it is what you
+            fall back to if the user does not answer in time. List only *substantive*
+            choices: a free-text "Other" entry
             is always shown by the frontend, so escape-hatch options ("Other",
             "Something else", "Request changes", "Add precisions", "None of these")
             are redundant and are stripped from your list.
@@ -175,10 +182,12 @@ async def ask_user_question(
     Returns:
         ``{"answers": [{"header": ..., "selected": [<labels>], "other_text":
         <str|None>}, ...]}`` — one entry per question, in order — on an answer.
-        The run is parked until the user answers, so expect to wait. If the user
-        cancels, or no interactive frontend is connected, the result carries an
-        empty ``answers`` list and a note: do NOT then decide for them — end your
-        turn by asking the question in your reply.
+        The run is parked while the user answers, so expect to wait. Two endings
+        carry no answers and the note says which. The user **cancelled**, or no
+        interactive frontend is connected: do NOT decide for them — end your turn by
+        asking the question in your reply. Or nobody answered **in time** (a five
+        minute wall, after which the card is closed): go on with the option you
+        recommended, saying which you took and that they can still redirect you.
     """
     clean_questions = _normalize_questions(questions)
     if not clean_questions:
@@ -251,6 +260,25 @@ async def ask_user_question(
                 "the user did not answer (cancelled, or no interactive frontend is "
                 "connected). Do not choose for them: stop and end your turn by asking "
                 "the question in your reply."
+            ),
+        })
+
+    # Nobody was there to answer within the wall the frontend gave them, and the card
+    # has been taken off their screen. Not a cancel: a cancel is a person declining to
+    # choose, and going back to them is the only honest answer to that. This is
+    # silence, and stopping on silence strands the run — so the model proceeds on the
+    # option it put first, which is the one it would have recommended.
+    if result.content.get("timed_out"):
+        minutes = int(result.content.get("timeout_secs") or 0) // 60
+        waited = f"{minutes} min" if minutes else "the allotted time"
+        return ok({
+            "answers": [],
+            "timed_out": True,
+            "note": (
+                f"the user did not answer within {waited} — the question has been "
+                "closed. Treat this as 'go ahead with what you recommend': carry on "
+                "with the option you listed first for each question, and say in your "
+                "reply which one you took and that they can redirect you."
             ),
         })
 

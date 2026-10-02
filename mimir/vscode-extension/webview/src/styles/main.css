@@ -2701,6 +2701,15 @@ body {
   color: var(--fg-dim);
 }
 
+/* How long is left to answer. Quiet: it is a fact about the card, not a warning —
+   nothing bad happens at zero, the agent simply proceeds on its recommendation. */
+.uq-countdown {
+  align-self: flex-start;
+  font-size: 10px;
+  letter-spacing: 0.02em;
+  color: var(--fg-dim);
+}
+
 .uq-header {
   align-self: flex-start;
   font-size: 10px;

@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import contextvars
 import copy
+import functools
+import inspect
 import json
 import os
 import re
@@ -14,7 +16,7 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
 from ..context.capabilities import infer_tool_caps
-from ..config.constants import STATE_DIR
+from ..config.constants import STATE_DIR, USER_QUESTION_TIMEOUT_SECS
 from ...servers._shared.state_paths import scratch_home
 
 
@@ -170,6 +172,20 @@ def _schema_with_arg_descriptions(tool: Any) -> dict:
     return schema
 
 
+def _bind_question_handler(ask: Any):
+    """``ask`` with the answer deadline applied, as a one-argument callable.
+
+    Frontends take the wall as a second parameter; handlers that do not offer one —
+    the non-interactive default's replacements in tests, a third-party shim — are
+    called as they always were and simply wait as long as they used to.
+    """
+    try:
+        inspect.signature(ask).bind(["q"], timeout_secs=USER_QUESTION_TIMEOUT_SECS)
+    except (TypeError, ValueError):
+        return ask
+    return functools.partial(ask, timeout_secs=USER_QUESTION_TIMEOUT_SECS)
+
+
 def _make_elicitation_callback(agent: Any):
     """Bridge MCP elicitation requests to the active frontend.
 
@@ -182,6 +198,11 @@ def _make_elicitation_callback(agent: Any):
 
     The frontend handlers are blocking/queue-based, so we run them off the event
     loop via ``run_in_executor`` to keep the agent loop responsive.
+
+    The handler is given ``USER_QUESTION_TIMEOUT_SECS`` as the wall to answer within.
+    The wall belongs to this path and not to the handler itself: plan approval calls
+    the same handler and waits indefinitely, which is why the timeout travels as an
+    argument instead of being read from the constant inside each frontend.
     """
 
     async def _callback(
@@ -205,15 +226,31 @@ def _make_elicitation_callback(agent: Any):
             result = await loop.run_in_executor(
                 None,
                 contextvars.copy_context().run,
-                agent._request_user_question,
+                _bind_question_handler(agent._request_user_question),
                 questions,
             )
         except Exception:
             return types.ElicitResult(action="cancel")
 
-        answers = list((result or {}).get("answers") or [])
+        result = result or {}
+        answers = list(result.get("answers") or [])
         if not answers:
-            return types.ElicitResult(action="decline")
+            if not result.get("timed_out"):
+                return types.ElicitResult(action="decline")
+            # Nobody was at the keyboard. Distinct from a decline, and the difference
+            # is what the tool tells the model: a cancelled question means stop and
+            # ask in the reply, an expired one means carry on with the recommended
+            # option. Carried as an accepted result because a decline has no room
+            # for it — ``action`` is the only thing a declined result reports.
+            return types.ElicitResult(
+                action="accept",
+                content={
+                    "answers": json.dumps([]),
+                    "timed_out": True,
+                    "timeout_secs": int(result.get("timeout_secs")
+                                        or USER_QUESTION_TIMEOUT_SECS),
+                },
+            )
 
         # ``ElicitResult.content`` is typed by the MCP SDK as
         # ``dict[str, str | int | float | bool | list[str] | None]`` — a list of
