@@ -102,6 +102,30 @@ function resolvePython(): string {
 }
 
 /**
+ * Environment the MIMIR server process is spawned with.
+ *
+ * The extension host inherits the user's login-shell environment — on
+ * Remote-SSH it is resolved from that shell at connection — and two of its
+ * variables poison any interpreter they reach. `PYTHONHOME` (exported by some
+ * module systems and setup snippets) overrides the interpreter's own home, so
+ * the shared venv's python runs on the user's stdlib and site-packages, or
+ * refuses to start outright; `PYTHONPATH` puts the user's packages ahead of
+ * the venv's in `sys.path`. Either one makes MIMIR "use the user's python"
+ * although the right binary was launched.
+ *
+ * Both are dropped here, for the processes MIMIR starts and nothing else. The
+ * user's shell is never touched (the 1.0.0 pollution fix promised as much),
+ * and nothing the user runs through the agent loses them: the bash tool
+ * already rebuilds a minimal environment for every command it executes.
+ */
+function mimirServerEnv(): NodeJS.ProcessEnv {
+  const env = { ...process.env };
+  delete env.PYTHONHOME;
+  delete env.PYTHONPATH;
+  return env;
+}
+
+/**
  * Update this extension from the shared release when it ships a newer version.
  *
  * Runs at most once per window (called from activate), never blocks startup, and
@@ -1080,8 +1104,10 @@ class MimirAgentViewProvider implements vscode.WebviewViewProvider {
     serverProcess = cp.spawn("bash", ["-c", spawnCmd], {
       cwd,
       // Anchor the agent's per-workspace state dir (.mimir) and the file-server
-      // root to the opened workspace, regardless of the process cwd.
-      env: { ...process.env, MCP_FILES_ROOT: cwd, ...noProxyEnv, ...verifyEnv, ...tokenizeEnv, ...maxLenEnv, ...anthropicEnv },
+      // root to the opened workspace, regardless of the process cwd. The base
+      // env is mimirServerEnv(): the user's PYTHONHOME/PYTHONPATH never reach
+      // the server's interpreter (see there).
+      env: { ...mimirServerEnv(), MCP_FILES_ROOT: cwd, ...noProxyEnv, ...verifyEnv, ...tokenizeEnv, ...maxLenEnv, ...anthropicEnv },
       stdio: ["ignore", "pipe", "pipe"],
     });
 
@@ -1418,8 +1444,9 @@ function startServer(context: vscode.ExtensionContext): void {
   serverProcess = cp.spawn("bash", ["-c", spawnCmd], {
     cwd,
     // Anchor the agent's per-workspace state dir (.mimir) and the file-server
-    // root to the opened workspace, regardless of the process cwd.
-    env: { ...process.env, MCP_FILES_ROOT: cwd, ...maxLenEnv },
+    // root to the opened workspace, regardless of the process cwd. Same
+    // python-env isolation as the connect path (see mimirServerEnv).
+    env: { ...mimirServerEnv(), MCP_FILES_ROOT: cwd, ...maxLenEnv },
     stdio: ["ignore", "pipe", "pipe"],
   });
 

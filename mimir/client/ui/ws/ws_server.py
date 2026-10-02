@@ -284,7 +284,12 @@ async def serve(
     # passes, so each window gets its own server) it is the kernel that picks one, and
     # it is not known until the socket is bound. The "Listening on" line below is the
     # one that carries the real address.
+    # The interpreter line is the server's own view of what it runs on: the extension
+    # logs the binary it launched, but a stray PYTHONHOME/PYTHONPATH in the inherited
+    # environment can still bend that interpreter onto another installation — this is
+    # the line that says so, from inside the process, where it cannot be mistaken.
     print(f"MIMIR WS server starting on {host}  (model: {_model})", file=_ORIGINAL_STDOUT)
+    print(f"Python: {sys.executable}  (prefix {sys.prefix})", file=_ORIGINAL_STDOUT)
     print("Initialising agent connections…", file=_ORIGINAL_STDOUT)
 
     # The pool, not an agent: one agent per conversation, built on that conversation's
