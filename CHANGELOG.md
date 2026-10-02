@@ -15,6 +15,27 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.1.1] — 2026-10-02
+
+### Fixed
+- The server is started without `PYTHONHOME` and `PYTHONPATH`, in the extension
+  and the CLI wrapper alike. Both travel with the user's login shell — module
+  systems and setup snippets export them — and each bends the interpreter onto
+  a python it was never meant to run: `PYTHONHOME` overrides the venv's own
+  home, so the shared interpreter loads another installation's stdlib and
+  site-packages (or refuses to start), and `PYTHONPATH` puts that
+  installation's packages ahead of the venv's. On a cluster login the result
+  reads as "MIMIR launched my python instead of its own", although the right
+  binary was executed. Both are now dropped for the processes MIMIR starts and
+  nothing else: the user's shell keeps everything it had, and commands the
+  agent runs were already executing under a rebuilt minimal environment of
+  their own, so nothing they do loses the variables either.
+- The server says which interpreter it runs on at startup —
+  `Python: <executable> (prefix <prefix>)`, on the output channel the connect
+  already logs to. The binary that was *launched* was always visible there;
+  these two variables made the process say otherwise at runtime, and the new
+  line tells them apart from inside the process, where it cannot be mistaken.
+
 ## [1.1.0] — 2026-10-02
 
 ### Added
