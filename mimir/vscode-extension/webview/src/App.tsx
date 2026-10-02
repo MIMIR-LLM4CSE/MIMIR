@@ -517,6 +517,11 @@ export const App: React.FC = () => {
           reserved_tokens: msg.reserved_tokens,
           overhead_tokens: msg.overhead_tokens,
           overhead_measured: msg.overhead_measured,
+          // Carried through, or the bar reads a floor as a verdict: a resumed
+          // session comes back with no agent, so `used_tokens` is missing the
+          // system prompt and tools and the figure must not be judged against
+          // the limit.
+          provisional: msg.provisional,
           history_messages: msg.history_messages,
           history_messages_full: msg.history_messages_full,
         });
