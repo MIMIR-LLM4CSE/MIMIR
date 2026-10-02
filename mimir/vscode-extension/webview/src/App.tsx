@@ -378,6 +378,7 @@ export const App: React.FC = () => {
         // The host is reconnecting to the remembered endpoint by itself — show
         // the connecting state, and let Reconnect replay the same arguments.
         lastConnectArgsRef.current = [msg.model, msg.backend, msg.baseUrl, undefined, true];
+        setModel(msg.model);
         setConnection("connecting");
         // Reset on every transition away from a live agent, so a reconnect starts
         // pessimistic and waits to be told again rather than inheriting the last
@@ -767,6 +768,10 @@ export const App: React.FC = () => {
   const handleConnect = useCallback(
     (mdl: string, be: string, baseUrl: string, anthropicApiKey?: string, remember?: boolean) => {
       lastConnectArgsRef.current = [mdl, be, baseUrl, anthropicApiKey, remember];
+      // The status bar names what we are connecting to while we wait, so the
+      // label matches the model the form was left on. `ready` confirms it with
+      // the name the server actually serves.
+      setModel(mdl);
       setRemembered(remember ? { backend: be, baseUrl, model: mdl } : null);
       seedAddress(be, baseUrl);
       setConnection("connecting");
@@ -1149,10 +1154,15 @@ export const App: React.FC = () => {
           </span>
           {/* Model name — a picker when the endpoint reported a real choice, a
               static label otherwise. The current model is always an option even
-              if the probe missed it (auto-selected, or probe failed). */}
-          {(() => {
+              if the probe missed it (auto-selected, or probe failed). Shown only
+              once an agent is live: before that there is no served model, and the
+              probe's list here would name one the connect form has not been told
+              to use — a label contradicting the form's own dropdown. While the
+              connection is still being made the name is a label, not a picker:
+              there is no agent yet to switch. */}
+          {connection !== "disconnected" && model && (() => {
             const options = Array.from(new Set([...endpointModels, model].filter(Boolean)));
-            if (options.length > 1) {
+            if (connection === "connected" && options.length > 1) {
               return (
                 <select
                   className="model-picker"
