@@ -48,6 +48,7 @@ from ....servers._shared.shell_paths import (
     ShellParseError,
     is_path_like_command,
     parse_segments,
+    unquoted_shell_char,
     unwrap_argv,
     path_operand_tokens,
     write_value_operands,
@@ -90,11 +91,17 @@ class Segment(NamedTuple):
     effect: str = ""
 
 
-# A token still carrying one of these after tokenization is opaque to *classification*:
-# a subshell or substitution runs code, and a ``$VAR``'s value is known only to the
-# running shell, so the command's kind would be a guess. (Operator tokens never reach
-# here — the shared parser has already lifted redirections out and refused subshells.)
-_BASH_FORBIDDEN_CHARS = frozenset("()<>`$&")
+# What makes a command opaque to *classification* beyond what the shared parser already
+# refuses: an expansion whose value only the running shell knows, so the command's kind
+# would be a guess. The sigil alone — a subshell, backgrounding, a substitution and a
+# stray redirection are all refused by ``parse_segments``, which reads the quoting itself.
+#
+# Read off the raw command through ``unquoted_shell_char``, never off tokens: shlex strips
+# the quotes, so a token scan cannot tell an expansion from the literal text of a search
+# pattern (``grep '$HOME' f.py``), and it sees operator characters only in the one case
+# where they are text — which is why this set holds no operator character. Unquoted ones
+# never survive into a token at all; the parser has lifted or refused them.
+_EXPANSION_SIGILS = frozenset("$")
 
 # Leading command → kind comes from the shell_paths command *groups*, the same module
 # the bash server validates with, so classification cannot drift from what runs.
@@ -416,30 +423,25 @@ def shell_segments(
 
     Returns None on anything the shared parser refuses (substitution, subshell,
     backgrounding, heredoc, quoting error, dangling separator) plus — the part that
-    is this side's own conservatism — any token carrying a character whose value
-    only the running shell knows.
+    is this side's own conservatism — any character the shell *would act on* whose
+    effect only the running shell knows. Quoting is part of that test: ``echo "(done)"``
+    and ``grep '$HOME' f.py`` name a literal, and classify like any other command.
 
     *allow_expansion* keeps going through a plain ``$VAR``. A bare variable makes a
     command opaque to **classification** (its kind depends on what the value turns
     out to be), but not to **path extraction**: in flag position it is irrelevant
     (``gcc -I$CUDA_HOME/include a.c``) and in path position it is refused outright
-    by the sandbox guard. Without this, such a command yielded no targets at all, so
-    a genuine out-of-workspace path sitting beside the flag was never offered to the
-    user — refused by the server with no way to grant it. Command *substitution*
-    (``$(...)``, ``${...}``, backticks) stays opaque either way: it runs code.
+    by the sandbox guard. Command *substitution* (``$(...)``, ``${...}``, backticks)
+    stays opaque either way where the shell acts on it — it runs code — and
+    ``parse_segments`` has already refused it by then.
     """
     try:
         segments = parse_segments(command)
     except ShellParseError:
         return None
 
-    forbidden = _BASH_FORBIDDEN_CHARS - {"$"} if allow_expansion else _BASH_FORBIDDEN_CHARS
-    for segment in segments:
-        for tok in [*segment.argv, *segment.redirect_targets]:
-            if any(ch in forbidden for ch in tok):
-                return None
-            if allow_expansion and ("$(" in tok or "${" in tok):
-                return None  # substitution runs code; a bare $VAR does not
+    if not allow_expansion and unquoted_shell_char(command, _EXPANSION_SIGILS):
+        return None
     return segments
 
 
@@ -489,13 +491,12 @@ _OPAQUE_ENV_ASSIGN_RE = re.compile(r"^[A-Za-z_]\w*=")
 def opaque_command_executes(command: str) -> bool:
     """Whether a command :func:`classify_bash_command` gave up on still *ran* something.
 
-    Classification is all-or-nothing: an inline payload (``python -c "print(f(x))"``),
-    a heredoc or a substitution makes the whole command unreadable. That is the right
-    answer for *crediting* anything — nothing can be attributed to a command nobody can
-    parse — but the wrong one for noticing that a program ran. The head stays legible
-    when the rest does not, and the base prompt actively steers one-off checks inline
-    (``## Running code``), so the most encouraged idiom was also the least visible one:
-    a single pair of parentheses is enough to make ``python -c`` opaque.
+    Classification is all-or-nothing: a heredoc, a substitution or an expansion the
+    shell resolves (``python -c "print(f($n))"``) makes the whole command unreadable.
+    That is the right answer for *crediting* anything — nothing can be attributed to a
+    command nobody can parse — but the wrong one for noticing that a program ran. The
+    head stays legible when the rest does not, and the base prompt actively steers
+    one-off checks inline (``## Running code``), which is the idiom most exposed to this.
 
     Only command-position tokens are read (start of the command, or after ``; && || |``),
     against the same ``EXEC_COMMANDS`` vocabulary the classifier itself uses, so an

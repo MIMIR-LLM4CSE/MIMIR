@@ -129,29 +129,40 @@ def _shell_path_targets(agent: Any, tool_name: str, arguments: dict, base: str) 
     arguments *as shell*. CODE_EXEC would be the wrong test: it also marks tools that
     execute through structured arguments (``proxy_exec``), whose parameters
     are not a command line. Driven off the shared segmenter, so no tool name or shell
-    keyword is spelled out here. Fail-open on an unparseable command: the server still
-    validates and confines every accepted call independently.
+    keyword is spelled out here.
+
+    **Segmentation is the server's own** :func:`shell_paths.parse_segments`, not the
+    policy layer's :func:`bash_classify.shell_segments`. The two do not refuse the same
+    commands: the policy layer adds a conservatism of its own, because a *kind* it
+    cannot read must not be auto-approved. Extraction cannot inherit that. A command
+    the policy layer calls opaque and the server parses would yield no targets here, so
+    no prompt would be raised — and the server, which confines it against its own parse,
+    refuses it with no grant the user could have given. Sharing the server's parser is
+    what makes "asked about" and "confined" the same set of paths. A command
+    ``parse_segments`` itself refuses never reaches a shell, so it needs no prompt.
     """
     if _shell_command_args(agent, tool_name) is None:
         return []
     from ....servers._shared.shell_paths import (
-        cd_destination, normalize_path_arg, segment_path_operands,
+        cd_destination, normalize_path_arg, parse_segments, segment_path_operands,
     )
-    from .bash_classify import shell_segments
 
     out: list[str] = []
     for val in arguments.values():
         if not isinstance(val, str) or not val.strip():
             continue
         try:
-            # allow_expansion: a bare $VAR blocks classification but not path
-            # extraction, and a command mixing one with a real out-of-workspace
-            # path must still reach the user (see shell_segments).
-            segments = shell_segments(val, allow_expansion=True)
+            # A bare $VAR blocks classification but not path extraction: a command
+            # mixing one with a real out-of-workspace path must still reach the user.
+            # parse_segments keeps such a command, so nothing here has to allow for it.
+            segments = parse_segments(val)
         except Exception:
+            # A ShellParseError, or anything unforeseen: a command the shared parser
+            # will not read is one the server refuses before any shell opens, so there
+            # is no access here to ask the user about.
             continue
         cursor = base
-        for segment in segments or []:
+        for segment in segments:
             argv = segment.argv
             for target in segment.redirect_targets:
                 path = normalize_path_arg(target, cursor)

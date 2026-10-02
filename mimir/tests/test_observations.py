@@ -550,12 +550,18 @@ class BashValidationObservationTests(unittest.TestCase):
         self.assertEqual(ec["validated_files"], set())
 
     def test_an_inline_snippet_is_a_run(self):
-        # Unclassifiable (parentheses defeat the tokenizer), so it names nothing — but
-        # it ran, and the base prompt asks for exactly this idiom.
+        # The payload is quoted, so it is text to bash and the command classifies: an
+        # exec that names no file. It credits nothing — but it ran, and the base prompt
+        # asks for exactly this idiom. The ledger keys it on its whole argv, which is
+        # what keeps two unrelated one-liners from reading as two attempts at one thing.
         agent, ec = self._agent(), self._ctx({"a.py", "b.py"})
         self._run(agent, "python -c 'print(check(a))'", ec)
         self.assertEqual(ec["validated_files"], set())
-        self.assertIn("python -c 'print(check(a))'", ec["runs"])
+        self.assertIn("python -c print(check(a))", ec["runs"])
+        self.assertEqual(
+            ec["runs"]["python -c print(check(a))"]["command"],
+            "python -c 'print(check(a))'",
+        )
 
     def test_a_scratchpad_probe_is_a_run_like_any_other(self):
         agent, ec = self._agent(), self._ctx({"solver.py", "mesh.py"})

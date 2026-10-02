@@ -242,6 +242,19 @@ class ChdirTests(unittest.TestCase):
                     "diff <(ls) <(ls)"]:
             self.assertIsNone(classify_bash_command(cmd), cmd)
 
+    def test_quoting_decides_what_is_opaque(self):
+        # Quoting is what makes a character do anything, so the test reads the raw
+        # command: a metacharacter inside quotes is text bash acts on in no way, and a
+        # search pattern is where one usually sits. Refusing those refused every literal
+        # occurrence — and left the out-of-workspace gate unable to see such a command's
+        # paths at all, so the server refused them with no prompt the user could answer.
+        for cmd in ('echo "(absent)"', "grep '$HOME' f.py", 'grep "a>b" f.py',
+                    "echo 'cost: $5'", 'python3 -c "print(1)"'):
+            self.assertIsNotNone(classify_bash_command(cmd), cmd)
+        # Double quotes do not stop an expansion, so the shell's own rule is kept.
+        for cmd in ('grep "$HOME" f.py', "cat $HOME/x"):
+            self.assertIsNone(classify_bash_command(cmd), cmd)
+
     def test_file_redirection_is_a_write(self):
         # A redirect to a file creates one, so the segment cannot stay read-only —
         # and the file it creates is the operand.
@@ -299,9 +312,9 @@ class ChdirTests(unittest.TestCase):
         self.assertEqual(_kinds("cat a.py\n\nls src\n"), [Kind.READ, Kind.INSPECT])
 
     def test_newline_inside_quotes_is_data(self):
-        # A multi-line `-c` body is one exec segment, not a chain. (A body with
-        # parens stays opaque for the same reason a one-line one does — the
-        # subshell chars — which is unrelated to the newlines.)
+        # A multi-line `-c` body is one exec segment, not a chain. (Quoted parens in
+        # the body are text to bash and classify like any other token; what would make
+        # such a body opaque is an expansion, which is unrelated to the newlines.)
         self.assertEqual(_kinds('python3 -c "\nimport re\nx = 1\n"'), [Kind.EXEC])
         self.assertEqual(_kinds("cat 'a\nb.py'"), [Kind.READ])
 

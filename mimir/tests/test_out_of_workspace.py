@@ -383,6 +383,20 @@ class ShellPathApprovalTests(_TmpStateDir):
             self.assertIsNone(out, cmd)
         self.assertEqual(agent.prompts, [])
 
+    def test_quoted_metacharacter_does_not_hide_the_path(self) -> None:
+        # A metacharacter inside quotes is text to bash, so the command parses and the
+        # server confines its operands. Extraction has to see the same paths the server
+        # will, or the one path that matters is refused there with no prompt to grant it:
+        # the whole command yields no target, and the mode is never even consulted.
+        agent = self._agent(script=(True, False))
+        for cmd in ('ls /tmp/outside/q; echo "(absent)"',
+                    "cat /tmp/outside/q && echo 'cost: $5'",
+                    'grep "a>b" /tmp/outside/q'):
+            agent.prompts = []
+            engine._check_out_of_workspace_access(
+                agent, "run_shell", {"command": cmd}, {})
+            self.assertIn(os.path.realpath("/tmp/outside/q"), agent.prompts, cmd)
+
     def test_path_after_an_out_of_workspace_cd_asks_once(self) -> None:
         # `cd /etc && cat passwd`: the relative operand resolves under the new base,
         # so the file *is* seen — but granting the destination admits it to the
@@ -605,6 +619,17 @@ class ApprovalModeTests(_TmpStateDir):
         self.assertEqual(agent.prompt_calls, 0)
         self.assertEqual(agent.tool_approvals, [])
         self.assertIn(os.path.realpath("/tmp/outside/autoall"),
+                      agent.approvals._allowed_paths)
+
+    def test_auto_all_grants_a_path_beside_a_quoted_metacharacter(self) -> None:
+        # The grant is reached through the target list, so a command whose paths went
+        # unextracted bypasses the mode entirely: auto_all asks nothing, grants nothing,
+        # and the server then refuses the access the mode was meant to have allowed.
+        agent = self._agent("auto_all")
+        out = self._evaluate(agent, 'mkdir /tmp/outside/autoallq; echo "(done)"')
+        self.assertIsNone(out.violation)
+        self.assertEqual(agent.prompt_calls, 0)
+        self.assertIn(os.path.realpath("/tmp/outside/autoallq"),
                       agent.approvals._allowed_paths)
 
     def test_the_mode_is_read_afresh_at_every_call(self) -> None:
