@@ -15,6 +15,7 @@ import mcp.types as types
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
+from .. import human_pause
 from ..context.capabilities import infer_tool_caps
 from ..config.constants import STATE_DIR, USER_QUESTION_TIMEOUT_SECS
 from ...servers._shared.state_paths import scratch_home
@@ -197,7 +198,12 @@ def _make_elicitation_callback(agent: Any):
     questions sequentially and returns the user's answers.
 
     The frontend handlers are blocking/queue-based, so we run them off the event
-    loop via ``run_in_executor`` to keep the agent loop responsive.
+    loop via ``run_in_executor`` to keep the agent loop responsive. The wait is
+    marked as human time *here*, on the loop thread, and not only inside the
+    handler: ``human_pause`` accounting is thread-local, so a pause recorded on a
+    pool thread is invisible to the ``_await_tool`` that is watching this tool call
+    from the loop thread, and ``ask_user_question`` died on the ordinary tool budget
+    after two minutes while the card on screen said five.
 
     The handler is given ``USER_QUESTION_TIMEOUT_SECS`` as the wall to answer within.
     The wall belongs to this path and not to the handler itself: plan approval calls
@@ -223,12 +229,13 @@ def _make_elicitation_callback(agent: Any):
         try:
             # With the caller's context: the handler reads which tool call is asking
             # (query_engine.deferral), and a bare executor thread starts from none.
-            result = await loop.run_in_executor(
-                None,
-                contextvars.copy_context().run,
-                _bind_question_handler(agent._request_user_question),
-                questions,
-            )
+            with human_pause.human_pause():
+                result = await loop.run_in_executor(
+                    None,
+                    contextvars.copy_context().run,
+                    _bind_question_handler(agent._request_user_question),
+                    questions,
+                )
         except Exception:
             return types.ElicitResult(action="cancel")
 

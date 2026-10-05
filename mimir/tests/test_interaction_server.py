@@ -315,6 +315,35 @@ class ElicitationTransportTests(unittest.TestCase):
 
         self.assertEqual(seen, [USER_QUESTION_TIMEOUT_SECS])
 
+    def test_the_users_thinking_time_does_not_burn_the_tool_budget(self) -> None:
+        """The wall on an answer is the question's own, not the tool-call budget.
+
+        The frontend handler blocks in a pool thread, and ``human_pause`` accounting
+        is thread-local: unless the wait is marked on the loop thread, the
+        ``_await_tool`` watching this call never sees it and the card dies on the
+        ordinary 120s tool budget while telling the user they have five minutes.
+        """
+        import time
+
+        from mimir.client.integration.server_manager import _make_elicitation_callback
+        from mimir.client.query_engine import dispatch
+
+        def _ask(questions, timeout_secs=None):
+            time.sleep(0.15)   # the user reading the card, in the executor thread
+            return {"answers": [{"selected": ["Postgres"], "other_text": None}]}
+
+        params = types.SimpleNamespace(
+            requestedSchema={"x_mimir": {"kind": "user_question", "questions": [_Q_DB]}}
+        )
+        callback = _make_elicitation_callback(
+            types.SimpleNamespace(_request_user_question=_ask))
+
+        async def _drive():
+            return await dispatch._await_tool(callback(None, params), 0.05)
+
+        result = asyncio.run(_drive())
+        self.assertEqual(result.action, "accept")
+
     def test_a_handler_without_a_wall_parameter_is_still_called(self) -> None:
         """A frontend (or a test double) that takes only the questions keeps working."""
         from mimir.client.integration.server_manager import _make_elicitation_callback
