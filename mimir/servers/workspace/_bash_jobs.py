@@ -15,8 +15,14 @@ out. Nothing here relaxes ``bash_run``'s validation: backgrounding is a paramete
 command that has already passed the same path checks and denylists, which is why ``&``
 stays refused. Detaching is the server's job, not a shell operator the caller supplies.
 
-The job directory lives under a fixed cache root (``trusted_read_roots``) so the log is
-readable with the ordinary file tools while the run is still going.
+The job directory lives under the session's own state directory
+(``<STATE_DIR>/sessions/<sid>/jobs/``) so the log is readable with the ordinary file tools
+while the run is still going — the state dir is a trusted read root. Per session, for two
+reasons that are the same one. Sessions run turns concurrently, and a shared jobs root
+would have ``bash_list`` enumerate every conversation's jobs, letting one read — and
+kill — another's. And a detached job's directory is never swept, however old, so a root
+outside any conversation grows without bound; tied to one it goes when the conversation
+goes. Nothing filters by session here: resolving the root does it.
 
 Every ``bash_run`` comes through here now, detached or not: a blocking call launches a
 job and waits on it. That is what lets a run be abandoned without being lost, since its
@@ -38,7 +44,16 @@ from datetime import datetime, timezone
 
 import build_progress
 
-JOBS_ROOT = os.path.expanduser("~/.cache/mimir_bash/jobs")
+def jobs_root() -> str:
+    """This session's job directory root, resolved per call.
+
+    Per call rather than frozen at import because the session-less fallback reads the
+    active-session pointer, which a single-session client rewrites as it goes. For a server
+    spawned by an agent, ``MIMIR_SESSION_ID`` is fixed for the process and the answer never
+    moves.
+    """
+    from state_paths import session_state_dir
+    return os.path.join(session_state_dir(), "jobs")
 
 # A job key is used as a directory name and echoed back by the client watcher, so it is
 # generated here rather than accepted from a caller, and validated on the way back in.
@@ -60,11 +75,16 @@ _swept = False
 
 
 def _job_dir(job_key: str) -> str:
-    return os.path.join(JOBS_ROOT, job_key)
+    return os.path.join(jobs_root(), job_key)
 
 
 def _path(job_key: str, name: str) -> str:
     return os.path.join(_job_dir(job_key), name)
+
+
+def job_dir(job_key: str) -> str:
+    """This job's directory. What a descriptor carries as its ``run_dir``."""
+    return _job_dir(job_key)
 
 
 def log_path(job_key: str) -> str:
@@ -223,6 +243,11 @@ def launch(command: str, cwd: str, env: dict, preamble: str = "",
                 ["bash", "--noprofile", "--norc", "-c", script],
                 cwd=cwd,
                 env=env,
+                # Never the server's own stdin: that is the MCP protocol pipe, and a job
+                # that reads it (``ssh`` without ``-n``, ``cat``) eats the client's
+                # JSON-RPC traffic — swallowing requests whole, or desynchronising the
+                # framing, while the server still looks healthy.
+                stdin=subprocess.DEVNULL,
                 stdout=log_fh,
                 stderr=err_fh if err_fh is not None else subprocess.STDOUT,
                 close_fds=True,
@@ -339,7 +364,7 @@ def _sweep_once() -> None:
         return
     _swept = True
     try:
-        keys = [k for k in os.listdir(JOBS_ROOT) if valid_key(k)]
+        keys = [k for k in os.listdir(jobs_root()) if valid_key(k)]
     except OSError:
         return
     for key in keys:
@@ -474,7 +499,7 @@ def output(job_key: str, max_bytes: int, running_max_bytes: int | None = None) -
 def listing() -> list[dict]:
     """Every known job, newest first — keys sort chronologically by construction."""
     try:
-        keys = sorted((k for k in os.listdir(JOBS_ROOT) if valid_key(k)), reverse=True)
+        keys = sorted((k for k in os.listdir(jobs_root()) if valid_key(k)), reverse=True)
     except OSError:
         return []
     return [state(k) for k in keys]

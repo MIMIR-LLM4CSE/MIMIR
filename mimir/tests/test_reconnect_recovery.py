@@ -15,18 +15,26 @@ from mimir.client.ui.ws.ws_worker import _AgentWorker
 from mimir.tests.test_session_isolation import _FakeWS, _bare_worker, SessionFencingTests
 
 
-def _parked_worker(prompt: dict | None = None) -> _AgentWorker:
+def _parked_worker(prompt: dict | None = None, session_id: str = "s1",
+                   title: str = "Install the toolchain") -> _AgentWorker:
     """A worker parked on *prompt*, or on nothing.
 
     The card is raised the way the shims raise it and then drained, which is the state
     a reconnect finds: shown to a socket that has since gone. Planting one straight
     into the slot would skip the queue that decides what is on screen.
     """
-    w = _bare_worker()
+    w = _bare_worker(session_id=session_id)
+    w.session_title = title
     if prompt is not None:
         w._emit_prompt(prompt)
         w.out_q.get_nowait()
     return w
+
+
+def _attributed(card: dict, session_id: str = "s1",
+                title: str = "Install the toolchain") -> dict:
+    """*card* as _emit_prompt stamps it: carrying the conversation that is asking."""
+    return {**card, "session_id": session_id, "session_title": title}
 
 
 class PendingPromptTests(unittest.TestCase):
@@ -34,16 +42,34 @@ class PendingPromptTests(unittest.TestCase):
         w = _parked_worker()
         card = {"type": "user_question", "id": "q1", "questions": []}
         w._emit_prompt(card)
-        self.assertEqual(w.out_q.get_nowait(), card)
-        self.assertEqual(w.pending_prompt(), card)
+        self.assertEqual(w.out_q.get_nowait(), _attributed(card))
+        self.assertEqual(w.pending_prompt(), _attributed(card))
+
+    def test_a_card_says_which_conversation_is_asking(self):
+        """Several conversations can be parked at once, and one may be asking while the
+        user reads another. The answer is routed by this, so a card without it is one
+        that cannot be answered — and the attribution is structured rather than written
+        into the question text, which the model also sees."""
+        w = _parked_worker(session_id="s2", title="Port the solver")
+        w._emit_prompt({"type": "approval", "id": "a1"})
+        card = w.out_q.get_nowait()
+        self.assertEqual(card["session_id"], "s2")
+        self.assertEqual(card["session_title"], "Port the solver")
+
+    def test_a_turn_resuming_another_conversation_names_that_one(self):
+        """A background-job wake runs a turn for the session that launched the job."""
+        w = _parked_worker(session_id="s1")
+        w._query_session_id = "s2"
+        w._emit_prompt({"type": "approval", "id": "a1"})
+        self.assertEqual(w.out_q.get_nowait()["session_id"], "s2")
 
     def test_the_card_is_a_copy_of_what_was_sent(self):
         """The queued dict is drained and stamped downstream; the record must not follow."""
         w = _parked_worker()
         card = {"type": "approval", "id": "a1"}
         w._emit_prompt(card)
-        w.out_q.get_nowait()["session_id"] = "s1"
-        self.assertEqual(w.pending_prompt(), {"type": "approval", "id": "a1"})
+        w.out_q.get_nowait()["id"] = "tampered"
+        self.assertEqual(w.pending_prompt(), _attributed({"type": "approval", "id": "a1"}))
 
     def test_an_answer_ends_the_park(self):
         w = _parked_worker({"type": "approval", "id": "a1"})
@@ -72,7 +98,7 @@ class PendingPromptTests(unittest.TestCase):
         w._emit_prompt({"type": "approval", "id": "a1"})
         self.assertIsNone(w.pending_prompt())
         w.out_q.get_nowait()                      # delivered to whoever was connected
-        self.assertEqual(w.pending_prompt(), {"type": "approval", "id": "a1"})
+        self.assertEqual(w.pending_prompt(), _attributed({"type": "approval", "id": "a1"}))
 
     def test_abandoning_the_turn_forgets_the_card(self):
         w = _parked_worker({"type": "continue_prompt", "id": "c1", "summary": "3 left"})
@@ -88,7 +114,7 @@ class ReconnectTests(unittest.IsolatedAsyncioTestCase):
         card = {"type": "user_question", "id": "q1", "questions": [{"header": "Plan approval"}]}
         sess = self._session(_parked_worker(card))
         await sess._resend_parked_prompt()
-        self.assertEqual([json.loads(p) for p in sess.ws.sent], [card])
+        self.assertEqual([json.loads(p) for p in sess.ws.sent], [_attributed(card)])
 
     async def test_nothing_is_sent_when_no_turn_is_parked(self):
         sess = self._session(_parked_worker(None))

@@ -1,9 +1,8 @@
 """The end-of-run honesty surface: what the machine records vs what the model says.
 
-Before this existed, a run's closing prose and the recorded evidence sat side by
-side with nothing reconciling them — so "verified and working" could be emitted
-directly above a file that had only ever been executed, never checked against
-anything, and above a checklist with most of its boxes still open.
+Nothing else reconciles the two. Without this surface, "verified and working" sits
+directly above a file that has only ever been executed, never checked against anything,
+and above a checklist with most of its boxes still open.
 
 Three separate mechanisms are pinned here:
   * the verification ledger appended to every answer (`finalize`),
@@ -272,7 +271,7 @@ class OutputVerdictLedgerTests(_ChecklistFixture):
 
     def test_a_run_with_no_file_still_earns_a_ledger(self):
         # An analysis-only session is exactly the one whose whole answer rests on that
-        # output — it used to produce no ledger at all.
+        # output, so it is the last one that may go without a ledger.
         out = _annotate_answer_with_changes("The suite is green.", self._run("pytest -q"))
         self.assertIn("`pytest -q` — ran; **its output was never judged**", out)
 
@@ -499,8 +498,8 @@ class CompletionIssueTests(_ChecklistFixture):
         raise_validation_tier(ec, "a.py", "static")
         raise_validation_tier(ec, "b.py", "syntax")
         _, completed = _collect_completion_issues(ec)
-        # The value reported is the floor across the change, and the sentence must say
-        # so: it used to print the weakest tier under the word "highest".
+        # The value reported is the floor across the change, and the sentence must say so:
+        # the weakest tier printed under the word "highest" claims the opposite.
         self.assertIn("checked (syntax)", " ".join(completed))
         self.assertNotIn("highest evidence", " ".join(completed))
 
@@ -517,8 +516,8 @@ class CompletionIssueTests(_ChecklistFixture):
         self.assertFalse(any("Checklist incomplete" in i for i in issues))
 
     def test_declared_but_unwritten_is_not_a_completion_issue(self):
-        # Same reason as the ledger row it used to mirror: an issue is something the
-        # run left broken, and a plan revised mid-course is not that.
+        # Same reason as the ledger row it mirrors: an issue is something the run left
+        # broken, and a plan revised mid-course is not that.
         ec = _written({"a.py"}, tier="static")
         ec["declared_edit_set"] = {"a.py", "b.py"}
         issues, _ = _collect_completion_issues(ec)
@@ -551,11 +550,11 @@ class IncompleteFinalizationTests(_ChecklistFixture):
 class RecommendedAxesDoNotBlockTests(_ChecklistFixture):
     """Only the check axis blocks. Build and run are recommended, and stay that way.
 
-    `workflow_state` used to be a third condition in the gate, which quietly made the
+`workflow_state` as a third condition in the gate quietly makes the
     recommendation mandatory: a failed run — or a `fail` verdict, which drives the same
-    ladder — sends the state machine back to `edit`, so every answer came back "Task is
-    incomplete" until the run had failed VALIDATION_RETRY_BUDGET times. That is what
-    made the model keep insisting on a validation it had been told was optional.
+    ladder — sends the state machine back to `edit`, so every answer comes back "Task is
+    incomplete" until the run has failed VALIDATION_RETRY_BUDGET times, and the model keeps
+    insisting on a validation it was told was optional.
     """
 
     def test_a_failing_run_does_not_make_a_checked_change_incomplete(self):
@@ -615,10 +614,10 @@ class RecommendedAxesDoNotBlockTests(_ChecklistFixture):
 class RefusedActionReportTests(_ChecklistFixture):
     """How a refused approval reads in the closing report.
 
-    A refusal used to be filed as a blocker unconditionally, so "the user told me
-    that step was unnecessary" and "the user stopped me" produced the same verdict:
-    `Task is incomplete.` at high risk. The three readings of a refusal have three
-    different honest endings, and none of them is silence about the skipped step.
+    Filing a refusal as a blocker unconditionally gives "the user told me that step was
+    unnecessary" and "the user stopped me" the same verdict: `Task is incomplete.` at high
+    risk. The three readings of a refusal have three different honest endings, and none of
+    them is silence about the skipped step.
     """
 
     def _headline(self, out):
@@ -771,11 +770,10 @@ class WorkspaceRootIsNameableTests(unittest.TestCase):
 
     Regression, observed twice. A run told to create files "outside of the codes
     directory" created them in the workspace root — which *is* `codes` — and reported
-    the constraint satisfied. The root used to be disclosed inside the repo-structure
-    orientation block; that block is gone, so the line stands on its own and is
-    injected unconditionally. Unconditional matters: the block was built only for a
-    query classified as repo-touching, which left the root unstated on exactly the
-    greenfield runs where a misplaced file is least visible.
+    the constraint satisfied. The line stands on its own and is injected
+    unconditionally — disclosing the root inside an orientation block built only for a
+    query classified as repo-touching leaves it unstated on exactly the greenfield runs
+    where a misplaced file is least visible.
     """
 
     def _content(self, root: str) -> str:
@@ -853,7 +851,7 @@ class BlockedRunIsALimitationTests(unittest.TestCase):
     def test_when_something_else_is_open_the_wall_is_reported_but_not_charged(self):
         # Second half: once a report *is* rendered for another reason, the blocked run
         # appears under its own heading and never among the issues that drive the
-        # headline. This is where the wall used to be counted as a defect.
+        # headline: a wall the environment put there is not a defect of the change.
         ec = self._blocked()
         ec["dirty_written_files"].add("mesh.c")  # a file that still owes a check
         summary = finalize_incomplete_answer("Done.", ec)
@@ -1047,11 +1045,11 @@ if __name__ == "__main__":
 class CompletionBlockTests(_ChecklistFixture):
     """The report's marker contract with the front-ends.
 
-    The report used to be bare prose concatenated ahead of the answer. Nothing could
-    lift it off, so every front-end rendered the whole of it as body text and the
-    model's own words arrived underneath — which is how an ordinary interim turn read
-    as a wall of machine output. It is now a marked block at the tail, folded by the
-    front-ends into a disclosure. These tests hold the shape that makes that possible.
+    A marked block at the tail, which the front-ends fold into a disclosure. Bare prose
+    concatenated ahead of the answer has nothing to lift it off by, so every front-end
+    renders the whole of it as body text with the model's own words underneath — which is
+    how an ordinary interim turn reads as a wall of machine output. These tests hold the
+    shape that makes the folding possible.
     """
 
     def _report(self, answer="Le build tourne toujours."):

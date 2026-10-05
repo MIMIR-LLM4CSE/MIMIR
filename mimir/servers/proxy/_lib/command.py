@@ -131,6 +131,7 @@ def _sbatch_header(
     constraint: str = "",
     nodelist: str = "",
     exclusive: bool = False,
+    comment: str = "",
     dependency: str = "",
     kill_on_invalid_dep: bool = False,
 ) -> list[str]:
@@ -143,13 +144,15 @@ def _sbatch_header(
     ``constraint`` and ``nodelist`` are what make a partition insufficient on a
     heterogeneous cluster: a partition says which queue, a feature expression says
     which hardware inside it. ``dependency`` chains one job behind another, which is
-    how a build job and the run that measures its output stay in order.
+    how a build job and the run that measures its output stay in order. ``comment`` is
+    free text Slurm stores with the job and ``sacct -o Comment`` reads back — it is how
+    a submission says, to whoever looks at the queue later, what it was for.
     """
     return sbatch_header(
         job_name=job_name, partition=partition, nodes=1, ntasks=ntasks,
         cpus_per_task=cpus_per_task, wall_time=wall_time, mem=mem, log_file=log_file,
         gpus=gpus, account=account, constraint=constraint, nodelist=nodelist,
-        exclusive=exclusive, dependency=dependency,
+        exclusive=exclusive, comment=comment, dependency=dependency,
         kill_on_invalid_dep=kill_on_invalid_dep,
     )
 
@@ -170,6 +173,7 @@ def _build_sbatch(
     python_exe: str = "",
     param_overrides: dict | None = None,
     target: dict | None = None,
+    comment: str = "",
 ) -> str:
     log_file = procs._log_path(run_dir)
     cmd_str  = shlex.join(shlex.split(
@@ -177,6 +181,7 @@ def _build_sbatch(
     lines = _sbatch_header(
         job_name=job_name, partition=partition, cpus_per_task=cpus_per_task,
         wall_time=wall_time, mem=mem, log_file=log_file, gpus=gpus, account=account,
+        comment=comment,
         **(target or {}),
     )
     # Capture wall time + exit code around the solver so the post-run step can

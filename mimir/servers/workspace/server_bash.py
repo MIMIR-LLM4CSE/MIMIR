@@ -826,8 +826,8 @@ def _run(
     its output lands in a file rather than a pipe. That is the whole point: bytes on
     disk survive the process, so a run that is stopped at the cap still reports what it
     printed, and one the user moves to the background keeps everything it has done.
-    Before this, output lived in a pipe read only by the final communicate(), and a
-    timeout discarded every byte of it.
+    Output living in a pipe read only by the final communicate() is output a timeout
+    discards every byte of.
 
     Three ways out, and only one of them leaves a process alive:
       * the command ended        — the ordinary payload, byte-for-byte as before;
@@ -1120,13 +1120,59 @@ def bash_job(
     if op not in _JOB_OPS:
         return err(f"Unknown op '{op}'.", valid_ops=list(_JOB_OPS))
     if op == "list":
-        return ok({"jobs": _bash_jobs.listing()})
+        jobs = _bash_jobs.listing()
+        return ok(_with_live_descriptors({"jobs": jobs}, jobs))
     if not _bash_jobs.valid_key(job_key):
         return err("A job_key from bash_run(background=True) is required.",
                    hint="Use op='list' to see the jobs this host knows about.")
     if op == "status":
-        return ok(_bash_jobs.state(job_key))
-    return ok(_bash_jobs.output(job_key, _MAX_OUTPUT, running_max_bytes=_RUNNING_OUTPUT))
+        payload = _bash_jobs.state(job_key)
+        return _job_payload(_with_live_descriptors(payload, [payload]))
+    payload = _bash_jobs.output(job_key, _MAX_OUTPUT, running_max_bytes=_RUNNING_OUTPUT)
+    return _job_payload(_with_live_descriptors(payload, [payload]))
+
+
+def _with_live_descriptors(payload: dict, jobs: list[dict]) -> dict:
+    """Attach a watcher handle for every job in *jobs* that is still running.
+
+    A watcher lives on the agent that launched the run and dies with it, which an
+    editor window reload is enough to cause; the run itself carries on in its own
+    session directory, indifferent. Answering "what state is it in?" with the handle as
+    well as the state is what lets the client put a watcher back on it — so asking is
+    the gesture that restores tracking, and nothing has to re-arm runs nobody asked
+    about.
+
+    Every op that names a run, not only ``status``: reading a build's log mid-run is as
+    much a "where is it at?" as asking for its state, and the two differ only in which
+    of them the model happened to reach for.
+
+    Plural, and never ``background_job``: that key means *this call launched it*, which
+    makes the row a run and, on a client with no watcher, something to wait out in-turn.
+    A status read is neither.
+    """
+    live = [_job_descriptor(j["job_key"], _bash_jobs.job_dir(j["job_key"]))
+            for j in jobs
+            if isinstance(j, dict) and j.get("state") == "running" and j.get("job_key")]
+    if live:
+        payload["background_jobs"] = live
+    return payload
+
+
+def _job_payload(payload: dict) -> dict:
+    """Wrap a job-layer answer, letting "no such job" stay an error.
+
+    ``valid_key`` checks the *shape* of a handle, not that it names anything, so a
+    well-formed key for a job this host does not have reaches the job layer and comes back
+    carrying ``error``. Wrapping that in ``ok()`` would assert both at once, and a caller
+    reading ``status`` first would be told a stop succeeded with nothing stopped. Job
+    directories are per session, so a handle from another conversation is exactly a
+    well-formed key naming nothing here.
+    """
+    reason = payload.pop("error", "")
+    if reason:
+        return err(reason, hint="Use bash_job(op='list') to see this session's jobs.",
+                   **payload)
+    return ok(payload)
 
 
 @mcp.tool(**tool_caps(
@@ -1149,7 +1195,7 @@ def bash_job_stop(job_key: str) -> dict:
     """
     if not _bash_jobs.valid_key(job_key):
         return err("A job_key from bash_run(background=True) is required.")
-    return ok(_bash_jobs.stop(job_key))
+    return _job_payload(_bash_jobs.stop(job_key))
 
 
 _VERDICT_VALUES = ("pass", "fail", "unknown", "blocked", "rejected")

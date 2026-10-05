@@ -36,6 +36,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import threading
 from typing import Any
 
 from .constants import STATE_DIR
@@ -43,6 +44,13 @@ from .constants import STATE_DIR
 logger = logging.getLogger(__name__)
 
 PREFERENCES_FILENAME = "preferences.json"
+
+# Held across a whole read-modify-write, not just the write. The file is one per workspace
+# and several sessions touch it at once: without the lock, two of them toggling at the same
+# moment each load the same dict, each merge their own key in, and the second write drops
+# the first. The write itself is atomic; the cycle around it is what needs the lock. One
+# process writes this file, so a threading lock is the right scope.
+_WRITE_LOCK = threading.Lock()
 
 
 def _preferences_path() -> str:
@@ -95,13 +103,14 @@ def save_disabled(
     disabled_nudges: set[str] | None = None,
 ) -> None:
     """Persist the disabled sets (sorted, atomic), keeping every other key."""
-    payload = load_preferences()
-    payload.update({
-        "disabled_servers": sorted(disabled_servers),
-        "disabled_skills": sorted(disabled_skills),
-        "disabled_nudges": sorted(disabled_nudges or set()),
-    })
-    _write_preferences(payload)
+    with _WRITE_LOCK:
+        payload = load_preferences()
+        payload.update({
+            "disabled_servers": sorted(disabled_servers),
+            "disabled_skills": sorted(disabled_skills),
+            "disabled_nudges": sorted(disabled_nudges or set()),
+        })
+        _write_preferences(payload)
 
 
 def load_subagent_level() -> str:
@@ -135,15 +144,16 @@ def load_temperature(model: str) -> float | None:
 
 def save_temperature(model: str, value: float | None) -> None:
     """Record ``value`` for ``model``; None removes the entry, back to the model's own."""
-    payload = load_preferences()
-    table = payload.get("temperatures")
-    table = dict(table) if isinstance(table, dict) else {}
-    if value is None:
-        table.pop(model, None)
-    else:
-        table[model] = float(value)
-    if table:
-        payload["temperatures"] = table
-    else:
-        payload.pop("temperatures", None)
-    _write_preferences(payload)
+    with _WRITE_LOCK:
+        payload = load_preferences()
+        table = payload.get("temperatures")
+        table = dict(table) if isinstance(table, dict) else {}
+        if value is None:
+            table.pop(model, None)
+        else:
+            table[model] = float(value)
+        if table:
+            payload["temperatures"] = table
+        else:
+            payload.pop("temperatures", None)
+        _write_preferences(payload)

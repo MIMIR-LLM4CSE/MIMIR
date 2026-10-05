@@ -33,6 +33,38 @@ function sessionLabel(session: SessionMeta): string {
   return session.title || session.summary || "New session";
 }
 
+/** The badge for what a conversation is doing, or nothing when it is idle.
+ *
+ *  Conversations run turns at once, so one the user is not reading can be working —
+ *  invisible without this. "Waiting on you" outranks "running" because it is the one that
+ *  needs an action: the agent blocks on that answer with no timeout, so the conversation
+ *  stays stopped until somebody answers it.
+ */
+function activityOf(session: SessionMeta) {
+  if (session.parked) {
+    return (
+      <span className="session-activity parked" title="Waiting for your answer">
+        waiting on you
+      </span>
+    );
+  }
+  if (session.running) {
+    return (
+      <span className="session-activity running" title="A turn is in flight">
+        running
+      </span>
+    );
+  }
+  if (session.queued) {
+    return (
+      <span className="session-activity queued" title="Starts when an agent slot frees">
+        queued
+      </span>
+    );
+  }
+  return null;
+}
+
 export const SessionsPanel: React.FC<Props> = ({
   sessions,
   activeSessionId,
@@ -113,6 +145,7 @@ export const SessionsPanel: React.FC<Props> = ({
               )}
               <span className="session-time">
                 {relativeTime(session.updated_at)}
+                {activityOf(session)}
               </span>
             </div>
             <button

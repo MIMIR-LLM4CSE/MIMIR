@@ -73,6 +73,7 @@ def _run(cmd: list[str], timeout: int = 8) -> dict:
     try:
         res = subprocess.run(
             cmd,
+            stdin=subprocess.DEVNULL,   # never the server's MCP pipe
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,

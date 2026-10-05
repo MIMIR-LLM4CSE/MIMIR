@@ -214,7 +214,7 @@ def exit_status_settles(exit_is_the_run_s: bool) -> bool:
     assumption silently — the status is the pager's, and the build was auto-passed
     without anyone establishing it had succeeded.
 
-    Trivial as a function; named as one because the assumption is what matters and it
-    was previously nowhere written down.
+    Trivial as a function; named as one because the assumption is what matters, and this
+    is where it is written down.
     """
     return exit_is_the_run_s

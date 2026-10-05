@@ -56,10 +56,25 @@ class ResolveExtraRootsTests(unittest.TestCase):
 
 
 class SearchServerReadRootsTests(unittest.TestCase):
-    def test_proxy_cache_is_a_read_root(self) -> None:
+    def test_the_state_dir_is_a_read_root(self) -> None:
+        """Where the agent's own artefacts live — job scripts, logs, session state.
+
+        It is the only trusted out-of-workspace root now. The three fixed ``~/.cache``
+        locations this used to assert are gone with the things that lived in them: the
+        proxy store moved into ``<workspace>/proxy_bench/``, and both kinds of job
+        directory moved under the state dir, per session.
+        """
         import server_search as ss
-        roots = ss._extra_read_roots()
-        self.assertIn(os.path.expanduser("~/.cache/proxy_bench"), roots)
+        with tempfile.TemporaryDirectory() as d:
+            old = os.environ.get("MIMIR_STATE_DIR")
+            os.environ["MIMIR_STATE_DIR"] = d
+            try:
+                self.assertIn(d, ss._extra_read_roots())
+            finally:
+                if old is None:
+                    os.environ.pop("MIMIR_STATE_DIR", None)
+                else:
+                    os.environ["MIMIR_STATE_DIR"] = old
 
     def test_env_extends_read_roots(self) -> None:
         import server_search as ss

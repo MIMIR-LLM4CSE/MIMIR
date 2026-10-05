@@ -249,8 +249,8 @@ const ToolRow: React.FC<RowProps> = ({ tool, childRows = [], onDivert }) => {
   const hasChildren = childRows.length > 0;
   const hasMath = !isError && tool.math !== undefined;
   // Anything the row can reveal — exec panel, error text or a sub-agent's steps —
-  // makes the head a working toggle. A failed row without exec used to be inert,
-  // leaving its only explanation cropped in the tail.
+  // makes the head a working toggle. An inert failed row leaves its only explanation
+  // cropped in the tail.
   const canExpand = hasExec || hasError || hasChildren || hasMath;
   // The tail is a narrow, single-line slot: an error there renders as a fragment
   // cropped mid-sentence. Failed rows keep it clear — the ✕ carries the status and

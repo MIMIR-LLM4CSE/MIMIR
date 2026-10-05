@@ -51,9 +51,9 @@ _SECTION_IDENTITY = (
     "Execute tasks with precision, determinism, and verifiable correctness."
 )
 
-# The hard floor. These are the rules whose violation is not self-correcting, hoisted
-# out of the sections where they used to be restated. They are stated once, here, and
-# the sections below no longer repeat them.
+# The hard floor: the rules whose violation is not self-correcting. Stated once, here,
+# and deliberately not restated by the sections below — what is repeated three times is
+# noise, and a rule that lives in several places drifts between them.
 _SECTION_NON_NEGOTIABLES = (
     "## Non-negotiables\n"
     "These are absolute. Every other section is a default you may adapt; these you may not.\n"
@@ -420,14 +420,18 @@ _SECTION_CLARIFY = (
     "- Ask at the point the fork appears, before building on either branch. The same "
     "question asked after the work is done is a rewrite.\n"
     "- Give the real options: each labelled, each described by what it costs and what it "
-    "buys. Recommend one and say which. A free-text field is always shown, so never add an "
+    "buys. Put the one you recommend FIRST — it is what you fall back to if nobody "
+    "answers. A free-text field is always shown, so never add an "
     "\"Other\"/\"Something else\"/\"Request changes\" option — those are stripped.\n"
     "- Bundle related questions into one call: they are asked in sequence and come back "
     "together, for the cost of a single turn.\n"
     "- Do NOT ask what you can settle: a convention visible in the code, a default the task "
     "implies, a detail whose answers converge on the same work. Decide, say so in one "
     "clause, and continue. Asking about what you could have read is its own failure.\n"
-    "- No answer means proceed on your best judgment — then state which branch you took."
+    "- The question closes itself if nobody answers within five minutes. That is not a "
+    "refusal: carry on with the option you put first, and say in your reply which branch "
+    "you took and that the user can redirect you. A question the user *cancels* is the "
+    "opposite — stop there and ask it in your reply instead."
 )
 
 
@@ -615,18 +619,22 @@ def _workspace_root_for_prompt(workspace_root: str = "") -> str:
     return workspace_root or os.environ.get("SEARCH_ROOT") or os.getcwd()
 
 
-def _scratch_dir_for_prompt(session_id: str = "") -> str:
+def _scratch_dir_for_prompt(session_id: str | None = None) -> str:
     """The scratchpad path to advertise, or "" if it cannot resolve.
 
     The session-scoped directory, not ``standing_roots()[0]``: the standing grant is
     the scratchpad *home* (it has to cover a mid-run session switch), so advertising it
     would point the model one level above where its own working files belong.
     STATE_DIR is passed explicitly — see tool_execution.validation.scratch_roots.
+
+    *session_id* names the conversation this prompt is for. It has to be passed, not
+    looked up: several sessions build prompts in this one process, and the active-session
+    pointer would advertise one conversation's scratchpad to all of them.
     """
     try:
         from ...servers._shared.state_paths import scratch_dir
         from ..config.constants import STATE_DIR
-        return scratch_dir(STATE_DIR, session_id or None)
+        return scratch_dir(STATE_DIR, session_id)
     except Exception:
         return ""
 
@@ -704,7 +712,7 @@ def build_system_content(
     thinking_depth: int = 0,
     delegation_available: bool = False,
     tool_descriptions: dict[str, str] | None = None,
-    session_id: str = "",
+    session_id: str | None = None,
     subagent_level: str = DEFAULT_SUBAGENT_LEVEL,
     workspace_root: str = "",
 ) -> str:

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import contextvars
 import copy
+import inspect
 import json
 import os
 import re
@@ -14,7 +15,7 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
 from ..context.capabilities import infer_tool_caps
-from ..config.constants import STATE_DIR
+from ..config.constants import STATE_DIR, USER_QUESTION_TIMEOUT_SECS
 from ...servers._shared.state_paths import scratch_home
 
 
@@ -170,6 +171,35 @@ def _schema_with_arg_descriptions(tool: Any) -> dict:
     return schema
 
 
+def _bind_question_handler(ask: Any):
+    """``ask`` as a three-argument callable: the questions, the asker, the deadline.
+
+    Frontends take all three. A handler that offers one of the extras and not the
+    other — the non-interactive default's replacements in tests, a third-party shim —
+    is called without what it does not declare: it stays callable, and a handler with
+    no deadline parameter simply waits indefinitely.
+    """
+    try:
+        sig = inspect.signature(ask)
+    except (TypeError, ValueError):   # a builtin or C callable: pass the questions only
+        return lambda questions, origin, timeout_secs: ask(questions)
+
+    def _accepts(name: str) -> bool:
+        try:
+            sig.bind(["q"], **{name: None})
+        except TypeError:
+            return False
+        return True
+
+    takes = tuple(n for n in ("origin", "timeout_secs") if _accepts(n))
+
+    def _call(questions: Any, origin: Any, timeout_secs: Any):
+        extra = {"origin": origin, "timeout_secs": timeout_secs}
+        return ask(questions, **{n: extra[n] for n in takes})
+
+    return _call
+
+
 def _make_elicitation_callback(agent: Any):
     """Bridge MCP elicitation requests to the active frontend.
 
@@ -182,6 +212,11 @@ def _make_elicitation_callback(agent: Any):
 
     The frontend handlers are blocking/queue-based, so we run them off the event
     loop via ``run_in_executor`` to keep the agent loop responsive.
+
+    The handler is given ``USER_QUESTION_TIMEOUT_SECS`` as the wall to answer within.
+    The wall belongs to this path and not to the handler itself: plan approval calls
+    the same handler and waits indefinitely, which is why the timeout travels as an
+    argument instead of being read from the constant inside each frontend.
     """
 
     async def _callback(
@@ -210,7 +245,7 @@ def _make_elicitation_callback(agent: Any):
             result = await loop.run_in_executor(
                 None,
                 contextvars.copy_context().run,
-                agent._request_user_question,
+                _bind_question_handler(agent._request_user_question),
                 questions,
                 # Who is asking, when the asker is not the turn the user is watching:
                 # a sub-agent names itself here so the card can say so. Absent for the
@@ -224,14 +259,25 @@ def _make_elicitation_callback(agent: Any):
         except Exception:
             return types.ElicitResult(action="cancel")
 
-        answers = list((result or {}).get("answers") or [])
+        result = result or {}
+        answers = list(result.get("answers") or [])
         if not answers:
-            # Nobody answered in time, or nobody was going to: the asker must be able
-            # to tell the two apart, because they call for opposite behaviour.
-            if (result or {}).get("timed_out"):
-                return types.ElicitResult(action="decline",
-                                          content={"reason": "timeout"})
-            return types.ElicitResult(action="decline")
+            if not (result or {}).get("timed_out"):
+                return types.ElicitResult(action="decline")
+            # Nobody was at the keyboard. Distinct from a decline, and the difference
+            # is what the tool tells the model: a cancelled question means stop and
+            # ask in the reply, an expired one means carry on with the recommended
+            # option. Carried as an accepted result because a decline has no room
+            # for it — ``action`` is the only thing a declined result reports.
+            return types.ElicitResult(
+                action="accept",
+                content={
+                    "answers": json.dumps([]),
+                    "timed_out": True,
+                    "timeout_secs": int(result.get("timeout_secs")
+                                        or USER_QUESTION_TIMEOUT_SECS),
+                },
+            )
 
         # ``ElicitResult.content`` is typed by the MCP SDK as
         # ``dict[str, str | int | float | bool | list[str] | None]`` — a list of
@@ -261,10 +307,24 @@ async def connect_server(*, agent: Any, name: str, script: str) -> None:
     # is deliberately distinct from the file/search sandbox — see config.constants.
     # The scratchpad travels the same way: the client vetted that path at startup
     # (ensure_scratch_home), so servers must use its answer, not re-derive one.
-    # ``agent.server_env`` is how an agent that is not the one the user is driving
-    # places itself: a sub-agent sets its own MIMIR_SESSION_ID there, so its todo and
-    # its scratchpad land under its own session. It must be per agent rather than in
-    # os.environ, because several sub-agents run concurrently in one process.
+    #
+    # MIMIR_SESSION_ID is what makes a server's state per-conversation. An agent serves
+    # one session for its whole life, so the session is fixed at spawn and the frozen
+    # environment is the right place for it: every state path the server resolves
+    # (todo list, plans, approved paths, run channels, job dirs) then names its own
+    # session, whatever other sessions are doing at the same moment. Empty for the ends
+    # that have no session — the CLI, standalone runs, tests — which fall back to the
+    # active-session pointer.
+    #
+    # MIMIR_DEFAULT_MODEL travels per server rather than through the client's own
+    # environment: server_spawn_agent reads it out of this frozen copy to build its
+    # child, and a second session on another model must not change what an
+    # already-spawned server would pass on.
+    #
+    # ``agent.server_env`` goes on last and wins: it is how an agent that is not the one
+    # the user is driving places itself — a sub-agent names its own session and, when it
+    # works in a copy of the repository, its own roots. Per agent rather than in
+    # os.environ, because several of them run concurrently in one process.
     root = getattr(agent, "workspace_root", None) or os.getcwd()
     server_env = {
         **os.environ,
@@ -272,6 +332,9 @@ async def connect_server(*, agent: Any, name: str, script: str) -> None:
         "SEARCH_ROOT": root,
         "MIMIR_STATE_DIR": STATE_DIR,
         "MIMIR_SCRATCH_DIR": scratch_home(),
+        "MIMIR_SESSION_ID": getattr(agent, "session_id", "") or "",
+        "MIMIR_DEFAULT_MODEL": getattr(agent, "model", "") or "",
+        "LLM_BACKEND": getattr(agent, "backend", "") or os.environ.get("LLM_BACKEND", ""),
         **(getattr(agent, "server_env", None) or {}),
     }
     params = StdioServerParameters(command=command, args=[script], env=server_env)

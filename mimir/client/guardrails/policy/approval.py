@@ -193,7 +193,12 @@ class ApprovalManager:
         fallback_tools: dict[str, tuple[str, ...]] | None = None,
         non_batch_tools: set[str] | None = None,
         tool_caps: dict[str, ToolCaps] | None = None,
+        session_id: str | None = None,
     ):
+        # Which conversation's allowlist this manager owns. Consent is given inside a
+        # conversation, and several run at once in this process, so the sidecar is one
+        # file per session — see _flush_allowed_paths. None for the session-less ends.
+        self.session_id: str | None = session_id
         # Classification (sensitive / non-batch / fallback) plus scope-narrowing and
         # risk notes are seeded from the per-agent live registry after servers
         # connect, via MimirAgent.seed_classification_from_caps(). Constructed empty
@@ -243,6 +248,11 @@ class ApprovalManager:
         self._pending_review: list[dict] = []
         # path → original content (None means file did not exist before the batch)
         self._file_snapshots: dict[str, str | None] = {}
+        # Digest of each reviewed file as it stood when its diff was last shown to the
+        # user — see note_reviewed. A revert may undo what was reviewed and nothing else:
+        # anything the file gained since comes from somewhere this agent cannot see, which
+        # under concurrent sessions is usually another conversation.
+        self._reviewed_digests: dict[str, str] = {}
 
     # ------------------------------------------------------------------
     # Basic metadata helpers
@@ -489,17 +499,39 @@ class ApprovalManager:
         self._flush_allowed_paths()
 
     def reset_allowed_paths(self) -> None:
-        """Clear session path grants (on session change) and truncate the sidecar."""
+        """Clear this session's path grants and truncate its own sidecar.
+
+        Only ever its own: the file is per session, so a conversation starting fresh cannot
+        revoke what another one was granted and is still writing under.
+        """
         self._allowed_paths.clear()
         self.approved_scopes = {s for s in self.approved_scopes if not s.startswith("path:")}
         self._flush_allowed_paths()
 
+    def approved_paths_file(self) -> str:
+        """This session's allowlist sidecar — the path the servers read per call.
+
+        ``<STATE_DIR>/sessions/<sid>/approved_paths.json`` — from ``self.session_id``, not
+        from the active-session pointer: the pointer names the conversation on screen, and
+        the grant belongs to the conversation that was asked for it.
+
+        A ``session_id`` of None means this agent has no session of its own, and the path
+        resolves the way the single-session ends resolve it — through the pointer, falling
+        back to the state-dir root when nothing wrote one (the CLI, the benchmark runner,
+        tests). Passing None through rather than coercing it to "" is what keeps the writer
+        and the servers' reader naming the same file.
+        """
+        from ...config.constants import STATE_DIR
+        from ....servers._shared.state_paths import session_state_dir
+        return os.path.join(
+            session_state_dir(STATE_DIR, self.session_id), "approved_paths.json"
+        )
+
     def _flush_allowed_paths(self) -> None:
         """Write the current allowed-paths set to the sidecar the servers read."""
         try:
-            from ...config.constants import STATE_DIR
-            os.makedirs(STATE_DIR, exist_ok=True)
-            path = os.path.join(STATE_DIR, "approved_paths.json")
+            path = self.approved_paths_file()
+            os.makedirs(os.path.dirname(path), exist_ok=True)
             tmp = path + ".tmp"
             with open(tmp, "w") as fh:
                 json.dump(sorted(self._allowed_paths), fh)
@@ -543,6 +575,46 @@ class ApprovalManager:
             self._file_snapshots[path] = None  # file will be created by this batch
         except OSError:
             pass  # can't snapshot; skip gracefully
+
+    @staticmethod
+    def _digest(text: str) -> str:
+        import hashlib
+        return hashlib.sha1(text.encode("utf-8", "replace")).hexdigest()
+
+    def note_reviewed(self, path: str, content: str) -> None:
+        """Record *content* as the state of *path* the user was just shown.
+
+        Called while the review diff is built, the one moment at which what is on disk and
+        what the user is looking at are known to be the same thing.
+        """
+        self._reviewed_digests[path] = self._digest(content)
+
+    def reviewed_matches(self, path: str) -> bool | None:
+        """Whether *path* on disk is still what was reviewed. None = cannot tell.
+
+        None when nothing was recorded, or the file cannot be read: the caller then
+        proceeds, like every other best-effort check in this module — a guard that cannot
+        read must not block the user's own undo.
+        """
+        expected = self._reviewed_digests.get(path)
+        if expected is None:
+            return None
+        try:
+            with open(path, "r", encoding="utf-8", errors="replace") as fh:
+                return self._digest(fh.read()) == expected
+        except FileNotFoundError:
+            # Gone since the review: restoring recreates it from a baseline nobody asked
+            # for, so this counts as moved.
+            return False
+        except OSError:
+            return None
+
+    def forget_reviewed(self, path: str | None = None) -> None:
+        """Drop the reviewed digest for *path*, or all of them."""
+        if path is None:
+            self._reviewed_digests.clear()
+        else:
+            self._reviewed_digests.pop(path, None)
 
     def flush_pending_review(
         self,

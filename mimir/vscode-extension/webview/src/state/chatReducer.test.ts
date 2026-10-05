@@ -18,6 +18,47 @@ function run(actions: Parameters<ReturnType<typeof makeReducer>>[1][]): ChatStat
 }
 
 describe("chatReducer", () => {
+  it("keeps two conversations' approval cards apart", () => {
+    // Matching on kind alone merged them into one card carrying both agents' ids, and
+    // one choice then answered both — one of them for a call the user never saw. With
+    // conversations running turns at once this is a live case, not a corner.
+    const base = { type: "approval" as const, tool: "bash_run", server: "bash",
+                   args: { command: "echo hi" }, risk: "", scope: "" };
+    const state = run([
+      { ...base, id: "a1", session_id: "s1", session_title: "Install the toolchain" },
+      { ...base, id: "a2", session_id: "s2", session_title: "Port the solver" },
+    ]);
+    const cards = state.messages.filter((m) => m.kind === "approval");
+    expect(cards).toHaveLength(2);
+    expect(cards[0].approval?.ids).toEqual(["a1"]);
+    expect(cards[1].approval?.ids).toEqual(["a2"]);
+  });
+
+  it("still merges concurrent cards within one conversation", () => {
+    // The merge exists because one step can park on several calls at once, and the user
+    // judges the step. Scoping it per conversation must not take that away.
+    const base = { type: "approval" as const, tool: "bash_run", server: "bash",
+                   args: { command: "echo hi" }, risk: "", scope: "" };
+    const state = run([
+      { ...base, id: "a1", session_id: "s1" },
+      { ...base, id: "a2", session_id: "s1" },
+    ]);
+    const cards = state.messages.filter((m) => m.kind === "approval");
+    expect(cards).toHaveLength(1);
+    expect(cards[0].approval?.ids).toEqual(["a1", "a2"]);
+  });
+
+  it("renders the queue notice rather than dropping it", () => {
+    // Other transient status is dropped; this one is not. A queue nobody can see reads
+    // as a hang, which is the one thing a bounded pool must never look like.
+    const state = run([
+      { type: "queued", position: 2, text: "  ⏸ Waiting for a free agent slot (#2 in line).",
+        session_id: "s1" },
+    ]);
+    const texts = state.messages.map((m) => m.text ?? "");
+    expect(texts.some((t) => t.includes("Waiting for a free agent slot"))).toBe(true);
+  });
+
   it("does not answer a card twice when it is put back over its saved copy", () => {
     // Coming back to a session whose turn was set aside: the saved transcript still
     // holds the card, and the server sends it again with the same id.
@@ -771,8 +812,8 @@ describe("session command replies", () => {
 
 describe("background-job wake", () => {
   // A wake starts a turn nobody pressed send for. `busy` is what puts the composer
-  // in stop mode, and only `submit_query` sets it — so before this the agent ran on
-  // with the button still offering "send", and the user could not interrupt it.
+  // in stop mode, and only `submit_query` sets it — so without this the agent runs on
+  // with the button still offering "send", and the user cannot interrupt it.
   it("marks the turn busy when the wake resumes this conversation", () => {
     const state = run([
       {
@@ -810,6 +851,48 @@ describe("background-job wake", () => {
     const state = run([
       { type: "submit_query", text: "go" },
       { type: "job_complete", job_key: "j1", state: "done", resumes_active_session: true },
+    ]);
+    expect(state.busy).toBe(true);
+  });
+});
+
+describe("background-job check-in", () => {
+  const bulletin = (over: Record<string, unknown> = {}) => ({
+    type: "job_checkin" as const,
+    jobs: [{ job_key: "j1", kind: "shell-command", state: "running", phase: "compile", percent: 40 }],
+    ...over,
+  });
+
+  it("marks the turn busy when the bulletin starts one here", () => {
+    // Same reason as a wake: nobody pressed send, so nothing else would put the
+    // composer in stop mode for a turn that is genuinely running.
+    expect(run([bulletin({ resumes_active_session: true })]).busy).toBe(true);
+  });
+
+  it("leaves this conversation idle when no turn started", () => {
+    // Held back because the owner is busy or parked, or started elsewhere. A stop
+    // button here would stop nothing.
+    expect(run([bulletin()]).busy).toBe(false);
+    expect(run([bulletin({ resumes_active_session: false })]).busy).toBe(false);
+  });
+
+  it("settles nothing — the runs it describes are still running", () => {
+    // The whole difference from a wake. A bulletin that marked the row done would
+    // report an ending that has not happened, and drop the live progress with it.
+    const state = run([
+      { type: "tool_call", id: "c1", name: "bash_run", args: {} },
+      { type: "tool_backgrounded", id: "c1", job_key: "j1" },
+      bulletin(),
+    ]);
+    const row = state.liveToolCalls.find((t) => t.id === "c1");
+    expect(row?.jobKey).toBe("j1");
+    expect(row?.status).not.toBe("ok");
+  });
+
+  it("does not end a turn that is already running", () => {
+    const state = run([
+      { type: "submit_query", text: "go" },
+      bulletin(),
     ]);
     expect(state.busy).toBe(true);
   });

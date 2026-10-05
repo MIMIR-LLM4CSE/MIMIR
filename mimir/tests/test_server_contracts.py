@@ -1,17 +1,27 @@
 import importlib.util
 import io
 import re
+import shutil
 import tempfile
 import unittest
 import urllib.error
 from pathlib import Path
 import sys
 
-from mimir.servers._shared import shell_paths as _shell_paths
-
-
 SERVERS_DIR = Path(__file__).resolve().parents[1] / "servers"
 _SHARED_DIR = SERVERS_DIR / "_shared"
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+
+# Ahead of the first ``import mimir``, and ahead of any installed copy of the package:
+# that import binds the package to whichever ``mimir`` is found first, and every later
+# ``mimir.*`` resolves through it. Found by the current directory, that is the working
+# tree when the suite runs from the repo root and site-packages when it runs from
+# anywhere else — so the file would check one build while importing another. Anchored at
+# this file, it is always the tree this test belongs to.
+if str(_REPO_ROOT) not in sys.path[:1]:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from mimir.servers._shared import shell_paths as _shell_paths   # noqa: E402
 
 # Add _shared/ and each group subdirectory to sys.path so modules can be
 # loaded via spec_from_file_location and their imports resolve correctly.
@@ -426,8 +436,8 @@ class RepresentativeServerContractTests(unittest.TestCase):
         self.assertLess(server_web._ERROR_BODY_READ, server_web._MAX_BYTES)
 
     def test_web_success_notes_never_use_the_reserved_hint_key(self) -> None:
-        """`hint` belongs to error payloads: responses.ok() strips it. Every note this
-        module wrote under that key had been addressed to a model that never got it."""
+        """`hint` belongs to error payloads: responses.ok() strips it, so a note written
+        under that key is addressed to a model that never receives it."""
         src = Path(server_web.__file__).read_text()
         head = src.split("# \u2500\u2500 tools")[0]
         self.assertNotIn('note["hint"]', head)
@@ -1001,9 +1011,9 @@ class BashServerTests(unittest.TestCase):
         self.assertIn("outside workspace", payload["error"])
 
     def test_find_exec_allows_a_read_only_nested_command(self) -> None:
-        # `-exec` used to be denied on the token alone, without ever inspecting what
-        # was nested — and the rejection hint pointed at `xargs`, which is itself
-        # permanently banned, so read-only fan-out had no spelling at all.
+        # Denying `-exec` on the token alone, without inspecting what is nested, leaves
+        # read-only fan-out no spelling at all: the obvious alternative hint is `xargs`,
+        # which is itself permanently banned.
         cwd = server_bash._WORKSPACE_ROOT
         for cmd in (
             r'find . -name "*.py" -exec grep -l pattern {} \;',
@@ -1016,8 +1026,8 @@ class BashServerTests(unittest.TestCase):
     def test_find_exec_still_refuses_anything_not_read_only(self) -> None:
         # The grant must not widen: a nested command's operands include `{}`, whose
         # expansion cannot be resolved here, so a nested write/exec targets unknown
-        # paths. `python f.py` was already directly invocable, so nothing that was
-        # previously unreachable becomes reachable.
+        # paths. `python f.py` is directly invocable anyway, so the allowance reaches
+        # nothing that was out of reach.
         cwd = server_bash._WORKSPACE_ROOT
         for cmd in (
             r"find . -exec rm {} \;",
@@ -1167,6 +1177,13 @@ class BashServerTests(unittest.TestCase):
         self.assertEqual(payload["status"], "ok", payload)
         self.assertIn("WS-BIN-OK", payload["stdout"])
 
+    # A tree of its own, inside the workspace, for the tests that need files to glob,
+    # pipe, cd into or fail to match. Naming the repo's own paths tied them to being run
+    # from a checkout of MIMIR — and the workspace is normally the user's project, where
+    # ``mimir/servers/workspace`` does not exist and the shell behaviour under test is
+    # no different.
+    FIXTURE_DIR = "_contract_fixture"
+
     @classmethod
     def setUpClass(cls) -> None:
         import os
@@ -1175,13 +1192,42 @@ class BashServerTests(unittest.TestCase):
             fh.write('#include <stdio.h>\nint main(){printf("WS-BIN-OK\\n");return 0;}')
         cls._wlocal_src = src
 
+        root = os.path.join(server_bash._WORKSPACE_ROOT, cls.FIXTURE_DIR)
+        os.makedirs(os.path.join(root, "inner"), exist_ok=True)
+        for name, body in (("probe.py", "VALUE = 1\n"),
+                           ("inner/deeper.py", "VALUE = 2\n"),
+                           ("notes.txt", "a line of prose\n")):
+            with open(os.path.join(root, name), "w") as fh:
+                fh.write(body)
+        cls._fixture_root = root
+
     @classmethod
     def tearDownClass(cls) -> None:
         import os
+        import shutil as _shutil
         for name in ("bin_src.c", "bin_out.out"):
             p = os.path.join(server_bash._WORKSPACE_ROOT, name)
             if os.path.exists(p):
                 os.remove(p)
+        _shutil.rmtree(getattr(cls, "_fixture_root", ""), ignore_errors=True)
+
+    def setUp(self) -> None:
+        # Every bash_run goes through the job launcher, which writes under the state dir.
+        # Left at its default that is the state of whoever runs the suite, so a test run
+        # would leave job directories in their real sessions.
+        import os
+        self._state_dir = tempfile.mkdtemp(prefix="mimir-contract-state-")
+        self._prior_state = os.environ.get("MIMIR_STATE_DIR")
+        os.environ["MIMIR_STATE_DIR"] = self._state_dir
+
+    def tearDown(self) -> None:
+        import os
+        import shutil as _shutil
+        if self._prior_state is None:
+            os.environ.pop("MIMIR_STATE_DIR", None)
+        else:
+            os.environ["MIMIR_STATE_DIR"] = self._prior_state
+        _shutil.rmtree(self._state_dir, ignore_errors=True)
 
     def test_bash_run_rejects_arbitrary_system_executable_by_path(self) -> None:
         # A path-like argv0 that is NOT inside the workspace stays rejected. It is
@@ -1205,9 +1251,9 @@ class BashServerTests(unittest.TestCase):
     def test_bash_run_allows_glob_and_simple_pipe(self) -> None:
         # Globbing and a single pipe must still work.
         payload = server_bash.bash_run(
-            "cd mimir/servers/workspace && ls *.py | head")
-        self.assertEqual(payload["status"], "ok")
-        self.assertIn("server_bash.py", payload["stdout"])
+            f"cd {self.FIXTURE_DIR} && ls *.py | head")
+        self.assertEqual(payload["status"], "ok", payload)
+        self.assertIn("probe.py", payload["stdout"])
 
     def test_bash_run_confines_path_sensitive_command(self) -> None:
         # rg reads files, so an out-of-workspace path must be rejected.
@@ -1334,9 +1380,9 @@ class BashServerTests(unittest.TestCase):
         # grep exit 1 == "no match", which exit 1 == "not installed". Both are
         # conclusive answers; reporting them as failures makes the agent re-run
         # the same command instead of acting on the finding.
-        for cmd in ("grep -r zzz-no-such-token-zzz mimir/servers/workspace",
+        for cmd in (f"grep -r zzz-no-such-token-zzz {self.FIXTURE_DIR}",
                     "which zzz-no-such-binary-zzz",
-                    "ls mimir | grep zzz-no-such-token-zzz"):
+                    f"ls {self.FIXTURE_DIR} | grep zzz-no-such-token-zzz"):
             payload = server_bash.bash_run(cmd)
             self.assertEqual(payload["status"], "ok", cmd)
             self.assertEqual(payload["returncode"], 1, cmd)
@@ -1412,9 +1458,9 @@ class BashServerTests(unittest.TestCase):
             self.assertEqual(server_bash._validate_command(cmd, cwd)["status"], "ok", cmd)
 
     def test_cd_then_relative_path_still_runs(self) -> None:
-        payload = server_bash.bash_run("cd mimir/servers/workspace && ls server_bash.py")
+        payload = server_bash.bash_run(f"cd {self.FIXTURE_DIR}/inner && ls deeper.py")
         self.assertEqual(payload["status"], "ok", payload)
-        self.assertIn("server_bash.py", payload["stdout"])
+        self.assertIn("deeper.py", payload["stdout"])
 
     def test_deletion_runs_but_only_inside_the_workspace(self) -> None:
         # 'rm' is destructive and reviewable, which is what the approval prompt is
@@ -1483,10 +1529,9 @@ class BashServerTests(unittest.TestCase):
 
     def test_a_workspace_script_can_be_made_executable_and_run(self) -> None:
         # Running a workspace script by path is already supported, but a script
-        # without the x bit (fresh checkout, or one the agent just wrote) used to be
-        # a dead end: './build.sh' failed with "Permission denied", 'chmod' was
-        # refused and 'bash build.sh' is refused by design, so nothing could grant it.
-        # Both halves must stay available for the sequence to work.
+        # without the x bit (fresh checkout, or one the agent just wrote) is a dead end
+        # unless both halves stay available: './build.sh' fails with "Permission denied",
+        # 'bash build.sh' is refused by design, so `chmod` is the only way to grant it.
         cwd = server_bash._WORKSPACE_ROOT
         for cmd in ("chmod +x ./build.sh", "chmod 755 tools/run.sh", "./build.sh"):
             self.assertEqual(server_bash._validate_command(cmd, cwd)["status"], "ok", cmd)
@@ -1541,7 +1586,9 @@ class BashServerTests(unittest.TestCase):
         self.assertEqual(payload["returncode"], 4)
         self.assertEqual(payload["matches"], 0)
         # grep keeps its stricter rule: 1 is no-match, 2 is a real error.
-        self.assertEqual(server_bash.bash_run("grep -n zzzznomatch README.md")["status"], "ok")
+        self.assertEqual(
+            server_bash.bash_run(
+                f"grep -n zzzznomatch {self.FIXTURE_DIR}/notes.txt")["status"], "ok")
 
     def test_outside_executable_is_approvable_not_flatly_refused(self) -> None:
         # An out-of-workspace *file* was refused pending the user's approval while an
@@ -1912,19 +1959,25 @@ class BashServerTests(unittest.TestCase):
         payload = server_bash.bash_run("ls ../../..")
         self.assertEqual(payload["status"], "error")
 
+    @unittest.skipUnless(shutil.which("git"), "git not available on this host")
     def test_bash_run_runs_git(self) -> None:
         # git ran through a dedicated server only because bash refused it; that
         # server is gone, and git is an ordinary approval-gated command here.
         #
-        # `git --version` rather than `git status`: what this pins is that git reaches
-        # the shell instead of being refused by name, and `git status` answers that only
-        # where the workspace happens to be a repository — it failed on returncode 128
-        # anywhere else, which is the suite depending on its surroundings rather than on
-        # the behaviour it tests. That the validator allows `git status` in particular is
-        # already pinned by test_an_unlisted_command_runs.
+        # ``--version`` rather than ``status``: what is under test is that the call is not
+        # refused and actually runs, and ``git status`` answers 128 wherever the workspace
+        # is not a repository — which failed the test for a reason it does not test. That
+        # the validator allows ``git status`` in particular is pinned by
+        # test_an_unlisted_command_runs.
         payload = server_bash.bash_run("git --version")
         self.assertEqual(payload["status"], "ok", payload)
         self.assertIn("git version", payload["stdout"])
+        self.assertNotIn("refused", payload)
+        # And a repository is not required for the command to be allowed through: in a
+        # workspace without one, git's own non-zero status is the only thing that differs.
+        payload = server_bash.bash_run("git status --short")
+        self.assertNotIn("refused", payload)
+        self.assertIn(payload.get("returncode"), (0, 128), payload)
 
     def test_bash_run_allows_python_as_code_fallback(self) -> None:
         # python is now an allowed build/exec tool so the code server can fall
@@ -2010,10 +2063,9 @@ class ToolSchemaContractTests(unittest.IsolatedAsyncioTestCase):
 
     Observed defect: a live session dropped `verdict` from two report_verdict calls,
     sending only {reason, run}. vLLM parsed the call fine — the rejection was pydantic's,
-    and the model saw a raw dump. The schema it had been given described all three
-    parameters as bare `{"type": "string"}` with no description and no enum: three
-    indistinguishable slots, with the closed four-value set stated only in the
-    docstring's prose. `reason` and `run` have obvious semantic anchors in that prose;
+    and the model saw a raw dump. Its schema described all three parameters as bare
+    `{"type": "string"}` with no description and no enum: three indistinguishable slots,
+    with the closed four-value set stated only in the docstring's prose. `reason` and `run` have obvious semantic anchors in that prose;
     `verdict` is the abstract one, and it is the one that went missing.
 
     The `Args:` block was written and is discarded — the bundled FastMCP builds its
@@ -2104,12 +2156,18 @@ class EveryToolDescribesItsParametersTests(unittest.IsolatedAsyncioTestCase):
     async def test_no_parameter_reaches_the_model_undescribed(self) -> None:
         import glob
         import importlib
+        import os
         from mimir.client.integration.server_manager import _schema_with_arg_descriptions
 
         undescribed, total = [], 0
-        for path in sorted(glob.glob("mimir/servers/*/server_*.py")):
+        # Anchored at this file, not at the current directory: globbing "mimir/servers/…"
+        # from anywhere else finds nothing, and resolves ``import mimir.*`` against an
+        # installed copy of the package rather than the tree under test.
+        repo_root = Path(__file__).resolve().parents[2]
+        for path in sorted(glob.glob(str(repo_root / "mimir/servers/*/server_*.py"))):
+            modname = str(Path(path).relative_to(repo_root))[:-3].replace(os.sep, ".")
             try:
-                mod = importlib.import_module(path[:-3].replace("/", "."))
+                mod = importlib.import_module(modname)
             except Exception:
                 continue  # a server whose deps are absent here is not this test's subject
             mcp = getattr(mod, "mcp", None)

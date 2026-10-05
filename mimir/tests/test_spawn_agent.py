@@ -59,9 +59,13 @@ _WRITERS = sorted(name for _, tools in _SERVER_TOOLS.items() for name, caps in t
 class _FakeAgent:
     """A MimirAgent stand-in recording what the spawn server does to it."""
 
-    def __init__(self, answer: str = "done"):
+    def __init__(self, answer: str = "done", session_id: str | None = None):
         self.connected: list[str] = []
         self.model = "parent/model"
+        # Taken at construction, as MimirAgent takes it: the approval manager below is
+        # built here and captures the session it resolves its allowlist against, so a
+        # stand-in that accepted it later would not exercise that ordering at all.
+        self.session_id: str | None = session_id
         self.server_env: dict = {}
         self.tools: list[dict] = []
         self.tool_owner: dict = {}
@@ -79,7 +83,7 @@ class _FakeAgent:
         # by its scope logic, and a namespace with a `approved_scopes` set would agree
         # with whatever the server did to it.
         from mimir.client.guardrails.policy.approval import ApprovalManager
-        self.approvals = ApprovalManager()
+        self.approvals = ApprovalManager(session_id=session_id)
 
     def approval_scope(self, tool_name: str, arguments: dict) -> str:
         """As MimirAgent derives it — the key a session grant is recorded under."""
@@ -129,7 +133,21 @@ def _run_child(tools: list[str] | None = None, answer: str = "done",
 def _patched_agent(agent: _FakeAgent):
     import mimir.client.agent_core as agent_core
     original = agent_core.MimirAgent
-    agent_core.MimirAgent = lambda **_kw: agent
+
+    def _factory(**kw):
+        """The pre-built fake, told what the real constructor would have been told.
+
+        The session has to be applied here rather than ignored: MimirAgent takes it as
+        a constructor argument and hands it straight to its approval manager, so a
+        stand-in that dropped it would let a regression in that wiring pass.
+        """
+        session_id = kw.get("session_id")
+        if session_id is not None:
+            agent.session_id = session_id
+            agent.approvals.session_id = session_id
+        return agent
+
+    agent_core.MimirAgent = _factory
     # The tool points stdout at stderr on first use (its stdout is the JSON-RPC pipe);
     # under a test runner that would swallow the rest of the session's output.
     saved_stdout, spawn._stdout_silenced = sys.stdout, False

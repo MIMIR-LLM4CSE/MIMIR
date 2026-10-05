@@ -64,9 +64,9 @@ _DIVERT_CHANNEL = "proxy_eval"
 # Sits under the tool-call budget proxy_eval declares, leaving room for the ratchet
 # to settle and the results to be read in the same call. That budget is capped
 # client-side at TOOL_CALL_TIMEOUT_MAX_SECS (1200 s) whatever the tool declares, so
-# a larger value here would mean the client always cut the call before the server
-# ever detached — the orderly hand-off to the watcher would never happen. With a
-# build ahead of the measurement, that stopped being a corner case.
+# a larger value here means the client always cuts the call before the server detaches,
+# and the orderly hand-off to the watcher never happens. With a build ahead of the
+# measurement, that is the common case rather than a corner.
 _RUN_WAIT_BUDGET_S = 1100.0
 # Above this measured build time, a run is worth detaching rather than waiting out.
 # One minute: short enough to catch any real compiled project, long enough that a
@@ -1048,6 +1048,13 @@ def status(proxy_name: str = "") -> dict:
     for key in ("phase", "percent"):
         if rs.get(key) is not None:
             payload[key] = rs[key]
+    # A handle for a run still going, so asking where it is at puts a watcher back on
+    # it: the watchers belong to the agent that made them and do not outlive it, while
+    # the run — a detached process with its own run dir — carries on regardless.
+    # Plural, never ``background_job``: that key says *this call launched it*, and this
+    # one only looked.
+    if rs["state"] in ("running", "pending"):
+        payload["background_jobs"] = [_background_descriptor(resolved, run_dir)]
     return ok(_with_next(payload, next_step))
 
 

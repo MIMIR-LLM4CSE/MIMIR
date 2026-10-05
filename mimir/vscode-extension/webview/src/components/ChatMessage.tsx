@@ -26,8 +26,8 @@ const ChatMessageInner: React.FC<Props> = ({ message, onApprovalResponse, onRetr
   // must run unconditionally.
   const [openDiffs, setOpenDiffs] = useState<Record<string, boolean>>({});
 
-  // Approval cards are now rendered in the GlobalApprovalBar above the input;
-  // suppress inline rendering so they don't duplicate.
+  // Approval cards belong to the GlobalApprovalBar above the input; rendering one inline
+  // as well would show the same card twice.
   if (message.kind === "approval" && message.approval) {
     return null;
   }

@@ -460,10 +460,10 @@ _INCOMPLETE_STATUSES: frozenset[str] = frozenset({"incomplete", "handback"})
 # fields, then a markdown body. The front-end lifts the block off the answer and shows
 # it as a collapsed disclosure — headline and risk visible, the detail one click away.
 #
-# The report used to be concatenated *ahead* of the answer as bare prose, with no marker
-# to lift it by, so every front-end rendered the whole of it as body text and the model's
-# own words arrived underneath it. That is what made an ordinary interim turn read as a
-# wall of machine output. Nothing is dropped here — only folded.
+# The marker is what makes that possible: concatenated ahead of the answer as bare prose,
+# the report has nothing to lift it by, so every front-end renders the whole of it as body
+# text with the model's own words underneath — which is what makes an ordinary interim turn
+# read as a wall of machine output. Nothing is dropped here, only folded.
 COMPLETION_MARKER: str = "<!--mimir:completion"
 COMPLETION_FRAMING: str = "Completion report — machine-recorded, not model-authored:"
 
@@ -597,12 +597,11 @@ def finalize_incomplete_answer(
 	)
 	sections.append(f"Residual risk: {risk_level}.")
 
-	# The model's own prose is the answer again, and the machine's account of the same run
-	# rides behind the marker. It used to be the other way round — the report first, the
-	# prose last under "What the model claims:" — which is what a reader met head-on on an
-	# ordinary interim turn. The framing that label carried is not lost: it is the marker's
-	# own ("machine-recorded, not model-authored"), stated once, where the machine's lines
-	# actually are.
+	# The model's own prose is the answer, and the machine's account of the same run rides
+	# behind the marker. This order and not the reverse: the report first and the prose last
+	# is what a reader meets head-on on an ordinary interim turn. The framing is the
+	# marker's own ("machine-recorded, not model-authored"), stated once, where the
+	# machine's lines actually are.
 	return answer.strip() + render_completion_report(
 		headline, risk_level, "\n\n".join(sections))
 

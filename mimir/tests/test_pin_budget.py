@@ -1,11 +1,11 @@
 """Tests for the checklist section of the system prompt and the recency sets.
 
 The checklist is state the model is held to, so what the prompt says about it is
-load-bearing. It carries the checklist and nothing else: it used to also repeat the
-paths read, written and planned this session, which the model copied instead of used
-(one recorded run looped on the file list until the step budget ran out). It lives in
+load-bearing. It carries the checklist and nothing else: repeating the paths read,
+written and planned this session gives the model something to copy instead of use (one
+recorded run looped on the file list until the step budget ran out). It lives in
 messages[0] — never in the last position before the generation prompt, which is what
-emptied turns on a served model (see test_prefix_cache).
+empties turns on a served model (see test_prefix_cache).
 """
 
 import os

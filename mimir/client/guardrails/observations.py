@@ -1175,9 +1175,9 @@ def _observe_bash_validation(
     # stdout and stderr together: every recorded invocation writes `2>&1`, which puts
     # the run's report in whichever stream the caller merged into.
     out = str(payload.get("stdout") or "") + "\n" + str(payload.get("stderr") or "")
-    # One question, asked once, in the module that owns it. This used to be an `or` chain
-    # of dialects assembled here, which is why each new way of reporting a failure
-    # arrived as a missed failure first and a clause second.
+    # One question, asked once, in the module that owns it. An `or` chain of dialects
+    # assembled here is how each new way of reporting a failure arrives as a missed failure
+    # first and a clause second.
     completed, reason = judge_run(exit_ok=(status == "ok"), output=out)
     if reason == TEST_RUNNER_FAILURE:
         _record_test_failure_signatures(execution_context, out)

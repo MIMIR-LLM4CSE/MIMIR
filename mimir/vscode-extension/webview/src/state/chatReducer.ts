@@ -592,6 +592,22 @@ export function createChatReducer(makeId: () => string) {
         };
       }
 
+      // A bulletin on runs that are still going. It settles nothing — the rows it
+      // describes are still running, which is the whole news — so unlike a wake it
+      // touches no tool call. All it can do is mark the chat busy for the short turn
+      // it may have started, for the same reason as above: nobody pressed send, and
+      // without this there is no stop button for a turn that is running.
+      case "job_checkin": {
+        if (!action.resumes_active_session) return state;
+        return {
+          ...state,
+          busy: true,
+          liveThinkingBlocks: [],
+          liveToolCalls: [],
+          toolCallAfterToken: true,
+        };
+      }
+
       // ── Server messages ────────────────────────────────────────────────────
       case "output":
       case "status": {
@@ -703,9 +719,14 @@ export function createChatReducer(makeId: () => string) {
         const base = s.messages.map((m) =>
           m.kind === "editing" && m.live ? { ...m, live: false } : m
         );
+        // The newest card of THIS conversation. Matching on kind alone would merge cards
+        // from different conversations into one — two agents' ids in a single `ids[]`,
+        // both then answered by one choice, one of them for a call the user never saw.
         let existingIdx = -1;
         for (let i = base.length - 1; i >= 0; i--) {
-          if (base[i].kind === "approval" && base[i].approval !== undefined) { existingIdx = i; break; }
+          const card = base[i].approval;
+          if (base[i].kind === "approval" && card !== undefined &&
+              (card.session_id ?? "") === (action.session_id ?? "")) { existingIdx = i; break; }
         }
         let messages: ChatMessage[];
         if (existingIdx >= 0) {
@@ -1071,6 +1092,20 @@ export function createChatReducer(makeId: () => string) {
           },
         ];
         return { ...s, messages };
+      }
+
+      // Every agent slot is taken. Rendered rather than dropped like other transient
+      // status, and deliberately leaving `busy` set: the turn was accepted and will
+      // run, so the chat must keep reading as working rather than invite a second send.
+      case "queued": {
+        const s = flushLive({ ...state, toolCallAfterToken: false }, makeId);
+        return {
+          ...s,
+          messages: [
+            ...s.messages,
+            { id: makeId(), role: "agent", kind: "text", text: action.text },
+          ],
+        };
       }
 
       case "error": {

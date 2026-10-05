@@ -32,10 +32,19 @@ def load_vectors(path: str) -> dict:
 
 
 def save_vectors(path: str, store: dict) -> None:
+    """Replace the cache at *path* atomically.
+
+    Via a temp file and one rename: these caches are workspace-global and several sessions
+    write them at once, and a truncating write lets a concurrent reader load a half-written
+    file — which, being JSON, reads as a corrupt cache rather than a short one. The pid in
+    the temp name keeps two writers from sharing it.
+    """
     try:
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-        with open(path, "w", encoding="utf-8") as f:
+        tmp = f"{path}.tmp{os.getpid()}"
+        with open(tmp, "w", encoding="utf-8") as f:
             json.dump(store, f)
+        os.replace(tmp, path)
     except OSError:
         pass
 

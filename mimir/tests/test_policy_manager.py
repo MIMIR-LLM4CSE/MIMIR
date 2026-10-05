@@ -213,11 +213,11 @@ class PolicyManagerTests(unittest.TestCase):
     def test_cluster_submit_stays_held_until_something_is_validated(self) -> None:
         """The hold is a precondition, not a counter — retrying alone must not clear it.
 
-        It used to be one-shot: warn once, set a flag, let the next call through. Against
-        a model that simply calls again (the normal reaction to an error) that cost one
-        round trip and constrained nothing, on the most expensive action in the system —
-        a submission that burns real allocation hours and cannot be taken back. The
-        condition is a fact about the session, so it holds until the fact changes.
+        One-shot — warn once, set a flag, let the next call through — constrains nothing
+        against a model that simply calls again, which is the normal reaction to an error,
+        and costs one round trip on the most expensive action in the system: a submission
+        that burns real allocation hours and cannot be taken back. The condition is a fact
+        about the session, so it holds until the fact changes.
         """
         agent = _FakeAgent()
         agent.tool_owner["salloc_submit"] = "hpc"
@@ -406,8 +406,8 @@ class PolicyManagerTests(unittest.TestCase):
                 execution_context={},
             )
 
-        # The refusal note reaches both the ledger and the tool result — it used to be
-        # computed by the front-end and then dropped on the floor.
+        # The refusal note reaches both the ledger and the tool result: computed by the
+        # front-end and kept there, it would be dropped on the floor.
         self.assertEqual(result.violation, "denied:read_file_lines:x.py:denied by user")
         self.assertEqual(len(agent.denied_calls), 1)
         self.assertEqual(agent.denied_calls[0][3], "denied by user")
@@ -596,7 +596,7 @@ class MissingEvidenceTests(unittest.TestCase):
 
     def test_missing_evidence_silent_once_model_has_evidence(self) -> None:
         # Coherent with the discovery gates: once the model has 2+ real signals,
-        # the discover-branch stops nagging (was previously per-field).
+        # the discover-branch stops nagging — asked once, not per field.
         from mimir.client.guardrails import policy as policy_module
 
         context = {

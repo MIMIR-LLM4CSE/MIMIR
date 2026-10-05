@@ -22,6 +22,9 @@ Session JSON schema:
   "todos": [{"text": "...", "done": false}],
   "pending_interaction": {...} | null  # the card a deferred turn waits on, and what
                                        #   its answer resumes (query_engine.deferral)
+  "context_mode": "full" | "compact"   # the window the session was running in, so a
+                                       #   resume budgets it that way before its agent
+                                       #   exists (see _Session._ctx_budget)
 }
 """
 
@@ -228,6 +231,10 @@ class FullSession:
     # What a turn of this conversation was waiting on when the user left it: the
     # card to put back and the calls its answer resumes (query_engine.deferral).
     pending_interaction: dict | None = None
+    # The context mode the session was running in. Read on resume to size the window
+    # before this conversation has an agent to ask — without it the budget fell back to
+    # compact's 32k and a restored full-mode window read as overflowing.
+    context_mode: str = "full"
 
     def meta(self) -> SessionMeta:
         return SessionMeta(
@@ -263,6 +270,9 @@ class FullSession:
             todos=data.get("todos", []),
             todo_deps=data.get("todo_deps", []),
             pending_interaction=data.get("pending_interaction") or None,
+            # Sessions saved before this field existed were full-mode by default, which
+            # is also the mode a rebuilt agent starts in.
+            context_mode=data.get("context_mode") or "full",
         )
 
 

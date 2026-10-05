@@ -66,7 +66,9 @@ CLUSTER_SUBMIT_TOOLS = {
     "salloc_submit", "sbatch_submit", "proxy_slurm",
 }
 
-# Launchers of long detached runs a client watcher can track to completion.
+# Launchers of long detached runs a client watcher can track to completion. The
+# status ops that report such a run as still in flight are deliberately NOT here:
+# re-arming a watcher reads a descriptor's shape, not a reader's capabilities.
 BACKGROUNDABLE_TOOLS = {
     "bash_run", "proxy_eval", "proxy_slurm", "sbatch_submit", "slurm_probe_node",
     # A sub-agent the caller detaches: same handle, same watcher, same resume.

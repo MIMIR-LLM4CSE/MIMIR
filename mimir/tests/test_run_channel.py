@@ -5,7 +5,7 @@ nothing typechecks the format between them: only a test that runs both halves ag
 one state dir can. The properties that matter are that a request reaches its own run
 and nothing else, that one tool's channel is invisible to another's, and that every
 failure mode is silent — a missing, stale or corrupt sidecar must leave a blocking run
-behaving exactly as it did before this existed.
+behaving exactly as it does when nothing asks it to detach.
 
 See servers/_shared/run_channel.py and client/tool_execution/run_channel.py.
 """
@@ -142,8 +142,8 @@ class DivertSeamTests(_ChannelFixture):
 class ChannelIsolationTests(_ChannelFixture):
     """One tool's channel must be invisible to another's.
 
-    The whole point of keying by tool: before this, a click on a proxy row wrote into
-    the shell's channel and detached whatever the shell happened to be running.
+    The whole point of keying by tool: sharing one channel has a click on a proxy row
+    write into the shell's channel and detach whatever the shell happens to be running.
     """
 
     def test_a_request_on_one_channel_does_not_reach_another(self) -> None:

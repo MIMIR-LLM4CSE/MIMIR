@@ -70,10 +70,9 @@ class BashCommandReadonlyTests(unittest.TestCase):
     def test_reading_a_repository_is_read_only(self):
         """`git status` and `git log` are how you find out what a repo is.
 
-        They used to be unplaced, so they classified as runs and plan mode — the
-        mode whose whole job is finding things out — refused them. Observed three
-        times in one planning phase, which then went looking for the same facts by
-        walking the filesystem instead.
+        Left unplaced they classify as runs, and plan mode — the mode whose whole job is
+        finding things out — refuses them. Observed three times in one planning phase,
+        which then went looking for the same facts by walking the filesystem instead.
         """
         for cmd in [
             "git status",

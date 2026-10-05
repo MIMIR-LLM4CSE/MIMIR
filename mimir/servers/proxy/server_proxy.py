@@ -105,7 +105,8 @@ from capabilities import (tool_caps, CODE_EXEC, PLAN_BLOCKED, CLUSTER_SUBMIT,
                           PANEL_REPORT)
 from responses import err, ok
 from _lib.execute import _DEFAULT_MAX_OUTPUT_MB, _REF_RUN_TIMEOUT
-from _lib.procs import _validate_slurm_args, _validate_slurm_token
+from _lib.procs import (_validate_slurm_args, _validate_slurm_comment,
+                        _validate_slurm_token)
 from slurm_script import validate_target
 from _ops import eval_session, references, registry, runs, scaffold as scaffold_ops, slurm, suites
 
@@ -785,6 +786,7 @@ def proxy_slurm(
     job_name: str = "",
     constraint: str = "",
     nodelist: str = "",
+    comment: str = "",
     build_partition: str = "",
     build_constraint: str = "",
     build_cpus_per_task: int = 0,
@@ -840,6 +842,11 @@ def proxy_slurm(
             partition may run this (e.g. 'a100', 'bigmem&avx512'). A partition
             says which queue; this says which hardware inside it.
         nodelist: Explicit nodes to run on (e.g. 'node[01-04]').
+        comment: Free-text label stored with the job and read back by
+            `sacct -j <id> -o Comment` or `scontrol show job <id>` — what this
+            submission was for, for whoever reads the queue later. Single line,
+            under 512 characters. For 'suite' it labels every job of the suite;
+            for 'eval' the build job carries the same text as the run job.
         build_partition: For 'eval': send the build to this partition instead of
             building on the node that measures. A node dedicated to GPU
             simulation is not a node to compile on. Setting it splits the run
@@ -890,6 +897,11 @@ def proxy_slurm(
         token_err = _validate_slurm_token(value, field)
         if token_err:
             return err(token_err)
+    # A comment is free text, so it gets the looser check: no control characters
+    # (a newline would forge a directive line) and a length Slurm will store.
+    comment_err = _validate_slurm_comment(comment)
+    if comment_err:
+        return err(comment_err)
     if build_partition or build_mem or build_wall_time or build_cpus_per_task:
         build_err = _validate_slurm_args(
             build_partition or partition, build_gpus,
@@ -903,15 +915,18 @@ def proxy_slurm(
                 or slurm.submit_run(proxy_name, partition, extra_params,
                                     param_overrides, compare_to_reference,
                                     gpus, cpus_per_task, mem, wall_time,
-                                    account, job_name, target=target))
+                                    account, job_name, target=target,
+                                    comment=comment))
     if op == "suite":
         return (_missing_args(op, suite_name=suite_name)
                 or slurm.submit_suite(suite_name, partition, gpus, cpus_per_task,
-                                      mem, wall_time, account, target=target))
+                                      mem, wall_time, account, target=target,
+                                      comment=comment))
     # op == "eval"
     return slurm.submit_eval(partition, proxy_name, background, gpus, cpus_per_task,
                              mem, wall_time, account, job_name or "proxy_opt",
-                             target=target, build_partition=build_partition,
+                             target=target, comment=comment,
+                             build_partition=build_partition,
                              build_constraint=build_constraint,
                              build_cpus_per_task=build_cpus_per_task,
                              build_mem=build_mem, build_wall_time=build_wall_time,

@@ -1,9 +1,8 @@
-"""One worker serves every session — events and prompts must not cross over.
+"""An agent per conversation — events and prompts must not cross over.
 
-A turn parked on a plan-approval prompt used to survive a session switch: its
-card stayed on screen, its answer resolved the old turn, and its `open_editor`
-opened the *other* session's plan. These tests pin the three seams that fence a
-turn to the session it started in.
+A turn parked on a plan-approval prompt survives a session switch, so its card, its
+answer and its `open_editor` must all reach the conversation it started in and not the one
+now on screen. These tests pin the three seams that fence a turn to its own session.
 """
 import json
 import queue as _queue
@@ -11,17 +10,21 @@ import threading
 from collections import OrderedDict
 import unittest
 
+from mimir.tests._fake_pool import FakePool
+
 from mimir.client.ui.ws.ws_worker import _AgentWorker
 from mimir.client.ui.ws.ws_session import _Session
 
 
-def _bare_worker() -> _AgentWorker:
+def _bare_worker(session_id: str | None = None) -> _AgentWorker:
     """A worker with only the queue/state fields the tests touch (no agent, no loop)."""
     w = object.__new__(_AgentWorker)
     w.out_q = _queue.Queue()
     w._steer_q = _queue.Queue()
     w._prompts = OrderedDict()
     w._prompts_lock = threading.Lock()
+    w.session_id = session_id
+    w.session_title = ""
     w.active_session_id = None
     w._query_session_id = None
     w._pending_prompt = None
@@ -44,16 +47,35 @@ class WorkerStampTests(unittest.TestCase):
         w.out_q.put({"type": "output", "text": "x", "session_id": "s2"})
         self.assertEqual(w.drain()[0]["session_id"], "s2")
 
-    def test_events_outside_a_query_are_unstamped(self):
+    def test_events_outside_a_query_carry_the_workers_own_session(self):
+        """Setup output belongs to its conversation as much as a turn's does.
+
+        A worker built lazily emits its ``ready``, and any setup failure, while the user
+        may well be reading a different conversation — so the stamp has to name the worker's
+        own session rather than mark the event unattributable.
+        """
+        w = _bare_worker(session_id="s1")
+        w.out_q.put({"type": "output", "text": "x"})
+        self.assertEqual(w.drain()[0]["session_id"], "s1")
+
+    def test_a_worker_with_no_session_of_its_own_still_stamps_nothing(self):
+        """A bare worker (tests, standalone) has no conversation to name."""
         w = _bare_worker()
         w.out_q.put({"type": "output", "text": "x"})
         self.assertIsNone(w.drain()[0]["session_id"])
 
+    def test_a_running_turn_outranks_the_workers_own_session(self):
+        """A wake turn names the session it resumes, whoever hosts it."""
+        w = _bare_worker(session_id="s1")
+        w._query_session_id = "s2"
+        w.out_q.put({"type": "output", "text": "x"})
+        self.assertEqual(w.drain()[0]["session_id"], "s2")
+
     def test_flush_prompts_drops_every_pending_card(self):
         """A card left behind would be answered by the next turn's response.
 
-        The answers used to sit on a queue shared by kind; they now sit in each card's
-        own slot, so dropping the cards is what drops the answers with them.
+        Each card's answer sits in its own slot, so dropping the cards is what drops
+        the answers with them.
         """
         w = _bare_worker()
         w._emit_prompt({"type": "approval", "id": "a1"})
@@ -85,7 +107,7 @@ class SessionFencingTests(unittest.IsolatedAsyncioTestCase):
     def _session(self, worker, active="s1"):
         sess = object.__new__(_Session)
         sess.ws = _FakeWS()
-        sess.worker = worker
+        sess.pool = FakePool(worker, active=active)
         sess.store = _FakeStore(["s1", "s2"])
         sess._active_session_id = active
         sess._display_messages = []
@@ -99,41 +121,49 @@ class SessionFencingTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(sess._is_foreign_event({"type": "open_editor", "session_id": "s1"}))
         self.assertFalse(sess._is_foreign_event({"type": "output"}))  # unstamped
 
-    async def test_idle_worker_is_not_cancelled(self):
-        w = _bare_worker()
-        w.is_busy = lambda: False
-        w.cancel = lambda: self.fail("idle worker must not be cancelled")
-        self.assertFalse(await self._session(w)._abandon_running_turn())
+    async def test_leaving_a_conversation_leaves_its_turn_running(self):
+        """The property the whole feature is for.
 
-    async def test_busy_worker_is_cancelled_and_its_prompts_flushed(self):
-        w = _bare_worker()
-        calls = []
-        busy = [True]
-        w.is_busy = lambda: busy[0]
-        w.cancel = lambda: (calls.append("cancel"), busy.__setitem__(0, False), True)[2]
-        w.flush_prompts = lambda: calls.append("flush")
-        self.assertTrue(await self._session(w)._abandon_running_turn())
-        self.assertEqual(calls, ["cancel", "flush"])
-
-    async def test_switch_cancels_before_the_active_session_pointer_moves(self):
-        """Order matters: a late tool call must never write into the new session."""
-        w = _bare_worker()
-        order = []
-        busy = [True]
-        w.is_busy = lambda: busy[0]
-        w.cancel = lambda: (order.append("cancel"), busy.__setitem__(0, False), True)[2]
-        w.flush_prompts = lambda: None
+With an agent per conversation the turn has somewhere to go: it streams into
+        its own transcript, and a card it is parked on carries the conversation that raised
+        it, so neither needs the user to be looking at it.
+        """
+        w = _bare_worker(session_id="s1")
+        w._query_session_id = "s1"
+        w.is_busy = lambda: True
+        w.cancel = lambda: self.fail("the turn of the conversation being left was cancelled")
+        w.defer = lambda: self.fail("the turn of the conversation being left was deferred")
+        w.flush_prompts = lambda: self.fail("its pending card was thrown away")
         sess = self._session(w)
         sess._autosave_session = lambda msgs: None
         sess._send_sessions_list = _noop_async
-        sess._notify_turn_abandoned = _noop_async
-
-        async def _load(sid):
-            order.append("load")
-
-        sess._load_session = _load
+        sess._load_session = _noop_async
         await sess._handle_switch_session({"session_id": "s2"})
-        self.assertEqual(order, ["cancel", "load"])
+
+    async def test_leaving_records_where_the_running_turn_stood(self):
+        """So its answer, landing after the user has moved on, is still applied to the
+        conversation it belongs to, and can tell its own messages from the prefix it
+        inherited."""
+        w = _bare_worker(session_id="s1")
+        w._query_session_id = "s1"
+        w.is_busy = lambda: True
+        sess = self._session(w)
+        sess._submitted_len = 7
+        sess._autosave_session = lambda msgs: None
+        sess._send_sessions_list = _noop_async
+        sess._load_session = _noop_async
+        await sess._handle_switch_session({"session_id": "s2"})
+        self.assertEqual(sess._detached_turns, {"s1": 7})
+
+    async def test_leaving_an_idle_conversation_records_nothing(self):
+        w = _bare_worker(session_id="s1")
+        w.is_busy = lambda: False
+        sess = self._session(w)
+        sess._autosave_session = lambda msgs: None
+        sess._send_sessions_list = _noop_async
+        sess._load_session = _noop_async
+        await sess._handle_switch_session({"session_id": "s2"})
+        self.assertEqual(sess._detached_turns, {})
 
     async def test_set_model_reports_the_new_model_and_derived_settings(self):
         w = _bare_worker()

@@ -92,17 +92,20 @@ TOOL_CALL_TIMEOUT_SECS: int = 120
 # rather than a bare "timed out".
 TOOL_CALL_TIMEOUT_MAX_SECS: int = 1200
 
-# How long a CLARIFICATION question stays in front of the user before the agent is told
-# to decide for itself. A long run — an optimisation left overnight, a build-and-measure
-# cycle — used to stop dead on a question nobody would read until morning, and never
-# resume: an unanswered question and a refused one returned the same "do not choose for
-# them", which is the right answer to a refusal and the wrong one to an empty room.
+# How long a clarification question (``ask_user_question``) waits for the user before
+# it gives up: the card is closed and the tool reports that nobody answered, so the
+# model carries on with the option it would have recommended. Human waits are excluded
+# from the tool-call budget (see ``human_pause``), so this is the only wall on them —
+# without it a question raised while nobody is at the keyboard parks the conversation
+# for ever, and an unanswered question read as a refused one is the wrong answer to an
+# empty room.
 #
 # Deliberately NOT applied to the other two cards that travel the same channel:
 #   * an APPROVAL that expired into "go ahead" would authorise, after a coffee break, a
 #     command nobody ever saw;
 #   * a PLAN approval left unanswered already resolves to "deliver the plan, execute
-#     nothing" — a deadline that executed would invert what the card is for.
+#     nothing" — a deadline that executed would invert what the card is for, and reading
+#     a plan legitimately takes longer than picking an option.
 # So the wall is declared by whoever asks (see the interaction server), never imposed
 # here on every card alike.
 USER_QUESTION_TIMEOUT_SECS: int = 300
@@ -250,10 +253,10 @@ LLM_RETRY_MAX_DELAY_SECS: float = 20.0
 
 
 # ── Nudge frequency caps & thresholds ──────────────────────────────────────────
-# Central home for the previously-inline "magic numbers" that govern how often a
-# workflow nudge may fire and the situational gates that trigger it. Values are
-# unchanged from the former literals — centralised here so the whole nudge cadence
-# can be read and tuned in one place instead of hunting through nudge_logic.py.
+# Central home for the "magic numbers" that govern how often a workflow nudge may fire
+# and the situational gates that trigger it. Here rather than inline at each guard, so the
+# whole nudge cadence can be read and tuned in one place instead of hunting through
+# nudge_logic.py.
 
 # Per-category max fires per query (the guarding branch checks
 # ``nudge_counts[cat] < NUDGE_MAX_<CAT>``). A cap of 1 means "one reminder only".

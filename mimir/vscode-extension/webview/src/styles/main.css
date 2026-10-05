@@ -308,6 +308,103 @@ body {
   max-width: 160px;
   cursor: pointer;
 }
+/* ── Other conversations waiting on the user ─────────────────────────────────── */
+
+/* Above the thread, not in it: the card belongs to another transcript. Deliberately
+   loud — each row is a turn blocked on a person with no timeout, so it stays until it is
+   answered, and the strip is the level that cannot be missed with the panel open. */
+.foreign-prompts {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  flex-shrink: 0;
+}
+
+.foreign-prompt {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  font-size: 12px;
+  background: var(--vscode-inputValidation-warningBackground,
+               var(--vscode-editorWidget-background));
+  color: var(--vscode-inputValidation-warningForeground, var(--vscode-foreground));
+  border-left: 3px solid var(--vscode-inputValidation-warningBorder,
+                            var(--vscode-editorWarning-foreground));
+}
+
+.foreign-prompt-icon {
+  flex-shrink: 0;
+}
+
+/* The name of the conversation must survive a narrow pane; the actions must not wrap
+   away from it, so the text is what gives. */
+.foreign-prompt-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.foreign-prompt-actions {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.foreign-prompt-btn {
+  font: inherit;
+  padding: 2px 8px;
+  cursor: pointer;
+  border: 1px solid var(--vscode-button-border, transparent);
+  border-radius: 2px;
+  background: var(--vscode-button-secondaryBackground);
+  color: var(--vscode-button-secondaryForeground);
+}
+
+.foreign-prompt-btn:hover {
+  background: var(--vscode-button-secondaryHoverBackground);
+}
+
+.foreign-prompt-open {
+  background: var(--vscode-button-background);
+  color: var(--vscode-button-foreground);
+}
+
+.foreign-prompt-open:hover {
+  background: var(--vscode-button-hoverBackground);
+}
+
+/* ── Session activity: what each conversation is doing right now ──────────────── */
+
+/* A turn running in a conversation nobody is reading is invisible otherwise, and one
+   parked on a card is worse than invisible — it waits for ever. */
+.session-activity {
+  flex-shrink: 0;
+  font-size: 10px;
+  padding: 1px 5px;
+  border-radius: 8px;
+  white-space: nowrap;
+}
+
+.session-activity.running {
+  background: var(--vscode-badge-background);
+  color: var(--vscode-badge-foreground);
+}
+
+.session-activity.parked {
+  background: var(--vscode-inputValidation-warningBorder,
+               var(--vscode-editorWarning-foreground));
+  color: var(--vscode-editor-background);
+}
+
+.session-activity.queued {
+  background: transparent;
+  color: var(--vscode-descriptionForeground);
+  border: 1px solid var(--vscode-widget-border, var(--vscode-descriptionForeground));
+}
+
 /* ── Chat thread ────────────────────────────────────────────────────────────── */
 
 /* Holds the thread and the progress dock together, so the dock can be anchored to
@@ -2601,6 +2698,15 @@ body {
   font-size: 10px;
   font-weight: 600;
   letter-spacing: 0.04em;
+  color: var(--fg-dim);
+}
+
+/* How long is left to answer. Quiet: it is a fact about the card, not a warning —
+   nothing bad happens at zero, the agent simply proceeds on its recommendation. */
+.uq-countdown {
+  align-self: flex-start;
+  font-size: 10px;
+  letter-spacing: 0.02em;
   color: var(--fg-dim);
 }
 

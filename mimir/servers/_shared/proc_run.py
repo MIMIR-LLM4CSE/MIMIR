@@ -68,8 +68,16 @@ def run(argv: list[str], *, timeout: float | None = None, **kwargs: Any):
     *start_new_session* is forced on unless the caller set it: it is what makes the
     group killable, and it is also what stops a child inheriting the controlling
     terminal it has no business reading from.
+
+    *stdin* defaults to ``DEVNULL`` for a sharper reason. A server's own stdin is the MCP
+    protocol pipe, and a child inherits it: a command that reads stdin — ``ssh`` without
+    ``-n`` and ``cat`` both do — then consumes the client's JSON-RPC traffic. The request
+    it swallows is never answered (a concurrent poll that hangs for ever), a partial steal
+    desynchronises the framing, and either way the session is left unusable while the
+    server itself looks healthy. Nothing a tool runs has any business reading that pipe.
     """
     kwargs.setdefault("start_new_session", True)
+    kwargs.setdefault("stdin", subprocess.DEVNULL)
     with subprocess.Popen(argv, **kwargs) as proc:
         try:
             stdout, stderr = proc.communicate(timeout=timeout)

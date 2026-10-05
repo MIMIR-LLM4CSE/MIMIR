@@ -1878,11 +1878,14 @@ async def _run_sub_agent(
 
     # The tool already settled the model: the caller's, or one it named that the
     # endpoint serves. Its temperature, window and reasoning profile resolve per model.
-    agent = MimirAgent(model=model or _caller_model(None))
-    # Its own session, so its todo list and its scratchpad are its own. Read by every
-    # server it is about to start (server_manager merges this into their environment),
-    # never by the servers already running for the caller.
-    agent.session_id = session
+    # Its own session, so its todo list, its scratchpad and its approved paths are its
+    # own. Passed to the constructor rather than set afterwards: the approval manager is
+    # built there and captures the session it resolves approved_paths.json against, so an
+    # agent that is told later keeps an allowlist pointing at the active-session pointer
+    # — the conversation the user is looking at, which is routinely a different one.
+    agent = MimirAgent(model=model or _caller_model(None), session_id=session or None)
+    # Read by every server it is about to start (server_manager merges this into their
+    # environment), never by the servers already running for the caller.
     agent.server_env = {"MIMIR_SESSION_ID": session} if session else {}
     if worktree:
         # Its own root: the servers it starts read the copy, and the client-side gates

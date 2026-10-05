@@ -75,6 +75,20 @@ it did not write: `server_bash._run` and both proxy execution paths in
 compete with the very next timing the ratchet takes). Fixed-argv callers
 (`module avail`, `squeue`, the LSP) are unchanged.
 
+**No child reads a server's stdin.** Every spawn redirects it from `/dev/null`:
+`proc_run.run` by default (a caller that needs to feed one still passes its own), the bash
+job launcher every `bash_run` goes through — blocking or detached — and the fixed-argv
+callers above. A server's stdin is its MCP protocol pipe: the client's JSON-RPC requests
+arrive on it, and a child inherits it unless told otherwise, while plenty of ordinary
+commands read stdin — `ssh` without `-n` drains it, `cat` and `head` consume it outright.
+What such a command eats is the client's traffic. A whole request swallowed is never
+answered, so the call that sent it waits for ever: a background-job watcher polling
+`bash_job` while an `ssh` ran is the case that turned this up. Part of a request
+desynchronises the framing, and every later call on that session hangs or fails on a dead
+transport. Either way the server itself looks healthy, which is why the symptom reads as
+MIMIR hanging, or as `ClosedResourceError` out of nowhere. A command that does read stdin
+now sees EOF — an answer rather than a wait.
+
 Normalization is handled by `mimir/servers/_shared/responses.py`:
 - `ok(...)` always preserves `status = ok`
 - `err(...)` always preserves `status = error`
@@ -192,11 +206,15 @@ execution plan instead of relying on a static system-prompt injection.
 Storage is **per session** under the central state dir
 (`<STATE_DIR>/sessions/<sid>/`): the checklist as a Markdown checkbox list
 (`todo_list.md`) and named plans as a history under `plans/` (one `<date>-<slug>.md` per
-plan, indexed by `PLANS.md`, with a `.active` pointer). The session is resolved by
-`state_paths.active_session_id()`: `MIMIR_SESSION_ID` when the server was started with one
-— that is how a sub-agent gets a checklist of its own — else `<STATE_DIR>/active_session`
-(written by `ws_server` on each switch). CLI/standalone runs fall back to the shared
-legacy `todo_list.md`.
+plan, indexed by `PLANS.md`, with a `.active` pointer). Which session is resolved through
+`state_paths.active_session_id()`: **`MIMIR_SESSION_ID`** first, stamped into each server's
+environment at spawn. One agent owns a server for its whole life, so the session is fixed
+and a frozen environment is the right carrier — and it is what makes the answer *correct*
+now that conversations run turns at the same time. It is also how a sub-agent gets a
+checklist of its own. The `<STATE_DIR>/active_session` sidecar remains the fallback for the
+ends that genuinely have one session (the CLI, standalone runs, the test suite), where "the
+session on screen" is still the right answer; CLI runs with no sidecar fall back to the
+shared legacy `todo_list.md`.
 
 The **plan** tools declare `MAIN_ONLY` and are never granted to a sub-agent: the plan is
 what the user approved, and an axis of it has no standing to rewrite it. The **checklist**
@@ -248,9 +266,10 @@ hermetic test suite), they fall back to the legacy in-workspace `<workspace>/.mi
 
 The same module owns the agent **scratchpad**, which lives under the temp dir rather than
 the state dir: `scratch_home()` → `MIMIR_SCRATCH_DIR` if set, else
-`<TMPDIR or /tmp>/mimir-<uid>-<workspace-id>`; `scratch_dir()` appends the active session
-id (from the `active_session` sidecar — the *only* thing it still needs the state dir for),
-falling back to the home outside a session. `standing_roots()` exposes the **home** as a
+`<TMPDIR or /tmp>/mimir-<uid>-<workspace-id>`; `scratch_dir()` appends the session id
+(from `MIMIR_SESSION_ID`, or the sidecar for a single-session end, or the caller's own
+answer — the client process runs several conversations in one `os.environ`, so there the id
+can only come from the agent that is acting), falling back to the home outside a session. `standing_roots()` exposes the **home** as a
 standing sandbox root, one entry covering both. `server_files._safe`,
 `server_bash._is_within_workspace` and the read servers (`server_search`,
 `server_code_intel`) all pass it as `extra_roots` alongside `approved_roots()`, so the
@@ -530,7 +549,7 @@ Tools:
   > **Architecture is the field that earns the tool.** Where a cluster mixes architectures, a binary built where the agent runs will not run on a node of a different one. What Slurm cannot report — CPU model, SIMD, `-march`, caches, OS, toolchains — is read on the node by `slurm_probe_node` and served by `slurm_node_profile`.
 - `slurm_queue`
 - `salloc_submit` — synchronous **interactive** allocation. Takes the resources as arguments (partition, nodes, ntasks, cpus, mem, time, gres, constraint, account/qos) and builds the `salloc` command itself, so the validated command is the one that runs; launched as argv, never through a shell. `confirm=False` returns the exact command as a preview instead of executing — the old two-step the server + free-form `salloc_submit(command=...)` is gone, because the validation lived entirely in the step nothing forced you to call
-- `sbatch_submit` — non-blocking Slurm **batch** submission (unlike synchronous `salloc_submit`): returns a `job_id` immediately plus a `background_job` descriptor (`BACKGROUNDABLE`), so the run is watched off the critical path and auto-resumes the agent on completion. Writes the script/log under `state_dir()/hpc_jobs/<ts>/` (env `MIMIR_HPC_JOBS_DIR`). Takes `constraint`, `nodelist`, `nodes`, `ntasks` and `exclusive` to aim at one kind of node and to time without a neighbour. The job inherits the server's environment, not modules loaded by earlier shell commands. Its output is not recorded as a measurement.
+- `sbatch_submit` — non-blocking Slurm **batch** submission (unlike synchronous `salloc_submit`): returns a `job_id` immediately plus a `background_job` descriptor (`BACKGROUNDABLE`), so the run is watched off the critical path and auto-resumes the agent on completion. Writes the script/log under `state_dir()/hpc_jobs/<ts>/` (env `MIMIR_HPC_JOBS_DIR`). Takes `constraint`, `nodelist`, `nodes`, `ntasks` and `exclusive` to aim at one kind of node and to time without a neighbour, and `comment` (as `salloc_submit` does) for the free-text `--comment` Slurm keeps with the job, refusing control characters and anything over 512 characters. The job inherits the server's environment, not modules loaded by earlier shell commands. Its output is not recorded as a measurement.
 - `slurm_probe_node(partition, constraint="", nodelist="", account="", confirm=False)` — submits a job of a few seconds that runs `server_platform.py --profile-json` **on the node**, so the node gets the same profile as the host. The job picks its own Python (`.venv-<os>-<arch>`); with none, a shell fallback still reads `lscpu`, `-march`, GPU and OS, and the profile is marked `partial`. Irreversible (approval prompt) but not `CLUSTER_SUBMIT`: it runs no user code, so the local-validation hold does not apply.
 - `slurm_node_profile(partition="", node="")` — read-only. Harvests finished probes into `state_dir()/hpc/node_profiles/<node>.json`, then returns each node kind of the partition with its profile, or `profiled: false`. A profile is kept until Slurm's description of the node changes (no TTL). `matches_this_host` lists what differs from the host MIMIR runs on (arch, CPU model, SIMD, OS, glibc). Inside an allocation, the current node is profiled on the spot, with no job.
 - `slurm_job_status(job_id)` — normalized per-job state (running|pending|done|crashed|unknown) via squeue (active) + sacct (terminal); the poll target the background-job watcher uses.
@@ -616,6 +635,11 @@ Tools:
   *Detached runs* below).
 - `bash_job(op, job_key)` — read-only handle on a detached run: `status` (its state),
   `output` (the tail of its log, with the state), `list` (every job this host knows).
+  A reply naming a run still going carries `background_jobs` — a watcher handle per live
+  run, so a client that lost its watchers can put them back by asking. Plural, never
+  `background_job`: that key means *this call launched it*, which would make the row a
+  run and, on a client with no watcher, something to wait out in-turn. A read is neither.
+  It declares no capability for this; what the client recognises is the payload's shape.
 - `bash_job_stop(job_key)` — signals the job's whole process group (TERM, then KILL
   after a grace period), so a build does not leave its compiler running.
 - `report_verdict` — the model's reading of what a run's output showed (`judge`
@@ -695,9 +719,22 @@ from one place.
 
 Backgrounding is a parameter on a command that has passed the same path checks and
 denylists, which is why the `&` operator stays refused: detaching is the server's job,
-not a shell operator the caller supplies. The job directory lives under a fixed cache
-root (`_shared/trusted_read_roots.py`), so the log is readable with the ordinary file
-tools while the run is still going.
+not a shell operator the caller supplies. The job directory lives under the submitting
+session's own state dir (`<STATE_DIR>/sessions/<sid>/jobs/`), which is a trusted read root
+(`_shared/trusted_read_roots.py`), so the log is readable with the ordinary file tools while
+the run is still going.
+
+**Per session**, and for two reasons that turn out to be the same one. These used to sit in
+a fixed `~/.cache/mimir_bash/jobs`, outside every conversation, so `bash_job(op='list')`
+enumerated every conversation's jobs — one could read, and kill, another's. Resolving the
+root per session makes the listing correct by construction: there is nothing to filter. And
+a detached job's directory is never swept, however old, so a root under `$HOME` grew for
+ever; tied to a conversation it goes when the conversation goes, which is the retention
+policy this never had. Deleting a conversation whose jobs are still running therefore asks
+first rather than taking the log of a live process with it. Slurm job directories moved the
+same way (`<STATE_DIR>/sessions/<sid>/hpc_jobs/`) — with the difference that a Slurm job
+outlives its conversation, so `slurm_job_status` searches the sibling sessions read-only and
+says which conversation a job came from: filed per session, never unfindable.
 
 States — `running` (the process is alive), `done` (exited 0), `crashed` (exited
 non-zero), `unknown`. The last is its own answer rather than a variant of the other
@@ -1225,7 +1262,7 @@ stdin. What it cannot settle it reports back, and the orchestrator — which doe
 user's attention — decides whether to ask.
 
 Tools:
-- `ask_user_question(question, header, options, multi_select=False)`
+- `ask_user_question(questions)` — a batch of `{question, header, options, multi_select}`
 
 How it works — **MCP elicitation**:
 - The tool calls `ctx.session.elicit_form(message, requestedSchema)`, which sends an
@@ -1244,10 +1281,20 @@ How it works — **MCP elicitation**:
   aside and trailing punctuation are ignored — so real choices that merely contain those
   words ("Request changes from the reviewer") survive. A question left with no substantive
   option is dropped; a call left with no question returns a structured error.
-- Protocol outcomes: **accept** (answered), **decline** (user said no), **cancel**
-  (dismissed). Decline/cancel/timeout — or no interactive frontend connected — return an
-  empty selection, and the tool tells the model to *proceed with its best judgment* rather
-  than hang.
+- **The user gets five minutes** (`USER_QUESTION_TIMEOUT_SECS`). Both frontends bound the
+  wait — the webview card shows the countdown, the CLI polls stdin instead of blocking in
+  `input()` — and when it passes the card is closed (a `prompt_expired` event for the
+  webview, which also drops it from the foreign-prompt strip) and an answer arriving late
+  is refused by card id, so it cannot settle the next question. A human wait is excluded
+  from the tool-call budget (`human_pause`), so this is the only wall on it: without it a
+  question raised while nobody is at the keyboard parks the conversation for ever. Plan
+  approval, which goes through the same card, passes **no** wall: reading a plan takes
+  longer than picking an option, and nothing sensible happens by default there.
+- Protocol outcomes: **accept** (answered, or the wall passed), **decline** (user said no),
+  **cancel** (dismissed). The two empty-handed endings are told apart, because the model
+  must do opposite things with them: *cancelled* — or no interactive frontend connected —
+  means stop and put the question in the reply; *expired* means go on with the option
+  listed first, which is the one the model was told to recommend, saying which it took.
 
 Notes:
 - The tool is read-only and **not** approval-gated — asking a question is harmless.
@@ -1331,9 +1378,11 @@ Tools (sensitive / approval-gated, `confirm=True` required):
   - **Per-session state** under `opt_runs/<proxy>/`: `best.json` pointing at a **tree snapshot** (`_lib/tree_snapshot.py` — a shadow git repository at `proxy_bench/opt.git` whose work tree is the workspace and which only ever adds `optimize_paths`, so the user's own `.git` is never touched and the workspace need not be a repository; a per-run directory copy is the fallback where git is unavailable, with the same atomicity), append-only `ledger.jsonl`, and a per-run frozen `ratchet.json`. The snapshot is taken at LAUNCH (`tree_at_launch.json`), so what is accepted is the code that produced the run and not whatever the files hold when it settles. The first run must be launched from the baseline tree — `_prepare_run` refuses otherwise — because without a measurement of the untouched code every later number is an assertion rather than a comparison. The ratchet is settled **by the runner at run completion** (flock-serialized, idempotent, `_ops/_eval_ratchet.py`): ledger and best are the source of truth even if the agent never calls `results`, which replays the frozen verdict.
   - **Direct execution is blocked** while a session is active — the client refuses to run the proxy source/executable through the exec surface (`bash_run`); see `POLICY.md` → Proxy Direct-Execution Guard.
   - `op='run'` accepts `background=True` (cap `BACKGROUNDABLE`): the result carries a `background_job` descriptor so the WebSocket worker watches the detached run off the critical path, notifies the UI (`job_complete`), and auto-resumes the agent with the verdict. Degrades safely in the CLI (no watcher → normal polling).
+  - `proxy_eval_status()` returns `background_jobs` while the run it reports is `running` or `pending`, the same re-arming handle `bash_job` and `slurm_job_status` carry. `slurm_job_status` withholds it for a job another conversation submitted — reading a sibling's job stays allowed, adopting it does not, since the wake would be routed to whichever agent registered the watch.
 
 Tools (cluster, `CLUSTER_SUBMIT`):
 - `proxy_slurm(op, partition, …)` — ops: `run` (single job), `suite` (one job per case × sweep), `eval` (optimization run); carries a `risk_note` shown in the approval prompt. `run` and `eval` return a `background_job` descriptor unconditionally: `sbatch` answers while the job is still queued, so there is no variant of the call that carries a result, and a submission with no handle is a job nothing is watching — the agent ends its turn and is never resumed. `run` is watched through `proxy_runs(op='status', run_id=…)`, `eval` through `proxy_eval_status()`; `background=` is accepted for symmetry with `proxy_eval` and ignored. `suite` submits many jobs under one answer, which the single-descriptor shape cannot express — aggregate it with `proxy_get(op='report', …)` once they finish. All three ops accept `constraint` and `nodelist`: a partition says which queue, a feature expression says which hardware inside it, and the header carried neither before. Both land in `#SBATCH` lines rather than in a shell, so `validate_target` (`_shared/slurm_script.py`, shared with the HPC server) refuses anything outside Slurm's feature grammar, and `_validate_slurm_token` does the same for the `build_*` fields, which are not part of a node target — a newline in any of these values would otherwise append directives of the caller's choosing.
+  - All three ops also accept `comment` — free text stored with the job and read back by `sacct -j <id> -o Comment`, so a queue of near-identical submissions says what each one was for; one `comment` labels every job of a `suite`, and a split build/run `eval` puts the same text on both jobs. Being free text it gets the looser check: `_validate_slurm_comment` refuses control characters and anything over 512 characters, and the value is `shlex.quote`d so spaces stay one directive value.
   - `ntasks` for an MPI proxy. `exclusive` defaults to on for `eval` and `suite` (timings) and off for `run`. The batch header comes from `_shared/slurm_script.py`, shared with `sbatch_submit`.
   - Everything runs on the node — the build too, unless a `build_partition` splits it onto another (below). The runner and the post-run step pick a Python the node can run (`.venv-<os>-<arch>`, then the server's), unless `python_executable` is set.
   - **Build/run decoupling** (`op='eval'`). A node dedicated to GPU simulation is not a node to compile on, and the node that compiles fastest is not the hardware anyone wants a number from — yet one `sbatch` carrying `_proxy_runner.py` gave both phases the same partition and the same node.

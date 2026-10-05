@@ -1,15 +1,15 @@
-"""An unanswered approval must keep the agent parked — never auto-proceed.
+"""What each kind of unanswered prompt does to a parked agent.
 
-Regression test for the WS worker's approval/continue/question shims: they used
-to time out after 300 s and return "denied", which let the agent resume on its
-own when the user simply hadn't answered yet. The wait is now indefinite but
-still cancellable via the agent's cancel flag (the Stop button).
+An approval waits indefinitely: it must never resume on its own and answer for the
+user, so the only ways out are an answer and the cancel flag (the Stop button). A
+clarification question carries a wall instead — nothing bad happens at the end of it,
+the agent goes on with the option it recommended — and the wait reports that ending
+distinctly so the card can be taken off the screen.
 
-The cards themselves used to share one slot and one queue per kind, which held
-for as long as every prompt came from the one worker thread. A sub-agent still
-running after its delegating call has returned raises its own from another
-thread, so the cards now queue — one on screen at a time — and each answer is
-matched to the card it belongs to by id.
+Each card has an answer slot of its own and is matched to its answer by id. A
+sub-agent still running after its delegating call has returned raises its card from
+another thread, so two can be in flight at once; the cards queue — one on screen at a
+time — rather than share one slot.
 """
 
 import queue as _queue
@@ -18,7 +18,7 @@ import time
 import unittest
 from collections import OrderedDict
 
-from mimir.client.ui.ws.ws_worker import _AgentWorker
+from mimir.client.ui.ws.ws_worker import TIMED_OUT, _AgentWorker
 
 
 class _StubAgent:
@@ -38,6 +38,8 @@ def _make_worker() -> _AgentWorker:
     w._preanswer = None
     w.active_session_id = None
     w._query_session_id = None
+    w.session_id = None
+    w.session_title = ""
     return w
 
 
@@ -93,11 +95,11 @@ class AwaitResponseTests(unittest.TestCase):
 class TwoCardsAtOnceTests(unittest.TestCase):
     """What a detached sub-agent introduces: two cards, raised from two threads.
 
-    Every prompt of a turn comes from the worker thread, so before this they could
-    not coexist. A sub-agent whose delegating call has already returned raises its
-    own from wherever the elicitation lands, and the single slot these used to share
-    meant the second card erased the first while its answer went to whichever thread
-    happened to be listening.
+    Every prompt of a turn comes from the worker thread, so on their own they cannot
+    coexist. A sub-agent whose delegating call has already returned raises its own
+    from wherever the elicitation lands, and a slot shared between them would let the
+    second card erase the first while its answer went to whichever thread happened to
+    be listening.
     """
 
     def _park(self, w, req_id, results):
@@ -195,10 +197,13 @@ class DeadlineTests(unittest.TestCase):
     """
 
     def test_a_card_with_a_deadline_gives_up_on_its_own(self) -> None:
+        """And says so with TIMED_OUT, which is not the cancelled None: the caller has
+        a card on screen to take back down, and the two endings read differently to
+        the model."""
         w = _make_worker()
         w._emit_prompt(_card("c1", kind="user_question"))
         started = time.monotonic()
-        self.assertIsNone(w._await_response("c1", timeout_secs=0.3))
+        self.assertIs(w._await_response("c1", timeout_secs=0.3), TIMED_OUT)
         self.assertGreaterEqual(time.monotonic() - started, 0.3)
 
     def test_a_card_without_one_keeps_waiting(self) -> None:
@@ -237,7 +242,8 @@ class ExpiryIsNotRefusalTests(unittest.TestCase):
     def test_running_out_of_time_is_flagged_as_such(self) -> None:
         w = _make_worker()
         out = w._question_shim([{"question": "which?"}], None, 0.2)
-        self.assertEqual(out, {"answers": [], "timed_out": True})
+        # The wall it ran out of travels with the verdict: the card says so on screen.
+        self.assertEqual(out, {"answers": [], "timed_out": True, "timeout_secs": 0.2})
 
     def test_being_cancelled_is_not(self) -> None:
         """Stop means the person is gone, not that they delegated the choice."""
@@ -250,6 +256,73 @@ class ExpiryIsNotRefusalTests(unittest.TestCase):
         w = _make_worker()
         w._agent._cancel_flag.set()
         self.assertEqual(w._question_shim([{"question": "which?"}]), {"answers": []})
+
+
+class ExpiryClosesTheCardTests(unittest.TestCase):
+    """The wall's other half: the card goes away, addressed to whoever asked."""
+
+    def _events(self, w) -> list:
+        out = []
+        while not w.out_q.empty():
+            out.append(w.out_q.get_nowait())
+        return out
+
+    def test_an_expired_question_closes_its_card_and_reports_it(self) -> None:
+        w = _make_worker()
+        w.session_id = "s1"
+        w.session_title = "Picking a database"
+        result = w._question_shim([{"question": "Which DB?", "header": "Database"}],
+                                  timeout_secs=0.05)
+
+        self.assertEqual(result["answers"], [])
+        self.assertTrue(result["timed_out"])
+
+        card, expiry = self._events(w)
+        self.assertEqual(card["type"], "user_question")
+        self.assertEqual(expiry["type"], "prompt_expired")
+        # Addressed to the conversation that asked: the card may be showing in the
+        # foreign-prompt strip of whatever the user is reading instead.
+        self.assertEqual(expiry["id"], card["id"])
+        self.assertEqual(expiry["session_id"], "s1")
+
+    def test_a_late_answer_cannot_settle_the_next_question(self) -> None:
+        """The card was dropped on the way out, so its id names nothing to settle."""
+        w = _make_worker()
+        w._question_shim([{"question": "Which DB?", "header": "Database"}],
+                         timeout_secs=0.05)
+        expired_id = self._events(w)[0]["id"]
+
+        results: dict = {}
+        w._emit_prompt(_card("next", kind="user_question"))
+        t = threading.Thread(
+            target=lambda: results.update(next=w._await_response("next")), daemon=True)
+        t.start()
+        time.sleep(0.05)
+        w.resolve_question([{"selected": ["Postgres"]}], expired_id)
+        t.join(timeout=0.5)
+        self.assertTrue(t.is_alive(), "a late answer settled the card behind it")
+        w.resolve_question([{"selected": ["SQLite"]}], "next")
+        t.join(timeout=2.0)
+        self.assertEqual(results["next"], {"answers": [{"selected": ["SQLite"]}]})
+
+    def test_a_question_with_no_wall_stays_parked(self) -> None:
+        """Plan approval passes no timeout: reading a plan takes as long as it takes."""
+        w = _make_worker()
+        done: list = []
+
+        t = threading.Thread(
+            target=lambda: done.append(w._question_shim([{"header": "Plan approval"}])),
+            daemon=True,
+        )
+        t.start()
+        t.join(timeout=1.0)
+        self.assertTrue(t.is_alive())
+        self.assertEqual(done, [])
+        card_id = self._events(w)[0]["id"]
+        w.resolve_question([{"selected": ["Accept"]}], card_id)
+        t.join(timeout=2.0)
+        self.assertEqual(done, [{"answers": [{"selected": ["Accept"],
+                                              "other_text": None}]}])
 
 
 if __name__ == "__main__":

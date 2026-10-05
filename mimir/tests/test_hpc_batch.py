@@ -15,6 +15,7 @@ import sys
 import tempfile
 import unittest
 import unittest.mock
+from unittest.mock import patch
 from pathlib import Path
 
 _SERVERS = Path(__file__).resolve().parents[1] / "servers"
@@ -86,15 +87,73 @@ class SlurmJobStatusToolTests(unittest.TestCase):
 
 class SbatchSubmitTests(unittest.TestCase):
     def setUp(self) -> None:
+        # Job dirs land under the submitting session's state dir; point the state dir at
+        # a temp tree. Through the environment, so the test exercises the real
+        # resolution (state_paths.session_state_dir) rather than a patched constant.
         self._orig_run = server_hpc._run_argv
-        self._orig_dir = server_hpc._HPC_JOBS_DIR
         self._tmp = tempfile.TemporaryDirectory()
-        server_hpc._HPC_JOBS_DIR = os.path.join(self._tmp.name, "jobs")
+        self.addCleanup(self._tmp.cleanup)
+        self._state = os.path.join(self._tmp.name, "state")
+        os.makedirs(self._state)
+        env = patch.dict(os.environ, {"MIMIR_STATE_DIR": self._state}, clear=False)
+        env.start()
+        self.addCleanup(env.stop)
+        os.environ.pop("MIMIR_SESSION_ID", None)
+        os.environ.pop("MIMIR_HPC_JOBS_DIR", None)
 
     def tearDown(self) -> None:
         server_hpc._run_argv = self._orig_run
-        server_hpc._HPC_JOBS_DIR = self._orig_dir
-        self._tmp.cleanup()
+
+    def _submit(self, **kwargs) -> dict:
+        server_hpc._run_argv = lambda argv, t: {
+            "status": "ok", "stdout": "Submitted batch job 4242",
+            "stderr": "", "returncode": 0}
+        return server_hpc.sbatch_submit(
+            command=kwargs.pop("command", "echo hi"),
+            partition=kwargs.pop("partition", "cpu"),
+            confirm=True, **kwargs)
+
+    def test_two_submissions_in_the_same_second_get_two_directories(self) -> None:
+        """The stamp resolves to the second, and exist_ok=True shared the directory.
+
+        Two sessions submitting at the same moment overwrote each other's
+        batch_script.sh, slurm.log and slurm_job_id.
+        """
+        first = self._submit()["job_dir"]
+        second = self._submit()["job_dir"]
+        self.assertNotEqual(first, second)
+        self.assertTrue(os.path.isfile(os.path.join(first, "batch_script.sh")))
+        self.assertTrue(os.path.isfile(os.path.join(second, "batch_script.sh")))
+
+    def test_each_session_submits_into_its_own_directory(self) -> None:
+        with patch.dict(os.environ, {"MIMIR_SESSION_ID": "session-a"}):
+            mine = self._submit()["job_dir"]
+        with patch.dict(os.environ, {"MIMIR_SESSION_ID": "session-b"}):
+            theirs = self._submit()["job_dir"]
+        self.assertIn(os.path.join("sessions", "session-a", "hpc_jobs"), mine)
+        self.assertIn(os.path.join("sessions", "session-b", "hpc_jobs"), theirs)
+
+    def test_a_job_submitted_elsewhere_is_still_findable_and_says_so(self) -> None:
+        """A Slurm job outlives its conversation; filing it per session must not hide it."""
+        with patch.dict(os.environ, {"MIMIR_SESSION_ID": "session-a"}):
+            submitted = self._submit()["job_dir"]
+        self.addCleanup(setattr, server_hpc, "_normalized_job_state",
+                        server_hpc._normalized_job_state)
+        server_hpc._normalized_job_state = lambda jid: ("running", "RUNNING")
+        with patch.dict(os.environ, {"MIMIR_SESSION_ID": "session-b"}):
+            status = server_hpc.slurm_job_status(job_id="4242")
+        self.assertEqual(status["job_dir"], submitted)
+        self.assertEqual(status["submitted_by_another_session"], "session-a")
+
+    def test_a_job_of_this_session_is_not_labelled_as_another_s(self) -> None:
+        self.addCleanup(setattr, server_hpc, "_normalized_job_state",
+                        server_hpc._normalized_job_state)
+        server_hpc._normalized_job_state = lambda jid: ("running", "RUNNING")
+        with patch.dict(os.environ, {"MIMIR_SESSION_ID": "session-a"}):
+            submitted = self._submit()["job_dir"]
+            status = server_hpc.slurm_job_status(job_id="4242")
+        self.assertEqual(status["job_dir"], submitted)
+        self.assertNotIn("submitted_by_another_session", status)
 
     def test_requires_confirm(self) -> None:
         res = server_hpc.sbatch_submit(command="echo hi", partition="cpu")
@@ -130,6 +189,38 @@ class SbatchSubmitTests(unittest.TestCase):
         res = server_hpc.sbatch_submit(command="x", partition="cpu",
                                        wall_time="notatime", confirm=True)
         self.assertEqual(res.get("status"), "error")
+
+    def test_comment_lands_in_the_script_quoted(self) -> None:
+        """Free text with spaces still has to be one --comment value to Slurm."""
+        server_hpc._run_argv = lambda argv, t: {
+            "status": "ok", "stdout": "Submitted batch job 7", "stderr": "",
+            "returncode": 0}
+        res = server_hpc.sbatch_submit(command="echo hi", partition="cpu",
+                                       comment="mimir ratchet iter 12", confirm=True)
+        self.assertEqual(res.get("status"), "ok", msg=res)
+        self.assertEqual(res["comment"], "mimir ratchet iter 12")
+        with open(res["batch_script"]) as fh:
+            self.assertIn("#SBATCH --comment='mimir ratchet iter 12'", fh.read())
+
+    def test_without_a_comment_the_directive_is_absent(self) -> None:
+        server_hpc._run_argv = lambda argv, t: {
+            "status": "ok", "stdout": "Submitted batch job 8", "stderr": "",
+            "returncode": 0}
+        res = server_hpc.sbatch_submit(command="echo hi", partition="cpu", confirm=True)
+        with open(res["batch_script"]) as fh:
+            self.assertNotIn("--comment", fh.read())
+
+    def test_a_newline_in_the_comment_is_refused_before_slurm(self) -> None:
+        """It would otherwise forge a #SBATCH directive line of its own."""
+        called: list = []
+        server_hpc._run_argv = lambda argv, t: called.append(argv) or {
+            "status": "ok", "stdout": "Submitted batch job 9", "stderr": "",
+            "returncode": 0}
+        res = server_hpc.sbatch_submit(
+            command="echo hi", partition="cpu", confirm=True,
+            comment="baseline\n#SBATCH --partition=everything")
+        self.assertEqual(res.get("status"), "error", msg=res)
+        self.assertEqual(called, [])
 
 
 class SallocSubmitTests(unittest.TestCase):
@@ -171,6 +262,14 @@ class SallocSubmitTests(unittest.TestCase):
         res = server_hpc.salloc_submit(partition="cpu; rm -rf ~", confirm=True)
         self.assertEqual(res.get("status"), "ok")
         self.assertIn("'--partition=cpu; rm -rf ~'", res["command"])
+
+    def test_comment_is_one_argv_token_and_validated(self) -> None:
+        accepted = server_hpc.salloc_submit(partition="cpu", comment="debug session",
+                                            confirm=True)
+        self.assertEqual(accepted.get("status"), "ok", msg=accepted)
+        self.assertIn("'--comment=debug session'", accepted["command"])
+        rejected = server_hpc.salloc_submit(partition="cpu", comment="a\nb", confirm=True)
+        self.assertEqual(rejected.get("status"), "error")
 
     def test_extra_args_takes_flags_only(self) -> None:
         rejected = server_hpc.salloc_submit(partition="cpu", extra_args="--x=1 rm -rf /", confirm=True)
@@ -257,15 +356,18 @@ class SlurmNodesTests(unittest.TestCase):
 class SbatchTargetingTests(unittest.TestCase):
     def setUp(self) -> None:
         self._orig_run = server_hpc._run_argv
-        self._orig_dir = server_hpc._HPC_JOBS_DIR
+        self._orig_dir = os.environ.get("MIMIR_HPC_JOBS_DIR")
         self._tmp = tempfile.TemporaryDirectory()
-        server_hpc._HPC_JOBS_DIR = os.path.join(self._tmp.name, "jobs")
+        os.environ["MIMIR_HPC_JOBS_DIR"] = os.path.join(self._tmp.name, "jobs")
         server_hpc._run_argv = lambda argv, t: {
             "status": "ok", "stdout": "Submitted batch job 7", "stderr": "", "returncode": 0}
 
     def tearDown(self) -> None:
         server_hpc._run_argv = self._orig_run
-        server_hpc._HPC_JOBS_DIR = self._orig_dir
+        if self._orig_dir is None:
+            os.environ.pop("MIMIR_HPC_JOBS_DIR", None)
+        else:
+            os.environ["MIMIR_HPC_JOBS_DIR"] = self._orig_dir
         self._tmp.cleanup()
 
     def test_constraint_nodelist_exclusive_reach_the_script(self) -> None:
@@ -305,10 +407,12 @@ class NodeProfileTests(unittest.TestCase):
 
     def setUp(self) -> None:
         self._saved = {k: getattr(server_hpc, k) for k in (
-            "_run_argv", "_run_bash", "_HPC_JOBS_DIR", "_NODE_PROFILES_DIR",
+            "_run_argv", "_run_bash", "_NODE_PROFILES_DIR",
             "_host_identity", "_local_profile_record")}
         self._tmp = tempfile.TemporaryDirectory()
-        server_hpc._HPC_JOBS_DIR = os.path.join(self._tmp.name, "jobs")
+        # tearDown restores the whole environment, which is what puts this back.
+        self._jobs_dir = os.path.join(self._tmp.name, "jobs")
+        os.environ["MIMIR_HPC_JOBS_DIR"] = self._jobs_dir
         server_hpc._NODE_PROFILES_DIR = os.path.join(self._tmp.name, "profiles")
         server_hpc._run_argv = _fake_scontrol(_SCONTROL)
         server_hpc._run_bash = _canned({"squeue": ("ok", "PENDING")})
@@ -432,8 +536,8 @@ class NodeProfileTests(unittest.TestCase):
         self.assertEqual(res["execution_context"]["context"], "in_allocation")
         self.assertEqual(calls, ["cpu-n02"])
         self.assertTrue(res["node_types"][0]["profiled"])
-        self.assertFalse(os.listdir(server_hpc._HPC_JOBS_DIR) if os.path.isdir(
-            server_hpc._HPC_JOBS_DIR) else [])
+        self.assertFalse(os.listdir(self._jobs_dir) if os.path.isdir(
+            self._jobs_dir) else [])
 class SlurmCancelTests(unittest.TestCase):
     """One job of the user's, approved as such: never a sweep, never someone else's."""
 

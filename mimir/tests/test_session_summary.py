@@ -8,6 +8,8 @@ backend is stubbed.
 
 import json
 import unittest
+
+from mimir.tests._fake_pool import FakePool
 from unittest.mock import patch
 
 from mimir.client.ui.ws import session_summary as ss
@@ -214,7 +216,7 @@ class WSLayerTests(unittest.IsolatedAsyncioTestCase):
         sess._unsaved_session_meta = None
         sess._active_session_id = "s1"
         sess._summary_task = None
-        sess.worker = type("W", (), {"model": "m"})()
+        sess.pool = FakePool(type("W", (), {"model": "m"})())
         return sess
 
     async def test_provisional_and_generated_summaries_are_both_sent(self):

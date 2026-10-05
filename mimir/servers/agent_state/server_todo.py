@@ -38,35 +38,36 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'
 from mcp.server.fastmcp import FastMCP
 from capabilities import MAIN_ONLY, TASK_PLANNING, tool_caps, RECOVERABLE
 from responses import err, ok
-from state_paths import active_session_id, state_dir
+from state_paths import session_state_dir, state_dir
 from text_tools import yaml_scalar, yaml_unquote
 
 # Central per-workspace state dir (MIMIR_STATE_DIR, set by server_manager; legacy
 # <workspace>/.mimir fallback for standalone/tests). Todos and plans are per-session
-# sidecars under sessions/<sid>/; the active-session pointer and legacy shared todo
-# live at the state-dir root. See state_paths.
+# sidecars under sessions/<sid>/; the legacy shared todo lives at the state-dir root.
+# See state_paths.
 _MIMIR_DIR = state_dir()
-# Legacy fallback path (used when no active session sidecar exists).
+# Legacy fallback path (used when this server belongs to no session at all).
 _LEGACY_TODO_FILE = os.path.abspath(os.path.join(_MIMIR_DIR, "todo_list.md"))
 
 
 def _get_todo_file() -> str:
     """Return the todo file path for the session this server belongs to.
 
-    The session comes from ``state_paths.active_session_id()`` — the one
-    implementation, so a sub-agent's own session (``MIMIR_SESSION_ID``) is honoured
-    here exactly as it is for the scratchpad. Falls back to the legacy shared
-    todo_list.md outside any session (e.g. CLI mode).
+    Resolved through ``session_state_dir()`` rather than by reading the active-session
+    pointer here: this server is one of the subprocesses of a single session's agent, and
+    that session is stamped into its environment at spawn. Reading "the active session"
+    would hand every concurrently running conversation the checklist of whichever one the
+    user happens to be looking at. The pointer lives on inside ``session_state_dir`` as the
+    single-session fallback (CLI, standalone, tests), where it is the right answer.
     """
+    base = session_state_dir(_MIMIR_DIR)
+    if base == _MIMIR_DIR:
+        return _LEGACY_TODO_FILE
     try:
-        session_id = active_session_id(_MIMIR_DIR)
-        if session_id:
-            session_dir = os.path.join(os.path.dirname(_LEGACY_TODO_FILE), "sessions", session_id)
-            os.makedirs(session_dir, exist_ok=True)
-            return os.path.join(session_dir, "todo_list.md")
+        os.makedirs(base, exist_ok=True)
     except OSError:
-        pass
-    return _LEGACY_TODO_FILE
+        return _LEGACY_TODO_FILE
+    return os.path.join(base, "todo_list.md")
 
 
 # ── named plan history ──────────────────────────────────────────────────────

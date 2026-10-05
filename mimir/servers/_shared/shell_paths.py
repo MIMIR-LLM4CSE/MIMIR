@@ -470,6 +470,48 @@ def unquoted_substitution_marker(command: str) -> str | None:
     return None
 
 
+# Characters bash still acts on inside double quotes. Everything else in a double-quoted
+# string is text, parentheses and redirection arrows included.
+_DOUBLE_QUOTE_ACTIVE = frozenset("$`")
+
+
+def unquoted_shell_char(command: str, chars: frozenset[str]) -> str | None:
+    """The first of *chars* that *command* lets the shell act on, or None.
+
+    The quote-aware counterpart to a scan over tokens, for the same reason as
+    :func:`unquoted_substitution_marker`: quoting is what decides whether a character
+    does anything, and it is only legible while the quotes are still attached. After
+    ``shlex(posix=True)`` has stripped them, ``echo "(absent)"`` — text — and ``(cd x)``
+    — a subshell — carry the same token, so a per-token scan has to refuse both.
+
+    Single quotes make every character literal. Double quotes leave only the expansion
+    sigils active (``_DOUBLE_QUOTE_ACTIVE``), so an operator character inside them is
+    text too. A backslash-escaped character outside single quotes is literal, and is
+    skipped the way the shell skips it.
+    """
+    i, n = 0, len(command)
+    in_single = in_double = False
+    while i < n:
+        ch = command[i]
+        if ch == "\\" and not in_single and i + 1 < n:
+            i += 2
+            continue
+        if ch == "'" and not in_double:
+            in_single = not in_single
+            i += 1
+            continue
+        if ch == '"' and not in_single:
+            in_double = not in_double
+            i += 1
+            continue
+        if ch in chars and not in_single and not (
+            in_double and ch not in _DOUBLE_QUOTE_ACTIVE
+        ):
+            return ch
+        i += 1
+    return None
+
+
 # ── Segmentation: one shell string → the commands the shell would run ──────────
 
 # Separators that join several commands in one call. Each command between them is

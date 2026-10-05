@@ -82,7 +82,20 @@ export interface CommandOutputMessage {
   tone?: CommandTone;
 }
 
-export interface ApprovalMessage {
+/** Which conversation a card belongs to.
+ *
+ *  Several conversations run turns at once, and one may raise a card while the user is
+ *  reading another. The id routes the answer back to the agent that asked: the server
+ *  drops an answer naming no conversation rather than handing it to whoever is on screen,
+ *  which would attach the user's approval to a call they never saw. Optional, so a card
+ *  from a server that does not attribute them still renders — it counts as the active
+ *  conversation's. */
+export interface Attributed {
+  session_id?: string;
+  session_title?: string;
+}
+
+export interface ApprovalMessage extends Attributed {
   type: "approval";
   id: string;
   /** All approval IDs when multiple concurrent approvals are merged into one card. */
@@ -105,6 +118,16 @@ export interface ApprovalMessage {
   oow_paths?: string[];
   /** First of `oow_paths`, kept for a card built by an older server. */
   oow_path?: string;
+}
+
+/** Every agent slot is taken; this conversation's turn starts when one frees.
+ *
+ *  Rendered rather than dropped like other transient status: a queue nobody can see
+ *  reads as a hang, which is the one thing a bounded pool must never look like. */
+export interface QueuedMessage extends Attributed {
+  type: "queued";
+  position: number;
+  text: string;
 }
 
 export interface AnswerMessage {
@@ -396,6 +419,14 @@ export interface SessionMeta {
   summary?: string;
   /** True once the user renamed the session by hand — the title then wins. */
   title_custom?: boolean;
+  /** A turn of this conversation is in flight. Several run at once, so a conversation the
+   *  user is not reading can be working — invisible without this. */
+  running?: boolean;
+  /** Its turn is parked on a card. Worse than invisible: the wait has no timeout, so
+   *  the conversation stays stopped until somebody answers. */
+  parked?: boolean;
+  /** It asked for a turn but every agent slot is taken; it starts when one frees. */
+  queued?: boolean;
 }
 
 /** How far the user lets a sub-agent go. Mirrors config.constants.SUBAGENT_LEVELS:
@@ -568,6 +599,26 @@ export interface JobCompleteMessage {
   resumes_active_session?: boolean;
 }
 
+/** A periodic bulletin on runs still going, 30s / 2min / 10min after the first
+ *  launch. Unlike a `job_complete` it carries no result and settles no row: it only
+ *  says the runs are still there and what they were last seen doing. It may start a
+ *  short turn in the conversation that launched them (never a steer into one already
+ *  running — a bulletin is not worth derailing an answer the user is waiting on). */
+export interface JobCheckinMessage {
+  type: "job_checkin";
+  jobs: Array<{
+    job_key: string;
+    kind?: string;
+    server?: string;
+    state?: string;
+    phase?: string;
+    percent?: number | null;
+  }>;
+  /** Same meaning as on `job_complete`: a turn is starting in THIS conversation, so
+   *  the chat must mark itself busy for something nobody pressed send for. */
+  resumes_active_session?: boolean;
+}
+
 export interface QuestionOption {
   label: string;
   description?: string;
@@ -593,11 +644,24 @@ export interface PromptOrigin {
   session?: string;
 }
 
-export interface UserQuestionMessage {
+export interface UserQuestionMessage extends Attributed {
   type: "user_question";
   id: string;
   questions: QuestionSpec[];
   origin?: PromptOrigin;
+  /** Seconds the agent waits for an answer before closing the card and going with
+   *  the first option. Absent on a card with no wall (plan approval). */
+  timeout_secs?: number;
+}
+
+/** The wait behind a card ended with nothing answered: close it, here or in the
+ *  foreign-prompt strip. The turn is producing again — it went on with what it
+ *  recommended — so it is not an answer and nothing is sent back. */
+export interface PromptExpiredMessage extends Attributed {
+  type: "prompt_expired";
+  id: string;
+  kind: "user_question";
+  timeout_secs?: number;
 }
 
 export interface QuestionAnswer {
@@ -618,6 +682,10 @@ export interface ContextUsageMessage {
   /** True once `overhead_tokens` is the size the server reported for a real prompt,
    *  false while it is still this client's estimate of the prompt it will send. */
   overhead_measured?: boolean;
+  /** True while the conversation has no agent yet: the system prompt and tools schema
+   *  are not in `used_tokens` at all, so the figure is a floor and the percentage must
+   *  not be read as a verdict. */
+  provisional?: boolean;
   /** Messages in the window the model actually sees this turn. */
   history_messages?: number;
   /** Messages in the untrimmed record a resume would start from. Larger than
@@ -721,11 +789,14 @@ export type ServerMessage =
   | StreamingStateMessage
   | ContextUsageMessage
   | JobCompleteMessage
+  | JobCheckinMessage
   | TogglesListMessage
   | ResourcesMessage
   | ActiveEditorMessage
   | OpenEditorMessage
-  | UserQuestionMessage;
+  | UserQuestionMessage
+  | PromptExpiredMessage
+  | QueuedMessage;
 
 // ── Message types (client → server) ──────────────────────────────────────────
 
@@ -762,6 +833,9 @@ export interface DivertToBackgroundMessage {
 export interface ApprovalResponseMessage {
   type: "approval_response";
   id: string;
+  /** The conversation that asked. Required in practice: the server drops an answer
+   *  carrying none rather than guessing which agent it belongs to. */
+  session_id?: string;
   choice: "y" | "n" | "a";
   approved_files?: string[];
 }
@@ -769,6 +843,7 @@ export interface ApprovalResponseMessage {
 export interface UserQuestionResponseMessage {
   type: "user_question_response";
   id: string;
+  session_id?: string;
   answers: QuestionAnswer[];
 }
 

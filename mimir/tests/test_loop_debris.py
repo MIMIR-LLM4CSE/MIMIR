@@ -311,7 +311,7 @@ class SkillContextTests(unittest.TestCase):
 
 
 class SharedRoleNormalizationTests(unittest.TestCase):
-    """Every backend gets the merge; it used to live inside the vLLM one."""
+    """Every backend gets the merge — it belongs to none of them in particular."""
 
     def test_adjacent_user_turns_are_merged(self) -> None:
         out = merge_consecutive_user_messages([

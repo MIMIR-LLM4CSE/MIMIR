@@ -54,6 +54,7 @@ from .background import (
     _maybe_emit_open_editor,
     _detect_background_job,
     _maybe_register_background_job,
+    _maybe_rewatch_background_jobs,
     _await_background_job,
 )
 
@@ -237,6 +238,38 @@ def _blocking_wait_payload() -> str:
             "waiting, end your turn and say what you are waiting for."
         ),
     })
+
+
+# What anyio raises once the stdio transport of an MCP server is gone — the server's
+# process died, or its exit stack was unwound while this agent still held the session.
+# Matched by name rather than by import: these come up through mcp's own stack, and the
+# string is what the user sees, so a rename there must not silently fall back.
+_DEAD_TRANSPORT = ("ClosedResourceError", "BrokenResourceError", "EndOfStream")
+
+
+def _dead_transport_hint(name: str, exc: BaseException, agent: Any) -> str | None:
+    """The hint for a tool whose server is gone, or None when it is a different failure.
+
+    Worth telling apart from every other tool error because the advice is the opposite:
+    a dead transport never recovers. Nothing reconnects an MCP server, so every later
+    call to any tool of that server fails identically — "retry once" spends the turn on
+    calls that cannot work, and the model deserves to be told to stop and say so instead.
+    """
+    if type(exc).__name__ not in _DEAD_TRANSPORT:
+        return None
+    owner = (getattr(agent, "tool_owner", None) or {}).get(name) or "its"
+    siblings = sorted(
+        tool for tool, server in (getattr(agent, "tool_owner", None) or {}).items()
+        if server == owner and tool != name
+    )
+    also = f" The same goes for {', '.join(siblings[:6])}." if siblings else ""
+    return (
+        f"The connection to the '{owner}' server is gone — its process died, or it was "
+        f"closed while this turn was running. It is not reconnected, so retrying this "
+        f"call, or any other tool of that server, fails the same way.{also} Do not retry: "
+        f"stop, tell the user the '{owner}' server died and that this conversation needs "
+        f"a restart to get it back, and say what was left unfinished."
+    )
 
 
 async def _dispatch_tool_calls(
@@ -534,6 +567,13 @@ async def _dispatch_tool_calls(
                     # No watcher (CLI, or a registration that declined): wait it out
                     # efficiently in-turn. Costs zero model calls either way.
                     result = await _await_background_job(descriptor, agent, result)
+            elif ok and isinstance(result, str):
+                # A result reporting runs that are still going — what a status op
+                # answers about work an earlier call started. Re-arms whatever is no
+                # longer watched, which after an agent restart is all of it, and is a
+                # no-op the rest of the time. Only where the call succeeded: a failed
+                # read says nothing trustworthy about what is in flight.
+                result = _maybe_rewatch_background_jobs(name, result, agent)
             return result
 
         except asyncio.TimeoutError:
@@ -562,22 +602,21 @@ async def _dispatch_tool_calls(
             # CancelledError is a BaseException and is deliberately NOT caught here,
             # so query cancellation still propagates.
             detail = f"{type(exc).__name__}: {exc}".strip().rstrip(":").strip()
+            hint = _dead_transport_hint(name, exc, agent) or (
+                "The tool's server process may have crashed or become "
+                "unreachable. Retry once; if it recurs, that server likely "
+                "needs attention (check its startup and imports)."
+            )
             _emit_result(
                 False,
                 detail.splitlines()[0][:100] if detail else "tool call failed",
-                error=(
-                    f"Tool '{name}' failed to execute: {detail}\n\n"
-                    "Hint: The tool's server process may have crashed or become "
-                    "unreachable. Retry once; if it recurs, that server likely "
-                    "needs attention (check its startup and imports)."
-                ) if detail else "The tool call failed with no error detail.",
+                error=(f"Tool '{name}' failed to execute: {detail}\n\nHint: {hint}")
+                if detail else "The tool call failed with no error detail.",
             )
             return json.dumps({
                 "status": "error",
                 "error": f"Tool '{name}' failed to execute: {detail}",
-                "hint": "The tool's server process may have crashed or become "
-                        "unreachable. Retry once; if it recurs, that server likely "
-                        "needs attention (check its startup and imports).",
+                "hint": hint,
             })
 
 

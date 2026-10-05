@@ -10,8 +10,11 @@ across sibling modules:
   - ``_ws_runtime`` — shared foundation (cwd bootstrap, stdout router, todo helpers,
     context-budget constants).
   - ``ws_worker``   — ``_AgentWorker``, the background agent thread.
+  - ``ws_pool``     — ``_AgentPool``, one worker per conversation: built on that
+                      conversation's first query, released when it goes idle.
   - ``ws_session``  — ``_Session``, one WebSocket connection.
-``_AgentWorker`` and ``_Session`` are re-exported here for backward compatibility.
+``_AgentWorker``, ``_AgentPool`` and ``_Session`` are re-exported here for
+backward compatibility.
 
 Protocol — all messages are JSON objects, one per send/recv:
 
@@ -38,10 +41,31 @@ Protocol — all messages are JSON objects, one per send/recv:
                                                                 # settings that own a control
                                                                 # report state instead
     {"type": "approval",       "id": "...", "tool": "...", "server": "...",
-                               "args": {}, "risk": "...", "scope": "..."}
+                               "args": {}, "risk": "...", "scope": "...",
+                               "session_id": "...", "session_title": "..."}
     {"type": "user_question",  "id": "...", "questions": [
                                {"question": "...", "header": "...", "multiSelect": false,
-                                "options": [{"label": "...", "description": "..."}]}]}
+                                "options": [{"label": "...", "description": "..."}]}],
+                               "session_id": "...", "session_title": "..."}
+                                                       # Every card says which
+                                                       # conversation raised it. Several
+                                                       # run turns at once, so one may ask
+                                                       # while the user reads another —
+                                                       # and the answer must come back
+                                                       # with that id (below).
+    {"type": "prompt_expired", "id": "...", "kind": "user_question",
+                               "timeout_secs": 300,
+                               "session_id": "...", "session_title": "..."}
+                                                       # the wait behind that card gave
+                                                       # up: close it, here or in the
+                                                       # foreign-prompt strip. The turn
+                                                       # is producing again — it went on
+                                                       # with the option it recommended
+    {"type": "queued",         "session_id": "...", "position": 1, "text": "..."}
+                                                       # every agent slot is taken; this
+                                                       # conversation's turn starts when
+                                                       # one frees. Rendered, not dropped:
+                                                       # an invisible queue reads as a hang
     {"type": "tool_progress",  "id": "...", "phase": "...", "percent": 0.0}
                                                        # what a blocking run is doing,
                                                        # read off its run channel once a
@@ -55,18 +79,41 @@ Protocol — all messages are JSON objects, one per send/recv:
                                                        # the same, for a run already
                                                        # detached — from the watcher
                                                        # that polls it
+    {"type": "job_checkin",    "jobs": [{"job_key": "...", "state": "running",
+                               "phase": "...", "percent": 0.0}],
+                               "resumes_active_session": false}
+                                                       # a bulletin on runs still going,
+                                                       # 30s / 2min / 10min after the
+                                                       # first launch. Settles no row:
+                                                       # the news is that they are still
+                                                       # there
+    {"type": "job_complete",   "job_key": "...", "state": "done", "summary": {...},
+                               "resumes_active_session": false}
+                                                       # a detached run reached a
+                                                       # terminal state. The flag says a
+                                                       # turn is starting in THIS
+                                                       # conversation, which the client
+                                                       # cannot work out for itself
     {"type": "answer",         "text": "..."}          # final answer for a query
     {"type": "todo",           "items": [{"text": "...", "done": false}]}
     {"type": "error",          "text": "..."}
     {"type": "sessions_list",  "sessions": [{"id": "...", "title": "...",
-                               "created_at": "...", "updated_at": "...", "preview": "..."}]}
+                               "created_at": "...", "updated_at": "...", "preview": "...",
+                               "running": false,   # a turn of it is in flight
+                               "parked": false,    # its turn waits on a card: no timeout,
+                                                   # so it stays stopped until answered
+                               "queued": false}]}  # waiting for an agent slot
     {"type": "session_loaded", "session_id": "...", "title": "...",
                                "display_messages": [...], "todos": [...]}
     {"type": "context_usage",  "used_tokens": 0, "total_tokens": 0, "reserved_tokens": 0,
                                "overhead_tokens": 0,
                                "overhead_measured": false,  # true once server-reported
                                "history_messages": 0,        # in the window the model sees
-                               "history_messages_full": 0}   # in the untrimmed record
+                               "history_messages_full": 0,   # in the untrimmed record
+                               "provisional": false}         # no agent yet: the fixed
+                                                             # part is not counted in
+                                                             # used_tokens, so the figure
+                                                             # is a floor, not a verdict
     {"type": "resources",      "resources": [{"uri": "...", "name": "...",
                                "description": "...", "mimeType": "..."}]}  # attachable resources
 
@@ -76,9 +123,16 @@ Protocol — all messages are JSON objects, one per send/recv:
                                   # the client's rendered chat, stored verbatim as the
                                   # session's display messages (see _handle_transcript)
     {"type": "list_resources"}                     # request the attachable-resource list
-    {"type": "approval_response", "id": "...", "choice": "y"|"n"|"a"}
-    {"type": "user_question_response", "id": "...", "answers": [
+    {"type": "approval_response", "id": "...", "session_id": "...",
+                               "choice": "y"|"n"|"a"}
+    {"type": "user_question_response", "id": "...", "session_id": "...", "answers": [
                                {"selected": ["..."], "otherText": "..."}]}
+                                  # session_id names the conversation that asked, copied
+                                  # off the card. An answer without one is DROPPED rather
+                                  # than given to whichever conversation is on screen:
+                                  # that would settle a question another one asked, with
+                                  # the user's approval on a call they never saw. An
+                                  # answer to a card whose wait expired is dropped too.
     {"type": "divert_to_background", "id": "..."}   # detach the run now blocking the
                                   # turn, keeping what it has already done. The id names
                                   # the row, whose tool name is the run channel its
@@ -103,10 +157,12 @@ from ._ws_runtime import (
     get_backend,
 )
 from .ws_worker import _AgentWorker
+from .ws_pool import _AgentPool
 from .ws_session import _Session
 
 import asyncio
 import os
+import signal
 import sys
 from typing import Any
 
@@ -118,7 +174,7 @@ except ImportError as exc:
     ) from exc
 
 
-__all__ = ["serve", "main", "_AgentWorker", "_Session"]
+__all__ = ["serve", "main", "_AgentWorker", "_AgentPool", "_Session"]
 
 
 # Ceiling on an inbound frame. Sized for the client transcript, the only message that
@@ -228,14 +284,29 @@ async def serve(
     # passes, so each window gets its own server) it is the kernel that picks one, and
     # it is not known until the socket is bound. The "Listening on" line below is the
     # one that carries the real address.
+    # The interpreter line is the server's own view of what it runs on: the extension
+    # logs the binary it launched, but a stray PYTHONHOME/PYTHONPATH in the inherited
+    # environment can still bend that interpreter onto another installation — this is
+    # the line that says so, from inside the process, where it cannot be mistaken.
     print(f"MIMIR WS server starting on {host}  (model: {_model})", file=_ORIGINAL_STDOUT)
+    print(f"Python: {sys.executable}  (prefix {sys.prefix})", file=_ORIGINAL_STDOUT)
     print("Initialising agent connections…", file=_ORIGINAL_STDOUT)
 
-    worker = _AgentWorker(_model)
-    print("Agent ready.", file=_ORIGINAL_STDOUT)
+    # The pool, not an agent: one agent per conversation, built on that conversation's
+    # first query. Process-global and shared by every connection, because two webviews on
+    # one port must see the same live turns — which is what the single shared worker gave
+    # for free, and the one property of it worth keeping.
+    #
+    # Nothing is built here any more, so the socket is listening in milliseconds instead
+    # of after the backend wait plus ~19 server spawns. That cost did not disappear; it
+    # moved to the first query of each conversation, which is the only place that can say
+    # which session is paying it.
+    pool = _AgentPool(_model)
+    print(f"Agent pool ready (up to {pool.cap} live conversations).",
+          file=_ORIGINAL_STDOUT)
 
     async def _handler(ws: Any) -> None:
-        session = _Session(ws, worker)
+        session = _Session(ws, pool)
         await session.run()
 
     # The default 1 MiB frame cap is below what a client transcript weighs once it
@@ -246,7 +317,48 @@ async def serve(
         # --port 0 the argument is a placeholder, and this line is the contract the
         # VS Code extension parses to learn where to connect.
         print(f"Listening on {_announced_url(server.sockets)}", file=_ORIGINAL_STDOUT, flush=True)
-        await asyncio.Future()  # run forever
+        await _run_until_signalled(pool)
+
+
+async def _run_until_signalled(pool: _AgentPool) -> None:
+    """Serve until asked to stop, then close every agent's MCP servers.
+
+    ``stdio_client`` spawns each server with ``start_new_session=True`` — its own process
+    group, so it survives this process dying — and the only thing that terminates one is
+    closing the agent's exit stack. Dying without that leaves up to ``pool.cap`` × ~19
+    orphaned interpreters behind, each holding whatever its own child processes hold; the
+    VS Code extension kills and respawns this server on every connect, so that is the
+    ordinary path, not an edge case.
+
+    ``add_signal_handler`` rather than ``signal.signal``: the close runs on this loop, and
+    a handler that interrupts an arbitrary frame cannot await. Falls back to serving
+    forever where the loop does not support it (Windows), which is where the pool's own
+    idle release is the only reaping there is.
+    """
+    loop = asyncio.get_running_loop()
+    stop = loop.create_future()
+
+    def _ask_to_stop() -> None:
+        if not stop.done():
+            stop.set_result(None)
+
+    installed = []
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        try:
+            loop.add_signal_handler(sig, _ask_to_stop)
+            installed.append(sig)
+        except (NotImplementedError, RuntimeError, ValueError):
+            pass
+    try:
+        await stop
+        print("Stopping — closing agent connections…", file=_ORIGINAL_STDOUT, flush=True)
+    finally:
+        for sig in installed:
+            try:
+                loop.remove_signal_handler(sig)
+            except (NotImplementedError, RuntimeError, ValueError):
+                pass
+        await pool.aclose_all()
 
 
 def main() -> None:

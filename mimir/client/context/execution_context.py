@@ -175,12 +175,11 @@ def recent_first(value) -> list:
 
 # ── Field traits ───────────────────────────────────────────────────────────────
 #
-# What a field *is*, declared next to the field itself. Before this, the answers lived
-# in eight hand-maintained name lists scattered across agent_core, observations, the
-# policy engine and the nudge engine — two of which computed the same thing twice, two
-# of which had gone stale (an entry for a field that is never in carry_context at all).
-# Nothing kept them correct when a field was added; each derived list below is now
-# computed from this table, so the question is asked once, where the field is defined.
+# What a field *is*, declared next to the field itself, so the question is asked once,
+# where the field is defined. Every derived list below is computed from this table —
+# hand-maintained name lists in agent_core, observations, the policy engine and the nudge
+# engine have nothing keeping them correct when a field is added, and go stale silently or
+# compute the same thing twice.
 CARRY = "carry"              # merged into the next query's context (session memory)
 FILE_PATH = "file_path"      # holds workspace FILE paths -> a deleted file must be purged
 KNOWN_FILE = "known_file"    # holds a file path the model has encountered this session
@@ -440,8 +439,8 @@ def known_existing_files(execution_context: dict[str, Any]) -> set[str]:
 #                                                                                         workflow (escalation ladder)
 #
 # Rule of thumb: fields are WRITTEN in exactly one place (the observation pass or the
-# loop) and READ in many. Never mutate context outside its declared writer above —
-# that is what previously caused cross-layer incoherence.
+# loop) and READ in many. Never mutate context outside its declared writer above: a second
+# writer is how the layers come to disagree about what the context says.
 
 
 # ── Discovery-evidence semantics: the single definition of "what counts as the

@@ -283,9 +283,9 @@ def github_get_file(owner: str, repo: str, path: str, ref: str = "",
     content = data.get("content", "")
     if size > _MAX_FILE_BYTES or encoding != "base64" or not content:
         # Too large for the contents API to inline, or inlined in something we do not
-        # decode. This used to be a refusal, which cost the caller the file entirely —
-        # a total loss of information to avoid a large one. The raw URL has the same
-        # bytes, and the window below is what makes reading them affordable.
+        # decode. Refusing here costs the caller the file entirely — a total loss of
+        # information to avoid a large one — and the raw URL has the same bytes, with the
+        # window below making them affordable to read.
         decoded = _raw_text(data.get("download_url") or "")
         if not decoded:
             return err(

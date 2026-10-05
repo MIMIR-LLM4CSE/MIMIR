@@ -455,6 +455,14 @@ The pluggable LLM backends behind one interface, plus token counting.
   `count_messages_tokens()`, with a per-content cache and an `allow_network` flag so an
   async loop can avoid a blocking tokenize call. The default `_tokenize_text()` is a
   chars-per-token heuristic that a subclass may override with an exact tokenizer.
+- **Calibration that outlives the process** (`token_calibration.py`): the two figures
+  measured against the server's own `prompt_tokens` — the per-call prompt overhead and
+  the history's chars-per-token — are cached in `<state>/token_calibration.json`, so a
+  session reopened against a fresh server is accounted for exactly as soon as its agent
+  is up, instead of only once its first answer lands. The ratio is keyed by model; the overhead by a
+  fingerprint of everything it is made of (model, context mode, system prompt,
+  advertised tools), so a changed fixed part is a miss and the honest estimate answers
+  rather than a stale measurement.
 - `served_models()` reports the model ids an endpoint exposes, `[]` where a backend cannot
   enumerate itself. It is what lets the WS server resolve an unspecified model without
   testing which backend is active.
@@ -692,6 +700,14 @@ format in [POLICY.md](POLICY.md#verification-ledger).
   `asyncio.wait_for` with the wall `capabilities.timeout_for` resolves — the tool's own
   `timeout_secs` if it declared one, else `TOOL_CALL_TIMEOUT_SECS`, clamped by
   `TOOL_CALL_TIMEOUT_MAX_SECS`.
+- **A dead transport is the one failure not to retry.** Any exception from a call becomes an
+  ordinary tool error rather than killing the turn, with "retry once" as the advice — except
+  `ClosedResourceError` / `BrokenResourceError`, which mean that server's stdio transport is
+  gone: its process died, or its stack was unwound under the turn. Nothing reconnects an MCP
+  server, so every later call to any tool of that server fails identically. That failure
+  therefore names the server, lists the other tools it has just taken down, and tells the
+  model to stop and report what is unfinished instead of spending the turn on calls that
+  cannot work.
 - **Step budget** — there is none. A query runs for as many steps as the work takes: it
   ends when the model delivers an answer, when a guard stops it (empty turns, validation
   budget), or when the user interrupts. Only a caller that asks for a bound gets one —
@@ -876,7 +892,7 @@ never a parse of the command, which is the guess the module exists to avoid. See
   the tool *name*, with no per-tool table: a verb is located in a reusable lexicon, rendered
   as a gerund, and the remaining tokens appended. `shorten_display_args()` reduces declared
   path arguments to their **file name** for display, capability-driven off the `path`
-  arg-role. A row reading `Reading file: /shared/data1/Projects/.../observations.py` buries
+  arg-role. A row reading `Reading file: /home/user/projects/solver/.../observations.py` buries
   the one token the user is scanning for; it becomes `Reading file: observations.py`.
 
   **Never applied where the path is the decision.** An out-of-workspace approval asks the
@@ -950,6 +966,13 @@ window is only the tail a front-trim left, and the record is then the faithful r
 Reloading the record over a compacted window is what handed the model a context that was
 full before the user had typed.
 
+**A resume is budgeted as the session it was.** The window is sized from the context mode,
+which only the agent can answer for — and a resumed conversation has no agent until its
+first query. So the mode is saved with the session (`context_mode`) and is what
+`_ctx_budget` assumes until an agent answers for itself; the pre-query budget check runs
+*after* `_ensure_worker`, never before. Read too early, it answered compact for a full-mode
+session, called a 60k window an overflow, and compacted and trimmed to fit 32k.
+
 **Progress is pushed, never recorded.** A tool call that blocks the turn cannot report
 on itself, so the session polls the blocking run's channel once a second
 (`_tick_run_channels`, reading `tool_execution/run_channel.py`) and pushes a
@@ -976,25 +999,146 @@ the conversation on screen, so the job records its session at launch and the com
 carries it back. When it names the active session the wake lands in the live history as any
 turn would; otherwise it is appended to *that* session's stored history and submitted there.
 
-**A wake carries the result, not the question.** The client does not know what a job does,
-so it passes the record through rather than paraphrasing it — but a record is a mapping, and
-the order its server chose is the order the budget is spent in. A sub-agent's record opened
-with the task the caller had written itself, so all 2000 characters went on repeating the
-question and the answer was cut off whole. `_compact_summary` therefore projects before it
-cuts: the result keys (`answer`, `output`, `verdict`, `best`, `next_step`, `reason`, `error`,
-`note`) move to the front intact, the echo keys (`task`, `command`, `context`, `prompt`) to
-the back and down to their first line, and every other key keeps its place. Keys, not tool
-names — the same licence the wake has to read `verdict` off any server's payload. When the
-text still has to be cut, the wake names the op that reads the whole of it, taken off the
-job's own `summary_op`.
+**A wake carries the record, not a paraphrase of it.** The client does not know what a job
+does, so it hands over what the server wrote rather than interpreting it. What it chooses is
+the shape: `_compact_summary` renders one field per line under the server's own names, clips
+each value on its own, and leaves out the fields the wake's head line already said
+(`job_key`, `kind`, `state`). Per-value clipping is what keeps a long echo from spending the
+budget — a sub-agent's record opens with the task the caller wrote itself, and as one line of
+JSON those 2000 characters went on repeating the question while the answer was cut off whole.
+Lines rather than JSON because a wake is read by a person as well as a model. When something
+did have to be cut, the wake names the op that reads the whole of it, taken off the job's own
+`summary_op`.
 
-**A connection that drops does not end the turn.** One worker serves the whole server and
-outlives every session, so a socket that dies mid-run leaves a turn working with nobody
-reading it. The next connection therefore only drains the event queue when the worker is
-**idle**: what is queued under a busy worker is that turn's own output, not debris. A turn
-parked on a person records the card it is waiting on, which the next connection puts back —
-without that, the wait had no timeout by design and no card left to end it, so every later
-query queued behind a wait nobody could answer and the session read as hung.
+**A connection that drops does not end the turn.** An agent outlives the connections that
+read it, so a socket that dies mid-run leaves a turn working with nobody reading it. The next
+connection therefore only drains the event queue when the agent is **idle**: what is queued
+under a busy one is that turn's own output, not debris. A turn parked on a person records the
+card it is waiting on, which the next connection puts back — without that, an approval has no
+timeout by design and no card left to end it, so every later query of that conversation
+queued behind a wait nobody could answer and it read as hung.
+The agent it runs on is resolved through the **pool, by that session** — never off
+`self.worker`, which answers for the conversation being read. Aimed there, a wake either runs
+behind another conversation's work with `is_busy` wrong about both, or reaches the detached
+stand-in, whose queue no loop reads and whose own docstring says so.
+
+**A wake is only off the pending map once a turn holds it.** The flush takes the wakes before
+it can know whether it will succeed, and every way it fails — a session deleted under it, a
+store that will not write, an agent released out from under it — is a finished run reported
+to nobody. So each of those puts them back, `told` preserved, for the next flush to carry.
+
+**A run that says nothing for an hour is a run going wrong unseen.** Check-ins break the
+silence on a ramp — 30s, 2min, 10min, 30min from the first launch (`_CHECKIN_SCHEDULE`) —
+and hourly from there (`_CHECKIN_INTERVAL`) for as long as the run lasts. The ramp widens
+the way the watcher's own backoff does, and for the same reason: so does the cost of having
+been wrong for that long. The hourly tail is the floor under it, because a schedule with a
+last point goes quiet exactly where the stakes are highest — an overnight run is the one
+with most to lose from four more unreported hours. Nothing but the run ending stops the
+cycle. One cycle per conversation, not per job: a worker *is* a conversation, so jobs
+launched in one step share a schedule and report together. It costs no status traffic —
+each bulletin is built from `_Watch.status`, written by the poll the watcher is running
+anyway.
+
+Because that tail never runs out, a cycle can be asleep for an hour after its last job
+ended, so **a registration that starts a wave replaces the cycle rather than joining it** —
+otherwise a job launched into that gap would inherit the remainder of a schedule describing
+nothing and wait out the hour for its first bulletin. Starting a wave means being the
+conversation's only live run. The cycle clears its own slot on the way out only if the slot
+still holds *it*: cancellation lands after the replacement is installed, and an
+unconditional clear would erase the live cycle and let the next launch start a second one
+beside it.
+
+**A check-in never interrupts.** A wake carries a result the running turn needs; a bulletin
+carries "nothing to report", and steering that in makes the agent answer about the job
+instead of the question it was asked — while the silence it exists to break is not there at
+all with the user watching it work. So an owner that is busy, or parked on a card a person
+has to answer, gets nothing then: the bulletin waits in `_held_checkin`, one slot per
+conversation so the next one replaces it, and goes out after the answer lands. It is dropped
+rather than delivered if the runs have since finished — their wakes say more — or if a wake
+of that conversation is itself pending.
+
+**Asking where a run is at is what puts a watcher back on it.** A watcher lives on the agent
+that made it and dies with it, which a window reload is enough to cause; the run carries on
+in its own session directory, indifferent. Nothing re-arms at load — that would poll jobs
+nobody is thinking about any more, in every conversation opened. Instead the status ops
+answer with the handle as well as the state (`background_jobs`, plural, *these are still
+going* — as against `background_job`, *this call launched it*, which makes the row a run and,
+with no watcher, something to wait out in-turn), and `_maybe_rewatch_background_jobs` picks
+them up. It reads the payload's shape and no capability: `BACKGROUNDABLE` says a tool
+*launches* a detached run, and hanging it on a reader to make a key legible would say
+something untrue about the reader. What is checked instead is that each descriptor names an
+op to poll and a job to poll it for — the whole trust boundary, and enough of one, since what
+registration buys is a read-only poll of a named tool. Loading a conversation whose jobs
+nothing is watching says so in one line, and leaves the asking to the person.
+
+**A connection that drops does not end the turn.** An agent outlives the connections that
+read it, so a socket that dies mid-run leaves a turn working with nobody watching. The next
+connection therefore drains an event queue only where that conversation's agent is **idle**:
+what is queued under a busy one is that turn's own output, not debris. With one exception,
+and it is why that drain is not a plain one: `job_complete` and `job_checkin` answer to no
+turn. A job finishes while its conversation sits idle, puts its wake on that idle queue, and
+the watcher holding it is gone the same instant — the socket went away, the agent never did.
+Those two are set aside and put back; the rest is counted on the way out, this being the one
+place in the client where work disappears on purpose. For the same reason the drain loop
+*handles* such an event before it sends it: it has already left `out_q`, nothing re-emits it,
+and a socket dying on the send must not be able to take the handler with it. Every parked card
+comes back, in every conversation — each wait has no timeout by design and no card left to
+end it, so a card left out is a conversation stopped for ever with nothing on screen to say
+why.
+
+**Conversations run at the same time, one agent each.** One worker used to serve every
+session, which is why leaving a conversation had to cancel its turn — or defer it when it was
+parked on a person. That was never a policy: a single worker cannot stream two conversations
+anywhere the user can see, and a card it was parked on would have been answered from the next
+conversation's UI. `_AgentPool` gives each conversation its own agent, so leaving one leaves
+its turn running; its output goes to its own transcript, which is what makes coming back show
+the whole turn rather than only the answer that ended it.
+
+What that costs is that "the running turn", "the parked card" and "the answer" stop being
+questions with one answer, and each one got wrong fails silently rather than loudly. So
+everything addresses a conversation: busy, cancel, steer, and the divertible tool rows —
+two conversations can each have a blocking run, and one map between them would let a divert
+click detach the other's command. **An answer to a card carries the conversation that asked**,
+copied off the card; an answer naming none is dropped rather than handed to whoever is on
+screen, which would settle a question another conversation asked with the user's approval
+attached to a call they never saw.
+
+Three things make an agent per conversation affordable. It is built on that conversation's
+**first query**, not when the session is created — the backend wait plus some nineteen MCP
+servers is a cost only a conversation that asks something should pay. The number alive is
+**capped** (`MIMIR_MAX_LIVE_SESSIONS`, three): the binding constraint is processes, roughly
+sixty interpreters at that cap, and past it a turn waits for a slot and is told so, because a
+queue nobody can see reads as a hang. An idle agent is **released**, servers included — but
+never one that is busy, parked on a card, watching a background job, or on screen. When
+nothing may be released the turn queues rather than evicting: taking a slot from a
+conversation mid-task trades a visible wait for silently lost work.
+
+**A slot is admitted the moment a turn ends**, on the on-screen path and the detached one
+alike — not only in the pool's thirty-second idle sweep, which left a conversation just told
+it was next in line sitting out the rest of that interval after the slot it needed had
+already freed.
+
+**Releasing an agent closes its MCP servers, in the task that opened them.** `stdio_client`
+anchors its anyio cancel scope to the entering task: exiting the exit stack from any other
+task raises and leaves it half-unwound — the streams closed, the subprocess alive — so
+nothing is reaped and a turn still running on that agent fails its next tool call on a dead
+stream. `_AgentWorker` therefore holds setup, the query loop and the close in one task
+(`_live`), and the close runs in that loop's `finally`, which is after any turn. `aclose`
+only sends the sentinel and waits, cancelling a turn in flight first so shutdown does not
+cost the rest of a turn per conversation. Eviction asks `has_work_pending` rather than
+`is_busy` for the same reason: a turn already submitted has not set `_current_task` yet, and
+releasing in that gap closes the servers under a turn about to start.
+
+**Stopping the server stops the MCP servers.** Each is spawned with
+`start_new_session=True` — its own process group, which survives this process dying — so
+only closing the owning agent's exit stack terminates one. `serve()` installs SIGTERM/SIGINT
+handlers and closes the pool on the way out, every agent at once rather than one after
+another. The VS Code extension kills and respawns the server on every connect, which makes
+that the ordinary path rather than an edge case.
+
+**Deleting a conversation that is working says so first.** A turn in flight counts as live
+work, and so does a turn parked on a card — work waiting to continue — alongside the job
+directories. The delete is refused once, naming what is running; asking again goes through.
 
 **Who owns the rendered chat.** `display_messages` as the server assembles it is text bubbles
 and nothing else; the tool rows, reasoning panels and diff cards are built by the webview's
@@ -1053,6 +1197,7 @@ installed.
 | `test_agent_loop.py` | the loop functions — intra-query compaction, `_post_dispatch_inject`, `_finalize_answer` (including the turn boundary surviving an in-turn rewrite, and matching on identity so two byte-identical job wakes are not confused), plan mode, and the non-interactive path. Plus the failing-call guard and the identical-success annotation |
 | `test_completion_honesty.py` | the end-of-run honesty surface: the ledger's rows and statuses, the marker contract, the tier-qualified completion sentence, `needs_incomplete_finalization`, the `unfinished_plan` nudge, and the checklist reader's fail-closed behaviour |
 | `test_observations.py` | the observer dispatch order, bash classification and credit, run-ledger keying, verdict grammar, exit attribution, `ValidationTierTests` (per-checker tiers, an execution earning none however green, a printed invariant earning nothing, monotonicity, retraction), and `DeclaredEditSetTests` (a revised checklist retracts what it dropped) |
+| `test_background_jobs.py` | the whole detached-run path: the server descriptor, the registration hook, `_watch_job`, the wake text, the detached resume and its coalescing — plus the check-in schedule and its never-interrupt rule, the three ways a finished run used to wake nobody (the wrong agent, a store that would not write, a socket dying on the send), what a reconnect may not purge, and re-arming a watcher from a status result |
 | `test_policy_manager.py` | the gates and the state guard |
 | `test_client_helpers.py` | the nudge predicates, token counting, eviction and `ContextOverflowError` |
 | `test_capabilities.py` / `test_phase_b_servers.py` | `infer_tool_caps` precedence and the golden declared registry (`_golden_caps.py` AST-parses the server decorators) |

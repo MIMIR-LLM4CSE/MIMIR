@@ -129,29 +129,40 @@ def _shell_path_targets(agent: Any, tool_name: str, arguments: dict, base: str) 
     arguments *as shell*. CODE_EXEC would be the wrong test: it also marks tools that
     execute through structured arguments (``proxy_exec``), whose parameters
     are not a command line. Driven off the shared segmenter, so no tool name or shell
-    keyword is spelled out here. Fail-open on an unparseable command: the server still
-    validates and confines every accepted call independently.
+    keyword is spelled out here.
+
+    **Segmentation is the server's own** :func:`shell_paths.parse_segments`, not the
+    policy layer's :func:`bash_classify.shell_segments`. The two do not refuse the same
+    commands: the policy layer adds a conservatism of its own, because a *kind* it
+    cannot read must not be auto-approved. Extraction cannot inherit that. A command
+    the policy layer calls opaque and the server parses would yield no targets here, so
+    no prompt would be raised — and the server, which confines it against its own parse,
+    refuses it with no grant the user could have given. Sharing the server's parser is
+    what makes "asked about" and "confined" the same set of paths. A command
+    ``parse_segments`` itself refuses never reaches a shell, so it needs no prompt.
     """
     if _shell_command_args(agent, tool_name) is None:
         return []
     from ....servers._shared.shell_paths import (
-        cd_destination, normalize_path_arg, segment_path_operands,
+        cd_destination, normalize_path_arg, parse_segments, segment_path_operands,
     )
-    from .bash_classify import shell_segments
 
     out: list[str] = []
     for val in arguments.values():
         if not isinstance(val, str) or not val.strip():
             continue
         try:
-            # allow_expansion: a bare $VAR blocks classification but not path
-            # extraction, and a command mixing one with a real out-of-workspace
-            # path must still reach the user (see shell_segments).
-            segments = shell_segments(val, allow_expansion=True)
+            # A bare $VAR blocks classification but not path extraction: a command
+            # mixing one with a real out-of-workspace path must still reach the user.
+            # parse_segments keeps such a command, so nothing here has to allow for it.
+            segments = parse_segments(val)
         except Exception:
+            # A ShellParseError, or anything unforeseen: a command the shared parser
+            # will not read is one the server refuses before any shell opens, so there
+            # is no access here to ask the user about.
             continue
         cursor = base
-        for segment in segments or []:
+        for segment in segments:
             argv = segment.argv
             for target in segment.redirect_targets:
                 path = normalize_path_arg(target, cursor)
@@ -303,13 +314,13 @@ def _check_cluster_submit(
     requires some local-validation evidence (``validated_files`` — a file that passed a
     check) before it may run.
 
-    **The hold is not one-shot.** It used to set a flag and let the very next retry
-    through, which made it a reminder rather than a guard: against a model that simply
-    calls again — the normal reaction to an error — it cost one round trip and
-    constrained nothing, on the single most expensive action in the system. The
-    condition is a fact about the session (was anything validated?), not a nagging
-    budget, so it holds until that fact changes. The error names exactly what would
-    clear it, so this is a precondition with a stated exit, not a wall.
+    **The hold is not one-shot.** Setting a flag and letting the next retry through would
+    make it a reminder rather than a guard: against a model that simply calls again — the
+    normal reaction to an error — it costs one round trip and constrains nothing, on the
+    single most expensive action in the system. The condition is a fact about the session
+    (was anything validated?), not a nagging budget, so it holds until that fact changes.
+    The error names exactly what would clear it, so this is a precondition with a stated
+    exit, not a wall.
 
     **A session that wrote nothing is exempt**, and that is what keeps the exit
     reachable. ``validated_files`` is credited only by a checker run against a file the
@@ -446,17 +457,25 @@ def _executed_programs(command: str) -> set[str]:
     return progs
 
 
-def active_proxy_source() -> str:
+def active_proxy_source(session_id: str | None = None) -> str:
     """The source file of the currently active proxy optimization session, or "".
 
     Reads the proxy server's own store (single source of truth); an absent or
     unreadable session yields "" so every caller abstains. Best-effort by design —
     this informs guards and evidence, never correctness.
+
+    *session_id* names the conversation asking. The store's pointer is per MIMIR
+    session, and in this process N sessions share one environment, so a caller that
+    knows which agent it is acting for must say. A caller that does not — the two
+    evidence paths in guardrails/workflow.py and guardrails/observations.py, which
+    receive only an execution_context — gets the pointer's own fallback, i.e. the
+    session on screen. Imprecise under concurrency, and bounded: those two only ever
+    raise a file's validation tier or add a reported line, never gate or block.
     """
     try:
         from ....servers.proxy._lib import store
 
-        name = store._resolve_proxy_name("")
+        name = store._resolve_proxy_name("", session_id)
         if not name:
             return ""
         cfg = store._read_json(store._opt_config_file(name))
@@ -466,21 +485,25 @@ def active_proxy_source() -> str:
         return ""
 
 
-def _proxy_exec_targets() -> set[str]:
+def _proxy_exec_targets(session_id: str | None = None) -> set[str]:
     """Abspaths + basenames that count as "executing the proxy under optimization".
 
-    Reads the proxy server's own store for the currently active optimization session;
-    returns an empty set when none is initialized so the guard abstains. Best-effort —
-    any failure yields the empty set.
+    Reads the proxy server's own store for the optimization session *this* conversation
+    is driving; returns an empty set when none is initialized so the guard abstains.
+    Best-effort — any failure yields the empty set.
+
+    This one does gate, so the session matters: without it the guard would read another
+    conversation's active proxy and either block a program that is none of this
+    conversation's business, or wave through this conversation's own.
     """
     from ....servers.proxy._lib import store
 
-    name = store._resolve_proxy_name("")
+    name = store._resolve_proxy_name("", session_id)
     if not name:
         return set()
 
     paths: set[str] = set()
-    src = active_proxy_source()
+    src = active_proxy_source(session_id)
     if src:
         paths.add(src)
     reg = store._read_json(store.registry_path())
@@ -524,7 +547,7 @@ def _check_proxy_exec(
     if _shell_command_args(agent, tool_name) is None:
         return None
     try:
-        targets = _proxy_exec_targets()
+        targets = _proxy_exec_targets(getattr(agent, "session_id", None))
         if not targets:
             return None
         executed: set[str] = set()

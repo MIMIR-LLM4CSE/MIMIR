@@ -19,6 +19,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 SERVERS_DIR = Path(__file__).resolve().parents[1] / "servers"
@@ -30,7 +31,15 @@ import run_channel  # noqa: E402
 import _bash_jobs  # noqa: E402
 import server_bash  # noqa: E402
 
-from mimir.servers._shared.trusted_read_roots import TRUSTED_CACHE_ROOTS  # noqa: E402
+from mimir.servers._shared.trusted_read_roots import trusted_read_roots  # noqa: E402
+
+
+def _jobs_on_disk() -> list[str]:
+    """What the jobs root holds — a root that was never created holds nothing."""
+    try:
+        return os.listdir(_bash_jobs.jobs_root())
+    except FileNotFoundError:
+        return []
 
 
 def _wait_terminal(job_key: str, timeout: float = 15.0) -> dict:
@@ -45,17 +54,22 @@ def _wait_terminal(job_key: str, timeout: float = 15.0) -> dict:
 
 class BashBackgroundTests(unittest.TestCase):
     def setUp(self) -> None:
-        # Jobs land in a real cache dir; point it at a temp tree so a test run neither
-        # reads nor leaves state in the user's own.
-        self._tmp = tempfile.mkdtemp(prefix="mimir-bash-jobs-")
-        self._orig_root = _bash_jobs.JOBS_ROOT
-        _bash_jobs.JOBS_ROOT = self._tmp
+        # Jobs land under the session's own state dir; point the state dir at a temp
+        # tree so a test run neither reads nor leaves state in the user's own. Set
+        # through the environment rather than by patching a module constant, so what
+        # the test exercises is the real resolution (state_paths.session_state_dir).
+        self._tmp = tempfile.mkdtemp(prefix="mimir-bash-state-")
+        self._orig_state = os.environ.get("MIMIR_STATE_DIR")
+        os.environ["MIMIR_STATE_DIR"] = self._tmp
 
     def tearDown(self) -> None:
         for payload in _bash_jobs.listing():
             if payload["state"] == "running":
                 _bash_jobs.stop(payload["job_key"])
-        _bash_jobs.JOBS_ROOT = self._orig_root
+        if self._orig_state is None:
+            os.environ.pop("MIMIR_STATE_DIR", None)
+        else:
+            os.environ["MIMIR_STATE_DIR"] = self._orig_state
         shutil.rmtree(self._tmp, ignore_errors=True)
 
     def test_launch_returns_immediately_with_a_watchable_handle(self) -> None:
@@ -164,13 +178,40 @@ class BashBackgroundTests(unittest.TestCase):
     def test_job_logs_live_under_a_trusted_read_root(self) -> None:
         # The model reads the log with the ordinary file tools while the run goes on;
         # that only works if the location is one the read servers and the policy gate
-        # both already trust.
-        self.assertTrue(
-            any(root.rstrip("/").endswith("mimir_bash") for root in TRUSTED_CACHE_ROOTS),
-            TRUSTED_CACHE_ROOTS,
-        )
-        self.assertTrue(self._orig_root.startswith(
-            os.path.expanduser("~/.cache/mimir_bash")))
+        # both already trust. The state dir is such a root, and is where jobs live now:
+        # a fixed root under ~/.cache was outside every session, so one conversation
+        # listed — and could kill — another's jobs, and nothing ever reclaimed the space.
+        self.assertIn(self._tmp, trusted_read_roots())
+        self.assertTrue(_bash_jobs.jobs_root().startswith(self._tmp))
+
+    def test_jobs_of_one_session_are_invisible_to_another(self) -> None:
+        # Scoped by resolving the root, not by filtering: each session's jobs sit in
+        # its own directory, so there is nothing to filter and no way to name a job
+        # that is not yours.
+        with patch.dict(os.environ, {"MIMIR_SESSION_ID": "session-a"}):
+            launched = server_bash.bash_run("sleep 30", background=True)["job_key"]
+            self.assertIn(launched, [j["job_key"] for j in _bash_jobs.listing()])
+            mine = _bash_jobs.jobs_root()
+            with patch.dict(os.environ, {"MIMIR_SESSION_ID": "session-b"}):
+                # Session B cannot see it, and so cannot reach it: the handle names no
+                # job of B's, and A's run is untouched by B asking to stop it.
+                self.assertEqual(_bash_jobs.listing(), [])
+                self.assertNotEqual(_bash_jobs.jobs_root(), mine)
+                self.assertEqual(_bash_jobs.state(launched)["error"], "No such job.")
+                server_bash.bash_job_stop(job_key=launched)
+            self.assertEqual(_bash_jobs.state(launched)["state"], "running")
+            # Stopped from its own session, where it is addressable. Done inside the
+            # patch: tearDown's sweep resolves the root too, and would not find it.
+            self.assertEqual(server_bash.bash_job_stop(job_key=launched)["status"], "ok")
+
+    def test_nothing_is_written_outside_the_state_dir(self) -> None:
+        # The point of the move: MIMIR writes under its own state dir, the workspace,
+        # and the /tmp scratchpad — never a cache root of its own in $HOME.
+        legacy = os.path.expanduser("~/.cache/mimir_bash")
+        before = os.path.isdir(legacy)
+        job_key = server_bash.bash_run("echo hi", background=True)["job_key"]
+        _wait_terminal(job_key)
+        self.assertEqual(os.path.isdir(legacy), before)
 
     def test_an_unknown_handle_is_refused_with_a_way_forward(self) -> None:
         for job_key in ("", "../../etc", "nope"):
@@ -178,6 +219,25 @@ class BashBackgroundTests(unittest.TestCase):
                 payload = server_bash.bash_job(job_key=job_key)
                 self.assertEqual(payload["status"], "error")
         self.assertEqual(server_bash.bash_job(op="nonsense")["status"], "error")
+
+    def test_a_well_formed_handle_naming_nothing_is_an_error_not_an_ok(self) -> None:
+        """``valid_key`` checks the shape of a handle, not that it names anything.
+
+        So a well-formed key for a job this host does not have reached the job layer and
+        came back carrying ``error`` — which was then wrapped in ``ok()``, producing a
+        payload that said both at once. A caller reading ``status`` first was told the
+        stop had succeeded while nothing was stopped. No longer hypothetical: job
+        directories are per session, so a handle from another conversation is exactly a
+        well-formed key naming nothing here.
+        """
+        absent = "20200101T000000Z-abcd"
+        self.assertTrue(_bash_jobs.valid_key(absent))
+        for payload in (server_bash.bash_job(op="status", job_key=absent),
+                        server_bash.bash_job(op="output", job_key=absent),
+                        server_bash.bash_job_stop(job_key=absent)):
+            self.assertEqual(payload["status"], "error")
+            self.assertIn("No such job", payload["error"])
+            self.assertIn("op='list'", payload.get("hint", ""))
 
     def test_a_redirected_job_says_where_its_output_went(self) -> None:
         # A command with its own redirect writes nothing to the job's log, so the
@@ -229,10 +289,10 @@ class BlockingRunTests(unittest.TestCase):
     """
 
     def setUp(self) -> None:
-        self._tmp = tempfile.mkdtemp(prefix="mimir-bash-jobs-")
-        self._orig_root = _bash_jobs.JOBS_ROOT
-        _bash_jobs.JOBS_ROOT = self._tmp
+        # One temp state dir now covers both: the job directories AND the divert
+        # channel live under it, which is the point — they belong to the same session.
         self._state = tempfile.mkdtemp(prefix="mimir-bash-state-")
+        self._tmp = self._state
         self._orig_state = os.environ.get("MIMIR_STATE_DIR")
         os.environ["MIMIR_STATE_DIR"] = self._state
 
@@ -240,7 +300,6 @@ class BlockingRunTests(unittest.TestCase):
         for payload in _bash_jobs.listing():
             if payload["state"] == "running":
                 _bash_jobs.stop(payload["job_key"])
-        _bash_jobs.JOBS_ROOT = self._orig_root
         if self._orig_state is None:
             os.environ.pop("MIMIR_STATE_DIR", None)
         else:
@@ -262,10 +321,10 @@ class BlockingRunTests(unittest.TestCase):
         self.fail("the server never announced a foreground run")
 
     def test_a_timeout_returns_the_output_produced_before_the_kill(self) -> None:
-        # The headline property. Before this, a timeout killed the process group AND
-        # threw away everything it had written, so the whole wait bought nothing and
-        # the model re-ran from scratch. The kill stays — it is what bounds a command
-        # gone astray — but the bytes now come back with it.
+        # The headline property. A timeout that kills the process group and throws away
+        # everything it wrote buys nothing for the whole wait, and the model re-runs from
+        # scratch. The kill is what bounds a command gone astray; the bytes come back
+        # with it.
         captured = {}
         watcher = threading.Thread(
             target=lambda: captured.update(self._await_current()), daemon=True)
@@ -287,12 +346,12 @@ class BlockingRunTests(unittest.TestCase):
 
     def test_a_timeout_leaves_no_job_directory(self) -> None:
         server_bash.bash_run("sleep 30", timeout=1)
-        self.assertEqual(os.listdir(_bash_jobs.JOBS_ROOT), [])
+        self.assertEqual(_jobs_on_disk(), [])
 
     def test_a_completed_blocking_run_leaves_no_job_directory(self) -> None:
         # A job dir per `ls` would grow the cache without anyone holding a handle.
         server_bash.bash_run("echo hi")
-        self.assertEqual(os.listdir(_bash_jobs.JOBS_ROOT), [])
+        self.assertEqual(_jobs_on_disk(), [])
 
     def test_a_refused_command_creates_no_job(self) -> None:
         # The blocking mirror of test_backgrounding_does_not_bypass_validation:
@@ -301,7 +360,7 @@ class BlockingRunTests(unittest.TestCase):
             with self.subTest(command=command):
                 result = server_bash.bash_run(command, timeout=5)
                 self.assertEqual(result["status"], "error")
-        self.assertEqual(os.listdir(_bash_jobs.JOBS_ROOT), [])
+        self.assertEqual(_jobs_on_disk(), [])
 
     def test_foreground_stderr_stays_separate_from_stdout(self) -> None:
         # The job launcher merges the two by default, which a tailed log wants and a
@@ -360,7 +419,7 @@ class BlockingRunTests(unittest.TestCase):
 
         threading.Thread(target=divert, daemon=True).start()
         result = server_bash.bash_run("sleep 4", timeout=60)
-        self.assertIn(result["job_key"], os.listdir(_bash_jobs.JOBS_ROOT))
+        self.assertIn(result["job_key"], _jobs_on_disk())
 
     def test_a_divert_naming_another_run_is_not_consumed(self) -> None:
         # Two clients share one state dir. A request must name the run it meant.
@@ -414,6 +473,84 @@ class FinishedOutputClipTests(unittest.TestCase):
         text, cut = _bash_jobs._clip(self.path, 4096, "ends")
         self.assertFalse(cut)
         self.assertEqual(len(text.splitlines()), 10)
+
+
+class RewatchHandleTests(unittest.TestCase):
+    """Asking a job's state hands back the handle to track it with.
+
+    The watcher that was holding a run dies with the agent that made it, which an
+    editor window reload is enough to cause; the detached process carries on in its
+    own session directory regardless. So the state op answers with the handle as well
+    as the state, and asking becomes the way to pick tracking back up — without
+    re-arming runs nobody asked about.
+    """
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.mkdtemp(prefix="mimir-bash-rewatch-")
+        self._orig_state = os.environ.get("MIMIR_STATE_DIR")
+        os.environ["MIMIR_STATE_DIR"] = self._tmp
+
+    def tearDown(self) -> None:
+        for payload in _bash_jobs.listing():
+            if payload["state"] == "running":
+                _bash_jobs.stop(payload["job_key"])
+        if self._orig_state is None:
+            os.environ.pop("MIMIR_STATE_DIR", None)
+        else:
+            os.environ["MIMIR_STATE_DIR"] = self._orig_state
+        shutil.rmtree(self._tmp, ignore_errors=True)
+
+    def _launch(self, command: str = "sleep 30") -> str:
+        return server_bash.bash_run(command, background=True)["job_key"]
+
+    def test_the_status_of_a_running_job_carries_a_handle(self) -> None:
+        key = self._launch()
+        status = server_bash.bash_job(op="status", job_key=key)
+        self.assertEqual(status["state"], "running")
+        handles = status["background_jobs"]
+        self.assertEqual([h["job_key"] for h in handles], [key])
+        self.assertEqual(handles[0]["status_op"]["args"]["job_key"], key)
+        self.assertEqual(handles[0]["summary_op"]["args"]["op"], "output")
+
+    def test_the_plural_key_is_used_so_a_read_is_not_mistaken_for_a_launch(self) -> None:
+        """``background_job`` would make the row a run and, with no watcher, a wait."""
+        key = self._launch()
+        status = server_bash.bash_job(op="status", job_key=key)
+        self.assertNotIn("background_job", status)
+
+    def test_a_finished_job_carries_none(self) -> None:
+        key = self._launch("true")
+        _wait_terminal(key)
+        status = server_bash.bash_job(op="status", job_key=key)
+        self.assertNotEqual(status["state"], "running")
+        self.assertNotIn("background_jobs", status)
+
+    def test_a_listing_carries_one_handle_per_running_job(self) -> None:
+        live, done = self._launch(), self._launch("true")
+        _wait_terminal(done)
+        listing = server_bash.bash_job(op="list")
+        self.assertEqual([h["job_key"] for h in listing["background_jobs"]], [live])
+
+    def test_a_listing_with_nothing_running_carries_none(self) -> None:
+        _wait_terminal(self._launch("true"))
+        self.assertNotIn("background_jobs", server_bash.bash_job(op="list"))
+
+    def test_a_handle_names_the_jobs_own_directory(self) -> None:
+        key = self._launch()
+        handle = server_bash.bash_job(op="status", job_key=key)["background_jobs"][0]
+        self.assertTrue(handle["run_dir"].endswith(key))
+        self.assertTrue(os.path.isdir(handle["run_dir"]))
+
+    def test_reading_a_running_jobs_log_re_arms_it_too(self) -> None:
+        """Reading the log mid-run is as much a "where is it at?" as asking the state."""
+        key = self._launch()
+        out = server_bash.bash_job(op="output", job_key=key)
+        self.assertEqual([h["job_key"] for h in out["background_jobs"]], [key])
+
+    def test_the_log_of_a_finished_job_carries_no_handle(self) -> None:
+        key = self._launch("true")
+        _wait_terminal(key)
+        self.assertNotIn("background_jobs", server_bash.bash_job(op="output", job_key=key))
 
 
 if __name__ == "__main__":

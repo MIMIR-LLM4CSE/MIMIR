@@ -129,7 +129,7 @@ def apply_verdict(
       about on their own.
     - ``rejected`` additionally charges nothing. A candidate that measured correctly and
       lost is the ordinary outcome of a search, not a defect to repair, and it is the
-      verdict that exists so ``fail`` no longer has to be borrowed for it.
+      verdict that exists so ``fail`` need not be borrowed for it.
     - ``blocked`` addresses *failed* runs instead, which is a disjoint set: a run that never
       completed is not outstanding, it is already judged. See :func:`_apply_blocked`.
 
@@ -205,11 +205,11 @@ def _close_exercise_advice(execution_context: dict[str, Any], verdict: str) -> N
     be read, the other that the environment will not produce one — and asking again after
     either is asking for a different answer to a question already answered.
 
-    The other verdicts do nothing here. There used to be a symmetric re-arm, handing the
-    shared exercise budget back once nothing was left outstanding, because a reminder
-    asked for the verdict itself; that reminder is gone (see the advisory-axis comment
-    in nudges/engine.py) and re-arming a *run* recommendation on the strength of a
-    verdict would only ask a model that just judged its run to go and run more.
+    The other verdicts do nothing here. There is deliberately no symmetric re-arm handing
+    the shared exercise budget back once nothing is outstanding: nothing asks for the
+    verdict itself any more (see the advisory-axis comment in nudges/engine.py), and
+    re-arming a *run* recommendation on the strength of a verdict would only ask a model
+    that just judged its run to go and run more.
     """
     if verdict in ("unknown", "blocked"):
         execution_context["exercise_advice_closed"] = True

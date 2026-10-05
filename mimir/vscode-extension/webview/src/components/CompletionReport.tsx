@@ -31,10 +31,10 @@ function tone(report: Completion): "ok" | "note" | "warn" {
  * answer — the same shape as the verification ledger it sits beside, and reusing its
  * styling for that reason.
  *
- * It used to be bare prose concatenated ahead of the answer, which no front-end could
- * lift off, so the whole report rendered as body text and the model's own words came
- * underneath it. Collapsed, the headline and the residual risk stay in view and the
- * sections are one click away.
+ * Collapsed because the headline and the residual risk are what belong in view, with the
+ * sections one click away. Bare prose concatenated ahead of the answer has no marker a
+ * front-end can lift it off by, so the whole report renders as body text with the model's
+ * own words underneath it.
  */
 export const CompletionReport: React.FC<Props> = ({ block }) => {
   const report = parseCompletion(block);

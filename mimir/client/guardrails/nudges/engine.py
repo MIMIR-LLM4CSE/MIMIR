@@ -283,9 +283,9 @@ def _declared_targets_already_existing(execution_context: dict[str, Any]) -> boo
     What tells "I am about to change something" from "I am about to create something",
     asked of recorded state. The two nudges that need the distinction — blast-radius
     ("who calls this?") and creation ("you have enough context, write it") — describe
-    the same situation otherwise, and used to be separated by whether the user's query
-    contained an edit verb or a create verb. That is a guess about a request; this is a
-    fact about the workspace, and it is the fact the guess was standing in for.
+    the same situation otherwise. Separating them by whether the user's query contains an
+    edit verb or a create verb is a guess about a request; this is a fact about the
+    workspace, which is what such a guess stands in for.
 
     Both declaration fields are read: ``planned_edit_targets`` (a path already written
     this turn) and ``declared_edit_set`` (paths named in the checklist). A turn that
@@ -386,11 +386,11 @@ def needs_incomplete_finalization(execution_context: dict[str, Any]) -> bool:
     if _all_pending_budget_exhausted(execution_context):
         return has_blocking_denials(execution_context)
 
-    # Only the check axis blocks. `workflow_state` used to be read here as a third
-    # condition, and that is what made the *recommended* axes mandatory in practice:
-    # a failed run — or a `fail` verdict, which drives the same ladder — sends the
-    # state machine back to `edit`, so every answer came back "Task is incomplete"
-    # until the run had failed VALIDATION_RETRY_BUDGET times. The state machine is
+    # Only the check axis blocks. Reading `workflow_state` here as a third condition is
+    # what makes the *recommended* axes mandatory in practice: a failed run — or a `fail`
+    # verdict, which drives the same ladder — sends the state machine back to `edit`, so
+    # every answer comes back "Task is incomplete" until the run has failed
+    # VALIDATION_RETRY_BUDGET times. The state machine is
     # steering, not evidence; what a run left open is reported by
     # _collect_completion_issues, which is where a recommendation belongs.
     return (
@@ -520,14 +520,11 @@ def _log_no_nudge(
 ) -> None:
     """Record why no nudge was injected on a turn that asked for one.
 
-    The counterpart to the fire-time log in :func:`_fire_nudge`. Suppression used to be
-    invisible, and the fields logged here are what make a false negative diagnosable
-    after the fact. They are now the state the predicates actually read — a declared
-    target, the workflow state, whether an edit happened, and the spent budgets. It used
-    to log three query-intent classifications instead, which is what the predicates read
-    back when a mis-classified query could disarm the layer; nothing classifies a query
-    any more, so there is nothing to second-guess and the real gates are the useful
-    trace. Debug-level and lazily formatted, so it costs nothing when the logger is off.
+    The counterpart to the fire-time log in :func:`_fire_nudge`: without it a suppression
+    is invisible, and a false negative cannot be diagnosed after the fact. What is logged
+    is the state the predicates actually read — a declared target, the workflow state,
+    whether an edit happened, and the spent budgets — which is the trace worth having.
+    Debug-level and lazily formatted, so it costs nothing when the logger is off.
     """
     if not logger.isEnabledFor(logging.DEBUG):
         return
@@ -640,8 +637,8 @@ def _should_nudge_validation(execution_context: dict[str, Any]) -> bool:
     The trigger is a *finding*, not a pending file: the check is performed by the loop
     (``guardrails.builtin_check``) where it asks whether it may conclude, so a file
     still pending has simply not been reached yet and there is nothing to say about it.
-    That is also why the idle-step and declared-set conditions are gone — they paced a
-    request the model no longer has to carry out.
+    That is also why there are no idle-step or declared-set conditions: they pace a
+    request the model is not being asked to carry out.
 
     Agent-only in practice without a mode test: plan mode is read-only, so nothing is
     dirty and nothing is ever rejected.

@@ -28,14 +28,21 @@ import threading
 import time
 import uuid
 from collections import OrderedDict
-from dataclasses import dataclass
-from typing import Any, NamedTuple
+from dataclasses import dataclass, field
+from itertools import chain, repeat
+from typing import Any
 
 from ... import human_pause
 from ...config.constants import DEFAULT_SUBAGENT_LEVEL
 from ...tool_execution.formatter import parse_tool_payload
 
 logger = logging.getLogger(__name__)
+
+# What a bounded prompt wait returns when its wall passes with nothing answered. A
+# unique instance compared with ``is``, never read as a response: ``None`` already
+# means cancelled, and an expired card has to be taken back down rather than treated
+# as a user who said no.
+TIMED_OUT: dict = {"timed_out": True}
 
 
 def _direct_opener():
@@ -60,18 +67,6 @@ def _direct_opener():
 _UNREADABLE_POLL_LIMIT = 5
 
 
-def _labelled_questions(questions: list, prefix: str) -> list:
-    """Mark each question with *prefix* (empty prefix: the list, untouched)."""
-    if not prefix:
-        return questions
-    out = []
-    for q in questions:
-        if isinstance(q, dict) and q.get("question"):
-            q = {**q, "question": f"{prefix}{q['question']}"}
-        out.append(q)
-    return out
-
-
 @dataclass
 class _Prompt:
     """One card put to the user, and the slot the thread that raised it waits on.
@@ -87,16 +82,40 @@ class _Prompt:
     shown: bool = False
 
 
-class _Watch(NamedTuple):
+# When a background check-in fires, as seconds from the one before it: T+30s, T+2.5min,
+# T+12.5min, T+42.5min, and hourly from there for as long as the run lasts. A detached
+# run says nothing between its launch and its end, so a two-hour build that went wrong
+# in its third minute is found out in its hundred-and-twentieth.
+#
+# The ramp widens the way the watcher's own backoff does, and for the same reason: so
+# does the cost of having been wrong for that long. Early on, a mistake is minutes of
+# cluster time and the gap should be small; four hours in, a bulletin every few minutes
+# would be noise charged against a turn each time. The hourly tail is the floor under
+# that — an overnight job stays answerable for without ever being chatty, where a
+# schedule that simply ran out would leave the longest runs, the ones with most to
+# lose, as silent as before.
+_CHECKIN_SCHEDULE = (30.0, 120.0, 600.0, 1800.0)
+_CHECKIN_INTERVAL = 3600.0
+
+
+@dataclass
+class _Watch:
     """A live background-job watcher: the polling task, and what it is watching.
 
     The descriptor is kept next to the task because the dispatch guard compares an
     incoming call against the *job's own* ``status_op`` — registry data travelling on
     the descriptor, the same reason the watcher itself can poll generically. Holding
     only the task would have forced the guard to name a tool.
+
+    ``status`` is the last thing the poll learned — ``{state, phase, percent, at}``,
+    whatever the status op chose to report, shape-driven like everything else here. A
+    check-in reads it instead of polling again: the watcher is already asking, once a
+    tick, and a second asker would double every run's status traffic to say what the
+    first one already knows. It has to be mutable, which is what a dataclass buys here.
     """
     task: asyncio.Task
     descriptor: dict
+    status: dict = field(default_factory=dict)
 
 
 def _first_line(value: Any) -> str:
@@ -111,11 +130,68 @@ class _AgentWorker:
     Thread-safe queues carry events to the WS layer and approval responses back.
     """
 
-    def __init__(self, model: str) -> None:
+    @classmethod
+    def detached(cls, model: str) -> "_AgentWorker":
+        """A worker that never builds an agent: no thread, no servers, no LLM wait.
+
+        The stand-in for "this conversation has no agent yet", which is the ordinary state
+        until its first query. A real ``_AgentWorker`` rather than a parallel null class, on
+        purpose: every getter here answers for ``_agent is None`` (``get_context_mode`` →
+        the default its caller passes, ``get_temperature_state`` → the stored preference,
+        ``toggles_state`` → empty) and every setter is a no-op in that state. A separate
+        class would restate all of those, and then drift from them.
+
+        What it must never be given is a query: ``submit_query`` would put it on a queue no
+        loop is reading. The session resolves a real worker through the pool for that.
+        """
+        worker = object.__new__(cls)
+        worker._init_fields(model, None)
+        return worker
+
+    def __init__(self, model: str, session_id: str | None = None) -> None:
+        self._init_fields(model, session_id)
+        self._thread = threading.Thread(target=self._main, name="mimir-worker", daemon=True)
+        self._thread.start()
+        # Wait for server connections. The timeout is long to accommodate vLLM
+        # cold-start (model load + torch.compile can exceed 3 min); a separate
+        # backend-health poll runs first and surfaces progress to the client.
+        timeout = int(os.environ.get("MIMIR_INIT_TIMEOUT", "600"))
+        if not self._ready.wait(timeout=timeout):
+            raise RuntimeError(
+                f"MimirAgent worker failed to initialise within {timeout} s"
+            )
+        if self._error:
+            raise self._error
+
+    def _init_fields(self, model: str, session_id: str | None) -> None:
+        """Every field, and nothing that starts running.
+
+        Split from ``__init__`` so :meth:`detached` can have the state without the thread,
+        the backend wait and the ~19 server spawns.
+        """
         self.model = model
+        # Whether the overhead `context_overhead_tokens` last returned came from a
+        # server's own count. Recorded as it is computed rather than worked out again:
+        # answering it needs the system prompt and the tools schema, and the bar asks
+        # both questions once a second.
+        self._overhead_measured = False
+        # The conversation this worker exists for, fixed for its whole life. One worker
+        # per session is what lets a turn keep running in a conversation nobody is looking
+        # at: a worker shared between conversations can stream only one of them anywhere
+        # the user can see.
+        #
+        # None only for the ends that have no session (tests, standalone construction),
+        # where everything session-scoped falls back to the active-session pointer.
+        self.session_id: str | None = session_id
+        # This conversation's title, for cards raised while the user is reading another.
+        # Pushed in by _Session, which is the side that knows what the session is called.
+        self.session_title: str = ""
         self._loop: asyncio.AbstractEventLoop | None = None
         self._agent: Any = None
         self._ready = threading.Event()
+        # Set once this worker's MCP servers are closed, so a caller that asked for the
+        # close can wait for the subprocesses to actually be gone.
+        self._closed = threading.Event()
         self._error: Exception | None = None
 
         # Queues for cross-thread communication.
@@ -135,15 +211,24 @@ class _AgentWorker:
         self._query_event = threading.Event()
 
         self._current_task: asyncio.Task | None = None
-        self.active_session_id: str | None = None  # kept in sync by _Session
-        # Session a running query belongs to, captured when it starts. One worker
-        # serves every session, so events must carry the session they were produced
-        # for or a turn that outlives a switch lands in the wrong conversation.
+        # The session the front-end is currently showing. Not the same question as
+        # ``session_id``: this worker always works for its own session, and this says
+        # whether that session is the one on screen. Kept in sync by _Session.
+        self.active_session_id: str | None = None
+        # Session a running query belongs to, captured when it starts. Events carry the
+        # session they were produced for, so a turn running in a conversation that is not
+        # on screen can be told apart from the one that is — and routed to its own
+        # transcript rather than streamed into whatever the user is reading.
         self._query_session_id: str | None = None
         # Background-job watchers: job_key -> _Watch(task, descriptor), polling a
         # detached run to completion. Registered by the agent loop via _register_bg_job
         # (below) and read back by _watched_bg_jobs, which the dispatch guard uses.
         self._bg_jobs: dict[str, _Watch] = {}
+        # The check-in cycle covering every job of this conversation, or None between
+        # waves. One per worker rather than one per job: a worker *is* a conversation,
+        # so three jobs launched in the same step share a schedule and report together
+        # instead of waking it three times a minute apart.
+        self._checkin_task: asyncio.Task | None = None
         # Set by the front-end when the user leaves a conversation whose turn is parked
         # on them: every wait of that turn returns at once instead (query_engine.deferral).
         self._defer = threading.Event()
@@ -153,19 +238,7 @@ class _AgentWorker:
         # The raw questions of the pending question card — how a deferred question is
         # matched to the call that asked it.
         self._pending_questions: list | None = None
-
-        self._thread = threading.Thread(target=self._main, name="mimir-worker", daemon=True)
-        self._thread.start()
-        # Wait for server connections. The timeout is long to accommodate vLLM
-        # cold-start (model load + torch.compile can exceed 3 min); a separate
-        # backend-health poll runs first and surfaces progress to the client.
-        timeout = int(os.environ.get("MIMIR_INIT_TIMEOUT", "600"))
-        if not self._ready.wait(timeout=timeout):
-            raise RuntimeError(
-                f"MimirAgent worker failed to initialise within {timeout} s"
-            )
-        if self._error:
-            raise self._error
+        self._thread: threading.Thread | None = None
 
     # ── Background thread ─────────────────────────────────────────────────────
 
@@ -174,11 +247,42 @@ class _AgentWorker:
         asyncio.set_event_loop(loop)
         self._loop = loop
         try:
-            loop.run_until_complete(self._setup())
-            if self._error is None:
-                loop.run_until_complete(self._query_loop())
+            loop.run_until_complete(self._live())
         finally:
             loop.close()
+
+    async def _live(self) -> None:
+        """Connect, serve queries, close the servers — all in one task.
+
+        One task, not three, because of where ``stdio_client`` keeps its cancel scope:
+        anyio anchors it to the task that entered the context, and exiting it anywhere
+        else raises ``RuntimeError: Attempted to exit cancel scope in a different task``.
+        The exit stack is then left half-unwound — the streams closed, the subprocess
+        alive — so the next tool call of a turn still running on this agent fails with
+        ``ClosedResourceError`` and no server is reaped. Setup, the query loop and the
+        close therefore share the task that owns the stack, and the close runs when the
+        query loop has returned, which is when no turn can be in flight.
+        """
+        await self._setup()
+        try:
+            if self._error is None:
+                await self._query_loop()
+        finally:
+            await self._close_agent()
+
+    async def _close_agent(self) -> None:
+        """Close the agent's MCP servers. Runs in :meth:`_live`, which opened them."""
+        agent, self._agent = self._agent, None
+        if agent is None:
+            self._closed.set()
+            return
+        try:
+            await agent.cleanup()
+        except Exception:
+            logger.warning("worker %s: closing MCP servers failed",
+                           self.session_id or "<no session>", exc_info=True)
+        finally:
+            self._closed.set()
 
     async def _wait_for_backend(self) -> None:
         """Poll the LLM backend until it answers, or fail fast when it never will.
@@ -313,6 +417,10 @@ class _AgentWorker:
             await asyncio.sleep(poll)
 
     async def _setup(self) -> None:
+        # Holds the agent for as long as it is half-built, so a failure partway through
+        # the ~19 connects still has something to close. ``self._agent`` cannot serve
+        # that: every getter reads it, and it means "ready", not "under construction".
+        building: Any = None
         try:
             await self._wait_for_backend()
             try:
@@ -324,7 +432,7 @@ class _AgentWorker:
             except ImportError:
                 from mimir.client.extensions import all_servers
 
-            agent = MimirAgent(model=self.model)
+            agent = building = MimirAgent(model=self.model, session_id=self.session_id)
             for name, script in all_servers().items():
                 await agent.connect_server(name, script)
             agent.seed_classification_from_caps()
@@ -350,6 +458,14 @@ class _AgentWorker:
             self.out_q.put({"type": "ready", "model": self.model, "agent_ready": True})
         except Exception as exc:
             self._error = exc
+            if self._agent is None and building is not None:
+                # Whatever connected before the failure is holding subprocesses, and
+                # this task is the only one that may close them.
+                try:
+                    await building.cleanup()
+                except Exception:
+                    logger.warning("worker %s: closing a half-built agent failed",
+                                   self.session_id or "<no session>", exc_info=True)
         finally:
             self._ready.set()
             # Pre-warm the model in the background so VRAM is ready for the first
@@ -404,7 +520,7 @@ class _AgentWorker:
                 return  # shutdown sentinel
 
             self._current_task = asyncio.current_task()
-            self._query_session_id = item.get("session_id") or self.active_session_id
+            self._query_session_id = item.get("session_id") or self._own_session()
             await self._run_query(item)
             self._current_task = None
             self._query_session_id = None
@@ -535,6 +651,10 @@ class _AgentWorker:
                     current = fh.read()
             except OSError:
                 current = ""
+            # What the user is about to be shown, recorded so a later revert can tell
+            # whether the file still holds it. Anything else on disk by then was written
+            # by something outside this review — another session, or the user's editor.
+            agent.approvals.note_reviewed(path, current)
             before_lines = original.splitlines(keepends=True) if original is not None else []
             after_lines  = current.splitlines(keepends=True)
             if before_lines == after_lines:
@@ -566,20 +686,32 @@ class _AgentWorker:
         except Exception:
             pass
 
+    def _own_session(self) -> str | None:
+        """The conversation this worker works for.
+
+        ``session_id`` when it has one, else the session on screen. The fallback is for
+        a worker built before any session was known — which is how the single shared
+        worker was built, and is still how a bare one in a test is. Reading the on-screen
+        session is only ever right for such a worker: one with a session of its own must
+        use it, or it writes another conversation's checklist the moment the user looks
+        somewhere else.
+        """
+        return self.session_id or self.active_session_id
+
     def _load_todos(self) -> list:
         try:
             try:
                 from ...prompt.system_prompt import _load_todo_items
             except ImportError:
                 from mimir.client.prompt.system_prompt import _load_todo_items
-            return _load_todo_items(_todo_file_for_session(self.active_session_id))
+            return _load_todo_items(_todo_file_for_session(self._own_session()))
         except Exception:
             return []
 
     def _clear_todos(self) -> None:
-        """Wipe the active session's todo file."""
+        """Wipe this worker's own session's todo file."""
         try:
-            todo_file = _todo_file_for_session(self.active_session_id)
+            todo_file = _todo_file_for_session(self._own_session())
             if os.path.exists(todo_file):
                 open(todo_file, "w").close()
         except Exception:
@@ -623,29 +755,43 @@ class _AgentWorker:
                            "answer": answer})
         self._query_event.set()
 
-    def _emit_prompt(self, payload: dict, questions: list | None = None) -> None:
+    def _emit_prompt(self, payload: dict, questions: list | None = None) -> dict:
         """Register a card the caller is about to park on, and show it when its turn comes.
 
-        One worker serves every connection, and it outlives them: a socket that drops
-        while the agent is parked leaves the card on a client that no longer exists,
-        and the turn waiting on an answer nobody can give any more. Every later query
-        queues behind that wait — the query loop is serial — so the session reads as
-        hung, with nothing on screen to explain it. Kept here, the card can be put
-        back in front of whoever reconnects (``_Session._resend_parked_prompt``).
+        An agent outlives the connections that read it: a socket that drops while it is
+        parked leaves the card on a client nobody is holding, and the turn waiting on an
+        answer nobody can give. This agent's query loop is serial, so every later query of
+        *this conversation* queues behind that wait and it reads as hung, with nothing on
+        screen to explain it. Kept here, the card goes back in front of whoever reconnects
+        (``_Session._resend_parked_prompt``).
 
-        Cards queue rather than overwrite one another. Every prompt of a turn is raised
-        from the worker thread, so they have always come one at a time on their own;
-        a sub-agent still running after its delegating call has returned raises its own
-        from another thread entirely, and two cards in the single slot this used to
-        keep meant the second erased the first while an answer went to whichever waiter
-        happened to be listening. So: one card on screen at a time, in the order they
-        were raised, each answered by its own id (:meth:`_deliver`).
+        Cards queue rather than overwrite one another: one card on screen at a time, in
+        the order they were raised, each answered by its own id (:meth:`_deliver`). A
+        sub-agent still running after its delegating call has returned raises its card
+        from a thread of its own, so two can be in flight at once; a single slot would
+        mean the second erased the first while an answer went to whichever waiter
+        happened to be listening.
+
+        Returns the attributed payload, so a caller that has to take the card back down
+        (an expired question) addresses the same conversation the card named.
         """
+        # Which conversation is asking. Structured, never spelled into the label or the
+        # question text: that text is also what the model sees, so a marker written there
+        # lands in the conversation's own history. The client renders the attribution from
+        # these and — the part that is not cosmetic — sends them back on the answer, which
+        # is how the answer reaches the agent that asked rather than whichever one is on
+        # screen.
+        payload = {
+            **payload,
+            "session_id": self._query_session_id or self.session_id,
+            "session_title": self.session_title or "",
+        }
         with self._prompts_lock:
             self._prompts[str(payload.get("id") or "")] = _Prompt(
                 payload=dict(payload), questions=questions,
                 answer=_queue.Queue(maxsize=1))
         self._show_next()
+        return payload
 
     def _show_next(self) -> None:
         """Put the oldest card that has not been shown on screen, if none is up.
@@ -739,11 +885,12 @@ class _AgentWorker:
         short slices and bail the moment the agent's cancel flag is set (from the WS
         thread), returning ``None`` for cancelled.
 
-        *timeout_secs* gives up waiting after that long and returns ``None``. Only a
-        clarification question passes one — whoever raised the card decides, because
-        the same seam carries approvals (a deadline would authorise a command nobody
-        saw) and plan decisions (one would execute a plan nobody approved). The caller
-        tells a timeout from a cancellation by whether the deadline had passed.
+        *timeout_secs* gives up waiting after that long and returns :data:`TIMED_OUT`
+        — told apart from the cancelled ``None`` because the caller has a card on
+        screen to take back down, and the two endings read differently to the model.
+        Only a clarification question passes one; whoever raised the card decides,
+        because the same seam carries approvals (a deadline would authorise a command
+        nobody saw) and plan decisions (one would execute a plan nobody approved).
 
         This is the single seam every WS prompt (approval, out-of-workspace path,
         question) blocks on, so it is where the wait is marked as *human*
@@ -773,7 +920,7 @@ class _AgentWorker:
                         self._record_deferral(prompt)
                         return None
                     if deadline is not None and time.monotonic() >= deadline:
-                        return None
+                        return TIMED_OUT
                     try:
                         return prompt.answer.get(timeout=0.25)
                     except _queue.Empty:
@@ -848,7 +995,7 @@ class _AgentWorker:
             # instead of keyword-sniffing the risk sentence for "destructive".
             "reversibility": reversibility_of(tool_name, agent.tool_caps),
             "scope": scope_label,
-            "label": f"{self._detached_prefix()}{label}" if label else label,
+            "label": label,
         }
         self._emit_prompt(payload)
 
@@ -944,27 +1091,41 @@ class _AgentWorker:
         the user can infer. It travels as data so the card can render it as a badge,
         and it is what tells the front end this card does not belong to the main turn.
 
-        *timeout_secs* is how long the asker is willing to wait. When it runs out the
-        answer comes back empty and flagged ``timed_out``, which the asking server
-        reads as "decide for yourself" — as against an empty answer with no flag,
-        which is a refusal and means "do not choose for them". Getting those two
-        confused is what left a long run stopped on a card nobody would read.
+        *timeout_secs* is how long the asker is willing to wait (``ask_user_question``
+        passes one; plan approval does not). When it runs out, a ``prompt_expired``
+        event takes the card off the client's screen — it is answering a question
+        nobody is waiting on any more — and the answer comes back empty and flagged
+        ``timed_out``, which the asking server reads as "decide for yourself". That is
+        against an empty answer with no flag, which is a refusal and means "do not
+        choose for them"; confusing the two is what left a long run stopped on a card
+        nobody would read.
         """
         req_id = str(uuid.uuid4())
-        started = time.monotonic()
-        self._emit_prompt({
+        emitted = self._emit_prompt({
             "type": "user_question",
             "id": req_id,
-            "questions": _labelled_questions(list(questions), self._detached_prefix()),
+            "questions": list(questions),
+            # So the card can show what is left of the wait. Closing it is this side's
+            # call (``prompt_expired``); the client only displays the countdown, which
+            # is what keeps the card disappearing from reading as a glitch.
+            "timeout_secs": int(timeout_secs) if timeout_secs else None,
             **({"origin": origin} if origin else {}),
         }, questions=list(questions))
         response = self._await_response(req_id, timeout_secs)
+        if response is TIMED_OUT:
+            self.out_q.put({
+                "type": "prompt_expired",
+                "id": req_id,
+                "kind": "user_question",
+                "session_id": emitted.get("session_id"),
+                "session_title": emitted.get("session_title") or "",
+                "timeout_secs": int(timeout_secs or 0),
+            })
+            return {"answers": [], "timed_out": True, "timeout_secs": timeout_secs}
         if response is None:
-            # Stop, a session switch, or the wall. Only the wall means "carry on
-            # without me"; the others mean the person is no longer there at all.
-            expired = (timeout_secs is not None
-                       and time.monotonic() - started >= timeout_secs)
-            return {"answers": [], "timed_out": True} if expired else {"answers": []}
+            # Stop or a session switch: the person is no longer there at all, which is
+            # not the same as the wall above and must not read as "carry on without me".
+            return {"answers": []}
         answers: list[dict] = []
         for a in response.get("answers") or []:
             a = a or {}
@@ -1057,17 +1218,16 @@ class _AgentWorker:
         """True while a query task is in flight (used to route steer vs. new query)."""
         return self._current_task is not None
 
-    def reset_session_guards(self) -> None:
-        """Clear session-scoped guard state on session change.
+    def has_work_pending(self) -> bool:
+        """True while a turn is running here *or* queued to run. What eviction reads.
 
-        Out-of-workspace approvals are session-scoped: a new session starts with a
-        clean slate.
+        ``is_busy`` answers a different question — is there a run to steer into — and is
+        False for the stretch between a turn being submitted and the query loop picking it
+        up. Releasing the agent in that gap closes the MCP servers under a turn that is
+        about to start, and every tool call it makes then fails on a dead stream.
         """
-        if self._agent is not None:
-            try:
-                self._agent.approvals.reset_allowed_paths()
-            except Exception:
-                pass
+        return self._current_task is not None or not self._query_q.empty()
+
 
     def flush_prompts(self) -> None:
         """Drop every pending human-pause answer and steer message.
@@ -1082,18 +1242,6 @@ class _AgentWorker:
         self._pending_questions = None
         self._drain_steer_q()
 
-    def _detached_prefix(self) -> str:
-        """A marker for a prompt raised by a turn the user is not currently reading.
-
-        A background-job wake resumes the session that launched the job, which may not
-        be the one on screen. Its approval and question cards still have to be shown —
-        the turn is parked until they are answered — so they say which conversation
-        they belong to instead of appearing to come from the one being read.
-        """
-        running = self._query_session_id
-        if running and running != self.active_session_id:
-            return "⏱ background session · "
-        return ""
 
     def _drain_steer_q(self) -> list[str]:
         """Pop and return all queued steer messages (the agent's ``_poll_steer``)."""
@@ -1131,7 +1279,7 @@ class _AgentWorker:
         existing = self._bg_jobs.get(job_key)
         if existing is not None and not existing.task.done():
             return True  # already watched
-        session_id = self._query_session_id or self.active_session_id
+        session_id = self._query_session_id or self._own_session()
         try:
             # get_running_loop, not get_event_loop: the latter can hand back a loop
             # that is not running, and a task created on one of those never polls
@@ -1148,8 +1296,106 @@ class _AgentWorker:
             logger.warning("background-job registration failed for %r: no running "
                            "event loop to host the watcher", job_key, exc_info=True)
             return False
+        task.add_done_callback(self._watcher_died)
         self._bg_jobs[job_key] = _Watch(task, descriptor)
+        logger.info("background job %r of session %s is now watched by %r",
+                    job_key, session_id, (descriptor.get("status_op") or {}).get("tool"))
+        self._start_checkins(session_id)
         return True
+
+    @staticmethod
+    def _watcher_died(task: asyncio.Task) -> None:
+        """Report a watcher or check-in cycle that ended on an exception.
+
+        Nothing awaits these tasks, so an exception escaping one is held until the GC
+        notices and prints "Task exception was never retrieved" — long after the run it
+        was holding finished into silence. The failure and the missing wake are the same
+        event, and this is the only place they can be named together.
+        """
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is not None:
+            logger.warning("background-job task died: %r — any run it was holding will "
+                           "not wake anyone", exc, exc_info=exc)
+
+    def _start_checkins(self, session_id: str | None) -> None:
+        """Begin a check-in cycle for this conversation, unless one is already running.
+
+        Called on every registration, and a no-op for all but the first of a wave: a job
+        joining a cycle in flight inherits what is left of it rather than restarting the
+        clock, which is what keeps three jobs launched together to one bulletin apiece
+        instead of three.
+
+        What decides is whether this registration *starts* a wave — whether it is the
+        only live run of the conversation. The cycle cannot end on its own the instant
+        the last job does: its tail is hourly, so it is asleep for up to an hour after
+        a wave finishes, and a job launched into that gap would inherit the remainder
+        of a schedule that no longer describes anything and wait out the hour for its
+        first bulletin. A new wave therefore replaces the cycle rather than joining it.
+        """
+        wave_starts = len(self.watched_job_keys()) <= 1
+        if self._checkin_task is not None and not self._checkin_task.done():
+            if not wave_starts:
+                return
+            self._checkin_task.cancel()
+        try:
+            self._checkin_task = asyncio.get_running_loop().create_task(
+                self._checkin_cycle(session_id))
+        except RuntimeError:
+            # Same precondition as the watcher's, and the same honesty: without a loop
+            # there are no check-ins, and the run is still watched. Not a failure of the
+            # registration — the completion wake does not depend on this.
+            logger.warning("background check-ins unavailable for session %s: no running "
+                           "event loop to host the cycle", session_id)
+            self._checkin_task = None
+            return
+        self._checkin_task.add_done_callback(self._watcher_died)
+
+    async def _checkin_cycle(self, session_id: str | None) -> None:
+        """Emit ``job_checkin`` down ``_CHECKIN_SCHEDULE``, then hourly while runs last.
+
+        Reports what the watchers have already seen — ``_Watch.status``, written by the
+        poll that is running anyway — so a check-in costs no status traffic at all. The
+        turn it may start is the only cost, and the session decides whether to spend it.
+
+        Ends the moment this conversation has no live run left: past that the completion
+        wakes have landed and there is nothing to be reassured about. That is the only
+        thing that ends it — the tail does not run out — so an overnight run is still
+        answered for at hour six, where a schedule with a last point would have gone
+        quiet exactly where the stakes were highest.
+        """
+        try:
+            for delay in chain(_CHECKIN_SCHEDULE, repeat(_CHECKIN_INTERVAL)):
+                await asyncio.sleep(delay)
+                jobs = [
+                    {"job_key": key, "kind": w.descriptor.get("kind"),
+                     "server": w.descriptor.get("server"), **w.status}
+                    for key, w in self._bg_jobs.items() if not w.task.done()
+                ]
+                if not jobs:
+                    return
+                self.out_q.put({
+                    "type":       "job_checkin",
+                    "session_id": session_id,
+                    "jobs":       jobs,
+                })
+        finally:
+            # Only if the slot still holds *this* cycle. A new wave cancels the old one
+            # and puts its own task in the slot, and cancellation is delivered after
+            # that — so an unconditional clear here would erase the live cycle's
+            # reference and let the next launch start a second one beside it.
+            if self._checkin_task is asyncio.current_task():
+                self._checkin_task = None
+
+    def watched_job_keys(self) -> list[str]:
+        """Keys of the runs this conversation still has in flight.
+
+        What the session asks before delivering a check-in it held back: a bulletin on
+        runs that have since finished is worse than none, their completion wakes having
+        already said more than it could.
+        """
+        return [k for k, w in self._bg_jobs.items() if not w.task.done()]
 
     def _watched_bg_jobs(self) -> list[dict]:
         """Descriptors of the runs a watcher is currently holding (the agent's hook).
@@ -1229,6 +1475,14 @@ class _AgentWorker:
                 percent = (payload or {}).get("percent")
                 if not isinstance(percent, (int, float)):
                     percent = None
+                # What a check-in reports, written by the poll that is running anyway.
+                # The state goes with it: "running" and "its status stopped being
+                # readable" are the two things a bulletin most needs to tell apart, and
+                # only this loop knows which one it is looking at.
+                watch = self._bg_jobs.get(job_key)
+                if watch is not None:
+                    watch.status = {"state": state or "unreadable", "phase": phase,
+                                    "percent": percent, "at": time.monotonic()}
                 # Starts at ("", None), so a run that never reports is never sent,
                 # while one whose count disappears is — a retraction is news too.
                 if (phase, percent) != last_reported:
@@ -1261,10 +1515,18 @@ class _AgentWorker:
                 raw = await self._agent._run_tool(
                     summary_tool, dict(summary_op.get("args") or {}),
                     record_observations=False)
-                summary = json.loads(raw) if isinstance(raw, str) else (raw or {})
+                # parse_tool_payload for the same reason the status tick uses it: a
+                # tool result is an envelope, its text blocks and any annotation
+                # appended after them, and a bare load reads that as one broken
+                # document. A summary lost here reaches the model as "it recorded no
+                # result of its own" — the wake still lands, emptied of the thing it
+                # was carrying.
+                summary = parse_tool_payload(raw) if isinstance(raw, str) else (raw or {})
             except Exception:
                 summary = {}
 
+        logger.info("background job %r of session %s finished (%s); waking it",
+                    job_key, session_id, state)
         self.out_q.put({
             "type":       "job_complete",
             "job_key":    job_key,
@@ -1405,10 +1667,18 @@ class _AgentWorker:
             except ValueError:
                 pass
 
-    def get_context_mode(self) -> str:
+    def get_context_mode(self, default: str = "full") -> str:
+        """The agent's context mode, or *default* while there is no agent.
+
+        The default is the caller's to give, and it matters: the context budget is
+        derived from this, and answering "compact" for a conversation that was running
+        in full mode sized its window at 32k. A session resumed before its first query
+        passes the mode it was saved with; everything else gets ``MimirAgent``'s own
+        default, which is what the agent built for it will have.
+        """
         if self._agent is not None:
-            return getattr(self._agent, "context_mode", "compact")
-        return "compact"
+            return getattr(self._agent, "context_mode", default)
+        return default
 
     def get_enforcement(self) -> str:
         if self._agent is not None:
@@ -1520,8 +1790,8 @@ class _AgentWorker:
         This is what lets a slash command do housekeeping directly. These ops are
         reachable by the model too, but the person who wants to start an optimisation
         over — or to drop a memory that has gone stale and keeps being recalled into
-        every prompt — should not have to ask the model to do it. Before this the only
-        recourse was deleting files under a store whose path they had no reason to know.
+        every prompt — should not have to ask the model to do it. The alternative is deleting
+        files under a store whose path they have no reason to know.
 
         The call goes STRAIGHT to the owning MCP session, around the guardrail
         pipeline — the same bypass the CLI surface makes in
@@ -1671,13 +1941,12 @@ class _AgentWorker:
         the prompt it is about to send, after it the server's reading of what it
         received. Saying which one is on screen turns a figure that quietly shifts
         after the first turn into one the user can account for.
+
+        Reads what :meth:`context_overhead_tokens` recorded on its last call, so ask it
+        after that one. A figure read back from the calibration cache counts as measured:
+        a server did measure it, against this very system prompt and tool set.
         """
-        try:
-            from ...query_engine.backends.factory import get_backend
-            probe = getattr(get_backend(), "measured_prompt_overhead", None)
-            return callable(probe) and probe(self.model) is not None
-        except Exception:
-            return False
+        return self._overhead_measured
 
     def context_overhead_tokens(self) -> int:
         """Fixed prompt overhead (tokens) sent on *every* LLM call besides history.
@@ -1704,6 +1973,15 @@ class _AgentWorker:
         merely close — and it is why the estimate above only has to carry the session
         as far as its first answer.
 
+        A measured figure outlives the process too: it is written to the calibration
+        cache under a fingerprint of the whole fixed part (model, mode, system prompt,
+        advertised tools) and read back on the next run. A session reopened against a
+        fresh server is therefore accounted for exactly from its first frame rather
+        than from its first answer — which is what kept the bar reading over-full on a
+        resume. The fingerprint is the safety: change a mode, a server or the prompt
+        and the entry is simply not found, so the estimate answers instead of a stale
+        measurement wearing its authority.
+
         Best-effort, cached via the backend's token cache; never raises.
         """
         agent = self._agent
@@ -1711,6 +1989,7 @@ class _AgentWorker:
             return 0
         try:
             from ...query_engine.backends.factory import get_backend
+            from ...query_engine import token_calibration
             from ...agent_core import build_base_system_content
             backend = get_backend()
             # getattr, not a direct call: a backend stub without the calibration
@@ -1718,17 +1997,32 @@ class _AgentWorker:
             # to the except below.
             probe = getattr(backend, "measured_prompt_overhead", None)
             measured = probe(self.model) if callable(probe) else None
-            if measured is not None:
-                return measured
             mode = getattr(agent, "mode", "") or ""
             build = getattr(agent, "build_system_content_now", None)
             prompt = build(mode) if callable(build) else build_base_system_content()
-            total = backend.count_text_tokens(self.model, prompt, allow_network=False)
             narrow = getattr(agent, "advertised_tools_for_mode", None)
             tools = narrow(mode) if callable(narrow) else getattr(agent, "tools", None)
-            if tools:
+            tools_json = json.dumps(tools) if tools else ""
+            key = token_calibration.overhead_key(
+                self.model, getattr(agent, "context_mode", "full"), prompt, tools_json
+            )
+            if measured is not None:
+                # Write-through, so the next run of this same configuration starts
+                # calibrated. A no-op when the figure is already on disk, which it is
+                # for all but the first call after a turn — the bar asks every second.
+                token_calibration.remember_overhead(key, measured)
+                self._overhead_measured = True
+                return measured
+            remembered = token_calibration.recall_overhead(key)
+            if remembered is not None:
+                # Measured by a server too, against this very prompt and tool set.
+                self._overhead_measured = True
+                return remembered
+            self._overhead_measured = False
+            total = backend.count_text_tokens(self.model, prompt, allow_network=False)
+            if tools_json:
                 total += backend.count_text_tokens(
-                    self.model, json.dumps(tools), allow_network=False
+                    self.model, tools_json, allow_network=False
                 )
             return total
         except Exception:
@@ -1750,8 +2044,12 @@ class _AgentWorker:
         """Drain all pending output events (non-blocking), stamped with their session.
 
         Single choke point for everything the engine emits, so the stamp is applied
-        here rather than at the dozens of emit sites. Events produced outside a query
-        carry ``None`` and are never filtered.
+        here rather than at the dozens of emit sites.
+
+        An event produced outside a query — the ``ready`` the setup emits, an error from
+        it — carries this worker's own session rather than ``None``. It belongs to that
+        conversation as much as a turn's own output does, and a worker building lazily
+        emits it while the user may well be reading a different one.
         """
         events: list[dict] = []
         while True:
@@ -1760,14 +2058,59 @@ class _AgentWorker:
             except _queue.Empty:
                 break
             if isinstance(ev, dict):
-                ev.setdefault("session_id", self._query_session_id)
+                ev.setdefault("session_id", self._query_session_id or self.session_id)
             events.append(ev)
         return events
 
     def shutdown(self) -> None:
-        # Cancel any in-flight background-job watchers on the worker loop.
-        for watch in list(self._bg_jobs.values()):
-            if self._loop is not None and not watch.task.done():
-                self._loop.call_soon_threadsafe(watch.task.cancel)
+        # Cancel any in-flight background-job watchers, and the check-in cycle over
+        # them, on the worker loop.
+        tasks = [w.task for w in self._bg_jobs.values()]
+        if self._checkin_task is not None:
+            tasks.append(self._checkin_task)
+        for task in tasks:
+            if self._loop is not None and not task.done():
+                self._loop.call_soon_threadsafe(task.cancel)
         self._query_q.put(None)
         self._query_event.set()
+
+    def aclose(self, timeout: float = 20.0) -> None:
+        """Shut the worker down AND close the agent's servers, then join the thread.
+
+        ``shutdown`` only ends the query loop. ``agent.exit_stack`` is where the ~19 MCP
+        server subprocesses are held, and a worker released when its conversation goes
+        quiet must close it, or each release strands a full set of servers and a few hours
+        of use exhausts the machine rather than freeing anything.
+
+        The close itself belongs to :meth:`_live`, the task that opened those servers;
+        this asks for it and waits. ``stdio_client`` is an anyio context whose cancel
+        scope is anchored to the entering task, and exiting it from any other task raises
+        and leaves the stack half-unwound: streams closed, subprocess alive, and a turn
+        still running on that agent failing its next tool call with
+        ``ClosedResourceError``. So the sentinel is the whole mechanism — the query loop
+        returns, and its own ``finally`` closes the servers.
+
+        A turn in flight is cancelled first. Without that the sentinel waits behind it:
+        shutdown would cost the rest of a turn per conversation, and a turn allowed to
+        run into the close would be the one that hits the dead streams.
+
+        Best-effort and bounded: a server wedged in its own shutdown must not hold the
+        pool, and the subprocess dies with this process in the worst case.
+        """
+        loop = self._loop
+        if self._agent is None or loop is None or loop.is_closed():
+            self.shutdown()
+            if self._thread is not None and self._thread.is_alive():
+                self._thread.join(timeout=5.0)
+            return
+        self.cancel()        # no-op when nothing is running
+        self.shutdown()      # the sentinel: ends the query loop, whose finally closes
+        if not self._closed.wait(timeout):
+            # The caller is already free; this worker's thread is left to finish on its
+            # own, and the OS reaps what is left when the process exits.
+            logger.warning("worker %s: MCP servers did not close within %.1fs; letting "
+                           "its thread finish on its own",
+                           self.session_id or "<no session>", timeout)
+            return
+        if self._thread is not None and self._thread.is_alive():
+            self._thread.join(timeout=5.0)

@@ -140,12 +140,8 @@ def _mirrored_carry_fields() -> tuple[str, ...]:
 class MimirAgent:
     """Multi-server MCP agent backed by a local Ollama model."""
 
-    def __init__(self, model: str = DEFAULT_MODEL):
+    def __init__(self, model: str = DEFAULT_MODEL, session_id: str | None = None):
         self.model = model
-        # Set when this agent is not the one the user is driving: a sub-agent names its
-        # own session, and its todo list and scratchpad follow it there. Empty means
-        # "whatever session the client is currently on", read from the shared sidecar.
-        self.session_id = ""
         self.server_env: dict[str, str] = {}
         # The tree this agent works in. The module constant for the agent the user
         # drives; a sub-agent given a copy of the repository points here instead, and
@@ -154,11 +150,18 @@ class MimirAgent:
         # workspace's, so memory, preferences and .mimir extensions are shared.
         self.workspace_root: str = WORKSPACE_ROOT
         import os
-        # Publish the active model to the environment, for the server subprocesses
-        # started after this point. Only a fallback for sub-agents: every tool call
-        # also carries the live model in its _meta (config.models.CALLER_MODEL_META).
-        if model:
-            os.environ["MIMIR_DEFAULT_MODEL"] = model
+        # The conversation this agent works for, for its whole life. Several agents run
+        # in this one process — one per concurrent session, plus every sub-agent — sharing
+        # one `os.environ`, so an id in the environment could only ever name one of them.
+        # Everything session-scoped on the client side reads it from here and passes it
+        # down explicitly (approvals, scratchpad, todo file, run channels); the server
+        # subprocesses get their own copy stamped into their frozen environment at spawn
+        # (see integration/server_manager.connect_server).
+        # None for the ends that have no session: the CLI, the benchmark runner, tests.
+        self.session_id: str | None = session_id
+        # Deliberately NOT published to os.environ: neither the model nor the session can
+        # be: one session's value would retarget every other session's servers. Both
+        # travel per server instead, in connect_server's env, read from this object.
         # Resolve the scratchpad home once, here, and publish it: the ownership check
         # on a world-writable /tmp must happen in exactly one place, and both this
         # process and the server subprocesses then read the same answer from the
@@ -211,7 +214,7 @@ class MimirAgent:
         # Use default non_batch_tools for immediate approval of execution/compilation tools
         # Constructed empty; classification is seeded from the live per-agent
         # registry after servers connect (seed_classification_from_caps).
-        self.approvals = ApprovalManager()
+        self.approvals = ApprovalManager(session_id=session_id)
         self.session_approved_scopes = self.approvals.approved_scopes
 
         self.plan_todos: list[str] = []
@@ -311,19 +314,22 @@ class MimirAgent:
     def set_model(self, model: str) -> None:
         """Switch the served model mid-session.
 
-        The model is read live at every LLM call (``agent.model`` is passed to the
-        backend per step), so mutating it here is enough for the next call to use
-        the new model — no reconnect is needed. Sub-agents follow through the model
-        each tool call carries in its _meta (servers already running never see this
-        environment refresh), and
-        ``enforcement`` is re-derived from the new model's profile, matching how it
-        is resolved once at ``__init__``.
+        The model is read live at every LLM call (``agent.model`` is passed to the backend
+        per step), so mutating it here is enough for the next call to use the new model — no
+        reconnect is needed. ``enforcement`` is re-derived from the new model's profile,
+        matching how it is resolved once at ``__init__``.
+
+        Nothing is written to ``os.environ``: a server's environment is a copy frozen at
+        spawn, so a write there reaches no running server, and with concurrent sessions in
+        one process it would change what *another* session's servers were told. Sub-agents
+        inherit the model through their own server's env, built from ``self.model`` at
+        connect time, so a model switched after that applies to this agent's own calls and
+        not to a sub-agent spawned by a server already running.
         """
         model = (model or "").strip()
         if not model:
             raise ValueError("Model name must not be empty.")
         self.model = model
-        os.environ["MIMIR_DEFAULT_MODEL"] = model
         self.enforcement = enforcement_level(model)
         from .config.preferences import load_temperature
         self.temperature = load_temperature(model)
@@ -531,29 +537,21 @@ class MimirAgent:
 
 
     def _get_todo_file(self) -> str:
-        """Return the absolute path to this agent's todo_list.md, or '' if not available.
+        """This agent's own todo_list.md, or '' when it has no planning tool.
 
-        ``self.session_id`` when it has one — a sub-agent keeps its own checklist, and
-        several of them run in one process, so neither the environment nor the shared
-        sidecar can tell them apart. Otherwise the session the user is driving.
+        ``self.session_id``, never the active-session pointer directly. This path goes into
+        the system prompt, and the pointer names the conversation the user is looking at —
+        which would hand every concurrently running agent that conversation's checklist. A
+        sub-agent names a session of its own and keeps its own checklist there. An agent
+        with no session (CLI, benchmark runner) passes None and resolves through the
+        pointer, falling back to the shared file at the state-dir root.
         """
         if not names_with_cap(TASK_PLANNING, self.tool_caps):
             return ""
-        mimir_dir = STATE_DIR
-        sidecar = os.path.join(mimir_dir, "active_session")
-        todo_file = ""
-        try:
-            _sid = self.session_id
-            if not _sid and os.path.exists(sidecar):
-                with open(sidecar, "r", encoding="utf-8") as _f:
-                    _sid = _f.read().strip()
-            if _sid:
-                todo_file = os.path.join(mimir_dir, "sessions", _sid, "todo_list.md")
-        except OSError:
-            pass
-        if not todo_file:
-            todo_file = os.path.join(mimir_dir, "todo_list.md")
-        return todo_file
+        from ..servers._shared.state_paths import session_state_dir
+        return os.path.join(
+            session_state_dir(STATE_DIR, self.session_id), "todo_list.md"
+        )
 
     async def _build_system_content(self, active_mode: str) -> str:
         return self.build_system_content_now(active_mode)
@@ -579,8 +577,8 @@ class MimirAgent:
             todo_file=todo_file,
             plan_todos=self.plan_todos,
             thinking_depth=self.thinking_depth,
-            delegation_available=bool(names_with_cap(DELEGATE, self.tool_caps)),
             session_id=self.session_id,
+            delegation_available=bool(names_with_cap(DELEGATE, self.tool_caps)),
             subagent_level=self.subagent_level,
             workspace_root=self.workspace_root,
             # Read from the live schemas rather than restated anywhere: the server that
@@ -746,12 +744,14 @@ class MimirAgent:
         ``questions`` is a list of ``{header, question, multiSelect, options}`` specs
         to ask in order. *origin* names the asker when it is not the turn on screen —
         a sub-agent running alongside it — so a front-end can say whose question this
-        is; None for the ordinary case. *timeout_secs* is how long the asker is willing
-        to wait before being told to decide for itself; None means it waits, which is
-        what an approval and a plan decision do. Returns ``{"answers": [{"selected": [<labels>],
-        "other_text": <str|None>}, ...]}`` — one entry per question. The default
-        (non-interactive) behaviour returns no answers, which the elicitation callback
-        maps to a ``decline`` so the model proceeds with its best judgment. Interactive
+        is; None for the ordinary case. *timeout_secs* is how long to wait for the user
+        before giving up; ``None`` waits indefinitely, which is what an approval and a
+        plan decision do. Returns ``{"answers": [{"selected": [<labels>],
+        "other_text": <str|None>}, ...]}`` — one entry per question — or
+        ``{"answers": [], "timed_out": True}`` when the wall passed with nothing
+        answered. The default (non-interactive) behaviour returns no answers at all,
+        which the elicitation callback maps to a ``decline`` so the model proceeds with
+        its best judgment. Interactive
         front-ends replace this with a handler that prompts the user sequentially
         (CLI ``input()`` or a WebSocket question card).
         """

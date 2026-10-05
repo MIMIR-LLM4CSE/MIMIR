@@ -56,13 +56,31 @@ class ClientHelperTests(unittest.TestCase):
         self.assertEqual(client_module.SERVERS, client_config_module.SERVERS)
         self.assertEqual(client_module._BASE, client_config_module.SERVER_BASE)
 
-    def test_set_model_switches_the_active_model_and_environment(self) -> None:
+    def test_set_model_switches_the_active_model_without_touching_the_environment(self) -> None:
+        """The model is the agent's own, not the process's.
+
+        Several agents live in one process — one per concurrent session, plus every
+        sub-agent — and they share one ``os.environ``, so publishing the model there
+        made one session's switch retarget what every other session's servers were
+        told. The model reaches a server through its own spawn environment instead,
+        built from ``agent.model`` (integration/server_manager.connect_server).
+        """
+        before = os.environ.get("MIMIR_DEFAULT_MODEL")
         agent = client_module.MimirAgent()
         original = agent.model
         self.assertNotEqual(original, "qwen3:30b")
         agent.set_model("qwen3:30b")
         self.assertEqual(agent.model, "qwen3:30b")
-        self.assertEqual(os.environ.get("MIMIR_DEFAULT_MODEL"), "qwen3:30b")
+        self.assertEqual(os.environ.get("MIMIR_DEFAULT_MODEL"), before)
+
+    def test_two_agents_in_one_process_keep_their_own_models(self) -> None:
+        """What the removed environment write made impossible."""
+        first = client_module.MimirAgent(model="qwen3:30b")
+        second = client_module.MimirAgent(model="some-other-model")
+        self.assertEqual(first.model, "qwen3:30b")
+        self.assertEqual(second.model, "some-other-model")
+        first.set_model("a-third-model")
+        self.assertEqual(second.model, "some-other-model")
 
     def test_set_model_re_resolves_enforcement_from_the_profile(self) -> None:
         agent = client_module.MimirAgent()
@@ -1126,6 +1144,18 @@ class ClientHelperTests(unittest.TestCase):
             self.assertEqual(constants_module.chars_per_token_for("llama-3"), 4.0)
 
     def test_vllm_tokenize_exact_then_fallback_on_error(self) -> None:
+        # The tokenize path must be live for the exact-count assertion below:
+        # a site or job environment may have MIMIR_VLLM_TOKENIZE=0 (or some
+        # previous code may have marked this root as not serving /tokenize),
+        # which would make _tokenize_text raise and fall back to the heuristic.
+        env_vars = {
+            "MIMIR_VLLM_TOKENIZE": "1",
+            "VLLM_BASE_URL": "http://127.0.0.1:8000",
+        }
+        with patch.dict(os.environ, env_vars, clear=False):
+            self._run_tokenize_paths()
+
+    def _run_tokenize_paths(self) -> None:
         backend = VllmBackend()
 
         # Exact path: /tokenize returns a count.
@@ -1153,8 +1183,8 @@ class ClientHelperTests(unittest.TestCase):
         execution_context = {"read_files": set(), "tool_msg_files": {}}
         # token_counter=len over the wire form -> 100 of content plus its JSON
         # envelope each, so the budget that keeps exactly the two newest is
-        # derived from the measure rather than hard-coded to the content length
-        # it used to equal.
+        # derived from the measure rather than hard-coded to the content length it
+        # happens to equal.
         each = len(message_wire_form(messages[-1]))
         history_module._trim_tool_history(
             messages, execution_context=execution_context,
@@ -1284,9 +1314,9 @@ class ClientHelperTests(unittest.TestCase):
 
     def test_enforce_context_budget_raises_when_the_prompt_cannot_be_made_to_fit(self) -> None:
         # System message + current query are both protected; when they alone exceed
-        # the window the force-fit pass fails. It used to fail silently, print a
-        # status claiming the history had been trimmed to fit, and let the backend
-        # answer with an opaque 400.
+        # the window the force-fit pass fails, and must say so: failing silently prints a
+        # status claiming the history was trimmed to fit and leaves the backend to answer
+        # with an opaque 400.
         messages = [
             {"role": "system", "content": "S" * 40_000},
             {"role": "assistant", "content": "", "tool_calls": [{"id": "c1"}]},
@@ -2512,10 +2542,9 @@ class ClientHelperTests(unittest.TestCase):
     # ── foundational context injection ────────────────────────────────────────
     #
     # Two absolute paths, and nothing describing the repo's contents or the machine.
-    # The repo-structure snapshot and the hardware probe that used to be injected here
-    # are gone: the snapshot pre-filled a discovery-evidence field, so a gate could be
-    # satisfied before the model had done anything, and neither block told the model
-    # what its task actually touches.
+    # No repo-structure snapshot and no hardware probe: a snapshot pre-fills a
+    # discovery-evidence field, so a gate is satisfied before the model has done anything,
+    # and neither block tells the model what its task actually touches.
 
     def test_no_repo_or_hardware_description_is_injected(self) -> None:
         for mode in ("agent", "plan", "ask"):

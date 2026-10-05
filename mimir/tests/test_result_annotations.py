@@ -319,6 +319,7 @@ class ForkBaseStemTests(unittest.TestCase):
         self.assertEqual(ex._fork_base_stem("a_b"), "")
 
 
+@unittest.skipUnless(shutil.which("git"), "git not available — BashEffect tests exercise a real git repo")
 class BashEffectTests(unittest.TestCase):
     """What a shell command changed, reported back because nothing else reports it.
 

@@ -118,8 +118,7 @@ class SemanticPathTests(unittest.TestCase):
     """Drive the embedding path with a fake embedder to prove the wiring: query and
     candidates are embedded, cosine-ranked, and the right items selected.
 
-    The tool-list cap used to be the other caller of this path; it was removed, so the
-    remaining consumer is memory search."""""
+    Memory search is the only consumer of this path."""""
 
     VOCAB = ["cluster", "job", "slurm", "date", "benchmark", "performance"]
 

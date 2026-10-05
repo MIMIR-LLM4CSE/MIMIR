@@ -20,6 +20,8 @@ import type {
   TodoItem,
   DiffEntry,
   QuestionSpec,
+  ApprovalMessage,
+  UserQuestionMessage,
   ToggleItem,
   ResourceItem,
   AgentMode,
@@ -32,6 +34,7 @@ import { createChatReducer, initialChatState } from "./state/chatReducer";
 import { useWebSocket, vscodePostMessage } from "./hooks/useWebSocket";
 import { useStickToBottom } from "./hooks/useStickToBottom";
 import { ChatThread } from "./components/ChatThread";
+import { ForeignPromptStrip } from "./components/ForeignPromptStrip";
 import { PlanBar } from "./components/PlanBar";
 import { AgentSettings } from "./components/AgentSettings";
 import { ApprovalSwitcher } from "./components/ApprovalSwitcher";
@@ -205,6 +208,10 @@ export const App: React.FC = () => {
     // sub-agent working alongside it. Rendered as a badge, because several can be
     // working and an unattributed approval is one the user cannot weigh.
     origin?: PromptOrigin;
+    // Which conversation asked, so the answer reaches the agent that is parked on it.
+    sessionId?: string;
+    // Epoch ms the agent stops waiting at, when the question carries a wall.
+    expiresAt?: number;
   } | null>(null);
   // Batch review: accumulated file diffs across queries; persists until user accepts/reverts.
   const [batchFiles, setBatchFiles] = useState<DiffEntry[]>([]);
@@ -222,6 +229,34 @@ export const App: React.FC = () => {
   // Ref kept in sync so the WS handler always reads the current session ID
   // without stale-closure issues.
   const activeSessionIdRef = useRef<string | null>(null);
+
+  /** Whether a card belongs to a conversation other than the one on screen.
+   *
+   *  A card carrying no session_id comes from a server that does not attribute them, and
+   *  counts as this conversation's — which is what such a server means by it. */
+  const rememberForeign = useCallback(
+    (msg: ApprovalMessage | UserQuestionMessage) => {
+      // One per conversation: the newest card is the one its turn is parked on, and a
+      // conversation waits on one at a time.
+      setForeignPrompts((prev) => ({ ...prev, [msg.session_id as string]: msg }));
+    },
+    []
+  );
+
+  const forgetForeign = useCallback((sessionId: string) => {
+    setForeignPrompts((prev) => {
+      if (!(sessionId in prev)) return prev;
+      const next = { ...prev };
+      delete next[sessionId];
+      return next;
+    });
+  }, []);
+
+  const isForeign = useCallback(
+    (msg: { session_id?: string }) =>
+      !!msg.session_id && msg.session_id !== activeSessionIdRef.current,
+    []
+  );
   const [showSessionsPanel, setShowSessionsPanel] = useState(false);
   // Sub-agents of the session in view. Kept apart from `sessions`: they are work this
   // session sent out, not conversations to come back to.
@@ -233,6 +268,14 @@ export const App: React.FC = () => {
   const [watchedRuns, setWatchedRuns] = useState<WatchedRun[]>([]);
   const [showSciencePanel, setShowSciencePanel] = useState(false);
   const [showSubAgentsPanel, setShowSubAgentsPanel] = useState(false);
+  // Cards raised by conversations the user is not reading, newest per conversation.
+  // They do not belong in this chat's thread — that is another transcript — but they
+  // cannot be hidden either: each one is a turn parked on a person with no timeout, so
+  // an unanswered card is a conversation stopped for ever. They are shown in a strip
+  // above the thread, and answering one sends its own session_id.
+  const [foreignPrompts, setForeignPrompts] = useState<
+    Record<string, ApprovalMessage | UserQuestionMessage>
+  >({});
 
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -365,6 +408,7 @@ export const App: React.FC = () => {
         // The host is reconnecting to the remembered endpoint by itself — show
         // the connecting state, and let Reconnect replay the same arguments.
         lastConnectArgsRef.current = [msg.model, msg.backend, msg.baseUrl, undefined, true];
+        setModel(msg.model);
         setConnection("connecting");
         // Reset on every transition away from a live agent, so a reconnect starts
         // pessimistic and waits to be told again rather than inheriting the last
@@ -486,13 +530,36 @@ export const App: React.FC = () => {
       // told the turn stopped producing (see parkOnPrompt) — which is also what
       // hands the transcript, plan included, back to the server.
       case "user_question":
+        if (isForeign(msg)) {
+          // Another conversation's: it belongs in the strip, not this thread, and must not
+          // clear `busy` (parkOnPrompt does) while this conversation is still working.
+          rememberForeign(msg);
+          return;
+        }
         setUserQuestion({
           id: msg.id,
           questions: msg.questions,
           origin: msg.origin,
+          sessionId: msg.session_id ?? activeSessionIdRef.current ?? undefined,
+          expiresAt: msg.timeout_secs
+            ? Date.now() + msg.timeout_secs * 1000
+            : undefined,
         });
         dispatch(msg);
         scrollToBottom();
+        return;
+
+      // The wait behind a card ended with nothing answered. Nothing is sent back —
+      // the agent has already gone on with the option it recommended — so this only
+      // takes the card down, wherever it is showing, and marks the turn as producing
+      // again (the same tail as an answered prompt).
+      case "prompt_expired":
+        if (isForeign(msg)) {
+          forgetForeign(msg.session_id as string);
+          return;
+        }
+        setUserQuestion((prev) => (prev && prev.id !== msg.id ? prev : null));
+        dispatch({ type: "prompt_answered", resumes: true });
         return;
 
       case "context_usage":
@@ -502,6 +569,11 @@ export const App: React.FC = () => {
           reserved_tokens: msg.reserved_tokens,
           overhead_tokens: msg.overhead_tokens,
           overhead_measured: msg.overhead_measured,
+          // Carried through, or the bar reads a floor as a verdict: a resumed
+          // session comes back with no agent, so `used_tokens` is missing the
+          // system prompt and tools and the figure must not be judged against
+          // the limit.
+          provisional: msg.provisional,
           history_messages: msg.history_messages,
           history_messages_full: msg.history_messages_full,
         });
@@ -512,6 +584,10 @@ export const App: React.FC = () => {
         const prevSessionId = activeSessionIdRef.current;
         activeSessionIdRef.current = msg.session_id;
         setActiveSessionId(msg.session_id);
+        // This conversation's card belongs in the thread now, not the strip: if its turn
+        // is still parked the server resends the card on arrival, and a strip entry beside
+        // it would show the same question twice.
+        forgetForeign(msg.session_id);
         const prevMessages = chatStateRef.current.messages;
         // Reconnecting to the session already on screen is the case that used to
         // lose a turn: the stored copy is whatever the server had assembled by
@@ -564,6 +640,10 @@ export const App: React.FC = () => {
     // Remaining message-state types (output/status/token/file_progress/
     // approval/thinking*/answer/error) are handled by the reducer; dispatch and
     // run the matching scroll side-effect afterwards.
+    if (msg.type === "approval" && isForeign(msg)) {
+      rememberForeign(msg);
+      return;
+    }
     dispatch(msg);
     if (msg.type === "approval") {
       scrollToApproval();
@@ -707,11 +787,11 @@ export const App: React.FC = () => {
     return () => clearInterval(timer);
   }, [chatState.busy, runningSubAgents, pollCards]);
 
-  // And during it. The end of the turn used to be the only handover, which made every
-  // long run a window where the work on screen existed nowhere else: a dropped
-  // connection, a reloaded window or a VS Code restart inside it came back to a
-  // conversation holding the questions and nothing that was done about them. A turn
-  // can run for many minutes, so that window was most of the session.
+  // And during it. With the end of the turn as the only handover, every long run is a
+  // window where the work on screen exists nowhere else: a dropped connection, a reloaded
+  // window or a VS Code restart inside it comes back to a conversation holding the
+  // questions and nothing that was done about them. A turn can run for many minutes, so
+  // that window would be most of the session.
   //
   // Streaming prose is not in `messages` — it is held in `draft` until the loop accepts
   // it — so this fires at step boundaries (a tool card frozen, a card answered) rather
@@ -778,6 +858,10 @@ export const App: React.FC = () => {
   const handleConnect = useCallback(
     (mdl: string, be: string, baseUrl: string, anthropicApiKey?: string, remember?: boolean) => {
       lastConnectArgsRef.current = [mdl, be, baseUrl, anthropicApiKey, remember];
+      // The status bar names what we are connecting to while we wait, so the
+      // label matches the model the form was left on. `ready` confirms it with
+      // the name the server actually serves.
+      setModel(mdl);
       setRemembered(remember ? { backend: be, baseUrl, model: mdl } : null);
       seedAddress(be, baseUrl);
       setConnection("connecting");
@@ -1014,10 +1098,15 @@ export const App: React.FC = () => {
         (m) => m.kind === "approval" && m.approval?.id === id
       );
       const allIds = card?.approval?.ids ?? [id];
+      // The conversation that asked, read off the card. The server drops an answer
+      // carrying none rather than guessing; the session on screen is exactly the wrong
+      // guess for a card raised elsewhere.
+      const sessionId = card?.approval?.session_id ?? activeSessionIdRef.current ?? undefined;
       for (const aid of allIds) {
-        const payload: { type: "approval_response"; id: string; choice: "y" | "n" | "a"; approved_files?: string[] } = {
-          type: "approval_response", id: aid, choice,
-        };
+        const payload: {
+          type: "approval_response"; id: string; choice: "y" | "n" | "a";
+          session_id?: string; approved_files?: string[];
+        } = { type: "approval_response", id: aid, choice, session_id: sessionId };
         if (approvedFiles !== undefined) payload.approved_files = approvedFiles;
         send(payload);
       }
@@ -1215,10 +1304,15 @@ export const App: React.FC = () => {
           </span>
           {/* Model name — a picker when the endpoint reported a real choice, a
               static label otherwise. The current model is always an option even
-              if the probe missed it (auto-selected, or probe failed). */}
-          {(() => {
+              if the probe missed it (auto-selected, or probe failed). Shown only
+              once an agent is live: before that there is no served model, and the
+              probe's list here would name one the connect form has not been told
+              to use — a label contradicting the form's own dropdown. While the
+              connection is still being made the name is a label, not a picker:
+              there is no agent yet to switch. */}
+          {connection !== "disconnected" && model && (() => {
             const options = Array.from(new Set([...endpointModels, model].filter(Boolean)));
-            if (options.length > 1) {
+            if (connection === "connected" && options.length > 1) {
               return (
                 <select
                   className="model-picker"
@@ -1253,6 +1347,28 @@ export const App: React.FC = () => {
             </button>
           )}
         </div>
+
+        {/* Conversations other than this one that are waiting on the user. Above the
+            thread rather than in it: the card belongs to another transcript, and each
+            one is a turn blocked on a person with no timeout — so it must be visible
+            without being mistaken for part of this conversation. */}
+        <ForeignPromptStrip
+          prompts={foreignPrompts}
+          onOpen={(sessionId) => {
+            forgetForeign(sessionId);
+            setSessionLoading(true);
+            switchSession(sessionId);
+          }}
+          onApprove={(prompt, choice) => {
+            send({
+              type: "approval_response",
+              id: prompt.id,
+              session_id: prompt.session_id,
+              choice,
+            });
+            forgetForeign(prompt.session_id as string);
+          }}
+        />
 
         {/* Chat thread, with the progress dock anchored to its bottom-left. The
             wrapper exists for the anchor: absolute inside `.main` would put the
@@ -1391,10 +1507,12 @@ export const App: React.FC = () => {
           <UserQuestion
             questions={userQuestion.questions}
             origin={userQuestion.origin}
+            expiresAt={userQuestion.expiresAt}
             onSubmit={(answers) => {
               send({
                 type: "user_question_response",
                 id: userQuestion.id,
+                session_id: userQuestion.sessionId,
                 answers,
               });
               // Whatever was chosen, the agent goes back to work: even a rejected

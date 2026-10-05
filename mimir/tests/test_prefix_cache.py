@@ -1,11 +1,10 @@
 """Workstream C: where the task checklist lives, and prompt-prefix stability.
 
-The checklist used to be appended as a transient tail message before every model
-call. That kept the prefix byte-stable but put a block of *state* in the last
-position before the generation prompt, which is what emptied turns on a served model
-(37/108 draws with it, 0/84 without; 0/40 once the same text sat in messages[0]).
-These tests hold the checklist to messages[0] and hold the rebuild to the moments
-the checklist actually changed.
+Appending the checklist as a transient tail message before every model call keeps the
+prefix byte-stable, but puts a block of *state* in the last position before the generation
+prompt — which is what empties turns on a served model (37/108 draws with it, 0/84 without;
+0/40 once the same text sits in messages[0]). These tests hold the checklist to messages[0]
+and hold the rebuild to the moments the checklist actually changed.
 """
 import asyncio
 import os
@@ -215,11 +214,11 @@ class PlanModeChecklistTests(unittest.TestCase):
 class ToolListStabilityTest(unittest.TestCase):
     """The tools payload must be byte-identical whenever nothing the user controls moved.
 
-    This matters more than it used to. The list is no longer trimmed by domain or by a
-    relevance cap, so it is the *whole* advertised surface — the largest single block in
-    the prompt prefix. Constant, it is tokenized and cached once per session; varying by
-    anything the request or the run's progress says, it would miss that cache on every
-    call and cost far more than the trimming ever saved.
+    The list is not trimmed by domain or by a relevance cap, so it is the *whole*
+    advertised surface — the largest single block in the prompt prefix. Constant, it is
+    tokenized and cached once per session; varying by anything the request or the run's
+    progress says, it misses that cache on every call, which costs far more than trimming
+    would ever save.
     """
 
     TOOLS = [{"function": {"name": n}} for n in

@@ -37,7 +37,7 @@ from mcp.server.fastmcp import FastMCP
 from capabilities import (tool_caps, PLAN_BLOCKED, CLUSTER_SUBMIT, BACKGROUNDABLE,
                           IRREVERSIBLE, PANEL_REPORT)
 from responses import err, ok
-from state_paths import state_dir
+from state_paths import session_state_dir, state_dir
 from slurm_nodes import (
     HARDWARE_FIELDS as _HARDWARE_FIELDS,
     aggregate_node_types as _aggregate_node_types,
@@ -60,16 +60,85 @@ _TIMEOUT_ALLOC = 20
 _TIMEOUT_SUBMIT = 30
 _MAX_OUTPUT = 128 * 1024
 
-# Where async batch jobs stash their script + Slurm log: under the agent's own state
-# dir like every other persistent artefact, not a second home-relative location
+# Where async batch jobs stash their script + Slurm log: under the submitting session's
+# own state dir, like every other artefact belonging to a conversation
 # (env-overridable for tests).
-_HPC_JOBS_DIR = os.environ.get("MIMIR_HPC_JOBS_DIR", os.path.join(state_dir(), "hpc_jobs"))
+#
+# Per session, resolved per call. A Slurm job outlives its session, sometimes by days,
+# which is the one way these differ from detached shell jobs — so a job is never
+# *unreachable* from another conversation: _find_job_dir below looks in the sibling
+# sessions read-only and says where it came from. Per session buys two things: two
+# conversations submitting at the same moment cannot land on each other's directory, and a
+# conversation's submissions go with it when it is deleted.
+def _hpc_jobs_dir() -> str:
+    env = os.environ.get("MIMIR_HPC_JOBS_DIR")
+    if env:
+        return env
+    return os.path.join(session_state_dir(), "hpc_jobs")
+
+
+def _new_job_dir_name() -> str:
+    """A sortable, collision-free directory name for one submission.
+
+    Shares ``_bash_jobs``' key shape — UTC stamp plus four random hex — because the stamp
+    alone collides: it resolves to the second, and with ``makedirs(exist_ok=True)`` two
+    submissions in that second would share one directory and overwrite each other's
+    batch_script.sh, slurm.log and slurm_job_id. One second is a long time when two
+    sessions are working at once.
+    """
+    import time as _time
+    stamp = _time.strftime("%Y%m%dT%H%M%SZ", _time.gmtime())
+    base = _hpc_jobs_dir()
+    while True:
+        name = f"{stamp}-{os.urandom(2).hex()}"
+        if not os.path.exists(os.path.join(base, name)):
+            return name
+
+
+def _find_job_dir(job_id: str) -> tuple[str, str]:
+    """Where *job_id* was recorded, and which session recorded it ("" for this one).
+
+    Looks in this session's directory first, then — read-only — in the sibling sessions'.
+    A Slurm job can outlive the conversation that submitted it and still need checking from
+    another one, so filing it per session must not make it unfindable. Returns ``("", "")``
+    when no session recorded it.
+    """
+    def _match(base: str) -> str:
+        try:
+            names = os.listdir(base)
+        except OSError:
+            return ""
+        for name in names:
+            try:
+                with open(os.path.join(base, name, "slurm_job_id")) as fh:
+                    if fh.read().strip() == job_id:
+                        return os.path.join(base, name)
+            except OSError:
+                continue
+        return ""
+
+    found = _match(_hpc_jobs_dir())
+    if found:
+        return found, ""
+    sessions = os.path.join(state_dir(), "sessions")
+    try:
+        others = sorted(os.listdir(sessions))
+    except OSError:
+        return "", ""
+    for sid in others:
+        found = _match(os.path.join(sessions, sid, "hpc_jobs"))
+        if found:
+            return found, sid
+    return "", ""
 
 
 def _run_bash(script: str, timeout: int) -> dict:
     try:
         res = subprocess.run(
             ["bash", "-lc", script],
+            # Never the server's own stdin: that is its MCP protocol pipe, and a script
+            # that reads it (``ssh`` without ``-n``, ``cat``) eats the client's traffic.
+            stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
@@ -116,6 +185,28 @@ def _validate_time(value: str) -> bool:
 def _validate_mem(value: str) -> bool:
     # Examples: 8G, 32000M, 2T
     return bool(re.fullmatch(r"\d+[KMGTP]", value.upper()))
+
+
+_COMMENT_MAX = 512
+
+
+def _validate_comment(value: str) -> str | None:
+    """Return why *value* cannot be a Slurm --comment, or None when it can.
+
+    Free text, so the only hard rules are a length Slurm will store and a single
+    line: a newline in a value that lands in a ``#SBATCH`` directive turns the rest
+    of it into directives of the caller's choosing, and sacct renders the field on
+    one line regardless.
+    """
+    if not value:
+        return None
+    if len(value) > _COMMENT_MAX:
+        return f"comment is too long ({len(value)} chars). Keep it under {_COMMENT_MAX}."
+    bad = [ch for ch in value if ord(ch) < 0x20 or ord(ch) == 0x7F]
+    if bad:
+        return ("Invalid comment: control characters are not allowed "
+                f"(found {bad[0]!r}). Keep it to a single line of plain text.")
+    return None
 
 
 @mcp.tool()
@@ -254,7 +345,8 @@ def _run_argv(argv: list[str], timeout: int) -> dict:
     """Run a command as argv — no shell, so no argument can inject a second command."""
     try:
         res = subprocess.run(
-            argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=timeout,
+            argv, stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=timeout,
         )
         return {
             "status": "ok" if res.returncode == 0 else "error",
@@ -270,7 +362,8 @@ def _run_argv(argv: list[str], timeout: int) -> dict:
 
 def _salloc_argv(partition: str, account: str, qos: str, nodes: int, ntasks: int,
                  cpus_per_task: int, mem: str, time: str, gres: str, constraint: str,
-                 job_name: str, extra_args: str) -> tuple[list[str], dict | None]:
+                 job_name: str, extra_args: str,
+                 comment: str = "") -> tuple[list[str], dict | None]:
     """Build a validated salloc argv, or return the rejection."""
     if not partition.strip():
         return [], err("partition is required.", hint="Use slurm_partitions() to list them.")
@@ -280,6 +373,9 @@ def _salloc_argv(partition: str, account: str, qos: str, nodes: int, ntasks: int
         return [], err("Invalid Slurm time format", hint="Use HH:MM:SS or D-HH:MM:SS")
     if mem and not _validate_mem(mem):
         return [], err("Invalid mem format", hint="Use values like 8G, 32000M, 1T")
+    comment_err = _validate_comment(comment)
+    if comment_err:
+        return [], err(comment_err)
 
     argv = [
         "salloc",
@@ -291,7 +387,8 @@ def _salloc_argv(partition: str, account: str, qos: str, nodes: int, ntasks: int
         f"--job-name={job_name}",
     ]
     for flag, value in (("account", account), ("qos", qos), ("mem", mem),
-                        ("gres", gres), ("constraint", constraint)):
+                        ("gres", gres), ("constraint", constraint),
+                        ("comment", comment)):
         if value:
             argv.append(f"--{flag}={value}")
     if extra_args:
@@ -323,6 +420,7 @@ def salloc_submit(
     time: str = "01:00:00",
     gres: str = "",
     constraint: str = "",
+    comment: str = "",
     job_name: str = "mimir-interactive",
     confirm: bool = False,
     timeout_seconds: int = _TIMEOUT_ALLOC,
@@ -345,13 +443,16 @@ def salloc_submit(
         time: Wall-clock limit HH:MM:SS or D-HH:MM:SS.
         gres: Generic resources, e.g. 'gpu:2'.
         constraint: Node feature constraint.
+        comment: Free-text label stored with the allocation and read back by
+            `sacct -j <id> -o Comment`. Single line, under 512 characters.
         job_name: Slurm job name.
         confirm: Must be True to execute; False returns the command as a preview.
         timeout_seconds: Max time to wait for the allocation response.
         extra_args: Additional salloc flags; every token must start with '-'.
     """
     argv, error = _salloc_argv(partition, account, qos, nodes, ntasks, cpus_per_task,
-                               mem, time, gres, constraint, job_name, extra_args)
+                               mem, time, gres, constraint, job_name, extra_args,
+                               comment)
     if error:
         return error
     preview = shlex.join(argv)
@@ -428,8 +529,34 @@ def slurm_job_status(job_id: str) -> dict:
     """
     if not str(job_id).strip():
         return err("job_id is required.")
-    state, raw = _normalized_job_state(str(job_id).strip())
-    return ok({"job_id": str(job_id).strip(), "state": state, "raw_state": raw})
+    job_id = str(job_id).strip()
+    state, raw = _normalized_job_state(job_id)
+    payload = {"job_id": job_id, "state": state, "raw_state": raw}
+    # Where the submission was recorded, so the script and the log stay reachable. A
+    # Slurm job outlives its conversation, so the sibling sessions are searched too and the
+    # answer says when the job came from another one.
+    job_dir, from_session = _find_job_dir(job_id)
+    if job_dir:
+        payload["job_dir"] = job_dir
+        payload["log"] = os.path.join(job_dir, "slurm.log")
+        if from_session:
+            payload["submitted_by_another_session"] = from_session
+    # A handle for a job of *this* conversation that is still in flight, so asking
+    # where it is at puts a watcher back on it — the watchers do not survive the agent
+    # that made them, and a window reload is enough to lose every one of them.
+    #
+    # Never for another session's job, and this is the whole reason the descriptor is
+    # withheld rather than always attached: a wake is routed to the conversation whose
+    # agent registered it, so re-arming here would deliver another conversation's
+    # result into this one. Reading a sibling's job stays allowed; adopting it does not.
+    if state in ("running", "pending") and not from_session:
+        payload["background_jobs"] = [{
+            "server":    "hpc",
+            "job_key":   job_id,
+            "kind":      "slurm-batch",
+            "status_op": {"tool": "slurm_job_status", "args": {"job_id": job_id}},
+        }]
+    return ok(payload)
 
 
 # A job, or one task of a job array. Anything wider — a user, a partition, a name — is
@@ -496,26 +623,6 @@ def slurm_cancel(job_id: str, confirm: bool = False) -> dict:
     })
 
 
-def _sbatch_header(job_name: str, partition: str, cpus_per_task: int, gpus: int,
-                   mem: str, wall_time: str, account: str, log_file: str) -> list[str]:
-    lines = [
-        "#!/bin/bash",
-        f"#SBATCH --job-name={job_name}",
-        f"#SBATCH --partition={partition}",
-        f"#SBATCH --cpus-per-task={cpus_per_task}",
-        f"#SBATCH --time={wall_time}",
-        f"#SBATCH --output={log_file}",
-        f"#SBATCH --error={log_file}",
-    ]
-    if mem:
-        lines.append(f"#SBATCH --mem={mem}")
-    if gpus > 0:
-        lines.append(f"#SBATCH --gres=gpu:{gpus}")
-    if account:
-        lines.append(f"#SBATCH --account={account}")
-    return lines
-
-
 @mcp.tool(**tool_caps(
     caps=[PLAN_BLOCKED, CLUSTER_SUBMIT, BACKGROUNDABLE], reversibility=IRREVERSIBLE, non_batch=True,
     risk_note="Submits a Slurm batch job that consumes cluster allocation hours.",
@@ -529,6 +636,7 @@ def sbatch_submit(
     mem: str = "",
     wall_time: str = "01:00:00",
     account: str = "",
+    comment: str = "",
     job_name: str = "mimir-batch",
     nodes: int = 0,
     ntasks: int = 0,
@@ -560,6 +668,10 @@ def sbatch_submit(
         mem: Memory in Slurm format (e.g. '8G'); empty = scheduler default.
         wall_time: Wall-clock limit HH:MM:SS or D-HH:MM:SS (default '01:00:00').
         account: Slurm account to charge (optional).
+        comment: Free-text label stored with the job and read back by
+            `sacct -j <id> -o Comment` or `scontrol show job <id>` — what this
+            job was for, for whoever reads the queue later. Single line, under
+            512 characters.
         job_name: Slurm job name (default 'mimir-batch').
         nodes: Nodes to allocate (0 = scheduler default).
         ntasks: Tasks to run, e.g. MPI ranks (0 = scheduler default).
@@ -581,12 +693,14 @@ def sbatch_submit(
     target_err = validate_target(constraint, nodelist, nodes or None, ntasks or None)
     if target_err:
         return err(target_err)
+    comment_err = _validate_comment(comment)
+    if comment_err:
+        return err(comment_err)
     if not confirm:
         return err("Submission not confirmed.",
                    hint="Set confirm=True only after user approval.")
 
-    import time as _time
-    job_dir = os.path.join(_HPC_JOBS_DIR, _time.strftime("%Y%m%dT%H%M%SZ", _time.gmtime()))
+    job_dir = os.path.join(_hpc_jobs_dir(), _new_job_dir_name())
     os.makedirs(job_dir, exist_ok=True)
     log_file    = os.path.join(job_dir, "slurm.log")
     script_path = os.path.join(job_dir, "batch_script.sh")
@@ -594,7 +708,7 @@ def sbatch_submit(
         job_name=job_name, partition=partition, cpus_per_task=cpus_per_task,
         wall_time=wall_time, log_file=log_file, mem=mem, gpus=gpus, account=account,
         nodes=nodes or None, ntasks=ntasks or None, constraint=constraint,
-        nodelist=nodelist, exclusive=exclusive,
+        nodelist=nodelist, exclusive=exclusive, comment=comment,
     )
     script = "\n".join(header + ["", command, ""]) + "\n"
     try:
@@ -624,6 +738,7 @@ def sbatch_submit(
         "batch_script": script_path,
         "log":          log_file,
         "partition":    partition,
+        "comment":      comment or None,
         "note":         f"Slurm job {job_id} submitted to '{partition}'.",
         "background_job": {
             "server":    "hpc",
@@ -739,11 +854,11 @@ def _harvest_probes(nodes_by_name: dict[str, dict]) -> list[dict]:
     """
     pending = []
     try:
-        entries = sorted(os.listdir(_HPC_JOBS_DIR))
+        entries = sorted(os.listdir(_hpc_jobs_dir()))
     except OSError:
         return pending
     for entry in entries:
-        job_dir = os.path.join(_HPC_JOBS_DIR, entry)
+        job_dir = os.path.join(_hpc_jobs_dir(), entry)
         meta = _read_json(os.path.join(job_dir, _PROBE_MARKER))
         if not meta or meta.get("harvested"):
             continue
@@ -866,11 +981,11 @@ def slurm_probe_node(partition: str, constraint: str = "", nodelist: str = "",
 
     import time as _time
     stamp = _time.strftime("%Y%m%dT%H%M%SZ", _time.gmtime())
-    job_dir = os.path.join(_HPC_JOBS_DIR, f"{stamp}-probe")
+    job_dir = os.path.join(_hpc_jobs_dir(), f"{stamp}-probe")
     suffix = 1
     while os.path.exists(job_dir):
         suffix += 1
-        job_dir = os.path.join(_HPC_JOBS_DIR, f"{stamp}-probe{suffix}")
+        job_dir = os.path.join(_hpc_jobs_dir(), f"{stamp}-probe{suffix}")
     os.makedirs(job_dir)
     log_file = os.path.join(job_dir, "slurm.log")
     header = sbatch_header(

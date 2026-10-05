@@ -330,6 +330,9 @@ VS Code extension sets the backend and address ones itself from the Connect form
 | `MIMIR_RAY_MAX_MODEL_LEN` | *(unset)* | Context window to use when the Ray router does not report `max_model_len` |
 | `ANTHROPIC_API_KEY` | *(none)* | Key for the `anthropic` backend |
 | `MIMIR_PYTHON` | *(none)* | Interpreter the VS Code extension starts the WS server with, when `~/.mimir/python` is absent or wrong |
+| `MIMIR_MAX_LIVE_SESSIONS` | `3` | How many conversations may hold an agent at once. The constraint is processes — each agent spawns some nineteen MCP servers — so lower it on a shared login node. Past the cap a turn waits for a slot and is told its place in line; conversations you only open or read cost nothing |
+| `MIMIR_SESSION_IDLE_TTL` | `600` | Seconds a conversation's agent may sit unused before it is released, servers included (minimum 30). Never one that is busy, parked on a question, watching a background job, or on screen |
+| `MIMIR_INIT_TIMEOUT` | `600` | Seconds to wait for a conversation's agent to come up — the LLM backend first, then its servers. A cold vLLM (model load plus `torch.compile`) can exceed three minutes |
 | `MIMIR_EMBED_MODEL` | *(empty; `nomic-embed-text` on Ollama)* | Embedding model for semantic memory search & tool ranking. **Required for vLLM and Ray** (the served model name, e.g. `BAAI/bge-m3`). Empty on those ⇒ semantic path disabled, lexical fallback used. |
 | `MIMIR_EMBED_BASE_URL` | *(falls back to the active backend's address)* | Serve embeddings from a separate endpoint than the chat model (vLLM and Ray only) |
 | `MIMIR_EMBED_TIMEOUT` | `10` | HTTP timeout (seconds) for the OpenAI-path embeddings call |

@@ -3,7 +3,7 @@
   "publisher": "mimir",
   "displayName": "MIMIR Chat",
   "description": "A chat panel for the MIMIR agent: plan, edit, run and verify code with the model server you already run (vLLM, Ray Serve, Ollama or Claude).",
-  "version": "1.0.0",
+  "version": "1.1.2",
   "license": "MIT",
   "repository": { "type": "git", "url": "https://github.com/MIMIR-LLM4CSE/MIMIR.git", "directory": "mimir/vscode-extension" },
   "bugs": { "url": "https://github.com/MIMIR-LLM4CSE/MIMIR/issues" },
@@ -64,6 +64,11 @@
           "type": "string",
           "default": "",
           "description": "Python executable used to start the WS server. Leave empty: install.sh records the venv interpreter in ~/.mimir/python and the extension picks it up (the MIMIR_PYTHON environment variable also works). Set this only to override both."
+        },
+        "mimir.releaseHome": {
+          "type": "string",
+          "default": "",
+          "description": "Shared site release root for enterprise deployments. When set, the extension takes its Python backend and its own updates from <releaseHome>/current. Leave empty to follow the path a deployment ships in the extension's own site.json. To disable the shared-release mode, point this at a path that has no current release."
         },
         "mimir.ollamaUrl": {
           "type": "string",

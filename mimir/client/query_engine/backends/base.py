@@ -6,6 +6,7 @@ from abc import ABC, abstractmethod
 from typing import Any, Callable
 
 from ...config.constants import chars_per_token_for
+from .. import token_calibration
 
 # Cap on the per-text token-count cache so a long-running session can't grow it
 # unbounded. When exceeded the cache is cleared wholesale (simple + adequate;
@@ -167,9 +168,16 @@ class LLMBackend(ABC):
         low, high = _CPT_BOUNDS
         if low <= ratio <= high:
             self._calibrated_cpt[model] = ratio
+            token_calibration.remember_chars_per_token(model, ratio)
 
     def calibrated_chars_per_token(self, model: str) -> float | None:
-        """The history's measured chars-per-token for *model*, or None before any."""
+        """The history's measured chars-per-token for *model*, or None before any.
+
+        This process's own measurement. A ratio measured in an earlier run is kept in
+        the calibration cache and used by :meth:`_heuristic_tokens`, but it is not
+        reported here: the two answer different questions, and whether *this* backend
+        has calibrated itself yet is the one this method is asked.
+        """
         return self._calibrated_cpt.get(model)
 
     def note_prompt_usage(
@@ -334,6 +342,14 @@ class LLMBackend(ABC):
         raise NotImplementedError("no tokenizer")
 
     def _heuristic_tokens(self, model: str, text: str) -> int:
-        """Chars-per-token estimate, measured against the server once it can be."""
-        ratio = self._calibrated_cpt.get(model) or chars_per_token_for(model)
+        """Chars-per-token estimate, measured against the server once it can be.
+
+        Falls back through the ratio measured in an earlier run before the static
+        default: a session reopened against a fresh server then counts its history the
+        way the server charged it, instead of at a 4 that was off by a fifth and moved
+        the bar on its own as soon as the first answer re-measured it.
+        """
+        ratio = (self._calibrated_cpt.get(model)
+                 or token_calibration.recall_chars_per_token(model)
+                 or chars_per_token_for(model))
         return max(1, int(len(text) / ratio))

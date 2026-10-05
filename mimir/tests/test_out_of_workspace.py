@@ -178,12 +178,26 @@ class OutOfWorkspaceGateTests(_TmpStateDir):
         self.assertEqual(len(agent.prompts), 1)   # "always" → no re-prompt
 
     def test_trusted_read_root_not_prompted_for_reads(self) -> None:
+        """A job log the agent itself produced is read without asking.
+
+        The state dir is the one trusted root, which is where everything the agent
+        produces lives: the proxy store sits in the workspace, and both kinds of job
+        directory under the state dir, per session. Nothing of MIMIR's is in ``~/.cache``.
+        """
         agent = self._agent(cap=READ)
-        log = os.path.expanduser("~/.cache/proxy_bench/opt_runs/x/stdout.log")
+        log = os.path.join(self._tmp.name, "sessions", "s1", "jobs", "k", "job.log")
         out = engine._check_out_of_workspace_access(
             agent, "read_file_lines", {"path": log}, {})
         self.assertIsNone(out)
-        self.assertEqual(agent.prompts, [])   # item 1: silent read of proxy cache
+        self.assertEqual(agent.prompts, [])
+
+    def test_no_home_cache_root_is_trusted_any_more(self) -> None:
+        """MIMIR writes under its state dir, the workspace and /tmp — nowhere else."""
+        from mimir.servers._shared.trusted_read_roots import trusted_read_roots
+        home = os.path.expanduser("~")
+        for root in trusted_read_roots():
+            self.assertFalse(
+                os.path.realpath(root).startswith(os.path.join(home, ".cache")), root)
 
     def test_state_dir_is_trusted_without_the_env_var(self) -> None:
         """The client must trust STATE_DIR from its own config, not from the env.
@@ -342,9 +356,9 @@ class ShellPathApprovalTests(_TmpStateDir):
         self.assertEqual(agent.prompts, [])
 
     def test_path_beside_a_flag_expansion_still_reaches_the_user(self) -> None:
-        # A bare $VAR makes a command opaque to *classification*, which used to mean
-        # no targets were extracted at all — so a real out-of-workspace path sitting
-        # beside the flag was refused by the server with no way to grant it.
+        # A bare $VAR makes a command opaque to *classification*. Letting that stop target
+        # extraction has a real out-of-workspace path sitting beside the flag refused by
+        # the server with no way for the user to grant it.
         agent = self._agent(script=(True, False))
         engine._check_out_of_workspace_access(
             agent, "run_shell", {"command": "gcc -I$CUDA_HOME/include /tmp/x.c -o a.out"}, {})
@@ -368,6 +382,20 @@ class ShellPathApprovalTests(_TmpStateDir):
                 agent, "run_shell", {"command": cmd}, {})
             self.assertIsNone(out, cmd)
         self.assertEqual(agent.prompts, [])
+
+    def test_quoted_metacharacter_does_not_hide_the_path(self) -> None:
+        # A metacharacter inside quotes is text to bash, so the command parses and the
+        # server confines its operands. Extraction has to see the same paths the server
+        # will, or the one path that matters is refused there with no prompt to grant it:
+        # the whole command yields no target, and the mode is never even consulted.
+        agent = self._agent(script=(True, False))
+        for cmd in ('ls /tmp/outside/q; echo "(absent)"',
+                    "cat /tmp/outside/q && echo 'cost: $5'",
+                    'grep "a>b" /tmp/outside/q'):
+            agent.prompts = []
+            engine._check_out_of_workspace_access(
+                agent, "run_shell", {"command": cmd}, {})
+            self.assertIn(os.path.realpath("/tmp/outside/q"), agent.prompts, cmd)
 
     def test_path_after_an_out_of_workspace_cd_asks_once(self) -> None:
         # `cd /etc && cat passwd`: the relative operand resolves under the new base,
@@ -508,9 +536,9 @@ class SingleApprovalPerCallTests(_TmpStateDir):
 class OneCardPerCallTests(_TmpStateDir):
     """A command naming several outside paths raises exactly ONE approval.
 
-    It used to raise one per path: ``cd /data && python /opt/x.py > /var/log/y.log``
-    put three cards in front of the user, in sequence, for a decision they had already
-    taken when they read the command.
+One per path would put three cards in front of the user for
+    ``cd /data && python /opt/x.py > /var/log/y.log``, in sequence, for a decision they
+    have already taken by the time they read the command.
     """
 
     COMMAND = "cd /tmp/one && python /opt/one/x.py > /var/tmp/one/y.log"
@@ -591,6 +619,17 @@ class ApprovalModeTests(_TmpStateDir):
         self.assertEqual(agent.prompt_calls, 0)
         self.assertEqual(agent.tool_approvals, [])
         self.assertIn(os.path.realpath("/tmp/outside/autoall"),
+                      agent.approvals._allowed_paths)
+
+    def test_auto_all_grants_a_path_beside_a_quoted_metacharacter(self) -> None:
+        # The grant is reached through the target list, so a command whose paths went
+        # unextracted bypasses the mode entirely: auto_all asks nothing, grants nothing,
+        # and the server then refuses the access the mode was meant to have allowed.
+        agent = self._agent("auto_all")
+        out = self._evaluate(agent, 'mkdir /tmp/outside/autoallq; echo "(done)"')
+        self.assertIsNone(out.violation)
+        self.assertEqual(agent.prompt_calls, 0)
+        self.assertIn(os.path.realpath("/tmp/outside/autoallq"),
                       agent.approvals._allowed_paths)
 
     def test_the_mode_is_read_afresh_at_every_call(self) -> None:

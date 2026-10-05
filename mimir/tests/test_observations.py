@@ -550,12 +550,18 @@ class BashValidationObservationTests(unittest.TestCase):
         self.assertEqual(ec["validated_files"], set())
 
     def test_an_inline_snippet_is_a_run(self):
-        # Unclassifiable (parentheses defeat the tokenizer), so it names nothing — but
-        # it ran, and the base prompt asks for exactly this idiom.
+        # The payload is quoted, so it is text to bash and the command classifies: an
+        # exec that names no file. It credits nothing — but it ran, and the base prompt
+        # asks for exactly this idiom. The ledger keys it on its whole argv, which is
+        # what keeps two unrelated one-liners from reading as two attempts at one thing.
         agent, ec = self._agent(), self._ctx({"a.py", "b.py"})
         self._run(agent, "python -c 'print(check(a))'", ec)
         self.assertEqual(ec["validated_files"], set())
-        self.assertIn("python -c 'print(check(a))'", ec["runs"])
+        self.assertIn("python -c print(check(a))", ec["runs"])
+        self.assertEqual(
+            ec["runs"]["python -c print(check(a))"]["command"],
+            "python -c 'print(check(a))'",
+        )
 
     def test_a_scratchpad_probe_is_a_run_like_any_other(self):
         agent, ec = self._agent(), self._ctx({"solver.py", "mesh.py"})
@@ -812,8 +818,8 @@ class RedTestRunObservationTests(unittest.TestCase):
 class VerdictGrammarTests(unittest.TestCase):
     """What a run may say about itself, in the shapes harnesses actually print.
 
-    Every case here is taken verbatim from a recorded session. The grammar was
-    previously written to mirror the proxy's metrics parser, and none of these passed.
+    Every case here is taken verbatim from a recorded session. A grammar mirroring the
+    proxy's metrics parser rather than real output passes none of them.
     """
 
     def test_a_declared_failure_survives_a_trailing_parenthetical(self):
@@ -944,11 +950,10 @@ class RunLedgerKeyTests(unittest.TestCase):
         )
 
     def test_a_status_line_does_not_split_the_ledger(self):
-        # This used to be the documented behaviour and it was the defect: `$` is
-        # refused by the classifier's security default, so appending `; echo "x=$?"`
-        # to a command under retry opened a fresh entry every time and the repair
-        # ladder never reached its first rung. run_ledger_key asks for an identity,
-        # not a verdict, so it parses with allow_expansion=True.
+        # `$` is refused by the classifier's security default, so parsing the key that way
+        # has `; echo "x=$?"` appended to a command under retry open a fresh entry every
+        # time, and the repair ladder never reaches its first rung. run_ledger_key asks for
+        # an identity, not a verdict, so it parses with allow_expansion=True.
         self.assertEqual(
             run_ledger_key('timeout 280 python3 test_x.py; echo "EXIT=$?"'),
             run_ledger_key("python3 test_x.py"),
@@ -1229,10 +1234,10 @@ class ValidationTierTests(unittest.TestCase):
 class UncheckableFileTests(unittest.TestCase):
     """The check is possible everywhere now, so almost nothing is uncheckable.
 
-    It used to depend on a binary: a `.cu` edited on a node with no CUDA toolkit had
-    no checker to run, and every language outside the table (`.rs`, `.go`, `.sh`) was
-    in the same position. The floor moved in-process, so the only file that still
-    escapes it is one that is not text at all.
+    The floor runs in-process, so the only file that escapes it is one that is not text at
+    all. Depending on a binary leaves a `.cu` edited on a node with no CUDA toolkit with no
+    checker to run, and every language outside the table (`.rs`, `.go`, `.sh`) in the same
+    position.
     """
 
     _ctx = BashValidationObservationTests._ctx
@@ -1381,7 +1386,7 @@ class DeclaredEditSetTests(unittest.TestCase):
 
     The set is only ever read while the work is going — the edit→validate transition,
     the empty-turn corrective — so what matters is that it tracks the *current* plan.
-    It used to only accumulate, which meant a declaration could never be taken back.
+    Accumulating only would mean a declaration can never be taken back.
     """
 
     def _agent(self):

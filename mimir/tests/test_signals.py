@@ -49,8 +49,8 @@ class QueryRequiresRepoDiscoveryTest(unittest.TestCase):
         self.assertFalse(query_requires_repo_discovery("prove this theorem"))
 
     def test_discovery_covers_french_explanatory_queries(self):
-        # The discovery vocabulary used to be almost English-only, so a French
-        # session skipped the plan-mode explore phase on purely explanatory questions.
+        # An English-only discovery vocabulary has a French session skip the plan-mode
+        # explore phase on purely explanatory questions.
         self.assertTrue(query_requires_repo_discovery("explique moi ce module"))
         self.assertTrue(query_requires_repo_discovery("montre moi la structure du projet"))
         self.assertTrue(query_requires_repo_discovery("a quoi sert cette classe ?"))

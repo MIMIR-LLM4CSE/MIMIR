@@ -142,7 +142,7 @@ def _squeue_state(job_id: int) -> str:
     try:
         res = subprocess.run(
             ["squeue", "-j", str(job_id), "-h", "-o", "%T"],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             text=True, timeout=10,
         )
         state = res.stdout.strip().upper()
@@ -344,7 +344,10 @@ def _launch_detached(argv: list[str], run_dir: str, log_file: str | None = None)
     When *log_file* is given, stdout/stderr are redirected into it; otherwise
     the child manages its own output (e.g. the local-run wrapper script).
     """
-    kwargs: dict = {"close_fds": True, "start_new_session": True}
+    # stdin is never inherited: it is this server's MCP protocol pipe, and a child that
+    # reads it eats the client's JSON-RPC traffic.
+    kwargs: dict = {"close_fds": True, "start_new_session": True,
+                    "stdin": subprocess.DEVNULL}
     if log_file:
         kwargs["stdout"] = open(log_file, "w")
         kwargs["stderr"] = subprocess.STDOUT
@@ -379,6 +382,7 @@ def _submit_sbatch(
 
     try:
         res = subprocess.run(["sbatch", batch_path],
+                             stdin=subprocess.DEVNULL,
                              stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                              text=True, timeout=30)
     except FileNotFoundError:
@@ -405,6 +409,7 @@ def _scancel(job_id: int) -> str | None:
     """Cancel one Slurm job; returns an error message, or None when it worked."""
     try:
         res = subprocess.run(["scancel", str(job_id)],
+                             stdin=subprocess.DEVNULL,
                              stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                              text=True, timeout=15)
     except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
@@ -490,6 +495,28 @@ def _validate_slurm_token(value: str, field: str) -> str | None:
     if not _SLURM_TOKEN_RE.fullmatch(value):
         return (f"Invalid {field}: {value!r}. Use a plain Slurm feature expression "
                 f"or node list, e.g. 'a100', 'bigmem&avx512', 'node[01-04]'.")
+    return None
+
+
+# A comment is free text, so the token expression above would reject most real ones
+# (spaces, '/', '#'). What still cannot appear is a control character: a newline ends
+# the directive line and makes the rest of the value directives of the caller's
+# choosing, and sacct/squeue render the field on one line either way. The cap is
+# Slurm's own practical limit on the field.
+_SLURM_COMMENT_MAX = 512
+
+
+def _validate_slurm_comment(value: str, field: str = "comment") -> str | None:
+    """Return why *value* cannot be a --comment, or None when it can."""
+    if not value:
+        return None
+    if len(value) > _SLURM_COMMENT_MAX:
+        return (f"{field} is too long ({len(value)} chars). "
+                f"Keep it under {_SLURM_COMMENT_MAX}.")
+    bad = [ch for ch in value if ord(ch) < 0x20 or ord(ch) == 0x7F]
+    if bad:
+        return (f"Invalid {field}: control characters are not allowed "
+                f"(found {bad[0]!r}). Keep it to a single line of plain text.")
     return None
 
 

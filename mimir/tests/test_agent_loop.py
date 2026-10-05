@@ -1288,11 +1288,11 @@ class SteerInjectionInLoopTests(RunAgentQueryNonInteractiveTests):
         """A steer is a real user turn, so it must hold the last position.
 
         The last message is what the model answers — that is what the position is for.
-        The checklist used to be appended after the steer, just before the call, and
-        both being plain string `user` turns, the backend's consecutive-user merge
-        folded them into ONE turn ending in a status block: the model answered the
-        block and the instruction was buried. Measured worst on exactly this shape.
-        The checklist now lives in messages[0], so a steer stays last.
+        Appending the checklist after the steer, just before the call, has the backend's
+        consecutive-user merge fold both plain string `user` turns into ONE ending in a
+        status block: the model answers the block and the instruction is buried. Measured
+        worst on exactly this shape. The checklist lives in messages[0], so a steer stays
+        last.
         """
         import tempfile
         agent = self._query_agent()
@@ -1850,6 +1850,32 @@ class RepeatedFailingCallGuardTests(unittest.TestCase):
         self.assertEqual(payload["status"], "error")
         self.assertIn("failed to execute", payload["error"])
         self.assertIn("Connection closed", payload["error"])
+        self.assertIn("Retry once", payload["hint"])
+
+    def test_a_dead_transport_is_told_not_to_retry(self) -> None:
+        """``ClosedResourceError`` means the server's stdio transport is gone.
+
+        Nothing reconnects an MCP server, so every later call to any of its tools fails
+        identically. "Retry once" would spend the rest of the turn on calls that cannot
+        work, which is how a dead bash server reads as the model being stubborn.
+        """
+        class ClosedResourceError(Exception):
+            pass
+
+        async def run_tool(name, args, execution_context=None, run_auto_validation=True, call_id=""):
+            raise ClosedResourceError()
+
+        agent = self._agent(run_tool)
+        agent.tool_owner = {"code_check_file": "code", "code_outline": "code",
+                            "bash_run": "bash"}
+        payload = json.loads(self._dispatch(agent, build_execution_context())[0]["content"])
+
+        self.assertEqual(payload["status"], "error")
+        self.assertIn("'code' server is gone", payload["hint"])
+        self.assertIn("code_outline", payload["hint"], "said nothing of its other tools")
+        self.assertNotIn("bash_run", payload["hint"], "blamed a server that is fine")
+        self.assertIn("Do not retry", payload["hint"])
+
 
 class WriteDiffEmitTests(unittest.TestCase):
     """The post-execution diff card must reflect the *outcome* of the write.

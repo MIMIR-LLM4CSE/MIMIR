@@ -70,10 +70,10 @@ class MessageTokensTests(unittest.TestCase):
     def test_empty_content_still_costs_its_envelope(self) -> None:
         """A message with nothing to say is still a message on the wire.
 
-        It used to score 0, which was the same optimism one layer down: the
-        provider is sent ``{"role": "user", ...}`` whether or not the content is
-        empty, and a budget that scores it free is a budget that will be short by
-        one envelope per message. Small per message, and there are hundreds.
+        Scoring it 0 is the same optimism one layer down: the provider is sent
+        ``{"role": "user", ...}`` whether or not the content is empty, and a budget that
+        scores it free is short by one envelope per message. Small per message, and there
+        are hundreds.
         """
         empty = _message_tokens({"role": "user", "content": ""}, len)
         self.assertGreater(empty, 0)

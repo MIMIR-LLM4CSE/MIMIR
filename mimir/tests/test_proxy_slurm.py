@@ -52,6 +52,30 @@ class ValidateSlurmTokenTests(unittest.TestCase):
             self.assertIsNotNone(procs._validate_slurm_token(value, "nodelist"), value)
 
 
+class ValidateSlurmCommentTests(unittest.TestCase):
+    """A comment is free text, so only length and control characters are refused."""
+
+    def test_real_comments_pass(self) -> None:
+        for value in ("", "ratchet iter 12", "GEOS-X / seismic #4 (baseline)",
+                      "why: comparing against ref_2024 — 50% mesh"):
+            self.assertIsNone(procs._validate_slurm_comment(value), value)
+
+    def test_a_newline_cannot_smuggle_in_another_directive(self) -> None:
+        bad = procs._validate_slurm_comment(
+            "baseline\n#SBATCH --partition=everything")
+        self.assertIsNotNone(bad)
+        self.assertIn("comment", bad)
+
+    def test_other_control_characters_are_refused(self) -> None:
+        for value in ("a\tb", "a\rb", "a\x00b", "a\x7fb"):
+            self.assertIsNotNone(procs._validate_slurm_comment(value), value)
+
+    def test_an_overlong_comment_is_refused(self) -> None:
+        bad = procs._validate_slurm_comment("x" * 513)
+        self.assertIsNotNone(bad)
+        self.assertIn("too long", bad)
+
+
 class SubmitSbatchTests(_TmpStorageTest):
     """The submission primitive itself, against a one-shot fake `sbatch` on PATH.
 
@@ -217,6 +241,33 @@ class SubmitEvalTests(_FakeSbatchTest):
             build.write_report(run_dir, [{"proxy": "tiny", "status": "failed",
                                           "error": "build exited 2", "duration_s": 1.0}])
             self.assertEqual(procs._run_state(run_dir)["state"], "crashed")
+
+    def test_comment_reaches_both_jobs_of_a_split_run(self) -> None:
+        """The comment labels the submission, so either job answers 'what was this'."""
+        self._session(metadata={"build_cmd": "make all", "build_partition": "compile"})
+        res = server_proxy.proxy_slurm(
+            op="eval", partition="gpu_simu", comment="ratchet iter 12", confirm=True)
+        self.assertEqual(res.get("status"), "ok", msg=res)
+        build_script, run_script = self._submitted_scripts()
+        for script in (build_script, run_script):
+            self.assertIn("#SBATCH --comment='ratchet iter 12'", script)
+        cfg = store._read_json(os.path.join(res["run_dir"], "config.json"))
+        self.assertEqual(cfg["placement"]["run"]["comment"], "ratchet iter 12")
+        self.assertEqual(cfg["placement"]["build"]["comment"], "ratchet iter 12")
+
+    def test_no_comment_leaves_the_directive_out(self) -> None:
+        self._session()
+        res = server_proxy.proxy_slurm(op="eval", partition="debug", confirm=True)
+        self.assertEqual(res.get("status"), "ok", msg=res)
+        self.assertNotIn("--comment", self._submitted_scripts()[0])
+
+    def test_a_refused_comment_submits_nothing(self) -> None:
+        self._session()
+        res = server_proxy.proxy_slurm(
+            op="eval", partition="debug",
+            comment="baseline\n#SBATCH --partition=everything", confirm=True)
+        self.assertEqual(res.get("status"), "error", msg=res)
+        self.assertEqual(self._submitted_scripts(), [])
 
     def test_a_refused_argument_submits_nothing(self) -> None:
         """_validate_slurm_token covers the refusal; this covers its timing."""

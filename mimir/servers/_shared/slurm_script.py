@@ -51,6 +51,7 @@ def sbatch_header(
     constraint: str = "",
     nodelist: str = "",
     exclusive: bool = False,
+    comment: str = "",
     dependency: str = "",
     kill_on_invalid_dep: bool = False,
 ) -> list[str]:
@@ -59,6 +60,10 @@ def sbatch_header(
     ``nodes``/``ntasks`` left at None are left to the scheduler's default. ``exclusive``
     is what a timing needs: a benchmark sharing its node with someone else's job
     measures the neighbour as much as the code.
+
+    ``comment`` is free text Slurm stores with the job and ``sacct -o Comment`` reads
+    back — it is how a submission says, to whoever looks at the queue later, what it
+    was for.
 
     ``dependency`` chains this job behind another, and ``kill_on_invalid_dep`` is what
     keeps that chain from hanging: without it a job whose dependency can never be
@@ -95,6 +100,8 @@ def sbatch_header(
         lines.append(f"#SBATCH --nodelist={nodelist}")
     if exclusive:
         lines.append("#SBATCH --exclusive")
+    if comment:
+        lines.append(f"#SBATCH --comment={shlex.quote(comment)}")
     if dependency:
         lines.append(f"#SBATCH --dependency={dependency}")
         if kill_on_invalid_dep:
