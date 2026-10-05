@@ -1509,6 +1509,32 @@ class CheckinDeliveryTests(unittest.TestCase):
         asyncio.run(self.session._flush_held_checkin(self.here.id))
         self.assertEqual(self.worker.submitted, [])
 
+    def test_a_bulletin_leaves_no_bubble_to_come_back_on_every_reload(self) -> None:
+        """The stored chat is the conversation, not the plumbing that kept it awake.
+
+        The client is sent the ``job_checkin`` event and renders the news itself; the
+        instruction asking the model for its one line is addressed to the model. Stored
+        as a bubble it was replayed on every reload, once per wake the session ever had.
+        """
+        asyncio.run(self.session._handle_job_checkin(self._event()))
+        self.assertEqual(self.session._display_messages, [])
+        stored = self.session.store.load_session(self.here.id)
+        self.assertEqual(
+            [m for m in stored.display_messages if "🔔" in str(m.get("text", ""))], [],
+            "a bulletin was persisted and will come back on the next reload",
+        )
+        # ...and the model was still told, which is the whole point of the wake.
+        self.assertIn("j1", self.worker.submitted[0][0])
+
+    def test_a_bulletin_in_another_conversation_leaves_no_bubble_either(self) -> None:
+        other = self.session.store.new_session()
+        self.session.store.save_session(other)
+        ev = {**self._event(), "session_id": other.id}
+        asyncio.run(self.session._handle_job_checkin(ev))
+        stored = self.session.store.load_session(other.id)
+        self.assertEqual(
+            [m for m in stored.display_messages if "🔔" in str(m.get("text", ""))], [])
+
     def test_the_transcript_tells_a_bulletin_from_a_wake(self) -> None:
         """``job_wake`` is counted against the jobs that recorded an exit code."""
         from unittest import mock

@@ -976,6 +976,18 @@ conversation so the next one replaces it, and goes out after the answer lands. I
 rather than delivered if the runs have since finished — their wakes say more — or if a wake
 of that conversation is itself pending.
 
+**And a check-in leaves no bubble.** A wake's notice is transcript — a run ended, and the
+reader wants that where it happened. A bulletin is plumbing: the client is sent the
+`job_checkin` event and renders the news that runs are still there, while the text the
+session layer builds is the instruction asking the model for its one line. Stored as a
+display message it was replayed on every reload, one full block per wake the conversation
+had ever had, each above the answer it had produced. So only a wake writes one, and
+`_text_count` — the guard that keeps a freshly opened webview from blanking a stored
+history — ignores the notices this layer wrote itself. It counted them, and since the
+webview never received one, every transcript the client sent afterwards looked short by one
+and was refused: the stored chat froze at the first notice and came back without a tool row,
+a diff card or a reasoning panel from that point on.
+
 **Asking where a run is at is what puts a watcher back on it.** A watcher lives on the agent
 that made it and dies with it, which a window reload is enough to cause; the run carries on
 in its own session directory, indifferent. Nothing re-arms at load — that would poll jobs

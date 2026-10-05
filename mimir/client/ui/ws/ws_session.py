@@ -1479,22 +1479,32 @@ class _Session:
         text_of = self._checkin_text if entry_type == "job_checkin" else self._wake_text
         entries = [{"type": entry_type, "text": text_of(e), "job": e.get("job_key")}
                    for e in events]
-        note = {"role": "system", "kind": "text", "text": f"🔔 {wake}"}
+        # A bulletin leaves no bubble. The client is sent the ``job_checkin`` event
+        # itself and renders the news that runs are still there; a stored copy of the
+        # instruction that *asks* the model for its one line is addressed to the model,
+        # not to a reader, and it was kept for ever — a conversation checked on twenty
+        # times reopened on twenty blocks of it, every one above the answer it had
+        # produced. The record below still gets it, which is what the mechanism is
+        # audited from.
+        note = None if entry_type == "job_checkin" else {
+            "role": "system", "kind": "text", "text": f"🔔 {wake}"}
         if owner == self._active_session_id:
-            self._display_messages.append(note)
             for entry in entries:
                 self.transcript.append(entry)
-            self._autosave_session(list(self._display_messages))
+            if note is not None:
+                self._display_messages.append(note)
+                self._autosave_session(list(self._display_messages))
             return
         try:
             session = self.store.load_session(owner)
         except Exception:
             return
-        session.display_messages.append(note)
-        try:
-            self.store.save_session(session)
-        except Exception:
-            return
+        if note is not None:
+            session.display_messages.append(note)
+            try:
+                self.store.save_session(session)
+            except Exception:
+                return
         log = self._detached_log(owner)
         for entry in entries:
             log.append(entry)
@@ -1950,9 +1960,17 @@ class _Session:
 
     @staticmethod
     def _text_count(messages: list) -> int:
-        """Number of plain-text bubbles — the part of a transcript both sides share."""
+        """Number of plain-text bubbles — the part of a transcript both sides share.
+
+        A note this layer wrote itself (``role: "system"``) is not that part: the
+        webview never received it, so counting it made every later transcript the
+        client sent look short by one and the guard below refused them all. The stored
+        chat then froze at the moment of the first notice and came back stripped of
+        every tool row, diff card and reasoning panel after it.
+        """
         return sum(1 for m in messages
-                   if isinstance(m, dict) and m.get("kind", "text") == "text")
+                   if isinstance(m, dict) and m.get("kind", "text") == "text"
+                   and m.get("role") != "system")
 
     async def _handle_transcript(self, msg: dict) -> None:
         """Store the client's rendered transcript as this session's display messages.

@@ -232,6 +232,28 @@ class TranscriptHandlerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(sess._display_messages, incoming)
 
 
+    async def test_a_notice_this_layer_wrote_does_not_freeze_the_transcript(self):
+        """A 🔔 the webview never received must not make its transcript look short.
+
+        It did: the guard then refused every transcript the client sent after the
+        first notice, and the stored chat froze there — coming back on reload without
+        a tool row, a diff card or a reasoning panel from that point on.
+        """
+        sess = _session()
+        sess._display_messages = [
+            {"role": "user", "kind": "text", "text": "build it"},
+            {"role": "system", "kind": "text", "text": "🔔 'j1' finished"},
+            {"role": "agent", "kind": "text", "text": "it is done"},
+        ]
+        incoming = [
+            {"role": "user", "kind": "text", "text": "build it"},
+            {"role": "agent", "kind": "tools", "tools": []},
+            {"role": "agent", "kind": "text", "text": "it is done"},
+        ]
+        await sess._handle_transcript({"session_id": "s1", "messages": incoming})
+        self.assertEqual(sess._display_messages, incoming)
+
+
 class UntrimmedHistoryTests(unittest.TestCase):
     def test_the_record_keeps_what_the_window_drops(self):
         sess = _session()
