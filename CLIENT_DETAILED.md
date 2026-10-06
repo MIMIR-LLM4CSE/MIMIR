@@ -1163,6 +1163,26 @@ was a placeholder and only the bound socket knows the answer. The choice of dire
 so two checkouts sharing a basename do not collide and two windows on one workspace resolve
 to the same file.
 
+**One server per workspace is enforced, not assumed**, and this is the piece that matters
+most. Two servers sharing a workspace share its sessions directory: both append to the same
+`transcript.jsonl` and both derive `seq` from it, so the numbering collides, the watermark
+built on it stops meaning anything, and a client attached to one sees nothing of the turn
+running in the other. What that looks like from a chat window is a conversation whose tools
+run and never appear — until a reconnect happens to land on the other server and replays
+them. It was diagnosed from `/diag` reporting a running pump that had moved zero events, no
+worker in the pool, and a journal already at seq 55.
+
+So `serve()` takes an exclusive `flock` on `<STATE_DIR>/server.lock` **before binding**, and a
+loser does not serve. `flock` rather than a file the process writes, because the kernel
+releases it however the process dies — a crashed server must not keep a workspace locked, and
+nothing the process writes can promise that. A loser that finds a live entry prints
+`Listening on <the winner's url>` on the line the extension parses, so a caller that meant to
+spawn connects to the server that already serves this workspace instead of adding a second;
+a loser that finds no address refuses outright rather than serving unlocked, which is the
+state that corrupts the journal. The extension asks the same question before spawning —
+auto-connect already did, and the Connect button did not, which is how the second server came
+to exist.
+
 Liveness is three questions, and the third is the one the other two cannot answer: the pid
 exists; its start time matches what was recorded, because a recycled pid wears the same
 number; and the port actually accepts a connection, because a process can be alive with its
@@ -1411,7 +1431,7 @@ installed.
 | `test_detached_commit.py` | the turn committer: an answer landing in its session file with nobody attached, a deferral stored as the card to put back, the answer-alone path for a non-full context mode, that the pump commits only when no client is attached and never a cancelled turn, and the revision guard — a second writer that loaded earlier is refused, an owner saving repeatedly is not, a failed write does not consume a revision, and a file from before the field existed still writes |
 | `test_reattach_replay.py` | that the gate cannot silence a stream — a watermark above the journal is not honoured, the stream still arrives after one, a filtered event is counted rather than vanishing, and a stream delta bypasses the gate (which is why the failure looks like a half-working chat) — and that a new conversation clears the watermark instead of inheriting it; then the watermark: everything replayed to a client that has seen nothing, only the tail to one that has seen some, nothing to one that is current; that the gate lands where the replay ended so an event is never both replayed and delivered live; that nothing produced between subscribing and reading is lost; framing, the cap keeping the end and saying so, a socket dying mid-replay leaving the gate alone; and that streamed deltas are absent while their aggregates are not |
 | `test_job_rearm.py` | the baseline — a first scan reporting nothing while recording that it looked, a job ending *after* it reported, a live run re-armed either way, and a watcher's own report marking the run so a restart does not repeat it — then the scan: a live run reported live, a recorded exit code winning over whatever the pid looks like, a dead pid with no code reading `unknown` rather than `done`, a recycled pid not mistaken for the job, an ephemeral scratch buffer skipped, a Slurm job live until Slurm says otherwise — then the re-arm itself, the wake going to the session that launched the run, a run already watched left alone, and the report-once marker |
-| `test_server_registry.py` | the registry: a published entry reading back with its pid and start time, an unreadable or wrong-protocol file reading as nothing, a failed write leaving no half file — and liveness over real sockets and real pids: a live pid whose listener has gone is *not* alive (while the process-only answer still says yes), a recycled pid is not mistaken for the server, `clear()` retires our own entry and leaves a stranger's |
+| `test_server_registry.py` | one server per workspace, with real contending subprocesses because `flock` is a kernel object a mock would not exercise: a second process is refused while the first holds the claim, the lock is free again once the holder is *killed* rather than stopped, and two workspaces do not contend — then the registry: a published entry reading back with its pid and start time, an unreadable or wrong-protocol file reading as nothing, a failed write leaving no half file — and liveness over real sockets and real pids: a live pid whose listener has gone is *not* alive (while the process-only answer still says yes), a recycled pid is not mistaken for the server, `clear()` retires our own entry and leaves a stranger's |
 | `test_hot_detach.py` | detaching, exercised against the real system calls because a fake `dup2` would prove nothing about the thing that breaks: output following the descriptors into the log while the parent's pipe sees only what preceded the redirect, a child **surviving two hundred writes after its reader is gone**, a second detachment appending rather than truncating, `setsid` succeeding for a non-leader and declining for a leader without cancelling the redirect — then the handler: per-session autonomy touching only the sessions named, naming none recording it pool-wide, an unknown level refused with nothing detached, and the registry entry keeping the address it was serving on |
 | `test_unattended_park.py` | the parking: a card with somebody there still waiting for ever, one with nobody there deferred through the pre-built mechanism, the grace period leaving room for a window reload, a wait with its own deadline left alone — **an answer already in hand, or landing during the poll, winning over the grace** (the bug this file found) — the pump publishing attachment on ticks that move nothing and not restarting the clock each tick, and `releasable()` refusing a session that holds a deferral |
 | `test_idle_predicate.py` | what counts as finished: a concluded conversation with no jobs idle, one that never answered *not* idle, an error counting as an ending, a live run on disk holding the process open even for a session with no agent, an unreadable state dir counting as busy — plus each prohibition (attached client, parked card, owed answer, queued turn, agent being built, a worker that cannot be asked), and the clock: it starts rather than stopping at once, stops on the TTL, and is reset by activity rather than shortened |

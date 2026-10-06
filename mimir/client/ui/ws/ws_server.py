@@ -346,6 +346,29 @@ async def serve(
     # of after the backend wait plus ~19 server spawns. That cost did not disappear; it
     # moved to the first query of each conversation, which is the only place that can say
     # which session is paying it.
+    # One server per workspace, enforced before anything is bound. Two of them share
+    # the sessions directory, so both append to the same journal and both derive `seq`
+    # from it: the numbering collides, the watermark built on it stops meaning
+    # anything, and a client attached to one sees nothing of the turn running in the
+    # other — a conversation whose tools run and never appear.
+    if not server_registry.acquire():
+        existing = server_registry.current()
+        if existing:
+            # Say where the real one is, on the line the extension parses. A caller
+            # that meant to spawn then connects to the server that already serves this
+            # workspace instead of adding a second.
+            print(f"Another MIMIR server already serves this workspace "
+                  f"(pid {existing['pid']}). Attaching to it instead of starting a "
+                  f"second one.", file=_ORIGINAL_STDOUT)
+            print(f"Listening on {existing['url']}", file=_ORIGINAL_STDOUT, flush=True)
+            return
+        print("Another process holds this workspace's server lock but published no "
+              "address. Refusing to start a second server: that would corrupt the "
+              "shared journal. Stop the other server, or clear "
+              f"{server_registry.lock_path()} if nothing is running.",
+              file=_ORIGINAL_STDOUT, flush=True)
+        raise SystemExit(1)
+
     pool = _AgentPool(_model)
     # The event pump, started here rather than with the first worker: it belongs to the
     # process, and what it does — drain every worker, journal what they emit, hand it to
@@ -381,6 +404,7 @@ async def serve(
             # Retired here rather than in the signal path: a crash leaves it behind on
             # purpose, and a reader checks liveness instead of trusting the file.
             server_registry.clear()
+            server_registry.release()
 
 
 async def _run_until_signalled(pool: _AgentPool) -> None:

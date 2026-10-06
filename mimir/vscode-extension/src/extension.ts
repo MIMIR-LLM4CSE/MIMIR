@@ -718,7 +718,9 @@ class MimirAgentViewProvider implements vscode.WebviewViewProvider {
    * Returns whether it attached, so the caller can skip the connect form entirely:
    * a window that reopens on a live run must not ask the user to connect to it.
    */
-  private async _attachToRunningServer(): Promise<boolean> {
+  private async _attachToRunningServer(
+    { silent = true }: { silent?: boolean } = {},
+  ): Promise<boolean> {
     if (this._ws || (serverProcess && !serverProcess.killed)) return false;
     // An explicit override is the user's own statement about where the server is, and
     // it wins: the spawn path already defers to it for the same reason.
@@ -736,10 +738,12 @@ class MimirAgentViewProvider implements vscode.WebviewViewProvider {
     if (!entry) return false;
 
     const log = vscode.window.createOutputChannel("MIMIR Server");
+    if (!silent) log.show();
     log.appendLine(
       `Attaching to the MIMIR server already running for this workspace ` +
       `(${entry.url}, pid ${entry.pid}). It was not started by this window, so it is ` +
-      `left running when the window closes.`
+      `left running when the window closes. Starting a second server for one ` +
+      `workspace would have both write the same session journal.`
     );
     this._attachLog = log;
     this._autoConnectStarted = true;
@@ -1117,14 +1121,30 @@ class MimirAgentViewProvider implements vscode.WebviewViewProvider {
    * Anthropic needs no URL at all — the hosted API is reached over the network
    * with the key from the form or the environment.
    */
-  private _startServerAndConnect(
+  /**
+   * Connect, starting a server only if this workspace does not already have one.
+   *
+   * The check is not an optimisation. Two servers on one workspace share its sessions
+   * directory, so both append to the same journal and both derive `seq` from it: the
+   * numbering collides, and a client attached to one sees nothing of the turn running
+   * in the other — a conversation whose tools run and never appear, until a reconnect
+   * lands on the right server and replays them. The server refuses the second claim
+   * itself, which is the guarantee; this is what keeps the ordinary path from relying
+   * on being refused.
+   *
+   * Auto-connect asked the same question (`_attachToRunningServer`) and this did not,
+   * which is how clicking Connect created the second server.
+   */
+  private async _startServerAndConnect(
     model: string,
     backend = "vllm",
     baseUrl = "http://127.0.0.1:8000",
     anthropicApiKey = "",
     { silent = false }: { silent?: boolean } = {},
-  ): void {
+  ): Promise<void> {
     const cfg = vscode.workspace.getConfiguration("mimir");
+
+    if (await this._attachToRunningServer({ silent })) return;
 
     // Attach mode: an explicit `mimir.wsUrl` means the user runs the server
     // themselves (by hand, or on another host), so we connect and start nothing.

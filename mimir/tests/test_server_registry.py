@@ -187,6 +187,114 @@ class ClearTests(_RegistryCase):
         server_registry.clear()
 
 
+class OneServerPerWorkspaceTests(_RegistryCase):
+    """The claim that stops a second server, and why it is a kernel lock.
+
+    Two servers on one workspace is not untidiness. They share the sessions directory,
+    so both append to the same ``transcript.jsonl`` and both derive ``seq`` from it: the
+    numbering collides, the watermark built on it stops meaning anything, and a client
+    attached to one sees nothing of the turn running in the other. Observed as a
+    conversation whose tools run and never appear — until a reconnect lands on the other
+    server and replays them.
+
+    ``flock`` rather than a file the process writes, because the kernel releases it
+    however the process dies, and a crashed server must not keep a workspace locked.
+    """
+
+    def tearDown(self) -> None:
+        server_registry.release()
+
+    def test_the_first_claim_succeeds(self):
+        self.assertTrue(server_registry.acquire())
+
+    def test_claiming_twice_in_one_process_is_idempotent(self):
+        self.assertTrue(server_registry.acquire())
+        self.assertTrue(server_registry.acquire())
+
+    def test_a_second_process_is_refused_while_the_first_holds_it(self):
+        # Real subprocesses: flock is a kernel object, and a mock of it would prove
+        # nothing about the thing that has to hold.
+        import subprocess
+        import sys
+        import textwrap
+
+        holder = textwrap.dedent(f"""
+            import os, sys, time
+            sys.path.insert(0, {json.dumps(os.getcwd())})
+            os.environ["MIMIR_STATE_DIR"] = {json.dumps(self._tmp.name)}
+            from unittest import mock
+            from mimir.client.ui.ws import server_registry as r
+            mock.patch.object(r, "_MIMIR_DIR_WS", {json.dumps(self._tmp.name)}).start()
+            print("HELD" if r.acquire() else "REFUSED", flush=True)
+            time.sleep(10)
+        """)
+        contender = textwrap.dedent(f"""
+            import os, sys
+            sys.path.insert(0, {json.dumps(os.getcwd())})
+            os.environ["MIMIR_STATE_DIR"] = {json.dumps(self._tmp.name)}
+            from unittest import mock
+            from mimir.client.ui.ws import server_registry as r
+            mock.patch.object(r, "_MIMIR_DIR_WS", {json.dumps(self._tmp.name)}).start()
+            print("HELD" if r.acquire() else "REFUSED", flush=True)
+        """)
+
+        first = subprocess.Popen([sys.executable, "-c", holder],
+                                 stdout=subprocess.PIPE, text=True)
+        try:
+            self.assertEqual(first.stdout.readline().strip(), "HELD")
+            second = subprocess.run([sys.executable, "-c", contender],
+                                    capture_output=True, text=True, timeout=30)
+            self.assertEqual(second.stdout.strip(), "REFUSED",
+                             "a second server claimed the same workspace")
+        finally:
+            first.kill()
+            first.wait(timeout=10)
+
+    def test_the_lock_is_free_once_the_holder_dies(self):
+        # However it dies: a crashed server must not keep a workspace locked, which is
+        # the whole reason this is the kernel's lock and not a file we write.
+        import subprocess
+        import sys
+        import textwrap
+
+        script = textwrap.dedent(f"""
+            import os, sys, time
+            sys.path.insert(0, {json.dumps(os.getcwd())})
+            from unittest import mock
+            from mimir.client.ui.ws import server_registry as r
+            mock.patch.object(r, "_MIMIR_DIR_WS", {json.dumps(self._tmp.name)}).start()
+            print("HELD" if r.acquire() else "REFUSED", flush=True)
+            time.sleep(30)
+        """)
+        holder = subprocess.Popen([sys.executable, "-c", script],
+                                  stdout=subprocess.PIPE, text=True)
+        self.assertEqual(holder.stdout.readline().strip(), "HELD")
+        holder.kill()                     # not a graceful stop
+        holder.wait(timeout=10)
+        self.assertTrue(server_registry.acquire(),
+                        "the lock outlived the process that held it")
+
+    def test_releasing_lets_the_next_one_in(self):
+        self.assertTrue(server_registry.acquire())
+        server_registry.release()
+        self.assertTrue(server_registry.acquire())
+
+    def test_releasing_nothing_is_not_an_error(self):
+        server_registry.release()
+        server_registry.release()
+
+    def test_two_workspaces_do_not_contend(self):
+        import tempfile as _tf
+        self.assertTrue(server_registry.acquire())
+        with _tf.TemporaryDirectory() as other:
+            with mock.patch.object(server_registry, "_MIMIR_DIR_WS", other):
+                # A different workspace is a different lock file; the global handle is
+                # this process's own, so it is released first to make the test honest.
+                server_registry.release()
+                self.assertTrue(server_registry.acquire())
+                server_registry.release()
+
+
 class WorkspaceScopeTests(unittest.TestCase):
     """One file per workspace is where "one server per workspace" comes from."""
 

@@ -23,6 +23,7 @@ waiting on an address nothing is listening at.
 
 from __future__ import annotations
 
+import fcntl
 import json
 import logging
 import os
@@ -44,6 +45,66 @@ PROTOCOL = 1
 _PROBE_TIMEOUT = 0.3
 
 _FILENAME = "server.json"
+_LOCKNAME = "server.lock"
+
+# Held for the life of the winning process. A module global because that is what its
+# lifetime is: released by the kernel when the process goes, which is the only release
+# that can be trusted — a crashed server must not keep a workspace locked.
+_LOCK_FH = None
+
+
+def lock_path() -> str:
+    return os.path.join(_MIMIR_DIR_WS, _LOCKNAME)
+
+
+def acquire() -> bool:
+    """Claim the right to be *the* server for this workspace. True when claimed.
+
+    Two servers on one workspace is not a tidiness problem. They share the sessions
+    directory, so both append to the same ``transcript.jsonl`` and both derive ``seq``
+    from it — the numbering collides, the watermark built on it stops meaning anything,
+    and a client attached to one of them sees nothing of the turn running in the other.
+    That is a conversation whose tools run and never appear.
+
+    So the claim is a kernel lock rather than a convention: ``flock`` is released when
+    the process dies however it dies, which no file written by the process can promise.
+    Taken before the socket is bound, because a loser must not occupy a port either.
+    """
+    global _LOCK_FH
+    if _LOCK_FH is not None:
+        return True
+    path = lock_path()
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        handle = open(path, "a+", encoding="utf-8")
+    except Exception:
+        # Nowhere to put the lock. Serving unlocked is worse than not serving: it is
+        # the exact state that corrupts the journal.
+        logger.warning("registry: could not open %s", path, exc_info=True)
+        return False
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        handle.close()
+        return False
+    _LOCK_FH = handle
+    return True
+
+
+def release() -> None:
+    """Drop the claim. Never raises; the kernel does this anyway when we go."""
+    global _LOCK_FH
+    handle, _LOCK_FH = _LOCK_FH, None
+    if handle is None:
+        return
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    except Exception:
+        pass
+    try:
+        handle.close()
+    except Exception:
+        pass
 
 
 def registry_path() -> str:
