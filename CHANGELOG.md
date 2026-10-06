@@ -15,6 +15,67 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.2.0] — 2026-10-06
+
+### Added
+- A run keeps working when the window closes. The control is at the right-hand
+  end of the toolbar that carries the mode and the settings; pressing it leaves
+  the server running without this window, and reopening the workspace comes
+  back to it. The autonomy it runs under while unattended is whatever the
+  approval switcher above the send button already says, so there is one place
+  to answer that question rather than two that can disagree — and the button's
+  tooltip spells out the consequence, because at `manual` a detached run parks
+  at its first sensitive call and does almost nothing overnight. Detaching does
+  not disconnect: the socket stays open, the turn goes on in front of you, and
+  pressing the control again gives the server back to the window.
+- Coming back brings the conversation with it. The history is replayed from the
+  session's journal — tool rows, diffs, and what the agent said between its
+  tools — the cards a turn is parked on are put back, the level it was left
+  running under is restored, and a turn still in flight carries on with a stop
+  button that stops something. Reasoning is the one thing a replay does not
+  keep: the deltas are hundreds per turn and are deliberately not recorded.
+- Background runs that finish while nobody is attached wake their conversation
+  without being asked. A run survives anything — its own process session, a
+  trap that records the exit code — but the watcher that promised to report it
+  does not, and re-making that promise previously needed a turn in which
+  somebody asked where the job had got to.
+- Disconnecting while conversations are still working asks first, naming them:
+  keep them going, disconnect anyway, or neither. Dismissing the question is
+  "neither", so pressing Escape cannot end a two-hour build.
+- `MIMIR: Stop Detached Server` ends a server this window no longer owns. It
+  signals rather than asks over the socket, because the window that wants it
+  stopped may not be connected to it, and it sends `SIGTERM` — the path that
+  closes each agent's MCP servers, where a `SIGKILL` would leave them behind.
+- A detached server stops itself once nothing needs it: no client attached,
+  every conversation having delivered a final answer, and no background run
+  still going. "Not busy" is not "has finished", so the criterion is the
+  answer rather than the silence. `MIMIR_SERVER_IDLE_TTL` sets the wait.
+- `/diag` reports what the event chain has done — whether the pump is running
+  and how much it has moved, the journal's position, each subscription's
+  watermark and what it filtered, and every worker's queue. A chat that has
+  gone quiet has several causes that look identical from a chat window, and
+  this is what separates them.
+- One server per workspace, enforced with a lock taken before anything binds. A
+  second would share the sessions directory, so both would write the same
+  journal and derive their sequence numbers from it — and a client attached to
+  one would see nothing of the turn running in the other. A window that would
+  have started one attaches to the server that already serves the workspace.
+- A card nobody can answer is set aside instead of waited on for ever. The
+  criterion is whether a client is *attached*, not how long the wait has been,
+  so a card with somebody there still waits indefinitely — and
+  `MIMIR_DETACH_GRACE` keeps a window reload from parking a question the user
+  is about to answer. Answering it later resumes the turn rather than
+  restarting it.
+
+### Fixed
+- Deleting a conversation that has nothing running takes one click. The
+  deletion asked about work in progress based on a reading of the session's job
+  directory that counted any file in it as a run still going.
+- A refused deletion says so. The warning went out on the transcript's
+  transient channel, which the panel drops as tool chatter, so the first click
+  did nothing visible and the second deleted — the warning the refusal exists
+  to give, not given.
+
 ## [1.1.2] — 2026-10-02
 
 ### Fixed
