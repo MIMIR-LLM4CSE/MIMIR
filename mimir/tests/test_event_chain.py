@@ -66,9 +66,15 @@ def _worker(session_id: str, turn: list[dict] | None = None) -> _AgentWorker:
     w._query_session_id = None
     w.active_session_id = session_id
     w.model = "m"
+    # A stand-in agent with the surface the worker actually calls on it. `_approvals`
+    # is what the policy engine reads afresh at each gate, so setting the mode is a
+    # rebind and nothing has to be queued.
     w._agent = types.SimpleNamespace(
         _cancel_flag=threading.Event(), _deferred_prompts=None, _deferred_turn=None,
-        context_mode="full", non_interactive=False)
+        context_mode="full", non_interactive=False,
+        set_approval_mode=lambda mode: setattr(w, "_approval_mode", mode),
+        toggles_state=lambda: {"servers": [], "skills": [], "nudges": []})
+    w._approval_mode = "manual"
     w._defer = threading.Event()
     w._preanswer = None
     w._pending_prompt = None
@@ -83,7 +89,7 @@ def _worker(session_id: str, turn: list[dict] | None = None) -> _AgentWorker:
     w.pending_prompt = lambda: None
     w.get_context_mode = lambda *a: "full"
     w.get_enforcement = lambda: "light"
-    w.get_approval_mode = lambda: "manual"
+    w.get_approval_mode = lambda: w._approval_mode
     w.get_thinking_profile = lambda: {}
     w.get_temperature_state = lambda: {"supported": True, "value": None}
     w._load_todos = lambda: []
@@ -327,6 +333,124 @@ class ProseSurvivesAnAbsenceTests(_ChainCase):
         while not worker.out_q.empty():
             emitted.append(worker.out_q.get_nowait())
         self.assertEqual([e["text"] for e in emitted], ["something said"])
+
+
+class ComingBackToARunningTurnTests(_ChainCase):
+    """A reattach is a window opening onto a run that never stopped.
+
+    Two things follow, and both are the user's own statement of what they want: the
+    conversation comes back in the mode it was left running under, and a turn that was
+    still working carries on — the window is what went away, not the run.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        from mimir.client.ui.ws import server_registry
+        patcher = mock.patch.object(server_registry, "_MIMIR_DIR_WS", self._tmp.name)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.registry = server_registry
+
+    def _detached_run(self, autonomy: str) -> None:
+        """A registry entry describing a detached server, as `detach` leaves it."""
+        self.registry.publish(url="ws://127.0.0.1:1", host="127.0.0.1", port=1)
+        self.registry.update(detached=True, autonomy=autonomy)
+
+    async def test_the_conversation_comes_back_under_the_level_it_was_left_on(self):
+        self._stored_session("s1")
+        self._detached_run("auto")
+        worker = _worker("s1")
+        applied: list[tuple] = []
+        pool = FakePool(worker, active="s1")
+        pool.apply_setting = lambda name, *a: applied.append((name, a)) or []
+        ws = _WS([], linger=0.3)
+        sess = _Session(ws, pool)
+
+        await self._run(sess, pool, ws)
+
+        self.assertIn(("set_approval_mode", ("auto",)), applied,
+                      "the run's own level was not restored")
+        modes = [m for m in ws.sent if m.get("type") == "approval_mode"]
+        self.assertTrue(modes, "the panel was never told which level it is on")
+        self.assertEqual(modes[-1]["mode"], "auto")
+
+    async def test_a_rebuilt_worker_comes_up_on_that_level_too(self):
+        # Recorded pool-wide as well as applied: a worker built after the reattach
+        # would otherwise start on the default and park at its next sensitive call,
+        # silently dropping a run from auto to manual.
+        self._stored_session("s1")
+        self._detached_run("auto_all")
+        worker = _worker("s1")
+        pool = FakePool(worker, active="s1")
+        ws = _WS([], linger=0.3)
+
+        await self._run(_Session(ws, pool), pool, ws)
+
+        self.assertEqual(worker.get_approval_mode(), "auto_all")
+
+    async def test_a_server_that_is_not_detached_is_left_alone(self):
+        # An ordinary connect decides nothing about the approval mode.
+        self._stored_session("s1")
+        self.registry.publish(url="ws://127.0.0.1:1", host="127.0.0.1", port=1)
+        worker = _worker("s1")
+        applied: list[tuple] = []
+        pool = FakePool(worker, active="s1")
+        pool.apply_setting = lambda name, *a: applied.append((name, a)) or []
+        ws = _WS([], linger=0.3)
+
+        await self._run(_Session(ws, pool), pool, ws)
+
+        self.assertEqual([a for a in applied if a[0] == "set_approval_mode"], [])
+
+    async def test_a_turn_still_in_flight_is_reported_as_running(self):
+        # So the chat comes back busy, with a stop button that stops something — and,
+        # not cosmetically, knowing a turn is open so the answer that ends it hands the
+        # finished transcript back.
+        self._stored_session("s1")
+        worker = _worker("s1")
+        worker._query_session_id = "s1"            # a turn of ours, mid-flight
+        pool = FakePool(worker, active="s1")
+        ws = _WS([], linger=0.3)
+
+        await self._run(_Session(ws, pool), pool, ws)
+
+        loaded = [m for m in ws.sent if m.get("type") == "session_loaded"]
+        self.assertTrue(loaded)
+        self.assertTrue(loaded[-1]["turn_running"],
+                        "the window came back without knowing its turn was still going")
+
+    async def test_an_idle_conversation_is_not_reported_as_running(self):
+        self._stored_session("s1")
+        worker = _worker("s1")
+        pool = FakePool(worker, active="s1")
+        ws = _WS([], linger=0.3)
+
+        await self._run(_Session(ws, pool), pool, ws)
+
+        loaded = [m for m in ws.sent if m.get("type") == "session_loaded"]
+        self.assertFalse(loaded[-1]["turn_running"])
+
+    async def test_the_turn_keeps_producing_across_the_reattach(self):
+        # The property itself: the window went away, the run did not.
+        self._stored_session("s1")
+        worker = _worker("s1", turn=[])
+        pool = FakePool(worker, active="s1")
+
+        first = _WS([json.dumps({"type": "query", "text": "a long one"})], linger=0.2)
+        await self._run(_Session(first, pool), pool, first)
+
+        # Mid-turn output, produced while nothing is attached.
+        worker._query_session_id = "s1"
+        worker.out_q.put({"type": "status", "text": "  → still going\n",
+                          "session_id": "s1"})
+
+        second = _WS([], linger=0.4)
+        await self._run(_Session(second, pool), pool, second)
+
+        replayed = [e["type"] for m in second.sent if m.get("type") == "replay"
+                    for e in m["events"]]
+        self.assertIn("status", replayed,
+                      "what the turn produced while away did not come back")
 
 
 class WhenTheChatGoesQuietTests(_ChainCase):

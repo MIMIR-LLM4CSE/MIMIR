@@ -325,8 +325,8 @@ class _Session:
         # chat that is already on screen, and a card on top of that.
         await self._send_replay()
 
-        # Somebody is here again, so the licence granted for their absence ends.
-        await self._revoke_absence_autonomy()
+        # The run never stopped, so its own level is the truth the panel must show.
+        await self._restore_detached_autonomy()
 
         # Last, so the card lands under a chat that is already on screen.
         await self._resend_parked_prompt()
@@ -1726,35 +1726,39 @@ class _Session:
                     "status_op": job.status_op(),
                 })
 
-    async def _revoke_absence_autonomy(self) -> None:
-        """Put the autonomy back to manual now that somebody is here.
+    async def _restore_detached_autonomy(self) -> None:
+        """Come back to the conversation in the mode it was left running under.
 
-        A level above manual answers "what may it do while I am gone", and the question
-        has stopped applying: the user is reading this. Left raised it is a conversation
-        that keeps approving sensitive calls long after the absence it was granted for —
-        and the approval mode is deliberately never persisted for exactly that reason,
-        that it must be chosen for the stretch it applies to rather than inherited.
+        A reattach is a window opening onto a run that never stopped, so the run's own
+        level is the truth and the panel has to show it. Two things can disagree with it
+        otherwise: a webview arrives on its default, and a worker rebuilt during the
+        absence comes up on the pool-wide record rather than the level chosen for this
+        session — which would quietly drop a run from ``auto`` to ``manual`` and park it
+        at its next sensitive call, with nothing said.
 
-        Said out loud rather than done quietly. Having had ``auto`` for seven hours is
-        something the user needs to be able to see, and a level that changed itself
-        without a word is worse than one that stayed.
+        Scoped to the run, not persisted past it: the level is read from the registry
+        entry, which is cleared on a clean stop and liveness-checked. That is what keeps
+        this from becoming the thing the approval mode is deliberately never persisted
+        for — a mode that suppresses prompts being inherited by a later session that
+        never asked for it.
         """
         entry = server_registry.read()
         if not entry or not entry.get("detached"):
             return
-        granted = str(entry.get("autonomy") or "manual")
-        if granted == "manual":
+        level = str(entry.get("autonomy") or "manual")
+        if level not in ("manual", "auto", "auto_all"):
             return
-        self._apply_setting("set_approval_mode", "manual")
-        server_registry.update(autonomy="manual")
+        # Recorded as well as applied, so a worker built after this comes up on it.
+        self._apply_setting("set_approval_mode", level)
         try:
-            await self.ws.send(json.dumps({"type": "approval_mode", "mode": "manual"}))
-            await self._notify(
-                f"Autonomy was \u201c{granted}\u201d while you were away; back to "
-                f"\u201cmanual\u201d now that you are here.")
+            await self.ws.send(json.dumps({"type": "approval_mode", "mode": level}))
+            if level != "manual":
+                await self._notify(
+                    f"Still running under \u201c{level}\u201d, the level it was "
+                    f"detached with.")
         except Exception:
             return
-        logger.info("reattach: autonomy revoked from %s back to manual", granted)
+        logger.info("reattach: autonomy restored to %s from the detached run", level)
 
     async def _send_replay(self) -> None:
         """Send what this session produced past the client's watermark, then go live.
