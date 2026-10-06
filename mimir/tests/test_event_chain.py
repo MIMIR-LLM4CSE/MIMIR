@@ -9,7 +9,8 @@ quiet.
 
 So this test is deliberately coarse. It builds a real ``_Session`` over a real
 ``_EventBus`` and a real worker's queue, runs the handshake, sends a query, and asserts
-that what the engine emitted arrived. It is the test that was missing.
+that what the engine emitted arrived. Coarse on purpose: the joins are what a chat
+window cannot see.
 """
 import asyncio
 import json
@@ -249,11 +250,11 @@ class ATurnReachesTheClientTests(_ChainCase):
 class ProseSurvivesAnAbsenceTests(_ChainCase):
     """Coming back shows what the agent *said*, not only what it called.
 
-    Reported after a real absence: the tool calls came back and the streaming did not.
-    Correct for the deltas — hundreds per turn, deliberately not journaled — but the
-    consequence was that everything the agent said *between* its tools was gone, and
-    that is most of what makes a turn legible. An aggregate of each block is recorded
-    instead, replay-only: a connected client already had the deltas.
+    The deltas are not journaled — hundreds per turn — so without an aggregate a turn
+    read back after an absence keeps only its tool rows and its final answer, having
+    lost everything the agent said between its tools. That is most of what makes a turn
+    legible. Each block is recorded whole instead, replay-only: a connected client has
+    already had the deltas.
     """
 
     def _turn_with_prose(self) -> list[dict]:

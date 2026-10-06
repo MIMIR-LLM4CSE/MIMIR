@@ -135,10 +135,11 @@ class ReconnectTests(unittest.IsolatedAsyncioTestCase):
         await sess._resend_parked_prompt()  # must not raise
 
     def test_a_reconnect_throws_nothing_away(self):
-        # There used to be a sweep here that emptied an idle worker's queue, with a
-        # carve-out for a finished job's wake. The pump drains every worker whether or
-        # not a socket exists, and the journal holds what it drained, so a reconnect
-        # replays from its watermark instead of hoping the right things were kept.
+        # Nothing is swept on connect. The pump drains every worker whether or not a
+        # socket exists and the journal holds what it drained, so a reconnect replays
+        # from its watermark rather than hoping the right things were kept — and a
+        # sweep that had to carve out a finished job's wake was deciding a question
+        # that does not need deciding.
         for busy in (True, False):
             with self.subTest(busy=busy):
                 sid = f"busy-{busy}"   # its own journal, so the runs do not add up
@@ -238,8 +239,8 @@ class HandshakeIsNotBlockedTests(unittest.IsolatedAsyncioTestCase):
     The job scan walks every session's job directories, and a job directory is never
     swept however old — so on a long-lived workspace it is unbounded file work. Awaited
     inside the handshake it sat between the connection and the message loop: the chat
-    came up, said it was ready, and the query was never read. Observed as "MIMIR is
-    frozen and makes no tool call".
+    came up, said it was ready, and the query was never read — which reads from a chat
+    window as "MIMIR is frozen and makes no tool call".
     """
 
     async def test_a_scan_that_never_finishes_does_not_stop_the_first_message(self):

@@ -1132,8 +1132,8 @@ class MimirAgentViewProvider implements vscode.WebviewViewProvider {
    * itself, which is the guarantee; this is what keeps the ordinary path from relying
    * on being refused.
    *
-   * Auto-connect asked the same question (`_attachToRunningServer`) and this did not,
-   * which is how clicking Connect created the second server.
+   * Every path that would start a server asks this first — auto-connect through
+   * `_attachToRunningServer`, and this one through the same call.
    */
   private async _startServerAndConnect(
     model: string,

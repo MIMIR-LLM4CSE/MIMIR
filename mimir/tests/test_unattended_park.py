@@ -135,9 +135,9 @@ class TheWaitTests(unittest.TestCase):
         self.assertFalse(w.has_deferral)
 
     def test_an_answer_already_in_hand_wins_over_the_grace(self):
-        # Found by this test: checking the grace before reading the queue threw away a
-        # reply that had crossed with the grace elapsing, and the user had answered
-        # into a void. The queue gets its turn first, always.
+        # The queue gets its turn first, always. Consulting the grace before reading it
+        # discards a reply that crossed with the grace elapsing — the user answered into
+        # a void.
         w = _worker()
         w.unattended_since = time.monotonic() - (_detach_grace() + 1)
         w._approval_q.put({"choice": "y"})

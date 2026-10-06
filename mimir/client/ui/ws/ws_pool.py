@@ -259,11 +259,11 @@ class _AgentPool:
     def _commit_turn(self, ev: dict, extras: dict) -> None:
         """Write a finished turn into its session file when no connection will.
 
-        Only when none is attached. A connected ``_Session`` has always done this
-        itself — to ``self.history`` for the conversation on screen, through
-        ``_persist_detached_answer`` for any other — and two writers of one file lose
-        history silently. So this is the fallback for the case that had none: nobody
-        looking, and a turn that would otherwise run, cost its tokens and vanish.
+        Only when none is attached. A connected ``_Session`` does this itself — to
+        ``self.history`` for the conversation on screen, through
+        ``_persist_detached_answer`` for any other — and two live writers of one file
+        lose history silently. This covers the case neither of them can: nobody looking,
+        and a turn that would otherwise run, cost its tokens and vanish.
         """
         if self.bus.attached():
             return
@@ -398,9 +398,9 @@ class _AgentPool:
         # the worker's constructor for the same reason — the constructor runs in the
         # executor, where there is no loop to host a watcher.
         #
-        # Any run this session left behind is now un-watched by construction: this
-        # worker is new, so nothing of its is holding anything. That makes this the one
-        # place where "the promise to report a run" can be re-made without being asked.
+        # A run this session left behind is un-watched by construction here: the worker
+        # is new, so nothing of its is holding anything. That makes this the one place
+        # where "the promise to report a run" can be re-made without being asked.
         try:
             worker.rearm_detached_jobs()
         except Exception:

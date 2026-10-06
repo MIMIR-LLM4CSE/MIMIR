@@ -538,9 +538,9 @@ class _AgentWorker:
             self._query_session_id = item.get("session_id") or self._own_session()
             # What this turn was handed, so whoever writes its answer can tell the
             # turn's own messages from the prefix it inherited. Recorded here because
-            # this is where the turn begins, and carried on the answer: the session
-            # layer used to hold it per socket, which a turn outliving its socket made
-            # into a boundary nobody had.
+            # this is where the turn begins, and carried on the answer rather than kept
+            # per socket: a turn can outlive the socket that submitted it, and a
+            # boundary held there is one nobody has when the answer lands.
             self._turn_submitted_len = len(item.get("history") or [])
             await self._run_query(item)
             self._current_task = None

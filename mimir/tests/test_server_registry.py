@@ -193,9 +193,9 @@ class OneServerPerWorkspaceTests(_RegistryCase):
     Two servers on one workspace is not untidiness. They share the sessions directory,
     so both append to the same ``transcript.jsonl`` and both derive ``seq`` from it: the
     numbering collides, the watermark built on it stops meaning anything, and a client
-    attached to one sees nothing of the turn running in the other. Observed as a
-    conversation whose tools run and never appear — until a reconnect lands on the other
-    server and replays them.
+    attached to one sees nothing of the turn running in the other — a conversation whose
+    tools run and never appear, until a reconnect lands on the other server and replays
+    them.
 
     ``flock`` rather than a file the process writes, because the kernel releases it
     however the process dies, and a crashed server must not keep a workspace locked.

@@ -1,9 +1,8 @@
 """Where this workspace's server is, written down so it can be found again.
 
-A detached server is only useful if something can find it. Today the port is learned by
-regexing the child's stdout — which works exactly as long as the extension host is the
-parent holding that pipe, and not a moment longer. A server that outlives the window
-that started it has to leave its address somewhere on disk.
+A detached server is only useful if something can find it, and a port read off a child's
+stdout is findable exactly as long as the reader is the parent holding that pipe. A
+server that outlives the window which started it has to leave its address on disk.
 
 ``<STATE_DIR>/server.json``, and the choice of directory is the whole of "one server per
 workspace": ``STATE_DIR`` is already ``<state home>/<basename>-<sha1(realpath)[:8]>``, so

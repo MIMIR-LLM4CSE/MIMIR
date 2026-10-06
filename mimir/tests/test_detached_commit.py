@@ -1,10 +1,9 @@
 """A turn that finishes while nobody is attached still gets written down.
 
-The one thing that recorded a turn's result used to run on the drain loop, which is
-created per WebSocket connection: a run that finished while the user was away cost its
-tokens and vanished. These tests pin the committer that replaced it — it takes a store,
-a session id and the answer, has no socket and no session object, and the pump calls it
-when ``bus.attached()`` is zero.
+Recording a turn's result from inside a connection would mean a run that finishes while
+the user is away costs its tokens and vanishes. These tests pin the committer: it takes
+a store, a session id and the answer, has no socket and no session object, and the pump
+calls it when ``bus.attached()`` is zero.
 """
 import queue as _queue
 import tempfile

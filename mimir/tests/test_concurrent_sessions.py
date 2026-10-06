@@ -189,10 +189,9 @@ class WhatIsRunningTests(unittest.IsolatedAsyncioTestCase):
     def test_every_conversations_output_is_drained_busy_or_not(self) -> None:
         """The pump drains them all, and the journal keeps what it drained.
 
-        This used to be a sweep that emptied an idle conversation's queue and spared a
-        busy one's, on the reasoning that a turn whose socket dropped mid-run is still
-        working. Both are drained now, because neither needed the queue to be its
-        record.
+        Both are drained, busy or not: neither needs its queue to be its record, and a
+        sweep that spared one and emptied the other was guarding output that the journal
+        already holds.
         """
         self.a._query_session_id = "s1"          # busy
         self.a.out_q.put({"type": "output", "text": "mid-run"})

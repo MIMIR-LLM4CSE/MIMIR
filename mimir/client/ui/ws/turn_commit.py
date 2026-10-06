@@ -1,17 +1,15 @@
 """Writing a finished turn into its session file, with or without a socket.
 
-This used to live in ``_Session._persist_detached_answer``, which runs on the drain
-loop — created per WebSocket connection. So the one thing that recorded a turn's result
-needed a client to be attached, and a turn that finished while nobody was looking ran,
-cost its tokens and vanished: its ``answer`` carried the history, the drain loop was
-what unpacked it, and there was no drain loop.
+No socket and no session object: everything it needs arrives as an argument — the
+store, the session id, the answer event, the private extras the pump took off it, where
+the turn began, and the context mode. That is what lets the pump call it with nobody
+attached, which is the whole point. A turn's ``answer`` carries its history, and if the
+only thing that unpacks it needs a client, a turn that finishes while nobody is looking
+runs, costs its tokens and vanishes.
 
-Pulled out here it has no socket and no session object. Everything it needs arrives as
-an argument — the store, the session id, the answer event, the private extras the pump
-took off it, where the turn began, and the context mode — so the pump can call it with
-nobody attached. The announcing is *not* here: notifying the user, refreshing the
-session list and flushing the wakes that piled up are things a connection does, and a
-commit that insisted on them would be back where it started.
+The announcing is deliberately elsewhere. Notifying the user, refreshing the session
+list and flushing the wakes that piled up are things a *connection* does; a commit that
+insisted on them could not run without one.
 """
 
 from __future__ import annotations
@@ -69,9 +67,9 @@ def commit_answer(store, session_id: str, ev: dict, extras: dict | None = None, 
     not have it. Never raises: it runs on the pump, which serves every conversation,
     and one session's unwritable file must not stop the rest from being recorded.
 
-    *context_mode* is the mode of the agent that ran **this** turn. It used to be read
-    off whichever worker was on screen, which is the wrong worker whenever the turn
-    belongs to another conversation.
+    *context_mode* is the mode of the agent that ran **this** turn, passed in rather
+    than read off whichever worker is on screen: that is the wrong worker whenever the
+    turn belongs to another conversation, which for a detached turn is always.
     """
     if not session_id:
         return None

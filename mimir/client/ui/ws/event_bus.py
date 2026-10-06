@@ -1,24 +1,20 @@
 """The event bus: one pump for the whole process, the journal as the record.
 
-Without this the WebSocket *is* the bus. ``_Session._drain_loop`` is created per
-connection, and it is what calls ``worker.drain()``, tees the journal and writes a
-finished turn's answer into its session file — so a socket that drops takes all three
-with it. The agents keep working (the pool is process-global, and ``releasable``
-refuses to evict a worker that is busy), but nothing records what they do, ``out_q``
-grows for the length of the disconnection, and a turn that finishes while nobody is
-attached loses its answer.
-
-So the arrow is turned around. The pump lives for the process, drains every worker
-whether or not anyone is listening, writes each event to that session's
-``transcript.jsonl`` under a monotonic ``seq``, and only then fans it out to however
-many sockets happen to be subscribed — zero included:
+The journal is the bus and a socket is one of its followers. The pump lives for the
+process, drains every worker whether or not anyone is listening, writes each event to
+that session's ``transcript.jsonl`` under a monotonic ``seq``, and only then fans it out
+to however many sockets happen to be subscribed — zero included:
 
     worker.out_q ──(pump)──► seq ──► transcript.jsonl      (durable, authoritative)
                                │
                                ├──► turn committer         (the session file)
                                └──► 0..N subscriber queues ──► sockets
 
-Three properties follow, and they are the whole reason for the module:
+Anything that recorded a turn from inside a connection would stop recording when the
+connection dropped: the agents keep working — the pool is process-global, and
+``releasable`` refuses to evict a worker that is busy — so what they do has to be
+written by something that outlives every socket. Three properties follow, and they are
+the whole reason for the module:
 
 **``out_q`` is bounded by a pump tick** rather than by how long the user was away. The
 queue stays unbounded upstream — the worker thread must never block on a full queue
@@ -167,12 +163,12 @@ class _EventBus:
         self._unattended_since: float | None = time.monotonic()
         self._task: asyncio.Task | None = None
         self._wake = asyncio.Event()
-        # Counters, so the chain can be asked what it did instead of inferred from what
-        # the chat shows. The pump is now the only consumer of every worker's queue, so
-        # "the chat went quiet" has several possible causes that look identical from
-        # outside: the pump never started, it started and died, it is draining but a
-        # watermark is swallowing the result, or the agent genuinely emitted nothing.
-        # These tell them apart in one answer.
+        # Counters, so the chain can be asked what it did rather than inferred from
+        # what the chat shows. The pump is the only consumer of every worker's queue, so
+        # "the chat went quiet" has several causes that look identical from outside: the
+        # pump never started, it started and died, it is draining but a watermark is
+        # swallowing the result, or the agent emitted nothing. These tell them apart in
+        # one answer.
         self.ticks = 0
         self.journaled = 0
         self.fanned_out = 0
@@ -264,9 +260,9 @@ class _EventBus:
     def record_client_event(self, session_id: str, ev: dict) -> dict:
         """Journal something the *client* said (a query, a steer) under the same seq run.
 
-        The journal has one writer per session; a second one would interleave the
-        numbering and break every watermark derived from it. So the lines that used to
-        be appended by the session layer come through here.
+        The journal has one writer per session; a second one interleaves the numbering
+        and breaks every watermark derived from it. So a line the session layer wants
+        recorded comes through here rather than being appended directly.
         """
         if not session_id:
             return ev

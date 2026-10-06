@@ -62,15 +62,13 @@ class AdvertisedCommandsExistTests(unittest.TestCase):
             f"them — they would autocomplete and do nothing: {missing}")
 
     def test_every_handled_command_is_advertised(self) -> None:
-        """The converse, and the half that was missing.
+        """The converse of the check above, and the sharper of the two.
 
-        One direction was checked — a name in the list must be handled — so the list
-        could not advertise a command that does nothing. Nothing checked the other way,
-        and the consequence is worse: a command the session handles but the webview does
-        not know is not routed as a command at all. It leaves as a plain query and the
-        *model* answers it, which looks like the command working badly rather than not
-        arriving. `/diag` shipped that way and reported the machine's CPU and memory
-        instead of the event chain's counters.
+        A name advertised but unhandled autocompletes and does nothing. A command the
+        session handles but the webview does not know is worse: it is not routed as a
+        command at all. It leaves as a plain query, the *model* answers it, and that
+        reads as the command working badly rather than never arriving — a `/diag` that
+        reports the machine's CPU instead of the event chain's counters.
         """
         # Every ``"/name"`` literal in the handler, rather than the syntactic forms a
         # branch can take. The first version of this test enumerated `==` and

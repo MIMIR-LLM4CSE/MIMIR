@@ -292,9 +292,9 @@ class _Session:
     async def run(self) -> None:
         # Subscribe BEFORE anything else, and this order is the point: from here on
         # nothing a turn produces can be missed, because it accumulates in this
-        # subscription's queue while the rest of the handshake runs. The old sweep that
-        # emptied the workers' queues on connect is gone with it — there is no debris to
-        # clear, the pump has already drained and journaled everything.
+        # subscription's queue while the rest of the handshake runs. Nothing has to be
+        # swept either — the pump has already drained and journaled everything, so what
+        # a worker holds is never debris.
         self._sub = self.pool.bus.subscribe()
 
         # Send ready immediately so the webview transitions out of "connecting".
@@ -334,11 +334,10 @@ class _Session:
         await self._send_served_models()
 
         # The greeting above may have said "not ready" and the worker may have come up
-        # since. It announces that once, by queueing a second ``ready``, which this
-        # connection subscribed in time to receive — but the announcement may also have
-        # been made before the subscription existed, in which case nothing will repeat
-        # it and the chat would sit on "starting the agent" for the life of the socket
-        # with a working agent behind it. Asking the worker directly costs one message.
+        # since. It announces that once, by queueing a second ``ready``, and an
+        # announcement made before this subscription existed is one nothing will repeat:
+        # the chat would sit on "starting the agent" for the life of the socket with a
+        # working agent behind it. Asking the worker directly costs one message.
         if not greeting["agent_ready"] and self.worker.agent_ready():
             try:
                 await self.ws.send(json.dumps(self._greeting()))
@@ -1698,11 +1697,11 @@ class _Session:
         conversation woken twice for one build.
 
         A session never scanned before gets a *baseline* instead of a backlog. A
-        detached job's directory is never swept, however old, so an existing workspace
-        has every build it ever ran sitting there with no marker — markers only started
-        being written when this did. Reading that history as wakes owed would wake a
-        conversation for a two-month-old build, which is worse than missing a recent
-        one and, unlike a missed wake, unbounded.
+        detached job's directory is never swept, however old, so a long-lived workspace
+        holds every build it ever ran, and an unmarked one there is as likely to have
+        been reported by its own watcher as to be owed a wake. Reading that history as
+        wakes owed wakes a conversation for a two-month-old build — worse than missing a
+        recent one, and unlike a missed wake unbounded.
         """
         try:
             found = scan_all_sessions()

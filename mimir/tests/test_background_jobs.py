@@ -1681,16 +1681,12 @@ class WakeDeliveryLossTests(unittest.TestCase):
 class ReconnectLosesNothingTests(unittest.TestCase):
     """What a reconnect may throw away: nothing.
 
-    There used to be a sweep here. A turn's output was treated as debris once the
-    socket drawing it was gone, with an exception carved out for a finished job's wake
-    — which answers to no turn, whose watcher is already finished, and whose
-    conversation is idle precisely because it is waiting for it. The exception was the
-    tell: deciding what to discard was the wrong question.
-
     The pump drains every worker whether or not a socket exists, and the journal holds
-    what it drained, so a reconnect replays from its watermark instead of hoping the
-    right things were kept. These tests pin that the cases the old sweep had to reason
-    about are now simply all recorded.
+    what it drained, so a reconnect replays from its watermark rather than deciding what
+    to keep. These tests pin that every case a sweep would have had to reason about is
+    simply recorded — including the one that makes the question unanswerable: a finished
+    job's wake answers to no turn, its watcher is already finished, and its conversation
+    is idle precisely because it is waiting for it.
     """
 
     def setUp(self) -> None:

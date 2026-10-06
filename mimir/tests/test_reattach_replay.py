@@ -192,15 +192,15 @@ class FramingTests(_ReplayCase):
 class TheGateCannotSilenceAStreamTests(_ReplayCase):
     """A watermark above the journal must not swallow the conversation.
 
-    Observed as: the chat streams the answer's opening text and then reasons for ever,
-    showing no tool call, no diff and no answer. The shape is the tell — `token` and
-    `thinking` are never journaled, so they carry no seq and bypass the gate entirely,
-    while everything else is stamped and filtered. So a gate set too high does not look
-    like a dead connection; it looks like a half-working one.
+    A gate above what the journal holds does not read as a dead connection. It reads as
+    a chat that streams the answer's opening text, reasons on, and shows no tool call,
+    no diff and no answer — because `token` and `thinking` are never journaled, so they
+    carry no seq and bypass the gate entirely, while everything else is stamped and
+    filtered.
 
-    The cause was a new conversation inheriting the previous one's watermark: its own
-    journal starts at 1, every stamped event is at or below the inherited mark, and the
-    gate drops the lot.
+    The watermark can exceed the journal in two ways, and both are guarded: a new
+    conversation starting with another's mark, and a stored mark outliving the log it
+    counted.
     """
 
     async def test_a_watermark_above_the_journal_is_not_honoured(self):
