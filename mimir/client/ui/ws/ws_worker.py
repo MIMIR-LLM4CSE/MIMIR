@@ -18,7 +18,13 @@ from ._ws_runtime import (
     augment_query_with_resources,
 )
 # After the runtime: it reads the workspace root that the bootstrap above pins.
-from .job_scan import mark_reported, scan_session
+from .job_scan import (
+    establish_baseline,
+    has_baseline,
+    mark_job_reported,
+    mark_reported,
+    scan_session,
+)
 
 import asyncio
 import concurrent.futures
@@ -1331,9 +1337,17 @@ class _AgentWorker:
         session_id = self._own_session()
         if not session_id:
             return {"rearmed": [], "reported": []}
+        jobs = scan_session(session_id)
+        if not has_baseline(session_id):
+            # First time this session has been looked at: everything already finished
+            # was reported by whatever was watching it, long before markers existed.
+            # Claiming that history as a backlog of wakes would wake a conversation for
+            # every build it ever ran.
+            establish_baseline(session_id, jobs)
+            jobs = [job for job in jobs if job.live]
         rearmed: list[str] = []
         reported: list[str] = []
-        for job in scan_session(session_id):
+        for job in jobs:
             existing = self._bg_jobs.get(job.job_key)
             if existing is not None and not existing.task.done():
                 continue   # a watcher is already holding it
@@ -1595,6 +1609,11 @@ class _AgentWorker:
             "session_id": session_id,
             "reason":     reason if state == "unknown" else "",
         })
+        # Recorded as spoken for, so a later scan does not report it a second time.
+        # Without this a job whose watcher reported it normally would be woken again on
+        # the next attach — the common case, and the worse one, since it happens in
+        # ordinary use rather than only after a crash.
+        mark_job_reported(session_id, job_key, descriptor.get("server"))
         self._bg_jobs.pop(job_key, None)
 
     def resolve_approval(self, choice: str, approved_files: list | None = None) -> None:

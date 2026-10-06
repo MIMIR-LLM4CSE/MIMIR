@@ -25,7 +25,12 @@ from ...query_engine.history import (
 from .ws_worker import _AgentWorker
 from .turn_commit import commit_answer, turn_messages
 from .transcript_log import read_since
-from .job_scan import mark_reported, scan_all_sessions
+from .job_scan import (
+    establish_baseline,
+    has_baseline,
+    mark_reported,
+    scan_all_sessions,
+)
 from .detach import detach as detach_process
 from . import server_registry
 from .ws_pool import _AgentPool
@@ -317,10 +322,6 @@ class _Session:
         # chat that is already on screen, and a card on top of that.
         await self._send_replay()
 
-        # And the runs that ended while nothing was listening. After the replay, so the
-        # wake lands under the turn that launched the run rather than above it.
-        await self._report_ended_jobs()
-
         # Last, so the card lands under a chat that is already on screen.
         await self._resend_parked_prompt()
 
@@ -339,6 +340,13 @@ class _Session:
                 return
 
         drain_task = asyncio.create_task(self._drain_loop())
+        # The runs that ended while nothing was listening, off the critical path and
+        # deliberately so. It walks every session's job directories, and a job
+        # directory is never swept however old — so on a long-lived workspace this is
+        # unbounded file work. Awaited here, inside the handshake, it sat between the
+        # client connecting and this loop reading its first message: the chat came up,
+        # said it was ready, and the query was never read. A task cannot do that.
+        jobs_task = asyncio.create_task(self._report_ended_jobs())
         try:
             async for raw in self.ws:
                 await self._handle(raw)
@@ -347,11 +355,12 @@ class _Session:
         finally:
             if self._summary_task is not None:
                 self._summary_task.cancel()
-            drain_task.cancel()
-            try:
-                await drain_task
-            except (asyncio.CancelledError, Exception):
-                pass
+            for task in (drain_task, jobs_task):
+                task.cancel()
+                try:
+                    await task
+                except (asyncio.CancelledError, Exception):
+                    pass
             # The agents and the pump live on; only this view of them ends here.
             self._sub.close()
 
@@ -1659,9 +1668,20 @@ class _Session:
         the same wake text and the same coalescing. A conversation with no agent yet keeps
         its wake pending rather than losing it, and the next flush delivers it.
 
+        Run as a task rather than awaited in the handshake: it walks every session's
+        job directories, and nothing must be able to come between a client connecting
+        and the loop that reads its messages.
+
         Marked on disk as it is announced, because two places look for these — a
         connection arriving and a worker being built — and a run announced twice is a
         conversation woken twice for one build.
+
+        A session never scanned before gets a *baseline* instead of a backlog. A
+        detached job's directory is never swept, however old, so an existing workspace
+        has every build it ever ran sitting there with no marker — markers only started
+        being written when this did. Reading that history as wakes owed would wake a
+        conversation for a two-month-old build, which is worse than missing a recent
+        one and, unlike a missed wake, unbounded.
         """
         try:
             found = scan_all_sessions()
@@ -1669,6 +1689,9 @@ class _Session:
             logger.warning("job scan: the sessions could not be read", exc_info=True)
             return
         for session_id, jobs in found.items():
+            if not has_baseline(session_id):
+                establish_baseline(session_id, jobs)
+                continue
             for job in jobs:
                 if job.live:
                     continue   # a worker being built is what puts a watcher back on it

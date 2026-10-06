@@ -227,14 +227,26 @@ class EndedJobsAreReportedOnAttachTests(unittest.IsolatedAsyncioTestCase):
 
         self.sess._handle_job_complete = _handle
 
+    def _baseline(self, session_id: str) -> None:
+        """This session has been looked at before — the ordinary state.
+
+        Only the very first scan establishes a baseline rather than reporting, and that
+        case has its own tests below.
+        """
+        path = os.path.join(self._tmp.name, "sessions", session_id, "jobs")
+        os.makedirs(path, exist_ok=True)
+        with open(os.path.join(path, ".wake_baseline"), "w") as fh:
+            fh.write("0")
+
     def _ended_job(self, session_id: str, job_key: str, exit_code: int) -> None:
         job_dir = os.path.join(self._tmp.name, "sessions", session_id, "jobs", job_key)
-        os.makedirs(job_dir)
+        os.makedirs(job_dir, exist_ok=True)
         with open(os.path.join(job_dir, "meta.json"), "w") as fh:
             json.dump({"job_key": job_key, "command": "make -j8", "pid": 1,
                        "pid_starttime": 1}, fh)
         with open(os.path.join(job_dir, "exit_code"), "w") as fh:
             fh.write(str(exit_code))
+        self._baseline(session_id)
 
     def _live_job(self, session_id: str, job_key: str) -> None:
         job_dir = os.path.join(self._tmp.name, "sessions", session_id, "jobs", job_key)
@@ -277,6 +289,29 @@ class EndedJobsAreReportedOnAttachTests(unittest.IsolatedAsyncioTestCase):
         await self.sess._report_ended_jobs()
         self.assertEqual(self.handled[0]["state"], "crashed")
         self.assertEqual(self.handled[0]["summary"]["exit_code"], 3)
+
+    async def test_the_first_look_at_a_session_reports_nothing(self):
+        # An existing workspace has every build it ever ran on disk with no marker —
+        # job directories are never swept. Reporting that history would wake a
+        # conversation per historical build on the first attach after upgrading.
+        for i in range(4):
+            job_dir = os.path.join(self._tmp.name, "sessions", "s1", "jobs", f"old-{i}")
+            os.makedirs(job_dir)
+            with open(os.path.join(job_dir, "meta.json"), "w") as fh:
+                json.dump({"job_key": f"old-{i}", "command": "make", "pid": 1,
+                           "pid_starttime": 1}, fh)
+            with open(os.path.join(job_dir, "exit_code"), "w") as fh:
+                fh.write("0")
+
+        await self.sess._report_ended_jobs()
+        self.assertEqual(self.handled, [])
+        self.assertTrue(job_scan.has_baseline("s1"))
+
+    async def test_a_job_that_ends_after_the_first_look_is_reported(self):
+        await self.sess._report_ended_jobs()      # establishes the baseline
+        self._ended_job("s1", "j1", 0)
+        await self.sess._report_ended_jobs()
+        self.assertEqual([e["job_key"] for e in self.handled], ["j1"])
 
     async def test_an_unreadable_state_dir_is_not_fatal(self):
         with mock.patch.object(job_scan, "scan_all_sessions",

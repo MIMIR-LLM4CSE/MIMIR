@@ -67,10 +67,8 @@ async function freePort(): Promise<number> {
 describe("workspaceId", () => {
   it("is the basename plus a short hash of the resolved path", () => {
     const real = fs.realpathSync(tmp);
-    const expected =
-      `${path.basename(real)}-${createHash("sha1").update(real, "utf8")
-        .digest("hex").slice(0, 8)}`;
-    expect(workspaceId(tmp)).toBe(expected);
+    const digest = createHash("sha1").update(real, "utf8").digest("hex").slice(0, 8);
+    expect(workspaceId(tmp)).toBe(`${path.basename(real)}-${digest}`);
   });
 
   it("matches what the Python side produces, for paths that exist everywhere", () => {

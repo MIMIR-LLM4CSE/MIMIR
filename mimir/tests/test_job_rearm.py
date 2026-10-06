@@ -27,6 +27,18 @@ class _ScanCase(unittest.TestCase):
         self.addCleanup(patcher.stop)
         self.addCleanup(self._tmp.cleanup)
 
+    def _baseline(self, session_id: str) -> None:
+        """Say this session has been scanned before — the ordinary state.
+
+        Only the very first scan of a session establishes a baseline instead of
+        reporting; every test about *reporting* therefore has to be past that point,
+        and the first-scan behaviour has its own tests in BaselineTests.
+        """
+        path = os.path.join(self._tmp.name, "sessions", session_id, "jobs")
+        os.makedirs(path, exist_ok=True)
+        with open(os.path.join(path, ".wake_baseline"), "w") as fh:
+            fh.write("0")
+
     def _job(self, session_id: str, job_key: str, *, pid: int | None = None,
              starttime: int | None = None, exit_code: int | None = None,
              ephemeral: bool = False, command: str = "make -j8",
@@ -43,6 +55,7 @@ class _ScanCase(unittest.TestCase):
         if exit_code is not None:
             with open(os.path.join(job_dir, "exit_code"), "w") as fh:
                 fh.write(str(exit_code))
+        self._baseline(session_id)
         return job_dir
 
     def _slurm_job(self, session_id: str, dir_name: str, job_id: str) -> None:
@@ -293,6 +306,72 @@ class ReportedOnceTests(_ScanCase):
                         side_effect=OSError("read-only")):
             reported = w.rearm_detached_jobs()["reported"]
         self.assertEqual(reported, ["j1"])
+
+
+class BaselineTests(_ScanCase):
+    """The first look at a session establishes what is already known, not a backlog.
+
+    A detached job's directory is never swept, however old, and markers only started
+    being written when this did — so an existing workspace has every build it ever ran
+    sitting there unmarked. Read as wakes owed, that is a conversation woken for a
+    two-month-old build, and unlike a missed wake it is unbounded.
+    """
+
+    def _unbaselined_job(self, session_id: str, job_key: str, exit_code: int) -> None:
+        job_dir = os.path.join(self._tmp.name, "sessions", session_id, "jobs", job_key)
+        os.makedirs(job_dir, exist_ok=True)
+        with open(os.path.join(job_dir, "meta.json"), "w") as fh:
+            json.dump({"job_key": job_key, "command": "make", "pid": 1,
+                       "pid_starttime": 1}, fh)
+        with open(os.path.join(job_dir, "exit_code"), "w") as fh:
+            fh.write(str(exit_code))
+
+    def test_the_first_scan_reports_nothing_and_records_that_it_looked(self):
+        for i in range(5):
+            self._unbaselined_job("s1", f"old-{i}", 0)
+        self.assertFalse(job_scan.has_baseline("s1"))
+        w = _RearmWorker("s1")
+        self.assertEqual(w.rearm_detached_jobs(), {"rearmed": [], "reported": []})
+        self.assertTrue(job_scan.has_baseline("s1"))
+        self.assertTrue(w.out_q.empty(), "woke a conversation for a historical build")
+
+    def test_a_job_that_ends_after_the_baseline_is_reported(self):
+        # The sequence that matters: looked at once, then a run finishes while away.
+        self._unbaselined_job("s1", "old", 0)
+        _RearmWorker("s1").rearm_detached_jobs()          # establishes the baseline
+        self._unbaselined_job("s1", "new", 0)
+        self.assertEqual(_RearmWorker("s1").rearm_detached_jobs()["reported"], ["new"])
+
+    def test_a_live_run_is_still_re_armed_on_the_first_scan(self):
+        # The baseline is about what has *ended*; a run still going needs its watcher
+        # back whether or not this session has been seen before.
+        job_dir = os.path.join(self._tmp.name, "sessions", "s1", "jobs", "live")
+        os.makedirs(job_dir)
+        with open(os.path.join(job_dir, "meta.json"), "w") as fh:
+            json.dump({"job_key": "live", "command": "sleep 9999",
+                       "pid": os.getpid(),
+                       "pid_starttime": job_scan._proc_starttime(os.getpid())}, fh)
+        w = _RearmWorker("s1")
+        self.assertEqual(w.rearm_detached_jobs()["rearmed"], ["live"])
+        self.assertTrue(job_scan.has_baseline("s1"))
+
+    def test_the_baseline_marks_the_history_so_it_is_never_claimed_later(self):
+        self._unbaselined_job("s1", "old", 0)
+        _RearmWorker("s1").rearm_detached_jobs()
+        jobs = scan_session("s1", include_reported=True)
+        self.assertTrue(all(job_scan.was_reported(j) for j in jobs))
+
+    def test_a_watcher_reporting_a_run_marks_it_so_a_restart_does_not_repeat_it(self):
+        # The common case and the worse one: a job whose own watcher reported it
+        # normally must not be woken again on the next attach.
+        self._baseline("s1")
+        self._unbaselined_job("s1", "j1", 0)
+        job_scan.mark_job_reported("s1", "j1")
+        self.assertEqual(_RearmWorker("s1").rearm_detached_jobs()["reported"], [])
+
+    def test_marking_by_key_needs_neither_a_session_nor_a_job(self):
+        job_scan.mark_job_reported(None, "j1")
+        job_scan.mark_job_reported("s1", "")
 
 
 class StateWordingTests(unittest.TestCase):

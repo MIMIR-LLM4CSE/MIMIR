@@ -29,6 +29,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import time
 from dataclasses import dataclass
 
 from ._ws_runtime import _MIMIR_DIR_WS
@@ -193,10 +194,53 @@ def _scan_slurm_jobs(session_id: str) -> list[DetachedJob]:
 # build.
 _REPORTED = "reported"
 
+# Name of the per-session file that says "scanning has happened here before".
+#
+# Without it the first scan of an existing workspace reads a whole history as a backlog
+# of wakes nobody is owed: a detached job's directory is never swept, however old, so
+# every build that ever finished is sitting there with no marker on it — and markers
+# only started being written when this was introduced. Waking a conversation for a
+# two-month-old build is worse than missing one, and unlike a missed wake it is also
+# unbounded.
+#
+# So the first scan establishes a baseline instead of claiming one: everything already
+# finished is marked as reported and nothing is emitted. Afterwards a job that ends is
+# genuinely one nothing has spoken for.
+_BASELINE = ".wake_baseline"
+
 
 def _job_dir(session_id: str, job_key: str, kind: str = "shell") -> str:
     sub = "hpc_jobs" if kind == "slurm" else "jobs"
     return os.path.join(_sessions_root(), session_id, sub, job_key)
+
+
+def _baseline_path(session_id: str) -> str:
+    return os.path.join(_sessions_root(), session_id, "jobs", _BASELINE)
+
+
+def has_baseline(session_id: str) -> bool:
+    """Whether this session has been scanned before."""
+    return os.path.exists(_baseline_path(session_id))
+
+
+def establish_baseline(session_id: str, jobs: list[DetachedJob]) -> None:
+    """Mark everything already finished as reported, and record that we have looked.
+
+    Called instead of emitting, the first time a session is scanned. Best-effort like
+    the markers themselves: a baseline that cannot be written costs one run of
+    duplicate wakes, while refusing to scan because of it costs the feature.
+    """
+    for job in jobs:
+        if not job.live:
+            mark_reported(job)
+    try:
+        path = _baseline_path(session_id)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(str(time.time()))
+    except Exception:
+        logger.warning("job scan: could not record a baseline for %s", session_id,
+                       exc_info=True)
 
 
 def was_reported(job: DetachedJob) -> bool:
@@ -221,6 +265,21 @@ def mark_reported(job: DetachedJob) -> None:
     except Exception:
         logger.warning("job scan: could not mark %s/%s reported",
                        job.session_id, job.job_key, exc_info=True)
+
+
+def mark_job_reported(session_id: str | None, job_key: str,
+                      server: str | None = None) -> None:
+    """Mark a run reported when all that is in hand is its key.
+
+    What a watcher has: it never built a :class:`DetachedJob`, and inventing one only
+    to mark it would be the same write with more ceremony.
+    """
+    if not session_id or not job_key:
+        return
+    mark_reported(DetachedJob(
+        session_id=session_id, job_key=job_key,
+        kind="slurm" if server == "hpc" else "shell",
+        live=False, exit_code=None))
 
 
 def scan_session(session_id: str, *, include_reported: bool = False

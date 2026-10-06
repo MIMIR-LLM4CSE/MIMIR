@@ -1120,8 +1120,20 @@ on time. A conversation with no agent yet keeps the wake pending rather than los
 Two places look for the ended pile — a connection arriving (`_report_ended_jobs`) and a
 worker being built (`rearm_detached_jobs`) — so a marker file in the run's own directory
 records that it has been announced, outliving whichever process announced it: a run reported
-twice is a conversation woken twice for one build. The marker is best-effort, because a
-duplicate wake is a nuisance and a missing one is the bug the whole path exists to fix. Slurm
+twice is a conversation woken twice for one build. The watcher's own terminal report marks it
+too, which is what keeps the marker truthful in ordinary use — a job reported normally and
+then re-reported on the next attach is the common case of that bug, and the worse one. The
+marker is best-effort, because a duplicate wake is a nuisance and a missing one is the bug
+the whole path exists to fix.
+
+**The first look at a session establishes a baseline rather than claiming a backlog.** A
+detached job's directory is never swept, however old, and markers only started being written
+when this did — so an existing workspace has every build it ever ran sitting there unmarked.
+Read as wakes owed, that is a conversation woken for a two-month-old build on the first attach
+after upgrading, and unlike a missed wake it is unbounded. So a session with no
+`.wake_baseline` has its finished history marked and nothing emitted; from then on a run that
+ends is genuinely one nothing has spoken for. A run still *going* is re-armed either way: the
+baseline is about what has ended. Slurm
 jobs are never declared finished by inspection: their state is in the controller, not in a pid
 here, so they come back as live and the watcher's first poll settles it.
 
@@ -1372,7 +1384,7 @@ installed.
 | `test_event_bus.py` | the pump: that it drains and journals with nobody attached, that `seq` has one writer per session and no gaps, that the private answer keys reach the committer but neither the journal nor the wire, that a streamed delta is delivered live and never recorded, that an overflowing subscriber is gapped rather than allowed to stall the pump, and what counts as a session having *concluded* |
 | `test_detached_commit.py` | the turn committer: an answer landing in its session file with nobody attached, a deferral stored as the card to put back, the answer-alone path for a non-full context mode, that the pump commits only when no client is attached and never a cancelled turn, and the revision guard — a second writer that loaded earlier is refused, an owner saving repeatedly is not, a failed write does not consume a revision, and a file from before the field existed still writes |
 | `test_reattach_replay.py` | the watermark: everything replayed to a client that has seen nothing, only the tail to one that has seen some, nothing to one that is current; that the gate lands where the replay ended so an event is never both replayed and delivered live; that nothing produced between subscribing and reading is lost; framing, the cap keeping the end and saying so, a socket dying mid-replay leaving the gate alone; and that streamed deltas are absent while their aggregates are not |
-| `test_job_rearm.py` | the scan: a live run reported live, a recorded exit code winning over whatever the pid looks like, a dead pid with no code reading `unknown` rather than `done`, a recycled pid not mistaken for the job, an ephemeral scratch buffer skipped, a Slurm job live until Slurm says otherwise — then the re-arm itself, the wake going to the session that launched the run, a run already watched left alone, and the report-once marker |
+| `test_job_rearm.py` | the baseline — a first scan reporting nothing while recording that it looked, a job ending *after* it reported, a live run re-armed either way, and a watcher's own report marking the run so a restart does not repeat it — then the scan: a live run reported live, a recorded exit code winning over whatever the pid looks like, a dead pid with no code reading `unknown` rather than `done`, a recycled pid not mistaken for the job, an ephemeral scratch buffer skipped, a Slurm job live until Slurm says otherwise — then the re-arm itself, the wake going to the session that launched the run, a run already watched left alone, and the report-once marker |
 | `test_server_registry.py` | the registry: a published entry reading back with its pid and start time, an unreadable or wrong-protocol file reading as nothing, a failed write leaving no half file — and liveness over real sockets and real pids: a live pid whose listener has gone is *not* alive (while the process-only answer still says yes), a recycled pid is not mistaken for the server, `clear()` retires our own entry and leaves a stranger's |
 | `test_hot_detach.py` | detaching, exercised against the real system calls because a fake `dup2` would prove nothing about the thing that breaks: output following the descriptors into the log while the parent's pipe sees only what preceded the redirect, a child **surviving two hundred writes after its reader is gone**, a second detachment appending rather than truncating, `setsid` succeeding for a non-leader and declining for a leader without cancelling the redirect — then the handler: per-session autonomy touching only the sessions named, naming none recording it pool-wide, an unknown level refused with nothing detached, and the registry entry keeping the address it was serving on |
 | `test_unattended_park.py` | the parking: a card with somebody there still waiting for ever, one with nobody there deferred through the pre-built mechanism, the grace period leaving room for a window reload, a wait with its own deadline left alone — **an answer already in hand, or landing during the poll, winning over the grace** (the bug this file found) — the pump publishing attachment on ticks that move nothing and not restarting the clock each tick, and `releasable()` refusing a session that holds a deferral |

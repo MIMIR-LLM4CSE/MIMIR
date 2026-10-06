@@ -8,6 +8,7 @@ the client nothing was running. The turn then waited on an answer that could not
 arrive — the query loop is serial, so every later query queued behind that wait — and
 the session read as hung with nothing on screen to say why.
 """
+import asyncio
 import json
 import tempfile
 import unittest
@@ -229,6 +230,77 @@ class _ClosedWS(_FakeWS):
             yield  # pragma: no cover - makes this an async generator
 
         return _empty()
+
+
+class HandshakeIsNotBlockedTests(unittest.IsolatedAsyncioTestCase):
+    """Nothing may come between a client connecting and its first message being read.
+
+    The job scan walks every session's job directories, and a job directory is never
+    swept however old — so on a long-lived workspace it is unbounded file work. Awaited
+    inside the handshake it sat between the connection and the message loop: the chat
+    came up, said it was ready, and the query was never read. Observed as "MIMIR is
+    frozen and makes no tool call".
+    """
+
+    async def test_a_scan_that_never_finishes_does_not_stop_the_first_message(self):
+        w = _bare_worker()
+        w.model = "m"
+        w.is_busy = lambda: False
+        w.get_context_mode = lambda: "full"
+        w.get_enforcement = lambda: "light"
+        w.get_approval_mode = lambda: "manual"
+        w.get_thinking_profile = lambda: {}
+        w.get_temperature_state = lambda: {"supported": True, "value": None}
+        w._agent = object()
+        sess = SessionFencingTests._session(self, w)
+        sess._purge_empty_sessions = lambda: None
+        sess._send_toggles = _noop_async
+        sess._send_sessions_list = _noop_async
+        sess._create_new_session = _noop_async
+        sess._resend_parked_prompt = _noop_async
+        sess._send_served_models = _noop_async
+        sess._send_replay = _noop_async
+        sess._drain_loop = _noop_async
+        sess._summary_task = None
+        sess.store = _NoSessions()
+
+        started = asyncio.Event()
+
+        async def _never_finishes():
+            started.set()
+            await asyncio.Event().wait()
+
+        sess._report_ended_jobs = _never_finishes
+
+        handled: list[str] = []
+
+        async def _handle(raw):
+            handled.append(raw)
+
+        sess._handle = _handle
+        sess.ws = _OneMessageWS('{"type": "query", "text": "hello"}')
+
+        await asyncio.wait_for(sess.run(), 5)
+        self.assertTrue(started.is_set(), "the scan never ran at all")
+        self.assertEqual(handled, ['{"type": "query", "text": "hello"}'],
+                         "the first message was never read")
+
+
+class _OneMessageWS(_FakeWS):
+    """A socket that yields one message and then ends, like a client that sent one."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__()
+        self._message = message
+
+    def __aiter__(self):
+        async def _gen():
+            yield self._message
+        return _gen()
+
+
+async def _noop_async(*_args, **_kwargs):
+    return None
 
 
 class ReadinessAnnouncementTests(unittest.IsolatedAsyncioTestCase):
