@@ -100,6 +100,70 @@ class AdvertisedCommandsExistTests(unittest.TestCase):
             self.assertIn(f'cmd == "/{name}"', cli, f"/{name} is missing from the CLI")
 
 
+class DetachOwnershipTests(unittest.TestCase):
+    """Asking to detach is what stops the kill, not hearing back about it.
+
+    There is a round trip between the click and the server having detached. A host that
+    waits for the reply leaves a window in which the user has asked to keep the run
+    going, the badge has not changed yet, and closing the editor still ends it. The two
+    outcomes are not symmetric: a server left running that failed to detach is findable
+    through the registry and endable with the stop command, while one killed after the
+    user asked to keep it is work gone.
+    """
+
+    def _extension(self) -> str:
+        path = os.path.join(_ROOT, "vscode-extension", "src", "extension.ts")
+        with open(path, encoding="utf-8") as fh:
+            return fh.read()
+
+    def test_the_outbound_request_sets_the_flag(self) -> None:
+        src = self._extension()
+        send = src[src.index('if (m.type === "ws_send")'):]
+        send = send[:send.index("this._pendingMessages.push(payload)")]
+        self.assertIn("serverDetached = true", send,
+                      "the kill is only called off once the server answers")
+
+    def test_every_kill_site_consults_it(self) -> None:
+        """All of them, found by enumerating the calls rather than the ones I knew.
+
+        Three sites end the server, and a guard on two of them is a detachment that
+        holds until the user presses the third. The enumeration is the test: a fourth
+        added later fails here rather than in somebody's overnight run.
+        """
+        lines = self._extension().splitlines()
+        # Real calls only: the spawn comment mentions the same expression to explain
+        # why `exec` is used, and a test that counted prose would be satisfied by it.
+        sites = [
+            i for i, line in enumerate(lines)
+            if ("serverProcess.kill()" in line or "serverProcess?.kill()" in line)
+            and not line.lstrip().startswith(("//", "*", "/*"))
+        ]
+        self.assertGreaterEqual(len(sites), 4, "the kill sites moved; re-read them")
+        for i in sites:
+            # The guard sits on the branch immediately around the call.
+            window = "\n".join(lines[max(0, i - 6):i + 1])
+            self.assertIn(
+                "serverDetached", window,
+                f"the kill on line {i + 1} does not consult the flag:\n{window}")
+
+    def test_the_server_is_spawned_in_its_own_session(self) -> None:
+        # Arranging it afterwards depends on the process not already being a group
+        # leader, and a detachment that quietly does not hold is worse than none.
+        src = self._extension()
+        spawn = src[src.index('cp.spawn("bash", ["-c", spawnCmd]'):]
+        spawn = spawn[:spawn.index("});")]
+        self.assertIn("detached: true", spawn)
+        self.assertIn('stdio: "ignore"', spawn)
+
+    def test_its_output_goes_to_a_file_not_a_pipe(self) -> None:
+        # A pipe held by this extension host is a tether: when the host goes, the next
+        # write takes a SIGPIPE and a server meant to outlive the window dies the first
+        # time it logs anything.
+        src = self._extension()
+        self.assertIn("logPath(", src)
+        self.assertIn(">> ${quotedLog} 2>&1", src)
+
+
 class RoutingTests(unittest.TestCase):
     """A session command must leave the webview as `command`, not as `query`."""
 

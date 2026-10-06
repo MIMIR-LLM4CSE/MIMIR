@@ -886,10 +886,22 @@ export const App: React.FC = () => {
     setAgentReady(false);
   }, [disconnect]);
 
-  // The conversations still working. `running` is the server's own answer — several
-  // turns run at once, so a conversation the user is not reading can be working, which
-  // is invisible without it.
-  const runningSessions = sessions.filter((s) => s.running);
+  // The conversations still working.
+  //
+  // Two sources, because neither is enough alone. `running` in the session list is the
+  // server's answer for conversations this window is not reading — several turns run at
+  // once, and those are invisible without it — but the list is pushed when a turn
+  // *ends*, not when one starts, so it says nothing about the turn happening right here.
+  // For that one the client's own `busy` is authoritative and immediate.
+  const runningSessions = useMemo(() => {
+    const others = sessions.filter((s) => s.running && s.id !== activeSessionId);
+    if (!busy || !activeSessionId) return others;
+    const mine = sessions.find((s) => s.id === activeSessionId);
+    return [
+      mine ?? { id: activeSessionId, title: "", created_at: "", updated_at: "" },
+      ...others,
+    ];
+  }, [sessions, activeSessionId, busy]);
 
   /**
    * Disconnect, asking first when it would end work that is still running.

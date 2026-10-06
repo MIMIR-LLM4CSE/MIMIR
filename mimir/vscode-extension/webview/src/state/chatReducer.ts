@@ -349,14 +349,20 @@ export function createChatReducer(makeId: () => string) {
     switch (action.type) {
       // ── Local actions ──────────────────────────────────────────────────────
       case "submit_query": {
+        // Committed, not dropped. Anything still live when a new question is asked
+        // happened, and the live buffers are a staging area rather than a record: a
+        // replayed turn whose cards and prose are sitting there — the ordinary state
+        // after reattaching to a run that has not answered yet — would otherwise be
+        // erased by the next thing typed, leaving the question where the work was.
+        const flushed = flushLive(state, makeId);
         const userMsg: ChatMessage = { id: makeId(), role: "user", kind: "text", text: action.text };
         return {
-          ...state,
+          ...flushed,
           // Whatever a previous turn left provisional is settled by a new question
           // being asked: it is the transcript now, and the `answer` this turn ends on
           // must supersede its own prose only — never reach back and delete an older
           // turn's, which is all that would be left of a run that was interrupted.
-          messages: [...clearProvisional(state.messages), userMsg],
+          messages: [...clearProvisional(flushed.messages), userMsg],
           liveThinkingBlocks: [],
           liveToolCalls: [],
           busy: true,

@@ -76,6 +76,42 @@ export function registryPath(workspaceRoot: string): string {
   return path.join(stateDir(workspaceRoot), "server.json");
 }
 
+/** Where a server started by this extension writes its output. */
+export function logPath(workspaceRoot: string, stamp: string): string {
+  return path.join(stateDir(workspaceRoot), "logs", `server-${stamp}.log`);
+}
+
+/**
+ * Wait for a server to publish its address, polling the registry.
+ *
+ * A server spawned in its own process session has no pipe back here, so its address
+ * cannot be read off its stdout: it writes `server.json` once the socket is bound and
+ * this reads it. Polling rather than watching, because the file is created, renamed
+ * into place and possibly replaced, and a watcher on a path that does not exist yet is
+ * the harder thing to get right.
+ *
+ * Resolves with the entry whose `pid` is *ours* — or, when one appears for another live
+ * pid, with that one: a server that loses this workspace's lock exits without serving,
+ * so the right answer is the server that already holds it.
+ */
+export async function waitForServer(
+  workspaceRoot: string,
+  ourPid: number | undefined,
+  { timeoutMs = 120000, intervalMs = 250 }: { timeoutMs?: number; intervalMs?: number } = {},
+): Promise<ServerEntry | undefined> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const entry = readEntry(workspaceRoot);
+    if (entry) {
+      if (ourPid !== undefined && entry.pid === ourPid) return entry;
+      // Somebody else's, and alive: ours lost the lock and stood down.
+      if (processAlive(entry) && (await portAnswers(entry.host, entry.port))) return entry;
+    }
+    await new Promise((r) => setTimeout(r, intervalMs));
+  }
+  return undefined;
+}
+
 /** The recorded entry, or undefined when there is none we can understand. */
 export function readEntry(workspaceRoot: string): ServerEntry | undefined {
   try {
