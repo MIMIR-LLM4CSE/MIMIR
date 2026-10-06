@@ -40,6 +40,7 @@ export const SESSION_COMMANDS: ToggleItem[] = [
   { name: "memory", description: "list | clear | delete <name> — persistent memory", enabled: true },
   { name: "proxy", description: "list | clean <name> — registered proxies; delete one's runs and optimisation state", enabled: true },
   { name: "cancel", description: "stop the run in flight", enabled: true },
+  { name: "diag", description: "what the event chain has done — pump, journal, watermark", enabled: true },
 ];
 
 const SESSION_NAMES = new Set(SESSION_COMMANDS.map((c) => c.name));

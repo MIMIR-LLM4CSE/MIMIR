@@ -207,6 +207,9 @@ class _Session:
         # This connection's view of the stream, opened in run(). The pump owns the
         # draining; this is only where our share of it arrives.
         self._sub = None
+        # Events withheld because they belong to another conversation, per session.
+        # The one quiet-chat cause that is otherwise invisible — see _is_foreign_event.
+        self._foreign_withheld: dict[str, int] = {}
         # How far into the journal the client's rendered transcript goes, as the client
         # last said. The watermark a re-attach replays from.
         self._rendered_seq = 0
@@ -1054,6 +1057,14 @@ class _Session:
                         return
                     continue
                 if self._is_foreign_event(ev):
+                    # Counted here rather than in the predicate, which must stay a
+                    # predicate. This is the one way the chat can go quiet that leaves
+                    # no trace: the event is withheld from the socket and journaled
+                    # under its own session, so the conversation looks stalled while
+                    # the record fills — and a reconnect replays it and it appears.
+                    if owner:
+                        self._foreign_withheld[owner] = (
+                            self._foreign_withheld.get(owner, 0) + 1)
                     # A turn running in a conversation that is not on screen. Its output
                     # has nowhere to be drawn, but it still happened: it goes to that
                     # conversation's own log, so switching to it shows the whole turn and
@@ -2931,7 +2942,7 @@ class _Session:
                 await self.ws.send(json.dumps({
                     "type": "error",
                     "text": "Usage: /memory list | /memory clear | /memory delete <name>\n"}))
-        elif text in ("/diag", "/diagnose"):
+        elif text == "/diag":
             # The chain the events travel, asked rather than inferred. The pump is the
             # only consumer of every worker's queue now, so a chat that goes quiet has
             # several causes that look identical from a chat window: the pump never
@@ -2941,6 +2952,9 @@ class _Session:
             rows.append({"label": "active session",
                          "detail": str(self._active_session_id)})
             rows.append({"label": "rendered watermark", "detail": str(self._rendered_seq)})
+            for sid, count in sorted(self._foreign_withheld.items()):
+                rows.append({"label": "withheld as foreign", "detail":
+                             f"{count} event(s) stamped {sid} — not this conversation"})
             for sid, worker in self.pool.items():
                 rows.append({"label": f"worker {sid[:8]}", "detail":
                              f"queue {worker.out_q.qsize()}, "

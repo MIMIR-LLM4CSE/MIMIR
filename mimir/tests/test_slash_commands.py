@@ -37,6 +37,14 @@ def _ws_handled() -> str:
         return fh.read()
 
 
+def _handler_body() -> str:
+    """Just the command handler, so a match elsewhere in the file cannot stand in."""
+    src = _ws_handled()
+    start = src.index("async def _handle_command(self")
+    end = src.index("async def _send_toggles", start)
+    return src[start:end]
+
+
 class AdvertisedCommandsExistTests(unittest.TestCase):
     def test_the_list_is_not_empty(self) -> None:
         # A parser that silently matched nothing would make every assertion below vacuous.
@@ -52,6 +60,33 @@ class AdvertisedCommandsExistTests(unittest.TestCase):
             missing, [],
             "the webview offers these but ws_session._handle_command does not handle "
             f"them — they would autocomplete and do nothing: {missing}")
+
+    def test_every_handled_command_is_advertised(self) -> None:
+        """The converse, and the half that was missing.
+
+        One direction was checked — a name in the list must be handled — so the list
+        could not advertise a command that does nothing. Nothing checked the other way,
+        and the consequence is worse: a command the session handles but the webview does
+        not know is not routed as a command at all. It leaves as a plain query and the
+        *model* answers it, which looks like the command working badly rather than not
+        arriving. `/diag` shipped that way and reported the machine's CPU and memory
+        instead of the event chain's counters.
+        """
+        # Every ``"/name"`` literal in the handler, rather than the syntactic forms a
+        # branch can take. The first version of this test enumerated `==` and
+        # `.startswith(`, and missed `text in ("/diag", "/diagnose")` — so it passed
+        # while the very command that prompted it was still unrouted.
+        handler = _handler_body()
+        handled = {name.rstrip() for name in re.findall(r'"/([a-z][a-z-]*)\s?"', handler)}
+        # Answered from the model's own surface rather than the panel's: the webview has
+        # no business knowing these.
+        model_facing = {"backend"}
+        advertised = set(_advertised())
+        unrouted = sorted(handled - advertised - model_facing)
+        self.assertEqual(
+            unrouted, [],
+            "ws_session handles these but the webview does not route them as commands, "
+            f"so they reach the model as plain queries instead: {unrouted}")
 
     def test_the_two_commands_this_work_added_are_both_there(self) -> None:
         advertised = _advertised()
@@ -96,10 +131,7 @@ class CommandAnswersAreRenderedTests(unittest.TestCase):
     """
 
     def _handler_body(self) -> str:
-        src = _ws_handled()
-        start = src.index("async def _handle_command(self")
-        end = src.index("async def _send_toggles", start)
-        return src[start:end]
+        return _handler_body()
 
     def test_the_handler_body_is_found(self) -> None:
         # A slice that silently matched nothing would make the assertions below vacuous.
