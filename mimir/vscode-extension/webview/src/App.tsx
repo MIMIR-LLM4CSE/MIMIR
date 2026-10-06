@@ -18,6 +18,7 @@ import type {
   ApprovalMessage,
   UserQuestionMessage,
   ToggleItem,
+  RunningServer,
   ResourceItem,
   AgentMode,
   ApprovalMode,
@@ -183,6 +184,10 @@ export const App: React.FC = () => {
   // boolean "show the dialog" but the disconnect itself, held: cancelling means the
   // disconnect never happened.
   const [disconnectPending, setDisconnectPending] = useState(false);
+  // The server this workspace already has, when it has one. Its presence is what turns
+  // a connect form into a rejoin: the address and backend a form collects describe how
+  // a *new* server would start, and none of them apply to one already serving.
+  const [runningServer, setRunningServer] = useState<RunningServer | null>(null);
   const [contextUsage, setContextUsage] = useState<ContextUsage | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [togglesOpen, setTogglesOpen] = useState(false);
@@ -398,6 +403,7 @@ export const App: React.FC = () => {
         // the user last connected to and asked us to keep.
         const saved = msg.remembered ?? null;
         setRemembered(saved);
+        setRunningServer(msg.running ?? null);
         if (saved) seedAddress(saved.backend, saved.baseUrl);
         return;
       }
@@ -870,6 +876,32 @@ export const App: React.FC = () => {
     },
     [fetchModels],
   );
+  /**
+   * Rejoin the server this workspace already has.
+   *
+   * Sent as an ordinary connect: the host checks the registry before starting
+   * anything, so this attaches rather than spawning. The arguments are placeholders —
+   * a server already serving does not take a backend or an address — and passing the
+   * last ones used keeps the host's own validation on a path it knows.
+   */
+  const handleReattach = useCallback(() => {
+    setConnection("connecting");
+    setAgentReady(false);
+    const args = lastConnectArgsRef.current;
+    if (args) {
+      connect(...args);
+      return;
+    }
+    // Nothing was connected from this window, so there are no last arguments. The
+    // address is a placeholder either way: the host sees a server already serving this
+    // workspace and attaches to it without reading any of this.
+    const baseUrl =
+      backend === "ray" ? rayBaseUrl
+      : backend === "ollama" ? ollamaBaseUrl
+      : vllmBaseUrl;
+    connect(runningServer?.model ?? "", backend, baseUrl, "", false);
+  }, [connect, runningServer, backend, vllmBaseUrl, rayBaseUrl, ollamaBaseUrl]);
+
   const handleReconnect = useCallback(() => {
     const args = lastConnectArgsRef.current;
     if (!args) return;
@@ -1429,11 +1461,32 @@ export const App: React.FC = () => {
         {/* Reconnect panel — shown when disconnected with existing history */}
         {connection === "disconnected" && messages.length > 0 && (
           <div className="reconnect-panel">
-            <div className="reconnect-hint">Agent disconnected — reconnect to continue</div>
-            {lastConnectArgsRef.current && (
-              <button className="reconnect-btn" onClick={handleReconnect}>
-                Reconnect
-              </button>
+            {runningServer ? (
+              <>
+                {/* A run is going without this panel. Rejoining it is the only thing
+                    worth offering here: the form below would collect an endpoint that
+                    a server already serving this workspace does not use. */}
+                <div className="reconnect-hint">
+                  {runningServer.detached
+                    ? "MIMIR is still working without this window"
+                    : "This workspace already has a MIMIR server"}
+                  {runningServer.autonomy && runningServer.autonomy !== "manual"
+                    ? ` — running under “${runningServer.autonomy}”`
+                    : ""}
+                </div>
+                <button className="reconnect-btn" onClick={handleReattach}>
+                  Rejoin the run
+                </button>
+              </>
+            ) : (
+              <>
+                <div className="reconnect-hint">Agent disconnected — reconnect to continue</div>
+                {lastConnectArgsRef.current && (
+                  <button className="reconnect-btn" onClick={handleReconnect}>
+                    Reconnect
+                  </button>
+                )}
+              </>
             )}
             <ConnectForm
               key={connectFormKey}

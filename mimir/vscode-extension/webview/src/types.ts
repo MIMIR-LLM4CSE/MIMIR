@@ -165,6 +165,22 @@ export interface ConfigMessage {
   anthropicModels?: string[];
   /** Endpoint the user asked the host to remember, if any. */
   remembered?: RememberedEndpoint | null;
+  /** The server this workspace already has, when it has one.
+   *
+   *  Present means a run is going without this panel, and rejoining it is a click
+   *  rather than a connection: the backend and address in this message describe how a
+   *  *new* server would be started, and none of them apply to one already serving. */
+  running?: RunningServer | null;
+}
+
+/** A server already serving this workspace. */
+export interface RunningServer {
+  url: string;
+  pid: number;
+  model: string;
+  autonomy: string;
+  /** True when it was deliberately left running without a window. */
+  detached: boolean;
 }
 
 /** Address (never a key) the extension host reconnects to unattended. */

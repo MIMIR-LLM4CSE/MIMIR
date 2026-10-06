@@ -640,7 +640,7 @@ class MimirAgentViewProvider implements vscode.WebviewViewProvider {
     // us from spawning connections on HPC front nodes.
 
     // Send config immediately so the webview can populate the model list.
-    this._sendConfig();
+    void this._sendConfig();
     // Seed the active-file chip on (re)load.
     this.pushActiveEditor();
 
@@ -879,11 +879,27 @@ class MimirAgentViewProvider implements vscode.WebviewViewProvider {
    * model list comes from the endpoint itself (see `_sendModels`), so a working
    * setup needs no `.vscode/settings.json` at all.
    */
-  private _sendConfig(): void {
+  private async _sendConfig(): Promise<void> {
     const cfg = vscode.workspace.getConfiguration("mimir");
+
+    // Whether this workspace already has a server, so a disconnected panel can offer
+    // to rejoin it rather than asking for an endpoint it will not use. A run left
+    // going is the one thing the user came back for, and a connect form is a poor way
+    // to say "it is still here".
+    let running: ServerEntry | undefined;
+    try {
+      const cwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
+      running = await findLiveServer(cwd);
+    } catch {
+      running = undefined;
+    }
 
     this._view?.webview.postMessage({
       type: "config",
+      running: running
+        ? { url: running.url, pid: running.pid, model: running.model ?? "",
+            autonomy: running.autonomy ?? "", detached: running.detached === true }
+        : null,
       backend: cfg.get<string>("backend") ?? "vllm",
       vllmBaseUrl: cfg.get<string>("vllmBaseUrl") ?? "http://127.0.0.1:8000",
       rayBaseUrl: cfg.get<string>("rayBaseUrl") ?? "http://127.0.0.1:8000",
@@ -1552,7 +1568,7 @@ class MimirAgentViewProvider implements vscode.WebviewViewProvider {
     if (m.type === "get_config") {
       // The webview's mount handshake: the one point where it is certainly
       // listening, so it is also where a connect it missed is replayed.
-      this._sendConfig();
+      void this._sendConfig();
       this._announceModels();
       this._resumeAutoConnect();
       return;
