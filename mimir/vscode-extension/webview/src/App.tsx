@@ -585,7 +585,9 @@ export const App: React.FC = () => {
       // The server has made itself survivable. Shown rather than announced: what
       // changes is a standing fact about this run, not an event in the conversation.
       case "detached":
-        setDetached(true);
+        // Absent means detached: an older server sends no flag, and the message
+        // existed only to announce one.
+        setDetached(msg.detached !== false);
         return;
 
       case "session_loaded": {
@@ -1640,6 +1642,8 @@ export const App: React.FC = () => {
                 mode={approvalMode}
                 detached={detached}
                 onDetach={() => send({ type: "detach", autonomy: approvalMode })}
+                onReattach={() =>
+                  send({ type: "detach", autonomy: approvalMode, enabled: false })}
               />
             </div>
           </div>

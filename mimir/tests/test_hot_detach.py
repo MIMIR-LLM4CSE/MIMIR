@@ -223,6 +223,9 @@ class DetachHandlerTests(unittest.IsolatedAsyncioTestCase):
             def set_approval_mode(self, mode):
                 self.mode = mode
 
+            def get_approval_mode(self):
+                return self.mode
+
         self.a, self.b = _Worker(), _Worker()
         self.sent: list[dict] = []
 
@@ -289,6 +292,37 @@ class DetachHandlerTests(unittest.IsolatedAsyncioTestCase):
         # The address it was serving on is kept: it was settled at bind time and has
         # not changed.
         self.assertEqual(entry["url"], "ws://127.0.0.1:9")
+
+    async def test_taking_the_decision_back_clears_the_claim(self):
+        # Detaching does not disconnect: the socket stays open and the turn goes on in
+        # front of the user, so changing their mind has to be possible. What makes a
+        # server survive a window closing is that nobody kills it — a decision, not a
+        # state of the process.
+        from mimir.client.ui.ws import server_registry
+        server_registry.publish(url="ws://127.0.0.1:9", host="127.0.0.1", port=9)
+        await self.sess._handle_detach({"type": "detach", "autonomy": "auto"})
+        self.assertTrue(server_registry.read()["detached"])
+
+        self.sent.clear()
+        await self.sess._handle_detach({"type": "detach", "enabled": False})
+        self.assertFalse(server_registry.read()["detached"])
+        reply = [m for m in self.sent if m["type"] == "detached"][0]
+        self.assertIs(reply["detached"], False)
+
+    async def test_taking_it_back_does_not_redo_the_process_work(self):
+        # The redirect cannot be undone and does not need to be: fds pointing at a log
+        # file are harmless either way.
+        await self.sess._handle_detach({"type": "detach", "autonomy": "auto"})
+        self.detach_called.reset_mock()
+        await self.sess._handle_detach({"type": "detach", "enabled": False})
+        self.assertFalse(self.detach_called.called)
+
+    async def test_a_detachment_says_so_explicitly(self):
+        # The flag is on the message rather than implied by its arrival, so the two
+        # directions cannot be told apart by accident.
+        await self.sess._handle_detach({"type": "detach", "autonomy": "auto"})
+        reply = [m for m in self.sent if m["type"] == "detached"][0]
+        self.assertIs(reply["detached"], True)
 
     async def test_no_registry_entry_is_not_an_error(self):
         await self.sess._handle_detach({"type": "detach", "autonomy": "auto"})

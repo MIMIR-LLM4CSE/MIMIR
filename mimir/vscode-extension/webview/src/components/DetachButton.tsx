@@ -5,9 +5,11 @@ import { APPROVAL_OPTIONS } from "./ApprovalSwitcher";
 interface Props {
   /** The autonomy the run will have while unattended — whatever is set right here. */
   mode: ApprovalMode;
-  /** True once the server has reported it detached; the control stops being an action. */
+  /** True once the server has reported it detached. */
   detached: boolean;
   onDetach: () => void;
+  /** Take the decision back: this window owns the server again. */
+  onReattach: () => void;
 }
 
 /**
@@ -25,16 +27,24 @@ interface Props {
  * The title spells out the consequence rather than naming the level, because at
  * `manual` a detached run parks at its first sensitive tool and does almost nothing
  * overnight — a user who has not been told that reads "detached" as "it will finish".
+ *
+ * Detaching does not disconnect: the socket stays open and the turn goes on in front of
+ * the user. So the state is a toggle rather than a destination — what it changed is who
+ * owns the process, and that is a decision, revocable until the window actually closes.
  */
-export const DetachButton: React.FC<Props> = ({ mode, detached, onDetach }) => {
+export const DetachButton: React.FC<Props> = ({
+  mode, detached, onDetach, onReattach,
+}) => {
   if (detached) {
     return (
-      <div
-        className="detach-state"
-        title="This server keeps working when the window closes. Reopening the workspace reattaches to it."
+      <button
+        className="detach-btn detached"
+        onClick={onReattach}
+        title="MIMIR keeps working when this window closes, and reopening the workspace comes back to it. Click to take that back: the window owns the server again and closing it stops it."
+        aria-label="Stop keeping the server alive without this window"
       >
-        ⛓️‍💥 detached
-      </div>
+        ⛓️‍💥
+      </button>
     );
   }
 

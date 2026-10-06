@@ -784,15 +784,28 @@ class MimirAgentViewProvider implements vscode.WebviewViewProvider {
    * the host rather than the webview because it is the host that does the killing.
    */
   private _noteOwnership(text: string): void {
-    let msg: { type?: string; pid?: number; autonomy?: string; log?: string | null };
+    let msg: {
+      type?: string; pid?: number; autonomy?: string; log?: string | null;
+      detached?: boolean;
+    };
     try {
       msg = JSON.parse(text);
     } catch {
       return;
     }
     if (msg?.type !== "detached") return;
-    serverDetached = true;
     const log = vscode.window.createOutputChannel("MIMIR Server");
+    // Absent means detached: an older server sends no flag, and the message existed
+    // only to announce a detachment.
+    if (msg.detached === false) {
+      serverDetached = false;
+      log.appendLine(
+        `This server belongs to this window again (pid ${msg.pid ?? "?"}); closing ` +
+        `the window stops it.`
+      );
+      return;
+    }
+    serverDetached = true;
     log.appendLine(
       `This server has detached (pid ${msg.pid ?? "?"}, autonomy ` +
       `${msg.autonomy ?? "?"}). It is left running when the window closes; its ` +
@@ -1632,7 +1645,11 @@ class MimirAgentViewProvider implements vscode.WebviewViewProvider {
       // command, while a server killed after the user asked to keep it is work gone.
       if (payload.includes('"detach"')) {
         try {
-          if ((JSON.parse(payload) as { type?: string }).type === "detach") {
+          const parsed = JSON.parse(payload) as { type?: string; enabled?: boolean };
+          // `enabled: false` is the user taking the decision back, and that one waits
+          // for the server's answer: acting on the request would stop guarding a
+          // server still believed detached on the other side.
+          if (parsed.type === "detach" && parsed.enabled !== false) {
             serverDetached = true;
           }
         } catch {

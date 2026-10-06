@@ -110,7 +110,8 @@ Protocol — all messages are JSON objects, one per send/recv:
                                                        # is what was still running, which
                                                        # a forced stop is ending
     {"type": "shutdown_refused", "reasons": [...]}     # it is still needed, and why
-    {"type": "detached",       "log": "...", "autonomy": "manual|auto|auto_all",
+    {"type": "detached",       "detached": true, "log": "...",
+                               "autonomy": "manual|auto|auto_all",
                                "sessions": [...], "pid": 0, "setsid": true}
                                                        # the answer to ``detach``: this
                                                        # server has re-pointed its output
@@ -166,11 +167,14 @@ Protocol — all messages are JSON objects, one per send/recv:
                                                      # anything is still working, with
                                                      # the reasons, unless forced
     {"type": "detach", "autonomy": "manual|auto|auto_all",
-                       "session_ids": ["..."]}       # "continue without me": make this
+                       "session_ids": ["..."],
+                       "enabled": true}             # "continue without me": make this
                                                      # server survivable and set what it
                                                      # may do unattended. No session_ids
                                                      # means every conversation, and only
-                                                     # that form outlives a worker rebuild
+                                                     # that form outlives a worker rebuild.
+                                                     # ``enabled: false`` takes it back:
+                                                     # the window owns the server again
     {"type": "divert_to_background", "id": "..."}   # detach the run now blocking the
                                   # turn, keeping what it has already done. The id names
                                   # the row, whose tool name is the run channel its

@@ -485,6 +485,9 @@ export interface AssistantTextMessage {
  *  what it may do while unattended, and `sessions` are the conversations it applies to. */
 export interface DetachedMessage {
   type: "detached";
+  /** False when the decision has been taken back and this window owns the server
+   *  again. Absent means detached: the message once existed only to announce one. */
+  detached?: boolean;
   log: string | null;
   autonomy: "manual" | "auto" | "auto_all";
   sessions: string[];
@@ -805,6 +808,12 @@ export interface DetachMessage {
   type: "detach";
   autonomy: "manual" | "auto" | "auto_all";
   session_ids?: string[];
+  /** `false` takes the decision back: the window owns the server again and closing it
+   *  stops the server. The process-level work is not undone — fds pointing at a log
+   *  file have no pipe to return to — and does not need to be: what makes a server
+   *  survive a window closing is that nobody kills it, which is a decision rather
+   *  than a state of the process. */
+  enabled?: boolean;
 }
 
 /** A message typed while the agent is busy — injected into the running turn. */

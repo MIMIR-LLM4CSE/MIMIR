@@ -2024,6 +2024,14 @@ body {
   color: var(--vscode-foreground, #ccc);
 }
 
+/* Held on, so the standing state is visible without reading a tooltip — and still a
+   button, because the decision is revocable until the window actually closes. */
+.detach-btn.detached {
+  color: var(--vscode-editorWarning-foreground, #cca700);
+  border-color: var(--vscode-editorWarning-foreground, #cca700);
+  background: var(--vscode-inputValidation-warningBackground, #352a05);
+}
+
 /* Once detached it is a standing fact about the run, not an action: no hover, no
    pointer, and it stays visible so the state is never a thing the user has to
    remember. */

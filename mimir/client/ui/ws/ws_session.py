@@ -2257,6 +2257,32 @@ class _Session:
         pool-wide as well — which is the only form that survives a worker being rebuilt,
         since the pool's record of UI settings is per-pool and not per-session.
         """
+        # Giving the decision back. The process-level work cannot be undone — fds that
+        # point at a log file have no pipe to return to — but none of it needs undoing:
+        # what makes a server survive a window closing is that nobody kills it, and that
+        # is a decision, not a state of the process. So this clears the claim and leaves
+        # the redirect in place.
+        if msg.get("enabled") is False:
+            server_registry.update(detached=False)
+            # Read before the send, not inside it: a getter that raises would otherwise
+            # swallow the whole reply, and a client left believing the server is still
+            # detached stops guarding something nothing is guarding.
+            try:
+                level = self.pool.worker_or_detached(
+                    self._active_session_id).get_approval_mode()
+            except Exception:
+                level = "manual"
+            try:
+                await self.ws.send(json.dumps({
+                    "type": "detached", "detached": False, "log": None,
+                    "autonomy": level, "sessions": [], "pid": os.getpid(),
+                    "setsid": False,
+                }))
+            except Exception:
+                return
+            logger.info("detach: this server is this window's again")
+            return
+
         autonomy = str(msg.get("autonomy") or "manual")
         if autonomy not in ("manual", "auto", "auto_all"):
             try:
@@ -2308,6 +2334,7 @@ class _Session:
         try:
             await self.ws.send(json.dumps({
                 "type": "detached",
+                "detached": True,
                 "log": info.get("log"),
                 "autonomy": autonomy,
                 "sessions": targeted,

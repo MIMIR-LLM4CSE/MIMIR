@@ -1247,6 +1247,14 @@ SIGHUP is coming either way. A declined `setsid` is logged and stepped over; it 
 cancel a detachment whose essential half already succeeded. Nothing here can be undone: a
 detached server has no pipe to go back to.
 
+**Detaching does not disconnect**, and that is the point of the shape: the socket stays
+open, the turn goes on in front of the user, and what changed is who owns the process.
+Which makes it revocable — `enabled: false` clears the claim, and the window owns the
+server again. The process-level work is not undone and does not need to be: fds pointing
+at a log file are harmless either way, and what makes a server survive a window closing
+is that nobody kills it. The claim travels in the reply as an explicit flag rather than
+being implied by the message's arrival, so the two directions cannot be confused.
+
 The autonomy level rides on the message and is applied through the same seam `/approvals`
 uses, so a turn already in flight picks it up at its next gate. Naming conversations sets only
 those; naming none means all of them and also records the level pool-wide — the only form that
