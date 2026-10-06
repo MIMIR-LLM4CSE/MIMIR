@@ -1272,6 +1272,20 @@ socket, because the window that wants the server stopped may not be connected to
 the whole situation it exists for — and it sends SIGTERM, never SIGKILL, for the same reason
 the exit matters.
 
+**Asking the chain what it did.** Every link of this was tested on its own — the pump, the
+watermark, the committer, the approval wait — and that is exactly how three separate faults
+reached a running install: each piece was right, and what broke were the joins. A chat window
+cannot tell those apart. The pump never starting, the pump dying, a watermark swallowing what
+it delivers, a turn belonging to a conversation that is not on screen, and the agent emitting
+nothing all look like a conversation that went quiet.
+
+So the bus counts what it does — ticks, events stamped, delivery attempts, pump errors, and
+per subscription the watermark, the filtered and the dropped — and `/diag` reports them beside
+the active session, the stored watermark and each worker's queue depth. One answer, and the
+candidates separate. `test_event_chain.py` is the other half of the same lesson: a coarse test
+that builds a real session over a real bus and a real worker queue, runs the handshake, sends
+a query and asserts that what the engine emitted arrived. It is the test that was missing.
+
 What has not changed is that the drain loop *handles* a durable event before it sends it: the
 event has already left the pump, nothing re-emits it, and a socket dying on the send must not
 be able to take the handler with it. Nor has the rule about cards: every parked card comes
@@ -1392,6 +1406,7 @@ installed.
 | `test_agent_loop.py` | the loop functions — intra-query compaction, `_post_dispatch_inject`, `_finalize_answer` (including the turn boundary surviving an in-turn rewrite, and matching on identity so two byte-identical job wakes are not confused), plan mode, and the non-interactive path. Plus the failing-call guard and the identical-success annotation |
 | `test_completion_honesty.py` | the end-of-run honesty surface: the ledger's rows and statuses, the marker contract, the tier-qualified completion sentence, `needs_incomplete_finalization`, the `unfinished_plan` nudge, and the checklist reader's fail-closed behaviour |
 | `test_observations.py` | the observer dispatch order, bash classification and credit, run-ledger keying, verdict grammar, exit attribution, `ValidationTierTests` (per-checker tiers, an execution earning none however green, a printed invariant earning nothing, monotonicity, retraction), and `DeclaredEditSetTests` (a revised checklist retracts what it dropped) |
+| `test_event_chain.py` | the whole chain with the real objects — handshake, query, and the turn's `status` / `tool_call` / `tool_result` / `answer` arriving, nothing lost to the watermark, the journal holding the same turn the client saw, a second turn arriving, a brand-new conversation not silenced by an inherited watermark, the approval card reaching the client and its answer coming back — plus the ways a chat *can* go quiet, pinned so each is deliberate |
 | `test_event_bus.py` | the pump: that it drains and journals with nobody attached, that `seq` has one writer per session and no gaps, that the private answer keys reach the committer but neither the journal nor the wire, that a streamed delta is delivered live and never recorded, that an overflowing subscriber is gapped rather than allowed to stall the pump, and what counts as a session having *concluded* |
 | `test_detached_commit.py` | the turn committer: an answer landing in its session file with nobody attached, a deferral stored as the card to put back, the answer-alone path for a non-full context mode, that the pump commits only when no client is attached and never a cancelled turn, and the revision guard — a second writer that loaded earlier is refused, an owner saving repeatedly is not, a failed write does not consume a revision, and a file from before the field existed still writes |
 | `test_reattach_replay.py` | that the gate cannot silence a stream — a watermark above the journal is not honoured, the stream still arrives after one, a filtered event is counted rather than vanishing, and a stream delta bypasses the gate (which is why the failure looks like a half-working chat) — and that a new conversation clears the watermark instead of inheriting it; then the watermark: everything replayed to a client that has seen nothing, only the tail to one that has seen some, nothing to one that is current; that the gate lands where the replay ended so an event is never both replayed and delivered live; that nothing produced between subscribing and reading is lost; framing, the cap keeping the end and saying so, a socket dying mid-replay leaving the gate alone; and that streamed deltas are absent while their aggregates are not |

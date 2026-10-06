@@ -2931,6 +2931,23 @@ class _Session:
                 await self.ws.send(json.dumps({
                     "type": "error",
                     "text": "Usage: /memory list | /memory clear | /memory delete <name>\n"}))
+        elif text in ("/diag", "/diagnose"):
+            # The chain the events travel, asked rather than inferred. The pump is the
+            # only consumer of every worker's queue now, so a chat that goes quiet has
+            # several causes that look identical from a chat window: the pump never
+            # started, it died, a watermark is swallowing what it delivers, or the agent
+            # emitted nothing. These rows tell them apart.
+            rows = list(self.pool.bus.diagnostics())
+            rows.append({"label": "active session",
+                         "detail": str(self._active_session_id)})
+            rows.append({"label": "rendered watermark", "detail": str(self._rendered_seq)})
+            for sid, worker in self.pool.items():
+                rows.append({"label": f"worker {sid[:8]}", "detail":
+                             f"queue {worker.out_q.qsize()}, "
+                             f"running {getattr(worker, '_query_session_id', None)}, "
+                             f"parked {getattr(worker, '_pending_prompt', None) is not None}, "
+                             f"deferral {getattr(worker, 'has_deferral', False)}"})
+            await self._command_reply("/diag", "Event chain", items=rows)
         elif text == "/cancel":
             cancelled = self.worker.cancel()
             if not cancelled:

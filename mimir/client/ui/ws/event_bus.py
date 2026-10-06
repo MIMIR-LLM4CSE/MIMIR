@@ -158,6 +158,17 @@ class _EventBus:
         self._unattended_since: float | None = time.monotonic()
         self._task: asyncio.Task | None = None
         self._wake = asyncio.Event()
+        # Counters, so the chain can be asked what it did instead of inferred from what
+        # the chat shows. The pump is now the only consumer of every worker's queue, so
+        # "the chat went quiet" has several possible causes that look identical from
+        # outside: the pump never started, it started and died, it is draining but a
+        # watermark is swallowing the result, or the agent genuinely emitted nothing.
+        # These tell them apart in one answer.
+        self.ticks = 0
+        self.journaled = 0
+        self.fanned_out = 0
+        self.pump_errors = 0
+        self.last_error: str = ""
 
     # ── Subscribers ───────────────────────────────────────────────────────────
 
@@ -176,6 +187,36 @@ class _EventBus:
     def attached(self) -> int:
         """How many clients are listening. Zero is the detached case."""
         return len(self._subs)
+
+    def diagnostics(self) -> list[dict]:
+        """What each link of the chain has actually done, as {label, detail} rows.
+
+        For the one question that is hard to answer from the outside: the chat has gone
+        quiet, and the pump never starting, the pump dying, a watermark swallowing
+        everything and the agent emitting nothing all look the same from a chat window.
+        """
+        running = self._task is not None and not self._task.done()
+        rows = [
+            {"label": "pump", "detail":
+                f"{'running' if running else 'NOT RUNNING'} — {self.ticks} tick(s)"},
+            {"label": "journaled", "detail": f"{self.journaled} event(s) stamped"},
+            {"label": "fanned out", "detail": f"{self.fanned_out} delivery attempt(s)"},
+            {"label": "subscriptions", "detail": str(len(self._subs))},
+            {"label": "unattended for",
+             "detail": "attached" if self._unattended_since is None
+                       else f"{time.monotonic() - self._unattended_since:.0f}s"},
+        ]
+        if self.pump_errors:
+            rows.append({"label": "pump errors",
+                         "detail": f"{self.pump_errors} — last: {self.last_error}"})
+        for index, sub in enumerate(self._subs, start=1):
+            rows.append({"label": f"subscription {index}", "detail":
+                         f"watermark {sub.min_seq}, {sub.filtered} filtered, "
+                         f"{sub.dropped} dropped, {sub.queue.qsize()} queued"})
+        for session_id, log in self._logs.items():
+            rows.append({"label": f"journal {session_id[:8]}",
+                         "detail": f"seq {log.seq}"})
+        return rows
 
     # ── What counts as finished ───────────────────────────────────────────────
 
@@ -266,9 +307,11 @@ class _EventBus:
                 self.pump_once()
             except asyncio.CancelledError:
                 raise
-            except Exception:
+            except Exception as exc:
                 # A pump that dies stops recording every session at once, which is the
                 # one failure this module exists to prevent. Log and keep going.
+                self.pump_errors += 1
+                self.last_error = f"{type(exc).__name__}: {exc}"
                 logger.warning("bus: pump tick failed", exc_info=True)
             try:
                 await asyncio.wait_for(self._wake.wait(), timeout=self._interval)
@@ -306,6 +349,7 @@ class _EventBus:
         Separate from the loop so a test can run exactly one tick, and so the shutdown
         path can flush what is still queued before the process goes.
         """
+        self.ticks += 1
         self._publish_attachment()
         moved = 0
         for ev in self._collect():
@@ -329,8 +373,11 @@ class _EventBus:
                     self._commit(ev, extras)
                 except Exception:
                     logger.warning("bus: turn commit failed for %s", owner, exc_info=True)
+            if isinstance(ev.get("seq"), int):
+                self.journaled += 1
             for sub in list(self._subs):
                 sub.offer(ev, extras)
+                self.fanned_out += 1
             moved += 1
         return moved
 

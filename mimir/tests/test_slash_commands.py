@@ -152,6 +152,10 @@ class CommandAnswersAreRenderedTests(unittest.TestCase):
                 "/backend",
                 # Not a setting — an action whose result has nowhere else to appear.
                 "/cancel",
+                # A listing, and the one place the event chain's own counters are
+                # readable. It owns no control, and the question it answers — which
+                # link went quiet — has no other surface.
+                "/diag",
                 "/memory clear", "/memory delete", "/memory list",
                 "/proxy clean", "/proxy list",
             ],
