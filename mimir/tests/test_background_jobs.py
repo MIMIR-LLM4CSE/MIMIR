@@ -919,6 +919,22 @@ class _FakeWorker:
     def watched_job_keys(self) -> list[str]:
         return list(self.watching)
 
+    def drain(self) -> list[dict]:
+        """The real worker's single choke point, stamping each event with its session.
+
+        What the pump calls. Tests that only need "a worker" leave ``out_q`` unset and
+        never get here.
+        """
+        out = []
+        q = getattr(self, "out_q", None)
+        while q is not None and not q.empty():
+            ev = q.get_nowait()
+            if isinstance(ev, dict):
+                ev.setdefault("session_id",
+                              self._query_session_id or getattr(self, "session_id", None))
+            out.append(ev)
+        return out
+
 
 class DetachedSessionResumeTests(unittest.TestCase):
     """A two-hour build outlives the conversation on screen.
@@ -1147,6 +1163,11 @@ class WakeCoalescingTests(unittest.TestCase):
         self.worker.drain = lambda: [events.pop()] if events else []
 
         async def run() -> None:
+            # The pump owns the draining now, so turn its crank once to move the event
+            # off the worker and into this connection's subscription; the drain loop
+            # then forwards what arrived.
+            self.session._sub = self.session.pool.bus.subscribe()
+            self.session.pool.bus.pump_once()
             task = asyncio.create_task(self.session._drain_loop())
             while not self.ws.sent:
                 await asyncio.sleep(0.01)
@@ -1537,11 +1558,10 @@ class CheckinDeliveryTests(unittest.TestCase):
 
     def test_the_transcript_tells_a_bulletin_from_a_wake(self) -> None:
         """``job_wake`` is counted against the jobs that recorded an exit code."""
-        from unittest import mock
-        self.session.transcript = mock.Mock()
+        from mimir.client.ui.ws import transcript_log
         asyncio.run(self.session._handle_job_checkin(self._event()))
-        kinds = [c.args[0]["type"] for c in self.session.transcript.append.call_args_list
-                 if isinstance(c.args[0], dict) and "type" in c.args[0]]
+        lines, _truncated = transcript_log.read_since(self.session._active_session_id, 0)
+        kinds = [e["type"] for e in lines if "type" in e]
         self.assertIn("job_checkin", kinds)
         self.assertNotIn("job_wake", kinds)
 
@@ -1658,58 +1678,85 @@ class WakeDeliveryLossTests(unittest.TestCase):
         self.assertEqual(len(self.launcher.steered), 1)
 
 
-class StaleEventPurgeTests(unittest.TestCase):
-    """What a reconnect may throw away, and what it may not.
+class ReconnectLosesNothingTests(unittest.TestCase):
+    """What a reconnect may throw away: nothing.
 
-    A turn's output is debris once the socket drawing it is gone. A finished job is
-    not: it answers to no turn, its watcher is already finished, and the conversation
-    it belongs to is idle precisely because it is waiting for it.
+    There used to be a sweep here. A turn's output was treated as debris once the
+    socket drawing it was gone, with an exception carved out for a finished job's wake
+    — which answers to no turn, whose watcher is already finished, and whose
+    conversation is idle precisely because it is waiting for it. The exception was the
+    tell: deciding what to discard was the wrong question.
+
+    The pump drains every worker whether or not a socket exists, and the journal holds
+    what it drained, so a reconnect replays from its watermark instead of hoping the
+    right things were kept. These tests pin that the cases the old sweep had to reason
+    about are now simply all recorded.
     """
 
     def setUp(self) -> None:
         import queue as _q
+        import tempfile
         from unittest import mock
-        from mimir.client.ui.ws.ws_session import _Session
+        from mimir.client.ui.ws import transcript_log
+
+        self._tmp = tempfile.TemporaryDirectory()
+        patcher = mock.patch.object(transcript_log, "_MIMIR_DIR_WS", self._tmp.name)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.addCleanup(self._tmp.cleanup)
+        self.transcript_log = transcript_log
 
         self.worker = _FakeWorker()
         self.worker.out_q = _q.Queue()
-        self.session = object.__new__(_Session)
-        self.session.pool = FakePool(self.worker, active="s1")
+        self.worker.session_id = "s1"
+        self.worker._query_session_id = None
+        self.pool = FakePool(self.worker, active="s1")
 
-    def _purge(self, *events: dict) -> list[dict]:
+    def _recorded(self, *events: dict) -> list[dict]:
+        """What the journal holds after the pump sees *events*, with nobody attached."""
         for ev in events:
             self.worker.out_q.put(ev)
-        self.session._drop_stale_events()
-        left = []
-        while not self.worker.out_q.empty():
-            left.append(self.worker.out_q.get_nowait())
-        return left
+        self.assertEqual(self.pool.bus.attached(), 0)
+        self.pool.bus.pump_once()
+        self.assertTrue(self.worker.out_q.empty())
+        lines, _truncated = self.transcript_log.read_since("s1", 0)
+        return lines
 
     def test_a_finished_job_survives_the_reconnect(self) -> None:
-        left = self._purge({"type": "job_complete", "job_key": "j1"})
-        self.assertEqual(len(left), 1)
-        self.assertEqual(left[0]["job_key"], "j1")
+        kept = self._recorded({"type": "job_complete", "job_key": "j1"})
+        self.assertEqual([e["job_key"] for e in kept], ["j1"])
 
     def test_a_held_bulletin_survives_the_reconnect(self) -> None:
-        left = self._purge({"type": "job_checkin", "jobs": []})
-        self.assertEqual(len(left), 1)
+        kept = self._recorded({"type": "job_checkin", "jobs": []})
+        self.assertEqual([e["type"] for e in kept], ["job_checkin"])
 
-    def test_a_dead_turns_debris_still_goes(self) -> None:
-        left = self._purge({"type": "token", "text": "hi"},
-                           {"type": "tool_call", "id": "c1"})
-        self.assertEqual(left, [])
+    def test_a_dead_turns_output_survives_too(self) -> None:
+        # What the sweep called debris. The turn happened; switching to it has to show
+        # the whole thing and not only the answer that ended it.
+        kept = self._recorded({"type": "tool_call", "id": "c1"},
+                              {"type": "answer", "text": "what I did"})
+        self.assertEqual([e["type"] for e in kept], ["tool_call", "answer"])
 
-    def test_order_is_kept_when_some_of_it_is_dropped(self) -> None:
-        left = self._purge({"type": "job_complete", "job_key": "jA"},
-                           {"type": "token", "text": "debris"},
-                           {"type": "job_complete", "job_key": "jB"})
-        self.assertEqual([e["job_key"] for e in left], ["jA", "jB"])
+    def test_a_streamed_delta_is_the_one_thing_not_recorded(self) -> None:
+        # Live-only by design: hundreds per turn, and the aggregate that closes the
+        # block covers their content. A reconnect sees that aggregate instead.
+        kept = self._recorded({"type": "token", "text": "hi"},
+                              {"type": "tool_call", "id": "c1"})
+        self.assertEqual([e["type"] for e in kept], ["tool_call"])
 
-    def test_a_busy_conversations_queue_is_not_touched_at_all(self) -> None:
-        """Its turn is still running; what is queued is that turn's own output."""
+    def test_order_is_kept_and_numbered_without_gaps(self) -> None:
+        kept = self._recorded({"type": "job_complete", "job_key": "jA"},
+                              {"type": "tool_call", "id": "c1"},
+                              {"type": "job_complete", "job_key": "jB"})
+        self.assertEqual([e["type"] for e in kept],
+                         ["job_complete", "tool_call", "job_complete"])
+        self.assertEqual([e["seq"] for e in kept], [1, 2, 3])
+
+    def test_a_busy_conversations_output_is_recorded_like_any_other(self) -> None:
+        """Its turn is still running; what it emits is that turn's own output."""
         self.worker._query_session_id = "s1"
-        left = self._purge({"type": "token", "text": "mid-answer"})
-        self.assertEqual(len(left), 1)
+        kept = self._recorded({"type": "status", "text": "mid-answer"})
+        self.assertEqual([e["text"] for e in kept], ["mid-answer"])
 
 
 # ── 12. Re-arming tracking a restart took away ────────────────────────────────

@@ -1,5 +1,6 @@
 import * as vscode from "vscode";
 import * as cp from "child_process";
+import { findLiveServer, ServerEntry } from "./serverRegistry";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
@@ -8,6 +9,13 @@ import { explainFetchError, fetchModels, type DiscoverableBackend } from "./mode
 import { loadSiteConfig, compareVersions, resolveReleaseRoot } from "./release";
 
 let serverProcess: cp.ChildProcess | undefined;
+
+// Set once the server reports it has detached. From then on it is not ours to end: it
+// re-pointed its output away from the pipe we hold and left our process group precisely
+// so that closing this window leaves it working. Module-global beside `serverProcess`
+// because the two are answers to the same question — who owns this process — and
+// `deactivate()` reads both.
+let serverDetached = false;
 
 /** fsPath of this extension's install root, captured at activation. */
 let extensionRoot: string | undefined;
@@ -520,11 +528,18 @@ export function activate(context: vscode.ExtensionContext): void {
       startServer(context)
     )
   );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand("mimir.stopServer", () => stopServer())
+  );
 }
 
 export function deactivate(): void {
   _stopPreviewWatch();
-  serverProcess?.kill();
+  // A detached server is left running on purpose — that is the whole point of having
+  // asked. Killing it here would make "continue without me" mean nothing at the one
+  // moment it is supposed to take effect.
+  if (!serverDetached) serverProcess?.kill();
   serverProcess = undefined;
 }
 
@@ -647,6 +662,14 @@ class MimirAgentViewProvider implements vscode.WebviewViewProvider {
   private async _maybeAutoConnect(): Promise<void> {
     if (this._autoConnectStarted || this._autoConnectProbing) return;
 
+    // A server this workspace already has comes first, and it does not depend on a
+    // remembered address: a run left going when the window closed is still serving,
+    // and the point of leaving it there is that reopening the window finds it. Asked
+    // before the endpoint probe because it is both cheaper and more certain — the
+    // probe asks whether an LLM endpoint answers, this asks whether the agent that was
+    // already working is still working.
+    if (await this._attachToRunningServer()) return;
+
     const saved = this._remembered();
     if (!saved) return;
 
@@ -682,6 +705,77 @@ class MimirAgentViewProvider implements vscode.WebviewViewProvider {
     this._announceModels();
     // Startup connect: don't pop the server log over whatever the user opened.
     this._startServerAndConnect(saved.model, saved.backend, saved.baseUrl, "", { silent: true });
+  }
+
+  /**
+   * Attach to the server this workspace already has, if it has one.
+   *
+   * Reuses the attach path `mimir.wsUrl` has always taken: nothing is started, so
+   * `serverProcess` stays undefined and this server is never torn down — it is not
+   * ours to kill. That is exactly the right relationship with a server that was
+   * deliberately left running.
+   *
+   * Returns whether it attached, so the caller can skip the connect form entirely:
+   * a window that reopens on a live run must not ask the user to connect to it.
+   */
+  private async _attachToRunningServer(): Promise<boolean> {
+    if (this._ws || (serverProcess && !serverProcess.killed)) return false;
+    // An explicit override is the user's own statement about where the server is, and
+    // it wins: the spawn path already defers to it for the same reason.
+    const override = (vscode.workspace.getConfiguration("mimir")
+      .get<string>("wsUrl") ?? "").trim();
+    if (override) return false;
+
+    const cwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
+    let entry: ServerEntry | undefined;
+    try {
+      entry = await findLiveServer(cwd);
+    } catch {
+      return false;   // advisory, never authoritative
+    }
+    if (!entry) return false;
+
+    const log = vscode.window.createOutputChannel("MIMIR Server");
+    log.appendLine(
+      `Attaching to the MIMIR server already running for this workspace ` +
+      `(${entry.url}, pid ${entry.pid}). It was not started by this window, so it is ` +
+      `left running when the window closes.`
+    );
+    this._attachLog = log;
+    this._autoConnectStarted = true;
+    // So a webview that mounts after this shows "connecting" rather than the form.
+    this._pendingAutoConnect = {
+      backend: "", baseUrl: entry.url, model: entry.model ?? "",
+    } as { backend: string; baseUrl: string; model: string };
+    this._announceAutoConnect();
+    this._wsUrl = entry.url;
+    this._connectToServer(entry.url);
+    return true;
+  }
+
+  /**
+   * Notice the server telling us it has detached.
+   *
+   * Nothing is rendered: the point is the ownership change. The server has re-pointed
+   * its output away from the pipe we hold and left our process group, so from here on
+   * closing this window leaves it working — which is what the user asked for. Read in
+   * the host rather than the webview because it is the host that does the killing.
+   */
+  private _noteOwnership(text: string): void {
+    let msg: { type?: string; pid?: number; autonomy?: string; log?: string | null };
+    try {
+      msg = JSON.parse(text);
+    } catch {
+      return;
+    }
+    if (msg?.type !== "detached") return;
+    serverDetached = true;
+    const log = vscode.window.createOutputChannel("MIMIR Server");
+    log.appendLine(
+      `This server has detached (pid ${msg.pid ?? "?"}, autonomy ` +
+      `${msg.autonomy ?? "?"}). It is left running when the window closes; its ` +
+      `output continues in ${msg.log ?? "its log"}.`
+    );
   }
 
   /** Hand the webview the model list the auto-connect probe already has. */
@@ -812,6 +906,9 @@ class MimirAgentViewProvider implements vscode.WebviewViewProvider {
       // Forward Python server messages → React webview
       const text = data.toString();
       this._view?.webview.postMessage({ type: "ws", payload: text });
+      // Read by the host as well as forwarded: one of these messages changes who owns
+      // the server process, which is this layer's business and not the webview's.
+      this._noteOwnership(text);
       // Surface a native VS Code notification when the chat isn't in view.
       this._maybeNotify(text);
     });
@@ -1411,6 +1508,55 @@ class MimirAgentViewProvider implements vscode.WebviewViewProvider {
       }
     }
   }
+}
+
+/**
+ * Stop the server this workspace has, detached or not.
+ *
+ * The counterpart of leaving one running: a detached server is no longer killed by
+ * closing the window, so there has to be a way to end it on purpose. It is signalled
+ * rather than asked over the socket, because the window that wants it stopped may not
+ * be connected to it — that is the whole situation this exists for.
+ *
+ * SIGTERM, which lands on the server's own handler and takes the ordinary exit: the one
+ * that unwinds each agent's exit stack and so reaps the MCP servers. A SIGKILL here
+ * would leave up to sixty orphaned interpreters behind, which is precisely the thing
+ * that path exists to prevent.
+ *
+ * Confirmed first, with what is actually running named in the prompt. "Stop the server"
+ * is cheap to type and can end a two-hour build, so the decision is made with the facts
+ * in front of the user rather than after.
+ */
+async function stopServer(): Promise<void> {
+  const cwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
+  const entry = await findLiveServer(cwd);
+  if (!entry) {
+    vscode.window.showInformationMessage(
+      "No MIMIR server is running for this workspace."
+    );
+    return;
+  }
+  const what = entry.detached
+    ? `the detached MIMIR server (pid ${entry.pid})`
+    : `the MIMIR server (pid ${entry.pid})`;
+  const answer = await vscode.window.showWarningMessage(
+    `Stop ${what}? Any turn still running, and any background job it is waiting on, ` +
+    `ends with it.`,
+    { modal: true },
+    "Stop server"
+  );
+  if (answer !== "Stop server") return;
+  try {
+    process.kill(entry.pid, "SIGTERM");
+  } catch (err) {
+    vscode.window.showErrorMessage(
+      `Could not stop pid ${entry.pid}: ${(err as Error).message}`
+    );
+    return;
+  }
+  serverDetached = false;
+  serverProcess = undefined;
+  vscode.window.showInformationMessage(`Asked pid ${entry.pid} to stop.`);
 }
 
 // ── Optional server lifecycle ─────────────────────────────────────────────────

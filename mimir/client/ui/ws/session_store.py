@@ -98,6 +98,17 @@ class FullSession:
     # before this conversation has an agent to ask — without it the budget fell back to
     # compact's 32k and a restored full-mode window read as overflowing.
     context_mode: str = "full"
+    # Bumped on every save. Two things write a session file now — a connected
+    # ``_Session`` and, when none is connected, the pump's turn committer — and the
+    # revision is what lets a save notice it is built on a copy someone else has
+    # already superseded, instead of overwriting it with older history.
+    rev: int = 0
+    # How far into this session's ``transcript.jsonl`` the stored ``display_messages``
+    # already go. The client assembles the rich transcript — tool rows, reasoning
+    # panels, diff cards — so this is its own statement of what it has rendered, and it
+    # is what a re-attach replays *from*. Stored rather than kept per connection: a
+    # fresh window, or another machine, has to be able to resume too.
+    rendered_seq: int = 0
 
     def meta(self) -> SessionMeta:
         return SessionMeta(
@@ -136,7 +147,22 @@ class FullSession:
             # Sessions saved before this field existed were full-mode by default, which
             # is also the mode a rebuilt agent starts in.
             context_mode=data.get("context_mode") or "full",
+            rev=int(data.get("rev") or 0),
+            rendered_seq=int(data.get("rendered_seq") or 0),
         )
+
+
+class StaleSessionWrite(RuntimeError):
+    """A save whose base revision is behind what is already on disk."""
+
+
+def _stored_rev(path: str) -> int:
+    """The revision in the file at *path*, or 0 when there is no readable one."""
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return int(json.load(f).get("rev") or 0)
+    except Exception:
+        return 0
 
 
 # ── Store ──────────────────────────────────────────────────────────────────────
@@ -188,15 +214,29 @@ class SessionStore:
         return FullSession.from_dict(data)
 
     def save_session(self, session: FullSession) -> None:
-        """Atomically write session to disk (write tmp then rename)."""
+        """Atomically write session to disk (write tmp then rename).
+
+        Refuses a stale write. *session* carries the revision it was loaded at; if the
+        file on disk has moved past it, somebody else has written since and this copy's
+        history is older than what is there. Overwriting silently is how a turn
+        disappears, so this raises :class:`StaleSessionWrite` and the caller can reload
+        and say so. A caller that saves the same object repeatedly is unaffected: a
+        successful save carries the new revision back onto it.
+        """
         sdir = _sessions_dir()
         target = os.path.join(sdir, f"{session.id}.json")
         tmp = target + ".tmp"
+        on_disk = _stored_rev(target)
+        if on_disk > session.rev:
+            raise StaleSessionWrite(
+                f"session {session.id} moved on (disk rev {on_disk} > {session.rev})")
+        session.rev = on_disk + 1
         try:
             with open(tmp, "w", encoding="utf-8") as f:
                 json.dump(session.to_dict(), f, ensure_ascii=False, indent=2, default=str)
             os.replace(tmp, target)
         except Exception:
+            session.rev = on_disk
             try:
                 os.remove(tmp)
             except Exception:

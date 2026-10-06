@@ -37,6 +37,10 @@ import time
 from collections import deque
 from typing import Any, Callable, Iterator
 
+from .event_bus import _EventBus
+from .job_scan import scan_all_sessions
+from .session_store import SessionStore
+from .turn_commit import commit_answer
 from .ws_worker import _AgentWorker
 
 logger = logging.getLogger(__name__)
@@ -50,6 +54,20 @@ _DEFAULT_CAP = 3
 # and forth does not pay for a rebuild, short enough that a forgotten conversation stops
 # holding twenty subprocesses.
 _DEFAULT_IDLE_TTL = 600.0
+
+# How long everything must stay quiet before a detached server stops on its own. Long
+# enough that closing a laptop lid for a meeting does not end a run, short enough that a
+# forgotten workspace does not hold sixty interpreters overnight.
+_DEFAULT_SERVER_IDLE_TTL = 7200.0
+
+
+def _server_idle_ttl() -> float:
+    try:
+        return max(60.0, float(
+            os.environ.get("MIMIR_SERVER_IDLE_TTL", "") or _DEFAULT_SERVER_IDLE_TTL))
+    except ValueError:
+        return _DEFAULT_SERVER_IDLE_TTL
+
 
 # How often the reaper looks. Nothing here is urgent — a worker that lives thirty seconds
 # past its welcome costs nothing — and a tight tick would walk the pool for no reason.
@@ -136,6 +154,132 @@ class _AgentPool:
         self._queue: deque[tuple[str, Callable[[_AgentWorker], None]]] = deque()
         self._lock = asyncio.Lock()
         self._reaper: asyncio.Task | None = None
+
+        # The one pump for this process. It drains every worker, journals what they
+        # emit and fans it out to whatever sockets are attached — zero included, which
+        # is the point: the pool outlives every connection, so what records its output
+        # has to as well.
+        self.store = SessionStore()
+        self.bus = _EventBus(self, commit=self._commit_turn)
+
+        # Resolved when this process decides it is no longer needed. Awaited beside the
+        # signal handlers, so an idle stop and a SIGTERM take the same path out — the
+        # one that closes the MCP servers.
+        self.stop_requested: asyncio.Event | None = None
+        self.server_idle_ttl = _server_idle_ttl()
+        # When the whole process first looked idle, or None while it does not. The TTL
+        # is measured from here, so a moment of activity restarts it rather than
+        # shortening it.
+        self._idle_since: float | None = None
+
+    # ── Is this process still needed ──────────────────────────────────────────
+
+    def idle_report(self) -> dict:
+        """Why this process is or is not still needed, in one interrogable answer.
+
+        **The criterion is positive.** "Not busy" is not "has finished": a worker is
+        also not busy between queries, after a turn that broke, and while it waits
+        behind a card. An idle test built on the absence of noise would stop a server
+        whose turn merely paused, so a conversation counts as finished only when it has
+        actually *concluded* — delivered a final answer (or ended in an error, which is
+        also an ending) — which the bus records as it hands that event to the committer.
+
+        And a run launched but not collected is work in progress even with no turn
+        running: that is precisely the "I submitted a two-hour build and left" case
+        this whole path exists for, so a live job on disk holds the process open.
+
+        The rest are not activity but prohibitions: somebody is attached, a card is
+        parked, a deferral is owed, a turn is queued for a slot.
+
+        One place, deliberately: the idle shutdown reads it, and so does the question
+        "has this window anything worth leaving running?".
+        """
+        reasons: list[str] = []
+        attached = self.bus.attached()
+        if attached:
+            reasons.append(f"{attached} client(s) attached")
+        if self._queue:
+            reasons.append(f"{len(self._queue)} turn(s) waiting for a slot")
+        if self._building:
+            reasons.append(f"{len(self._building)} agent(s) being built")
+
+        unfinished: list[str] = []
+        for session_id, worker in list(self._workers.items()):
+            try:
+                if worker.has_work_pending():
+                    reasons.append(f"session {session_id} has a turn in flight")
+                    continue
+            except Exception:
+                reasons.append(f"session {session_id} could not be asked")
+                continue
+            if getattr(worker, "_pending_prompt", None) is not None:
+                reasons.append(f"session {session_id} is parked on a card")
+                continue
+            if getattr(worker, "has_deferral", False):
+                reasons.append(f"session {session_id} is owed an answer")
+                continue
+            if self.bus.concluded_at(session_id) is None:
+                # Never answered, and not running: a turn that ended without saying so.
+                # Counted as working, because nothing observed it finishing.
+                unfinished.append(session_id)
+        if unfinished:
+            reasons.append("session(s) that never delivered an answer: "
+                           + ", ".join(sorted(unfinished)))
+
+        live_jobs = self._live_job_keys()
+        if live_jobs:
+            reasons.append("background run(s) still going: " + ", ".join(live_jobs))
+
+        return {"idle": not reasons, "reasons": reasons}
+
+    @staticmethod
+    def _live_job_keys() -> list[str]:
+        """Every detached run still going, across every session on disk.
+
+        Read from disk rather than from the live workers: a run outlives the agent that
+        launched it, and the session it belongs to may have no worker at all right now.
+        """
+        keys: list[str] = []
+        try:
+            for session_id, jobs in scan_all_sessions().items():
+                keys.extend(f"{session_id}/{job.job_key}" for job in jobs if job.live)
+        except Exception:
+            # Unreadable means unknown, and unknown must not read as "nothing is
+            # running": erring the other way stops a server mid-build.
+            logger.warning("pool: the detached runs could not be read", exc_info=True)
+            return ["<unreadable>"]
+        return sorted(keys)
+
+    def request_stop(self) -> None:
+        """Ask the serve loop to shut down. Idempotent."""
+        event = self.stop_requested
+        if event is not None and not event.is_set():
+            event.set()
+
+    def _commit_turn(self, ev: dict, extras: dict) -> None:
+        """Write a finished turn into its session file when no connection will.
+
+        Only when none is attached. A connected ``_Session`` has always done this
+        itself — to ``self.history`` for the conversation on screen, through
+        ``_persist_detached_answer`` for any other — and two writers of one file lose
+        history silently. So this is the fallback for the case that had none: nobody
+        looking, and a turn that would otherwise run, cost its tokens and vanish.
+        """
+        if self.bus.attached():
+            return
+        if ev.get("type") != "answer" or ev.get("cancelled"):
+            return
+        session_id = ev.get("session_id")
+        if not session_id:
+            return
+        result = commit_answer(
+            self.store, session_id, ev, extras,
+            submitted_len=extras.get("_submitted_len"),
+            context_mode=extras.get("_context_mode") or "full",
+        )
+        if result is not None:
+            logger.info("commit: session %s wrote its answer with nobody attached",
+                        session_id)
 
     # ── Looking up ────────────────────────────────────────────────────────────
 
@@ -234,6 +378,7 @@ class _AgentPool:
         if not pending.done():
             pending.set_result(worker)
         self.ensure_reaper()
+        self.ensure_pump()
         return worker
 
     async def _build(self, session_id: str) -> _AgentWorker:
@@ -248,6 +393,19 @@ class _AgentPool:
             None, lambda: _AgentWorker(self.model, session_id=session_id))
         worker.active_session_id = self.active_session_id
         self.settings.replay(worker)
+        # On the loop, not in the executor: putting a watcher back creates a task, and
+        # a task created off a running loop never polls anything. Here rather than in
+        # the worker's constructor for the same reason — the constructor runs in the
+        # executor, where there is no loop to host a watcher.
+        #
+        # Any run this session left behind is now un-watched by construction: this
+        # worker is new, so nothing of its is holding anything. That makes this the one
+        # place where "the promise to report a run" can be re-made without being asked.
+        try:
+            worker.rearm_detached_jobs()
+        except Exception:
+            logger.warning("pool: could not re-arm the detached runs of session %s",
+                           session_id, exc_info=True)
         return worker
 
     # ── Queueing past the cap ─────────────────────────────────────────────────
@@ -256,6 +414,7 @@ class _AgentPool:
         """Hold *submit* until a slot frees. Returns its 1-based place in the line."""
         self._queue.append((session_id, submit))
         self.ensure_reaper()
+        self.ensure_pump()
         return len(self._queue)
 
     def drop_queued(self, session_id: str) -> None:
@@ -293,6 +452,10 @@ class _AgentPool:
           the build finishes and nothing ever says so.
         * **parked on a card** — the turn is waiting on a person, with no timeout, by
           design. Closing it discards a question the user may be about to answer.
+        * **holding a deferral** — the same debt, set aside. A deferred turn has
+          cleared its pending card, so the clause above no longer sees it, and the
+          user still owes it an answer; releasing the agent here throws away the ~19
+          servers that answer will be resumed against.
         * **on screen** — the conversation the user is reading must stay instant.
         """
         worker = self._workers.get(session_id)
@@ -308,6 +471,8 @@ class _AgentPool:
         if getattr(worker, "_bg_jobs", None):
             return False
         if getattr(worker, "_pending_prompt", None) is not None:
+            return False
+        if getattr(worker, "has_deferral", False):
             return False
         return True
 
@@ -372,6 +537,13 @@ class _AgentPool:
         if self._reaper is not None:
             self._reaper.cancel()
             self._reaper = None
+        # Flush before stopping: whatever a turn emitted in its last moments is still
+        # on ``out_q``, and the journal is the only thing that will remember it.
+        try:
+            self.bus.pump_once()
+        except Exception:
+            logger.warning("pool: final pump flush failed", exc_info=True)
+        await self.bus.aclose()
         async with self._lock:
             workers = list(self._workers.items())
             self._workers.clear()
@@ -389,6 +561,18 @@ class _AgentPool:
 
     # ── The reaper ────────────────────────────────────────────────────────────
 
+    def ensure_pump(self) -> None:
+        """Start the event pump, if it is not already running.
+
+        Idempotent and loop-dependent in the same way as :meth:`ensure_reaper`, and
+        called from the same places, so a worker built on a bare pool in a test does
+        not need a running loop.
+        """
+        try:
+            self.bus.start()
+        except RuntimeError:
+            pass   # no loop (tests driving the pool synchronously call pump_once)
+
     def ensure_reaper(self) -> None:
         """Start the idle sweep, if it is not already running."""
         if self._reaper is not None and not self._reaper.done():
@@ -404,10 +588,37 @@ class _AgentPool:
             try:
                 await self.release_idle()
                 await self.pump()
+                self._consider_stopping()
             except asyncio.CancelledError:
                 raise
             except Exception:
                 logger.warning("pool: idle sweep failed", exc_info=True)
+
+    def _consider_stopping(self) -> None:
+        """Stop once nothing has needed this process for the whole TTL.
+
+        Measured from when it *first* looked idle, and reset by any activity, so the
+        answer is "idle throughout" rather than "idle at some point" — which is the
+        difference between stopping a forgotten server and stopping one between two
+        turns of a conversation the user is coming back to.
+        """
+        if self.stop_requested is None:
+            return
+        report = self.idle_report()
+        if not report["idle"]:
+            if self._idle_since is not None:
+                logger.info("pool: no longer idle (%s)", "; ".join(report["reasons"]))
+            self._idle_since = None
+            return
+        now = time.monotonic()
+        if self._idle_since is None:
+            self._idle_since = now
+            logger.info("pool: nothing needs this process; stopping in %.0fs unless "
+                        "something does", self.server_idle_ttl)
+            return
+        if now - self._idle_since >= self.server_idle_ttl:
+            logger.info("pool: idle for %.0fs — stopping", now - self._idle_since)
+            self.request_stop()
 
     # ── Addressing a session rather than "the worker" ──────────────────────────
 

@@ -1989,6 +1989,45 @@ body {
 .stop-btn:hover { opacity: 0.85; }
 .stop-btn:disabled { opacity: 0.25; cursor: not-allowed; }
 
+/* ── Detach ─────────────────────────────────────────────────────────────────── */
+
+/* Quiet by default: leaving a run going is a deliberate, occasional act, and a
+   control that competes with Send would be pressed by accident. */
+.detach-btn {
+  background: transparent;
+  color: var(--vscode-descriptionForeground, #9d9d9d);
+  border: 1px solid var(--vscode-widget-border, #3c3c3c);
+  border-radius: 6px;
+  width: 34px;
+  height: 26px;
+  font-size: 13px;
+  cursor: pointer;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.1s, color 0.1s;
+}
+
+.detach-btn:hover {
+  background: var(--vscode-toolbar-hoverBackground, #2a2d2e);
+  color: var(--vscode-foreground, #ccc);
+}
+
+/* Once detached it is a standing fact about the run, not an action: no hover, no
+   pointer, and it stays visible so the state is never a thing the user has to
+   remember. */
+.detach-state {
+  color: var(--vscode-descriptionForeground, #9d9d9d);
+  font-size: 10px;
+  line-height: 1.2;
+  text-align: center;
+  width: 34px;
+  flex-shrink: 0;
+  overflow-wrap: anywhere;
+  cursor: default;
+}
+
 /* ── Plan bar ────────────────────────────────────────────────────────────────── */
 
 /* ── Batch Review Bar ──────────────────────────────────────────────────────── */

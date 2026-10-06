@@ -9,8 +9,11 @@ arrive — the query loop is serial, so every later query queued behind that wai
 the session read as hung with nothing on screen to say why.
 """
 import json
+import tempfile
 import unittest
+from unittest import mock
 
+from mimir.client.ui.ws import transcript_log
 from mimir.client.ui.ws.ws_worker import _AgentWorker
 from mimir.tests.test_session_isolation import _FakeWS, _bare_worker, SessionFencingTests
 
@@ -98,6 +101,15 @@ class PendingPromptTests(unittest.TestCase):
 
 
 class ReconnectTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        # The pump journals what it drains, so these tests write a transcript: give
+        # them their own state dir rather than the real one.
+        self._tmp = tempfile.TemporaryDirectory()
+        patcher = mock.patch.object(transcript_log, "_MIMIR_DIR_WS", self._tmp.name)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.addCleanup(self._tmp.cleanup)
+
     def _session(self, worker):
         return SessionFencingTests._session(self, worker)
 
@@ -121,20 +133,25 @@ class ReconnectTests(unittest.IsolatedAsyncioTestCase):
         sess.ws.send = _boom
         await sess._resend_parked_prompt()  # must not raise
 
-    def test_a_busy_worker_keeps_the_events_of_its_running_turn(self):
-        w = _parked_worker()
-        w.is_busy = lambda: True
-        w.out_q.put({"type": "tool_call", "id": "t1"})
-        w.out_q.put({"type": "answer", "text": "what I did"})
-        self._session(w)._drop_stale_events()
-        self.assertEqual(w.out_q.qsize(), 2)
-
-    def test_an_idle_worker_leaves_only_debris_behind(self):
-        w = _parked_worker()
-        w.is_busy = lambda: False
-        w.out_q.put({"type": "status", "text": "left over"})
-        self._session(w)._drop_stale_events()
-        self.assertTrue(w.out_q.empty())
+    def test_a_reconnect_throws_nothing_away(self):
+        # There used to be a sweep here that emptied an idle worker's queue, with a
+        # carve-out for a finished job's wake. The pump drains every worker whether or
+        # not a socket exists, and the journal holds what it drained, so a reconnect
+        # replays from its watermark instead of hoping the right things were kept.
+        for busy in (True, False):
+            with self.subTest(busy=busy):
+                sid = f"busy-{busy}"   # its own journal, so the runs do not add up
+                w = _parked_worker()
+                w.session_id = sid
+                w.is_busy = lambda: busy
+                w.out_q.put({"type": "tool_call", "id": "t1"})
+                w.out_q.put({"type": "answer", "text": "what I did"})
+                sess = self._session(w)
+                self.assertEqual(sess.pool.bus.attached(), 0)
+                sess.pool.bus.pump_once()
+                self.assertTrue(w.out_q.empty())
+                lines, _truncated = transcript_log.read_since(sid, 0)
+                self.assertEqual([e["type"] for e in lines], ["tool_call", "answer"])
 
 
 if __name__ == "__main__":
@@ -260,16 +277,18 @@ class ReadinessAnnouncementTests(unittest.IsolatedAsyncioTestCase):
     async def test_an_agent_that_comes_up_during_setup_is_announced(self):
         w = self._worker(None)
         sess = self._session(w)
-        # The gap itself: the worker finishes starting, queues its one announcement,
-        # and the stale-event purge throws it away.
-        original = sess._drop_stale_events
+        # The gap this guards: the worker finishes starting and queues its one
+        # announcement, but it may have done so before this socket subscribed — and
+        # nothing re-emits it, so the chat would sit on "starting the agent" for the
+        # life of the connection with a working agent behind it. Asking the worker
+        # directly, after the handshake, is what closes it.
+        original = sess._purge_empty_sessions
 
-        def _ready_then_purge():
+        def _ready_then_setup():
             w._agent = object()
-            w.out_q.put({"type": "ready", "model": "m", "agent_ready": True})
             original()
 
-        sess._drop_stale_events = _ready_then_purge
+        sess._purge_empty_sessions = _ready_then_setup
 
         await sess.run()
 

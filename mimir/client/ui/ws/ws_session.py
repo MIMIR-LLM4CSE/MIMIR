@@ -18,12 +18,16 @@ from ._ws_runtime import (
     context_budget_for,
     get_backend,
 )
-from .transcript_log import TranscriptLog
 from ...query_engine.deferral import KIND_CALLS, take_deferred_calls
 from ...query_engine.history import (
     carries_compaction_summary, reconcile_tool_pairs,
 )
 from .ws_worker import _AgentWorker
+from .turn_commit import commit_answer, turn_messages
+from .transcript_log import read_since
+from .job_scan import mark_reported, scan_all_sessions
+from .detach import detach as detach_process
+from . import server_registry
 from .ws_pool import _AgentPool
 from ...tool_execution import run_channel
 from ...config import (
@@ -75,6 +79,16 @@ _INTERACTION_EVENTS = frozenset({"approval", "user_question", "prompt_expired"})
 # their watcher is finished by the time they are read, and the conversation they belong
 # to is idle precisely because it is waiting for them.
 _DURABLE_EVENTS = frozenset({"job_complete", "job_checkin"})
+
+# How many journal events one ``replay`` frame carries. The frame cap is 32 MiB, which a
+# long detached run's transcript can exceed whole; chunking also lets the webview render
+# the first of them while the rest are still arriving.
+_REPLAY_CHUNK = 500
+
+# The most a replay will resend. Past this the oldest are dropped and the frame says so:
+# what a returning user needs is the end of the run, and an unbounded replay into the
+# webview's reducer is how a twelve-hour absence wedges the panel.
+_REPLAY_MAX_EVENTS = 5000
 
 
 def _clip(text: str) -> str:
@@ -185,8 +199,12 @@ class _Session:
         # agent until its first query, and budgeting it as compact sized a full-mode
         # window at 32k, which read as an overflow and trimmed history to match.
         self._resumed_context_mode: str = "full"
-        # Append-only JSONL record of the session, for resume and offline profiling.
-        self.transcript = TranscriptLog()
+        # This connection's view of the stream, opened in run(). The pump owns the
+        # draining; this is only where our share of it arrives.
+        self._sub = None
+        # How far into the journal the client's rendered transcript goes, as the client
+        # last said. The watermark a re-attach replays from.
+        self._rendered_seq = 0
         # Length of `history` at the moment the running turn was submitted, so the
         # answer can tell the turn's own messages from the prefix it inherited.
         self._submitted_len = 0
@@ -223,10 +241,6 @@ class _Session:
         # Last (phase, percent) pushed per call id, so a tick that learned nothing
         # sends nothing.
         self._sent_progress: dict[str, dict[str, tuple]] = {}
-        # Transcript writers for conversations other than the one on screen, cached:
-        # binding one scans its log for the last sequence number, which is not a thing
-        # to do per event of a streaming turn.
-        self._foreign_logs: dict[str, TranscriptLog] = {}
         # The active session's deferred interaction (query_engine.deferral): the card
         # to show and what answering it resumes. Mirrors the session file.
         self._pending_interaction: dict | None = None
@@ -268,14 +282,20 @@ class _Session:
         return {"type": "ready", **self.pool.ui_state(self._active_session_id)}
 
     async def run(self) -> None:
+        # Subscribe BEFORE anything else, and this order is the point: from here on
+        # nothing a turn produces can be missed, because it accumulates in this
+        # subscription's queue while the rest of the handshake runs. The old sweep that
+        # emptied the workers' queues on connect is gone with it — there is no debris to
+        # clear, the pump has already drained and journaled everything.
+        self._sub = self.pool.bus.subscribe()
+
         # Send ready immediately so the webview transitions out of "connecting".
         greeting = self._greeting()
         try:
             await self.ws.send(json.dumps(greeting))
         except Exception:
+            self._sub.close()
             return
-
-        self._drop_stale_events()
 
         # ── Session initialisation ────────────────────────────────────────────
         # Purge any empty sessions left over from previous (pre-fix) reconnects.
@@ -293,18 +313,25 @@ class _Session:
         else:
             await self._create_new_session()
 
+        # What happened while nobody was attached, before the cards: a replay under a
+        # chat that is already on screen, and a card on top of that.
+        await self._send_replay()
+
+        # And the runs that ended while nothing was listening. After the replay, so the
+        # wake lands under the turn that launched the run rather than above it.
+        await self._report_ended_jobs()
+
         # Last, so the card lands under a chat that is already on screen.
         await self._resend_parked_prompt()
 
         await self._send_served_models()
 
-        # The greeting above may have said "not ready" and the worker may have come
-        # up since. It announces that once, by queueing a second ``ready`` on out_q —
-        # and ``_drop_stale_events`` empties that queue when the worker is idle, which
-        # is exactly what an agent that just finished starting is. The announcement
-        # fell into that gap and nothing ever replaced it, so the chat sat on
-        # "starting the agent" for the life of the socket with a working agent behind
-        # it. Asking the worker again, after the gap has closed, costs one message.
+        # The greeting above may have said "not ready" and the worker may have come up
+        # since. It announces that once, by queueing a second ``ready``, which this
+        # connection subscribed in time to receive — but the announcement may also have
+        # been made before the subscription existed, in which case nothing will repeat
+        # it and the chat would sit on "starting the agent" for the life of the socket
+        # with a working agent behind it. Asking the worker directly costs one message.
         if not greeting["agent_ready"] and self.worker.agent_ready():
             try:
                 await self.ws.send(json.dumps(self._greeting()))
@@ -325,6 +352,8 @@ class _Session:
                 await drain_task
             except (asyncio.CancelledError, Exception):
                 pass
+            # The agents and the pump live on; only this view of them ends here.
+            self._sub.close()
 
     # ── Session helpers ───────────────────────────────────────────────────────
 
@@ -342,43 +371,6 @@ class _Session:
                     pass
         except Exception:
             pass
-
-    def _drop_stale_events(self) -> None:
-        """Empty every idle agent's event queue of debris left by a previous connection.
-
-        Only an *idle* agent's queue is debris, and that is asked per conversation: the
-        agents outlive every connection, so a turn whose socket dropped mid-run is still
-        working and what is queued for it is its own output waiting for someone to read it.
-        Emptying it regardless loses everything that turn did — the card it is parked on,
-        the answer it eventually writes.
-
-        An idle agent's queue is debris with one exception, and it is the whole reason
-        this is not a plain drain: a background job answers to nobody's turn. It finishes
-        while its conversation sits idle, puts its wake on that idle queue, and the
-        watcher that was holding it is gone the same instant. Dropping that is the run
-        finishing into silence — the socket went away, the agent never did. So the
-        durable events are set aside and put back, and the rest is counted on the way
-        out, this being the one place in the client where work disappears on purpose.
-        """
-        for session_id, worker in self.pool.items():
-            if self.pool.is_busy(session_id):
-                continue
-            kept: list[dict] = []
-            dropped = 0
-            while not worker.out_q.empty():
-                try:
-                    ev = worker.out_q.get_nowait()
-                except Exception:
-                    break
-                if isinstance(ev, dict) and ev.get("type") in _DURABLE_EVENTS:
-                    kept.append(ev)
-                else:
-                    dropped += 1
-            for ev in kept:
-                worker.out_q.put(ev)
-            if kept or dropped:
-                logger.info("reconnect: session %s kept %d background event(s) and "
-                            "dropped %d stale one(s)", session_id, len(kept), dropped)
 
     async def _resend_parked_prompt(self) -> None:
         """Put back every card a turn is parked on — in any conversation.
@@ -453,7 +445,6 @@ class _Session:
         self._submitted_len = 0
         self._display_messages = []
         self._pending_interaction = None
-        self.transcript.bind(session.id)
         # No agent state to load and no grants to drop: a new conversation has no agent
         # yet, and the one built for it on its first query starts empty by construction.
         # Clearing anything here would reach into another conversation's agent, and
@@ -524,7 +515,7 @@ class _Session:
         self._submitted_len = len(self.history)
         self._display_messages = list(session.display_messages)
         self._pending_interaction = session.pending_interaction
-        self.transcript.bind(session.id)
+        self._rendered_seq = session.rendered_seq
         self._publish_title(session.id, session.title)
         if not resuming_live_agent:
             # Only when this conversation has no agent yet — the snapshot is how a
@@ -731,6 +722,9 @@ class _Session:
             # So a resume sizes the window the way this session was actually running,
             # rather than falling back to a default that may not be its own.
             session.context_mode = self.worker.get_context_mode(self._resumed_context_mode)
+            # Never backwards: a replay is sized from this, and lowering it would resend
+            # what the client already has.
+            session.rendered_seq = max(session.rendered_seq, self._rendered_seq)
             # Persist deps sidecar alongside todos.
             try:
                 import json as _json
@@ -846,10 +840,8 @@ class _Session:
         if start is None:
             hook = getattr(self.worker, "last_turn_start", None)
             start = hook() if hook else None
-        if not isinstance(start, int):
-            start = self._submitted_len if submitted is None else submitted
-        added = full[start:] if len(full) > start else []
-        return added or full[-1:]
+        fallback = self._submitted_len if submitted is None else submitted
+        return turn_messages(full, fallback, start=start)
 
     async def _emit_context_usage(self) -> None:
         """Push a context_usage event to the WS client (best-effort, never raises)."""
@@ -899,7 +891,13 @@ class _Session:
     # ── Drain loop ────────────────────────────────────────────────────────────
 
     async def _drain_loop(self) -> None:
-        """Forward worker output queue to the WS client."""
+        """Forward this connection's share of the stream to the WS client.
+
+        ``run()`` subscribes before the handshake so nothing can be missed; this is the
+        safety net for a caller that starts the loop on its own.
+        """
+        if self._sub is None:
+            self._sub = self.pool.bus.subscribe()
         _todo_mtime: float = 0.0  # last known mtime of the session's todo file
 
         async def _check_and_push_todos() -> None:
@@ -988,27 +986,27 @@ class _Session:
                     return
 
         while True:
-            # Every conversation's agent, not "the" one. Per-conversation order comes
-            # free — each worker owns its own FIFO — and the interleaving between them
-            # is harmless because every event carries the session it was produced for.
-            events: list[dict] = []
-            for _sid, worker in self.pool.items():
-                events.extend(worker.drain())
-            for ev in events:
+            # Read from this connection's subscription, not from the workers: the pump
+            # owns the draining, so that output is recorded whether or not this socket
+            # exists. Per-conversation order comes free — each worker owns its own FIFO
+            # — and the interleaving between them is harmless because every event
+            # carries the session it was produced for.
+            events: list[tuple[dict, dict]] = []
+            while True:
+                try:
+                    events.append(self._sub.queue.get_nowait())
+                except asyncio.QueueEmpty:
+                    break
+            for ev, extras in events:
                 # Which conversation this belongs to. Everything below addresses a
                 # session rather than "the session", because more than one may be
                 # producing at this instant.
                 owner = ev.get("session_id") or self._active_session_id
-                # The turn's transcript and deferral ride on its answer for the session
-                # layer only; they never go down the socket.
-                extras = self._pop_answer_extras(ev)
                 if ev.get("type") in _DURABLE_EVENTS:
                     # Routed by the session that launched the job rather than the one
                     # on screen, so it is handled ahead of the foreign-event filter.
                     checkin = ev.get("type") == "job_checkin"
                     foreign = self._is_foreign_event(ev)
-                    if not foreign:
-                        self.transcript.append(ev)
                     # Decided once, before the send: the send yields, and a turn that
                     # ended meanwhile would otherwise have the client and the handler
                     # disagree about whether a new turn began.
@@ -1045,8 +1043,6 @@ class _Session:
                     # conversation's own log, so switching to it shows the whole turn and
                     # not only the answer that ended it. (Progress is excluded for the same
                     # reason it is below — it describes a moment.)
-                    if ev.get("type") not in ("job_progress", "token", "thinking"):
-                        self._detached_log(owner).append(ev)
                     if ev.get("type") in ("answer", "error"):
                         if ev.get("type") == "answer":
                             await self._persist_detached_answer(ev, extras)
@@ -1065,11 +1061,6 @@ class _Session:
                 # Logged before the send: an event the client never received still
                 # happened, and the log is the record of the run, not of the socket.
                 # Progress is the exception: a watcher ticks for the whole life of a
-                # long run, and a transcript that recorded every "still building"
-                # would be mostly that. It describes a moment; only the moment needs
-                # it, and `job_complete` is what records how the run actually ended.
-                if ev.get("type") != "job_progress":
-                    self.transcript.append(ev)
                 try:
                     await self.ws.send(json.dumps(ev, default=str))
                 except Exception:
@@ -1194,6 +1185,8 @@ class _Session:
         "query": "_handle_query",
         "transcript": "_handle_transcript",
         "steer": "_handle_steer",
+        "detach": "_handle_detach",
+        "shutdown": "_handle_shutdown",
         "divert_to_background": "_handle_divert_to_background",
         "approval_response": "_handle_approval_response",
         "user_question_response": "_handle_user_question_response",
@@ -1490,7 +1483,7 @@ class _Session:
             "role": "system", "kind": "text", "text": f"🔔 {wake}"}
         if owner == self._active_session_id:
             for entry in entries:
-                self.transcript.append(entry)
+                self.pool.bus.record_client_event(owner, entry)
             if note is not None:
                 self._display_messages.append(note)
                 self._autosave_session(list(self._display_messages))
@@ -1505,9 +1498,8 @@ class _Session:
                 self.store.save_session(session)
             except Exception:
                 return
-        log = self._detached_log(owner)
         for entry in entries:
-            log.append(entry)
+            self.pool.bus.record_client_event(owner, entry)
 
     def _drop_injected_wakes(self, text: str) -> None:
         """Forget the pending jobs whose wake *text* the running turn just took in.
@@ -1612,10 +1604,10 @@ class _Session:
                 {"role": "system", "kind": "text", "text": f"🔔 {shown}"})
         if not await self._submit_detached(session, wake):
             return False
-        log = self._detached_log(session_id)
         for e in fresh:
-            log.append({"type": "job_wake", "text": self._wake_text(e),
-                        "job": e.get("job_key")})
+            self.pool.bus.record_client_event(
+                session_id, {"type": "job_wake", "text": self._wake_text(e),
+                             "job": e.get("job_key")})
         await self._notify(f"🔔 “{session.title or session_id}” resumed in the "
                            f"background: {wake.split(chr(10))[0]}")
         await self._send_sessions_list()
@@ -1652,19 +1644,97 @@ class _Session:
         worker.submit_query(text, list(session.llm_history), session_id=session_id)
         return True
 
-    def _detached_log(self, session_id: str) -> TranscriptLog:
-        """A transcript writer bound to a session other than the active one.
+    async def _report_ended_jobs(self) -> None:
+        """Announce every detached run that finished while nothing was watching it.
 
-        Cached per session. Binding resumes the log's sequence numbering by reading back
-        its last line, so building one per event — which is what a concurrently running
-        turn now produces — would re-scan the file hundreds of times a turn.
+        This is what makes coming back enough. A background run survives anything — its
+        own process session, a trap that records the exit code, a descriptor on disk —
+        but the *watcher* that promised to report it is a task on a worker's loop, and a
+        restart takes it with them. Re-making that promise already existed, through a
+        status tool returning ``background_jobs``, but it needed a turn in which somebody
+        asked; here nobody has to.
+
+        Handed to :meth:`_handle_job_complete`, deliberately: a run reported late must be
+        indistinguishable from one reported on time, so it goes through the same routing,
+        the same wake text and the same coalescing. A conversation with no agent yet keeps
+        its wake pending rather than losing it, and the next flush delivers it.
+
+        Marked on disk as it is announced, because two places look for these — a
+        connection arriving and a worker being built — and a run announced twice is a
+        conversation woken twice for one build.
         """
-        log = self._foreign_logs.get(session_id)
-        if log is None:
-            log = TranscriptLog()
-            log.bind(session_id)
-            self._foreign_logs[session_id] = log
-        return log
+        try:
+            found = scan_all_sessions()
+        except Exception:
+            logger.warning("job scan: the sessions could not be read", exc_info=True)
+            return
+        for session_id, jobs in found.items():
+            for job in jobs:
+                if job.live:
+                    continue   # a worker being built is what puts a watcher back on it
+                mark_reported(job)
+                await self._handle_job_complete({
+                    "type": "job_complete",
+                    "job_key": job.job_key,
+                    "state": job.state,
+                    "session_id": session_id,
+                    "summary": {"command": job.command, "exit_code": job.exit_code},
+                    "status_op": job.status_op(),
+                })
+
+    async def _send_replay(self) -> None:
+        """Send what this session produced past the client's watermark, then go live.
+
+        The order in :meth:`run` is the whole argument that this neither duplicates nor
+        drops. The subscription was opened *before* the handshake, so everything the
+        agents produced since is already queued behind it — there is no gap to fall
+        into. The journal is then read from the watermark and sent. Events produced
+        while that read was happening are in both places, so the subscription's gate is
+        raised to where the replay ended and the drain loop discards anything at or
+        below it: the overlap collapses to exactly one copy.
+
+        Streamed deltas are not in the journal and so are not replayed — a resumed turn
+        shows the aggregate that closed each block (``thinking_end``, ``answer``) rather
+        than its keystrokes, which is also what makes replaying a twelve-hour run
+        affordable. ``context_usage``, ``batch_status`` and ``todo`` are re-derived on
+        load and are skipped for the same reason.
+        """
+        session_id = self._active_session_id
+        if not session_id or self._sub is None:
+            return
+        try:
+            events, truncated = read_since(session_id, self._rendered_seq,
+                                           limit=_REPLAY_MAX_EVENTS)
+        except Exception:
+            logger.warning("replay: session %s could not be read", session_id,
+                           exc_info=True)
+            return
+        if not events:
+            # Nothing missed. The gate still moves to where the journal stands, so a
+            # live event this connection has already been handed is not sent twice.
+            self._sub.min_seq = max(self._sub.min_seq, self._rendered_seq)
+            return
+
+        through = self._rendered_seq
+        for start in range(0, len(events), _REPLAY_CHUNK):
+            chunk = events[start:start + _REPLAY_CHUNK]
+            through = max(through, max(int(e.get("seq", 0)) for e in chunk))
+            try:
+                await self.ws.send(json.dumps({
+                    "type": "replay",
+                    "session_id": session_id,
+                    "events": chunk,
+                    "through_seq": through,
+                    "more": start + _REPLAY_CHUNK < len(events),
+                    "truncated": truncated and start == 0,
+                }, default=str))
+            except Exception:
+                return
+        # Only now: a gate raised before the frames were sent would have discarded the
+        # live events that arrived between the read and the send.
+        self._sub.min_seq = max(self._sub.min_seq, through)
+        logger.info("replay: session %s resent %d event(s) from seq %d",
+                    session_id, len(events), self._rendered_seq)
 
     async def _notify(self, text: str) -> None:
         """One line of chrome for the client, outside any conversation. Never raises."""
@@ -1672,13 +1742,6 @@ class _Session:
             await self.ws.send(json.dumps({"type": "output", "text": f"  {text}\n"}))
         except Exception:
             pass
-
-    @staticmethod
-    def _pop_answer_extras(ev: dict) -> dict:
-        """Take the session-layer payload off an answer event (see ``_run_query``)."""
-        if ev.get("type") != "answer":
-            return {}
-        return {k: ev.pop(k) for k in ("_full", "_turn_start", "_deferred") if k in ev}
 
     def _answer_transcript(self, extras: dict) -> tuple[list | None, Any]:
         """The finished turn's transcript and boundary, from its answer when carried."""
@@ -1698,35 +1761,24 @@ class _Session:
         if not session_id or session_id not in self._detached_turns:
             return
         submitted = self._detached_turns.pop(session_id)
-        try:
-            session = self.store.load_session(session_id)
-        except Exception:
-            return
         extras = extras or {}
         full, start = self._answer_transcript(extras)
-        context_mode = getattr(self.worker._agent, "context_mode", "full")
-        if full is not None and context_mode == "full":
-            added = self._turn_messages(full, submitted, start=start)
-            session.llm_history_full.extend(dict(m) for m in added)
-            session.llm_history = list(full)
-        else:
-            answer_msg = {"role": "assistant", "content": ev.get("text", "")}
-            session.llm_history.append(answer_msg)
-            session.llm_history_full.append(dict(answer_msg))
-        if ev.get("text"):
-            session.display_messages.append(
-                {"role": "agent", "kind": "text", "text": ev.get("text", "")})
-        deferred = extras.get("_deferred")
-        if deferred:
-            session.pending_interaction = deferred
-        try:
-            self.store.save_session(session)
-        except Exception:
+        # The agent that ran THIS turn, carried on its answer. Read off the worker on
+        # screen it is the wrong agent whenever the turn belongs elsewhere — which for
+        # a detached turn is always.
+        context_mode = extras.get("_context_mode") or getattr(
+            self.worker._agent, "context_mode", "full")
+        result = commit_answer(
+            self.store, session_id,
+            ev, {**extras, "_full": full, "_turn_start": start},
+            submitted_len=extras.get("_submitted_len") or submitted,
+            context_mode=context_mode,
+        )
+        if result is None:
             return
-        self._detached_log(session_id).append(ev)
-        name = session.title or session_id
-        await self._notify(f"“{name}” is waiting for your decision." if deferred
-                           else f"“{name}” finished its background turn.")
+        deferred = result.deferred
+        await self._notify(f"“{result.title}” is waiting for your decision." if deferred
+                           else f"“{result.title}” finished its background turn.")
         await self._send_sessions_list()
         # The detached twin of the flush after an active turn's answer: jobs that
         # finished into this conversation while it was answering leave together now,
@@ -1762,7 +1814,7 @@ class _Session:
         # Slicing across a turn boundary can strand an assistant tool call or its
         # result; strict backends reject that outright.
         self.history[:] = reconcile_tool_pairs(self.history)
-        self.transcript.append({
+        self.pool.bus.record_client_event(self._active_session_id, {
             "type": "context_compact",
             "dropped": len(middle),
             "kept": len(self.history),
@@ -1878,7 +1930,7 @@ class _Session:
                 self.history.pop(0)
             # `history_full` is deliberately untouched above — this records what the
             # window lost, so the log stays the one complete account of the session.
-            self.transcript.append({
+            self.pool.bus.record_client_event(self._active_session_id, {
                 "type": "context_trim",
                 "dropped": dropped_before - len(self.history),
                 "kept": len(self.history),
@@ -1931,7 +1983,8 @@ class _Session:
         self.history.append({"role": "user", "content": text})
         self.history_full.append({"role": "user", "content": text})
         self._display_messages.append({"role": "user", "kind": "text", "text": text})
-        self.transcript.append({"type": "query", "text": text})
+        self.pool.bus.record_client_event(
+            self._active_session_id, {"type": "query", "text": text})
         # Save on arrival so a reconnect mid-turn (e.g. while waiting for an edit
         # approval) reloads from disk instead of minting a blank session ID, which
         # would wipe the chat on the frontend.
@@ -1995,6 +2048,12 @@ class _Session:
         if self._text_count(messages) < self._text_count(self._display_messages):
             return
         self._display_messages = messages
+        # The client says how far the transcript it just sent reaches. Taken on trust
+        # the same way the transcript itself is, and only ever forward: a webview that
+        # reopened on less than we hold must not shorten the watermark either.
+        through = msg.get("through_seq")
+        if isinstance(through, int) and through > self._rendered_seq:
+            self._rendered_seq = through
         self._autosave_session(list(self._display_messages))
 
     async def _handle_steer(self, msg: dict) -> None:
@@ -2018,7 +2077,8 @@ class _Session:
         # Not added to `history_full` here: the steer comes back inside the turn's own
         # messages when the answer lands, and recording it twice would double it.
         self._display_messages.append({"role": "user", "kind": "text", "text": text})
-        self.transcript.append({"type": "steer", "text": text})
+        self.pool.bus.record_client_event(
+            self._active_session_id, {"type": "steer", "text": text})
         self._autosave_session(list(self._display_messages))
         self.worker.submit_steer(text)
 
@@ -2051,6 +2111,125 @@ class _Session:
         sid = session_id if session_id is not None else self._active_session_id
         self._rows_for(sid).pop(call_id, None)
         self._sent_progress.setdefault(sid or "", {}).pop(call_id, None)
+
+    async def _handle_shutdown(self, msg: dict) -> None:
+        """Stop the server, now or once it has nothing left to do.
+
+        ``force`` stops it whatever is in flight — the user's own decision about their
+        own machine, and the only way to end a run that is waiting on an answer they
+        have decided not to give. Without it the request is refused while anything is
+        still working, and the reasons are sent back: an arrest that silently discarded
+        a two-hour build would be the worst answer this path could give.
+
+        Either way it goes through the same exit as a signal, which is the only thing
+        that closes the agents' MCP servers.
+        """
+        report = self.pool.idle_report()
+        force = bool(msg.get("force"))
+        if not report["idle"] and not force:
+            try:
+                await self.ws.send(json.dumps({
+                    "type": "shutdown_refused",
+                    "reasons": report["reasons"],
+                }))
+            except Exception:
+                pass
+            return
+        try:
+            await self.ws.send(json.dumps({
+                "type": "shutting_down",
+                "forced": force,
+                "reasons": report["reasons"],
+            }))
+        except Exception:
+            pass
+        logger.info("shutdown: requested by the client (forced=%s; %s)", force,
+                    "; ".join(report["reasons"]) or "nothing was running")
+        self.pool.request_stop()
+
+    async def _handle_detach(self, msg: dict) -> None:
+        """Let the server go on without this window — "continue without me".
+
+        Served here, on the WS loop, because the two things that make this process
+        survivable are things it does to *itself*: re-pointing its output fds away from
+        the pipe the extension host holds, and leaving that host's process group. The
+        spawn is not touched at all, which is why this works on a server that was
+        started as an ordinary child — and why it can be decided when the user is
+        leaving rather than when they connected, which is the moment they actually know
+        whether anything is worth leaving running.
+
+        The autonomy level is the user's answer to "what may it do while I am gone", and
+        it is required rather than defaulted: a detachment at ``manual`` parks at the
+        first sensitive tool and does almost nothing overnight, and that has to be a
+        choice rather than something that happened to them. It is applied to the
+        conversations named, through the same seam ``/approvals`` uses, so a turn
+        already in flight picks the new level up at its next gate.
+
+        Naming no conversation means all of them, and then the level is recorded
+        pool-wide as well — which is the only form that survives a worker being rebuilt,
+        since the pool's record of UI settings is per-pool and not per-session.
+        """
+        autonomy = str(msg.get("autonomy") or "manual")
+        if autonomy not in ("manual", "auto", "auto_all"):
+            try:
+                await self.ws.send(json.dumps({
+                    "type": "error",
+                    "text": (f"Unknown autonomy level: {autonomy}. "
+                             "Use manual, auto, or auto_all."),
+                }))
+            except Exception:
+                pass
+            return
+
+        session_ids = msg.get("session_ids")
+        targeted: list[str] = []
+        if isinstance(session_ids, list) and session_ids:
+            for sid in session_ids:
+                worker = self.pool.get(sid)
+                if worker is None:
+                    continue
+                try:
+                    worker.set_approval_mode(autonomy)
+                    targeted.append(str(sid))
+                except Exception:
+                    logger.warning("detach: session %s refused the autonomy level %s",
+                                   sid, autonomy, exc_info=True)
+        else:
+            self._apply_setting("set_approval_mode", autonomy)
+            targeted = [sid for sid, _w in self.pool.items()]
+
+        # The agent's stdout is about to become a log file, which is not a tty but is
+        # also not proof that nobody is reachable. Saying so plainly keeps the
+        # interactive fallbacks — the bare ``input()`` calls behind the CLI's hooks —
+        # from being attempted at all.
+        for _sid, worker in self.pool.items():
+            setter = getattr(worker, "set_non_interactive", None)
+            if setter is not None:
+                try:
+                    setter(True)
+                except Exception:
+                    logger.warning("detach: session %s could not be marked "
+                                   "non-interactive", _sid, exc_info=True)
+
+        info = detach_process(_MIMIR_DIR_WS)
+        # The entry already holds the address; this only adds what has changed about
+        # the process behind it, so a window that attaches later can say the run is
+        # detached and under which level.
+        server_registry.update(detached=True, log=info.get("log"), autonomy=autonomy)
+
+        try:
+            await self.ws.send(json.dumps({
+                "type": "detached",
+                "log": info.get("log"),
+                "autonomy": autonomy,
+                "sessions": targeted,
+                "pid": info.get("pid"),
+                "setsid": info.get("setsid"),
+            }))
+        except Exception:
+            return
+        logger.info("detach: this server is now survivable (autonomy %s over %d "
+                    "conversation(s))", autonomy, len(targeted))
 
     async def _handle_divert_to_background(self, msg: dict) -> None:
         """Move the run the user pointed at into the background.

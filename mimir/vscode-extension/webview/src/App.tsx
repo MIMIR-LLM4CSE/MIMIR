@@ -33,6 +33,7 @@ import { ForeignPromptStrip } from "./components/ForeignPromptStrip";
 import { PlanBar } from "./components/PlanBar";
 import { AgentSettings } from "./components/AgentSettings";
 import { ApprovalSwitcher } from "./components/ApprovalSwitcher";
+import { DetachButton } from "./components/DetachButton";
 import { ModeSwitcher } from "./components/ModeSwitcher";
 import { TogglesPanel } from "./components/TogglesPanel";
 import { ConnectForm } from "./components/ConnectForm";
@@ -174,6 +175,9 @@ export const App: React.FC = () => {
   // Held by the server, per model and on disk: never replayed from here on connect.
   const [temperature, setTemperature] = useState<TemperatureState>({ supported: false, value: null });
   const [approvalMode, setApprovalMode] = useState<ApprovalMode>("manual");
+  // Set once the server says it has detached. One-way: a detached server has no
+  // pipe to go back to.
+  const [detached, setDetached] = useState(false);
   const [contextUsage, setContextUsage] = useState<ContextUsage | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [togglesOpen, setTogglesOpen] = useState(false);
@@ -335,7 +339,26 @@ export const App: React.FC = () => {
   // ── WebSocket message handler ─────────────────────────────────────────────
   // Scalar/config message types update local React state directly; the
   // streaming/thinking/approval/diff state machine is delegated to the reducer.
+  // How far into each session's journal this window has rendered, keyed by session.
+  // Per session rather than one number: switching conversations would otherwise carry
+  // one session's high-water mark onto another and tell the server we had already seen
+  // events we never got.
+  const renderedSeqRef = useRef<Record<string, number>>({});
+
+  // A `replay` frame is a bundle of ordinary events, so it goes through this very
+  // handler — one reducer for what happened live and what happened while we were away.
+  const handlerRef = useRef<(m: ServerMessage) => void>(() => {});
+
   const handleServerMessage = useCallback((msg: ServerMessage) => {
+    // Every journaled event carries the point it was written at. Remembering the
+    // highest is what lets a later attach replay only what this window missed.
+    const seq = (msg as { seq?: unknown }).seq;
+    const owner = (msg as { session_id?: unknown }).session_id;
+    if (typeof seq === "number" && typeof owner === "string") {
+      const seen = renderedSeqRef.current[owner] ?? 0;
+      if (seq > seen) renderedSeqRef.current[owner] = seq;
+    }
+
     switch (msg.type) {
       case "ready":
         setModel(msg.model);
@@ -527,6 +550,25 @@ export const App: React.FC = () => {
         });
         return;
 
+      // What this conversation produced while nobody was attached. Each event is fed
+      // to this same handler, which is what rebuilds the rich transcript — tool rows,
+      // diff cards, reasoning panels — for a stretch this window was not there for.
+      // Streamed deltas are not in it by design: a resumed turn arrives as the
+      // aggregates that closed its blocks, not as its keystrokes.
+      case "replay": {
+        for (const ev of msg.events ?? []) handlerRef.current(ev as ServerMessage);
+        const seen = renderedSeqRef.current[msg.session_id] ?? 0;
+        if (msg.through_seq > seen) renderedSeqRef.current[msg.session_id] = msg.through_seq;
+        if (!msg.more) scrollToBottom();
+        return;
+      }
+
+      // The server has made itself survivable. Shown rather than announced: what
+      // changes is a standing fact about this run, not an event in the conversation.
+      case "detached":
+        setDetached(true);
+        return;
+
       case "session_loaded": {
         // Capture BEFORE updating so we can compare old vs new session id.
         const prevSessionId = activeSessionIdRef.current;
@@ -608,6 +650,12 @@ export const App: React.FC = () => {
     }
   }, [scrollToBottom, scrollToApproval]);
 
+  // Kept in a ref so the `replay` case can run each bundled event through the handler
+  // it is defined in.
+  useEffect(() => {
+    handlerRef.current = handleServerMessage;
+  }, [handleServerMessage]);
+
   const resetSession = () => {
     dispatch({ type: "reset" });
     setTodos([]);
@@ -688,7 +736,14 @@ export const App: React.FC = () => {
     if (!sessionId || messages.length === 0) return;
     if (!force && messages === lastSentMessagesRef.current) return;
     lastSentMessagesRef.current = messages;
-    send({ type: "transcript", session_id: sessionId, messages: pruneForStorage(messages) });
+    send({
+      type: "transcript",
+      session_id: sessionId,
+      messages: pruneForStorage(messages),
+      // How far these messages reach. The server stores it and replays from it, so a
+      // window that has rendered everything is sent nothing on its next attach.
+      through_seq: renderedSeqRef.current[sessionId] ?? 0,
+    });
   }, [send]);
 
   // At the end of the turn. The delay lets the last few events (a trailing verdict,
@@ -1506,6 +1561,13 @@ export const App: React.FC = () => {
               belongs where the user already is rather than behind a settings gear. */}
           <div className="input-actions">
             <ApprovalSwitcher mode={approvalMode} onModeChange={handleApprovalModeChange} />
+            {/* Directly under the level it will run at: the two are one decision, and
+                the button carries no picker of its own so they cannot disagree. */}
+            <DetachButton
+              mode={approvalMode}
+              detached={detached}
+              onDetach={() => send({ type: "detach", autonomy: approvalMode })}
+            />
             {busy ? (
               <>
                 {input.trim() && (

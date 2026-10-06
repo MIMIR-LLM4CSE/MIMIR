@@ -105,6 +105,35 @@ Protocol — all messages are JSON objects, one per send/recv:
                                "queued": false}]}  # waiting for an agent slot
     {"type": "session_loaded", "session_id": "...", "title": "...",
                                "display_messages": [...], "todos": [...]}
+    {"type": "shutting_down",  "forced": false, "reasons": [...]}
+                                                       # the server is going. ``reasons``
+                                                       # is what was still running, which
+                                                       # a forced stop is ending
+    {"type": "shutdown_refused", "reasons": [...]}     # it is still needed, and why
+    {"type": "detached",       "log": "...", "autonomy": "manual|auto|auto_all",
+                               "sessions": [...], "pid": 0, "setsid": true}
+                                                       # the answer to ``detach``: this
+                                                       # server has re-pointed its output
+                                                       # at ``log`` and left the
+                                                       # extension host's process group,
+                                                       # so it survives the window. The
+                                                       # client must stop killing it
+    {"type": "replay",         "session_id": "...", "events": [...],
+                               "through_seq": 0, "more": false, "truncated": false}
+                                                       # what this conversation produced
+                                                       # while nobody was attached, read
+                                                       # back from its journal past the
+                                                       # client's watermark. Sent on
+                                                       # attach, in frames; feed each
+                                                       # event to the same reducer a live
+                                                       # one goes to. ``through_seq`` is
+                                                       # the watermark to send back on
+                                                       # the next ``transcript``;
+                                                       # ``truncated`` means older events
+                                                       # were elided. Streamed deltas are
+                                                       # not replayed — a resumed turn
+                                                       # arrives as the aggregates that
+                                                       # closed its blocks
     {"type": "context_usage",  "used_tokens": 0, "total_tokens": 0, "reserved_tokens": 0,
                                "overhead_tokens": 0,
                                "overhead_measured": false,  # true once server-reported
@@ -133,6 +162,15 @@ Protocol — all messages are JSON objects, one per send/recv:
                                   # that would settle a question another one asked, with
                                   # the user's approval on a call they never saw. An
                                   # answer to a card whose wait expired is dropped too.
+    {"type": "shutdown", "force": false}             # stop the server. Refused while
+                                                     # anything is still working, with
+                                                     # the reasons, unless forced
+    {"type": "detach", "autonomy": "manual|auto|auto_all",
+                       "session_ids": ["..."]}       # "continue without me": make this
+                                                     # server survivable and set what it
+                                                     # may do unattended. No session_ids
+                                                     # means every conversation, and only
+                                                     # that form outlives a worker rebuild
     {"type": "divert_to_background", "id": "..."}   # detach the run now blocking the
                                   # turn, keeping what it has already done. The id names
                                   # the row, whose tool name is the run channel its
@@ -158,6 +196,7 @@ from ._ws_runtime import (
 )
 from .ws_worker import _AgentWorker
 from .ws_pool import _AgentPool
+from . import server_registry
 from .ws_session import _Session
 
 import asyncio
@@ -182,6 +221,13 @@ __all__ = ["serve", "main", "_AgentWorker", "_AgentPool", "_Session"]
 _MAX_FRAME_BYTES = 32 * 1024 * 1024
 
 
+def _announced_address(sockets: Any) -> tuple[str, int]:
+    """The host and port behind :func:`_announced_url` — the same choice, unformatted."""
+    names = [s.getsockname() for s in sockets]
+    addr, port = next((n for n in names if ":" not in n[0]), names[0])[:2]
+    return addr, int(port)
+
+
 def _announced_url(sockets: Any) -> str:
     """The address a client must dial to reach the server.
 
@@ -196,8 +242,7 @@ def _announced_url(sockets: Any) -> str:
     ``localhost`` almost everywhere, but rarely ``::1``: a client that honours the
     proxy variables sent ``ws://[::1]`` to the corporate proxy, which closed it.
     """
-    names = [s.getsockname() for s in sockets]
-    addr, port = next((n for n in names if ":" not in n[0]), names[0])[:2]
+    addr, port = _announced_address(sockets)
     host = f"[{addr}]" if ":" in addr else addr
     return f"ws://{host}:{port}"
 
@@ -302,6 +347,10 @@ async def serve(
     # moved to the first query of each conversation, which is the only place that can say
     # which session is paying it.
     pool = _AgentPool(_model)
+    # The event pump, started here rather than with the first worker: it belongs to the
+    # process, and what it does — drain every worker, journal what they emit, hand it to
+    # whatever sockets are attached — has to happen when none are.
+    pool.ensure_pump()
     print(f"Agent pool ready (up to {pool.cap} live conversations).",
           file=_ORIGINAL_STDOUT)
 
@@ -316,12 +365,26 @@ async def serve(
         # Read the port back off the socket rather than echoing the argument: with
         # --port 0 the argument is a placeholder, and this line is the contract the
         # VS Code extension parses to learn where to connect.
-        print(f"Listening on {_announced_url(server.sockets)}", file=_ORIGINAL_STDOUT, flush=True)
-        await _run_until_signalled(pool)
+        url = _announced_url(server.sockets)
+        print(f"Listening on {url}", file=_ORIGINAL_STDOUT, flush=True)
+        # Written down as well as announced. The printed line reaches whoever holds this
+        # process's stdout — the extension host that spawned it, and nobody else; a
+        # server meant to outlive that window has to leave its address somewhere a
+        # later window can read. One file per workspace, which is where "one server per
+        # workspace" actually comes from.
+        _addr = _announced_address(server.sockets)
+        server_registry.publish(url=url, host=_addr[0], port=_addr[1],
+                                model=pool.model)
+        try:
+            await _run_until_signalled(pool)
+        finally:
+            # Retired here rather than in the signal path: a crash leaves it behind on
+            # purpose, and a reader checks liveness instead of trusting the file.
+            server_registry.clear()
 
 
 async def _run_until_signalled(pool: _AgentPool) -> None:
-    """Serve until asked to stop, then close every agent's MCP servers.
+    """Serve until nothing needs this process, then close every agent's MCP servers.
 
     ``stdio_client`` spawns each server with ``start_new_session=True`` — its own process
     group, so it survives this process dying — and the only thing that terminates one is
@@ -334,6 +397,11 @@ async def _run_until_signalled(pool: _AgentPool) -> None:
     a handler that interrupts an arbitrary frame cannot await. Falls back to serving
     forever where the loop does not support it (Windows), which is where the pool's own
     idle release is the only reaping there is.
+
+    Three doors, one exit. A signal, an explicit ``shutdown`` from the client, and the
+    pool deciding it is no longer needed all resolve here, because what has to happen on
+    the way out — unwinding each agent's exit stack — is the same in every case and is
+    the only thing that reaps the MCP servers.
     """
     loop = asyncio.get_running_loop()
     stop = loop.create_future()
@@ -341,6 +409,13 @@ async def _run_until_signalled(pool: _AgentPool) -> None:
     def _ask_to_stop() -> None:
         if not stop.done():
             stop.set_result(None)
+
+    # The third door out, beside SIGTERM and SIGINT: the pool deciding nothing needs
+    # this process any more. It goes through the same exit precisely because that exit
+    # is the only thing that closes the MCP servers — a stop that took a shortcut would
+    # leave the orphans this function exists to prevent.
+    pool.stop_requested = asyncio.Event()
+    asked = loop.create_task(pool.stop_requested.wait())
 
     installed = []
     for sig in (signal.SIGTERM, signal.SIGINT):
@@ -350,9 +425,12 @@ async def _run_until_signalled(pool: _AgentPool) -> None:
         except (NotImplementedError, RuntimeError, ValueError):
             pass
     try:
-        await stop
-        print("Stopping — closing agent connections…", file=_ORIGINAL_STDOUT, flush=True)
+        await asyncio.wait([stop, asked], return_when=asyncio.FIRST_COMPLETED)
+        why = "idle" if pool.stop_requested.is_set() else "asked to"
+        print(f"Stopping ({why}) — closing agent connections…",
+              file=_ORIGINAL_STDOUT, flush=True)
     finally:
+        asked.cancel()
         for sig in installed:
             try:
                 loop.remove_signal_handler(sig)

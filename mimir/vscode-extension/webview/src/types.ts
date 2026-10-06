@@ -444,6 +444,47 @@ export interface SessionLoadedMessage {
   turn_running?: boolean;
 }
 
+/** The server has made itself survivable — the answer to `detach`.
+ *
+ *  It has re-pointed its output at `log` (so the pipe this window holds can close
+ *  without taking it down) and left this process group. The extension stops killing it
+ *  on window close from here on: it is no longer this window's to end. `autonomy` is
+ *  what it may do while unattended, and `sessions` are the conversations it applies to. */
+export interface DetachedMessage {
+  type: "detached";
+  log: string | null;
+  autonomy: "manual" | "auto" | "auto_all";
+  sessions: string[];
+  pid: number;
+  setsid: boolean;
+}
+
+/** What this conversation produced while nobody was attached.
+ *
+ *  Read back from the session's journal past the watermark the client last reported,
+ *  and sent on attach in frames of at most a few hundred. Each event is the same shape
+ *  a live one has, so feed them to the same reducer: that is what rebuilds the rich
+ *  transcript — tool rows, diff cards, reasoning panels — for a period this window was
+ *  not there for.
+ *
+ *  Streamed deltas are deliberately absent. `token` and `thinking` are not journaled,
+ *  so a replayed turn arrives as the aggregates that closed its blocks (`thinking_end`,
+ *  `answer`) rather than its keystrokes — which is also what makes replaying a
+ *  twelve-hour run affordable. `context_usage`, `batch_status` and `todo` are re-derived
+ *  on load for the same reason.
+ *
+ *  `through_seq` is the watermark to send back on the next `transcript`; `more` says
+ *  another frame follows; `truncated` says older events were elided because the replay
+ *  hit its cap. */
+export interface ReplayMessage {
+  type: "replay";
+  session_id: string;
+  events: ServerMessage[];
+  through_seq: number;
+  more: boolean;
+  truncated: boolean;
+}
+
 export interface ContextModeMessage {
   type: "context_mode";
   mode: "compact" | "full";
@@ -690,6 +731,8 @@ export type ServerMessage =
   | OpenEditorMessage
   | UserQuestionMessage
   | PromptExpiredMessage
+  | ReplayMessage
+  | DetachedMessage
   | QueuedMessage;
 
 // ── Message types (client → server) ──────────────────────────────────────────
@@ -709,6 +752,25 @@ export interface TranscriptMessage {
   type: "transcript";
   session_id: string;
   messages: ChatMessage[];
+  /** How far into the session's journal these messages reach — the highest `seq` the
+   *  reducer has taken in, from a live event or a `replay` frame. Stored server-side
+   *  and used as the point a later re-attach replays *from*, so a window that has
+   *  rendered everything is sent nothing. Omitted, the watermark simply does not
+   *  advance and the next attach replays more than it needed to. */
+  through_seq?: number;
+}
+
+/** "Continue without me": make the server survive this window closing.
+ *
+ *  `autonomy` is required rather than defaulted, because the answer matters: at
+ *  `manual` a detached run parks at its first sensitive tool and does almost nothing
+ *  overnight, and that has to be a choice. Omitting `session_ids` means every
+ *  conversation — and that is the only form that outlives a worker being rebuilt,
+ *  since the server records UI settings per pool rather than per session. */
+export interface DetachMessage {
+  type: "detach";
+  autonomy: "manual" | "auto" | "auto_all";
+  session_ids?: string[];
 }
 
 /** A message typed while the agent is busy — injected into the running turn. */
@@ -821,6 +883,7 @@ export type ClientMessage =
   | QueryMessage
   | TranscriptMessage
   | SteerMessage
+  | DetachMessage
   | DivertToBackgroundMessage
   | ApprovalResponseMessage
   | UserQuestionResponseMessage

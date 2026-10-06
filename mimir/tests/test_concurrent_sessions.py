@@ -19,6 +19,7 @@ import json
 import queue as _queue
 import unittest
 
+from mimir.client.ui.ws.event_bus import _EventBus
 from mimir.client.ui.ws.ws_session import _Session
 from mimir.client.ui.ws.ws_worker import _AgentWorker
 
@@ -59,6 +60,9 @@ class _ManyPool:
         self.active_session_id = None
         self.model = "test-model"
         self.cap = 3
+        # The real bus over this stand-in: what carries a worker's output to a session
+        # is the seam under test, so faking it would test the call and not the seam.
+        self.bus = _EventBus(self)
 
     def get(self, session_id):
         return self._workers.get(session_id or "")
@@ -96,7 +100,6 @@ def _session(pool: _ManyPool, active: str) -> _Session:
     sess._submitted_len = 0
     sess._live_rows = {}
     sess._sent_progress = {}
-    sess._foreign_logs = {}
     pool.set_active(active)
     return sess
 
@@ -183,14 +186,20 @@ class WhatIsRunningTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.sess._session_activity("s2"),
                          {"running": False, "parked": True, "queued": False})
 
-    def test_an_idle_conversations_queue_is_cleared_and_a_busy_ones_is_not(self) -> None:
-        """A turn whose socket dropped mid-run is still working, and what is queued for
-        it is its own output waiting for someone to read it."""
+    def test_every_conversations_output_is_drained_busy_or_not(self) -> None:
+        """The pump drains them all, and the journal keeps what it drained.
+
+        This used to be a sweep that emptied an idle conversation's queue and spared a
+        busy one's, on the reasoning that a turn whose socket dropped mid-run is still
+        working. Both are drained now, because neither needed the queue to be its
+        record.
+        """
         self.a._query_session_id = "s1"          # busy
         self.a.out_q.put({"type": "output", "text": "mid-run"})
-        self.b.out_q.put({"type": "output", "text": "debris"})
-        self.sess._drop_stale_events()
-        self.assertFalse(self.a.out_q.empty(), "threw away a running turn's output")
+        self.b.out_q.put({"type": "output", "text": "idle"})
+        moved = self.sess.pool.bus.pump_once()
+        self.assertEqual(moved, 2)
+        self.assertTrue(self.a.out_q.empty())
         self.assertTrue(self.b.out_q.empty())
 
 

@@ -41,6 +41,10 @@
       {
         "command": "mimir.startServer",
         "title": "MIMIR: Start Server"
+      },
+      {
+        "command": "mimir.stopServer",
+        "title": "MIMIR: Stop Detached Server"
       }
     ],
     "menus": {

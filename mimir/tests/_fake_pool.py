@@ -17,6 +17,8 @@ from __future__ import annotations
 
 from typing import Any, Iterator
 
+from mimir.client.ui.ws.event_bus import _EventBus
+
 
 class FakePool:
     def __init__(self, worker: Any = None, *, active: str | None = None,
@@ -28,6 +30,10 @@ class FakePool:
         self.cap = 3
         self.queued: list[tuple[str, Any]] = []
         self.closed: list[str] = []
+        # The real bus over this stand-in: what carries a worker's output to a session
+        # is the seam under test in most of these cases, so faking it would test the
+        # call and not the seam. Tests drive it with ``bus.pump_once()``.
+        self.bus = _EventBus(self)
 
     def _for(self, session_id: str | None) -> Any:
         """The agent of *session_id*: the per-session table when there is one."""
@@ -111,6 +117,9 @@ class FakePool:
         pass
 
     def ensure_reaper(self) -> None:
+        pass
+
+    def ensure_pump(self) -> None:
         pass
 
     # ── settings ──────────────────────────────────────────────────────────────
