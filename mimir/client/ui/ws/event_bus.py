@@ -85,14 +85,26 @@ class _Subscription:
         # replaying from its own watermark.
         self.gapped: bool = False
         self.dropped: int = 0
+        # Events the watermark filtered out. Counted and logged rather than silently
+        # discarded: a gate set too high is invisible from the outside.
+        self.filtered: int = 0
 
     def wants(self, ev: dict) -> bool:
         if self._filter is not None and not self._filter(ev):
             return False
         seq = ev.get("seq")
         # Unstamped events are stream deltas: live-only, never replayed, so the
-        # watermark has nothing to say about them.
+        # watermark has nothing to say about them. Note the asymmetry this creates and
+        # why it is worth logging: `token` and `thinking` are never journaled, so they
+        # bypass the gate entirely. A gate set too high therefore does not look like a
+        # dead connection — it looks like a chat that streams text and reasoning
+        # normally and never shows a tool call, a diff or an answer.
         if isinstance(seq, int) and seq <= self.min_seq:
+            self.filtered += 1
+            if self.filtered == 1 or self.filtered % 100 == 0:
+                logger.warning("subscription: dropped %d event(s) at or below the "
+                               "rendered watermark %d (latest: %s seq %d)",
+                               self.filtered, self.min_seq, ev.get("type"), seq)
             return False
         return True
 

@@ -189,6 +189,95 @@ class FramingTests(_ReplayCase):
         self.assertEqual(self.sess._sub.min_seq, 0)
 
 
+class TheGateCannotSilenceAStreamTests(_ReplayCase):
+    """A watermark above the journal must not swallow the conversation.
+
+    Observed as: the chat streams the answer's opening text and then reasons for ever,
+    showing no tool call, no diff and no answer. The shape is the tell — `token` and
+    `thinking` are never journaled, so they carry no seq and bypass the gate entirely,
+    while everything else is stamped and filtered. So a gate set too high does not look
+    like a dead connection; it looks like a half-working one.
+
+    The cause was a new conversation inheriting the previous one's watermark: its own
+    journal starts at 1, every stamped event is at or below the inherited mark, and the
+    gate drops the lot.
+    """
+
+    async def test_a_watermark_above_the_journal_is_not_honoured(self):
+        self._produce("a")                      # the journal holds seq 1
+        self.sess._rendered_seq = 9000          # inherited from somewhere else
+        self._attach()
+        await self.sess._send_replay()
+        self.assertLessEqual(self.sess._sub.min_seq, 1)
+
+    async def test_the_stream_still_arrives_after_such_a_watermark(self):
+        self.sess._rendered_seq = 9000
+        self._attach()
+        await self.sess._send_replay()
+        self._produce("the tool row", "the answer")
+        delivered = []
+        while not self.sess._sub.queue.empty():
+            ev, _x = self.sess._sub.queue.get_nowait()
+            if self.sess._sub.wants(ev):
+                delivered.append(ev["text"])
+        self.assertEqual(delivered, ["the tool row", "the answer"],
+                         "the gate silenced the conversation")
+
+    async def test_a_filtered_event_is_counted_rather_than_vanishing(self):
+        self._produce("a", "b")
+        self._attach()
+        self.sess._sub.min_seq = 5
+        self.assertFalse(self.sess._sub.wants({"type": "answer", "seq": 2}))
+        self.assertEqual(self.sess._sub.filtered, 1)
+
+    async def test_a_stream_delta_bypasses_the_gate(self):
+        # Which is exactly why the failure looks like a half-working chat.
+        self._attach()
+        self.sess._sub.min_seq = 9000
+        self.assertTrue(self.sess._sub.wants({"type": "token", "text": "tok"}))
+        self.assertFalse(self.sess._sub.wants({"type": "tool_call", "seq": 1}))
+
+
+class ANewConversationRendersNothingYetTests(unittest.IsolatedAsyncioTestCase):
+    """A new conversation starts with no watermark of its own."""
+
+    def setUp(self) -> None:
+        self.sess = object.__new__(_Session)
+        self.sess.ws = _FakeWS()
+        self.sess.pool = FakePool(_bare_worker("s1"), active="s1")
+        self.sess.store = _StoreStub()
+        self.sess._rendered_seq = 1234          # the conversation being left
+        self.sess._unsaved_session_meta = None
+        self.sess._summary_task = None
+        self.sess._pending_interaction = None
+        self.sess._display_messages = []
+        self.sess.history = []
+        self.sess.history_full = []
+        self.sess._submitted_len = 7
+        self.sess._publish_title = lambda *a, **k: None
+        self.sess._send_sessions_list = _noop
+        self.sess._emit_context_usage = _noop
+        self.sess._push_todos = lambda *a, **k: None
+
+    async def test_creating_one_clears_the_watermark(self):
+        await self.sess._create_new_session()
+        self.assertEqual(self.sess._rendered_seq, 0,
+                         "a new conversation inherited another's rendered watermark")
+
+
+class _StoreStub:
+    def new_session(self):
+        from mimir.client.ui.ws.session_store import SessionStore
+        return SessionStore().new_session()
+
+    def list_sessions(self):
+        return []
+
+
+async def _noop(*_args, **_kwargs):
+    return None
+
+
 class WhatIsNotReplayedTests(_ReplayCase):
     async def test_streamed_deltas_are_absent_but_their_aggregate_is_not(self):
         self.worker.out_q.put({"type": "token", "text": "tok"})

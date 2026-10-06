@@ -454,6 +454,13 @@ class _Session:
         self._submitted_len = 0
         self._display_messages = []
         self._pending_interaction = None
+        # A new conversation has rendered nothing. Carried over, the previous one's
+        # watermark is a number from a journal this session does not have: its own
+        # starts at 1, every stamped event is at or below the inherited mark, and the
+        # replay gate drops the lot — while `token` and `thinking`, which are never
+        # journaled and so never stamped, keep arriving. That is a chat that streams
+        # text and reasoning for ever and shows no tool call, no diff and no answer.
+        self._rendered_seq = 0
         # No agent state to load and no grants to drop: a new conversation has no agent
         # yet, and the one built for it on its first query starts empty by construction.
         # Clearing anything here would reach into another conversation's agent, and
@@ -1725,6 +1732,17 @@ class _Session:
         session_id = self._active_session_id
         if not session_id or self._sub is None:
             return
+        # Never past what the journal actually holds. The watermark arrives from the
+        # client, and is stored, so it can outlive the journal it counted — a session
+        # whose log was removed, or a number inherited from another conversation. A
+        # claim to have seen more than exists cannot be true, and honouring it sets the
+        # gate above every event this session will ever produce.
+        held = self.pool.bus.last_seq(session_id)
+        if self._rendered_seq > held:
+            logger.warning("replay: session %s claims to have rendered seq %d but its "
+                           "journal holds %d; trusting the journal",
+                           session_id, self._rendered_seq, held)
+            self._rendered_seq = held
         try:
             events, truncated = read_since(session_id, self._rendered_seq,
                                            limit=_REPLAY_MAX_EVENTS)

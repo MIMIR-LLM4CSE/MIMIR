@@ -103,6 +103,7 @@ class SessionFencingTests(unittest.IsolatedAsyncioTestCase):
         sess._display_messages = []
         sess._detached_turns = {}
         sess._submitted_len = 0
+        sess._rendered_seq = 0
         return sess
 
     def test_foreign_events_are_dropped_and_own_events_kept(self):
