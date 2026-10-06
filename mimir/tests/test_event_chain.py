@@ -240,6 +240,95 @@ class ATurnReachesTheClientTests(_ChainCase):
         self.assertEqual(sess._sub.filtered, 0)
 
 
+class ProseSurvivesAnAbsenceTests(_ChainCase):
+    """Coming back shows what the agent *said*, not only what it called.
+
+    Reported after a real absence: the tool calls came back and the streaming did not.
+    Correct for the deltas — hundreds per turn, deliberately not journaled — but the
+    consequence was that everything the agent said *between* its tools was gone, and
+    that is most of what makes a turn legible. An aggregate of each block is recorded
+    instead, replay-only: a connected client already had the deltas.
+    """
+
+    def _turn_with_prose(self) -> list[dict]:
+        # Not literal events: the worker builds these from the token callback. The
+        # fixture stands in for that, in the order the real one produces.
+        return [
+            {"type": "assistant_text", "text": "First I will look at the servers.\n"},
+            {"type": "tool_call", "id": "c1", "tool": "bash_run"},
+            {"type": "tool_result", "id": "c1", "ok": True},
+            {"type": "assistant_text", "text": "Nineteen of them; now the client.\n"},
+            {"type": "tool_call", "id": "c2", "tool": "read_file"},
+            {"type": "tool_result", "id": "c2", "ok": True},
+            {"type": "answer", "text": "done", "cancelled": False,
+             "_full": None, "_turn_start": None, "_submitted_len": 0,
+             "_context_mode": "full"},
+        ]
+
+    async def test_the_prose_is_recorded_in_order_with_the_tools(self):
+        self._stored_session("s1")
+        worker = _worker("s1", turn=self._turn_with_prose())
+        pool = FakePool(worker, active="s1")
+        ws = _WS([json.dumps({"type": "query", "text": "look around"})])
+        sess = _Session(ws, pool)
+
+        await self._run(sess, pool, ws)
+
+        logged, _truncated = transcript_log.read_since("s1", 0)
+        kinds = [e["type"] for e in logged if e["type"] != "query"]
+        self.assertEqual(
+            kinds,
+            ["assistant_text", "tool_call", "tool_result",
+             "assistant_text", "tool_call", "tool_result", "answer"],
+            "the record does not interleave what was said with what was called")
+
+    async def test_it_is_not_sent_to_a_client_that_already_had_the_deltas(self):
+        # Sending the aggregate as well would print the paragraph twice.
+        self._stored_session("s1")
+        worker = _worker("s1", turn=self._turn_with_prose())
+        pool = FakePool(worker, active="s1")
+        ws = _WS([json.dumps({"type": "query", "text": "look around"})])
+        sess = _Session(ws, pool)
+
+        await self._run(sess, pool, ws)
+
+        self.assertNotIn("assistant_text", self._kinds(ws))
+        self.assertIn("tool_call", self._kinds(ws))
+
+    async def test_a_reconnect_replays_the_prose(self):
+        # The property the whole thing is for: leave, come back, and the turn reads as
+        # it would have been watched.
+        self._stored_session("s1")
+        worker = _worker("s1", turn=self._turn_with_prose())
+        pool = FakePool(worker, active="s1")
+        first = _WS([json.dumps({"type": "query", "text": "look around"})])
+        await self._run(_Session(first, pool), pool, first)
+
+        second = _WS([], linger=0.3)
+        await self._run(_Session(second, pool), pool, second)
+
+        frames = [m for m in second.sent if m.get("type") == "replay"]
+        self.assertTrue(frames, "nothing was replayed")
+        replayed = [e["type"] for f in frames for e in f["events"]]
+        self.assertEqual(replayed.count("assistant_text"), 2,
+                         "the agent's prose did not come back")
+        self.assertIn("tool_call", replayed)
+
+    async def test_a_blank_block_is_not_recorded(self):
+        # Whitespace between a tool result and the next call is not something the agent
+        # said, and recording it puts a blank bubble in every replayed turn. Asserted on
+        # the worker's own rule rather than through a turn, because the fixture cannot
+        # honour a rule it does not contain.
+        worker = _worker("s1")
+        self.assertFalse(worker.emit_assistant_text("   \n"))
+        self.assertFalse(worker.emit_assistant_text(""))
+        self.assertTrue(worker.emit_assistant_text("something said"))
+        emitted = []
+        while not worker.out_q.empty():
+            emitted.append(worker.out_q.get_nowait())
+        self.assertEqual([e["text"] for e in emitted], ["something said"])
+
+
 class WhenTheChatGoesQuietTests(_ChainCase):
     """The ways it can, pinned so each is deliberate rather than a surprise."""
 

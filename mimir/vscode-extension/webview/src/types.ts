@@ -444,6 +444,23 @@ export interface SessionLoadedMessage {
   turn_running?: boolean;
 }
 
+/** A whole streamed prose block, recorded rather than streamed.
+ *
+ *  Never sent live: a connected client has already had every one of its deltas as
+ *  `token`, and the aggregate on top would print the paragraph twice. It exists for
+ *  the replay, where the deltas are gone — the journal deliberately keeps hundreds of
+ *  `token` events out of itself, and without this a turn read back after an absence
+ *  would have only its tool rows and its final answer, having lost everything the
+ *  agent said in between.
+ *
+ *  Fed to the reducer as a `token`, which is what keeps a replayed turn interleaving
+ *  prose and tool cards the way the live one did: the same draft-and-boundary logic
+ *  decides where the block sits relative to the calls that followed it. */
+export interface AssistantTextMessage {
+  type: "assistant_text";
+  text: string;
+}
+
 /** The server has made itself survivable — the answer to `detach`.
  *
  *  It has re-pointed its output at `log` (so the pipe this window holds can close
@@ -732,6 +749,7 @@ export type ServerMessage =
   | UserQuestionMessage
   | PromptExpiredMessage
   | ReplayMessage
+  | AssistantTextMessage
   | DetachedMessage
   | QueuedMessage;
 

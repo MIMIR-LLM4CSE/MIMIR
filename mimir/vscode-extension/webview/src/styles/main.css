@@ -1803,6 +1803,16 @@ body {
   color: var(--fg-dim);
 }
 
+/* Pushes what follows to the far edge. The detach control sits there because it is not
+   of a kind with the others: mode, settings and toggles change what the next turn does,
+   this one changes who owns the process. Mixed in among them it would be adjusted; at
+   the end it is reached for. */
+.toolbar-end {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+}
+
 /* ── Textarea + send/stop row ───────────────────────────────────────────────── */
 /* Send/stop plus the approval switcher, stacked at the right of the message box. */
 .input-actions {
@@ -1997,10 +2007,10 @@ body {
   background: transparent;
   color: var(--vscode-descriptionForeground, #9d9d9d);
   border: 1px solid var(--vscode-widget-border, #3c3c3c);
-  border-radius: 6px;
-  width: 34px;
-  height: 26px;
-  font-size: 13px;
+  border-radius: 4px;
+  width: 24px;
+  height: 20px;
+  font-size: 11px;
   cursor: pointer;
   flex-shrink: 0;
   display: flex;
@@ -2018,15 +2028,116 @@ body {
    pointer, and it stays visible so the state is never a thing the user has to
    remember. */
 .detach-state {
-  color: var(--vscode-descriptionForeground, #9d9d9d);
+  color: var(--vscode-editorWarning-foreground, #cca700);
   font-size: 10px;
   line-height: 1.2;
-  text-align: center;
-  width: 34px;
+  white-space: nowrap;
   flex-shrink: 0;
-  overflow-wrap: anywhere;
   cursor: default;
 }
+
+/* ── Disconnecting on work in flight ───────────────────────────────────────── */
+
+/* Modal on purpose. The question is whether to end a turn that may have been running
+   for hours, and a banner that can be scrolled past is not a question. */
+.disconnect-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 300;
+  background: rgba(0, 0, 0, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+}
+
+.disconnect-dialog {
+  position: relative;
+  max-width: 420px;
+  width: 100%;
+  background: var(--vscode-editorWidget-background, #252526);
+  border: 1px solid var(--vscode-widget-border, #3c3c3c);
+  border-radius: 6px;
+  padding: 14px 16px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+  font-size: 12px;
+  color: var(--vscode-foreground, #ccc);
+}
+
+.disconnect-title {
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 8px;
+  padding-right: 18px;   /* clear of the close button */
+}
+
+.disconnect-list {
+  margin: 0 0 10px;
+  padding-left: 18px;
+  max-height: 120px;
+  overflow-y: auto;
+}
+
+.disconnect-list li {
+  margin: 2px 0;
+  overflow-wrap: anywhere;
+}
+
+.disconnect-note {
+  margin: 0 0 12px;
+  color: var(--vscode-descriptionForeground, #9d9d9d);
+  line-height: 1.45;
+}
+
+.disconnect-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+}
+
+.disconnect-primary,
+.disconnect-secondary {
+  border-radius: 4px;
+  padding: 5px 12px;
+  font-size: 12px;
+  cursor: pointer;
+  border: 1px solid transparent;
+}
+
+.disconnect-primary {
+  background: var(--vscode-button-background, #0e639c);
+  color: var(--vscode-button-foreground, #fff);
+}
+
+.disconnect-primary:hover { opacity: 0.9; }
+
+/* The destructive answer reads as one, and is not the default: it is not where focus
+   lands and not what Enter presses. */
+.disconnect-secondary {
+  background: transparent;
+  color: var(--vscode-editorWarning-foreground, #cca700);
+  border-color: var(--vscode-editorWarning-foreground, #cca700);
+}
+
+.disconnect-secondary:hover {
+  background: var(--vscode-inputValidation-warningBackground, #352a05);
+}
+
+.disconnect-close {
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  background: transparent;
+  border: none;
+  color: var(--vscode-descriptionForeground, #9d9d9d);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 2px 4px;
+}
+
+.disconnect-close:hover { color: var(--vscode-foreground, #ccc); }
 
 /* ── Plan bar ────────────────────────────────────────────────────────────────── */
 

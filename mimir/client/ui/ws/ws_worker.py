@@ -570,7 +570,24 @@ class _AgentWorker:
 
         cancelled = False
         try:
+            # The prose of the streamed block, kept so it can be *recorded*. The
+            # deltas themselves are not: hundreds per turn, and a journal of them is
+            # unreadable. But without an aggregate the record keeps only the tool rows
+            # and the final answer, so a turn read back after an absence has lost
+            # everything the agent said between its tools — which is most of what makes
+            # a turn legible. Flushed at each boundary, in order, so the replay
+            # interleaves prose and tools the way the live stream did.
+            text_buf: list[str] = []
+
+            def _flush_text() -> None:
+                if not text_buf:
+                    return
+                text = "".join(text_buf)
+                text_buf.clear()
+                self.emit_assistant_text(text)
+
             def _token_cb(delta: str) -> None:
+                text_buf.append(delta)
                 self.out_q.put({"type": "token", "text": delta})
 
             # Reasoning text of the streaming block, kept so its size can be reported
@@ -583,6 +600,7 @@ class _AgentWorker:
                 self.out_q.put({"type": "thinking", "text": delta})
 
             def _think_start_cb() -> None:
+                _flush_text()      # prose written before this block belongs above it
                 think_buf.clear()
                 self.out_q.put({"type": "thinking_start"})
 
@@ -595,6 +613,9 @@ class _AgentWorker:
             # onto out_q as event dicts — no stdout round-trip. The drain/send
             # loop already forwards any dict via json.dumps(ev).
             def _event_cb(ev: dict) -> None:
+                # Before the structured event, which is what puts the prose above the
+                # tools it preceded rather than after them.
+                _flush_text()
                 self.out_q.put(ev)
 
             task = asyncio.ensure_future(
@@ -632,6 +653,12 @@ class _AgentWorker:
             self._defer.clear()
             self._preanswer = None
 
+        # The answer carries the closing block in full, so whatever is still buffered
+        # is a copy of it: dropped rather than flushed, or the replay shows it twice.
+        try:
+            text_buf.clear()
+        except NameError:
+            pass
         answer_ev: dict = {"type": "answer", "text": answer, "cancelled": cancelled,
                            # Stamped here: the turn is over by the time the drain
                            # loop reads this, and its session must not be guessed.
@@ -812,6 +839,19 @@ class _AgentWorker:
         # The attributed payload, so a caller that has to take the card back down
         # (an expired question) addresses the same conversation the card named.
         return payload
+
+    def emit_assistant_text(self, text: str) -> bool:
+        """Record one streamed prose block. True when it was worth recording.
+
+        The one rule in the aggregation, and the reason it is a method rather than a
+        line inside the streaming closure: whitespace between a tool result and the
+        next call is not something the agent *said*, and a journal of empty blocks
+        would put a blank bubble in every replayed turn.
+        """
+        if not text or not text.strip():
+            return False
+        self.out_q.put({"type": "assistant_text", "text": text})
+        return True
 
     def _unattended_past_grace(self) -> bool:
         """Whether this process has had no client for longer than the grace period.

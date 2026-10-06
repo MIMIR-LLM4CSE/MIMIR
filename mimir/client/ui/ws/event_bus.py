@@ -60,6 +60,15 @@ _SUBSCRIBER_MAX = 2000
 # leave a session that failed looking busy for ever.
 _CONCLUSIVE = frozenset({"answer", "error"})
 
+# Recorded, never delivered live. ``assistant_text`` is the aggregate of a streamed
+# prose block, and a client that is attached has already had every one of its deltas:
+# sending the aggregate as well would print the paragraph twice. It exists for the
+# replay, where the deltas are gone — the journal keeps hundreds of `token` events out
+# of itself, and without this aggregate a turn read back after an absence would have
+# only its tool rows and its final answer, having lost everything the agent said in
+# between.
+_REPLAY_ONLY = frozenset({"assistant_text"})
+
 
 class _Subscription:
     """One attached client's view of the stream.
@@ -375,6 +384,8 @@ class _EventBus:
                     logger.warning("bus: turn commit failed for %s", owner, exc_info=True)
             if isinstance(ev.get("seq"), int):
                 self.journaled += 1
+            if etype in _REPLAY_ONLY:
+                continue   # journaled above; the live client had the deltas
             for sub in list(self._subs):
                 sub.offer(ev, extras)
                 self.fanned_out += 1

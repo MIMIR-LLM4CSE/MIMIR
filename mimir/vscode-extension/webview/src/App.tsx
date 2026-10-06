@@ -34,6 +34,7 @@ import { PlanBar } from "./components/PlanBar";
 import { AgentSettings } from "./components/AgentSettings";
 import { ApprovalSwitcher } from "./components/ApprovalSwitcher";
 import { DetachButton } from "./components/DetachButton";
+import { DisconnectPrompt } from "./components/DisconnectPrompt";
 import { ModeSwitcher } from "./components/ModeSwitcher";
 import { TogglesPanel } from "./components/TogglesPanel";
 import { ConnectForm } from "./components/ConnectForm";
@@ -178,6 +179,10 @@ export const App: React.FC = () => {
   // Set once the server says it has detached. One-way: a detached server has no
   // pipe to go back to.
   const [detached, setDetached] = useState(false);
+  // True while the disconnect is waiting on an answer about the running work. Not a
+  // boolean "show the dialog" but the disconnect itself, held: cancelling means the
+  // disconnect never happened.
+  const [disconnectPending, setDisconnectPending] = useState(false);
   const [contextUsage, setContextUsage] = useState<ContextUsage | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [togglesOpen, setTogglesOpen] = useState(false);
@@ -563,6 +568,14 @@ export const App: React.FC = () => {
         return;
       }
 
+      // A recorded prose block, which only a replay carries. Dispatched as a token so
+      // the existing draft-and-boundary logic places it relative to the tool cards that
+      // followed it — the same path the live stream takes, so a turn read back after an
+      // absence is laid out the way it would have been watched.
+      case "assistant_text":
+        dispatch({ type: "token", text: msg.text });
+        return;
+
       // The server has made itself survivable. Shown rather than announced: what
       // changes is a standing fact about this run, not an event in the conversation.
       case "detached":
@@ -872,6 +885,52 @@ export const App: React.FC = () => {
     setConnection("disconnected");
     setAgentReady(false);
   }, [disconnect]);
+
+  // The conversations still working. `running` is the server's own answer — several
+  // turns run at once, so a conversation the user is not reading can be working, which
+  // is invisible without it.
+  const runningSessions = sessions.filter((s) => s.running);
+
+  /**
+   * Disconnect, asking first when it would end work that is still running.
+   *
+   * Nothing is torn down here when there is something to ask about: the disconnect is
+   * held until answered, and dismissing the question cancels it. A dialog that acted on
+   * being dismissed would make Escape a decision, and the decision can end a two-hour
+   * build.
+   */
+  const requestDisconnect = useCallback(() => {
+    if (runningSessions.length > 0 && !detached) {
+      setDisconnectPending(true);
+      return;
+    }
+    disconnect();
+    resetSession();
+  }, [runningSessions.length, detached, disconnect, resetSession]);
+
+  const confirmDetachThenDisconnect = useCallback(() => {
+    // Only the conversations that are working. Naming them rather than detaching
+    // everything keeps an idle conversation from silently gaining an autonomy level
+    // nobody chose for it.
+    send({
+      type: "detach",
+      autonomy: approvalMode,
+      session_ids: runningSessions.map((s) => s.id),
+    });
+    setDisconnectPending(false);
+    setDetached(true);
+    // After the message, so it leaves before the socket does.
+    setTimeout(() => {
+      disconnect();
+      resetSession();
+    }, 150);
+  }, [send, approvalMode, runningSessions, disconnect, resetSession]);
+
+  const confirmDisconnectAnyway = useCallback(() => {
+    setDisconnectPending(false);
+    disconnect();
+    resetSession();
+  }, [disconnect, resetSession]);
 
   // Recompute the @-mention query from the textarea's current value + caret.
   const syncMention = useCallback((el: HTMLTextAreaElement | null) => {
@@ -1251,12 +1310,23 @@ export const App: React.FC = () => {
               aria-label={connection === "connecting" ? "Cancel connection" : "Disconnect agent"}
               onClick={connection === "connecting"
                 ? handleCancelConnect
-                : () => { disconnect(); resetSession(); }}
+                : requestDisconnect}
             >
               ⏏
             </button>
           )}
         </div>
+
+        {/* Asked only when disconnecting would end work in flight. Held, not fired:
+            dismissing it cancels the disconnect. */}
+        {disconnectPending && (
+          <DisconnectPrompt
+            running={runningSessions}
+            onDetach={confirmDetachThenDisconnect}
+            onDiscard={confirmDisconnectAnyway}
+            onCancel={() => setDisconnectPending(false)}
+          />
+        )}
 
         {/* Conversations other than this one that are waiting on the user. Above the
             thread rather than in it: the card belongs to another transcript, and each
@@ -1494,6 +1564,19 @@ export const App: React.FC = () => {
                 />
               )}
             </div>
+
+            {/* Hard right, away from the controls that change what the next turn does:
+                this one changes who owns the process, and it is pressed once a session
+                rather than adjusted. The autonomy it runs under is the approval mode
+                already set above the send button — it carries no picker of its own, so
+                the two cannot disagree. */}
+            <div className="toolbar-end">
+              <DetachButton
+                mode={approvalMode}
+                detached={detached}
+                onDetach={() => send({ type: "detach", autonomy: approvalMode })}
+              />
+            </div>
           </div>
           {activeEditor && connection === "connected" && (
             <div className="active-file-bar">
@@ -1561,13 +1644,6 @@ export const App: React.FC = () => {
               belongs where the user already is rather than behind a settings gear. */}
           <div className="input-actions">
             <ApprovalSwitcher mode={approvalMode} onModeChange={handleApprovalModeChange} />
-            {/* Directly under the level it will run at: the two are one decision, and
-                the button carries no picker of its own so they cannot disagree. */}
-            <DetachButton
-              mode={approvalMode}
-              detached={detached}
-              onDetach={() => send({ type: "detach", autonomy: approvalMode })}
-            />
             {busy ? (
               <>
                 {input.trim() && (

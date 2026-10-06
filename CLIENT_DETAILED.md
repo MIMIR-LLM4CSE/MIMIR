@@ -1037,10 +1037,22 @@ There used to be a sweep on connect — `_drop_stale_events` — that emptied an
 conversation's queue and spared a busy one's, with a carve-out for `job_complete` and
 `job_checkin` because those answer to no turn. The carve-out was the tell: deciding what to
 discard was the wrong question. Nothing is discarded now. The one thing not *recorded* is a
-streamed delta (`token`, `thinking`, and the rest of `_SKIPPED_TYPES`): hundreds per turn,
-their content already covered by the aggregate that closes the block, so a replayed turn
-shows `thinking_end` and `answer` rather than its keystrokes — which is also what makes
-replay affordable.
+streamed delta (`token`, `thinking`, and the rest of `_SKIPPED_TYPES`): hundreds per turn, so
+a replayed turn shows aggregates rather than keystrokes — which is what makes replay
+affordable.
+
+**That left a real hole, reported from a real absence**: the tool calls came back and the
+prose did not. Correct for the deltas, but the consequence was that everything the agent said
+*between* its tools was gone, and that is most of what makes a turn legible — only the rows
+and the final answer survived. So each streamed prose block is aggregated into one
+`assistant_text` event as it closes, flushed at every boundary so the record interleaves what
+was said with what was called, in order. It is **replay-only**: a connected client has already
+had every delta, and sending the aggregate as well would print the paragraph twice, so the
+pump journals it and does not fan it out. A replay feeds it to the webview's reducer as a
+`token`, which is what makes a turn read back after an absence lay out the way it would have
+been watched — the same draft-and-boundary logic decides where the block sits relative to the
+cards that followed. Reasoning is still not kept: it is the one thing a replay deliberately
+sacrifices, and the one the aggregate is not worth paying for.
 
 **Who writes a finished turn down.** The answer carries the turn's own transcript, and
 unpacking it into the session file used to be `_Session._persist_detached_answer` — on the
@@ -1426,7 +1438,7 @@ installed.
 | `test_agent_loop.py` | the loop functions — intra-query compaction, `_post_dispatch_inject`, `_finalize_answer` (including the turn boundary surviving an in-turn rewrite, and matching on identity so two byte-identical job wakes are not confused), plan mode, and the non-interactive path. Plus the failing-call guard and the identical-success annotation |
 | `test_completion_honesty.py` | the end-of-run honesty surface: the ledger's rows and statuses, the marker contract, the tier-qualified completion sentence, `needs_incomplete_finalization`, the `unfinished_plan` nudge, and the checklist reader's fail-closed behaviour |
 | `test_observations.py` | the observer dispatch order, bash classification and credit, run-ledger keying, verdict grammar, exit attribution, `ValidationTierTests` (per-checker tiers, an execution earning none however green, a printed invariant earning nothing, monotonicity, retraction), and `DeclaredEditSetTests` (a revised checklist retracts what it dropped) |
-| `test_event_chain.py` | the whole chain with the real objects — handshake, query, and the turn's `status` / `tool_call` / `tool_result` / `answer` arriving, nothing lost to the watermark, the journal holding the same turn the client saw, a second turn arriving, a brand-new conversation not silenced by an inherited watermark, the approval card reaching the client and its answer coming back — plus the ways a chat *can* go quiet, pinned so each is deliberate |
+| `test_event_chain.py` | that an absence keeps the prose — the record interleaving what was said with what was called, the aggregate not being sent to a client that already had the deltas, a reconnect replaying both, and a blank block not recorded — plus the whole chain with the real objects: handshake, query, and the turn's `status` / `tool_call` / `tool_result` / `answer` arriving, nothing lost to the watermark, the journal holding the same turn the client saw, a second turn arriving, a brand-new conversation not silenced by an inherited watermark, the approval card reaching the client and its answer coming back — plus the ways a chat *can* go quiet, pinned so each is deliberate |
 | `test_event_bus.py` | the pump: that it drains and journals with nobody attached, that `seq` has one writer per session and no gaps, that the private answer keys reach the committer but neither the journal nor the wire, that a streamed delta is delivered live and never recorded, that an overflowing subscriber is gapped rather than allowed to stall the pump, and what counts as a session having *concluded* |
 | `test_detached_commit.py` | the turn committer: an answer landing in its session file with nobody attached, a deferral stored as the card to put back, the answer-alone path for a non-full context mode, that the pump commits only when no client is attached and never a cancelled turn, and the revision guard — a second writer that loaded earlier is refused, an owner saving repeatedly is not, a failed write does not consume a revision, and a file from before the field existed still writes |
 | `test_reattach_replay.py` | that the gate cannot silence a stream — a watermark above the journal is not honoured, the stream still arrives after one, a filtered event is counted rather than vanishing, and a stream delta bypasses the gate (which is why the failure looks like a half-working chat) — and that a new conversation clears the watermark instead of inheriting it; then the watermark: everything replayed to a client that has seen nothing, only the tail to one that has seen some, nothing to one that is current; that the gate lands where the replay ended so an event is never both replayed and delivered live; that nothing produced between subscribing and reading is lost; framing, the cap keeping the end and saying so, a socket dying mid-replay leaving the gate alone; and that streamed deltas are absent while their aggregates are not |
