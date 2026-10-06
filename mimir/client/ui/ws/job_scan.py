@@ -215,7 +215,11 @@ def _job_dir(session_id: str, job_key: str, kind: str = "shell") -> str:
 
 
 def _baseline_path(session_id: str) -> str:
-    return os.path.join(_sessions_root(), session_id, "jobs", _BASELINE)
+    # Beside the session's other sidecars, not inside ``jobs/``. That directory holds
+    # job handles and is read as a list of them: anything else in it is a job to
+    # whoever enumerates it, and a marker there reads as a run with no exit code —
+    # which is to say a live one.
+    return os.path.join(_sessions_root(), session_id, _BASELINE)
 
 
 def has_baseline(session_id: str) -> bool:

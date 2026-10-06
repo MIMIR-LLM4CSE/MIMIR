@@ -1752,9 +1752,14 @@ class _Session:
         try:
             await self.ws.send(json.dumps({"type": "approval_mode", "mode": level}))
             if level != "manual":
-                await self._notify(
-                    f"Still running under \u201c{level}\u201d, the level it was "
-                    f"detached with.")
+                # Rendered, not notified: ``_notify`` writes to the transcript's
+                # transient channel, which is dropped. Being told the run has been
+                # approving sensitive calls on its own is not chatter.
+                await self._command_reply(
+                    "detach", f"Still running under \u201c{level}\u201d",
+                    note="The level it was detached with. The switcher above the send "
+                         "button changes it.",
+                    tone="warn")
         except Exception:
             return
         logger.info("reattach: autonomy restored to %s from the detached run", level)
@@ -2678,6 +2683,11 @@ class _Session:
                 continue
             for key in keys:
                 job = os.path.join(root, key)
+                # A job is a directory. Anything else here is not one, and reporting it
+                # as a run with no exit code — which is to say a live one — makes
+                # deleting the conversation ask about work that does not exist.
+                if not os.path.isdir(job):
+                    continue
                 if os.path.exists(os.path.join(job, "exit_code")):
                     continue
                 label = key
@@ -2698,13 +2708,19 @@ class _Session:
             self._delete_refused.add(target_id)
             # Said rather than done: the user may well want it gone anyway, and the
             # answer is theirs. Nothing is deleted in the meantime.
-            await self.ws.send(json.dumps({
-                "type": "status",
-                "text": ("  ⚠ Not deleted — that conversation still has work running: "
-                         + "; ".join(running[:3])
-                         + (f" (+{len(running) - 3} more)" if len(running) > 3 else "")
-                         + ". Stop it first, or delete again to discard it."),
-            }))
+            #
+            # On the rendered channel, not ``status``. The transcript drops status text
+            # as transient tool chatter, so a refusal sent there is a click that does
+            # nothing visible followed by one that deletes — the warning this exists to
+            # give, not given.
+            await self._command_reply(
+                "delete",
+                "Not deleted — that conversation still has work running",
+                items=[{"label": label} for label in running[:5]],
+                note=(f"(+{len(running) - 5} more) " if len(running) > 5 else "")
+                     + "Stop it first, or delete again to discard it.",
+                tone="warn",
+            )
             await self._send_sessions_list()
             return
         self._delete_refused.discard(target_id)

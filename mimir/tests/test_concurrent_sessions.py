@@ -228,13 +228,44 @@ class DeletingAConversationTests(unittest.IsolatedAsyncioTestCase):
         sess = self._session()
         self.assertEqual(sess._live_work_of("s1"), [])
 
+    def test_a_sidecar_among_the_job_dirs_is_not_a_live_run(self) -> None:
+        """``jobs/`` is read as a list of job handles, and a job is a directory.
+
+        Anything else in there is a run with no exit code to whoever enumerates it,
+        which is to say a live one — and then deleting the conversation asks about work
+        that does not exist, one extra click for nothing.
+        """
+        import os
+        import tempfile
+        from unittest import mock
+        from mimir.client.ui.ws import ws_session as ws
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(ws, "_MIMIR_DIR_WS", tmp):
+                jobs = os.path.join(tmp, "sessions", "s1", "jobs")
+                os.makedirs(jobs)
+                with open(os.path.join(jobs, ".some-marker"), "w") as fh:
+                    fh.write("x")
+                sess = self._session()
+                self.assertEqual(sess._live_jobs_of("s1"), [])
+
+                # And a real job directory with no exit code still counts.
+                os.makedirs(os.path.join(jobs, "j1"))
+                self.assertEqual(sess._live_jobs_of("s1"), ["j1"])
+
     async def test_the_first_delete_of_a_working_conversation_is_refused(self) -> None:
         sess = self._session()
         self.a._query_session_id = "s1"
         sess.store = type("S", (), {"delete_session": lambda self, sid: 1 / 0})()
         sess._send_sessions_list = lambda: _noop()
         await sess._handle_delete_session({"session_id": "s1"})
-        self.assertIn("still has work running", sess.ws.sent[0]["text"])
+        # On the rendered channel: the transcript drops status text as transient tool
+        # chatter, so a refusal sent there is a click that does nothing visible.
+        reply = sess.ws.sent[0]
+        self.assertEqual(reply["type"], "command_output")
+        self.assertIn("still has work running", reply["title"])
+        self.assertEqual(reply["tone"], "warn")
+        self.assertIn("delete again", reply["note"])
         # And asking again goes through: the warning is to be read, not to make the
         # conversation undeletable.
         self.assertIn("s1", sess._delete_refused)

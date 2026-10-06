@@ -34,7 +34,9 @@ class _ScanCase(unittest.TestCase):
         reporting; every test about *reporting* therefore has to be past that point,
         and the first-scan behaviour has its own tests in BaselineTests.
         """
-        path = os.path.join(self._tmp.name, "sessions", session_id, "jobs")
+        # Beside the session's other sidecars, not inside ``jobs/``: that directory is
+        # read as a list of job handles, and a stray file there reads as a live run.
+        path = os.path.join(self._tmp.name, "sessions", session_id)
         os.makedirs(path, exist_ok=True)
         with open(os.path.join(path, ".wake_baseline"), "w") as fh:
             fh.write("0")
