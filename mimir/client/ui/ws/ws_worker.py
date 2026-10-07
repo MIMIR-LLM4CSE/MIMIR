@@ -562,9 +562,6 @@ class _AgentWorker:
         # Clear cancel flag from any previous cancellation before starting.
         if self._agent is not None:
             self._agent._cancel_flag.clear()
-        # Drop any steer messages left over from a finished/cancelled run so they
-        # can't bleed into this query (mirrors the cancel-flag clear above).
-
         tid = threading.get_ident()
         _ROUTER.register(tid, lambda text: self.out_q.put({"type": "output", "text": text}))
 
@@ -677,6 +674,16 @@ class _AgentWorker:
         deferred = self._deferred_record()
         if deferred is not None and not cancelled:
             answer_ev["_deferred"] = deferred
+        # Steering the loop never read. It is drained at a step boundary, and the step
+        # that produces the final answer has none after it: a message typed while that
+        # answer streams lands in the queue after the loop has stopped looking. Taken
+        # off the queue here, so it cannot bleed into whatever runs next, and handed to
+        # the session, which starts a turn for it — unanswered, it is a message the user
+        # sees waiting for a run that has ended. Dropped after a cancel: the turn it was
+        # aimed at is abandoned, and so is the instruction aimed at it.
+        unread = self._drain_steer_q()
+        if unread and not cancelled:
+            answer_ev["_unconsumed_steer"] = unread
 
         # Push current todo state.
         self._push_todos()

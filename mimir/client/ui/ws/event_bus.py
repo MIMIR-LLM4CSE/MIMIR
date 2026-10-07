@@ -412,11 +412,13 @@ def _pop_answer_extras(ev: dict) -> dict:
     """Take the session-layer payload off an answer event.
 
     ``_full`` / ``_turn_start`` / ``_deferred`` are how a finished turn hands its
-    history and its deferral record to whatever writes the session file. They are not
+    history and its deferral record to whatever writes the session file, and
+    ``_unconsumed_steer`` the steering it ended without reading. They are not
     part of the protocol and must reach neither the journal nor the wire.
     """
     if ev.get("type") != "answer":
         return {}
     return {k: ev.pop(k) for k in
-            ("_full", "_turn_start", "_deferred", "_submitted_len", "_context_mode")
+            ("_full", "_turn_start", "_deferred", "_submitted_len", "_context_mode",
+             "_unconsumed_steer")
             if k in ev}

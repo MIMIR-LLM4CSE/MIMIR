@@ -389,13 +389,20 @@ export function createChatReducer(makeId: () => string) {
         };
       }
 
-      // Server confirmed a queued steer reached the running agent. Clear the
-      // "queued" tag on the oldest still-queued bubble (FIFO injection order).
+      // Server confirmed a queued steer reached the agent. Clear the "queued" tag on
+      // the oldest still-queued bubble (FIFO injection order).
+      //
+      // `starts_turn` means it reached the agent as a turn of its own: the run it was
+      // typed into ended before any step boundary read it, so the server submitted it.
+      // Nobody pressed send for that turn, so `busy` is set here — it is what offers
+      // the stop button and makes the end of the turn observable at all.
       case "steer_injected": {
+        const busy = action.starts_turn ? true : state.busy;
         const idx = state.messages.findIndex((m) => m.queued);
-        if (idx < 0) return state;
+        if (idx < 0) return busy === state.busy ? state : { ...state, busy };
         return {
           ...state,
+          busy,
           messages: state.messages.map((m, i) =>
             i === idx ? { ...m, queued: false } : m
           ),

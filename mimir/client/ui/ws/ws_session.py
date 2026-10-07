@@ -230,6 +230,12 @@ class _Session:
         # and three near-identical final answers, one of them contradicting the last on
         # how many jobs there even were.
         self._pending_wakes: dict[str, list[dict]] = {}
+        # The history entries written for steer messages of the turn now running, held
+        # by identity. A steer the run never read starts a turn of its own, and the
+        # message must read once there — at the end, where that turn begins — so the
+        # copy written when it was typed is removed by identity rather than by matching
+        # its text, which would be free to delete an older, identical user turn.
+        self._live_steer: list[dict] = []
         # The one check-in a conversation is holding back, as {session_id: job_checkin}.
         # A check-in carries "nothing to report" and nothing else, so unlike a wake it
         # never interrupts: while the owner is working or parked on a card, it waits
@@ -1195,6 +1201,11 @@ class _Session:
                         await self.ws.send(json.dumps({"type": "batch_status", "files": files}))
                     except Exception:
                         pass
+                    # Before the wakes, and for the same reason they exist: a steer
+                    # past the last step boundary was never read. The user is waiting on
+                    # their own message, so it takes the next turn ahead of any job.
+                    await self._flush_unconsumed_steer(
+                        self._active_session_id, extras.get("_unconsumed_steer") or [])
                     # Last, so the catch-up turn is handed the history this answer just
                     # wrote rather than the one it inherited. Jobs that finished during
                     # the turn and were never taken in leave together, as one turn.
@@ -1589,6 +1600,52 @@ class _Session:
         self._submitted_len = len(self.history)
         worker.submit_query(wake, list(self.history), session_id=owner)
         return True
+
+    async def _flush_unconsumed_steer(self, session_id: str | None,
+                                      texts: list[str]) -> None:
+        """Start a turn for steer messages the run that just ended never read.
+
+        Steering is taken in at a step boundary, and the step that writes the final
+        answer has none after it: a message typed during it reaches the queue once the
+        loop has stopped draining. That message is a real user turn nobody answered, and
+        on screen it keeps the "queued" tag of a run that is over — the shape of
+        :meth:`_flush_pending_wakes`, and here for the same reason.
+
+        Called on every answer, including one that carries nothing, because it is also
+        where the bookkeeping of the finished turn's steers is dropped.
+
+        The client is told as well: ``steer_injected`` per message, so each bubble loses
+        its tag, and the last one says a turn started — the chat marks itself busy only
+        for a turn it submitted, and without that the catch-up turn runs with no stop
+        button and no end the composer can see.
+        """
+        stale, self._live_steer = self._live_steer, []
+        if not texts:
+            return
+        worker = self.pool.get(session_id)
+        if worker is None:
+            logger.warning("unread steering in session %s has no agent to answer it: %r",
+                           session_id, texts)
+            return
+        # The copies written while the run was live, in the middle of the history. The
+        # message belongs at the end, where the turn that answers it starts; left in
+        # place as well, it reads to the model as having been said twice.
+        self.history = [m for m in self.history if not any(m is e for e in stale)]
+        text = "\n\n".join(texts)
+        self.history.append({"role": "user", "content": text})
+        self.history_full.append({"role": "user", "content": text})
+        # The display already holds a bubble per message, written when it was typed.
+        self._autosave_session(list(self._display_messages))
+        self._submitted_len = len(self.history)
+        worker.submit_query(text, list(self.history), session_id=session_id)
+        for i, one in enumerate(texts):
+            try:
+                await self.ws.send(json.dumps({
+                    "type": "steer_injected", "text": one,
+                    "starts_turn": i == len(texts) - 1,
+                }))
+            except Exception:
+                return
 
     def _keep_pending(self, owner: str | None, items: list[dict]) -> None:
         """Put wakes back after a flush that could not deliver them.
@@ -2166,7 +2223,9 @@ class _Session:
             # normal query path is right: the serial query loop queues it.
             await self._handle_query(msg)
             return
-        self.history.append({"role": "user", "content": text})
+        entry = {"role": "user", "content": text}
+        self.history.append(entry)
+        self._live_steer.append(entry)
         # Not added to `history_full` here: the steer comes back inside the turn's own
         # messages when the answer lands, and recording it twice would double it.
         self._display_messages.append({"role": "user", "kind": "text", "text": text})

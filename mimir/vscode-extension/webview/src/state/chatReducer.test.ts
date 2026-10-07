@@ -177,6 +177,34 @@ describe("chatReducer", () => {
     ]);
   });
 
+  it("clears the queued tag when the steer is injected into the running turn", () => {
+    const state = run([
+      { type: "submit_query", text: "go" },
+      { type: "steer_query", text: "also check the tests" },
+      { type: "steer_injected", text: "also check the tests" },
+    ]);
+
+    expect(state.messages[1].queued).toBeFalsy();
+    expect(state.busy).toBe(true);
+  });
+
+  it("goes busy again for the turn started for a steer the run never read", () => {
+    // Typed into the last step, so no boundary followed to take it in: the server
+    // answers it with a turn of its own. Nobody pressed send for that turn, and
+    // without `busy` the chat offers no stop button and never sees it end — the
+    // message sat tagged "queued" for a run that was over.
+    const state = run([
+      { type: "submit_query", text: "go" },
+      { type: "steer_query", text: "also check the tests" },
+      { type: "answer", text: "All done!" },
+      { type: "steer_injected", text: "also check the tests", starts_turn: true },
+    ]);
+
+    const steer = state.messages.find((m) => m.text === "also check the tests")!;
+    expect(steer.queued).toBeFalsy();
+    expect(state.busy).toBe(true);
+  });
+
   it("drops the draft when a guardrail nudge sends the model back to work", () => {
     // The symptom this exists for: a finished-looking answer appearing in the
     // transcript and then being taken out of it again.

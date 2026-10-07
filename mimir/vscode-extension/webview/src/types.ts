@@ -408,10 +408,13 @@ export interface DiffMessage {
 }
 
 
-/** Confirms a mid-run steer message was injected into the running agent's turn. */
+/** Confirms a mid-run steer message reached the agent: injected into the running
+ *  turn, or — when `starts_turn` is set — carried by a turn the server started for
+ *  it because the run it was typed into ended before reading it. */
 export interface SteerInjectedMessage {
   type: "steer_injected";
   text: string;
+  starts_turn?: boolean;
 }
 
 /** A workflow reminder the guardrail layer injected into the agent's user turn.
