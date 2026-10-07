@@ -86,6 +86,18 @@ class _IdleCase(unittest.TestCase):
         with open(os.path.join(job_dir, "exit_code"), "w") as fh:
             fh.write("0")
 
+    def _baseline(self, session_id: str) -> None:
+        """Say this session has been scanned before — the ordinary state."""
+        path = os.path.join(self._tmp.name, "sessions", session_id)
+        os.makedirs(path, exist_ok=True)
+        with open(os.path.join(path, ".wake_baseline"), "w") as fh:
+            fh.write("0")
+
+    def _deliver(self, session_id: str, job_key: str) -> None:
+        """What a consumer does once the turn carrying a wake is submitted."""
+        job_scan.mark_wakes_reported(
+            [{"session_id": session_id, "job_key": job_key, "server": "bash"}])
+
 
 class WhatCountsAsFinishedTests(_IdleCase):
     def test_a_concluded_conversation_with_no_jobs_is_idle(self):
@@ -141,7 +153,34 @@ class JobsHoldItOpenTests(_IdleCase):
         self.assertFalse(report["idle"])
         self.assertTrue(any("still going" in r for r in report["reasons"]))
 
-    def test_a_finished_run_does_not(self):
+    def test_a_finished_run_still_owed_a_wake_keeps_the_process_needed(self):
+        # The debt one step on from a live run: the job ended, and the turn its result
+        # was supposed to start has not happened. Stopping here is how a conversation
+        # loses the night — the server shuts down owing a turn it never began.
+        w = _Worker()
+        pool = self._pool({"s1": w})
+        self._conclude(pool, "s1", w)
+        self._ended_job("s1", "j1")
+        self._baseline("s1")
+        report = pool.idle_report()
+        self.assertFalse(report["idle"])
+        self.assertTrue(any("nobody has taken in" in r for r in report["reasons"]),
+                        report["reasons"])
+
+    def test_a_finished_run_whose_wake_was_delivered_does_not(self):
+        w = _Worker()
+        pool = self._pool({"s1": w})
+        self._conclude(pool, "s1", w)
+        self._ended_job("s1", "j1")
+        self._baseline("s1")
+        self._deliver("s1", "j1")
+        self.assertTrue(pool.idle_report()["idle"], pool.idle_report()["reasons"])
+
+    def test_a_finished_run_of_a_never_scanned_session_does_not(self):
+        # A job directory is never swept, however old, so an unbaselined session holds
+        # every run it ever finished with no marker on any of them. Reading that history
+        # as debt would leave the workspace permanently un-stoppable — worse than
+        # stopping one with a wake outstanding, and the trade the baseline exists for.
         w = _Worker()
         pool = self._pool({"s1": w})
         self._conclude(pool, "s1", w)

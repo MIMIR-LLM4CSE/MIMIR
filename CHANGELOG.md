@@ -15,6 +15,29 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+- A background run that ends while no window is open now gets its turn there and
+  then, instead of waiting for someone to come back and ask. Recording what the
+  run reported already worked; starting the turn it asks for needed a panel,
+  because the routing lived in the socket. So a job that finished three minutes
+  after the last answer, with the window shut, was written down and never handed
+  to the conversation waiting on it — and the run sat untouched until morning.
+  The server now takes the wake in itself: it appends it to the conversation,
+  queues the turn on that conversation's own agent, and writes the answer back,
+  with no connection involved at any point. A run detached under `auto` or
+  `auto_all` can therefore carry its work through the night, which is what
+  detaching it was for. The hourly check-ins behave the same way.
+- A wake is no longer lost when nothing is there to read it. A finished run was
+  marked as reported the moment its event was queued, so a wake that reached an
+  empty process was filed as delivered: every later scan skipped it, and
+  reconnecting said nothing about a job that had finished hours earlier. The
+  marker now records delivery — it is written where the wake enters a turn — so
+  a run nothing took in is announced again on the next scan, and reopening the
+  panel catches up on what happened while it was shut.
+- A detached server no longer stops itself while it owes a conversation a turn.
+  A finished run whose wake nothing has taken in counts as work in progress, the
+  same as one still going.
+
 ## [1.2.0] — 2026-10-06
 
 ### Added

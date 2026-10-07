@@ -27,6 +27,12 @@ class _ScanCase(unittest.TestCase):
         self.addCleanup(patcher.stop)
         self.addCleanup(self._tmp.cleanup)
 
+    def _events(self, worker) -> list[dict]:
+        out = []
+        while not worker.out_q.empty():
+            out.append(worker.out_q.get_nowait())
+        return out
+
     def _baseline(self, session_id: str) -> None:
         """Say this session has been scanned before — the ordinary state.
 
@@ -182,12 +188,6 @@ class RearmTests(_ScanCase):
     def _worker(self, session_id: str = "s1") -> _RearmWorker:
         return _RearmWorker(session_id)
 
-    def _events(self, worker) -> list[dict]:
-        out = []
-        while not worker.out_q.empty():
-            out.append(worker.out_q.get_nowait())
-        return out
-
     def test_a_live_run_gets_its_watcher_back(self):
         self._job("s1", "j1", pid=os.getpid(),
                   starttime=job_scan._proc_starttime(os.getpid()))
@@ -263,9 +263,14 @@ class RearmTests(_ScanCase):
 class ReportedOnceTests(_ScanCase):
     """Two places look for runs that ended unwatched; one wake must come of it.
 
-    A connection arriving and a worker being built both ask. A run announced twice is a
-    conversation woken twice for one build, so the marker lives in the run's own
-    directory and outlives whichever process wrote it.
+    A connection arriving and a worker being built both ask, so the marker lives in the
+    run's own directory and outlives whichever process wrote it.
+
+    What the marker records is **delivery, not emission**. A run announced twice and
+    taken in once is a nuisance the consumers dedup; a run settled at the moment its
+    event was queued, with nothing yet reading the queue, is a wake nobody will ever be
+    given — and every later scan agrees it was already paid. So an announcement repeats
+    until a consumer has folded the wake into a turn, and stops for good once one has.
     """
 
     def test_a_reported_run_is_left_out_of_the_next_scan(self):
@@ -290,12 +295,33 @@ class ReportedOnceTests(_ScanCase):
         job_scan.mark_reported(scan_session("s1")[0])
         self.assertEqual([j.job_key for j in scan_session("s1")], ["j1"])
 
-    def test_the_worker_marks_what_it_reports(self):
+    def test_the_worker_announces_a_run_until_something_takes_it_in(self):
+        # Announcing is not delivering. The worker puts the event on its queue and
+        # nothing has read it yet, so a rebuild must say it again: the alternative is a
+        # wake that was emitted into an empty process and settled on the spot, which is
+        # a conversation waiting for ever on a job that finished.
         self._job("s1", "j1", exit_code=0)
         w = _RearmWorker("s1")
         self.assertEqual(w.rearm_detached_jobs()["reported"], ["j1"])
-        # A second worker for the same session — a rebuild — says nothing again.
+        self.assertEqual(_RearmWorker("s1").rearm_detached_jobs()["reported"], ["j1"])
+
+    def test_a_run_whose_wake_was_delivered_is_announced_no_more(self):
+        # What settles a run: a consumer that folded its wake into a turn.
+        self._job("s1", "j1", exit_code=0)
+        w = _RearmWorker("s1")
+        self.assertEqual(w.rearm_detached_jobs()["reported"], ["j1"])
+        job_scan.mark_wakes_reported(self._events(w))
         self.assertEqual(_RearmWorker("s1").rearm_detached_jobs()["reported"], [])
+
+    def test_an_announced_run_carries_what_the_wake_text_needs(self):
+        # A run reported late must be indistinguishable from one reported on time: the
+        # wake names the job's kind, which only the descriptor knows.
+        self._job("s1", "j1", exit_code=0)
+        w = _RearmWorker("s1")
+        w.rearm_detached_jobs()
+        ev = self._events(w)[0]
+        self.assertEqual(ev["server"], "bash")
+        self.assertEqual(ev["kind"], "shell-command")
 
     def test_a_marker_that_cannot_be_written_still_lets_the_run_be_announced(self):
         # Costing a duplicate wake is a nuisance; refusing to announce the run because

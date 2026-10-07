@@ -28,9 +28,10 @@ from .transcript_log import read_since
 from .job_scan import (
     establish_baseline,
     has_baseline,
-    mark_reported,
+    mark_wakes_reported,
     scan_all_sessions,
 )
+from .job_wakes import DURABLE_EVENTS, checkin_text, wake_text
 from .detach import detach as detach_process
 from . import server_registry
 from .ws_pool import _AgentPool
@@ -57,18 +58,6 @@ _WS = Any
 logger = logging.getLogger(__name__)
 
 
-# How much of a finished job's own summary a wake carries. Enough for an exit code
-# and the tail of a build log; short of pasting a whole test suite into the history.
-_WAKE_SUMMARY_LIMIT = 2000
-
-# Per field, so one long value — a command built out of absolute paths, a log tail —
-# cannot crowd the rest of the record out of the budget above.
-_WAKE_VALUE_LIMIT = 500
-
-# Fields the body leaves out: the head line of the wake already names the job and says
-# how it ended, and repeating that as JSON is what made these messages unreadable.
-_WAKE_SUMMARY_SKIP = frozenset({"job_key", "kind", "state"})
-
 # Events that must reach the user no matter which conversation they belong to: each
 # one is a question the agent is parked on, and filtering it as "foreign" (which it is,
 # during a background-job wake in another session) would leave the turn waiting on an
@@ -82,8 +71,9 @@ _INTERACTION_EVENTS = frozenset({"approval", "user_question", "prompt_expired"})
 # turn — its tokens, its rows, its answer — and is debris once the socket that was
 # drawing it is gone. These two describe a detached run instead: nothing re-emits them,
 # their watcher is finished by the time they are read, and the conversation they belong
-# to is idle precisely because it is waiting for them.
-_DURABLE_EVENTS = frozenset({"job_complete", "job_checkin"})
+# to is idle precisely because it is waiting for them. Shared with the pool, which
+# routes the same two when no socket exists to do it.
+_DURABLE_EVENTS = DURABLE_EVENTS
 
 # How many journal events one ``replay`` frame carries. The frame cap is 32 MiB, which a
 # long detached run's transcript can exceed whole; chunking also lets the webview render
@@ -94,67 +84,6 @@ _REPLAY_CHUNK = 500
 # what a returning user needs is the end of the run, and an unbounded replay into the
 # webview's reducer is how a twelve-hour absence wedges the panel.
 _REPLAY_MAX_EVENTS = 5000
-
-
-def _clip(text: str) -> str:
-    """One field's value, cut in the middle so both of its ends survive.
-
-    Which end carries the meaning depends on the field — a command says it at the
-    front, a log tail at the back — and this layer does not know which it is holding.
-    """
-    if len(text) <= _WAKE_VALUE_LIMIT:
-        return text
-    head = _WAKE_VALUE_LIMIT * 2 // 3
-    tail = _WAKE_VALUE_LIMIT - head
-    return f"{text[:head]}… [cut: {len(text)} chars] …{text[-tail:]}"
-
-
-def _render_field(key: str, value: object) -> str:
-    """One recorded field as ``key: value``, or as an indented block when it has lines."""
-    if isinstance(value, (dict, list)):
-        try:
-            text = json.dumps(value, ensure_ascii=False, default=str)
-        except (TypeError, ValueError):
-            text = str(value)
-    else:
-        text = str(value)
-    text = _clip(text).strip("\n")
-    if "\n" in text:
-        body = "\n".join(f"    {line}" for line in text.splitlines())
-        return f"  {key}:\n{body}"
-    return f"  {key}: {text}"
-
-
-def _compact_summary(payload: dict) -> str:
-    """A job's recorded result, as one field per line, cut to a budget.
-
-    Passed through rather than interpreted: the client does not know what kind of job
-    ran, so it hands the model what the server recorded, under the server's own field
-    names. What it chooses is the shape — lines instead of a single JSON string, each
-    value clipped on its own — because a wake is read by a person as well as a model,
-    and one 800-character command should not be the whole of what either sees.
-    """
-    lines: list[str] = []
-    budget = _WAKE_SUMMARY_LIMIT
-    dropped = 0
-    for key, value in payload.items():
-        if key in _WAKE_SUMMARY_SKIP or value is None or value == "":
-            continue
-        line = _render_field(key, value)
-        if lines and len(line) + 1 > budget:
-            dropped += 1
-            continue
-        budget -= len(line) + 1
-        lines.append(line)
-    if dropped:
-        lines.append(f"  [{dropped} more field(s) not shown]")
-    if lines:
-        return "\n".join(lines)
-    # Everything it recorded was something the head line already said.
-    try:
-        return _clip(json.dumps(payload, ensure_ascii=False, default=str))
-    except (TypeError, ValueError):
-        return _clip(str(payload))
 
 
 def _reconcile(messages: list[dict]) -> list[dict]:
@@ -1261,59 +1190,12 @@ class _Session:
 
     @staticmethod
     def _wake_text(ev: dict) -> str:
-        """Build the auto-resume instruction from a job_complete event.
+        """The auto-resume instruction for a ``job_complete`` event.
 
-        The client does not know what a job *does*. A detached run can be a two-hour
-        compile, a Slurm batch or a proxy optimization, and the only thing this layer
-        holds about it is the descriptor the server handed over. So the wake states
-        the fact and passes the payload through: what the model should do next comes
-        from the job's own recorded result, never from an instruction invented here.
-        Naming another server's ops in this function is how a build once got told to
-        review proxy results and continue an optimization loop that did not exist.
-
-        The one tool name it may use is ``status_op``'s, and only because that is
-        registry data travelling on the descriptor — the same reason the watcher can
-        poll generically. It is the last resort, for a job that recorded no summary.
+        Shared with the pool, which words the same wake when nobody is attached:
+        see :mod:`job_wakes`.
         """
-        job_key = ev.get("job_key", "?")
-        state   = ev.get("state", "done")
-        kind    = ev.get("kind")
-        summary = ev.get("summary") if isinstance(ev.get("summary"), dict) else {}
-
-        what = f"Background job '{job_key}'" + (f" ({kind})" if kind else "")
-        if state == "crashed":
-            head = f"{what} crashed."
-        elif state == "unknown":
-            why = ev.get("reason") or "its status stopped being readable"
-            head = f"{what} can no longer be tracked: {why}."
-        else:
-            head = f"{what} finished."
-
-        # Payload conventions, shown only where the server put them — keys, not tool
-        # names, so a job that carries none is described by its summary alone.
-        marks = []
-        if summary.get("verdict"):
-            marks.append(f"verdict={summary['verdict']}")
-        best = summary.get("best") or {}
-        if isinstance(best, dict) and best.get("primary_value") is not None:
-            marks.append(f"best {summary.get('primary_metric', 'primary')}="
-                         f"{best.get('primary_value')}")
-        if marks:
-            head = f"{head} {' '.join(marks)}"
-
-        # A next step the *server* wrote is an instruction from something that knows
-        # the job; relayed verbatim.
-        next_step = summary.get("next_step")
-        if next_step:
-            return f"{head} {next_step}"
-        if summary:
-            return (f"{head} Here is what it recorded — read it, then carry on with "
-                    f"the work it was part of:\n{_compact_summary(summary)}")
-        status_tool = (ev.get("status_op") or {}).get("tool")
-        if status_tool:
-            return (f"{head} It recorded no result of its own; read its state with "
-                    f"'{status_tool}', then carry on with the work it was part of.")
-        return f"{head} Carry on with the work it was part of."
+        return wake_text(ev)
 
     def _wake_owner(self, ev: dict) -> str | None:
         """The session a finished job belongs to: the one that launched it."""
@@ -1333,42 +1215,8 @@ class _Session:
 
     @staticmethod
     def _checkin_text(ev: dict) -> str:
-        """Build the check-in instruction from a job_checkin event.
-
-        Under the same rule as :meth:`_wake_text` — it names no tool of any server and
-        interprets nothing, passing on whatever the status op chose to report. What it
-        adds is a ceiling on the answer. A check-in exists so a run that went wrong in
-        its third minute is not discovered in its hundred-and-twentieth; it is not an
-        occasion to restate the plan, re-answer the question the job was launched for,
-        or go and look at something. Said plainly here because the model has no other
-        way to tell this turn apart from a completion wake, which wants the opposite.
-
-        Reading the run is still open to it where the status says something is off: the
-        dispatch guard refuses the *status* op of a watched job (this event already
-        carries that answer) and leaves the summary op alone.
-        """
-        jobs = [j for j in (ev.get("jobs") or []) if isinstance(j, dict)]
-        lines = []
-        for job in jobs:
-            key = job.get("job_key", "?")
-            kind = f" ({job['kind']})" if job.get("kind") else ""
-            state = job.get("state") or "running"
-            bits = [state]
-            if job.get("phase"):
-                bits.append(f"phase={job['phase']}")
-            if isinstance(job.get("percent"), (int, float)):
-                bits.append(f"{job['percent']}%")
-            lines.append(f"- '{key}'{kind}: {', '.join(bits)}")
-        body = "\n".join(lines) or "- (no status recorded yet)"
-        return (
-            "Background check-in. Still running in this conversation:\n"
-            f"{body}\n"
-            "If this looks healthy, say so in ONE short line and stop — no tool call, "
-            "no restating the plan, and do not re-answer the question these runs were "
-            "launched for. If it does not — no progress since the last check, a status "
-            "that stopped being readable, a phase that should have moved on by now — "
-            "say what is wrong and what you are doing about it."
-        )
+        """The bulletin instruction for a ``job_checkin`` event. See :mod:`job_wakes`."""
+        return checkin_text(ev)
 
     async def _handle_durable_event(self, ev: dict, *, checkin: bool,
                                     steer: bool) -> bool:
@@ -1467,6 +1315,18 @@ class _Session:
         owner = self._wake_owner(ev)
         if steer is None:
             steer = self._wake_steers(ev)
+        # One wake per run, however many times it is announced. Two places emit a
+        # finished run — the watcher that was holding it, and a disk scan that found it
+        # unspoken-for — and the marker that settles it is only written once the wake
+        # has actually been handed to a turn, so between the two a run can be announced
+        # twice. Telling the model the same job finished twice in one message is the
+        # visible half; the worse half is a second turn for a run already reported.
+        job_key = ev.get("job_key")
+        if job_key and any(i["ev"].get("job_key") == job_key
+                           for i in self._pending_wakes.get(owner, ())):
+            logger.info("wake for job %r of session %s already pending; dropping the "
+                        "duplicate announcement", job_key, owner)
+            return False
         # Each entry remembers whether the user has already been shown this job, so a
         # later flush re-tells the *model* (a steer may never have been read) without
         # writing the notice and the log line a second time.
@@ -1580,6 +1440,7 @@ class _Session:
         wake = "\n\n".join(self._wake_text(e) for e in events)
         if owner != self._active_session_id:
             if await self._resume_detached_session(owner, wake, fresh):
+                mark_wakes_reported(events)
                 return True
             self._keep_pending(owner, items)
             return False
@@ -1599,6 +1460,7 @@ class _Session:
         self._autosave_session(list(self._display_messages))
         self._submitted_len = len(self.history)
         worker.submit_query(wake, list(self.history), session_id=owner)
+        mark_wakes_reported(events)
         return True
 
     async def _flush_unconsumed_steer(self, session_id: str | None,
@@ -1772,10 +1634,12 @@ class _Session:
             for job in jobs:
                 if job.live:
                     continue   # a worker being built is what puts a watcher back on it
-                mark_reported(job)
+                descriptor = job.descriptor()
                 await self._handle_job_complete({
                     "type": "job_complete",
                     "job_key": job.job_key,
+                    "server": descriptor.get("server"),
+                    "kind": descriptor.get("kind"),
                     "state": job.state,
                     "session_id": session_id,
                     "summary": {"command": job.command, "exit_code": job.exit_code},

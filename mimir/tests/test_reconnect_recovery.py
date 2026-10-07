@@ -14,7 +14,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from mimir.client.ui.ws import transcript_log
+from mimir.client.ui.ws import job_scan, transcript_log
 from mimir.client.ui.ws.ws_worker import _AgentWorker
 from mimir.tests.test_session_isolation import _FakeWS, _bare_worker, SessionFencingTests
 
@@ -103,12 +103,14 @@ class PendingPromptTests(unittest.TestCase):
 
 class ReconnectTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
-        # The pump journals what it drains, so these tests write a transcript: give
-        # them their own state dir rather than the real one.
+        # The pump journals what it drains and a delivered wake settles its run on
+        # disk, so these tests write both a transcript and job markers: give them their
+        # own state dir rather than the real one.
         self._tmp = tempfile.TemporaryDirectory()
-        patcher = mock.patch.object(transcript_log, "_MIMIR_DIR_WS", self._tmp.name)
-        patcher.start()
-        self.addCleanup(patcher.stop)
+        for target in (transcript_log, job_scan):
+            patcher = mock.patch.object(target, "_MIMIR_DIR_WS", self._tmp.name)
+            patcher.start()
+            self.addCleanup(patcher.stop)
         self.addCleanup(self._tmp.cleanup)
 
     def _session(self, worker):

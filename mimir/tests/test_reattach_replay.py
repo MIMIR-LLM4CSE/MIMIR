@@ -368,12 +368,33 @@ class EndedJobsAreReportedOnAttachTests(unittest.IsolatedAsyncioTestCase):
         await self.sess._report_ended_jobs()
         self.assertEqual(self.handled, [])
 
-    async def test_a_second_connection_does_not_report_it_again(self):
+    async def test_a_second_connection_reports_it_again_until_it_is_taken_in(self):
+        # The routing is stubbed here, so nothing has folded this wake into a turn. A
+        # second connection must therefore hand it over again: settling a run on the
+        # strength of having *announced* it is how a conversation ends up waiting for
+        # ever on a job that finished while its window was shut.
         self._ended_job("s1", "j1", 0)
         await self.sess._report_ended_jobs()
         self.handled.clear()
         await self.sess._report_ended_jobs()
+        self.assertEqual([ev["job_key"] for ev in self.handled], ["j1"])
+
+    async def test_a_run_whose_wake_reached_a_turn_is_not_reported_again(self):
+        self._ended_job("s1", "j1", 0)
+        await self.sess._report_ended_jobs()
+        # What a consumer does once the turn carrying the wake is submitted.
+        job_scan.mark_wakes_reported(self.handled)
+        self.handled.clear()
+        await self.sess._report_ended_jobs()
         self.assertEqual(self.handled, [])
+
+    async def test_a_late_report_is_shaped_like_an_on_time_one(self):
+        # The wake text names the job's kind, which only the descriptor knows. A run
+        # reported late with that missing reads as a different job to the model.
+        self._ended_job("s1", "j1", 0)
+        await self.sess._report_ended_jobs()
+        self.assertEqual(self.handled[0]["server"], "bash")
+        self.assertEqual(self.handled[0]["kind"], "shell-command")
 
     async def test_a_crash_keeps_its_exit_code_in_the_summary(self):
         self._ended_job("s1", "j1", 3)

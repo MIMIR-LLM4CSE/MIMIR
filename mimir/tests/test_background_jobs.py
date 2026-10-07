@@ -948,12 +948,14 @@ class DetachedSessionResumeTests(unittest.TestCase):
         import shutil
         import tempfile
         from unittest import mock
-        from mimir.client.ui.ws import session_store, transcript_log
+        from mimir.client.ui.ws import job_scan, session_store, transcript_log
         from mimir.client.ui.ws.ws_session import _Session
 
         self._tmp = tempfile.mkdtemp(prefix="mimir-detached-")
         self.addCleanup(shutil.rmtree, self._tmp, ignore_errors=True)
-        for target, attr in ((session_store, "STATE_DIR"), (transcript_log, "_MIMIR_DIR_WS")):
+        for target, attr in ((session_store, "STATE_DIR"),
+                             (transcript_log, "_MIMIR_DIR_WS"),
+                             (job_scan, "_MIMIR_DIR_WS")):
             patcher = mock.patch.object(target, attr, self._tmp)
             patcher.start()
             self.addCleanup(patcher.stop)
@@ -1091,12 +1093,14 @@ class WakeCoalescingTests(unittest.TestCase):
         import shutil
         import tempfile
         from unittest import mock
-        from mimir.client.ui.ws import session_store, transcript_log
+        from mimir.client.ui.ws import job_scan, session_store, transcript_log
         from mimir.client.ui.ws.ws_session import _Session
 
         self._tmp = tempfile.mkdtemp(prefix="mimir-coalesce-")
         self.addCleanup(shutil.rmtree, self._tmp, ignore_errors=True)
-        for target, attr in ((session_store, "STATE_DIR"), (transcript_log, "_MIMIR_DIR_WS")):
+        for target, attr in ((session_store, "STATE_DIR"),
+                             (transcript_log, "_MIMIR_DIR_WS"),
+                             (job_scan, "_MIMIR_DIR_WS")):
             patcher = mock.patch.object(target, attr, self._tmp)
             patcher.start()
             self.addCleanup(patcher.stop)
@@ -1175,6 +1179,29 @@ class WakeCoalescingTests(unittest.TestCase):
 
         asyncio.run(asyncio.wait_for(run(), 5))
         return self.ws.sent[0]
+
+    def test_one_run_announced_twice_wakes_the_conversation_once(self) -> None:
+        # Two places announce a finished run — the watcher that held it, and a disk
+        # scan that found it unspoken-for — and the marker that settles it is written
+        # only once the wake reaches a turn. So between the two, the same run can
+        # arrive twice; it must not be told twice.
+        self._running(self.here.id)
+        self._wake(self._event("j1"))
+        self._wake(self._event("j1"))
+        self._answer()
+        submitted = self.worker.submitted[-1][0]
+        self.assertEqual(submitted.count("'j1'"), 1)
+
+    def test_a_duplicate_arriving_after_the_turn_began_starts_no_second_one(self) -> None:
+        # The first announcement started a turn, so the run is settled and no scan will
+        # offer it again. A duplicate already in flight joins that turn as a steer
+        # rather than opening a second one — the ordinary busy route, reached here
+        # because submitting the turn is what made the conversation busy.
+        self._wake(self._event("j1"))
+        self.assertEqual(len(self.worker.submitted), 1)
+        self._wake(self._event("j1"))
+        self.assertEqual(len(self.worker.submitted), 1)
+        self.assertEqual(len(self.worker.steered), 1)
 
     def test_a_steered_wake_does_not_tell_the_client_a_turn_began(self) -> None:
         # Seen on 2026-09-18: the client took this flag as a new turn and cleared the
@@ -1439,12 +1466,14 @@ class CheckinDeliveryTests(unittest.TestCase):
         import shutil
         import tempfile
         from unittest import mock
-        from mimir.client.ui.ws import session_store, transcript_log
+        from mimir.client.ui.ws import job_scan, session_store, transcript_log
         from mimir.client.ui.ws.ws_session import _Session
 
         self._tmp = tempfile.mkdtemp(prefix="mimir-checkin-")
         self.addCleanup(shutil.rmtree, self._tmp, ignore_errors=True)
-        for target, attr in ((session_store, "STATE_DIR"), (transcript_log, "_MIMIR_DIR_WS")):
+        for target, attr in ((session_store, "STATE_DIR"),
+                             (transcript_log, "_MIMIR_DIR_WS"),
+                             (job_scan, "_MIMIR_DIR_WS")):
             patcher = mock.patch.object(target, attr, self._tmp)
             patcher.start()
             self.addCleanup(patcher.stop)
@@ -1580,12 +1609,14 @@ class WakeDeliveryLossTests(unittest.TestCase):
         import shutil
         import tempfile
         from unittest import mock
-        from mimir.client.ui.ws import session_store, transcript_log
+        from mimir.client.ui.ws import job_scan, session_store, transcript_log
         from mimir.client.ui.ws.ws_session import _Session
 
         self._tmp = tempfile.mkdtemp(prefix="mimir-wakeloss-")
         self.addCleanup(shutil.rmtree, self._tmp, ignore_errors=True)
-        for target, attr in ((session_store, "STATE_DIR"), (transcript_log, "_MIMIR_DIR_WS")):
+        for target, attr in ((session_store, "STATE_DIR"),
+                             (transcript_log, "_MIMIR_DIR_WS"),
+                             (job_scan, "_MIMIR_DIR_WS")):
             patcher = mock.patch.object(target, attr, self._tmp)
             patcher.start()
             self.addCleanup(patcher.stop)

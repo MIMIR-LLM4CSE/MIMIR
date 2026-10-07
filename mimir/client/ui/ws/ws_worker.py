@@ -21,8 +21,6 @@ from ._ws_runtime import (
 from .job_scan import (
     establish_baseline,
     has_baseline,
-    mark_job_reported,
-    mark_reported,
     scan_session,
 )
 
@@ -1402,18 +1400,22 @@ class _AgentWorker:
                 if self._register_bg_job(job.descriptor(), owner=session_id):
                     rearmed.append(job.job_key)
                 continue
-            # Ended with nobody watching. Emitted as the watcher would have: the
-            # session layer is what turns this into a wake turn, and it must not be
-            # able to tell a run reported late from one reported on time.
+            # Ended with nobody watching. Emitted as the watcher would have — the
+            # descriptor's own server and kind included — because a consumer must not be
+            # able to tell a run reported late from one reported on time, and the wake
+            # text names the kind. Settled by that consumer, not here: see
+            # ``job_scan.mark_wakes_reported``.
+            descriptor = job.descriptor()
             self.out_q.put({
                 "type": "job_complete",
                 "job_key": job.job_key,
+                "server": descriptor.get("server"),
+                "kind": descriptor.get("kind"),
                 "state": job.state,
                 "session_id": session_id,
                 "summary": {"command": job.command, "exit_code": job.exit_code},
                 "status_op": job.status_op(),
             })
-            mark_reported(job)
             reported.append(job.job_key)
         if rearmed or reported:
             logger.info("job scan: session %s re-armed %d run(s) and reported %d "
@@ -1656,11 +1658,11 @@ class _AgentWorker:
             "session_id": session_id,
             "reason":     reason if state == "unknown" else "",
         })
-        # Recorded as spoken for, so a later scan does not report it a second time.
-        # Without this a job whose watcher reported it normally would be woken again on
-        # the next attach — the common case, and the worse one, since it happens in
-        # ordinary use rather than only after a crash.
-        mark_job_reported(session_id, job_key, descriptor.get("server"))
+        # Deliberately not marked as reported here. Emitting is not delivering: the
+        # event still has to be folded into a turn by whatever consumes the bus, and a
+        # run settled at the moment its event is queued is one every later scan takes
+        # for already delivered — so a wake nobody has read is a wake nobody ever will.
+        # The consumer writes the marker — see ``job_scan.mark_wakes_reported``.
         self._bg_jobs.pop(job_key, None)
 
     def resolve_approval(self, choice: str, approved_files: list | None = None) -> None:

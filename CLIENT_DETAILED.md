@@ -1080,6 +1080,34 @@ older. A successful save carries the new revision back onto the object, so an ow
 one session and writes it as a turn progresses is never refused — only a second writer that
 loaded earlier is, and the committer says so in the log instead of dropping the turn quietly.
 
+**Who starts the turn a wake asks for.** The committer's twin, and the other half of
+"nobody is looking". A watcher outlives every connection — it is a task on a worker's loop,
+and `releasable` refuses to free a worker that holds one — so a detached run reports in
+whether or not a panel is open, and the pump journals what it says. Acting on that report is
+`_AgentPool.consume_durable_event`, called by the pump for `job_complete` and `job_checkin`
+**only when `bus.attached()` is zero**, for the same reason the committer is: a subscriber
+present means a `_Session` is about to route it against the history it holds on screen, and
+two consumers starting a turn for one finished run is a duplicate no marker can catch, since
+neither has written one yet.
+
+A wake only a connection can route is a conversation that waits out the night for a job that
+finished in three minutes. So the pool does what the session does, minus the socket: loads the
+conversation that launched the run, appends the wake to its stored history, writes the 🔔 the
+user finds on their return, journals a `job_wake` where the turn begins, and queues the turn on
+that conversation's own agent — then settles the run. All of it synchronous, inside the pump
+tick that drained the event, because loading, saving and `submit_query` are plain calls. The
+answer is written back by the committer off the same pump, against the boundary the worker
+carried on it: a wake taken in this way is a complete turn, asked, answered and persisted,
+with no connection anywhere in the path. A busy conversation gets the wake steered into its
+running turn instead; a bulletin is dropped rather than steered, because "nothing to report"
+must not make the agent answer about the job instead of the work.
+
+And an owed wake holds the process open. `idle_report` counts a finished run whose wake
+nothing has taken in alongside one still going — the same debt one step later — so the server
+cannot shut down owing a turn it never started. Only for sessions past their baseline: an
+unbaselined one holds every run it ever finished with no marker on any of them, and reading
+that as debt would leave a workspace permanently un-stoppable.
+
 **Coming back is a window opening onto a run that never stopped**, and two things follow
 from reading it that way. The conversation returns under the level it was left running on —
 the registry entry carries it, and it is both applied and recorded pool-wide, because a
@@ -1156,18 +1184,25 @@ on time. A conversation with no agent yet keeps the wake pending rather than los
 
 Two places look for the ended pile — a connection arriving (`_report_ended_jobs`) and a
 worker being built (`rearm_detached_jobs`) — so a marker file in the run's own directory
-records that it has been announced, outliving whichever process announced it: a run reported
-twice is a conversation woken twice for one build. The watcher's own terminal report marks it
-too, which is what keeps the marker truthful in ordinary use — a job reported normally and
-then re-reported on the next attach is the common case of that bug, and the worse one. The
-marker is best-effort, because a duplicate wake is a nuisance and a missing one is the bug
-the whole path exists to fix.
+records what has been settled, outliving whichever process settled it: a run delivered twice
+is a conversation woken twice for one build.
+
+**The marker records delivery, not emission.** It is written where the wake enters a turn —
+`mark_wakes_reported`, called by whichever consumer submitted it — and never where the event
+is queued. A `job_complete` put on the bus with nothing ready to read it is a wake still
+owed; settling it at that moment makes the only record of the debt say it was already paid,
+and the run is then filtered out of every later scan. That is a conversation waiting for ever
+on a job that finished hours ago, which is precisely the failure this path exists to fix. So
+an announcement repeats until a consumer has taken the wake in, and the consumers dedup
+instead: a job already pending for a conversation is not added twice. A steered wake is
+deliberately left unsettled — a steer is only known to have been read when the loop says so,
+and the flush that eventually gives it a turn writes the marker. The marker is best-effort,
+because a duplicate wake is a nuisance and a missing one is the bug.
 
 **The first look at a session establishes a baseline rather than claiming a backlog.** A
-detached job's directory is never swept, however old, and markers only started being written
-when this did — so an existing workspace has every build it ever ran sitting there unmarked.
-Read as wakes owed, that is a conversation woken for a two-month-old build on the first attach
-after upgrading, and unlike a missed wake it is unbounded. So a session with no
+detached job's directory is never swept, however old, so an existing workspace has every
+build it ever ran sitting there unmarked. Read as wakes owed, that is a conversation woken for
+a two-month-old build on the first attach, and unlike a missed wake it is unbounded. So a session with no
 `.wake_baseline` has its finished history marked and nothing emitted; from then on a run that
 ends is genuinely one nothing has spoken for. A run still *going* is re-armed either way: the
 baseline is about what has ended. Slurm

@@ -38,7 +38,8 @@ from collections import deque
 from typing import Any, Callable, Iterator
 
 from .event_bus import _EventBus
-from .job_scan import scan_all_sessions
+from .job_scan import has_baseline, mark_wakes_reported, scan_all_sessions
+from .job_wakes import DURABLE_EVENTS, checkin_text, wake_text
 from .session_store import SessionStore
 from .turn_commit import commit_answer
 from .ws_worker import _AgentWorker
@@ -160,7 +161,8 @@ class _AgentPool:
         # is the point: the pool outlives every connection, so what records its output
         # has to as well.
         self.store = SessionStore()
-        self.bus = _EventBus(self, commit=self._commit_turn)
+        self.bus = _EventBus(self, commit=self._commit_turn,
+                             durable=self.consume_durable_event)
 
         # Resolved when this process decides it is no longer needed. Awaited beside the
         # signal handlers, so an idle stop and a SIGTERM take the same path out — the
@@ -186,7 +188,9 @@ class _AgentPool:
 
         And a run launched but not collected is work in progress even with no turn
         running: that is precisely the "I submitted a two-hour build and left" case
-        this whole path exists for, so a live job on disk holds the process open.
+        this whole path exists for, so a live job on disk holds the process open — and
+        so does one that has *ended* without its wake reaching a turn, which is the same
+        debt one step later.
 
         The rest are not activity but prohibitions: somebody is attached, a card is
         parked, a deferral is owed, a turn is queued for a slot.
@@ -226,29 +230,53 @@ class _AgentPool:
             reasons.append("session(s) that never delivered an answer: "
                            + ", ".join(sorted(unfinished)))
 
-        live_jobs = self._live_job_keys()
+        live_jobs, owed_wakes = self._job_keys()
         if live_jobs:
             reasons.append("background run(s) still going: " + ", ".join(live_jobs))
+        if owed_wakes:
+            reasons.append("run(s) whose wake nobody has taken in yet: "
+                           + ", ".join(owed_wakes))
 
         return {"idle": not reasons, "reasons": reasons}
 
     @staticmethod
-    def _live_job_keys() -> list[str]:
-        """Every detached run still going, across every session on disk.
+    def _job_keys() -> tuple[list[str], list[str]]:
+        """The runs still going, and the finished ones still owed a wake.
 
         Read from disk rather than from the live workers: a run outlives the agent that
         launched it, and the session it belongs to may have no worker at all right now.
+        One scan answers both, since ``scan_all_sessions`` already drops the runs whose
+        wake has been delivered — what it returns is exactly "still going" plus "ended
+        and unspoken for".
+
+        **Why an owed wake holds the process open.** A finished run that nothing has
+        taken in is a turn this process still has to start, which is work in progress
+        as surely as the run itself was. Stopping here is how a conversation loses the
+        night: the job ends, its wake is journaled, and the server that owes the turn
+        shuts down two hours later without ever having started it.
+
+        Only sessions that have been scanned before are counted. A job directory is
+        never swept, however old, so an unbaselined session holds every run it ever
+        finished with no marker on any of them — reading that history as debt would
+        leave a workspace permanently un-stoppable, which is worse than stopping one
+        with a wake outstanding and exactly the trade the baseline exists to make.
         """
-        keys: list[str] = []
+        live: list[str] = []
+        owed: list[str] = []
         try:
             for session_id, jobs in scan_all_sessions().items():
-                keys.extend(f"{session_id}/{job.job_key}" for job in jobs if job.live)
+                baselined = has_baseline(session_id)
+                for job in jobs:
+                    if job.live:
+                        live.append(f"{session_id}/{job.job_key}")
+                    elif baselined:
+                        owed.append(f"{session_id}/{job.job_key}")
         except Exception:
             # Unreadable means unknown, and unknown must not read as "nothing is
             # running": erring the other way stops a server mid-build.
             logger.warning("pool: the detached runs could not be read", exc_info=True)
-            return ["<unreadable>"]
-        return sorted(keys)
+            return ["<unreadable>"], []
+        return sorted(live), sorted(owed)
 
     def request_stop(self) -> None:
         """Ask the serve loop to shut down. Idempotent."""
@@ -280,6 +308,96 @@ class _AgentPool:
         if result is not None:
             logger.info("commit: session %s wrote its answer with nobody attached",
                         session_id)
+
+    def consume_durable_event(self, ev: dict) -> None:
+        """Turn a finished run's wake into a turn when no socket will.
+
+        Every way this can fail is a logged return rather than a raise, and the pump
+        guards the call besides: one unreadable session must not stop the tick that is
+        draining every other conversation's output.
+
+        The counterpart of :meth:`_commit_turn`. A watcher outlives every connection —
+        it is a task on a worker's loop, and the pool refuses to release a worker that
+        holds one — so a two-hour run reports in whether or not a window is open, and
+        the pump journals what it says. Acting on that report is this method's job, and
+        it must not need a socket either: a wake only a connection can route is a
+        conversation that waits out the night for a job that finished in three minutes,
+        and resumes when somebody opens the panel and asks.
+
+        Called by the pump, which has already checked that nobody is attached: a
+        ``_Session`` present routes this itself, against the history it holds on screen.
+
+        Everything here is synchronous on purpose. Loading a session, appending to it,
+        saving it and queueing a turn are all plain calls — ``submit_query`` is a queue
+        put — so this needs no loop of its own and runs inside the pump tick that
+        drained the event.
+
+        The turn's answer is written back by :meth:`_commit_turn`, off the same pump,
+        against the ``_submitted_len`` the worker records as it takes the turn in. So a
+        wake taken in here is a complete turn: asked, answered and persisted, with no
+        connection involved at any point.
+        """
+        etype = ev.get("type")
+        owner = ev.get("session_id")
+        if not owner or etype not in DURABLE_EVENTS:
+            return
+        checkin = etype == "job_checkin"
+        worker = self.get(owner)
+        if worker is None:
+            # No agent to run it. Nothing is lost by stopping here *for a wake*: it
+            # stays unsettled on disk, so the next worker built for this conversation
+            # re-announces it and the next connection scans it up. A bulletin has
+            # nothing to preserve — the run is still going and its own wake is still
+            # to come.
+            if not checkin:
+                logger.info("wake for job %r of session %s not taken in: it has no "
+                            "agent; left for the next scan", ev.get("job_key"), owner)
+            return
+        if self.is_busy(owner) or self.is_parked(owner):
+            if checkin:
+                # A bulletin interrupts nothing, by design: steering "nothing to
+                # report" into a turn makes the agent answer about the job instead of
+                # the work. The next tick carries a fresher one anyway.
+                return
+            # Handed to the turn already running, which learns at its next step
+            # boundary that the run finished and carries on — no extra turn, no second
+            # final answer. Left unsettled deliberately: a steer is only known to have
+            # been read when the loop says so, and re-telling a run is recoverable
+            # where losing one is not.
+            worker.submit_steer(wake_text(ev))
+            return
+        text = checkin_text(ev) if checkin else wake_text(ev)
+        try:
+            session = self.store.load_session(owner)
+        except Exception:
+            logger.warning("wake for session %s not taken in: it could not be loaded",
+                           owner, exc_info=True)
+            return
+        message = {"role": "user", "content": text}
+        session.llm_history.append(message)
+        session.llm_history_full.append(dict(message))
+        if not checkin:
+            # What the user sees on their return, where the turn that answers it
+            # begins. A bulletin leaves no bubble — twenty check-ins would reopen the
+            # conversation on twenty blocks of an instruction addressed to the model.
+            session.display_messages.append(
+                {"role": "system", "kind": "text", "text": f"🔔 {text}"})
+        try:
+            self.store.save_session(session)
+        except Exception:
+            logger.warning("wake for session %s not taken in: it would not save",
+                           owner, exc_info=True)
+            return
+        # Journaled under the same seq run as everything else, so a window opening later
+        # replays the wake in its place rather than finding a turn with no question.
+        self.bus.record_client_event(owner, {
+            "type": "job_checkin" if checkin else "job_wake",
+            "text": text, "job": ev.get("job_key")})
+        worker.submit_query(text, list(session.llm_history), session_id=owner)
+        if not checkin:
+            mark_wakes_reported([ev])
+        logger.info("session %s woken by %s %r with nobody attached", owner, etype,
+                    ev.get("job_key"))
 
     # ── Looking up ────────────────────────────────────────────────────────────
 

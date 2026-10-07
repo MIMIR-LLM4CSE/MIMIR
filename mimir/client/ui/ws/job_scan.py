@@ -187,11 +187,18 @@ def _scan_slurm_jobs(session_id: str) -> list[DetachedJob]:
     return found
 
 
-# Name of the marker that says a finished run has already been announced. A file in the
-# run's own directory, because "has this been reported?" has to survive the process that
-# reported it: two places look for runs that ended unwatched — a connection arriving and
-# a worker being built — and a run announced twice is a conversation woken twice for one
-# build.
+# Name of the marker that says a finished run's wake has been handed to a turn. A file
+# in the run's own directory, because "has this been delivered?" has to survive the
+# process that delivered it: two places look for runs that ended unwatched — a
+# connection arriving and a worker being built — and a run delivered twice is a
+# conversation woken twice for one build.
+#
+# **Delivered, not emitted.** The marker is written where the wake enters a turn, never
+# where the event is queued. A ``job_complete`` put on the bus with nothing ready to
+# consume it is a wake still owed: marking it at that moment makes the only record of
+# the debt say it was already paid, and the run is then filtered out of every later scan
+# — a conversation that waits for ever on a job that finished hours ago. Which is
+# precisely the case this module exists for, so the marker follows the turn.
 _REPORTED = "reported"
 
 # Name of the per-session file that says "scanning has happened here before".
@@ -284,6 +291,22 @@ def mark_job_reported(session_id: str | None, job_key: str,
         session_id=session_id, job_key=job_key,
         kind="slurm" if server == "hpc" else "shell",
         live=False, exit_code=None))
+
+
+def mark_wakes_reported(events: list[dict]) -> None:
+    """Settle every run whose wake has just been handed to a turn.
+
+    What a consumer has: the ``job_complete`` events it folded into one message, each
+    carrying the session, the key and the server its descriptor named. Called once the
+    turn is submitted — before that the debt is still outstanding, and a marker written
+    early is indistinguishable from one written on time to every scan that follows.
+
+    A steered wake is deliberately *not* settled here: a steer is only known to have
+    been read when the loop says so, and until then the job still needs a turn of its
+    own. Its marker is written by the flush that eventually gives it one.
+    """
+    for ev in events or ():
+        mark_job_reported(ev.get("session_id"), ev.get("job_key"), ev.get("server"))
 
 
 def scan_session(session_id: str, *, include_reported: bool = False

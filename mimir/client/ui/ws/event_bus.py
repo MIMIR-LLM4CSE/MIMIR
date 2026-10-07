@@ -37,6 +37,7 @@ import logging
 import time
 from typing import Callable, Iterable
 
+from .job_wakes import DURABLE_EVENTS
 from .transcript_log import TranscriptLog
 
 logger = logging.getLogger(__name__)
@@ -145,9 +146,14 @@ class _EventBus:
     """
 
     def __init__(self, pool, *, commit: Callable[[dict, dict], None] | None = None,
+                 durable: Callable[[dict], None] | None = None,
                  interval: float = _PUMP_INTERVAL) -> None:
         self._pool = pool
         self._commit = commit
+        # What takes in a finished run's wake when no socket will. The twin of
+        # ``commit``, and for the same reason: a subscriber is a view, and a run that
+        # ends with nobody looking still has to reach the turn it was launched from.
+        self._durable = durable
         self._interval = interval
         self._logs: dict[str, TranscriptLog] = {}
         self._subs: list[_Subscription] = []
@@ -378,6 +384,18 @@ class _EventBus:
                     self._commit(ev, extras)
                 except Exception:
                     logger.warning("bus: turn commit failed for %s", owner, exc_info=True)
+            # After the journal, so the event the consumer reads is the stamped one, and
+            # only with nobody attached: a subscriber present means a ``_Session`` is
+            # about to route this itself, and two consumers starting a turn for one
+            # finished run is the duplicate the marker cannot catch — neither has
+            # written it yet.
+            if (self._durable is not None and etype in DURABLE_EVENTS
+                    and not self._subs):
+                try:
+                    self._durable(ev)
+                except Exception:
+                    logger.warning("bus: taking in %s for %s failed", etype, owner,
+                                   exc_info=True)
             if isinstance(ev.get("seq"), int):
                 self.journaled += 1
             if etype in _REPLAY_ONLY:
