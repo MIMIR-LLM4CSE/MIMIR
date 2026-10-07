@@ -16,6 +16,7 @@ from .gates import (
     _check_cluster_submit,
     _check_out_of_workspace_access,
     _check_proxy_exec,
+    _check_skill_pull,
     _out_of_workspace_targets,
 )
 # The exempt helper waives the approval prompt for side-effect-free discovery
@@ -388,6 +389,21 @@ def evaluate_tool_preconditions(
             violation=_enrich_violation_payload(
                 violation=proxy_exec_violation,
                 policy_stage="proxy_exec",
+                execution_context=normalized_context,
+                tool_name=normalized_tool_name,
+            ),
+        )
+
+    skill_pull_violation = _check_skill_pull(
+        agent, normalized_tool_name, rewritten_arguments, normalized_context)
+    if skill_pull_violation is not None:
+        return PolicyEvaluation(
+            tool_name=normalized_tool_name,
+            arguments=rewritten_arguments,
+            execution_context=normalized_context,
+            violation=_enrich_violation_payload(
+                violation=skill_pull_violation,
+                policy_stage="skill_pull",
                 execution_context=normalized_context,
                 tool_name=normalized_tool_name,
             ),

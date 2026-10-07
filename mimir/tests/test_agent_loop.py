@@ -1122,6 +1122,76 @@ class RunAgentQueryNonInteractiveTests(unittest.TestCase):
         self.assertEqual(len(backend.calls), 2)     # tool-call step, then final answer
 
 
+class SkillResolutionTests(RunAgentQueryNonInteractiveTests):
+    """What a query costs in model calls before its first step, and what /name does.
+
+    The implicit classifier used to run here: one full model round-trip per query,
+    spent deciding which methodology applied from a request that does not yet know
+    what the task is made of. The model now has the index in its system prompt and
+    loads a skill itself, at the step where its own reading settles the question.
+    """
+
+    def _skilled_agent(self):
+        agent = self._query_agent()
+        agent.skills = {
+            "fix-bug": {"description": "repair a defect", "content": "METHOD BODY",
+                        "model_invocable": True},
+        }
+        agent.skill_enabled = lambda name: True
+        return agent
+
+    def _run(self, agent, query):
+        backend = ScriptedBackend([{"content": "final answer"}])
+
+        async def _noop_async(*a, **k):
+            return None
+
+        m = agent_loop_module
+        with patch.object(streaming_module, "get_backend", lambda: backend), \
+             patch.object(agent_loop_module, "_dispatch_tool_calls", _noop_async), \
+             patch.object(agent_loop_module, "_post_dispatch_inject", _noop_async), \
+             patch.object(history_module, "_trim_tool_history", lambda *a, **k: None), \
+             patch.object(history_module, "_maybe_compact_intra_query", lambda *a, **k: None), \
+             patch.object(m, "tools_for_context", lambda **k: []), \
+             patch.object(m, "needs_incomplete_finalization", lambda ec: False):
+            result = asyncio.run(
+                m.run_agent_query(agent=agent, query=query, max_steps=5)
+            )
+        return result, backend
+
+    def test_a_plain_query_spends_no_model_call_choosing_a_skill(self) -> None:
+        result, backend = self._run(self._skilled_agent(), "why does the parser crash")
+        self.assertEqual(result, "final answer")
+        # One call: the step that answered. Not two, which is what a classifier
+        # round-trip ahead of the first step would have cost.
+        self.assertEqual(len(backend.calls), 1)
+        self.assertNotIn("METHOD BODY", backend.calls[0]["messages"][0]["content"])
+
+    def test_an_explicit_slash_command_still_folds_into_the_system_message(self) -> None:
+        agent = self._skilled_agent()
+        _result, backend = self._run(agent, "/fix-bug the parser crashes")
+        self.assertEqual(len(backend.calls), 1)
+        system = backend.calls[0]["messages"][0]
+        self.assertEqual(system["role"], "system")
+        self.assertIn("METHOD BODY", system["content"])
+        self.assertIn("SKILL CONTEXT (SUBORDINATE)", system["content"])
+
+    def test_an_explicit_skill_counts_against_what_the_model_may_pull(self) -> None:
+        """The user put a body in the context; the model must not pull it again."""
+        agent = self._skilled_agent()
+        seen: dict = {}
+        original = MimirAgent._new_execution_context
+
+        def _capture():
+            ctx = original()
+            seen["ctx"] = ctx
+            return ctx
+
+        agent._new_execution_context = staticmethod(_capture)
+        self._run(agent, "/fix-bug the parser crashes")
+        self.assertEqual(seen["ctx"]["skills_loaded"], {"fix-bug": ""})
+
+
 class LiveMessagesExposureTests(RunAgentQueryNonInteractiveTests):
     """The in-flight transcript is readable mid-run and released at the end.
 

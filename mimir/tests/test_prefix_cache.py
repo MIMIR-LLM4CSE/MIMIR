@@ -195,6 +195,49 @@ class RebuildRuleTests(unittest.TestCase):
         self.assertEqual(out, messages[0]["content"])
 
 
+class PulledSkillLeavesThePrefixAloneTests(unittest.TestCase):
+    """The counterpart to the rule above, and the reason the two differ.
+
+    A skill the USER invokes with /name is folded into messages[0]: the decision is
+    made before the first step, so the prefix is paid for once and binds every step.
+    A skill the MODEL pulls arrives mid-run, where rewriting messages[0] would void
+    the prompt prefix for every remaining step of the query. So it stays where it
+    landed — a tool result in the tail — and is protected there instead.
+    """
+
+    def _agent(self):
+        d = tempfile.mkdtemp()
+        fp = os.path.join(d, "todo_list.md")
+        with open(fp, "w", encoding="utf-8") as fh:
+            fh.write("- [ ] one\n")
+        self.addCleanup(lambda: (os.remove(fp), os.rmdir(d)))
+        return _FakeAgent(fp)
+
+    def test_a_pull_does_not_touch_the_system_message_or_the_suffix(self):
+        from mimir.client.query_engine import dispatch as dispatch_module
+        agent = self._agent()
+        agent.tool_caps = {}   # the only thing the pin helper reads off the agent
+        ctx = {"skills_loaded": {"fix-bug": "pending"}}
+        messages = [{"role": "system", "content": "SYS"}]
+        before = messages[0]["content"]
+
+        dispatch_module._pin_loaded_skill(
+            agent, "load_skill", {"name": "fix-bug"}, "call-1",
+            '{"status": "ok", "instructions": "METHOD BODY"}', ctx,
+        )
+
+        # Not even reassigned: the same string object is still there.
+        self.assertIs(messages[0]["content"], before)
+        self.assertNotIn("_skill_suffix", ctx)
+        self.assertEqual(ctx["pinned_call_ids"], {"call-1"})
+
+    def test_a_rebuild_after_a_pull_carries_no_skill_block(self):
+        """Because there is nothing in the suffix to carry: the body is in the tail."""
+        ctx = {"skills_loaded": {"fix-bug": "call-1"}, "pinned_call_ids": {"call-1"}}
+        out = asyncio.run(m._rebuild_system_content(self._agent(), "agent", ctx))
+        self.assertNotIn("SKILL CONTEXT", out)
+
+
 class PlanModeChecklistTests(unittest.TestCase):
     """The plan-mode prompt carries no checklist section, so nothing to refresh there."""
 

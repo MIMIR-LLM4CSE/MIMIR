@@ -1,6 +1,7 @@
 ---
 name: example-skill
-description: One-line description shown to the skill classifier.
+description: One line — when this skill applies. The model reads it to decide whether to load the body.
+disable-model-invocation: false
 ---
 
 Objective: describe the methodology the agent should follow for this kind of task.

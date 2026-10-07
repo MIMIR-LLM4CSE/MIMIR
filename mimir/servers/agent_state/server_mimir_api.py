@@ -18,6 +18,7 @@ tool; this server only answers questions.
 
 Tools:
   1. mimir_api(topic, name) — one topic of the extension API
+  2. load_skill(name) — one skill's methodology, loaded into the conversation on demand
 """
 
 import os
@@ -145,17 +146,39 @@ def _capability_vocabulary() -> dict:
     return {"flags": flags, "reversibility": levels}
 
 
+# The front-matter keys this server reads. ``disable-model-invocation`` is in the set
+# because it is load-bearing: it decides whether ``load_skill`` will hand the body to
+# the model at all, so an inventory that dropped it would describe a skill the model
+# cannot actually load as one it can.
+_FRONT_MATTER_KEYS = ("name", "description", "disable-model-invocation")
+
+
 def _front_matter(path: str) -> dict:
-    """``name`` / ``description`` from a SKILL.md front-matter block (best effort)."""
+    """The read front-matter keys of a SKILL.md block (best effort)."""
     text = _read_text(path, limit=8_000)
     fields: dict = {}
     if not text.startswith("---"):
         return fields
     for line in text.split("---", 2)[1].splitlines():
         key, _, value = line.partition(":")
-        if key.strip() in ("name", "description") and value.strip():
+        if key.strip() in _FRONT_MATTER_KEYS and value.strip():
             fields[key.strip()] = yaml_unquote(value.strip())
     return fields
+
+
+# Front-matter values that mean "yes" for ``disable-model-invocation``. Mirrors the
+# client's ``_SKILL_TRUTHY`` (client/agent_core.py), and the parity is tested.
+_SKILL_TRUTHY = frozenset({"true", "yes", "1"})
+
+
+def _model_invocable(fields: dict) -> bool:
+    """Whether the MODEL may load this skill itself, from its front-matter.
+
+    False only when the file says so. The user's ``/<name>`` is unaffected: the field
+    names who may invoke the skill, and a slash command is the user invoking it.
+    """
+    return str(fields.get("disable-model-invocation", "")).strip().lower() \
+        not in _SKILL_TRUTHY
 
 
 def _bundled_skill_names() -> list[dict]:
@@ -164,7 +187,15 @@ def _bundled_skill_names() -> list[dict]:
     for entry in sorted(_listdir(_BUNDLED_SKILLS)):
         md = os.path.join(_BUNDLED_SKILLS, entry, "SKILL.md")
         if os.path.isfile(md):
-            out.append({"name": entry, **_front_matter(md)})
+            fields = _front_matter(md)
+            out.append({
+                "name": entry,
+                "description": fields.get("description", ""),
+                # Reported as the one boolean a reader acts on, not as the raw
+                # front-matter spelling: a skill listed here that load_skill would
+                # refuse has to be readable as such.
+                "model_invocable": _model_invocable(fields),
+            })
     return out
 
 
@@ -229,14 +260,20 @@ _TYPES: dict[str, dict] = {
         "what": "A methodology prompt that steers *how* the agent works on a class of task.",
         "drop_in": lambda: os.path.join(_skills_dir(), "<name>", "SKILL.md"),
         "env_override": SKILLS_DIR_ENV,
-        "loaded": "At agent start. Triggered explicitly (`/<name> …`) or by the skill "
-                  "classifier, which reads the current query plus the last few turns.",
+        "loaded": "At agent start, as a name and a one-line description in the "
+                  "system prompt. The body is read on demand: explicitly by the user "
+                  "(`/<name> …`), which folds it in for the whole query, or by the "
+                  "model itself with `load_skill(<name>)` at the step its own reading "
+                  "says the method applies.",
         "collision": "A user skill overrides the bundled skill of the same name.",
         "template": os.path.join(_EXAMPLES, "skills", "example-skill", "SKILL.md"),
         "rules": [
             "The front-matter `name` MUST equal the directory name.",
-            "`description` is the one line the classifier reads — write what the task "
-            "looks like, not what the skill contains.",
+            "`description` is the one line the MODEL reads to decide whether to load "
+            "the body — write what the task looks like, not what the skill contains.",
+            "`disable-model-invocation: true` keeps a skill for `/<name>` only: it stays "
+            "the user's to invoke and refuses the model's own `load_skill`. Omit it (or "
+            "false) for anything the model should be able to reach for.",
             "The body is injected as a subordinate system message; the base system "
             "instructions stay authoritative, so never restate or contradict them.",
             "Methodology only. Validation tiers, approval handling and edit-tool "
@@ -475,6 +512,120 @@ def mimir_api(topic: str = "index", name: str = "") -> dict:
 
     return err(f"Unknown topic '{topic}'.",
                hint=f"Use one of: {', '.join(_TOPICS)}. Start at 'index'.")
+
+
+# ── loading a skill on demand ─────────────────────────────────────────────────
+# The index of skills (name + one line) lives in the system prompt; the BODY is read
+# here, when the model's own observations say a methodology applies. That split is the
+# whole point: the eight shipped skills are 22 KB together and the largest is 13 KB, so
+# an index costs a few lines where carrying every body would cost thousands of tokens
+# per query to apply, at most, one of them.
+
+
+def _skill_md_path(name: str) -> str:
+    """The SKILL.md a pull must read — user directory first, then the bundled one.
+
+    Restates ``MimirAgent.load_skills(merge=True)``'s override rule across a process
+    boundary, so a workspace skill shadows the shipped one of the same name here too.
+    The duplication is held level by a parity test rather than by trust.
+
+    Returns "" when neither exists.
+    """
+    for base in (_skills_dir(), _BUNDLED_SKILLS):
+        candidate = os.path.join(base, name, "SKILL.md")
+        if os.path.isfile(candidate):
+            return candidate
+    return ""
+
+
+def _skill_body(path: str) -> tuple[dict, str]:
+    """(front-matter fields, body) of a SKILL.md.
+
+    The body is everything under the closing ``---``, verbatim: it is a methodology the
+    model is about to follow, so trimming or reflowing it would change the instruction.
+    """
+    text = _read_text(path)
+    fields = _front_matter(path)
+    if text.startswith("---"):
+        parts = text.split("---", 2)
+        if len(parts) == 3:
+            return fields, parts[2].strip()
+    return fields, text.strip()
+
+
+def _available_skill_names() -> list[str]:
+    """Every skill name a pull could resolve — user directory and bundled, merged."""
+    names = set()
+    for base in (_skills_dir(), _BUNDLED_SKILLS):
+        for entry in _listdir(base):
+            if os.path.isfile(os.path.join(base, entry, "SKILL.md")):
+                names.add(entry)
+    return sorted(names)
+
+
+def _rejects_as_path(name: str) -> bool:
+    """Whether *name* must not be joined onto a directory.
+
+    The only path-traversal surface this server adds: ``name`` arrives from the model
+    and is joined onto the skills directories. A skill name is one directory component,
+    so anything that could leave that component is refused before the join rather than
+    normalised into something plausible.
+    """
+    separators = {"/", "\\", os.sep, os.altsep} - {None, ""}
+    return (not name
+            or name.startswith(".")
+            or any(sep in name for sep in separators))
+
+
+@mcp.tool(**tool_caps(
+    caps=[CACHEABLE],
+    label="Loading the {name} skill",
+))
+def load_skill(name: str) -> dict:
+    """Load one skill's methodology into this conversation, on demand.
+
+    The available-skills list in your instructions names each skill and when it
+    applies; this returns the method itself. Call it the moment the work turns out to
+    match one — including on your first step, and equally at the twentieth, once what
+    you have read tells you which method the task needs.
+
+    What comes back is METHODOLOGY, subordinate to your system instructions: it adds a
+    way of working, and never relaxes a rule stated there.
+
+    Args:
+        name: The skill's name, exactly as the available-skills list spells it.
+    """
+    requested = (name or "").strip()
+    if _rejects_as_path(requested):
+        return err(f"'{name}' is not a skill name.",
+                   hint=f"Available: {', '.join(_available_skill_names())}.")
+
+    path = _skill_md_path(requested)
+    if not path:
+        return err(f"No skill named '{requested}'.",
+                   hint=f"Available: {', '.join(_available_skill_names())}.")
+
+    fields, body = _skill_body(path)
+    if not _model_invocable(fields):
+        # The file itself says this one is the user's to invoke. Said plainly, with
+        # what to do instead, because the alternative the model reaches for otherwise
+        # is to stop and ask the user to run the slash command for it.
+        return err(f"The skill '{requested}' is user-invoked only.",
+                   hint=f"The user can run /{requested}. Carry on with your own "
+                        "method; do not ask them to run it for you.")
+    if not body:
+        return err(f"The skill '{requested}' has no instructions under its front-matter.",
+                   hint=f"Read {path} if you need to know why, or carry on without it.")
+
+    return ok({
+        "skill": requested,
+        "source": path,
+        "description": fields.get("description", ""),
+        "instructions": body,
+        "applies": "This is methodology, subordinate to your system instructions. "
+                   "Apply it where it is relevant to the task; it never overrides a "
+                   "rule stated in those instructions.",
+    })
 
 
 if __name__ == "__main__":

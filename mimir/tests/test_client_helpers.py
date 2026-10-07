@@ -182,9 +182,13 @@ class ClientHelperTests(unittest.TestCase):
         against the semantics it claims to preserve.
         """
         m = execution_context_module
+        # `pinned_call_ids` is the one CARRY field holding no paths: it names tool
+        # messages, not files, so it carries no FILE_PATH trait and the delete purge
+        # leaves it alone. It is carried because the message it protects is archived
+        # and replayed into the next query, so the protection has to travel with it.
         self.assertEqual(set(m.fields_with(m.CARRY)), {
             "read_files", "delegated_read_files", "existing_paths", "inspected_dirs",
-            "checked_paths"})
+            "checked_paths", "pinned_call_ids"})
         self.assertEqual(set(m.fields_with(m.FILE_PATH)), {
             "existing_paths", "read_files", "delegated_read_files", "checked_paths",
             "dirty_written_files", "validated_files", "unverifiable_files"})

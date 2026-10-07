@@ -20,6 +20,7 @@ from typing import Any
 
 from ....servers._shared.shell_paths import COMMAND_WRAPPERS, unwrap_argv
 
+from ...config.constants import SKILL_LOAD_TOOL, SKILL_PULL_MAX
 from ...context.capabilities import (
     CLUSTER_SUBMIT, EDIT, PLAN_BLOCKED, READ,
     arg_role, has_cap, scope_spec,
@@ -558,3 +559,78 @@ def _check_proxy_exec(
         ),
         tool=tool_name,
     )
+
+
+# ── loading a skill on demand ─────────────────────────────────────────────────
+
+def _check_skill_pull(
+    agent: Any, tool_name: str, arguments: dict[str, Any],
+    execution_context: dict[str, Any] | None,
+) -> str | None:
+    """Refuse a skill pull the operator, the skill itself, or the budget rules out.
+
+    The server that serves ``load_skill`` is a subprocess: it can read a SKILL.md's own
+    front-matter, but not the toggle panel's live state, nor what this conversation has
+    already loaded. Those three answers are therefore given here, before dispatch —
+    where a refusal costs one line instead of the thousands of tokens the body would.
+
+    Reserves on the way through: a step can issue two pulls at once, and two gates
+    reading the same count would both pass a cap with one slot left. Writing
+    ``"pending"`` is what makes the cap exact; the dispatcher then promotes it to the
+    result's call id or releases it (see ``_pin_loaded_skill``). A reservation only ever
+    narrows what is allowed, which is the contract this layer holds to.
+    """
+    if tool_name != SKILL_LOAD_TOOL:
+        return None
+    skill = str((arguments or {}).get("name") or "").strip()
+    if not skill:
+        return None   # the server answers for a malformed name
+    context = execution_context if execution_context is not None else {}
+    loaded: dict = context.setdefault("skills_loaded", {})
+
+    if skill in loaded:
+        return agent._json_error_payload(
+            f"The skill '{skill}' is already loaded in this conversation.",
+            hint="Its instructions are in an earlier tool result — re-read that result "
+                 "rather than loading it again.",
+            tool=tool_name,
+        )
+
+    if len(loaded) >= SKILL_PULL_MAX:
+        return agent._json_error_payload(
+            f"{len(loaded)} skills are already loaded "
+            f"({', '.join(sorted(loaded))}).",
+            hint="That is the limit for one task. Finish the work with the methods you "
+                 "have; a fourth playbook would not be applied either.",
+            tool=tool_name,
+        )
+
+    available = dict(getattr(agent, "skills", None) or {})
+    meta = available.get(skill)
+    offered = []
+    fn = getattr(agent, "model_invocable_skills", None)
+    if callable(fn):
+        offered = [name for name, _desc in fn()]
+
+    # A skill the operator soft-hid gets the SAME answer as one that does not exist,
+    # deliberately. It is absent from the index the model was given, so naming it as
+    # "switched off" tells the model about a capability it cannot have and invites it to
+    # stop and ask the user to switch it back on — a worse outcome than not knowing.
+    if meta is None or not agent.skill_enabled(skill):
+        return agent._json_error_payload(
+            f"No skill named '{skill}'.",
+            hint=(f"Available: {', '.join(offered)}." if offered
+                  else "No skills are available to load."),
+            tool=tool_name,
+        )
+
+    if not meta.get("model_invocable", True):
+        return agent._json_error_payload(
+            f"The skill '{skill}' is user-invoked only.",
+            hint=f"The user can run /{skill}. Carry on with your own method — do not "
+                 "ask them to run it for you.",
+            tool=tool_name,
+        )
+
+    loaded[skill] = "pending"
+    return None

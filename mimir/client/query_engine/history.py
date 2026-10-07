@@ -261,6 +261,10 @@ def _trim_tool_history(
     evicted: they are the current turn's payload, and stubbing them out costs more
     than the space it frees. Only the force-fit backstop may shrink them.
 
+    Results whose ``tool_call_id`` is in ``execution_context["pinned_call_ids"]`` are
+    exempt for as long as anything else is reducible: a skill's instructions, which the
+    model was told are in its context and will act on for the rest of the task.
+
     Tool messages whose content references a file currently being written
     (dirty_written_files or declared_edit_set) are protected from eviction.
     When a file has been read but then evicted from history, its path is also
@@ -317,10 +321,25 @@ def _trim_tool_history(
     last_call_turn = _last_call_turn(messages)
     newest_results = {i for i in tool_indices if i > last_call_turn} if last_call_turn >= 0 else set()
 
+    # Pinned results: a skill's instructions, loaded on demand and left where they
+    # landed. Protected by tool_call_id, the same structural key as tool_msg_files, so
+    # a body that merely mentions a path neither protects nor invalidates anything.
+    # The alternative to pinning was to fold the text into messages[0], which no pass
+    # touches — and that costs the prompt prefix for every remaining step of the query.
+    # So the tail is where it stays, and this is what makes the tail safe to promise:
+    # the model has been told the method is in its context.
+    pinned_call_ids: set[str] = (
+        execution_context.get("pinned_call_ids", set()) if execution_context else set()
+    )
+    pinned = (
+        {i for i in tool_indices if messages[i].get("tool_call_id") in pinned_call_ids}
+        if pinned_call_ids else set()
+    )
+
     to_remove: list[int] = []
     removed_size = 0
     for idx in tool_indices:
-        if idx in newest_results:
+        if idx in newest_results or idx in pinned:
             continue
         if total_size - removed_size <= budget:
             break
@@ -363,6 +382,40 @@ def _trim_tool_history(
         del messages[i]
 
 
+def _carve_out_pinned(
+    middle: list[dict], pinned_call_ids: set[str],
+) -> tuple[list[dict], list[dict]]:
+    """Split *middle* into (summarizable, kept).
+
+    *kept* holds each pinned tool message **together with the assistant turn that
+    declared it**, in their original order. The pairing is not optional:
+    :func:`reconcile_tool_pairs` drops any tool message that is not immediately
+    preceded by the assistant turn declaring its id, so a body that survived the
+    summary alone would be deleted by the very next repair pass — protection that
+    looks like it works and does nothing.
+
+    An assistant turn that declared a pinned call plus three ordinary ones is kept
+    whole; its unpinned results go into the summary, and the repair fills their slots
+    with EVICTED_TOOL_RESULT stubs. That is exactly what those stubs are for.
+    """
+    kept_idx: set[int] = set()
+    for i, m in enumerate(middle):
+        if m.get("role") != "tool" or m.get("tool_call_id") not in pinned_call_ids:
+            continue
+        kept_idx.add(i)
+        # Walk back over this turn's other results to the assistant turn that owns it.
+        j = i - 1
+        while j >= 0 and middle[j].get("role") == "tool":
+            j -= 1
+        if j >= 0 and middle[j].get("role") == "assistant" and middle[j].get("tool_calls"):
+            kept_idx.add(j)
+    if not kept_idx:
+        return middle, []
+    summarizable = [m for i, m in enumerate(middle) if i not in kept_idx]
+    kept = [m for i, m in enumerate(middle) if i in kept_idx]
+    return summarizable, kept
+
+
 def _maybe_compact_intra_query(
     messages: list[dict],
     system_content: str,
@@ -381,6 +434,10 @@ def _maybe_compact_intra_query(
 
     Total size is measured in tokens via *token_counter* against the token
     budget when supplied, else in characters against the char budget.
+
+    Pinned results (``execution_context["pinned_call_ids"]``) are carved out of the
+    middle with their assistant turn and re-appended after the summary — see
+    :func:`_carve_out_pinned`.
     """
     if compact_fn is None:
         return
@@ -402,13 +459,24 @@ def _maybe_compact_intra_query(
     if not middle:
         return
 
+    # A pinned result sits in this slice like any other and would be summarised away
+    # with it — the one pass that could silently drop a skill's instructions without
+    # the eviction path ever running. Carved out, with its assistant turn.
+    pinned_call_ids: set[str] = execution_context.get("pinned_call_ids", set()) or set()
+    middle, kept = (_carve_out_pinned(middle, pinned_call_ids)
+                    if pinned_call_ids else (middle, []))
+    if not middle:
+        return  # nothing left to summarise once the pinned pairs are out
+
     emit({"type": "status", "text": "⚡ Intra-query compaction triggered — summarising intermediate steps..."})
     try:
         summary_messages = compact_fn(middle)
     except Exception:
         return  # compaction failed — silently continue without it
 
-    messages[2:-4] = summary_messages
+    # Kept pairs go after the summary: they are the methodology the following steps
+    # act on, and the summary stands for the work that happened around them.
+    messages[2:-4] = list(summary_messages) + kept
     # The task checklist lives in messages[0], which this slice does not touch, so
     # compaction of the middle never disturbs it — nothing to refresh.
 
@@ -757,6 +825,7 @@ def _force_fit_to_window(
     messages: list[dict],
     target_tokens: int,
     token_counter: Any,
+    pinned_call_ids: set[str] | None = None,
 ) -> bool:
     """Guarantee the message list fits *target_tokens*, truncating as a last resort.
 
@@ -768,6 +837,13 @@ def _force_fit_to_window(
     its instructions and the question. Returns True when the list fits afterwards,
     False when the irreducible core alone still exceeds the target (the caller /
     backend then surfaces a clear context-overflow error).
+
+    *pinned_call_ids* names results that go LAST in the reduction order rather than
+    into ``protected``. A skill's instructions are the largest single message in the
+    list, so largest-first would otherwise truncate the one thing the model was
+    promised it could rely on, before anything else. But protecting them outright here
+    could only turn an over-window prompt into a hard overflow — so they are reduced
+    only once everything else has been, and the guarantee above still holds.
     """
     if target_tokens < 1:
         return False
@@ -786,10 +862,20 @@ def _force_fit_to_window(
         default=-1,
     )
     protected = {0, last_user}
+    pinned_ids = pinned_call_ids or set()
+    pinned = (
+        {i for i, m in enumerate(messages)
+         if m.get("role") == "tool" and m.get("tool_call_id") in pinned_ids}
+        if pinned_ids else set()
+    )
     # Largest first; ties broken by oldest (lower index) so recent context survives.
+    # A pinned message sorts behind every unpinned one whatever its size: reverse=True
+    # puts the HIGHEST key first, so 0 for pinned and 1 for the rest sends the pinned
+    # ones to the end of the order, where they are reached only after the rest has been
+    # cut and usually not at all.
     order = sorted(
         (i for i in range(len(messages)) if i not in protected),
-        key=lambda i: (_mtok(messages[i]), -i),
+        key=lambda i: (0 if i in pinned else 1, _mtok(messages[i]), -i),
         reverse=True,
     )
     for i in order:
@@ -900,7 +986,10 @@ def _enforce_context_budget(
         usable = max(1, total - reserved - overhead
                      - len(messages) * WIRE_LIST_TOKENS_PER_MESSAGE)
         before = sum(_message_tokens(m, token_counter) for m in messages)
-        fitted = _force_fit_to_window(messages, usable, token_counter)
+        fitted = _force_fit_to_window(
+            messages, usable, token_counter,
+            pinned_call_ids=execution_context.get("pinned_call_ids") or set(),
+        )
         after = sum(_message_tokens(m, token_counter) for m in messages)
         if after < before:
             emit({"type": "status", "text": (

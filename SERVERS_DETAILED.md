@@ -304,8 +304,9 @@ states its own answer, by pre-filling the verdict.
 
 Purpose: MIMIR's own extension API — what a user or a developer writes against when they
 add a skill, an MCP server, a policy, a post-tool hook, a nudge or a base prompt under
-the workspace `.mimir/`. One tool, `mimir_api(topic)`, with the companion methodology in
-the bundled [`mimir-api` skill](mimir/skills/mimir-api/SKILL.md).
+the workspace `.mimir/` — plus the op that loads a skill's method on demand. Two tools,
+`mimir_api(topic)` and `load_skill(name)`, with the companion methodology for the first
+in the bundled [`mimir-api` skill](mimir/skills/mimir-api/SKILL.md).
 
 Topics: `index` (every extension type, its drop-in path here, and the rules common to
 all of them), one per type (`skill`, `server`, `policy`, `post_tool`, `nudge`,
@@ -334,15 +335,39 @@ derived from the installed package at call time:
   registry import is guarded — a server must still run with no client on the path — and
   the answer says which of the two it used.
 
-The tool declares `CACHEABLE` and nothing else. It reads the installed package, which no
-call of the agent's can change, so one topic answers identically for a whole query; and
-it deliberately does **not** declare `READ`, because nothing of the *workspace* was read
-— crediting MIMIR's own documentation as the read-before-edit evidence for a file would
-be exactly the wrong answer.
+Both tools declare `CACHEABLE` and nothing else. They read the installed package, which
+no call of the agent's can change, so one topic or one skill answers identically for a
+whole query; and they deliberately do **not** declare `READ`, because nothing of the
+*workspace* was read — crediting MIMIR's own documentation as the read-before-edit
+evidence for a file would be exactly the wrong answer.
+
+### `load_skill(name)`
+
+Returns one skill's `instructions` — the body under the front-matter, **verbatim**: it is
+a methodology the model is about to follow, so reflowing or trimming it would change the
+instruction while appearing to serve it. The user directory is tried before the bundled
+one, restating `load_skills(merge=True)`'s override rule across a process boundary; the
+duplication is held level by a parity test rather than by trust.
+
+The index of what is loadable lives in the system prompt (names and one-line descriptions
+only), which is what makes the split pay: the shipped set is 22 KB together and its
+largest member 13 KB, so carrying every body would spend thousands of tokens per query to
+apply, at most, one of them.
+
+Two refusals are the server's own, because they are properties of the file and a server
+must run with no client on the path: a name it cannot resolve, and a skill whose
+front-matter sets `disable-model-invocation: true` — which stays available to the user's
+`/<name>` and refuses only the model's own pull. The answers that depend on **live** state
+— the operator's toggles, how many skills this conversation has already loaded, whether
+this one is among them — are given client-side before dispatch, by the `skill_pull` gate
+in `client/guardrails/policy/gates.py`, where a refusal costs one line instead of the
+thousands of tokens the body would. `name` is validated before any path join: it arrives
+from the model, and this is the one path-traversal surface the server adds.
 
 Parity is tested rather than trusted: `test_mimir_api` asserts every capability the
-client publishes is reported, that every flag reported is a real constant, and that the
-skill drop-in path the tool hands out is the one `resolve_skills_dir()` scans.
+client publishes is reported, that every flag reported is a real constant, that the
+skill drop-in path the tool hands out is the one `resolve_skills_dir()` scans, and that a
+loaded body is byte-identical to what the client's own parser produces for the same file.
 
 ## workspace/server_files.py
 

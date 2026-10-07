@@ -364,6 +364,34 @@ _SECTION_MEMORY = (
 # the execution context establishes that a *fork* exists, and a nudge fired on loop
 # length as a proxy for ambiguity would fire on every merely long task. A nudge earns
 # its place only where what it guards is decidable from recorded fact.
+# The skills index. Only the NAME and the one-line description of each skill live in
+# the prompt; the method itself is read by load_skill when the work turns out to need
+# it. The split is what makes skills affordable at all: the shipped set is 22 KB
+# together and its largest member 13 KB, so carrying every body would spend thousands
+# of tokens per query to apply, at most, one of them — while a classifier guessing from
+# the query alone decides before the first step, from a request that does not yet know
+# what the task is made of.
+def _skills_section(skills_index: list[tuple[str, str]]) -> str:
+    lines = "\n".join(f"- {name}: {desc}" for name, desc in skills_index)
+    return (
+        "## Skills\n"
+        "Methodology playbooks you can load. Each line is a name and when it applies; "
+        "the method itself is not in your context until you ask for it.\n"
+        "- Call `load_skill(name)` the moment the work matches one — on your first step "
+        "if the request already says so, and equally at the twentieth, once what you "
+        "have read is what tells you which method the task needs.\n"
+        "- What comes back is METHODOLOGY, SUBORDINATE to these instructions: it adds a "
+        "way of working and never relaxes a rule stated here.\n"
+        "- Load at most three in one task, and never the same one twice — a body stays "
+        "in this conversation once loaded, so re-reading the earlier result is how you "
+        "consult it again.\n"
+        "- Nothing obliges you to load one. A task none of these describes needs none of "
+        "them, and loading one that merely sounds adjacent buys a method aimed at other "
+        "work.\n"
+        f"{lines}"
+    )
+
+
 _SECTION_CLARIFY = (
     "## Clarifying with the user\n"
     "You can put a choice to the user and wait for the answer. Its tool description states "
@@ -667,6 +695,7 @@ def build_system_content(
     delegation_available: bool = False,
     tool_descriptions: dict[str, str] | None = None,
     session_id: str | None = None,
+    skills_index: list[tuple[str, str]] | None = None,
 ) -> str:
     system_content = build_base_system_content(context_file)
 
@@ -692,6 +721,16 @@ def build_system_content(
     # ASK is excluded: it answers and changes nothing, so a fork has no work to divide.
     if "ask_user_question" in (tool_owner or {}) and active_mode in ("agent", "plan"):
         system_content += _section("\n" + _SECTION_CLARIFY)
+
+    # Same gating shape again, and for the same reason: an index of loadable skills is a
+    # phantom instruction when the tool that loads them is not connected (the mimir_api
+    # server switched off in the toggle panel, or a trimmed install). The caller has
+    # already dropped what the operator disabled and what declares itself user-invoked
+    # only, so what is listed here is exactly what a pull would be answered for. Sits in
+    # the same static, capability-gated band — ahead of every dynamic block, so a
+    # changing checklist or memory index never pushes the index out of the cached prefix.
+    if skills_index and "load_skill" in (tool_owner or {}):
+        system_content += _section("\n" + _skills_section(skills_index))
 
     # Two absolute paths, and nothing else foundational: the workspace root (which the
     # model needs to BUILD an in-workspace path, since the file tools reject relative

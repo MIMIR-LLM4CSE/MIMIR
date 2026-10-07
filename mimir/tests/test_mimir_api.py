@@ -211,5 +211,76 @@ class BundledSkillContractTests(unittest.TestCase):
         self.assertIn("mimir_api(", body)
 
 
+class LoadSkillTests(unittest.TestCase):
+    """The pull itself: what the model gets, and what it is refused.
+
+    The body must come back byte-for-byte. It is a methodology the model is about to
+    follow, so a server that reflowed or trimmed it would be changing the instruction
+    while appearing to serve it.
+    """
+
+    def test_the_body_is_the_file_verbatim(self):
+        from mimir.client.agent_core import _parse_skill_markdown
+        source = (pathlib.Path(k.SKILL_BASE) / "fix-bug" / "SKILL.md").read_text()
+        result = api.load_skill("fix-bug")
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["skill"], "fix-bug")
+        # Parity with the client's own parser, which is what the user's /<name> path
+        # folds into messages[0]: the two routes must hand over the same text.
+        self.assertEqual(result["instructions"],
+                         _parse_skill_markdown(source)["content"])
+        self.assertTrue(result["description"])
+
+    def test_a_user_invoked_only_skill_is_refused_with_its_slash_command(self):
+        # prepare-pr ships with disable-model-invocation: true. Before that field was
+        # honoured it was parsed and dropped, so the skill was reachable by the model
+        # against its own declaration.
+        result = api.load_skill("prepare-pr")
+        self.assertEqual(result["status"], "error")
+        self.assertIn("user-invoked only", result["error"])
+        self.assertIn("/prepare-pr", result["hint"])
+
+    def test_an_unknown_name_is_refused_with_the_available_ones(self):
+        result = api.load_skill("no-such-skill")
+        self.assertEqual(result["status"], "error")
+        self.assertIn("No skill named", result["error"])
+        self.assertIn("fix-bug", result["hint"])
+
+    def test_a_name_that_could_leave_its_directory_is_never_joined(self):
+        # The one path-traversal surface this server adds: `name` arrives from the
+        # model and is joined onto the skills directories.
+        for name in ("../../etc/passwd", "a/b", ".hidden", "", "..",
+                     "fix-bug/../../../etc/passwd"):
+            with self.subTest(name=name):
+                result = api.load_skill(name)
+                self.assertEqual(result["status"], "error")
+
+    def test_a_user_skill_overrides_the_bundled_one_of_the_same_name(self):
+        import tempfile
+        from mimir.client.agent_core import MimirAgent
+        with tempfile.TemporaryDirectory() as d:
+            skill_dir = pathlib.Path(d) / "fix-bug"
+            skill_dir.mkdir()
+            (skill_dir / "SKILL.md").write_text(
+                "---\nname: fix-bug\ndescription: OVERRIDDEN\n---\nMy own method.\n"
+            )
+            with mock.patch.dict(os.environ, {extension_paths.SKILLS_DIR_ENV: d}):
+                result = api.load_skill("fix-bug")
+                self.assertEqual(result["instructions"], "My own method.")
+                self.assertEqual(result["description"], "OVERRIDDEN")
+                # And the client's loader agrees: the override rule is restated across
+                # a process boundary, so parity is tested rather than trusted.
+                agent = MimirAgent.__new__(MimirAgent)
+                agent.skills = {}
+                agent.load_skills(k.SKILL_BASE)
+                agent.load_skills(resolve_skills_dir(), merge=True)
+                self.assertEqual(agent.skills["fix-bug"]["content"], "My own method.")
+
+    def test_the_inventory_reports_which_skills_the_model_may_load(self):
+        by_name = {entry["name"]: entry for entry in api._bundled_skill_names()}
+        self.assertFalse(by_name["prepare-pr"]["model_invocable"])
+        self.assertTrue(by_name["fix-bug"]["model_invocable"])
+
+
 if __name__ == "__main__":
     unittest.main()

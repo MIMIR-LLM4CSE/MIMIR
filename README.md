@@ -48,7 +48,8 @@ On top of that loop sits a policy and context layer:
   the repository or the machine is injected up front: both are discovered on demand, by
   the model's own tool calls.
 - **Throughput & UX** — real-time token streaming and parallel dispatch of independent calls.
-- **Skills** — automatic detection of a methodology prompt from the query and recent turns.
+- **Skills** — methodology playbooks the model loads by name, at the step its own
+  reading says one applies.
 
 ### Companion docs
 
@@ -219,7 +220,7 @@ and feeds the results back — until the task is done. Every path ends with the 
 %%{init: {'theme':'base','themeVariables':{'fontSize':'14px','lineColor':'#8b95a5','primaryBorderColor':'#5b6270'}}}%%
 flowchart TD
     Q(["🧑 You ask a question"]) --> CTX["🗂️ Get oriented<br/><small>scan the project · recall earlier work</small>"]
-    CTX --> SYS["📝 Prepare the instructions<br/><small>+ load a matching skill, if any</small>"]
+    CTX --> SYS["📝 Prepare the instructions<br/><small>+ the skills that can be loaded</small>"]
     SYS --> MODE{"Just plan,<br/>or take action?"}
     MODE -->|plan| PLAN["🧭 Plan only<br/><small>gather evidence → write the answer</small>"]
     MODE -->|act| STEER
@@ -363,15 +364,18 @@ The authoritative definition of policy, completion gating, and workflow-state ru
   compaction of intermediate tool results when the window fills, and a summary of the older
   turns before any of them are dropped. When even that cannot fit the prompt, the turn ends
   on an explicit context-overflow message instead of a provider error.
-- **Skills** — methodology prompts auto-detected from the query and recent turns.
+- **Skills** — methodology playbooks the model loads when the work turns out to need
+  one. Only the names and one-line descriptions are in the prompt; a body is read on
+  demand, at the step where what has been read says which method applies.
 
 See [`POLICY.md`](POLICY.md) and [`CLIENT_DETAILED.md`](CLIENT_DETAILED.md) for the full
 behaviour and rationale.
 
 ## Skills
 
-Skills are reusable methodology prompts injected into the agent context when a relevant task is
-detected. They guide *how* the agent works without replacing the base system instructions.
+Skills are reusable methodology prompts. They guide *how* the agent works without replacing
+the base system instructions, which stay authoritative. Their names and one-line descriptions
+are in the agent's instructions; a body enters the context only when it is loaded.
 
 Each lives at `mimir/skills/<skill-name>/SKILL.md` with YAML front-matter (`name` must match
 the directory) followed by the methodology body. Built-in skills:
@@ -387,11 +391,16 @@ the directory) followed by the methodology body. Built-in skills:
 | `proxy-optimize` | Optimize a registered proxy through the iterative eval loop |
 | `mimir-api` | Author a `.mimir` extension — skill, tool server, policy, hook, nudge — from MIMIR's own API |
 
-Trigger a skill explicitly with a slash command (`/fix-bug the import error in …`) or let the
-classifier detect it implicitly — it reads the current query plus the last few turns, so a
-short "yes" can activate a skill whose intent was set earlier. In the VS Code chat, typing
-`/` at the start of the input opens an autocomplete dropdown of available skills (mirroring
-the `@` resource-attach menu).
+Trigger a skill explicitly with a slash command (`/fix-bug the import error in …`), which
+folds its method into the system prompt for the whole query. Otherwise the model loads one
+itself: the index of available skills is in its instructions, and `load_skill(<name>)` reads
+the body — on the first step when the request already says so, and equally at the twentieth,
+once what it has read is what settles which method the task needs. At most three per task,
+never the same one twice. A skill whose front-matter sets `disable-model-invocation: true`
+stays available to the slash command and refuses the model's own pull.
+
+In the VS Code chat, typing `/` at the start of the input opens an autocomplete dropdown of
+available skills (mirroring the `@` resource-attach menu).
 
 ## Extending MIMIR
 

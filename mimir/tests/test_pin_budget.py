@@ -71,6 +71,54 @@ class RecencySetTests(unittest.TestCase):
         validate_execution_context(ctx)  # must not raise
 
 
+class SkillsIndexSectionTests(unittest.TestCase):
+    """The index the model chooses from — and what is kept off it.
+
+    Only names and one-line descriptions: the bodies are 22 KB together and the
+    largest is 13 KB, so carrying them would spend thousands of tokens per query to
+    apply, at most, one of them.
+    """
+
+    INDEX = [("fix-bug", "repair a defect"), ("write-tests", "write tests")]
+
+    def _prompt(self, *, connected: bool = True, index=None) -> str:
+        return build_system_content(
+            active_mode="agent",
+            tool_owner={"load_skill": "mimir_api"} if connected else {},
+            sensitive_tools=set(),
+            skills_index=self.INDEX if index is None else index,
+        )
+
+    def test_it_lists_each_skill_with_its_one_line(self) -> None:
+        out = self._prompt()
+        self.assertIn("## Skills", out)
+        self.assertIn("- fix-bug: repair a defect", out)
+        self.assertIn("load_skill(name)", out)
+        # The three rules that keep the mechanism from becoming its own failure mode.
+        self.assertIn("SUBORDINATE", out)
+        self.assertIn("at most three", out)
+        self.assertIn("Nothing obliges you", out)
+
+    def test_no_index_is_printed_when_the_tool_is_not_connected(self) -> None:
+        """An index naming a tool that is not there is a phantom instruction.
+
+        The mimir_api server can be switched off in the toggle panel, and a trimmed
+        install may not ship it at all.
+        """
+        self.assertNotIn("## Skills", self._prompt(connected=False))
+
+    def test_an_empty_index_renders_no_heading(self) -> None:
+        self.assertNotIn("## Skills", self._prompt(index=[]))
+
+    def test_the_index_sits_ahead_of_every_dynamic_block(self) -> None:
+        """So a changing checklist never pushes it out of the cached prefix."""
+        out = self._prompt()
+        self.assertLess(out.index("## Skills"), out.index("Workspace root"))
+
+    def test_rendering_is_byte_stable_across_calls(self) -> None:
+        self.assertEqual(self._prompt(), self._prompt())
+
+
 class ChecklistSectionTests(unittest.TestCase):
     def _todo(self, body: str) -> str:
         tmp = tempfile.mkdtemp()

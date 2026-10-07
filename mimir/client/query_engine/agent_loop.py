@@ -802,19 +802,20 @@ async def run_agent_query(
     agent._live_messages = messages
 
     # -------------------------------------------------------
-    # Skill detection (explicit first, then implicit)
+    # Skill invoked by the user: /skill-name
     # -------------------------------------------------------
+    # The only skill this function resolves. A skill the MODEL decides it needs is
+    # loaded mid-run through the ``load_skill`` tool, whose result stays in the tail
+    # and is pinned there — the index of what is loadable is in the system prompt, so
+    # the choice is made by whoever has read the code, at the step where that becomes
+    # clear. An explicit slash command is different in kind: the user has already
+    # decided, before the first step, so it is folded into messages[0] where it costs
+    # the prefix nothing and binds every step of the query.
     skill_name = None
-
-    # Explicit: /skill-name
     if query.strip().startswith("/"):
         candidate = query.strip()[1:].split()[0]
         if getattr(agent, "skills", None) and candidate in agent.skills:
             skill_name = candidate
-    else:
-        # Implicit detection — pass history so multi-turn context is available
-        if getattr(agent, "detect_skill_implicit", None):
-            skill_name = await agent.detect_skill_implicit(query, history=history)
 
     if skill_name:
         skill = agent.skills[skill_name]
@@ -836,6 +837,11 @@ async def run_agent_query(
         )
         messages[0]["content"] = system_content
         execution_context["_skill_suffix"] = system_content[len(_base_system_content):]
+        # Counted among the loaded skills, with no call id: there is no tool result to
+        # pin because the body is in messages[0], which nothing evicts. What this buys
+        # is that the model cannot pull what it has already been given, and that the
+        # cap counts a body the user put there the same as one the model asked for.
+        execution_context.setdefault("skills_loaded", {})[skill_name] = ""
 
     # messages[0] now carries the checklist as it stands at query start; _sync_checklist
     # rewrites it from here on, and only when the file behind it actually changes. The

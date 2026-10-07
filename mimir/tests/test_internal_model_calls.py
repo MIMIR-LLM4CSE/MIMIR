@@ -1,16 +1,20 @@
 """The model calls MIMIR makes on its own behalf, rather than for the user.
 
-History compaction and implicit skill classification both ask the model something
-the user never typed and consume the answer in code. Two properties follow, and
-neither held before: the call must go through the *configured* backend (these two
-used to call ``ollama.chat`` directly, so they failed under vLLM, Ray or Anthropic),
-and its output must not reach the terminal — ``LLMBackend.chat`` streams to stdout
-whenever no ``token_callback`` is given, which is the CLI answer path's default.
+History compaction asks the model something the user never typed and consumes the
+answer in code. Two properties follow, and neither held before: the call must go
+through the *configured* backend (it used to call ``ollama.chat`` directly, so it
+failed under vLLM, Ray or Anthropic), and its output must not reach the terminal —
+``LLMBackend.chat`` streams to stdout whenever no ``token_callback`` is given, which
+is the CLI answer path's default.
+
+A skill is not one of these calls. The model is given the index of loadable skills in
+its system prompt and loads one itself with ``load_skill`` when the work turns out to
+need it, so no internal round-trip is spent classifying a query that does not yet know
+what the task is made of. ``test_agent_loop.SkillResolutionTests`` is what holds that.
 """
 
 import asyncio
 import io
-import json
 import sys
 import types
 import unittest
@@ -123,65 +127,15 @@ class CompactHistoryTests(unittest.TestCase):
         self.assertEqual(backend.calls, [])
 
 
-class SkillClassifierTests(unittest.TestCase):
-    def _agent(self) -> Any:
-        return types.SimpleNamespace(
-            model="some-model",
-            skills={"fix-bug": {"description": "diagnose and repair a defect"}},
-            skill_enabled=lambda name: True,
-        )
-
-    def _classify(self, query: str = "the parser crashes on empty input") -> Any:
-        return asyncio.run(MimirAgent.detect_skill_implicit(self._agent(), query))
-
-    def test_the_verdict_comes_from_the_configured_backend(self) -> None:
-        backend = ScriptedBackend([{"content": json.dumps({"skill": "fix-bug"})}])
-        with _BackendPatch(backend):
-            self.assertEqual(self._classify(), "fix-bug")
-        self.assertEqual(len(backend.calls), 1)
-        self.assertEqual(backend.calls[0]["model"], "some-model")
-
-    def test_the_classifier_json_is_not_printed(self) -> None:
-        buf = io.StringIO()
-        with _BackendPatch(EchoingBackend(json.dumps({"skill": "fix-bug"}))):
-            with redirect_stdout(buf):
-                self.assertEqual(self._classify(), "fix-bug")
-        self.assertEqual(buf.getvalue(), "")
-
-    def test_a_skill_the_agent_does_not_have_is_refused(self) -> None:
-        backend = ScriptedBackend([{"content": json.dumps({"skill": "write-tests"})}])
-        with _BackendPatch(backend):
-            self.assertIsNone(self._classify())
-
-    def test_unparseable_output_yields_no_skill(self) -> None:
-        with _BackendPatch(ScriptedBackend([{"content": "I think fix-bug applies."}])):
-            self.assertIsNone(self._classify())
-
-    def test_a_backend_failure_yields_no_skill(self) -> None:
-        class _Down(LLMBackend):
-            def chat(self, *a: object, **k: object) -> dict:
-                raise RuntimeError("endpoint down")
-
-        with _BackendPatch(_Down()):
-            self.assertIsNone(self._classify())
-
-
 class TokenSinkTests(unittest.TestCase):
     """The sink is the mechanism behind the two "not printed" tests above."""
 
     def test_internal_calls_pass_a_token_sink(self) -> None:
-        backend = ScriptedBackend([
-            {"content": "HANDOFF"},
-            {"content": json.dumps({"skill": "fix-bug"})},
-        ])
-        agent = types.SimpleNamespace(
-            model="m",
-            skills={"fix-bug": {"description": "d"}},
-            skill_enabled=lambda name: True,
-        )
+        backend = ScriptedBackend([{"content": "HANDOFF"}])
+        agent = types.SimpleNamespace(model="m")
         with _BackendPatch(backend):
             asyncio.run(MimirAgent.compact_history(agent, _HISTORY))
-            asyncio.run(MimirAgent.detect_skill_implicit(agent, "why does it crash"))
+        self.assertTrue(backend.calls)
         for call in backend.calls:
             self.assertIs(call["token_callback"], agent_core._discard_token)
 

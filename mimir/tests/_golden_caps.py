@@ -104,6 +104,11 @@ CACHEABLE_TOOLS = {
     # carries no READ: nothing of the *workspace* was read, and crediting an edit
     # precondition for reading MIMIR's own docs is exactly the wrong answer.
     "mimir_api",
+    # One skill's instructions, loaded on demand. Same reasoning as mimir_api and the
+    # same omission of READ: the file read is MIMIR's own, not the workspace's. Caching
+    # it is free of consequence — a SKILL.md does not change under a running query —
+    # and the dedup gate means a second identical pull is refused before it gets here.
+    "load_skill",
 }
 SEARCH_WITH_PATH_TOOLS = set()
 # Every tool that opens a socket to a host. The two HTTP tools take an arbitrary

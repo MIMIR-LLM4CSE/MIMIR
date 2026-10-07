@@ -29,6 +29,36 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   already has — which skills and packs are present, which server namespaces are taken.
   Nothing it answers is a prose copy, which is the point: the flag table in the docs had
   already drifted three flags behind the vocabulary it claimed to list.
+- A skill can now be loaded in the middle of the work, by the model, when what it has
+  read tells it which method the task needs. Before, a skill could only enter the prompt
+  once — before the first step, chosen either by `/<name>` or by a classifier model call
+  that read the query and the last few turns. That decision is made at the one moment
+  nothing is known yet: at step 14, having just found that the slow request is a proxy
+  problem, the agent could not go and get `proxy-optimize`. Now the system prompt carries
+  the *index* — each skill's name and the one line saying when it applies — and
+  `load_skill(<name>)` reads the body on demand. The split is what makes it affordable:
+  the eight shipped skills are 22 KB together and the largest is 13 KB, so carrying every
+  body would have spent thousands of tokens per query to apply, at most, one of them.
+  At most three per task, never the same one twice.
+- `disable-model-invocation` in a `SKILL.md`'s front-matter now does what it says. Eight
+  shipped skills declared it and the parser dropped it, so `prepare-pr` — which declares
+  `true` — was reachable by the classifier against its own file. It now keeps a skill for
+  the user's `/<name>` and refuses the model's own pull.
+
+### Changed
+- A skill the model loads stays where it lands, as the tool result, pinned against
+  eviction — not folded into the system message. Rewriting the system message mid-query
+  voids the prompt prefix for every remaining step, and a pull happens at step 14 as
+  readily as at step 1. An explicit `/<name>` is still folded in: the user decided before
+  the first step, so the prefix is paid for once and binds the whole query.
+- Switching a skill off in the toggle panel now hides it from `/<name>` **and** from what
+  the model can load. A skill its own file reserves for the user reads as `(/name only)`
+  on its row.
+
+### Removed
+- The implicit skill classifier, and with it one full model round-trip per query. The
+  model is given the index and chooses for itself, at the step where the choice can
+  actually be made. `/<name>` is unchanged.
 
 ### Fixed
 - A background run that ends while no window is open now gets its turn there and

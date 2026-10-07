@@ -2,7 +2,7 @@
 
 Regression cover for a bar that swung back and forth mid-session: every call on the
 shared backend stored its reported prompt size as the model's overhead, including
-the skill classifier and the session summary, whose prompt is a short instruction
+the session summary and history compaction, whose prompt is a short instruction
 and no tools. The overhead fell to almost nothing after each of them and came back
 on the next agent step.
 """

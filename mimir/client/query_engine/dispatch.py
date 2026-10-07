@@ -20,6 +20,7 @@ from ..config.constants import (
     AUTO_VALIDATION_TIMEOUT_SECS as _AUTO_VALIDATION_TIMEOUT_SECS,
     IDENTICAL_REPEAT_THRESHOLD,
     NUDGE_MAX_TODO_TICK,
+    SKILL_LOAD_TOOL,
 )
 from ..event_sink import emit
 from .. import human_pause
@@ -703,7 +704,44 @@ async def _dispatch_tool_calls(
             tool_msg_files[call_id] = agent.get_tool_file_targets(name, args)
         except Exception:
             tool_msg_files[call_id] = []
+        _pin_loaded_skill(agent, name, args, call_id, result, execution_context)
         messages.append({"role": "tool", "tool_call_id": call_id, "content": result})
+
+
+def _pin_loaded_skill(
+    agent: Any,
+    name: str,
+    args: dict,
+    call_id: str,
+    result: str,
+    execution_context: dict,
+) -> None:
+    """Promote a successful skill pull from reservation to pinned tail message.
+
+    The body stays where it landed — a tool result in the tail — and is protected
+    there instead of being folded into ``messages[0]``: the system prompt is the one
+    thing a query may not rewrite mid-run without costing the prefix cache for every
+    remaining step. What makes the tail safe is the pin, honoured by the three history
+    passes (see ``pinned_call_ids`` in history.py).
+
+    A refused pull releases the slot the gate reserved. Otherwise a mistyped name, or
+    a skill the file itself declares user-invoked only, would spend one of the three
+    the model is allowed — a refusal charging the budget of the thing it refused.
+    """
+    if name != SKILL_LOAD_TOOL:
+        return
+    skill = str((args or {}).get("name") or "").strip()
+    if not skill:
+        return
+    loaded: dict = execution_context.setdefault("skills_loaded", {})
+    succeeded, _summary = summarize_tool_result(name, result, agent.tool_caps)
+    if not succeeded:
+        if loaded.get(skill) == "pending":
+            del loaded[skill]
+        return
+    loaded[skill] = call_id
+    execution_context.setdefault("pinned_call_ids", set()).add(call_id)
+    emit({"type": "status", "text": f"  \u2295 Skill loaded: {skill}"})
 
 
 def _bound_results(results: list[str], agent: Any) -> list[str]:

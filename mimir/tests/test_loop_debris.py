@@ -277,7 +277,6 @@ class SkillContextTests(unittest.TestCase):
     def _messages_for(self, history):
         agent = RunAgentQueryNonInteractiveTests._query_agent(self)
         agent.skills = {"refactor": {"content": "METHOD."}}
-        agent.detect_skill_implicit = None
         seen: dict = {}
         backend = ScriptedBackend([{"content": "done"}])
 

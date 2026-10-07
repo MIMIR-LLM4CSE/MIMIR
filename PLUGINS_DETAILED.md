@@ -36,8 +36,9 @@ MIMIR writing there by itself. `mimir_api(topic="index")` is also the quickest a
 
 ## Skills
 
-A skill is a reusable methodology prompt injected as a subordinate system message when the
-task is detected — it guides *how* the agent works without replacing the base instructions.
+A skill is a reusable methodology prompt, loaded by name — it guides *how* the agent works
+without replacing the base instructions, which stay authoritative. Its name and one line are
+in the system prompt; the body arrives only when it is loaded.
 
 `.mimir/skills/<name>/SKILL.md` — a YAML front-matter block (the `name` must equal the
 directory name) followed by the methodology body:
@@ -45,7 +46,9 @@ directory name) followed by the methodology body:
 ```markdown
 ---
 name: fix-bug
-description: One-line description shown to the skill classifier.
+description: One line — when this skill applies. The model reads it to decide
+  whether to load the body, so write the trigger, not a title.
+disable-model-invocation: false   # true = /name only, never the model's own pull
 ---
 
 Objective: describe the methodology the agent should follow for this kind of task.
@@ -55,8 +58,10 @@ Steps:
 2. ...
 ```
 
-Triggered explicitly (`/fix-bug …`) or implicitly by the classifier (current query + the last
-few turns). A user skill whose name matches a bundled one **overrides** it. Example:
+Triggered explicitly (`/fix-bug …`), which folds the body into the system prompt for the
+whole query, or loaded by the model itself with `load_skill(<name>)` when its own reading
+says the method applies — the index of names and descriptions is in the system prompt, the
+bodies are not. A user skill whose name matches a bundled one **overrides** it. Example:
 [`mimir/examples/skills/example-skill/SKILL.md`](mimir/examples/skills/example-skill/SKILL.md).
 
 ---

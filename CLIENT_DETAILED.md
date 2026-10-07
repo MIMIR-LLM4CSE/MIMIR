@@ -65,7 +65,7 @@ separate handler.
 | `/ledger` | expand the last answer's verification ledger |
 | `/undo` | revert the last write |
 | `/memory` | the memory store |
-| `/servers`, `/skills`, `/nudges` | list or toggle, persisted in `preferences.json` |
+| `/servers`, `/skills`, `/nudges` | list or toggle, persisted in `preferences.json`. A switched-off skill is hidden from both `/<name>` and the index the model loads from |
 | `/resources` | what `@`-mention can attach |
 | `/modules` | module-catalogue status, `refresh`, or a search term. Status never builds |
 | `/proxy clean <name>` | delete a proxy's runs, state and snapshots, and say what it removed |
@@ -169,7 +169,7 @@ primitives (`MIMIR_DIR`, `resolve_extension_dir`, the `*_DIRNAME` / `*_DIR_ENV` 
 | Module | Provides |
 |---|---|
 | `servers.py` | `all_servers()` — bundled `SERVERS` merged with `discover_user_servers()` (scans `.mimir/servers/server_<name>.py\|.js`, env `MIMIR_SERVERS_DIR`). A name colliding with a bundled server is skipped, so the core is protected. `all_server_descriptions()` does the same for the toggle panel |
-| `skills.py` | `resolve_skills_dir()` — `.mimir/skills/`, env `MIMIR_SKILLS_DIR`. Loading itself is `MimirAgent.load_skills(..., merge=True)`, where a same-named user skill overrides the bundled one |
+| `skills.py` | `resolve_skills_dir()` — `.mimir/skills/`, env `MIMIR_SKILLS_DIR`. Loading itself is `MimirAgent.load_skills(..., merge=True)`, where a same-named user skill overrides the bundled one. Only names and one-line descriptions reach the prompt (`model_invocable_skills()`); a body is read on demand by the `load_skill` tool |
 | `plugins.py` | `load_plugins()` / `resolve_plugins_dir()` — scans `.mimir/plugins/`, env `MIMIR_PLUGINS_DIR`, and imports each pack. A pack self-registers through `register_policy_check` / `register_nudge` as an import side effect |
 
 Nothing is auto-created in `.mimir/` — it is the user's alone. Copy-to-customize examples
@@ -398,6 +398,33 @@ list of them is a pattern the model **copies** rather than uses.
 Five sites rebuild it — mode switch, thinking-rung change, plan→agent handoff, checklist
 refresh, initial build — and before this existed the skill block was silently dropped by
 every one of them but the last.
+
+Only a skill the **user** invoked is in that block. One the **model** loads mid-run with
+`load_skill` deliberately does **not** go into `messages[0]`: rewriting the system message
+mid-query voids the prompt prefix for every remaining step, and a pull happens at step 14 as
+readily as at step 1. So the body stays where it landed — the tool result in the tail — and
+is protected there instead.
+
+### The pin
+
+One set of ids, `execution_context["pinned_call_ids"]`, and three passes that honour it. It
+exists because the tail is where the context budget does its work: `_trim_tool_history`
+evicts whole tool results, `_maybe_compact_intra_query` summarises the middle of the list,
+and `_force_fit_to_window` truncates largest-first. All three would carry off a skill body,
+and the model has been told the method is in its context.
+
+- `_trim_tool_history` skips pinned ids outright, by `tool_call_id` — the same structural key
+  as `tool_msg_files`, never a substring scan.
+- `_maybe_compact_intra_query` carves each pinned result out of the slice it is about to
+  summarise, **together with the assistant turn that declared it**. The pairing is not
+  optional: `reconcile_tool_pairs` drops any tool message not immediately preceded by that
+  turn, so a body saved alone would be deleted by the very next repair pass — protection that
+  looks like it works and does nothing.
+- `_force_fit_to_window` sorts pinned messages to the **end** of the reduction order rather
+  than protecting them. Protecting them there could only turn an over-window prompt into a
+  hard `ContextOverflowError`; ordering them last means a body is cut only once everything
+  else has been, and usually not at all. Doing nothing was not an option either — the order
+  is largest-first, and a skill body is the largest single message in the list.
 
 ---
 
@@ -854,13 +881,15 @@ frontends pilot, not a frontend.
 - `_apply_carry_context()` / `_update_carry_context()` — merge prior-session discovery sets
   into each new context, evicting stale reads by mtime, and save fields back after each
   query. Both iterate the trait-derived carry list.
-- `compact_history()` / `compact_messages()` / `detect_skill_implicit()` — the model calls
-  MIMIR makes on **its own behalf**. All three go through `get_backend()`; two used to call
-  Ollama directly, which broke them under every other backend. Each passes a discarding
-  token callback, because `chat` streams to stdout when given none — that default belongs to
-  the CLI answer path, and without a sink a compaction summary is printed into the middle of
-  the session. Each degrades quietly when the endpoint is down, so an unreachable backend
-  costs a summary, not the turn.
+- `compact_history()` / `compact_messages()` — the model calls MIMIR makes on **its own
+  behalf**. Both go through `get_backend()`; they used to call Ollama directly, which broke
+  them under every other backend. A third used to live here — a classifier picking a skill
+  from the query before the first step. It is gone: the model is given the index and loads a
+  skill itself, so no round-trip is spent guessing from a request that does not yet know what
+  the task is made of. Both pass a discarding token callback, because `chat` streams to
+  stdout when given none — that default belongs to the CLI answer path, and without a sink a
+  compaction summary is printed into the middle of the session. Both degrade quietly when the
+  endpoint is down, so an unreachable backend costs a summary, not the turn.
 
 ### `human_pause.py`
 

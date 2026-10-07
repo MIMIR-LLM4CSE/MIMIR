@@ -282,6 +282,18 @@ DENIAL_QUERY_HANDBACK_TOTAL: int = 4  # total refusals in a query that force the
 # still nudged normally; only stalled prose-only re-affirmations are cut off.
 NUDGE_MAX_CONSECUTIVE_NOOP: int = 1
 
+# The tool the model loads a skill's instructions with — an op of the bundled
+# ``mimir_api`` server. Named here because three layers key off it and none of them
+# owns it: the system prompt gates the skills index on it being connected, the policy
+# engine gates the pull on the live toggles, and the dispatcher pins the result.
+SKILL_LOAD_TOOL: str = "load_skill"
+
+# How many skills the model may load into one conversation (load_skill). A methodology
+# that stacks five applies none of them, and the real failure mode of on-demand loading
+# is a model that keeps reaching for one more playbook instead of doing the work. The
+# user's own /<name> counts towards it: it put a body in the context the same way.
+SKILL_PULL_MAX: int = 3
+
 # Idle-step gate: how many steps the agent must have paused editing before the
 # nudge fires, so an in-progress refactor is not interrupted. Validation has no such
 # gate — its nudge carries a finding the loop already made, not a request to pace.

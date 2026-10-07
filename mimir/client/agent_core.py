@@ -3,7 +3,6 @@ from __future__ import annotations
 import logging
 import os
 import re
-import json
 from contextlib import AsyncExitStack
 from typing import Any
 
@@ -85,10 +84,21 @@ _FRONT_MATTER_RE = re.compile(
     re.DOTALL,
 )
 
+# Front-matter values that mean "yes" for ``disable-model-invocation``. Anything else,
+# the field's absence included, leaves the skill model-invocable: a skill is reachable
+# unless its own file says otherwise, the same default the server/skill toggles use.
+_SKILL_TRUTHY = frozenset({"true", "yes", "1"})
+
+
 def _parse_skill_markdown(text: str) -> dict:
         """
         Parse SKILL.md with YAML-like front-matter.
-        Returns: {name, description, content}
+        Returns: {name, description, content, model_invocable}
+
+        ``model_invocable`` is False when the front-matter carries
+        ``disable-model-invocation: true``. It gates the model's own ``load_skill``
+        pull, never the user's ``/<name>``: the field says who may invoke the skill,
+        and an explicit slash command is the user invoking it.
         """
         
         m = _FRONT_MATTER_RE.match(text)
@@ -111,6 +121,10 @@ def _parse_skill_markdown(text: str) -> dict:
             "name": meta["name"],
             "description": meta["description"],
             "content": body.strip(),
+            "model_invocable": (
+                meta.get("disable-model-invocation", "").strip().lower()
+                not in _SKILL_TRUTHY
+            ),
         }
 
 
@@ -118,9 +132,9 @@ def _discard_token(_text: str) -> None:
     """Token sink for model calls whose output is not the user's answer.
 
     ``LLMBackend.chat`` streams to stdout whenever no ``token_callback`` is given —
-    that default belongs to the CLI answer path. The calls below (compaction,
-    classification) consume their result in code, so without a sink the summary or
-    the classifier's JSON would be printed into the middle of the session.
+    that default belongs to the CLI answer path. History compaction consumes its
+    result in code, so without a sink the summary would be printed into the middle of
+    the session.
     """
 
 
@@ -234,13 +248,12 @@ class MimirAgent:
         import threading as _threading
         self._cancel_flag = _threading.Event()
 
-        self.skills: dict[str, dict[str, str]] = {}
+        self.skills: dict[str, dict[str, Any]] = {}
         self.load_skills(SKILL_BASE)
         # Layer user-provided skills from .mimir/skills on top (a same-named user skill
         # overrides the bundled one). See extensions.resolve_skills_dir.
         from .extensions import resolve_skills_dir
         self.load_skills(resolve_skills_dir(), merge=True)
-        self.classifier_model: str | None = None  # optionnel
 
         # Application extension packs: import custom policy/nudge modules from the
         # plugins dir so their descriptors register before the first query. Locked
@@ -255,7 +268,8 @@ class MimirAgent:
         # the panel. Only *disabled* names are persisted (.mimir/preferences.json);
         # anything absent is enabled, so new servers/skills/nudges default to on. Disabled
         # servers keep their subprocess but their tools are not advertised to the LLM;
-        # disabled skills are excluded from auto-detection; disabled nudges are skipped by
+        # a disabled skill is hidden from both /<name> and the index the model loads
+        # from; disabled nudges are skipped by
         # the nudge dispatcher. Application policies are locked (no toggle). See
         # config/preferences.py.
         from .config.preferences import load_disabled
@@ -557,7 +571,24 @@ class MimirAgent:
                 for fn in (t.get("function", {}) for t in self.tools)
                 if fn.get("name")
             },
+            skills_index=self.model_invocable_skills(),
         )
+
+    def model_invocable_skills(self) -> list[tuple[str, str]]:
+        """(name, description) of every skill the MODEL may load, sorted by name.
+
+        Two exclusions, and they are different in kind: a skill the operator switched
+        off in the toggle panel is soft-hidden from everything, and a skill whose own
+        front-matter carries ``disable-model-invocation`` stays available to the user's
+        ``/<name>`` and only refuses the model's own pull. What is left is exactly the
+        set ``load_skill`` will answer for, which is what makes it safe to print as a
+        list of offers. Sorted so the prompt prefix is byte-stable across rebuilds.
+        """
+        return [
+            (name, str(meta.get("description") or "").strip())
+            for name, meta in sorted(self.skills.items())
+            if self.skill_enabled(name) and meta.get("model_invocable", True)
+        ]
 
     def _apply_carry_context(self, execution_context: dict) -> None:
         """Merge long-lived session knowledge into a fresh per-query execution context.
@@ -599,6 +630,12 @@ class MimirAgent:
                 execution_context[field].update(sorted(prior))
         if self._carry_context.get("searched"):
             execution_context["searched"] = True
+        # A dict, so the set-only mirror above skips it. Carried because the tool
+        # results carrying these bodies are archived and replayed: a skill already in
+        # the conversation must not be pulled again just because a new query started.
+        prior_skills = self._carry_context.get("skills_loaded")
+        if isinstance(prior_skills, dict):
+            execution_context["skills_loaded"].update(prior_skills)
 
     def _update_carry_context(self, execution_context: dict) -> None:
         """Persist the fields worth remembering into the session carry dict."""
@@ -609,6 +646,15 @@ class MimirAgent:
                 self._carry_context[field] = prior | current
         if execution_context.get("searched"):
             self._carry_context["searched"] = True
+        loaded = execution_context.get("skills_loaded")
+        if isinstance(loaded, dict):
+            prior_skills = self._carry_context.get("skills_loaded")
+            merged = dict(prior_skills) if isinstance(prior_skills, dict) else {}
+            # A reservation that never resolved is not a load: the query it belonged to
+            # is over, so carrying "pending" forward would bar the skill for the rest of
+            # the session on the strength of a call that never came back.
+            merged.update({n: cid for n, cid in loaded.items() if cid != "pending"})
+            self._carry_context["skills_loaded"] = merged
         # Record which files were written this query so a sub-agent's hand-back can
         # report them (see server_spawn_agent).
         self._carry_context["last_query_written_files"] = set(
@@ -933,7 +979,14 @@ class MimirAgent:
         skills = [
             {
                 "name": name,
-                "description": meta.get("description", ""),
+                # A skill its own file keeps for the user says so on the row: switched
+                # on, it is still reachable only by /<name>, and a panel that showed it
+                # as plainly "active" would read as "the model may use this".
+                "description": (
+                    meta.get("description", "")
+                    if meta.get("model_invocable", True)
+                    else f"{meta.get('description', '')} (/{name} only)".strip()
+                ),
                 "enabled": name not in self.disabled_skills,
             }
             for name, meta in sorted(self.skills.items())
@@ -1135,111 +1188,10 @@ class MimirAgent:
             self.skills[name] = {
                 "description": parsed["description"],
                 "content": parsed["content"],
-                # future-compatible slot:
-                # "metadata": {...}
+                # Whether the MODEL may pull this skill itself (load_skill). The user's
+                # /<name> ignores it — see _parse_skill_markdown.
+                "model_invocable": parsed["model_invocable"],
             }
-
-    async def detect_skill_implicit(
-        agent: Any,
-        query: str,
-        history: list[dict] | None = None,
-    ) -> str | None:
-        """
-        Ask the model to classify whether a skill applies to the user query.
-
-        ``history`` is the recent conversation (user + assistant messages).
-        Including it allows multi-turn detection, e.g.:
-            Q: "Can you plan implementing X?"
-            A: "Here is the plan… want me to start?"
-            Q: "Yes"  ← current query; skill detected from context
-        Returns the skill name or None.
-        """
-
-        if not getattr(agent, "skills", None):
-            return None
-
-        # Only skills the operator left enabled are eligible for auto-detection
-        # (soft-hide via the toggle panel). An explicitly-disabled skill is invisible
-        # to the classifier and so can never be selected.
-        enabled_skills = {
-            name: data for name, data in agent.skills.items()
-            if agent.skill_enabled(name)
-        }
-        if not enabled_skills:
-            return None
-
-        # Build a compact recent-conversation snippet (last 3 turns, user/assistant only).
-        # Tool results and system messages are excluded to keep the prompt tight.
-        conversation_context = ""
-        if history:
-            recent: list[dict] = [
-                m for m in history
-                if m.get("role") in ("user", "assistant")
-            ][-6:]  # up to 3 user+assistant pairs
-            if recent:
-                lines = []
-                for m in recent:
-                    role_label = "User" if m["role"] == "user" else "Agent"
-                    # Truncate long messages so the classifier prompt stays small.
-                    text = str(m.get("content") or "").strip()
-                    if len(text) > 400:
-                        text = text[:400] + "…"
-                    lines.append(f"{role_label}: {text}")
-                conversation_context = (
-                    "\n\nRecent conversation (for context):\n"
-                    + "\n".join(lines)
-                )
-
-        # Build the skills index (name + description only) from enabled skills.
-        skills_list = "\n".join(
-            f"- {name}: {data.get('description', '').strip()}"
-            for name, data in enabled_skills.items()
-        )
-
-        classifier_messages = [
-            {
-                "role": "system",
-                "content": (
-                    "You are a classifier.\n\n"
-                    "Available skills:\n"
-                    f"{skills_list}\n\n"
-                    "Rules:\n"
-                    "- Evaluate the LATEST user message in light of the full conversation.\n"
-                    "- If the conversation context makes it clear that one skill applies "
-                    "(even if the latest message alone is ambiguous, e.g. 'yes', 'go ahead'), "
-                    "return that skill name.\n"
-                    "- If no skill applies, return \"none\".\n"
-                    "- Do not explain your reasoning.\n\n"
-                    "Respond ONLY in JSON with this exact shape:\n"
-                    "{\"skill\": \"<skill_name_or_none>\"}"
-                    + conversation_context
-                ),
-            },
-            {
-                "role": "user",
-                "content": query,
-            },
-        ]
-
-        from .query_engine.backends.factory import get_backend
-
-        try:
-            msg = get_backend().chat(
-                agent.model, classifier_messages, [], False, False, {"temperature": 0.0},
-                token_callback=_discard_token,
-            )
-        except Exception:
-            return None
-
-        content = (msg or {}).get("content", "") if isinstance(msg, dict) else ""
-
-        try:
-            parsed = json.loads(content)
-        except Exception:
-            return None
-
-        skill = parsed.get("skill")
-        return skill if skill in agent.skills else None
 
     async def run(
         self,

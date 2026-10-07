@@ -27,8 +27,9 @@ const Row: React.FC<{ item: ToggleItem; onToggle: (name: string, enabled: boolea
 
 /**
  * A scrollable popover listing every MCP server and skill as a clickable checkbox.
- * Ticked = active (advertised to the model / eligible for auto-detection); unticked =
- * soft-hidden. Hover a row for its description. Mirrors the AgentSettings popover.
+ * Ticked = active (a server's tools advertised to the model, a skill listed as loadable
+ * and reachable by /<name>); unticked = soft-hidden. Hover a row for its description.
+ * Mirrors the AgentSettings popover.
  */
 export const TogglesPanel: React.FC<Props> = ({
   servers,

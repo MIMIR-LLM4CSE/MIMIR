@@ -63,6 +63,8 @@ class ExecutionContext(TypedDict):
     tool_msg_files: dict[str, list[str]]             # tool_call_id -> files that tool message concerns; lets history trimming match messages to files structurally
     consecutive_noop_turns: int                      # consecutive bare final-answer turns with no tool call (nudge cutoff)
     history_truncated: bool                          # the context backstop dropped older content this query; a cached read may no longer be "above in your context"
+    skills_loaded: dict[str, str]                    # skill name -> tool_call_id carrying its instructions ("" = folded into messages[0] by /<name>, "pending" = pull in flight)
+    pinned_call_ids: set[str]                        # tool_call_ids the history budget may not evict or summarise while anything else is reducible
 
 
 # Per-query loop-control bookkeeping used only by the tool-dispatch dedup and the
@@ -272,6 +274,20 @@ _FIELD_SPECS: tuple[_FieldSpec, ...] = (
     ("tool_msg_files", dict, (dict,), _NO_TRAITS),
     ("consecutive_noop_turns", lambda: 0, (int,), _NO_TRAITS),
     ("history_truncated", lambda: False, (bool,), _NO_TRAITS),
+    # ── Skills loaded on demand ────────────────────────────────────────────────
+    # skill name -> the tool_call_id of the result carrying its instructions; "" for
+    # one the user's /<name> folded into messages[0], "pending" while a pull is in
+    # flight (the gate reserves the slot so two parallel pulls cannot both pass the
+    # cap). Insertion order is the load order. No body is copied in: it lives in the
+    # message list and in agent.skills.
+    # Mirrored into carry_context by hand, like ``searched``: the trait-driven mirror
+    # only handles sets, and the instructions outlive the query that pulled them.
+    ("skills_loaded", dict, (dict,), _NO_TRAITS),
+    # tool_call_ids whose results the history budget may not evict or summarise away
+    # while anything else is reducible. The one pin mechanism; see history.py. CARRY
+    # because the pinned message is archived and replayed into the next query, so its
+    # protection has to outlive the query too.
+    ("pinned_call_ids", set, (set,), frozenset({CARRY})),
 )
 
 
