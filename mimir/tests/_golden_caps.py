@@ -99,6 +99,11 @@ CACHEABLE_TOOLS = {
     "tree_summary", "list_directory",
     # The module catalogue and its status: read-only, and identical within a query.
     "platform_search", "platform_catalogue_status",
+    # MIMIR's own extension API: it reads the installed package, which no call of the
+    # agent's can change, so one topic answers identically for the whole query. It
+    # carries no READ: nothing of the *workspace* was read, and crediting an edit
+    # precondition for reading MIMIR's own docs is exactly the wrong answer.
+    "mimir_api",
 }
 SEARCH_WITH_PATH_TOOLS = set()
 # Every tool that opens a socket to a host. The two HTTP tools take an arbitrary

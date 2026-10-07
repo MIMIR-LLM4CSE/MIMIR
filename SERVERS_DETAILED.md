@@ -10,10 +10,10 @@ Servers are organized into domain-based subdirectories:
 
 | Directory | Purpose | Servers |
 |---|---|---|
-| `_shared/` | Cross-group utilities | `responses.py`, `capabilities.py`, `root_paths.py`, `approved_roots.py`, `trusted_read_roots.py`, `text_tools.py`, `module_env.py`, `embed.py`, `vector_cache.py`, `slurm_nodes.py`, `lsp_client.py`, `shell_paths.py`, `state_paths.py`, `numerics.py`, `proc_run.py` |
+| `_shared/` | Cross-group utilities | `responses.py`, `capabilities.py`, `root_paths.py`, `approved_roots.py`, `trusted_read_roots.py`, `text_tools.py`, `module_env.py`, `embed.py`, `vector_cache.py`, `slurm_nodes.py`, `lsp_client.py`, `shell_paths.py`, `state_paths.py`, `extension_paths.py`, `numerics.py`, `proc_run.py` |
 | `workspace/` | File & code interaction | `server_bash`, `server_files`, `server_search`, `server_code_intel` |
 | `utilities/` | Stateless data helpers | `server_math`, `server_strings`, `server_datetime`, `server_symbolic_math` |
-| `agent_state/` | Agent memory, planning & delegation | `server_memory`, `server_todo`, `server_spawn_agent` |
+| `agent_state/` | Agent memory, planning, delegation & self-knowledge | `server_memory`, `server_todo`, `server_spawn_agent`, `server_mimir_api` |
 | `interaction/` | Asking the user structured questions | `server_interaction` |
 | `external/` | Network & remote APIs | `server_github`, `server_web`, `server_system` |
 | `hpc/` | HPC & platform profiling | `server_hpc`, `server_platform`, `server_env` |
@@ -21,8 +21,8 @@ Servers are organized into domain-based subdirectories:
 
 ## Tool catalogue
 
-Every `@mcp.tool` the bundled servers expose — 68 tools
-across 19 servers, all registered by default. Each server has its own section
+Every `@mcp.tool` the bundled servers expose — 70 tools
+across 20 servers, all registered by default. Each server has its own section
 below with the arguments and the behaviour.
 
 | Server | Tools |
@@ -32,6 +32,7 @@ below with the arguments and the behaviour.
 | `workspace/server_files.py` | `write_file`, `append_file`, `delete_file`, `replace_in_file`, `replace_lines`, `replace_all_in_file` |
 | `workspace/server_search.py` | `read_file_lines`, `list_directory`, `tree_summary` |
 | `agent_state/server_memory.py` | `memory_add`, `memory_search`, `memory_list_all`, `memory_update`, `memory_delete`, `memory_clear` |
+| `agent_state/server_mimir_api.py` | `mimir_api` |
 | `agent_state/server_spawn_agent.py` | `spawn_agent` |
 | `agent_state/server_todo.py` | `todo_set_plan`, `todo_read_plan`, `todo_list_plans`, `todo_delete_plan`, `todo_write`, `todo_read`, `todo_read_ready`, `todo_update` |
 | `interaction/server_interaction.py` | `ask_user_question` |
@@ -298,6 +299,50 @@ This is an auxiliary carrier, not the mechanism. Judging a run's output is the m
 and logs; a `check=fail` line only spares the model being asked about output that already
 states its own answer, by pre-filling the verdict.
 
+
+## agent_state/server_mimir_api.py
+
+Purpose: MIMIR's own extension API — what a user or a developer writes against when they
+add a skill, an MCP server, a policy, a post-tool hook, a nudge or a base prompt under
+the workspace `.mimir/`. One tool, `mimir_api(topic)`, with the companion methodology in
+the bundled [`mimir-api` skill](mimir/skills/mimir-api/SKILL.md).
+
+Topics: `index` (every extension type, its drop-in path here, and the rules common to
+all of them), one per type (`skill`, `server`, `policy`, `post_tool`, `nudge`,
+`system_prompt` — contract, authoring rules, and the shipped template verbatim),
+`capabilities` (the vocabulary a tool declares and a policy or nudge keys off), and
+`loaded` (what this workspace already has, plus the server namespaces a user server may
+not take).
+
+Nothing it answers is a prose copy, because a copy is what goes stale — the flag count
+written into [PLUGINS_DETAILED.md](PLUGINS_DETAILED.md#tool-capabilities) was three
+short of the vocabulary by the time this server was written, and a model that answers
+from the version it was trained on is wrong in the same way, silently. So each answer is
+derived from the installed package at call time:
+
+- the capability flags, their groups and what each one drives are **parsed out of
+  `client/context/capabilities.py`**, comments included — that file carries the note that
+  says what a flag is *for*, which is what someone choosing between flags needs;
+- the templates are the shipped `mimir/examples/` files, **read verbatim**;
+- the drop-in paths come from the same
+  [`_shared/extension_paths.py`](mimir/servers/_shared/extension_paths.py) the loaders
+  resolve, so the path a user is handed is the one that will actually be scanned — env
+  overrides included, reported with the value they are set to;
+- the bundled skills are scanned off disk with their front-matter, and the reserved
+  server namespaces come from the client's registry rather than from filenames (a
+  filename is not a namespace: `server_spawn_agent.py` registers as `agent`). That
+  registry import is guarded — a server must still run with no client on the path — and
+  the answer says which of the two it used.
+
+The tool declares `CACHEABLE` and nothing else. It reads the installed package, which no
+call of the agent's can change, so one topic answers identically for a whole query; and
+it deliberately does **not** declare `READ`, because nothing of the *workspace* was read
+— crediting MIMIR's own documentation as the read-before-edit evidence for a file would
+be exactly the wrong answer.
+
+Parity is tested rather than trusted: `test_mimir_api` asserts every capability the
+client publishes is reported, that every flag reported is a real constant, and that the
+skill drop-in path the tool hands out is the one `resolve_skills_dir()` scans.
 
 ## workspace/server_files.py
 

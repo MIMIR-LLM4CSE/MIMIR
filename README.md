@@ -258,7 +258,7 @@ flowchart TD
 
 ## Registered Servers
 
-The client registers 21 servers by default; the authoritative registry lives in
+The client registers 20 servers by default; the authoritative registry lives in
 [`constants.py`](mimir/client/config/constants.py). Per-server tool details are in
 [`SERVERS_DETAILED.md`](SERVERS_DETAILED.md).
 
@@ -280,6 +280,7 @@ The client registers 21 servers by default; the authoritative registry lives in
 | `code_intel` | Symbol navigation (ctags + LSP): definition, references, outline, hover |
 | `bash` | Workspace shell: search, compile, run, validate, test, `git`, file management — any command but a short denylist, approval-gated and path-confined |
 | `todo` | Agent task checklist: create, read, update an ordered per-session todo list |
+| `mimir_api` | MIMIR's own extension API: the capability vocabulary, the drop-in paths this workspace resolves, and the shipped template per extension type — read from the running build, not remembered |
 | `interaction` | `ask_user_question` — pause mid-run to ask a structured clarifying question (five minutes to answer, then it closes and the agent goes with the option it recommended) |
 | `agent` | `spawn_agent` — fan work out to a fresh agent: `role="explore"` (read-only recon, answers with a cited conclusion) or `role="task"` (full toolkit) |
 | `proxy` | Proxy registration, references, runs, benchmark suites, and the iterative eval loop (7 op-dispatched tools) |
@@ -384,6 +385,7 @@ the directory) followed by the methodology body. Built-in skills:
 | `analyze-only` | Analyse code and report findings without making edits |
 | `prepare-pr` | Prepare a pull-request description from recent changes |
 | `proxy-optimize` | Optimize a registered proxy through the iterative eval loop |
+| `mimir-api` | Author a `.mimir` extension — skill, tool server, policy, hook, nudge — from MIMIR's own API |
 
 Trigger a skill explicitly with a slash command (`/fix-bug the import error in …`) or let the
 classifier detect it implicitly — it reads the current query plus the last few turns, so a
@@ -403,6 +405,11 @@ core edit, no registration call:
 | MCP servers | `.mimir/servers/server_<name>.py` (or `.js`) | `MIMIR_SERVERS_DIR` | user **skipped** (core protected) |
 | Policies, post-tool hooks + nudges | `.mimir/plugins/*.py` | `MIMIR_PLUGINS_DIR` | additive |
 | Base prompt | `.mimir/system_prompt.md` | `MIMIR_SYSTEM_PROMPT_FILE` | user **replaces the doctrine half** of the built-in default |
+
+**Or ask MIMIR.** `/mimir-api` authors any of these with you, working from the `mimir_api`
+tool rather than from what a model remembers of MIMIR: the live capability vocabulary, the
+drop-in path *your* workspace resolves, and the shipped template for the type. Asking it
+"what can I extend, and where does the file go?" is the one-call version.
 
 Agent **state** lives elsewhere, in a central per-workspace dir (`~/.mimir/<workspace-id>/`,
 override `MIMIR_STATE_DIR`): memory, sessions, plans, todos, and the module catalogue. The agent's **scratchpad** sits

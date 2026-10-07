@@ -13,7 +13,22 @@ the server of the same checkout, so the two always move together.
 How to release is in [CONTRIBUTING.md](CONTRIBUTING.md#releasing). The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased]
+## [1.3.0] — 2026-10-07
+
+### Added
+- MIMIR can explain and write its own extensions. Asking how to add a skill, a tool
+  server, a policy, a post-tool hook, a nudge or a base prompt used to be answered from
+  whatever the model remembered of MIMIR — a capability flag that no longer exists, a
+  path from an older layout, a plugin signature that was never ours. All of it plausible,
+  none of it checkable, and the file written from it fails silently: an extension that
+  does not load says nothing at the moment it is written. The new `/mimir-api` skill
+  answers from the build that is running instead. Its `mimir_api` tool reads the
+  installed package at call time: the capability vocabulary with what each flag drives,
+  the drop-in path *this* workspace resolves (env overrides included, reported with the
+  value they are set to), the shipped template for the type, and what the workspace
+  already has — which skills and packs are present, which server namespaces are taken.
+  Nothing it answers is a prose copy, which is the point: the flag table in the docs had
+  already drifted three flags behind the vocabulary it claimed to list.
 
 ### Fixed
 - A background run that ends while no window is open now gets its turn there and

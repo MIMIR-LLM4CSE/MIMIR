@@ -3,8 +3,24 @@ from __future__ import annotations
 import os
 
 # The workspace id names both the state dir below and the scratchpad under /tmp, so
-# it is defined once, server-side, and imported here rather than duplicated.
+# it is defined once, server-side, and imported here rather than duplicated. The
+# .mimir extension paths come from server-side too: the mimir_api server reports the
+# drop-in locations this module's loaders scan, so both ends read one definition.
 from ...servers._shared.state_paths import workspace_id  # noqa: F401  (re-exported)
+from ...servers._shared.extension_paths import (  # noqa: F401  (re-exported)
+    MIMIR_DIRNAME,
+    PLUGINS_DIR_ENV,
+    PLUGINS_DIRNAME,
+    SERVERS_DIR_ENV,
+    SERVERS_DIRNAME,
+    SKILLS_DIR_ENV,
+    SKILLS_DIRNAME,
+    SYSTEM_PROMPT_ENV,
+    SYSTEM_PROMPT_FILENAME,
+    mimir_dir as _mimir_dir,
+    resolve_extension_dir as _resolve_extension_dir,
+    workspace_root as _workspace_root,
+)
 
 
 SERVER_BASE = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "servers")) + os.sep
@@ -14,7 +30,7 @@ SKILL_BASE = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..",
 # MCP servers use (MCP_FILES_ROOT, set by server_manager / the extension), so the
 # client and the server subprocesses resolve .mimir to the same place. Falls back
 # to the process cwd when MCP_FILES_ROOT is unset.
-WORKSPACE_ROOT = os.path.abspath(os.environ.get("MCP_FILES_ROOT") or os.getcwd())
+WORKSPACE_ROOT = _workspace_root()
 
 # Per-workspace *extensions* directory (<workspace>/.mimir). Holds ONLY the user
 # extensions that belong with the repo: plugins/, skills/, servers/, and the
@@ -22,7 +38,7 @@ WORKSPACE_ROOT = os.path.abspath(os.environ.get("MCP_FILES_ROOT") or os.getcwd()
 # plans, preferences.json, active_session) no longer lives
 # here — see STATE_DIR below. Resolved the same way the UI front-ends and servers
 # resolve it, so the extension path stays in agreement.
-MIMIR_DIR = os.path.join(WORKSPACE_ROOT, ".mimir")
+MIMIR_DIR = _mimir_dir(WORKSPACE_ROOT)
 
 # Central per-workspace STATE directory, kept OUT of the workspace so the agent's
 # runtime state never pollutes the repo. Layout: <STATE_HOME>/<workspace-id>/,
@@ -43,37 +59,27 @@ STATE_DIR = os.path.abspath(
     or os.path.join(STATE_HOME, workspace_id(WORKSPACE_ROOT))
 )
 
-# Modular "general context" (the agent's base system prompt). Resolution order:
-#   SYSTEM_PROMPT_ENV env var → MIMIR_DIR/SYSTEM_PROMPT_FILENAME → built-in
-#   default. The env-var form needs no .mimir/ dir. Nothing is auto-created in the
-#   workspace; a template lives in mimir/examples/system_prompt.md. See
-#   discovery/context_builder.py.
-SYSTEM_PROMPT_ENV = "MIMIR_SYSTEM_PROMPT_FILE"
-SYSTEM_PROMPT_FILENAME = "system_prompt.md"
-
-# Application extension packs (custom policies + nudges). Resolution order:
-#   MIMIR_PLUGINS_DIR env var → MIMIR_DIR/plugins/. Each *.py module in the dir is
-#   imported once at agent init and registers its descriptors on import. See
-#   client/extensions/plugins.py.
-PLUGINS_DIR_ENV = "MIMIR_PLUGINS_DIR"
-PLUGINS_DIRNAME = "plugins"
-
-# User-provided skills and MCP servers, discovered under .mimir/ the same way as
-# plugins (env override → MIMIR_DIR/<name>). User skills merge over the bundled set
-# (same name overrides); user servers whose name collides with a bundled server are
-# skipped. See extensions/servers.py.
-SKILLS_DIR_ENV = "MIMIR_SKILLS_DIR"
-SKILLS_DIRNAME = "skills"
-SERVERS_DIR_ENV = "MIMIR_SERVERS_DIR"
-SERVERS_DIRNAME = "servers"
+# The four extension locations re-exported at the top of this module (their env vars
+# and default names live in servers/_shared/extension_paths.py). Resolution is always
+# "env var if set, else MIMIR_DIR/<name>", through resolve_extension_dir below:
+#   SYSTEM_PROMPT_ENV / SYSTEM_PROMPT_FILENAME — the base prompt, a single file whose
+#     env form needs no .mimir/ dir at all (discovery/context_builder.py). Nothing is
+#     auto-created in the workspace; a template lives in mimir/examples/system_prompt.md.
+#   PLUGINS_DIR_ENV / PLUGINS_DIRNAME — policy, post-tool and nudge packs; each *.py in
+#     the dir is imported once at agent init and registers on import (extensions/plugins.py).
+#   SKILLS_DIR_ENV / SKILLS_DIRNAME — user skills, merged over the bundled set, same name
+#     overriding (agent_core.load_skills).
+#   SERVERS_DIR_ENV / SERVERS_DIRNAME — user MCP servers; a name colliding with a bundled
+#     one is skipped, so the core cannot be shadowed (extensions/servers.py).
 
 
 def resolve_extension_dir(env_var: str, dirname: str) -> str:
     """Resolve a user-extension directory: ``$env_var`` if set, else ``MIMIR_DIR/dirname``.
 
-    Single source of truth for the skills/servers/plugins locations under ``.mimir/``.
+    Pinned to the ``MIMIR_DIR`` this module resolved at import, so one client process
+    keeps one answer for the whole run.
     """
-    return os.path.abspath(os.environ.get(env_var) or os.path.join(MIMIR_DIR, dirname))
+    return _resolve_extension_dir(env_var, dirname, MIMIR_DIR)
 
 
 # ── Agent runtime tuning ───────────────────────────────────────────────────────
@@ -425,6 +431,7 @@ SERVERS: dict[str, str] = {
     "code_intel": SERVER_BASE + "workspace/server_code_intel.py",
     "bash": SERVER_BASE + "workspace/server_bash.py",
     "todo": SERVER_BASE + "agent_state/server_todo.py",
+    "mimir_api": SERVER_BASE + "agent_state/server_mimir_api.py",
     "symbolic_math": SERVER_BASE + "utilities/server_symbolic_math.py",
     "proxy": SERVER_BASE + "proxy/server_proxy.py",
     "agent": SERVER_BASE + "agent_state/server_spawn_agent.py",
@@ -450,6 +457,8 @@ SERVER_DESCRIPTIONS: dict[str, str] = {
     "code_intel": "Code navigation: definitions, references, symbol outline (LSP/ctags).",
     "bash": "Shell command execution: search, compile, run, validate, test.",
     "todo": "Live task checklist and prose plan for the agent.",
+    "mimir_api": "MIMIR's own extension API: how to author a .mimir skill, server, "
+                 "policy, hook or nudge.",
     "symbolic_math": "Symbolic math (SymPy): algebra, calculus, matrices (symbolic).",
     "proxy": "Proxy/surrogate registry, benchmarks, runs, and optimization loop.",
     "agent": "Fan work out to fresh sub-agents: read-only exploration, or a separable sub-task.",
