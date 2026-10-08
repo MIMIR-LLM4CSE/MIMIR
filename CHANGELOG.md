@@ -13,6 +13,79 @@ the server of the same checkout, so the two always move together.
 How to release is in [CONTRIBUTING.md](CONTRIBUTING.md#releasing). The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.3.1] — 2026-10-08
+
+### Fixed
+- Detaching now behaves like being there. A run finishing with the window shut got
+  its turn, and the chain stopped at that one link: a connection does more when an
+  answer lands than write it down — it puts the steering the turn never read to a new
+  turn, starts a turn for every run that finished while it was busy, and delivers the
+  bulletin it was holding. None of that happened with nobody attached, so "when the
+  training finishes, carry on with the next step" answered the training and stopped.
+  The server now carries on the same way, so a chain of steps runs through the night.
+  What still differs is a choice, not a gap: under `manual` or `auto` a sensitive tool
+  parks its card and waits for your return, which is what the autonomy level asked at
+  detach time is for.
+- A window that closes at the wrong moment no longer leaves the server deaf for the
+  rest of its life. Whether to act on a finished run was decided by asking if any
+  socket was subscribed — which says a socket exists, not that it will do anything
+  with what it is sent. A view that ended without unsubscribing (a window shut during
+  the replay of a long detached run raised mid-handshake, which skipped the cleanup)
+  therefore stood in for a reader that was gone, and with it went every wake, every
+  check-in and every turn written back, silently, until the server was restarted. The
+  cleanup now runs on every way out, and the decision no longer guesses: each such
+  event is offered, an attached panel has a moment's first refusal, and the server
+  acts on whatever nobody claimed.
+- An agent is no longer released at the one moment it is needed. A watcher stops
+  holding its job the instant it reports it finished, which left the agent eligible
+  for the ten-minute idle sweep in the gap before the wake reached it — and a
+  conversation waiting on an overnight run has looked idle for hours by then, since
+  idleness is counted from the last time the agent was asked for, not from anything
+  the run is doing. Being owed a wake, holding unread output, or holding an event
+  still to be claimed now count as work in progress like the rest. An agent rebuilt
+  for any reason also resumes the context the last one had carried, which previously
+  only happened when a panel reopened the conversation.
+- A message typed into the last step of a run is answered instead of being left
+  tagged "queued". Steering is taken in at a step boundary, and the step that writes
+  the final answer has none after it, so a message typed while that answer streamed
+  reached the queue once the loop had stopped draining: the run ended, nothing read
+  it, and the bubble kept the tag of a turn that was over — in full-context mode the
+  history lost the message too. What the loop never read now leaves with the answer
+  and is answered by a turn of its own, ahead of any background-job wake, because the
+  user is waiting on their own message. The bubble is placed by the same fact: while
+  it is still tagged, the turn in flight has not claimed it, so the answer that ends
+  that turn comes back **above** it — appended after it, the reply to the previous
+  message read as a reply to one the user had not sent yet.
+- A watcher whose status op stops answering now gives up instead of waiting for ever.
+  Nothing beneath it had a deadline, so a wedged tool server or a scheduler that hung
+  froze the watcher in place: the job was never reported, the agent was never released
+  and never woken, and the check-ins kept repeating a status frozen at the moment it
+  stopped — the quietest way to lose a run, since a watcher that crashes at least says
+  so. A probe now has 60 seconds, a slow one counts as unreadable like any other
+  unusable answer, and a run whose status cannot be read ends as `unknown` with the
+  reason after a few of those. The summary call has the same deadline, where it matters
+  more: the run is already over, and better a wake carrying nothing than no wake.
+- Tool calls, diffs and answers appear in the chat as they happen again, instead of
+  only on the next reconnect. A client's replay watermark — how far it has already
+  rendered — was one number per connection, while `seq` is counted per conversation:
+  one journal and one writer each. A socket that opened on a long conversation
+  therefore raised the gate above every event a *shorter* one would ever produce, so a
+  new chat had its tool rows, diff cards and final answers dropped on the way to the
+  screen while its streamed text (never journaled, so never stamped) arrived normally.
+  The journal still held everything, which is why reconnecting showed the whole run at
+  once — and why nothing about the connection looked wrong. The watermark is now kept
+  per conversation, like the number it compares.
+- "Disconnect anyway" no longer promises something it cannot do. A workspace has one
+  server, and a window either started it or attached to the one already running; only
+  the first is stopped by closing the window, which the host says plainly in its log.
+  The dialog described both cases as the first, so disconnecting from a server this
+  window had only attached to left every run going after a choice whose stated outcome
+  was ending them — indistinguishable, from the outside, from MIMIR detaching itself
+  without being asked. The prompt now says which case it is in, and where
+  disconnecting leaves the runs going it offers stopping the server as its own
+  choice — including what that costs, since another window of the same workspace may
+  be reading it.
+
 ## [1.3.0] — 2026-10-07
 
 ### Added
@@ -82,56 +155,6 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - A detached server no longer stops itself while it owes a conversation a turn.
   A finished run whose wake nothing has taken in counts as work in progress, the
   same as one still going.
-- Detaching now behaves like being there. A run finishing with the window shut got
-  its turn, and the chain stopped at that one link: a connection does more when an
-  answer lands than write it down — it puts the steering the turn never read to a new
-  turn, starts a turn for every run that finished while it was busy, and delivers the
-  bulletin it was holding. None of that happened with nobody attached, so "when the
-  training finishes, carry on with the next step" answered the training and stopped.
-  The server now carries on the same way, so a chain of steps runs through the night.
-  What still differs is a choice, not a gap: under `manual` or `auto` a sensitive tool
-  parks its card and waits for your return, which is what the autonomy level asked at
-  detach time is for.
-- A window that closes at the wrong moment no longer leaves the server deaf for the
-  rest of its life. Whether to act on a finished run was decided by asking if any
-  socket was subscribed — which says a socket exists, not that it will do anything
-  with what it is sent. A view that ended without unsubscribing (a window shut during
-  the replay of a long detached run raised mid-handshake, which skipped the cleanup)
-  therefore stood in for a reader that was gone, and with it went every wake, every
-  check-in and every turn written back, silently, until the server was restarted. The
-  cleanup now runs on every way out, and the decision no longer guesses: each such
-  event is offered, an attached panel has a moment's first refusal, and the server
-  acts on whatever nobody claimed.
-- An agent is no longer released at the one moment it is needed. A watcher stops
-  holding its job the instant it reports it finished, which left the agent eligible
-  for the ten-minute idle sweep in the gap before the wake reached it — and a
-  conversation waiting on an overnight run has looked idle for hours by then, since
-  idleness is counted from the last time the agent was asked for, not from anything
-  the run is doing. Being owed a wake, holding unread output, or holding an event
-  still to be claimed now count as work in progress like the rest. An agent rebuilt
-  for any reason also resumes the context the last one had carried, which previously
-  only happened when a panel reopened the conversation.
-- A message typed into the last step of a run is answered instead of being left
-  tagged "queued". Steering is taken in at a step boundary, and the step that writes
-  the final answer has none after it, so a message typed while that answer streamed
-  reached the queue once the loop had stopped draining: the run ended, nothing read
-  it, and the bubble kept the tag of a turn that was over — in full-context mode the
-  history lost the message too. What the loop never read now leaves with the answer
-  and is answered by a turn of its own, ahead of any background-job wake, because the
-  user is waiting on their own message. The bubble is placed by the same fact: while
-  it is still tagged, the turn in flight has not claimed it, so the answer that ends
-  that turn comes back **above** it — appended after it, the reply to the previous
-  message read as a reply to one the user had not sent yet.
-- A watcher whose status op stops answering now gives up instead of waiting for ever.
-  Nothing beneath it had a deadline, so a wedged tool server or a scheduler that hung
-  froze the watcher in place: the job was never reported, the agent was never released
-  and never woken, and the check-ins kept repeating a status frozen at the moment it
-  stopped — the quietest way to lose a run, since a watcher that crashes at least says
-  so. A probe now has 60 seconds, a slow one counts as unreadable like any other
-  unusable answer, and a run whose status cannot be read ends as `unknown` with the
-  reason after a few of those. The summary call has the same deadline, where it matters
-  more: the run is already over, and better a wake carrying nothing than no wake.
-
 ## [1.2.0] — 2026-10-06
 
 ### Added
