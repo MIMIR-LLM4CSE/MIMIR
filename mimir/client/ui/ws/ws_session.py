@@ -1797,9 +1797,18 @@ class _Session:
                 # twenty of them, each claiming to be now.
                 # Named when more than one conversation was left running: the levels
                 # can differ, and "under auto_all" says nothing about which of them.
-                title = (f"still running under \u201c{level}\u201d" if len(held) == 1
-                         else f"{len(held)} conversations still running, this one "
-                              f"under \u201c{level}\u201d")
+                #
+                # It opens with the state the toggle shows — "detached" — because that
+                # is the word the button answers to, and a line that only says what the
+                # run has been doing leaves the user to work out which of the two
+                # positions they are in. Then what detached means here: it worked with
+                # no window watching, and at this level.
+                title = (
+                    f"detached — this conversation kept working with no window "
+                    f"open, under “{level}”"
+                    if len(held) == 1 else
+                    f"detached — {len(held)} conversations kept working with no "
+                    f"window open, this one under “{level}”")
                 await self._command_reply("detach", title, tone="quiet",
                                           transient=True)
         except Exception:
@@ -2397,6 +2406,19 @@ class _Session:
                     "autonomy": level, "sessions": sorted(held), "pid": os.getpid(),
                     "setsid": False,
                 }))
+                # The switch itself, in the same quiet rule the attachment notice
+                # uses. The button is one glyph and both of its positions look like a
+                # chain: a line in the thread is what tells the user which way it just
+                # went, and it says the consequence rather than only the word, since
+                # "attached" on its own does not warn anybody that closing the window
+                # now ends the run.
+                await self._command_reply(
+                    "detach",
+                    ("attached — this window owns the server again, and closing it "
+                     "stops the run" if not held else
+                     f"attached — this window owns the server again; {len(held)} "
+                     f"other conversation(s) still keep it alive"),
+                    tone="quiet", transient=True)
             except Exception:
                 return
             logger.info("detach: taken back for %s; %d claim(s) left",
@@ -2466,6 +2488,16 @@ class _Session:
                 "pid": info.get("pid"),
                 "setsid": info.get("setsid"),
             }))
+            # The other half of the switch — see the take-back above. Named here as
+            # what the run may do while unwatched, because that is the part of
+            # detaching the user chose and the part the glyph cannot show.
+            await self._command_reply(
+                "detach",
+                (f"detached — this run keeps working with this window closed, under "
+                 f"“{autonomy}”" if autonomy != "manual" else
+                 "detached — this run keeps working with this window closed, and "
+                 "parks at the first call that needs you"),
+                tone="quiet", transient=True)
         except Exception:
             return
         logger.info("detach: this server is now survivable (autonomy %s over %d "

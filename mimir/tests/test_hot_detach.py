@@ -471,7 +471,35 @@ class DetachHandlerTests(unittest.IsolatedAsyncioTestCase):
     async def test_no_registry_entry_is_not_an_error(self):
         await self.sess._handle_detach({"type": "detach", "autonomy": "auto"})
         self.assertEqual(
-            [m["type"] for m in self.sent], ["detached"])
+            [m["type"] for m in self.sent], ["detached", "command_output"])
+
+    async def test_each_direction_of_the_switch_says_so_in_the_thread(self):
+        # The button is one glyph in both positions, so the thread is where the user
+        # reads which way it went — and the line names the consequence, since the word
+        # alone does not say that closing the window now ends the run.
+        from mimir.client.ui.ws import server_registry
+        server_registry.publish(url="ws://127.0.0.1:9", host="127.0.0.1", port=9)
+
+        await self.sess._handle_detach({"type": "detach", "autonomy": "auto_all"})
+        note = [m for m in self.sent if m["type"] == "command_output"][-1]
+        self.assertEqual(note["command"], "detach")
+        self.assertEqual(note["tone"], "quiet")
+        # Never stored: it describes this moment, not the conversation.
+        self.assertTrue(note["transient"])
+        self.assertIn("detached", note["title"])
+        self.assertIn("auto_all", note["title"])
+
+        self.sent.clear()
+        await self.sess._handle_detach({"type": "detach", "enabled": False})
+        note = [m for m in self.sent if m["type"] == "command_output"][-1]
+        self.assertIn("attached", note["title"])
+        self.assertIn("closing it", note["title"])
+
+    async def test_a_manual_detachment_says_it_will_park(self):
+        # "under manual" reads as "it will finish"; it will not.
+        await self.sess._handle_detach({"type": "detach", "autonomy": "manual"})
+        note = [m for m in self.sent if m["type"] == "command_output"][-1]
+        self.assertIn("parks at the first call", note["title"])
 
 
 if __name__ == "__main__":

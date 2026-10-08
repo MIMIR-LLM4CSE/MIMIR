@@ -834,7 +834,7 @@ body {
   padding: 1px 6px;
 }
 
-/* A rule across the thread: ──── still running under "auto_all" ────
+/* A rule across the thread: ──── detached — this run keeps working … ────
    Informative and nothing else. No badge, no border, no colour of its own — it marks
    a boundary in the conversation the way a date separator does, and the eye passes
    over it unless it is looking for it. */
@@ -844,7 +844,7 @@ body {
   gap: var(--sp-4);
   padding: var(--sp-3) var(--sp-4);
   color: var(--fg-dim);
-  font-size: 11px;
+  font-size: 12.5px;
 }
 .cmd-rule::before,
 .cmd-rule::after {

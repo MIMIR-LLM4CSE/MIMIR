@@ -38,7 +38,8 @@ describe("pruneForStorage", () => {
         id: "m2", role: "agent", kind: "command",
         command: {
           type: "command_output", command: "detach",
-          title: "still running under “auto_all”", tone: "quiet", transient: true,
+          title: "detached — this run keeps working, under “auto_all”",
+          tone: "quiet", transient: true,
         },
       },
     ]);
@@ -53,8 +54,8 @@ describe("pruneForStorage", () => {
         id: "m1", role: "agent", kind: "command",
         command: {
           type: "command_output", command: "detach",
-          title: "Still running under “auto_all”", tone: "warn",
-          note: "The level it was detached with.",
+          title: "attached — this window owns the server again", tone: "warn",
+          note: "Stored as a card by an older panel.",
         },
       },
     ]);

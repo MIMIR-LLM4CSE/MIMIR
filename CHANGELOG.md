@@ -64,9 +64,19 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   at its next sensitive call with nothing said — but saying it as a warning, with a
   badge and a coloured border, read as a problem to deal with at the one moment the
   user is looking for what happened rather than for what to do. It is now a rule across
-  the thread, grey and unremarkable: `──── still running under "auto_all" ────`. The
-  line explaining that the switcher above the send button changes it is gone; the
+  the thread, grey and unremarkable, and it names the position the toggle is in rather
+  than only what the run has been doing:
+  `──── detached — this conversation kept working with no window open, under "auto_all" ────`.
+  The line explaining that the switcher above the send button changes it is gone; the
   switcher is on screen.
+- Flipping the detach toggle now says which way it went. The button is one glyph in
+  both positions, and nothing but a tooltip distinguished "this run survives the window
+  closing" from "closing the window ends it" — the toggle's whole point, read off a
+  chain emoji. Each press now writes the same quiet rule to the thread, naming the
+  consequence rather than the word: the autonomy a detached run may act under (or, at
+  `manual`, that it parks at the first call needing an answer), and on taking it back,
+  that closing the window stops the run. Transient like the rejoining notice, so no
+  reload replays it.
 
 ### Fixed
 - Unfolding a long plan no longer hides the conversation behind it. The step list
