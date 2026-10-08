@@ -87,6 +87,8 @@ class _HeadlessCase(unittest.TestCase):
         pool.stop_requested = None
         pool.server_idle_ttl = 100.0
         pool._idle_since = None
+        pool._wakes_pending = {}
+        pool._held_checkin = {}
         pool.store = self.store
         pool.bus = _EventBus(pool, commit=pool._commit_turn,
                              durable=pool.consume_durable_event)

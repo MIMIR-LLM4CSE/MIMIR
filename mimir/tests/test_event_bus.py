@@ -9,10 +9,11 @@ subscriber that falls behind is told it has a gap rather than stalling the proce
 import asyncio
 import queue as _queue
 import tempfile
+import time
 import unittest
 from unittest import mock
 
-from mimir.client.ui.ws import transcript_log
+from mimir.client.ui.ws import event_bus, transcript_log
 from mimir.client.ui.ws.event_bus import _EventBus
 from mimir.client.ui.ws.ws_worker import _AgentWorker
 
@@ -117,7 +118,11 @@ class PumpRecordsWhenDetachedTests(_BusCase):
                 self.assertNotIn(key, written[0])
 
             # They are not dropped — they reach the committer, which is what writes
-            # the session file.
+            # the session file when no attached view claims the answer. This one is
+            # subscribed, so the committer is offered it once that first refusal
+            # expires: it must still arrive carrying them.
+            self.assertEqual(committed, [])
+            bus._sweep_unclaimed(now=time.monotonic() + event_bus._CLAIM_GRACE + 1.0)
             self.assertEqual(len(committed), 1)
             _ev, extras = committed[0]
             self.assertEqual(extras["_turn_start"], 0)

@@ -1032,6 +1032,20 @@ op to poll and a job to poll it for — the whole trust boundary, and enough of 
 registration buys is a read-only poll of a named tool. Loading a conversation whose jobs
 nothing is watching says so in one line, and leaves the asking to the person.
 
+**A watcher's own tool calls have a deadline, because nothing beneath them does.**
+`session.call_tool` takes no timeout and the MCP sessions are built without a read timeout, so
+a status op that stops answering — a wedged server, a scheduler that hangs, a queue command
+that never returns — blocks the watcher for ever. That is the one failure that genuinely loses
+a run, and the quietest: the job stays in `_bg_jobs`, so the agent is never released and never
+woken, and the bulletins keep repeating a status frozen at the moment it stopped. A watcher
+that *dies* at least says so. `_TOOL_CALL_TIMEOUT` (60s) is the line between "slow" and
+"never", not a budget to work inside; a tick that crosses it counts as unreadable, which is a
+case the loop already had, so `_UNREADABLE_POLL_LIMIT` of them in a row end the run as
+`unknown` with the reason — an honest "I lost track of it" in minutes instead of silence. The
+summary call is under the same deadline, and there it matters more: the run is already over, so
+a summary op that never answers withholds the wake itself, and better a wake with nothing in
+it than no wake.
+
 **A connection that drops does not end the turn, and no longer costs its record either.**
 An agent outlives the connections that read it, so a socket that dies mid-run leaves a turn
 working with nobody watching. What used to be true as well is that nothing *recorded* that
@@ -1099,10 +1113,13 @@ its queue and carries it on the answer. And `context_mode` was read off whicheve
 on screen, which is the wrong agent whenever the turn belongs to another conversation; it
 rides on the answer too.
 
-The pump calls the committer **only when `bus.attached()` is zero**. A connected `_Session`
-has always written this itself — into `self.history` for the conversation on screen, through
+The pump **offers** the answer and the committer takes it if nobody else does. A connected
+`_Session` writes this itself — into `self.history` for the conversation on screen, through
 `_persist_detached_answer` for any other — and two live writers of one file lose history
-silently. So this is the fallback for the case that had none. The belt to that braces is a
+silently, so exactly one of them may write. What elects it is a claim rather than a count of
+subscribers: see *Who is allowed to act* below, which is the same mechanism and the same
+reason. A view that loses the claim re-reads the conversation the committer wrote instead of
+appending its own copy of the turn. The belt to that braces is a
 revision on the session file: `save_session` bumps `rev` and refuses a save whose base is
 behind what is on disk, raising `StaleSessionWrite` rather than overwriting newer history with
 older. A successful save carries the new revision back onto the object, so an owner that holds
@@ -1113,11 +1130,8 @@ loaded earlier is, and the committer says so in the log instead of dropping the 
 "nobody is looking". A watcher outlives every connection — it is a task on a worker's loop,
 and `releasable` refuses to free a worker that holds one — so a detached run reports in
 whether or not a panel is open, and the pump journals what it says. Acting on that report is
-`_AgentPool.consume_durable_event`, called by the pump for `job_complete` and `job_checkin`
-**only when `bus.attached()` is zero**, for the same reason the committer is: a subscriber
-present means a `_Session` is about to route it against the history it holds on screen, and
-two consumers starting a turn for one finished run is a duplicate no marker can catch, since
-neither has written one yet.
+`_AgentPool.consume_durable_event`, reached for `job_complete` and `job_checkin` through the
+claim below.
 
 A wake only a connection can route is a conversation that waits out the night for a job that
 finished in three minutes. So the pool does what the session does, minus the socket: loads the
@@ -1128,10 +1142,55 @@ tick that drained the event, because loading, saving and `submit_query` are plai
 answer is written back by the committer off the same pump, against the boundary the worker
 carried on it: a wake taken in this way is a complete turn, asked, answered and persisted,
 with no connection anywhere in the path. A busy conversation gets the wake steered into its
-running turn instead; a bulletin is dropped rather than steered, because "nothing to report"
-must not make the agent answer about the job instead of the work.
+running turn instead, and keeps it pending until that turn says it read it; a bulletin is
+held rather than steered, because "nothing to report" must not make the agent answer about
+the job instead of the work.
 
-And an owed wake holds the process open. `idle_report` counts a finished run whose wake
+**Writing the answer down is only half of what a connection does when a turn lands.** The
+other half is carrying on, and a detached process that did only the first half answers the
+step that finished and stops there — which is the difference between a chain of steps that
+runs overnight and one that stops at its first link. On every answer a socket puts the
+steering the loop never read to a new turn, starts a turn for every run that finished while
+it was busy, and delivers the bulletin it was holding. `_AgentPool._carry_on_after_turn` is
+that, with no socket: it reads `_unconsumed_steer` off the answer — what the loop ended
+without taking in, and the only place that is knowable — settles the wakes the turn did read,
+and gives the rest one turn between them. A burst that finished together is one piece of news,
+not three turns that answer the first and then re-answer it twice.
+
+**Who is allowed to act.** Two consumers can now act on a finished run or a finished turn,
+and only one of them may. The first rule was a test on the subscriber list — act only when
+`bus.attached()` is zero — which answers a different question than the one that matters: a
+subscription says a socket *exists*, not that it will route anything. A view whose drain loop
+returned on a failed send, or that ended without closing its subscription, is a promise nobody
+is keeping, and because nothing re-emits a wake the run it was holding then waits for someone
+to open the panel and ask. One leaked subscription silenced the committer, every wake and
+every check-in for the life of the process. (The leak itself is closed too: everything in
+`_Session.run` from the subscription onward is under one `finally`, because every step of that
+handshake sends on a socket that can close under it — a window shut mid-replay raises there —
+which makes an unguarded exit the ordinary case rather than the exotic one.)
+
+So the bus *offers* each such event and the pool acts on what nobody claimed. An attached
+socket gets first refusal for `_CLAIM_GRACE`; the drain loop claims an event before doing
+anything with it, and `_sweep_unclaimed` at the end of each tick claims whatever is past its
+deadline and runs the pool's handler for it. With no subscription the deadline is now, so the
+detached case keeps the latency it had. `claim()` is true for exactly one caller, and grants an
+event this bus never offered — something that reached a consumer by another route reached only
+that one. The grace is a latency bound on the handover, not a correctness condition: whichever
+consumer claims first is the only one that acts, whatever the timing.
+
+**And an agent is never released while anything of its is unresolved**, which is what makes a
+wake for a closed agent impossible rather than merely handled. Idleness is counted from the
+last time the pool was asked for the worker, so a conversation waiting on an overnight run has
+been "idle" for hours throughout — the clock never protects it, and `releasable()` is the whole
+of what does. Its clauses are the list of what *unresolved* means: on screen, a turn running or
+queued, a job watched, a card up, a deferral owed, a wake owed, output undrained, an event still
+to be claimed. The last three close the window a watcher opens by dropping its job the instant
+it reports it finished — the one moment at which the agent is needed most. Every emitter of a
+durable event runs on a worker's own loop, so with those clauses a wake cannot arrive for a
+conversation whose agent is closed; `consume_durable_event` logs that invariant as broken rather
+than rebuilding anything, and leaves the run unsettled so the next agent built announces it.
+
+An owed wake also holds the process open. `idle_report` counts a finished run whose wake
 nothing has taken in alongside one still going — the same debt one step later — so the server
 cannot shut down owing a turn it never started. Only for sessions past their baseline: an
 unbaselined one holds every run it ever finished with no marker on any of them, and reading
@@ -1355,7 +1414,9 @@ anything and must not touch loop state. So the pump pushes a plain timestamp ont
 each tick — including the ticks that move no events, since what it reports is the absence of
 events. And `releasable()` gains a clause: a deferred turn has cleared its pending card, so
 the parked-on-a-card clause no longer sees it, while the user still owes it an answer and
-releasing the agent would throw away the ~19 servers that answer is resumed against.
+releasing the agent would throw away the ~19 servers that answer is resumed against. (It has
+since gained three more, for the same shape of debt one step later: see *Who is allowed to
+act*.)
 
 **When a detached server stops.** Once it is no longer killed by closing the window, it
 needs its own answer to "am I still needed", and `_AgentPool.idle_report()` is that answer in
@@ -1525,15 +1586,16 @@ installed.
 | `test_completion_honesty.py` | the end-of-run honesty surface: the ledger's rows and statuses, the marker contract, the tier-qualified completion sentence, `needs_incomplete_finalization`, the `unfinished_plan` nudge, and the checklist reader's fail-closed behaviour |
 | `test_observations.py` | the observer dispatch order, bash classification and credit, run-ledger keying, verdict grammar, exit attribution, `ValidationTierTests` (per-checker tiers, an execution earning none however green, a printed invariant earning nothing, monotonicity, retraction), and `DeclaredEditSetTests` (a revised checklist retracts what it dropped) |
 | `test_event_chain.py` | coming back to a running turn — the conversation restored under the level it was left on, a rebuilt worker coming up on it too, an ordinary connect deciding nothing about it, a turn in flight reported as running and an idle one not, and what the turn produced while away coming back — that an absence keeps the prose: the record interleaving what was said with what was called, the aggregate not being sent to a client that already had the deltas, a reconnect replaying both, and a blank block not recorded — plus the whole chain with the real objects: handshake, query, and the turn's `status` / `tool_call` / `tool_result` / `answer` arriving, nothing lost to the watermark, the journal holding the same turn the client saw, a second turn arriving, a brand-new conversation not silenced by an inherited watermark, the approval card reaching the client and its answer coming back — plus the ways a chat *can* go quiet, pinned so each is deliberate |
-| `test_event_bus.py` | the pump: that it drains and journals with nobody attached, that `seq` has one writer per session and no gaps, that the private answer keys reach the committer but neither the journal nor the wire, that a streamed delta is delivered live and never recorded, that an overflowing subscriber is gapped rather than allowed to stall the pump, and what counts as a session having *concluded* |
-| `test_detached_commit.py` | the turn committer: an answer landing in its session file with nobody attached, a deferral stored as the card to put back, the answer-alone path for a non-full context mode, that the pump commits only when no client is attached and never a cancelled turn, and the revision guard — a second writer that loaded earlier is refused, an owner saving repeatedly is not, a failed write does not consume a revision, and a file from before the field existed still writes |
+| `test_event_bus.py` | the pump: that it drains and journals with nobody attached, that `seq` has one writer per session and no gaps, that the private answer keys reach the committer but neither the journal nor the wire, that a streamed delta is delivered live and never recorded, that an overflowing subscriber is gapped rather than allowed to stall the pump, and what counts as a session having *concluded* — the private keys reaching the committer once its first refusal expires, since an attached view is given the chance to write the turn itself |
+| `test_detached_commit.py` | the turn committer: an answer landing in its session file with nobody attached, a deferral stored as the card to put back, the answer-alone path for a non-full context mode, that the pump commits what no attached view claimed and never a cancelled turn, and the revision guard — a second writer that loaded earlier is refused, an owner saving repeatedly is not, a failed write does not consume a revision, and a file from before the field existed still writes |
 | `test_reattach_replay.py` | that the gate cannot silence a stream — a watermark above the journal is not honoured, the stream still arrives after one, a filtered event is counted rather than vanishing, and a stream delta bypasses the gate (which is why the failure looks like a half-working chat) — and that a new conversation clears the watermark instead of inheriting it; then the watermark: everything replayed to a client that has seen nothing, only the tail to one that has seen some, nothing to one that is current; that the gate lands where the replay ended so an event is never both replayed and delivered live; that nothing produced between subscribing and reading is lost; framing, the cap keeping the end and saying so, a socket dying mid-replay leaving the gate alone; and that streamed deltas are absent while their aggregates are not |
 | `test_job_rearm.py` | the baseline — a first scan reporting nothing while recording that it looked, a job ending *after* it reported, a live run re-armed either way, and a watcher's own report marking the run so a restart does not repeat it — then the scan: a live run reported live, a recorded exit code winning over whatever the pid looks like, a dead pid with no code reading `unknown` rather than `done`, a recycled pid not mistaken for the job, an ephemeral scratch buffer skipped, a Slurm job live until Slurm says otherwise — then the re-arm itself, the wake going to the session that launched the run, a run already watched left alone, and the report-once marker |
 | `test_server_registry.py` | one server per workspace, with real contending subprocesses because `flock` is a kernel object a mock would not exercise: a second process is refused while the first holds the claim, the lock is free again once the holder is *killed* rather than stopped, and two workspaces do not contend — then the registry: a published entry reading back with its pid and start time, an unreadable or wrong-protocol file reading as nothing, a failed write leaving no half file — and liveness over real sockets and real pids: a live pid whose listener has gone is *not* alive (while the process-only answer still says yes), a recycled pid is not mistaken for the server, `clear()` retires our own entry and leaves a stranger's |
 | `test_hot_detach.py` | detaching, exercised against the real system calls because a fake `dup2` would prove nothing about the thing that breaks: output following the descriptors into the log while the parent's pipe sees only what preceded the redirect, a child **surviving two hundred writes after its reader is gone**, a second detachment appending rather than truncating, `setsid` succeeding for a non-leader and declining for a leader without cancelling the redirect — then the handler: per-session autonomy touching only the sessions named, naming none recording it pool-wide, an unknown level refused with nothing detached, and the registry entry keeping the address it was serving on |
 | `test_unattended_park.py` | the parking: a card with somebody there still waiting for ever, one with nobody there deferred through the pre-built mechanism, the grace period leaving room for a window reload, a wait with its own deadline left alone — **an answer already in hand, or landing during the poll, winning over the grace** (the bug this file found) — the pump publishing attachment on ticks that move nothing and not restarting the clock each tick, and `releasable()` refusing a session that holds a deferral |
+| `test_wake_claim.py` | who is allowed to act, and that somebody always does: a wake taken in within the tick that drained it with nothing attached, an attached view given first refusal and the pool standing down, a claim granted to exactly one caller and to one this bus never offered, a view that routes nothing not costing the run its turn (with the take-over counted and logged), the run settled by whoever ends up delivering it, bulletins going the same way — then what a turn landing carries on: a steered wake the turn never read getting its own turn, one the turn did read settled instead of told twice, a burst arriving as one turn, the 🔔 of a steered wake, and a held bulletin delivered after the answer or dropped once its runs have finished — then the release invariant: an agent watching a run, owed a wake, holding an event still to be claimed or output still unread is never released while one with nothing outstanding still gives up its slot, so a wake for a closed agent cannot arise and is logged as a broken invariant if it does — and the subscription's lifetime: released on a handshake that raises, on a greeting that cannot be sent, and on an ordinary end, with a run finishing afterwards still answered for |
 | `test_idle_predicate.py` | what counts as finished: a concluded conversation with no jobs idle, one that never answered *not* idle, an error counting as an ending, a live run on disk holding the process open even for a session with no agent, an unreadable state dir counting as busy — plus each prohibition (attached client, parked card, owed answer, queued turn, agent being built, a worker that cannot be asked), and the clock: it starts rather than stopping at once, stops on the TTL, and is reset by activity rather than shortened |
-| `test_background_jobs.py` | the whole detached-run path: the server descriptor, the registration hook, `_watch_job`, the wake text, the detached resume and its coalescing — plus the check-in schedule and its never-interrupt rule, the three ways a finished run used to wake nobody (the wrong agent, a store that would not write, a socket dying on the send), that a reconnect throws nothing away, and re-arming a watcher from a status result |
+| `test_background_jobs.py` | the whole detached-run path: the server descriptor, the registration hook, `_watch_job`, the wake text, the detached resume and its coalescing — plus the check-in schedule and its never-interrupt rule, the three ways a finished run used to wake nobody (the wrong agent, a store that would not write, a socket dying on the send), that a reconnect throws nothing away, and re-arming a watcher from a status result — plus the fourth and quietest way, a tool call that never answers: a status op that hangs ending the run as `unknown` rather than polling for ever, a timed-out probe reported as `unreadable` rather than as still running, and a summary op that hangs not withholding the wake |
 | `test_policy_manager.py` | the gates and the state guard |
 | `test_client_helpers.py` | the nudge predicates, token counting, eviction and `ContextOverflowError` |
 | `test_capabilities.py` / `test_phase_b_servers.py` | `infer_tool_caps` precedence and the golden declared registry (`_golden_caps.py` AST-parses the server decorators) |

@@ -82,6 +82,44 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - A detached server no longer stops itself while it owes a conversation a turn.
   A finished run whose wake nothing has taken in counts as work in progress, the
   same as one still going.
+- Detaching now behaves like being there. A run finishing with the window shut got
+  its turn, and the chain stopped at that one link: a connection does more when an
+  answer lands than write it down — it puts the steering the turn never read to a new
+  turn, starts a turn for every run that finished while it was busy, and delivers the
+  bulletin it was holding. None of that happened with nobody attached, so "when the
+  training finishes, carry on with the next step" answered the training and stopped.
+  The server now carries on the same way, so a chain of steps runs through the night.
+  What still differs is a choice, not a gap: under `manual` or `auto` a sensitive tool
+  parks its card and waits for your return, which is what the autonomy level asked at
+  detach time is for.
+- A window that closes at the wrong moment no longer leaves the server deaf for the
+  rest of its life. Whether to act on a finished run was decided by asking if any
+  socket was subscribed — which says a socket exists, not that it will do anything
+  with what it is sent. A view that ended without unsubscribing (a window shut during
+  the replay of a long detached run raised mid-handshake, which skipped the cleanup)
+  therefore stood in for a reader that was gone, and with it went every wake, every
+  check-in and every turn written back, silently, until the server was restarted. The
+  cleanup now runs on every way out, and the decision no longer guesses: each such
+  event is offered, an attached panel has a moment's first refusal, and the server
+  acts on whatever nobody claimed.
+- An agent is no longer released at the one moment it is needed. A watcher stops
+  holding its job the instant it reports it finished, which left the agent eligible
+  for the ten-minute idle sweep in the gap before the wake reached it — and a
+  conversation waiting on an overnight run has looked idle for hours by then, since
+  idleness is counted from the last time the agent was asked for, not from anything
+  the run is doing. Being owed a wake, holding unread output, or holding an event
+  still to be claimed now count as work in progress like the rest. An agent rebuilt
+  for any reason also resumes the context the last one had carried, which previously
+  only happened when a panel reopened the conversation.
+- A watcher whose status op stops answering now gives up instead of waiting for ever.
+  Nothing beneath it had a deadline, so a wedged tool server or a scheduler that hung
+  froze the watcher in place: the job was never reported, the agent was never released
+  and never woken, and the check-ins kept repeating a status frozen at the moment it
+  stopped — the quietest way to lose a run, since a watcher that crashes at least says
+  so. A probe now has 60 seconds, a slow one counts as unreadable like any other
+  unusable answer, and a run whose status cannot be read ends as `unknown` with the
+  reason after a few of those. The summary call has the same deadline, where it matters
+  more: the run is already over, and better a wake carrying nothing than no wake.
 
 ## [1.2.0] — 2026-10-06
 

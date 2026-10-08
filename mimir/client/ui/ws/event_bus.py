@@ -35,6 +35,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from collections import deque
 from typing import Callable, Iterable
 
 from .job_wakes import DURABLE_EVENTS
@@ -51,6 +52,28 @@ _PUMP_INTERVAL = 0.05
 # this the oldest are dropped: the journal still holds them, so the client recovers by
 # replaying from its watermark rather than by the pump stalling for it.
 _SUBSCRIBER_MAX = 2000
+
+# How long an attached socket has first refusal on an event before the pool acts on it
+# regardless. Two consumers can act on a finished run or a finished turn — the socket's
+# drain loop, which works against the conversation it holds on screen, and the pool,
+# which works against the one on disk — and only one of them may: two turns for one run
+# is a duplicate nothing downstream can undo, and two writers of one session file lose
+# history silently.
+#
+# Presence of a subscription is not evidence that one will: a view whose drain loop has
+# returned on a failed send, or that ended without closing its subscription, is a
+# promise nobody is keeping, and the run it was holding then waits for somebody to open
+# the panel and ask. So the right is granted for a bounded time rather than inferred
+# from the subscriber list, and the pool takes over what nothing claimed. The drain
+# loop reads its queue every 5 ms, so this only has to cover a tick plus one send; it
+# is a latency bound on the handover and not a correctness condition, because whichever
+# consumer claims first is the only one that acts.
+_CLAIM_GRACE = 2.0
+
+# How many claimed identities to remember. Only enough to answer the other consumer
+# when it looks a tick later: past that nothing is asking, and an unbounded record of
+# every run a long-lived server ever reported is a leak for no reader.
+_CLAIMED_MEMORY = 512
 
 # The event types that end a turn. An ``error`` is a conclusion as much as an ``answer``
 # is — the turn is over either way — and conflating "concluded" with "succeeded" would
@@ -169,6 +192,17 @@ class _EventBus:
         self._unattended_since: float | None = time.monotonic()
         self._task: asyncio.Task | None = None
         self._wake = asyncio.Event()
+        # Events nobody has claimed yet, by identity, each with what the pool would do
+        # with it and the instant the sockets' first refusal expires:
+        # ``{key: (event, extras, handler, deadline)}``. Emptied by every tick — either
+        # a consumer claims the event or the sweep passes it to the handler — so it
+        # holds at most one grace window's worth.
+        self._unclaimed: dict[tuple, tuple[dict, dict, Callable, float]] = {}
+        # The identities already taken, so "nobody ever offered this" and "somebody
+        # has it" are different answers. Bounded and in order: a claim matters for as
+        # long as it takes the other consumer to look, which is one tick.
+        self._claimed: deque[tuple] = deque(maxlen=_CLAIMED_MEMORY)
+        self.claimed_by_sweep = 0
         # Counters, so the chain can be asked what it did rather than inferred from
         # what the chat shows. The pump is the only consumer of every worker's queue, so
         # "the chat went quiet" has several causes that look identical from outside: the
@@ -199,6 +233,100 @@ class _EventBus:
         """How many clients are listening. Zero is the detached case."""
         return len(self._subs)
 
+    # ── Who takes a durable event in ──────────────────────────────────────────
+
+    @staticmethod
+    def _claim_key(ev: dict) -> tuple:
+        """The identity of a durable event, for deciding who acts on it.
+
+        ``seq`` is in it because it is the one field guaranteed unique per event: a
+        bulletin names no job, and the same finished run can be announced twice (by the
+        watcher that was holding it and by a scan that found it unspoken-for), which are
+        two events to be claimed separately and deduplicated downstream on the job key.
+        """
+        return (ev.get("session_id") or "", ev.get("type") or "",
+                str(ev.get("job_key") or ""), ev.get("seq"))
+
+    def claim(self, ev: dict) -> bool:
+        """Take responsibility for *ev*. True for the first caller only.
+
+        What a consumer calls before acting on a durable event. Both consumers ask, so
+        neither has to know whether the other exists, and a run cannot get two turns
+        however the timing falls.
+
+        An event this bus never offered is granted: the pump is what offers them, so
+        something that reached a consumer by another route reached only that one, and
+        refusing it would lose a wake to protect against a second consumer that does
+        not exist. Recorded either way, which is what makes the grant good for once.
+        """
+        key = self._claim_key(ev)
+        if self._unclaimed.pop(key, None) is not None:
+            self._claimed.append(key)
+            return True
+        if key in self._claimed:
+            return False
+        self._claimed.append(key)
+        return True
+
+    def unclaimed_for(self, session_id: str) -> bool:
+        """Whether a conversation has an event still waiting to be claimed.
+
+        What the pool asks before releasing an agent. An event in flight is work this
+        process has accepted and not yet done, and the agent it is addressed to is the
+        one that has to do it — so the window in which a socket is being given first
+        refusal is not a window in which that agent may be closed.
+        """
+        if not session_id:
+            return False
+        return any(key[0] == session_id for key in self._unclaimed)
+
+    def _offer(self, ev: dict, extras: dict, handler: Callable[[dict, dict], None]
+               ) -> None:
+        """Put *ev* up for claiming, and say how long the sockets have.
+
+        No subscription means no first refusal to grant: the deadline is now, and the
+        sweep at the end of this very tick calls *handler*. That is the detached case,
+        and it costs it nothing — a run that ends with no window open is acted on inside
+        the tick that drained it.
+        """
+        now = time.monotonic()
+        self._unclaimed[self._claim_key(ev)] = (
+            ev, extras, handler, now + (_CLAIM_GRACE if self._subs else 0.0))
+
+    def _sweep_unclaimed(self, now: float | None = None) -> int:
+        """Act on every event whose first-refusal window has closed. Returns how many.
+
+        Run at the end of each tick. The event is claimed here before its handler runs,
+        so a drain loop that wakes up a moment later finds it taken and does not do the
+        same work a second time.
+        """
+        if not self._unclaimed:
+            return 0
+        at = time.monotonic() if now is None else now
+        due = [key for key, entry in self._unclaimed.items() if entry[3] <= at]
+        taken = 0
+        for key in due:
+            entry = self._unclaimed.pop(key, None)
+            if entry is None:
+                continue
+            ev, extras, handler, _deadline = entry
+            self._claimed.append(key)
+            self.claimed_by_sweep += 1
+            taken += 1
+            if self._subs:
+                # Granted and not taken up. Said out loud because it is the only
+                # outward sign that a socket is subscribed and doing nothing with what
+                # it is sent.
+                logger.warning("bus: no attached view claimed %s for %s within %.0fs; "
+                               "handling it here", ev.get("type"),
+                               ev.get("session_id"), _CLAIM_GRACE)
+            try:
+                handler(ev, extras)
+            except Exception:
+                logger.warning("bus: handling %s for %s failed", ev.get("type"),
+                               ev.get("session_id"), exc_info=True)
+        return taken
+
     def diagnostics(self) -> list[dict]:
         """What each link of the chain has actually done, as {label, detail} rows.
 
@@ -217,6 +345,10 @@ class _EventBus:
              "detail": "attached" if self._unattended_since is None
                        else f"{time.monotonic() - self._unattended_since:.0f}s"},
         ]
+        if self._unclaimed or self.claimed_by_sweep:
+            rows.append({"label": "claims", "detail":
+                         f"{len(self._unclaimed)} awaiting a claim, "
+                         f"{self.claimed_by_sweep} handled by the pool unclaimed"})
         if self.pump_errors:
             rows.append({"label": "pump errors",
                          "detail": f"{self.pump_errors} — last: {self.last_error}"})
@@ -379,23 +511,16 @@ class _EventBus:
                 else:
                     # It is producing again, so whatever it concluded before is history.
                     self._concluded.pop(owner, None)
+            # After the journal, so the event every consumer reads is the stamped one,
+            # and offered rather than acted on: an attached socket gets first refusal
+            # (it works against the conversation it holds on screen), the sweep below
+            # does what nobody claimed. Two turns for one finished run, or two writers
+            # of one session file, are duplicates nothing downstream can undo — and the
+            # claim, not the subscriber list, is what elects the one that acts.
             if self._commit is not None and etype in _CONCLUSIVE:
-                try:
-                    self._commit(ev, extras)
-                except Exception:
-                    logger.warning("bus: turn commit failed for %s", owner, exc_info=True)
-            # After the journal, so the event the consumer reads is the stamped one, and
-            # only with nobody attached: a subscriber present means a ``_Session`` is
-            # about to route this itself, and two consumers starting a turn for one
-            # finished run is the duplicate the marker cannot catch — neither has
-            # written it yet.
-            if (self._durable is not None and etype in DURABLE_EVENTS
-                    and not self._subs):
-                try:
-                    self._durable(ev)
-                except Exception:
-                    logger.warning("bus: taking in %s for %s failed", etype, owner,
-                                   exc_info=True)
+                self._offer(ev, extras, self._commit)
+            if self._durable is not None and etype in DURABLE_EVENTS:
+                self._offer(ev, {}, lambda e, _x: self._durable(e))
             if isinstance(ev.get("seq"), int):
                 self.journaled += 1
             if etype in _REPLAY_ONLY:
@@ -404,6 +529,9 @@ class _EventBus:
                 sub.offer(ev, extras)
                 self.fanned_out += 1
             moved += 1
+        # Last, so an event offered in this tick with no socket to claim it is taken in
+        # within it: with nothing attached, the whole handover is one synchronous tick.
+        self._sweep_unclaimed()
         return moved
 
     def _collect(self) -> Iterable[dict]:

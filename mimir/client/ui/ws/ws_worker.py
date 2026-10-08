@@ -70,6 +70,23 @@ def _direct_opener():
 # intervals, so a single transient failure never trips it.
 _UNREADABLE_POLL_LIMIT = 5
 
+# How long one of a watcher's own tool calls may take before it is given up on.
+#
+# There is no deadline anywhere beneath this: ``session.call_tool`` takes none, and the
+# MCP sessions are built without a read timeout, so a status op that stops answering —
+# a wedged server, a scheduler that hangs, a queue command that never returns — blocks
+# the watcher for ever. That is the one failure that genuinely loses a run: the task
+# stays in ``_bg_jobs``, so the agent is never released and never woken, the bulletins
+# keep repeating a status frozen at the moment it stopped, and nothing anywhere says
+# the run is no longer being watched. A watcher that dies at least says so.
+#
+# Generous on purpose: a status op is a cheap read, and this is the line between "slow"
+# and "never", not a budget to work inside. A tick that crosses it is counted as
+# unreadable, which is a case this loop already has — ``_UNREADABLE_POLL_LIMIT`` of
+# them in a row and the run is reported as unknown, with the reason — so a stuck status
+# op ends as an honest "I lost track of it" instead of silence.
+_TOOL_CALL_TIMEOUT = 60.0
+
 # When a background check-in fires, as seconds from the one before it: T+30s, T+2.5min,
 # T+12.5min, T+42.5min, and hourly from there for as long as the run lasts. A detached
 # run says nothing between its launch and its end, so a two-hour build that went wrong
@@ -1566,9 +1583,11 @@ class _AgentWorker:
                 await asyncio.sleep(interval)
                 interval = min(interval * 1.5, max_interval)
                 try:
-                    raw = await self._agent._run_tool(
-                        status_tool, dict(status_op.get("args") or {}),
-                        record_observations=False)
+                    raw = await asyncio.wait_for(
+                        self._agent._run_tool(
+                            status_tool, dict(status_op.get("args") or {}),
+                            record_observations=False),
+                        timeout=_TOOL_CALL_TIMEOUT)
                     # parse_tool_payload, not json.loads: the result is an envelope
                     # followed by its text blocks and any appended annotation, and a
                     # bare load reads that as one broken document. Five of those in a
@@ -1580,6 +1599,16 @@ class _AgentWorker:
                                   or f"'{status_tool}' returned no state")
                 except asyncio.CancelledError:
                     raise
+                except asyncio.TimeoutError:
+                    # Named rather than lumped in with the failures below: "it never
+                    # answered" and "it answered with an error" are the two things a
+                    # reader most needs to tell apart, and only this knows which it saw.
+                    payload = {}
+                    state, reason = "", (f"'{status_tool}' did not answer within "
+                                         f"{_TOOL_CALL_TIMEOUT:.0f}s")
+                    logger.warning("background job %r: its status op %r did not answer "
+                                   "within %.0fs", job_key, status_tool,
+                                   _TOOL_CALL_TIMEOUT)
                 except Exception as exc:
                     payload = {}
                     state, reason = "", f"'{status_tool}' raised {type(exc).__name__}"
@@ -1631,9 +1660,14 @@ class _AgentWorker:
         summary_tool = summary_op.get("tool")
         if summary_tool:
             try:
-                raw = await self._agent._run_tool(
-                    summary_tool, dict(summary_op.get("args") or {}),
-                    record_observations=False)
+                # Under the same deadline as the status poll, and here it matters more:
+                # the run is already over, so a summary op that never answers holds back
+                # the wake itself. Better a wake with nothing in it than no wake.
+                raw = await asyncio.wait_for(
+                    self._agent._run_tool(
+                        summary_tool, dict(summary_op.get("args") or {}),
+                        record_observations=False),
+                    timeout=_TOOL_CALL_TIMEOUT)
                 # parse_tool_payload for the same reason the status tick uses it: a
                 # tool result is an envelope, its text blocks and any annotation
                 # appended after them, and a bare load reads that as one broken
@@ -1641,6 +1675,13 @@ class _AgentWorker:
                 # result of its own" — the wake still lands, emptied of the thing it
                 # was carrying.
                 summary = parse_tool_payload(raw) if isinstance(raw, str) else (raw or {})
+            except asyncio.CancelledError:
+                raise
+            except asyncio.TimeoutError:
+                summary = {}
+                logger.warning("background job %r finished, but its summary op %r did "
+                               "not answer within %.0fs; waking it without one",
+                               job_key, summary_tool, _TOOL_CALL_TIMEOUT)
             except Exception:
                 summary = {}
 

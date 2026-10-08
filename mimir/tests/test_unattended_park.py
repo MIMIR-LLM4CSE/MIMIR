@@ -231,6 +231,7 @@ class TheReaperTests(unittest.TestCase):
         pool.active_session_id = None
         pool._workers = {"s1": worker}
         pool._last_use = {"s1": 0.0}
+        pool._wakes_pending = {}
         return pool
 
     def _releasable_worker(self):

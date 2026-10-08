@@ -254,7 +254,9 @@ class DetachHandlerTests(unittest.IsolatedAsyncioTestCase):
             {"type": "detach", "autonomy": "auto_all", "session_ids": ["s2"]})
         self.assertEqual(self.b.mode, "auto_all")
         self.assertEqual(self.a.mode, "manual", "a conversation not named was changed")
-        self.assertEqual(self.applied, [], "a per-session detach recorded pool-wide")
+        self.assertEqual([name for name, _args in self.applied],
+                         ["set_non_interactive"],
+                         "a per-session detach recorded a level pool-wide")
         self.assertEqual(
             [m for m in self.sent if m["type"] == "detached"][0]["sessions"], ["s2"])
 
@@ -262,7 +264,17 @@ class DetachHandlerTests(unittest.IsolatedAsyncioTestCase):
         # The only form that outlives a worker being rebuilt, since the pool records UI
         # settings per pool rather than per session.
         await self.sess._handle_detach({"type": "detach", "autonomy": "auto"})
-        self.assertEqual(self.applied, [("set_approval_mode", ("auto",))])
+        self.assertIn(("set_approval_mode", ("auto",)), self.applied)
+
+    async def test_there_is_no_terminal_whichever_conversations_are_named(self):
+        # Recorded pool-wide even for a per-session detach, because it is a fact about
+        # the *process*: its stdout is a log file from here on, and that cannot be
+        # undone. A detached process goes on building agents — a conversation whose own
+        # was released gets it back when a run of its finishes — and one built without
+        # this would reach for a terminal that is a log file.
+        await self.sess._handle_detach(
+            {"type": "detach", "autonomy": "auto_all", "session_ids": ["s2"]})
+        self.assertIn(("set_non_interactive", (True,)), self.applied)
 
     async def test_an_unknown_level_is_refused_and_nothing_is_detached(self):
         await self.sess._handle_detach({"type": "detach", "autonomy": "yolo"})

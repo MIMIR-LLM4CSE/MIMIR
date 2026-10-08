@@ -14,6 +14,7 @@ import json
 import os
 import types
 import unittest
+from unittest import mock
 
 from mimir.tests._fake_pool import FakePool
 
@@ -340,6 +341,45 @@ class _MuteAgent:
         return json.dumps(self._payload)
 
 
+class _HangingAgent:
+    """An agent whose tool call never answers at all.
+
+    The shape of a wedged MCP server, a scheduler that stops responding, a queue
+    command that never returns. Distinct from :class:`_MuteAgent` in the one way that
+    matters: that one answers uselessly and the loop can count the useless answers,
+    while this one never comes back — and nothing beneath the watcher has a deadline,
+    so without one of its own the watcher waits for ever.
+
+    *hang_on* says which op hangs, so the status poll and the summary call can be
+    tested apart: the second is the dangerous one, the run being already over.
+    """
+
+    def __init__(self, hang_on: str = "status", states: list[str] | None = None,
+                 summary: dict | None = None) -> None:
+        self._hang_on = hang_on
+        self._states = list(states or ["done"])
+        self._summary = summary if summary is not None else {"verdict": "accept"}
+        self.status_calls = 0
+        self.summary_calls = 0
+
+    async def _run_tool(self, tool: str, args: dict, execution_context=None,
+                        record_observations: bool = True) -> str:
+        summary_call = args.get("op") == "results"
+        if summary_call:
+            self.summary_calls += 1
+        else:
+            self.status_calls += 1
+        if self._hang_on == ("summary" if summary_call else "status"):
+            # Never fires. Deliberately not asyncio.sleep: the harness replaces that
+            # with a no-op to keep the poll interval out of the test's runtime, and a
+            # hang built on it would not hang.
+            await asyncio.Event().wait()
+        if summary_call:
+            return json.dumps(self._summary)
+        state = self._states.pop(0) if self._states else "done"
+        return json.dumps({"state": state})
+
+
 class WatchJobTests(unittest.TestCase):
     def _make_worker(self, agent) -> object:
         import queue as _queue
@@ -418,6 +458,59 @@ class WatchJobTests(unittest.TestCase):
         self.assertEqual(ev["state"], "unknown")
         self.assertIn("refused", ev["reason"])
         self.assertLessEqual(agent.status_calls, 6)        # bounded, not forever
+
+    def test_a_status_op_that_never_answers_ends_as_unknown_too(self) -> None:
+        # The one failure that genuinely loses a run. There is no deadline under the
+        # watcher — ``session.call_tool`` takes none and the MCP sessions carry no read
+        # timeout — so a status op that stops answering holds the job in ``_bg_jobs``
+        # for ever: the agent is never released and never woken, and the bulletins keep
+        # repeating a status frozen at the moment it stopped. A watcher that dies at
+        # least says so; this one says nothing.
+        import mimir.client.ui.ws.ws_worker as ws
+
+        agent = _HangingAgent(hang_on="status")
+        worker = self._make_worker(agent)
+        with mock.patch.object(ws, "_TOOL_CALL_TIMEOUT", 0.01):
+            self._run(worker, self._descriptor())
+
+        ev = worker.out_q.get_nowait()
+        self.assertEqual(ev["type"], "job_complete")
+        self.assertEqual(ev["state"], "unknown")
+        self.assertIn("did not answer", ev["reason"])
+        self.assertNotIn("fast", worker._bg_jobs)
+        self.assertLessEqual(agent.status_calls, 6)        # bounded, not forever
+
+    def test_a_timed_out_probe_is_reported_as_unreadable_not_as_running(self) -> None:
+        # What a check-in reads. A bulletin that keeps saying "running" from a status
+        # frozen hours ago is worse than one that admits it cannot tell.
+        import mimir.client.ui.ws.ws_worker as ws
+
+        agent = _HangingAgent(hang_on="status")
+        worker = self._make_worker(agent)
+        seen: list[dict] = []
+        watch = ws._Watch(task=mock.Mock(), descriptor=self._descriptor())
+        worker._bg_jobs["fast"] = watch
+        with mock.patch.object(ws, "_TOOL_CALL_TIMEOUT", 0.01):
+            self._run(worker, self._descriptor())
+            seen.append(dict(watch.status))
+
+        self.assertEqual(seen[0].get("state"), "unreadable")
+
+    def test_a_summary_that_never_answers_does_not_hold_back_the_wake(self) -> None:
+        # The run is already over here, so a summary op that hangs withholds the wake
+        # itself. Better a wake with nothing in it than no wake.
+        import mimir.client.ui.ws.ws_worker as ws
+
+        agent = _HangingAgent(hang_on="summary", states=["done"])
+        worker = self._make_worker(agent)
+        with mock.patch.object(ws, "_TOOL_CALL_TIMEOUT", 0.01):
+            self._run(worker, self._descriptor())
+
+        ev = worker.out_q.get_nowait()
+        self.assertEqual(ev["type"], "job_complete")
+        self.assertEqual(ev["state"], "done")
+        self.assertEqual(ev["summary"], {})
+        self.assertEqual(agent.summary_calls, 1)
         self.assertNotIn("fast", worker._bg_jobs)
 
     def test_a_probe_that_raises_also_ends_as_unknown(self) -> None:

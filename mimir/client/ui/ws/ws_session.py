@@ -231,71 +231,89 @@ class _Session:
         # swept either — the pump has already drained and journaled everything, so what
         # a worker holds is never debris.
         self._sub = self.pool.bus.subscribe()
-
-        # Send ready immediately so the webview transitions out of "connecting".
-        greeting = self._greeting()
+        # Named out here, created inside the guarded body below: the ``finally`` has to
+        # be able to cancel them whether or not the handshake reached the line that
+        # starts them.
+        drain_task: asyncio.Task | None = None
+        jobs_task: asyncio.Task | None = None
+        # Everything from the subscription on is guarded, and that is the point. A
+        # subscription is what tells the pool a socket will route this process's output
+        # — the committer and the headless wake consumer both stand down while one
+        # exists — so a view that ends without closing it leaves the server believing
+        # somebody is watching for as long as it lives: no turn committed, no finished
+        # run handed to its conversation, no check-in. Every step of the handshake sends
+        # on a socket that can close under it (a window shut mid-replay raises here),
+        # which makes an unguarded exit the ordinary case rather than the exotic one.
         try:
-            await self.ws.send(json.dumps(greeting))
-        except Exception:
-            self._sub.close()
-            return
-
-        # ── Session initialisation ────────────────────────────────────────────
-        # Purge any empty sessions left over from previous (pre-fix) reconnects.
-        self._purge_empty_sessions()
-        await self._send_sessions_list()
-        await self._send_toggles()
-
-        sessions = self.store.list_sessions()
-        if sessions:
-            # Auto-load the most recent session.
+            # Send ready immediately so the webview transitions out of "connecting".
+            greeting = self._greeting()
             try:
-                await self._load_session(sessions[0].id)
-            except Exception:
-                await self._create_new_session()
-        else:
-            await self._create_new_session()
-
-        # What happened while nobody was attached, before the cards: a replay under a
-        # chat that is already on screen, and a card on top of that.
-        await self._send_replay()
-
-        # The run never stopped, so its own level is the truth the panel must show.
-        await self._restore_detached_autonomy()
-
-        # Last, so the card lands under a chat that is already on screen.
-        await self._resend_parked_prompt()
-
-        await self._send_served_models()
-
-        # The greeting above may have said "not ready" and the worker may have come up
-        # since. It announces that once, by queueing a second ``ready``, and an
-        # announcement made before this subscription existed is one nothing will repeat:
-        # the chat would sit on "starting the agent" for the life of the socket with a
-        # working agent behind it. Asking the worker directly costs one message.
-        if not greeting["agent_ready"] and self.worker.agent_ready():
-            try:
-                await self.ws.send(json.dumps(self._greeting()))
+                await self.ws.send(json.dumps(greeting))
             except Exception:
                 return
 
-        drain_task = asyncio.create_task(self._drain_loop())
-        # The runs that ended while nothing was listening, off the critical path and
-        # deliberately so. It walks every session's job directories, and a job
-        # directory is never swept however old — so on a long-lived workspace this is
-        # unbounded file work. Awaited here, inside the handshake, it sat between the
-        # client connecting and this loop reading its first message: the chat came up,
-        # said it was ready, and the query was never read. A task cannot do that.
-        jobs_task = asyncio.create_task(self._report_ended_jobs())
-        try:
-            async for raw in self.ws:
-                await self._handle(raw)
-        except Exception:
-            pass
+            # ── Session initialisation ────────────────────────────────────────────
+            # Purge any empty sessions left over from previous (pre-fix) reconnects.
+            self._purge_empty_sessions()
+            await self._send_sessions_list()
+            await self._send_toggles()
+
+            sessions = self.store.list_sessions()
+            if sessions:
+                # Auto-load the most recent session.
+                try:
+                    await self._load_session(sessions[0].id)
+                except Exception:
+                    await self._create_new_session()
+            else:
+                await self._create_new_session()
+
+            # What happened while nobody was attached, before the cards: a replay under a
+            # chat that is already on screen, and a card on top of that.
+            await self._send_replay()
+
+            # The run never stopped, so its own level is the truth the panel must show.
+            await self._restore_detached_autonomy()
+
+            # Last, so the card lands under a chat that is already on screen.
+            await self._resend_parked_prompt()
+
+            await self._send_served_models()
+
+            # The greeting above may have said "not ready" and the worker may have come up
+            # since. It announces that once, by queueing a second ``ready``, and an
+            # announcement made before this subscription existed is one nothing will repeat:
+            # the chat would sit on "starting the agent" for the life of the socket with a
+            # working agent behind it. Asking the worker directly costs one message.
+            if not greeting["agent_ready"] and self.worker.agent_ready():
+                try:
+                    await self.ws.send(json.dumps(self._greeting()))
+                except Exception:
+                    return
+
+            drain_task = asyncio.create_task(self._drain_loop())
+            # The runs that ended while nothing was listening, off the critical path and
+            # deliberately so. It walks every session's job directories, and a job
+            # directory is never swept however old — so on a long-lived workspace this is
+            # unbounded file work. Awaited here, inside the handshake, it sat between the
+            # client connecting and this loop reading its first message: the chat came up,
+            # said it was ready, and the query was never read. A task cannot do that.
+            jobs_task = asyncio.create_task(self._report_ended_jobs())
+            try:
+                async for raw in self.ws:
+                    await self._handle(raw)
+            except Exception:
+                pass
         finally:
-            if self._summary_task is not None:
-                self._summary_task.cancel()
+            # Asked for rather than read: this block runs on every way out, including
+            # a greeting that never reached the socket, and cleanup that raises here
+            # strands the subscription it is on its way to close.
+            summary_task = getattr(self, "_summary_task", None)
+            if summary_task is not None:
+                summary_task.cancel()
             for task in (drain_task, jobs_task):
+                if task is None:
+                    continue
                 task.cancel()
                 try:
                     await task
@@ -967,6 +985,24 @@ class _Session:
                     # ended meanwhile would otherwise have the client and the handler
                     # disagree about whether a new turn began.
                     steer = False if checkin else self._wake_steers(ev)
+                    # Claimed before anything is done with it. This view is one of two
+                    # consumers that can route a finished run — the pool is the other,
+                    # and it routes against the conversation on disk — and a run given
+                    # two turns is a duplicate nothing downstream can undo. The claim
+                    # fails when the pool has already taken it in, which is what
+                    # happens when this loop was slow enough to lose its first refusal:
+                    # the event is still shown, because the news is the user's either
+                    # way, and the turn it started is the pool's.
+                    if not self.pool.bus.claim(ev):
+                        logger.info("durable %s for %s was already taken in; showing "
+                                    "it without starting a turn", ev.get("type"),
+                                    owner)
+                        try:
+                            await self.ws.send(json.dumps(
+                                {**ev, "resumes_active_session": False}, default=str))
+                        except Exception:
+                            return
+                        continue
                     # Handled BEFORE the send, and this order is the point. The event
                     # has already left ``out_q`` and nothing re-emits it, so a socket
                     # that dies on the send — the ordinary end of a connection — must
@@ -1085,9 +1121,28 @@ class _Session:
                     context_mode = getattr(self.worker._agent, "context_mode", "full")
                     # Left and come back before it answered: it lands here after all.
                     self._detached_turns.pop(self._active_session_id, None)
+                    # Whose job it is to write this turn down. The pool writes it when
+                    # no view does — that is what keeps a detached turn from running,
+                    # costing its tokens and vanishing — and two writers of one session
+                    # file lose history silently, so exactly one of us may. Claimed
+                    # here, which is also where this view stops being able to lose it:
+                    # if this loop were wedged, the claim would have gone to the pool.
+                    mine = self.pool.bus.claim(ev)
                     if extras.get("_deferred"):
                         self._pending_interaction = extras["_deferred"]
-                    if full is not None and context_mode == "full":
+                    if not mine:
+                        # The pool wrote it. Re-reading the conversation it wrote is
+                        # how this view catches up, rather than appending a second copy
+                        # of the turn to the history it holds.
+                        logger.info("the answer of session %s was already written by "
+                                    "the pool; reloading rather than writing it twice",
+                                    owner)
+                        try:
+                            await self._reload_active_history()
+                        except Exception:
+                            logger.warning("session %s could not be re-read after the "
+                                           "pool wrote its turn", owner, exc_info=True)
+                    elif full is not None and context_mode == "full":
                         # Keep only what the turn itself produced. The loop may have
                         # trimmed or compacted the prefix it inherited from us, and that
                         # prefix is exactly what the untrimmed record exists to hold —
@@ -1104,13 +1159,14 @@ class _Session:
                         answer_msg = {"role": "assistant", "content": ev.get("text", "")}
                         self.history.append(answer_msg)
                         self.history_full.append(dict(answer_msg))
-                    if ev.get("text"):
-                        self._display_messages.append({
-                            "role": "agent",
-                            "kind": "text",
-                            "text": ev.get("text", ""),
-                        })
-                    self._autosave_session(list(self._display_messages))
+                    if mine:
+                        if ev.get("text"):
+                            self._display_messages.append({
+                                "role": "agent",
+                                "kind": "text",
+                                "text": ev.get("text", ""),
+                            })
+                        self._autosave_session(list(self._display_messages))
                     # Set aside while this conversation was still on screen: the card
                     # it was parked on comes straight back.
                     if extras.get("_deferred"):
@@ -1489,10 +1545,17 @@ class _Session:
             logger.warning("unread steering in session %s has no agent to answer it: %r",
                            session_id, texts)
             return
+        # Which of this turn's steers were never read. A steer the loop did take in
+        # belongs where it was typed, inside the step that read it, and only these move.
+        # Matched on text among the turn's own entries, which is what keeps the match
+        # off an older, identical user turn — and off the job wakes that share the steer
+        # queue and were never written here at all.
+        wanted = set(texts)
+        unread = [e for e in stale if e.get("content") in wanted]
         # The copies written while the run was live, in the middle of the history. The
         # message belongs at the end, where the turn that answers it starts; left in
         # place as well, it reads to the model as having been said twice.
-        self.history = [m for m in self.history if not any(m is e for e in stale)]
+        self.history = [m for m in self.history if not any(m is e for e in unread)]
         text = "\n\n".join(texts)
         self.history.append({"role": "user", "content": text})
         self.history_full.append({"role": "user", "content": text})
@@ -1763,6 +1826,25 @@ class _Session:
             return extras["_full"], extras.get("_turn_start")
         return self.worker.full_history(), None
 
+    async def _reload_active_history(self) -> None:
+        """Re-read the conversation on screen, after something else wrote its turn.
+
+        Narrow on purpose — the history and the display, nothing else. The pool writes
+        a turn only when no view claimed it, which from this view's side means it was
+        not reading when the answer landed: what it holds in memory is a turn behind
+        the file, and appending its own copy of that turn would record it twice.
+        """
+        session_id = self._active_session_id
+        if not session_id:
+            return
+        session = self.store.load_session(session_id)
+        self.history_full = list(session.llm_history_full or session.llm_history)
+        # The window the committer wrote, copied message by message for the same reason
+        # the load path copies: the budgeting pass rewrites messages in place.
+        self.history = [dict(m) for m in session.llm_history]
+        self._submitted_len = len(self.history)
+        self._display_messages = list(session.display_messages)
+
     async def _persist_detached_answer(self, ev: dict, extras: dict | None = None) -> None:
         """Write a detached turn's answer into its own session file.
 
@@ -1775,6 +1857,12 @@ class _Session:
         if not session_id or session_id not in self._detached_turns:
             return
         submitted = self._detached_turns.pop(session_id)
+        if not self.pool.bus.claim(ev):
+            # The pool wrote it, against the same stored conversation this would have.
+            # Nothing is left to do but let the user know, which the caller does.
+            logger.info("the answer of session %s was already written by the pool",
+                        session_id)
+            return
         extras = extras or {}
         full, start = self._answer_transcript(extras)
         # The agent that ran THIS turn, carried on its answer. Read off the worker on
@@ -2085,6 +2173,13 @@ class _Session:
             # Nothing of ours in flight — or a detached wake turn running in another
             # session, which this message must not be injected into. Either way the
             # normal query path is right: the serial query loop queues it.
+            #
+            # The client sent a steer because it still believes a run is going, and the
+            # end of a run reaches the worker before its answer reaches the screen: a
+            # message typed in that gap is answered as a turn of its own, so it is also
+            # told so — unannounced, the bubble kept the "queued" tag of a run that was
+            # already over.
+            await self._announce_steer_turn(text)
             await self._handle_query(msg)
             return
         entry = {"role": "user", "content": text}
@@ -2097,6 +2192,34 @@ class _Session:
             self._active_session_id, {"type": "steer", "text": text})
         self._autosave_session(list(self._display_messages))
         self.worker.submit_steer(text)
+
+    async def _announce_steer_turn(self, text: str) -> None:
+        """Tell the client the steer it just sent became a turn of its own.
+
+        The same ``steer_injected`` :meth:`_flush_unconsumed_steer` sends, and for the
+        same two reasons: the bubble drops the "queued" tag of a run that is over, and
+        ``busy`` is set for a turn the user is waiting on but never pressed send for.
+
+        It goes on the agent's output queue rather than to the socket, because what
+        makes it read correctly is where it sits relative to the answer of the run the
+        message was typed into. That answer is on that queue, ahead of this, and it is
+        what clears ``busy``: sent straight to the socket this would arrive first and
+        the turn would run with no stop button and no end the composer can see. With no
+        agent there is no queue and no answer in flight either, so nothing to be ordered
+        behind — the socket is then the only route.
+        """
+        ev = {"type": "steer_injected", "text": text, "starts_turn": True,
+              # Unstamped it would pass the foreign-event filter and clear a tag in
+              # whatever conversation happens to be on screen.
+              "session_id": self._active_session_id}
+        out_q = getattr(self.pool.get(self._active_session_id), "out_q", None)
+        if out_q is not None:
+            out_q.put(ev)
+            return
+        try:
+            await self.ws.send(json.dumps(ev))
+        except Exception:
+            pass
 
     def _session_title(self, session_id: str) -> str:
         """A conversation's name, or "" if it has none (or none saved yet)."""
@@ -2244,14 +2367,13 @@ class _Session:
         # also not proof that nobody is reachable. Saying so plainly keeps the
         # interactive fallbacks — the bare ``input()`` calls behind the CLI's hooks —
         # from being attempted at all.
-        for _sid, worker in self.pool.items():
-            setter = getattr(worker, "set_non_interactive", None)
-            if setter is not None:
-                try:
-                    setter(True)
-                except Exception:
-                    logger.warning("detach: session %s could not be marked "
-                                   "non-interactive", _sid, exc_info=True)
+        #
+        # Through the pool, so it is recorded as well as pushed: a detached process
+        # builds agents after this point — a conversation whose own agent was released
+        # gets it back when a run of its finishes — and the redirect cannot be undone,
+        # so one that came up without this would reach for a terminal that is a log
+        # file for the rest of the process's life.
+        self._apply_setting("set_non_interactive", True)
 
         info = detach_process(_MIMIR_DIR_WS)
         # The entry already holds the address; this only adds what has changed about

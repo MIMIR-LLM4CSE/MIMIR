@@ -65,6 +65,8 @@ class _IdleCase(unittest.TestCase):
         pool.stop_requested = None
         pool.server_idle_ttl = 100.0
         pool._idle_since = None
+        pool._wakes_pending = {}
+        pool._held_checkin = {}
         pool.bus = _EventBus(pool)
         return pool
 
