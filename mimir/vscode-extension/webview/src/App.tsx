@@ -188,6 +188,9 @@ export const App: React.FC = () => {
   // a connect form into a rejoin: the address and backend a form collects describe how
   // a *new* server would start, and none of them apply to one already serving.
   const [runningServer, setRunningServer] = useState<RunningServer | null>(null);
+  // Whether closing this window stops the server. The host says so on connect; true
+  // until then, which is the ordinary case — a window that started its own.
+  const [serverIsOurs, setServerIsOurs] = useState(true);
   const [contextUsage, setContextUsage] = useState<ContextUsage | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [togglesOpen, setTogglesOpen] = useState(false);
@@ -393,6 +396,12 @@ export const App: React.FC = () => {
         if (msg.path) vscodePostMessage({ type: "open_preview", file: msg.path });
         return;
 
+      case "server_ownership": {
+        // What disconnecting will do, which only the host knows: it kills a server it
+        // spawned and leaves alone one it merely attached to.
+        setServerIsOurs(msg.ours);
+        return;
+      }
       case "config": {
         setAnthropicModels(msg.anthropicModels ?? []);
         if (msg.backend) setBackend(msg.backend);
@@ -978,6 +987,17 @@ export const App: React.FC = () => {
     resetSession();
   }, [disconnect, resetSession]);
 
+  // Stopping a server this window did not start. Asked of the server over the socket
+  // rather than done by the host, which has no process to signal — and `force`,
+  // because the dialog is shown precisely when something is still running and the
+  // user has just said to end it anyway.
+  const confirmStopServer = useCallback(() => {
+    setDisconnectPending(false);
+    send({ type: "shutdown", force: true });
+    disconnect();
+    resetSession();
+  }, [send, disconnect, resetSession]);
+
   // Recompute the @-mention query from the textarea's current value + caret.
   const syncMention = useCallback((el: HTMLTextAreaElement | null) => {
     if (!el) return;
@@ -1368,8 +1388,10 @@ export const App: React.FC = () => {
         {disconnectPending && (
           <DisconnectPrompt
             running={runningSessions}
+            serverIsOurs={serverIsOurs}
             onDetach={confirmDetachThenDisconnect}
             onDiscard={confirmDisconnectAnyway}
+            onStop={confirmStopServer}
             onCancel={() => setDisconnectPending(false)}
           />
         )}

@@ -1403,6 +1403,20 @@ the killing: a module-global flag beside `serverProcess`, and `deactivate()` and
 end, each for its own reason — one it only attached to, one that has detached, and one already
 gone.
 
+**Which means "disconnect" does not mean one thing, and the dialog has to say which.** A
+workspace has one server; a window either started it or attached to the one already serving,
+and only the first dies with it. The disconnect prompt described both as the first —
+*"Disconnecting ends the server, and their turns with it"* — so a window that had attached to
+a running server offered a choice whose stated outcome was the opposite of what happened: the
+runs carried on, which reads as MIMIR having detached itself without being asked. The host is
+the only layer that knows which case it is (the server cannot tell whether the process it runs
+in was spawned by the window now talking to it), so it posts `server_ownership` on every
+connect and whenever detaching changes the answer. `disconnectOutcome` turns that one fact into
+what the dialog may claim and which buttons it offers; where disconnecting would leave the run
+going, the prompt says so and offers stopping the server as its own choice — over the socket,
+as `shutdown` with `force`, which needs no process to signal. That it ends any turn running in
+another window of the same workspace is stated rather than discovered.
+
 **A card nobody can answer is set aside, not waited out.** The wait behind an approval
 passes no timeout, deliberately: nothing may proceed because the user was slow. That is right
 while somebody is there and a deadlock once nobody is — a detached run meets its first

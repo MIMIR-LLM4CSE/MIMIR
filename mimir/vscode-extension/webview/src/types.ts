@@ -173,6 +173,21 @@ export interface ConfigMessage {
   running?: RunningServer | null;
 }
 
+/**
+ * Whose server this window is talking to. Emitted by the extension host, not the
+ * server: only the host knows whether it spawned the process it connected to.
+ *
+ * It decides what disconnecting means. The host kills a server it started and leaves
+ * alone one it only attached to — another window of the same workspace may be reading
+ * it, and a detached one was kept running on purpose — so the same click ends the runs
+ * in one case and leaves them going in the other.
+ */
+export interface ServerOwnershipMessage {
+  type: "server_ownership";
+  /** True when closing this window (or disconnecting) stops the server. */
+  ours: boolean;
+}
+
 /** A server already serving this workspace. */
 export interface RunningServer {
   url: string;
@@ -758,6 +773,7 @@ export type ServerMessage =
   | EnforcementModeMessage
   | ApprovalModeMessage
   | AgentModeMessage
+  | ServerOwnershipMessage
   | ThinkingDepthMessage
   | TemperatureMessage
   | StreamingStateMessage
@@ -817,6 +833,21 @@ export interface DetachMessage {
    *  survive a window closing is that nobody kills it, which is a decision rather
    *  than a state of the process. */
   enabled?: boolean;
+}
+
+/**
+ * Stop the server, now or once it has nothing left to do.
+ *
+ * Sent rather than inferred from closing the socket, because a server this window did
+ * not start is not killed by the host: it has no process to signal, and ending a
+ * workspace's server is a decision in any case. `force` stops it whatever is in
+ * flight — the user's own call about their own machine, and the only way to end a run
+ * waiting on an answer they have decided not to give. Without it the request is
+ * refused while anything is still working, and the reasons come back.
+ */
+export interface ShutdownMessage {
+  type: "shutdown";
+  force?: boolean;
 }
 
 /** A message typed while the agent is busy — injected into the running turn. */
@@ -946,7 +977,8 @@ export type ClientMessage =
   | ListResourcesMessage
   | ToggleServerMessage
   | ToggleSkillMessage
-  | SetModelMessage;
+  | SetModelMessage
+  | ShutdownMessage;
 
 // ── UI state types ─────────────────────────────────────────────────────────────
 
