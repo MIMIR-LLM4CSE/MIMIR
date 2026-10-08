@@ -36,6 +36,7 @@ import { AgentSettings } from "./components/AgentSettings";
 import { ApprovalSwitcher } from "./components/ApprovalSwitcher";
 import { DetachButton } from "./components/DetachButton";
 import { DisconnectPrompt } from "./components/DisconnectPrompt";
+import { workingSessions } from "./components/disconnectUtils";
 import { ModeSwitcher } from "./components/ModeSwitcher";
 import { TogglesPanel } from "./components/TogglesPanel";
 import { ConnectForm } from "./components/ConnectForm";
@@ -936,15 +937,10 @@ export const App: React.FC = () => {
   // once, and those are invisible without it — but the list is pushed when a turn
   // *ends*, not when one starts, so it says nothing about the turn happening right here.
   // For that one the client's own `busy` is authoritative and immediate.
-  const runningSessions = useMemo(() => {
-    const others = sessions.filter((s) => s.running && s.id !== activeSessionId);
-    if (!busy || !activeSessionId) return others;
-    const mine = sessions.find((s) => s.id === activeSessionId);
-    return [
-      mine ?? { id: activeSessionId, title: "", created_at: "", updated_at: "" },
-      ...others,
-    ];
-  }, [sessions, activeSessionId, busy]);
+  const runningSessions = useMemo(
+    () => workingSessions(sessions, activeSessionId, busy),
+    [sessions, activeSessionId, busy],
+  );
 
   /**
    * Disconnect, asking first when it would end work that is still running.

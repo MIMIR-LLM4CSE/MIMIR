@@ -469,6 +469,12 @@ export interface SessionMeta {
   parked?: boolean;
   /** It asked for a turn but every agent slot is taken; it starts when one frees. */
   queued?: boolean;
+  /** How many background runs it still has going.
+   *
+   *  Not the same question as `running`: a conversation that launched a two-hour build
+   *  and answered has no turn in flight, and is exactly the one worth asking about
+   *  before walking away. */
+  runs?: number;
 }
 
 export interface SessionsListMessage {

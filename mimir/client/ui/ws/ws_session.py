@@ -385,15 +385,27 @@ class _Session:
         conversation nobody is reading is invisible otherwise, and one *parked on a card* is
         worse than invisible: it waits on a person, with no timeout, by design — so a
         conversation can sit stopped for ever with nothing on screen to explain it.
+
+        ``runs`` is the count of background runs it still has going, and it is not the
+        same question as ``running``: a conversation that launched a two-hour build and
+        answered has no turn in flight at all. That is the case detaching exists for,
+        and it was the one case nothing reported — the panel asked whether to keep the
+        work going only when a *turn* was live, so a job submitted and left behind was
+        abandoned with no question asked. Read off the live worker, which is where the
+        watchers are: a run cannot be live without one, since ``releasable`` refuses to
+        close a worker that holds a watcher.
         """
         # Guarded: this is read for every row of every listing, and the send around it
         # swallows exceptions — so a hiccup here would blank the whole panel rather than
         # lose one dot.
         try:
+            worker = self.pool.get(session_id)
+            runs = len(worker.watched_job_keys()) if worker is not None else 0
             return {
                 "running": self.pool.is_busy(session_id),
                 "parked": self.pool.is_parked(session_id),
                 "queued": self.pool.queued_position(session_id) is not None,
+                "runs": runs,
             }
         except Exception:
             return {}
@@ -1028,6 +1040,12 @@ class _Session:
                             default=str))
                     except Exception:
                         return
+                    if not checkin:
+                        # One run fewer. Behind the notification, never ahead of it:
+                        # the news is what the user is waiting for and this is
+                        # bookkeeping. Refreshed here as well as at the end of a turn so
+                        # a row never goes on claiming a run that has finished.
+                        await self._send_sessions_list()
                     continue
                 if self._is_foreign_event(ev):
                     # Counted here rather than in the predicate, which must stay a
@@ -1179,6 +1197,12 @@ class _Session:
                     # This conversation stopping work may let the pool release a different
                     # idle one to make room for whoever is waiting.
                     await self._admit_waiting()
+                    # What it is still doing, now that it has stopped answering. A turn
+                    # that launched a background run ends with no turn in flight and a
+                    # run going, and the panel decides from this list whether walking
+                    # away would abandon work — so a stale row here is a two-hour build
+                    # dropped with no question asked.
+                    await self._send_sessions_list()
                     # Sent directly rather than via out_q, so the snapshot dict is read
                     # *after* any batch_review_accept that arrived mid-run cleared it.
                     try:

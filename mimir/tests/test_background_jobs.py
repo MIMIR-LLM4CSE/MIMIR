@@ -1255,7 +1255,12 @@ class WakeCoalescingTests(unittest.TestCase):
             self.assertIn(key, text)
 
     def _drained_frame(self, ev: dict) -> dict:
-        """The frame the drain loop sends the client for *ev*."""
+        """The frame the drain loop sends the client *for ev*.
+
+        Picked by type rather than by position: handling a finished run also refreshes
+        the session rows — one run fewer — and which of the two leaves first is not what
+        these tests are about.
+        """
         events = [ev]
         self.worker.drain = lambda: [events.pop()] if events else []
 
@@ -1266,11 +1271,16 @@ class WakeCoalescingTests(unittest.TestCase):
             self.session._sub = self.session.pool.bus.subscribe()
             self.session.pool.bus.pump_once()
             task = asyncio.create_task(self.session._drain_loop())
-            while not self.ws.sent:
+            # Waited for by type: handling a finished run also refreshes the session
+            # rows, so "a frame arrived" is not "the frame arrived".
+            while not any(f.get("type") == ev.get("type") for f in self.ws.sent):
                 await asyncio.sleep(0.01)
             task.cancel()
 
         asyncio.run(asyncio.wait_for(run(), 5))
+        for frame in self.ws.sent:
+            if frame.get("type") == ev.get("type"):
+                return frame
         return self.ws.sent[0]
 
     def test_one_run_announced_twice_wakes_the_conversation_once(self) -> None:

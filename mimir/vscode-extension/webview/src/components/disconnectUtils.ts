@@ -12,6 +12,31 @@
  * Pure, and separate from the dialog, so what it claims can be tested without a DOM.
  */
 
+/**
+ * The conversations that would be abandoned by disconnecting now.
+ *
+ * "Working" is not "a turn is in flight". A conversation that launched a two-hour
+ * build and answered has no turn at all, and is precisely the one worth asking about
+ * before walking away — it is the case detaching exists for. Asking only about live
+ * turns meant the question was never put for it: the job was left behind silently,
+ * which from the outside looks exactly like MIMIR having decided to detach on its own.
+ *
+ * *busy* is the client's own flag for the conversation on screen, and it is
+ * authoritative for that one: the sessions list is pushed when a turn *ends*, so it
+ * lags the turn happening right here.
+ */
+export function workingSessions<T extends {
+  id: string; running?: boolean; runs?: number;
+}>(sessions: T[], activeSessionId: string | null, busy: boolean): T[] {
+  const working = (s: T | undefined) =>
+    !!s && (!!s.running || (s.runs ?? 0) > 0);
+  const others = sessions.filter((s) => working(s) && s.id !== activeSessionId);
+  if (!activeSessionId) return others;
+  const mine = sessions.find((s) => s.id === activeSessionId);
+  if (!busy && !working(mine)) return others;
+  return mine ? [mine, ...others] : others;
+}
+
 /** Which actions a disconnect dialog offers, and what it may truthfully say. */
 export interface DisconnectOutcome {
   /** What disconnecting does to the runs, in the dialog's own voice. */

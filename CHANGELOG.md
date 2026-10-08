@@ -27,6 +27,16 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   switcher is on screen.
 
 ### Fixed
+- Leaving while a background run is going now asks, instead of walking away in
+  silence. The question — keep them going, or disconnect — was put only when a *turn*
+  was in flight, and a conversation that launched a two-hour build and answered has no
+  turn at all. That is the case detaching exists for, and it was the one case nothing
+  asked about: the job was abandoned with no dialog, which from the outside is
+  indistinguishable from MIMIR having detached itself without being asked. Each
+  conversation's row now carries how many runs it still has going, and the panel reads
+  that beside the live turn. The activity rows are also refreshed when a run starts and
+  when one ends, so the dot beside a conversation chewing through a job no longer looks
+  inert — and no longer claims a run that finished hours ago.
 - Detaching now behaves like being there. A run finishing with the window shut got
   its turn, and the chain stopped at that one link: a connection does more when an
   answer lands than write it down — it puts the steering the turn never read to a new

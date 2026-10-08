@@ -102,7 +102,10 @@ Protocol — all messages are JSON objects, one per send/recv:
                                "running": false,   # a turn of it is in flight
                                "parked": false,    # its turn waits on a card: no timeout,
                                                    # so it stays stopped until answered
-                               "queued": false}]}  # waiting for an agent slot
+                               "queued": false,    # waiting for an agent slot
+                               "runs": 0}]}        # background runs still going, which
+                                                   # a conversation has with no turn
+                                                   # in flight — the detach case
     {"type": "session_loaded", "session_id": "...", "title": "...",
                                "display_messages": [...], "todos": [...]}
     {"type": "shutting_down",  "forced": false, "reasons": [...]}

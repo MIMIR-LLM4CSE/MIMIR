@@ -1527,11 +1527,17 @@ class _AgentWorker:
     def watched_job_keys(self) -> list[str]:
         """Keys of the runs this conversation still has in flight.
 
-        What the session asks before delivering a check-in it held back: a bulletin on
-        runs that have since finished is worse than none, their completion wakes having
-        already said more than it could.
+        Asked before delivering a check-in it held back — a bulletin on runs that have
+        since finished is worse than none — and by the panel, which reports a live run
+        beside a live turn so walking away from one is a question rather than a
+        surprise.
+
+        A worker with no table of watchers has no watchers, which is the honest answer
+        to give rather than an attribute error: this is read for every row of every
+        session listing, behind a guard that would blank the whole panel.
         """
-        return [k for k, w in self._bg_jobs.items() if not w.task.done()]
+        watched = getattr(self, "_bg_jobs", None) or {}
+        return [k for k, w in watched.items() if not w.task.done()]
 
     def _watched_bg_jobs(self) -> list[dict]:
         """Descriptors of the runs a watcher is currently holding (the agent's hook).

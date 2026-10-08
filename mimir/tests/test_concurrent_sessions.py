@@ -24,6 +24,17 @@ from mimir.client.ui.ws.ws_session import _Session
 from mimir.client.ui.ws.ws_worker import _AgentWorker
 
 
+def _watch(*, done: bool = False):
+    """A watcher as ``watched_job_keys`` reads one: a task it can ask if it is finished."""
+    class _Task:
+        @staticmethod
+        def done() -> bool:
+            return done
+    class _Watch:
+        task = _Task()
+    return _Watch()
+
+
 class _FakeWS:
     def __init__(self) -> None:
         self.sent: list[dict] = []
@@ -182,9 +193,32 @@ class WhatIsRunningTests(unittest.IsolatedAsyncioTestCase):
         self.a._query_session_id = "s1"
         self.b._pending_prompt = {"id": "card-b"}
         self.assertEqual(self.sess._session_activity("s1"),
-                         {"running": True, "parked": False, "queued": False})
+                         {"running": True, "parked": False, "queued": False,
+                          "runs": 0})
         self.assertEqual(self.sess._session_activity("s2"),
-                         {"running": False, "parked": True, "queued": False})
+                         {"running": False, "parked": True, "queued": False,
+                          "runs": 0})
+
+    def test_a_sleeping_conversation_with_a_run_going_is_not_reported_idle(self) -> None:
+        """The row the disconnect question is decided from.
+
+        A run in the background and the agent asleep: no turn in flight anywhere, which
+        is the ordinary state of the thing detaching exists for. Reported as idle, the
+        panel let the window close on a two-hour job without asking — the same from the
+        outside as MIMIR having decided to detach on its own.
+        """
+        self.a._query_session_id = None                  # nothing is answering
+        self.a._bg_jobs = {"j1": _watch(), "j2": _watch()}
+        activity = self.sess._session_activity("s1")
+        self.assertFalse(activity["running"], "no turn is in flight")
+        self.assertEqual(activity["runs"], 2)
+
+    def test_a_run_that_has_ended_stops_being_counted(self) -> None:
+        # Otherwise the row goes on claiming it and every later disconnect asks about
+        # work that finished hours ago.
+        self.a._query_session_id = None
+        self.a._bg_jobs = {"j1": _watch(done=True)}
+        self.assertEqual(self.sess._session_activity("s1")["runs"], 0)
 
     def test_every_conversations_output_is_drained_busy_or_not(self) -> None:
         """The pump drains them all, and the journal keeps what it drained.
