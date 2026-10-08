@@ -174,6 +174,28 @@ function appendStamped(messages: ChatMessage[], msg: ChatMessage): ChatMessage[]
 }
 
 /**
+ * Append *msg* above the messages the turn in flight has not claimed.
+ *
+ * A steer bubble carries its "queued" tag until the server says the run read it, so a
+ * tagged bubble still at the tail when the turn ends is one no step of it took in: it
+ * is answered by a turn of its own, and the message was typed *during* the step that
+ * is ending here. What closes that step therefore belongs above it — appended after
+ * it, the answer of the turn before reads as a reply to a message not yet sent.
+ *
+ * This is the other half of {@link appendStamped}, which puts a bubble under the cards
+ * and prose that were already on screen: there the step's own output comes back above
+ * the bubble, and the authoritative text that supersedes it has to land in the same
+ * place.
+ */
+function appendAboveUnclaimed(
+  messages: ChatMessage[], msg: ChatMessage,
+): ChatMessage[] {
+  let at = messages.length;
+  while (at > 0 && messages[at - 1].queued) at--;
+  return [...messages.slice(0, at), msg, ...messages.slice(at)];
+}
+
+/**
  * Bake the turn's live state into the transcript and clear it, in arrival order.
  *
  * Prose, reasoning blocks and tool rows are collected in three separate streams,
@@ -396,6 +418,10 @@ export function createChatReducer(makeId: () => string) {
       // typed into ended before any step boundary read it, so the server submitted it.
       // Nobody pressed send for that turn, so `busy` is set here — it is what offers
       // the stop button and makes the end of the turn observable at all.
+      //
+      // Where the bubble sits is settled by the tag, not here: while it is set, the
+      // turn in flight has not claimed the message, and whatever ends that turn is
+      // placed above it.
       case "steer_injected": {
         const busy = action.starts_turn ? true : state.busy;
         const idx = state.messages.findIndex((m) => m.queued);
@@ -1089,17 +1115,14 @@ export function createChatReducer(makeId: () => string) {
         );
         const hasEditCard = finalized.some((m) => m.kind === "editing");
         const attachDiffs = !hasEditCard && diffs.length > 0 ? diffs : undefined;
-        const messages: ChatMessage[] = [
-          ...finalized,
-          {
-            id: makeId(),
-            role: "agent",
-            kind: "text",
-            text: action.text,
-            diffs: attachDiffs,
-            thinking: thinkingText || undefined,
-          },
-        ];
+        const messages = appendAboveUnclaimed(finalized, {
+          id: makeId(),
+          role: "agent",
+          kind: "text",
+          text: action.text,
+          diffs: attachDiffs,
+          thinking: thinkingText || undefined,
+        });
         return { ...s, messages };
       }
 
@@ -1119,12 +1142,12 @@ export function createChatReducer(makeId: () => string) {
 
       case "error": {
         const s = flushLive({ ...state, toolCallAfterToken: false }, makeId);
-        const messages: ChatMessage[] = [
-          ...s.messages.map((m) =>
+        const messages: ChatMessage[] = appendAboveUnclaimed(
+          s.messages.map((m) =>
             m.kind === "editing" && m.live ? { ...m, live: false } : m
           ),
           { id: makeId(), role: "agent", kind: "error", text: action.text },
-        ];
+        );
         return { ...s, busy: false, messages };
       }
 

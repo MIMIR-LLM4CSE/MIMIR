@@ -152,16 +152,17 @@ describe("chatReducer", () => {
 
     // The bubble arrived after the prose and after the tool row, and stays under
     // both — including once the step is frozen, which is what used to lift the
-    // prose back above it.
+    // prose back above it. The error ends that step and nothing read the message,
+    // so it closes above it too, and the bubble is left waiting at the end.
     expect(state.messages.map((m) => [m.role, m.kind])).toEqual([
       ["user", "text"],    // the query
       ["agent", "text"],   // "Looking into it."
       ["agent", "tools"],  // t1
-      ["user", "text"],    // the steer
       ["agent", "error"],
+      ["user", "text"],    // the steer
     ]);
-    expect(state.messages[3].text).toBe("also check the tests");
-    expect(state.messages[3].queued).toBe(true);
+    expect(state.messages[4].text).toBe("also check the tests");
+    expect(state.messages[4].queued).toBe(true);
   });
 
   it("keeps a steer bubble above the prose that started after it", () => {
@@ -186,6 +187,39 @@ describe("chatReducer", () => {
 
     expect(state.messages[1].queued).toBeFalsy();
     expect(state.busy).toBe(true);
+  });
+
+  it("leaves a steer the run never read below the answer that run ended on", () => {
+    // Typed while the final answer was streaming. The bubble is stamped under the
+    // cards already on screen, and the answer that supersedes that prose has to come
+    // back above it: appended last, as it used to be, the reply to "go" sat under a
+    // message the user had not sent when it was written.
+    const state = run([
+      { type: "submit_query", text: "go" },
+      { type: "token", text: "All d" },
+      { type: "steer_query", text: "also check the tests" },
+      { type: "answer", text: "All done!" },
+    ]);
+
+    expect(state.messages.map((m) => m.text)).toEqual([
+      "go", "All done!", "also check the tests",
+    ]);
+  });
+
+  it("keeps the answer under a steer bubble the run did read", () => {
+    // Confirmed mid-run, so it was taken in by a step of this turn: the message was
+    // said before the answer, and belongs above it.
+    const state = run([
+      { type: "submit_query", text: "go" },
+      { type: "steer_query", text: "also check the tests" },
+      { type: "steer_injected", text: "also check the tests" },
+      { type: "token", text: "Both done." },
+      { type: "answer", text: "Both done." },
+    ]);
+
+    expect(state.messages.map((m) => m.text)).toEqual([
+      "go", "also check the tests", "Both done.",
+    ]);
   });
 
   it("goes busy again for the turn started for a steer the run never read", () => {

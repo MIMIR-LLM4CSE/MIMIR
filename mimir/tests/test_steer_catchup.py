@@ -231,6 +231,26 @@ class TheCatchUpTurnTests(unittest.TestCase):
         self.assertEqual([m["text"] for m in injected], ["first", "second"])
         self.assertEqual([m["starts_turn"] for m in injected], [False, True])
 
+    def test_a_steer_the_turn_did_read_is_left_where_it_was_typed(self) -> None:
+        """Only the unread ones move: the read one was taken in by a step of that turn."""
+        self._steer("read in time")
+        self._steer("too late")
+        self._flush(["too late"])
+        _text, history, _sid = self.worker.submitted[0]
+        self.assertEqual([m["content"] for m in history],
+                         ["do it", "read in time", "too late"])
+
+    def test_a_wake_sharing_the_steer_queue_moves_nothing_of_ours(self) -> None:
+        """Job wakes go into the same queue and were never written here as turns."""
+        self._steer("my own message")
+        self._flush(["a job finished", "my own message"])
+        _text, history, _sid = self.worker.submitted[0]
+        # Ours moved to the turn that answers it, the wake rode along, and neither
+        # reads twice — the match ran over this turn's own entries, not over a list
+        # one of the two was never in.
+        self.assertEqual([m["content"] for m in history],
+                         ["do it", "a job finished\n\nmy own message"])
+
     def test_a_turn_that_read_its_steering_starts_nothing(self) -> None:
         self._steer("read in time")
         self._flush([])
@@ -241,6 +261,90 @@ class TheCatchUpTurnTests(unittest.TestCase):
         """Entries kept past the turn would delete a later turn's history from under it."""
         self._steer("read in time")
         self._flush([])
+        self.assertEqual(self.session._live_steer, [])
+
+
+class SteerSentIntoARunThatHasJustEndedTests(unittest.TestCase):
+    """The other half of the same gap: the message arrives after the run has ended.
+
+    A run ends in the worker a moment before its answer reaches the screen. The chat is
+    still busy until it lands, so a message typed in that gap is sent as a steer — and
+    there is no longer a run to steer into. It is answered as a turn of its own, which
+    was always true; what was missing is that nobody told the client, so the bubble kept
+    the "queued" tag of a run that was over.
+
+    The notice cannot be sent from here: the answer is still on the wire ahead of it and
+    is what clears ``busy``. It goes on the queue that answer is in, behind it.
+    """
+
+    def setUp(self) -> None:
+        from mimir.client.ui.ws import session_store, transcript_log
+        from mimir.client.ui.ws.ws_session import _Session
+
+        self._tmp = tempfile.mkdtemp(prefix="mimir-steer-late-")
+        self.addCleanup(shutil.rmtree, self._tmp, ignore_errors=True)
+        for target, attr in ((session_store, "STATE_DIR"),
+                             (transcript_log, "_MIMIR_DIR_WS")):
+            patcher = mock.patch.object(target, attr, self._tmp)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+        self.ws, self.worker = _FakeWS(), _FakeWorker()
+        self.worker.out_q = _queue.Queue()
+        self.worker.is_busy = lambda: False      # the turn ended a moment ago
+        # What the ordinary query path reads on the way in, and nothing of what is
+        # under test here: the history fits, and there are no @-mentions to resolve.
+        self.worker.get_context_mode = lambda *_a: "flat"
+        self.worker.context_overhead_tokens = lambda: 0
+        self.session = _Session(self.ws, FakePool(self.worker))
+        meta = self.session.store.new_session()
+        self.session.store.save_session(meta)
+        self.sid = meta.id
+        self.session._active_session_id = self.sid
+        self.session.history = [{"role": "user", "content": "do it"}]
+        self.session.history_full = list(self.session.history)
+        self.session._display_messages = []
+
+    def _steer(self, text: str) -> None:
+        asyncio.run(self.session._handle_steer({"text": text}))
+
+    def _injected(self) -> list[dict]:
+        return [ev for ev in list(self.worker.out_q.queue)
+                if ev.get("type") == "steer_injected"]
+
+    def test_the_message_is_answered_as_a_turn_of_its_own(self) -> None:
+        self._steer("use the other file")
+        self.assertEqual(len(self.worker.submitted), 1)
+        self.assertEqual(self.worker.submitted[0][0], "use the other file")
+        self.assertEqual(self.worker.steered, [])
+
+    def test_the_client_is_told_so_the_bubble_loses_its_queued_tag(self) -> None:
+        self._steer("use the other file")
+        self.assertEqual([ev["text"] for ev in self._injected()],
+                         ["use the other file"])
+        self.assertTrue(self._injected()[0]["starts_turn"])
+
+    def test_the_notice_rides_the_queue_the_answer_is_on(self) -> None:
+        """Sent straight to the socket it would overtake the answer, which clears busy."""
+        self._steer("use the other file")
+        self.assertEqual([ev for ev in self.ws.sent
+                          if ev.get("type") == "steer_injected"], [])
+
+    def test_it_is_stamped_with_the_conversation_it_belongs_to(self) -> None:
+        """Unstamped, the foreign-event filter would let it into another chat."""
+        self._steer("use the other file")
+        self.assertEqual(self._injected()[0]["session_id"], self.sid)
+
+    def test_with_no_agent_at_all_the_notice_goes_straight_to_the_socket(self) -> None:
+        """No agent means no run and no answer in flight: nothing to be ordered behind."""
+        self.session.pool.worker = None
+        asyncio.run(self.session._announce_steer_turn("use the other file"))
+        injected = [ev for ev in self.ws.sent if ev.get("type") == "steer_injected"]
+        self.assertEqual([ev["text"] for ev in injected], ["use the other file"])
+
+    def test_the_turn_is_not_bookkept_as_live_steering(self) -> None:
+        """It steers nothing, so the answer flush must not delete its history entry."""
+        self._steer("use the other file")
         self.assertEqual(self.session._live_steer, [])
 
 

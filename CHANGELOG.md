@@ -111,6 +111,17 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   still to be claimed now count as work in progress like the rest. An agent rebuilt
   for any reason also resumes the context the last one had carried, which previously
   only happened when a panel reopened the conversation.
+- A message typed into the last step of a run is answered instead of being left
+  tagged "queued". Steering is taken in at a step boundary, and the step that writes
+  the final answer has none after it, so a message typed while that answer streamed
+  reached the queue once the loop had stopped draining: the run ended, nothing read
+  it, and the bubble kept the tag of a turn that was over — in full-context mode the
+  history lost the message too. What the loop never read now leaves with the answer
+  and is answered by a turn of its own, ahead of any background-job wake, because the
+  user is waiting on their own message. The bubble is placed by the same fact: while
+  it is still tagged, the turn in flight has not claimed it, so the answer that ends
+  that turn comes back **above** it — appended after it, the reply to the previous
+  message read as a reply to one the user had not sent yet.
 - A watcher whose status op stops answering now gives up instead of waiting for ever.
   Nothing beneath it had a deadline, so a wedged tool server or a scheduler that hung
   froze the watcher in place: the job was never reported, the agent was never released
