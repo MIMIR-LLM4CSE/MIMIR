@@ -88,6 +88,16 @@ export interface CommandOutputMessage {
   /** A single line under the rows, e.g. "This cannot be undone." */
   note?: string;
   tone?: CommandTone;
+  /**
+   * Rendered, never stored.
+   *
+   * For a card that describes the state at this moment rather than something that
+   * happened in the conversation. Kept in the transcript it is replayed on every load,
+   * so a conversation reconnected to twenty times reopens on twenty copies of it, each
+   * above whatever answer it happened to follow and every one of them describing a
+   * past moment as if it were now.
+   */
+  transient?: boolean;
 }
 
 /** Which conversation a card belongs to.

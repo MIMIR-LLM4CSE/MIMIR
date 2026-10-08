@@ -29,6 +29,51 @@ describe("pruneForStorage", () => {
     expect(out).toEqual({ id: "m1", role: "agent", kind: "text", text: "…" });
   });
 
+  it("leaves out a card that describes the moment rather than the conversation", () => {
+    // Kept, it is replayed on every load: a conversation reconnected to twenty times
+    // reopens on twenty copies of the same notice, each claiming to be now.
+    const out = pruneForStorage([
+      { id: "m1", role: "user", kind: "text", text: "go" },
+      {
+        id: "m2", role: "agent", kind: "command",
+        command: {
+          type: "command_output", command: "detach",
+          title: "still running under “auto_all”", tone: "quiet", transient: true,
+        },
+      },
+    ]);
+    expect(out.map((m) => m.id)).toEqual(["m1"]);
+  });
+
+  it("takes the detach notice out however it got there", () => {
+    // It is one by nature, so naming it is what removes the copies a transcript is
+    // already carrying.
+    const out = pruneForStorage([
+      {
+        id: "m1", role: "agent", kind: "command",
+        command: {
+          type: "command_output", command: "detach",
+          title: "Still running under “auto_all”", tone: "warn",
+          note: "The level it was detached with.",
+        },
+      },
+    ]);
+    expect(out).toEqual([]);
+  });
+
+  it("keeps the answer to a command the user typed", () => {
+    // The ordinary case, and the one this must not break: "/memory list" prints
+    // nothing if its answer is dropped.
+    const messages: ChatMessage[] = [{
+      id: "m1", role: "agent", kind: "command",
+      command: {
+        type: "command_output", command: "/memory list", title: "3 memories",
+        items: [{ label: "one" }],
+      },
+    }];
+    expect(pruneForStorage(messages)).toEqual(messages);
+  });
+
   it("leaves out an approval card nobody can answer any more", () => {
     // The reducer rewrites an answered card into text or removes it, so one still
     // holding an `approval` is an unresolved prompt — and it renders as nothing.

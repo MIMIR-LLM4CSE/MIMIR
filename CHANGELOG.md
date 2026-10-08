@@ -16,6 +16,13 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [1.3.1] — 2026-10-08
 
 ### Changed
+- The notice about a run you have rejoined is no longer kept in the conversation. It
+  went into the stored transcript like any other card, so it came back on every load:
+  a conversation reconnected to twenty times reopened on twenty copies of it, each
+  above whatever answer it happened to follow and every one of them describing a past
+  attachment as if it were now. It describes the moment, so it is now rendered and not
+  stored — and the copies a transcript is already carrying leave with the next one it
+  sends.
 - Rejoining a run that kept going is announced quietly. The panel has to say what
   level the run is under — a worker rebuilt during the absence would otherwise come up
   on the pool-wide record, and a run silently dropped from `auto_all` to `manual` parks

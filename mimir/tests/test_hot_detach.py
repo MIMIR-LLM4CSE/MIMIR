@@ -260,6 +260,14 @@ class ComingBackToARunTests(unittest.IsolatedAsyncioTestCase):
         await self.sess._restore_detached_autonomy()
         self.assertEqual((self._notice() or {}).get("tone"), "quiet")
 
+    async def test_it_is_not_kept_in_the_conversation(self):
+        # It describes this attachment, not anything that happened in the chat. Stored,
+        # it is replayed on every load — and a conversation rejoined twenty times opens
+        # on twenty copies of it, each claiming to be now.
+        self._detached_at("auto_all")
+        await self.sess._restore_detached_autonomy()
+        self.assertTrue((self._notice() or {}).get("transient"))
+
     async def test_it_does_not_explain_a_control_already_on_screen(self):
         self._detached_at("auto")
         await self.sess._restore_detached_autonomy()

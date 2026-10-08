@@ -688,6 +688,7 @@ export function createChatReducer(makeId: () => string) {
                 items: (action.items ?? []).filter((i) => (i?.label ?? "").trim()),
                 note: (action.note ?? "").trim(),
                 tone: action.tone ?? "ok",
+                transient: action.transient ?? false,
               },
           }),
         };

@@ -1771,9 +1771,13 @@ class _Session:
                 # user has just walked back into — the one moment they are reading for
                 # what happened rather than for what to do. So it reads as a rule
                 # across the thread, marking where they rejoined and under what.
+                # Transient: it describes the state at this attachment, not anything
+                # that happened in the conversation. Stored, every later load would
+                # replay it — and a conversation rejoined twenty times would open on
+                # twenty of them, each claiming to be now.
                 await self._command_reply(
                     "detach", f"still running under \u201c{level}\u201d",
-                    tone="quiet")
+                    tone="quiet", transient=True)
         except Exception:
             return
         logger.info("reattach: autonomy restored to %s from the detached run", level)
@@ -2844,6 +2848,7 @@ class _Session:
         items: list[dict] | None = None,
         note: str = "",
         tone: str = "ok",
+        transient: bool = False,
     ) -> None:
         """Send one structured answer for a session command.
 
@@ -2865,6 +2870,11 @@ class _Session:
         nothing in it, ``quiet`` for a state the user has walked back into rather than
         caused — drawn as a rule across the thread, with no badge and no border, since
         there is nothing to deal with. ``items`` are ``{label, detail}`` rows.
+
+        ``transient`` keeps the card out of the stored transcript. For one that
+        describes this moment rather than the conversation: stored, it is replayed on
+        every load, so a conversation reconnected to twenty times reopens on twenty
+        copies of it, each above whatever answer it happened to follow.
         """
         await self.ws.send(json.dumps({
             "type":    "command_output",
@@ -2873,6 +2883,7 @@ class _Session:
             "items":   items or [],
             "note":    note,
             "tone":    tone,
+            "transient": transient,
         }))
 
     async def _send_thinking_state(self) -> None:
