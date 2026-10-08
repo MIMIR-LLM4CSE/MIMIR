@@ -2227,6 +2227,46 @@ class TodoServerTests(unittest.TestCase):
         payload = server_todo.todo_update(5, True)
         self.assertEqual(payload["status"], "error")
 
+    def test_todo_update_rewords_item_keeping_its_tick(self) -> None:
+        server_todo.todo_write(["x", "y"])
+        server_todo.todo_update(0, True)
+        payload = server_todo.todo_update(0, text="x, narrowed")
+        self.assertEqual(payload["status"], "ok")
+        self.assertEqual(payload["item"]["text"], "x, narrowed")
+        self.assertTrue(payload["item"]["done"])
+        self.assertEqual(server_todo.todo_read()["items"][1]["text"], "y")
+
+    def test_todo_update_with_neither_field_is_error(self) -> None:
+        server_todo.todo_write(["x"])
+        self.assertEqual(server_todo.todo_update(0)["status"], "error")
+
+    def test_todo_update_empty_text_is_error(self) -> None:
+        server_todo.todo_write(["x"])
+        self.assertEqual(server_todo.todo_update(0, text="  ")["status"], "error")
+
+    def test_todo_write_carries_over_ticks_of_unchanged_steps(self) -> None:
+        server_todo.todo_write(["a", "b", "c"])
+        server_todo.todo_update(0, True)
+        server_todo.todo_update(1, True)
+        payload = server_todo.todo_write(["a", "b", "b2 discovered", "c"])
+        self.assertEqual(payload["kept_done"], 2)
+        items = server_todo.todo_read()["items"]
+        self.assertEqual([it["done"] for it in items], [True, True, False, False])
+        self.assertEqual(server_todo.todo_read()["pending"], 2)
+
+    def test_todo_write_carries_over_one_tick_per_done_duplicate(self) -> None:
+        server_todo.todo_write(["same", "same"])
+        server_todo.todo_update(0, True)
+        server_todo.todo_write(["same", "same"])
+        items = server_todo.todo_read()["items"]
+        self.assertEqual([it["done"] for it in items], [True, False])
+
+    def test_todo_write_reworded_step_starts_pending(self) -> None:
+        server_todo.todo_write(["a"])
+        server_todo.todo_update(0, True)
+        server_todo.todo_write(["a, revised"])
+        self.assertFalse(server_todo.todo_read()["items"][0]["done"])
+
     def test_todo_write_empty_clears_list(self) -> None:
         server_todo.todo_write(["old step"])
         server_todo.todo_write([])

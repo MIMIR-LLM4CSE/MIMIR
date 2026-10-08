@@ -16,6 +16,18 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [1.3.1] — 2026-10-08
 
 ### Changed
+- Revising the task checklist mid-work no longer costs the progress already on it.
+  Only one shape of change existed for the list's contents — resend the whole thing —
+  and it opened every step unticked, so a plan corrected at step six came back with
+  six finished steps to tick again, one call each, in a run that had just discovered
+  it needed a seventh. A step whose wording is carried over word for word now keeps
+  its tick, and the one-item update tool, which until now could only tick, takes new
+  wording for the step it names: the step that changed is the only one that has to be
+  sent. Inserting, dropping and reordering steps follow from the same rule, since
+  rewriting the list is no longer destructive. Two identical texts are matched one for
+  one, so a duplicate that was still pending stays pending; a reworded step is a
+  different step and starts pending, which is the state the model should have to state
+  rather than inherit.
 - The notice about a run you have rejoined is no longer kept in the conversation. It
   went into the stored transcript like any other card, so it came back on every load:
   a conversation reconnected to twenty times reopened on twenty copies of it, each
@@ -34,6 +46,12 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   switcher is on screen.
 
 ### Fixed
+- Unfolding a long plan no longer hides the conversation behind it. The step list
+  expanded to whatever height its steps needed, in a bar that does not shrink, so a
+  twenty-step plan took the panel and left the transcript nothing — the one thing the
+  user opened the plan to read alongside. It now has a ceiling of 40% of the panel, no
+  more than 320px, and scrolls within it; the step being worked on is brought into view
+  when the list opens and each time it moves on, so the cap never buries it.
 - Leaving while a background run is going now asks, instead of walking away in
   silence. The question — keep them going, or disconnect — was put only when a *turn*
   was in flight, and a conversation that launched a two-hour build and answered has no

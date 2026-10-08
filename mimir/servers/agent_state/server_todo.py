@@ -19,13 +19,15 @@ Named prose plans are stored as a per-session history under plans/ (one
 
 Tools:
   1. todo_set_plan(text, title) — write the named approach/rationale before starting
-  2. todo_write(steps)          — replace the entire checklist with new steps, once the
+  2. todo_write(steps)          — rewrite the whole checklist, carrying over the ticks
+                                  of steps whose text is unchanged; called first once the
                                   plan it comes from has been approved and work starts
   3. todo_read()                — return the current list (index, text, done)
   4. todo_read_plan(name)       — return the active or a named prose plan
   5. todo_list_plans()          — list the session's plan history
   6. todo_delete_plan(name)     — delete one plan from the history
-  7. todo_update(index, done)   — mark one item done/undone
+  7. todo_update(index, done, text) — targeted edit of one item: tick/untick it,
+                                  reword it, or both
 """
 
 import os
@@ -197,6 +199,24 @@ def _load() -> list[dict]:
                 "done": m.group(1) == "x",
             })
     return items
+
+
+def _done_counts(items: list[dict]) -> dict[str, int]:
+    """How many *done* items carry each text, so a rewrite can carry them over.
+
+    A count rather than a set because a list may legitimately hold the same text
+    twice (two files given the same one-line treatment): two done copies carry two
+    ticks over, one carries one, and the duplicate that was still pending stays
+    pending. Matching is on the exact stripped text — the identity of a step is
+    what it says, and a reworded step is a different step whose state the model
+    has to state itself (todo_update) rather than inherit by accident.
+    """
+    counts: dict[str, int] = {}
+    for it in items:
+        if it.get("done"):
+            text = str(it.get("text", "")).strip()
+            counts[text] = counts.get(text, 0) + 1
+    return counts
 
 
 def _save(items: list[dict]) -> None:
@@ -419,13 +439,19 @@ def todo_delete_plan(name: str) -> dict:
 
 @mcp.tool(**tool_caps(caps=[TASK_PLANNING], arg_roles={"plan_steps": ["steps"]}))
 def todo_write(steps: list[str], depends_on: list[list[int]] | None = None) -> dict:
-    """Replace the entire todo list with a new ordered list of steps.
+    """Replace the whole todo list with a new ordered list of steps.
 
-    Each step starts as not done.  For multi-step tasks, call todo_set_plan
-    first to record your prose rationale and — in plan mode — get it approved,
-    then call this tool with the concrete ordered steps before starting the work.
-    Use todo_update() to mark items complete one at a time as
-    you finish each step.
+    A step whose text matches one already on the list keeps that item's done
+    state; a step with new text starts as not done.  So revising the list
+    mid-task — inserting a step you discovered, dropping one that turned out
+    unnecessary, reordering the rest — is safe: the work you have already
+    finished stays ticked and you never re-tick it.  Carry the finished steps
+    over verbatim for that to hold.  To reword a single step in place, or to
+    tick one off, call todo_update() instead of resending the list.
+
+    For multi-step tasks, call todo_set_plan first to record your prose
+    rationale and — in plan mode — get it approved, then call this tool with
+    the concrete ordered steps before starting the work.
 
     Args:
         steps:      Ordered list of task descriptions.
@@ -435,15 +461,25 @@ def todo_write(steps: list[str], depends_on: list[list[int]] | None = None) -> d
                     Omit or pass null for a plain sequential list.
 
     Returns:
-        {"status": "ok", "count": <n>}
+        {"status": "ok", "count": <n>, "kept_done": <n carried over>}
     """
-    items = [{"index": i, "text": s.strip(), "done": False} for i, s in enumerate(steps)]
+    done_before = _done_counts(_load())
+    items = []
+    for i, step in enumerate(steps):
+        text = step.strip()
+        was_done = done_before.get(text, 0) > 0
+        if was_done:
+            done_before[text] -= 1
+        items.append({"index": i, "text": text, "done": was_done})
     _save(items)
     if depends_on is not None:
         _save_deps(depends_on)
     else:
         _delete_deps()
-    return ok({"count": len(items)})
+    return ok({
+        "count": len(items),
+        "kept_done": sum(1 for it in items if it["done"]),
+    })
 
 
 @mcp.tool()
@@ -493,8 +529,13 @@ def todo_read_ready() -> dict:
 
 
 @mcp.tool()
-def todo_update(index: int, done: bool) -> dict:
-    """Mark a todo item as done or undone.
+def todo_update(index: int, done: bool | None = None, text: str | None = None) -> dict:
+    """Update one todo item in place: tick it off, reopen it, and/or reword it.
+
+    This is the targeted edit — prefer it over resending the whole list with
+    todo_write whenever a single item changes.  Pass ``done`` to change the tick,
+    ``text`` to replace that step's wording (its position and tick are kept), or
+    both at once; whichever you omit is left alone.
 
     Only call with done=True AFTER the step is fully complete and verified on
     disk (e.g. the file was written, the directory exists, the test passed).
@@ -503,7 +544,8 @@ def todo_update(index: int, done: bool) -> dict:
 
     Args:
         index: Zero-based index of the item to update.
-        done:  True to mark complete, False to reopen.
+        done:  True to mark complete, False to reopen, omit to leave as is.
+        text:  New wording for this step, or omit to keep the current one.
 
     Returns:
         {"status": "ok", "item": <updated entry>, "pending": <remaining count>}
@@ -511,7 +553,21 @@ def todo_update(index: int, done: bool) -> dict:
     items = _load()
     if index < 0 or index >= len(items):
         return err(f"Index {index} out of range (list has {len(items)} items).")
-    items[index]["done"] = done
+    if done is None and text is None:
+        return err(
+            "Nothing to update.",
+            hint="Pass done to change the tick, text to reword the step, or both.",
+        )
+    if text is not None:
+        new_text = text.strip()
+        if not new_text:
+            return err(
+                "text is empty — a step needs wording.",
+                hint="Call todo_write() with the remaining steps to drop this one.",
+            )
+        items[index]["text"] = new_text
+    if done is not None:
+        items[index]["done"] = done
     _save(items)
     pending = sum(1 for it in items if not it.get("done"))
     return ok({"item": items[index], "pending": pending})

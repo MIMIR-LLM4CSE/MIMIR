@@ -278,9 +278,10 @@ _SECTION_PLANNING = (
     "- A checklist tracks progress; it is not a script. Independent steps have no order — take them "
     "as the work suggests; where an order is real, declare it (the todo capability records what "
     "each step waits on and tells you which are ready).\n"
-    "- Rewrite the list when reality diverges from the plan: a step that proved unnecessary, wrong, "
-    "or split in two. A step you end up not doing is closed by saying so in your answer, not by "
-    "ticking it."
+    "- Revise the list when reality diverges from the plan: a step that proved unnecessary, wrong, "
+    "or split in two. Change the one step that changed rather than resending the list; a list you do "
+    "resend keeps the ticks of the steps it carries over word for word, so finished work is never "
+    "re-ticked. A step you end up not doing is closed by saying so in your answer, not by ticking it."
 )
 
 _SECTION_REASONING = (

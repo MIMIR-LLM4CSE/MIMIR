@@ -2450,6 +2450,13 @@ body {
   flex-direction: column;
   gap: 2px;
   border-top: 1px solid var(--border);
+  /* Capped and scrollable: a long plan unfolds into its own scroll area instead
+     of pushing the transcript off the panel (.plan-bar does not shrink). The vh
+     half keeps the cap proportional in a short side panel, the px half keeps it
+     from eating a tall one. */
+  max-height: min(40vh, 320px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .plan-bar-item {

@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import type { TodoItem } from "../types";
 
 interface Props {
@@ -23,6 +23,16 @@ export const PlanBar: React.FC<Props> = ({ items, busy, onClear }) => {
   const currentItem = items[currentIdx];
 
   const progressPct = total > 0 ? Math.round((doneCount / total) * 100) : 0;
+
+  // The expanded list is height-capped, so on a long plan the step being worked
+  // on is usually below the fold. Bring it into view when the list opens and
+  // whenever it moves on — unfolding a plan to look for the current step and
+  // having to scroll for it is the whole point of the cap undone.
+  const currentRef = useRef<HTMLLIElement | null>(null);
+  useEffect(() => {
+    if (!expanded) return;
+    currentRef.current?.scrollIntoView({ block: "nearest" });
+  }, [expanded, currentIdx]);
 
   return (
     <div className={`plan-bar ${expanded ? "plan-bar--expanded" : ""} ${allDone ? "plan-bar--done" : ""}`}>
@@ -88,6 +98,7 @@ export const PlanBar: React.FC<Props> = ({ items, busy, onClear }) => {
             return (
               <li
                 key={idx}
+                ref={isCurrent ? currentRef : undefined}
                 className={`plan-bar-item ${item.done ? "done" : ""} ${isCurrent ? "current" : ""}`}
               >
                 <span className="plan-bar-item-icon">
