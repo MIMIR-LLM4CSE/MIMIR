@@ -107,9 +107,19 @@ class _Subscription:
         # session that owns the turn still needs them to write its history — so they
         # travel beside the event rather than inside it.
         self.queue: asyncio.Queue[tuple[dict, dict]] = asyncio.Queue(maxsize=maxsize)
-        # Events at or below this are already rendered by this client: the replay it
-        # was just sent covers them. Set once, after the replay, by the attach path.
-        self.min_seq: int = 0
+        # Per conversation, the seq at or below which this client has already rendered
+        # everything: the replay it was just sent covers them. Written by the attach
+        # path, one conversation at a time.
+        #
+        # Per conversation and not one number for the socket, because ``seq`` is
+        # counted per conversation — one journal and one writer each. A single
+        # watermark raised to one conversation's position gates out every conversation
+        # whose journal is shorter, which on a socket that opens on a long chat is
+        # every new one: its events start again at 1, below the gate, and are dropped.
+        # Streamed text is never journaled and so passes regardless, which is what
+        # makes the failure look like a working chat that has stopped showing tool
+        # calls, diffs and answers rather than like a dead connection.
+        self._rendered: dict[str, int] = {}
         # Set when the queue overflowed. The client is told, and closes the gap by
         # replaying from its own watermark.
         self.gapped: bool = False
@@ -118,22 +128,38 @@ class _Subscription:
         # discarded: a gate set too high is invisible from the outside.
         self.filtered: int = 0
 
+    def rendered_through(self, session_id: str, seq: int) -> None:
+        """Note that *session_id* is rendered up to *seq* on this client.
+
+        Monotonic per conversation: a gate only ever rises, so an event already handed
+        to this connection is not sent again by a later replay of the same chat.
+        """
+        if not session_id:
+            return
+        self._rendered[session_id] = max(self._rendered.get(session_id, 0), int(seq))
+
+    def rendered_at(self, session_id: str) -> int:
+        """The watermark for one conversation, or 0 if it has none."""
+        return self._rendered.get(session_id or "", 0)
+
     def wants(self, ev: dict) -> bool:
         if self._filter is not None and not self._filter(ev):
             return False
         seq = ev.get("seq")
+        min_seq = self._rendered.get(ev.get("session_id") or "", 0)
         # Unstamped events are stream deltas: live-only, never replayed, so the
         # watermark has nothing to say about them. Note the asymmetry this creates and
         # why it is worth logging: `token` and `thinking` are never journaled, so they
         # bypass the gate entirely. A gate set too high therefore does not look like a
         # dead connection — it looks like a chat that streams text and reasoning
         # normally and never shows a tool call, a diff or an answer.
-        if isinstance(seq, int) and seq <= self.min_seq:
+        if isinstance(seq, int) and seq <= min_seq:
             self.filtered += 1
             if self.filtered == 1 or self.filtered % 100 == 0:
                 logger.warning("subscription: dropped %d event(s) at or below the "
-                               "rendered watermark %d (latest: %s seq %d)",
-                               self.filtered, self.min_seq, ev.get("type"), seq)
+                               "rendered watermark %d of session %s (latest: %s seq "
+                               "%d)", self.filtered, min_seq, ev.get("session_id"),
+                               ev.get("type"), seq)
             return False
         return True
 
@@ -354,7 +380,8 @@ class _EventBus:
                          "detail": f"{self.pump_errors} — last: {self.last_error}"})
         for index, sub in enumerate(self._subs, start=1):
             rows.append({"label": f"subscription {index}", "detail":
-                         f"watermark {sub.min_seq}, {sub.filtered} filtered, "
+                         f"watermarks {sub._rendered or '{}'}, "
+                         f"{sub.filtered} filtered, "
                          f"{sub.dropped} dropped, {sub.queue.qsize()} queued"})
         for session_id, log in self._logs.items():
             rows.append({"label": f"journal {session_id[:8]}",

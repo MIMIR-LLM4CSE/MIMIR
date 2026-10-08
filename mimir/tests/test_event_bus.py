@@ -192,7 +192,7 @@ class SubscriberTests(_BusCase):
             w = _bare_worker("s1")
             bus = _EventBus(_FakePool({"s1": w}))
             sub = bus.subscribe()
-            sub.min_seq = 2
+            sub.rendered_through("s1", 2)
             for i in range(4):
                 w.out_q.put({"type": "output", "text": f"{i}\n"})
             bus.pump_once()

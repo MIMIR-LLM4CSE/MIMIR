@@ -1773,6 +1773,10 @@ class _Session:
         # whose log was removed, or a number inherited from another conversation. A
         # claim to have seen more than exists cannot be true, and honouring it sets the
         # gate above every event this session will ever produce.
+        #
+        # The gate it feeds is this conversation's own, which is what makes the clamp
+        # enough: ``seq`` is counted per conversation, so a number from one says
+        # nothing about another.
         held = self.pool.bus.last_seq(session_id)
         if self._rendered_seq > held:
             logger.warning("replay: session %s claims to have rendered seq %d but its "
@@ -1789,7 +1793,7 @@ class _Session:
         if not events:
             # Nothing missed. The gate still moves to where the journal stands, so a
             # live event this connection has already been handed is not sent twice.
-            self._sub.min_seq = max(self._sub.min_seq, self._rendered_seq)
+            self._sub.rendered_through(session_id, self._rendered_seq)
             return
 
         through = self._rendered_seq
@@ -1809,7 +1813,7 @@ class _Session:
                 return
         # Only now: a gate raised before the frames were sent would have discarded the
         # live events that arrived between the read and the send.
-        self._sub.min_seq = max(self._sub.min_seq, through)
+        self._sub.rendered_through(session_id, through)
         logger.info("replay: session %s resent %d event(s) from seq %d",
                     session_id, len(events), self._rendered_seq)
 

@@ -103,7 +103,7 @@ class WatermarkTests(_ReplayCase):
         self.sess._rendered_seq = 2
         self._attach()
         await self.sess._send_replay()
-        self.assertEqual(self.sess._sub.min_seq, 2)
+        self.assertEqual(self.sess._sub.rendered_at("s1"), 2)
 
 
 class NoDuplicateNoGapTests(_ReplayCase):
@@ -111,7 +111,7 @@ class NoDuplicateNoGapTests(_ReplayCase):
         self._produce("a", "b", "c")
         self._attach()
         await self.sess._send_replay()
-        self.assertEqual(self.sess._sub.min_seq, 3)
+        self.assertEqual(self.sess._sub.rendered_at("s1"), 3)
 
     async def test_an_already_replayed_event_is_not_delivered_live_as_well(self):
         # The overlap: the subscription was open while the journal was being read, so
@@ -186,7 +186,7 @@ class FramingTests(_ReplayCase):
 
         self.sess.ws.send = _boom
         await self.sess._send_replay()        # must not raise
-        self.assertEqual(self.sess._sub.min_seq, 0)
+        self.assertEqual(self.sess._sub.rendered_at("s1"), 0)
 
 
 class TheGateCannotSilenceAStreamTests(_ReplayCase):
@@ -208,7 +208,7 @@ class TheGateCannotSilenceAStreamTests(_ReplayCase):
         self.sess._rendered_seq = 9000          # inherited from somewhere else
         self._attach()
         await self.sess._send_replay()
-        self.assertLessEqual(self.sess._sub.min_seq, 1)
+        self.assertLessEqual(self.sess._sub.rendered_at("s1"), 1)
 
     async def test_the_stream_still_arrives_after_such_a_watermark(self):
         self.sess._rendered_seq = 9000
@@ -226,16 +226,56 @@ class TheGateCannotSilenceAStreamTests(_ReplayCase):
     async def test_a_filtered_event_is_counted_rather_than_vanishing(self):
         self._produce("a", "b")
         self._attach()
-        self.sess._sub.min_seq = 5
-        self.assertFalse(self.sess._sub.wants({"type": "answer", "seq": 2}))
+        self.sess._sub.rendered_through("s1", 5)
+        self.assertFalse(self.sess._sub.wants(
+            {"type": "answer", "seq": 2, "session_id": "s1"}))
         self.assertEqual(self.sess._sub.filtered, 1)
 
     async def test_a_stream_delta_bypasses_the_gate(self):
         # Which is exactly why the failure looks like a half-working chat.
         self._attach()
-        self.sess._sub.min_seq = 9000
-        self.assertTrue(self.sess._sub.wants({"type": "token", "text": "tok"}))
-        self.assertFalse(self.sess._sub.wants({"type": "tool_call", "seq": 1}))
+        self.sess._sub.rendered_through("s1", 9000)
+        self.assertTrue(self.sess._sub.wants(
+            {"type": "token", "text": "tok", "session_id": "s1"}))
+        self.assertFalse(self.sess._sub.wants(
+            {"type": "tool_call", "seq": 1, "session_id": "s1"}))
+
+
+class OneGatePerConversationTests(_ReplayCase):
+    """``seq`` is counted per conversation, so a watermark has to be as well.
+
+    One number for the socket, raised to the position of whichever chat the connection
+    opened on, gates out every conversation whose journal is shorter — which on a
+    socket that opens on a long chat is every new one: its events start again at 1,
+    below the gate, and are dropped on the way to the client. Streamed text is never
+    journaled and so passes regardless, which is what makes this look like a working
+    chat that has stopped showing tool calls, diffs and answers rather than like a
+    connection that has died.
+    """
+
+    async def test_a_second_conversation_is_not_gated_by_the_first(self):
+        self._produce("a", "b", "c")          # s1's journal reaches seq 3
+        self.sess._rendered_seq = 3
+        self._attach()
+        await self.sess._send_replay()
+        self.assertEqual(self.sess._sub.rendered_at("s1"), 3)
+
+        # A conversation this client has rendered nothing of. Its own journal starts
+        # again at 1, which is under the gate the first chat raised.
+        fresh = [{"type": "tool_call", "seq": 1, "session_id": "s2"},
+                 {"type": "tool_result", "seq": 2, "session_id": "s2"},
+                 {"type": "answer", "seq": 3, "session_id": "s2"}]
+        self.assertTrue(all(self.sess._sub.wants(ev) for ev in fresh),
+                        "the gate of one conversation silenced another")
+        self.assertEqual(self.sess._sub.rendered_at("s2"), 0)
+
+    async def test_the_gate_of_one_conversation_still_holds_for_its_own(self):
+        self._produce("a", "b", "c")
+        self.sess._rendered_seq = 3
+        self._attach()
+        await self.sess._send_replay()
+        self.assertFalse(self.sess._sub.wants(
+            {"type": "answer", "seq": 2, "session_id": "s1"}))
 
 
 class ANewConversationRendersNothingYetTests(unittest.IsolatedAsyncioTestCase):
