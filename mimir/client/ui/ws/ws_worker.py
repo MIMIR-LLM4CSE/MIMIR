@@ -130,11 +130,15 @@ def _first_line(value: Any) -> str:
 
 
 def _detach_grace() -> float:
-    """How long a socket may be gone before an unanswered card is set aside.
+    """How long a socket may be gone before this process treats it as gone.
 
     Not zero, and this is the whole reason the delay exists: reloading a VS Code window
-    closes and reopens the socket, and parking every card on that blink would be a
-    regression — the user is right there, and would find their question put away.
+    closes and reopens the socket, and acting on that blink would be a regression — the
+    user is right there, and would find their question put away.
+
+    One value, two readers: an unanswered card is set aside past it, and a server no
+    conversation has asked to keep stops past it. Both are answering the same question
+    — has the window actually gone — so both must answer it the same way.
     """
     try:
         return max(0.0, float(os.environ.get("MIMIR_DETACH_GRACE", "") or 30.0))

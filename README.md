@@ -144,8 +144,8 @@ Optional extras: `sudo apt-get install gfortran` for Fortran compilation;
 | `MIMIR_RAY_MAX_MODEL_LEN` | *(unset)* | Pin the context window when the Ray router does not report `max_model_len` |
 | `MIMIR_EMBED_MODEL` | *(empty; `nomic-embed-text` on Ollama)* | Embedding model for semantic memory search & tool ranking (required for vLLM and Ray; else lexical fallback) |
 | `MIMIR_MODULE_INDEX_BUDGET` | `600` | Seconds the background module-catalogue enrichment may spend (the name-level pass the user waits on is not affected) |
-| `MIMIR_SERVER_IDLE_TTL` | `7200` | Seconds a detached server stays up with nothing needing it — no client, every conversation concluded, no background run — before stopping itself |
-| `MIMIR_DETACH_GRACE` | `30` | Seconds with no client attached before an unanswered card is set aside instead of waited on. Long enough that reloading the window does not park a question the user is about to answer |
+| `MIMIR_SERVER_IDLE_TTL` | `7200` | Seconds a server a conversation asked to keep stays up with nothing needing it — no client, every conversation concluded, no background run, no wake owed — before stopping itself. One nobody asked to keep stops after `MIMIR_DETACH_GRACE` instead |
+| `MIMIR_DETACH_GRACE` | `30` | Seconds with no client attached before the window counts as gone: past it an unanswered card is set aside instead of waited on, and a server no conversation asked to be left running stops itself. Long enough that reloading the window does neither |
 | `MCP_FILES_ROOT` | current working dir | Workspace root (guardrail on paths tools name — [not a sandbox](SERVERS_DETAILED.md#scope-of-the-sandbox-read-this-before-trusting-confined)) |
 | `GITHUB_TOKEN` | *(none)* | Raises GitHub API rate limits |
 | `MIMIR_OLLAMA_NUM_CTX` | *(model's context length)* | Overrides the Ollama context window (`num_ctx`) |

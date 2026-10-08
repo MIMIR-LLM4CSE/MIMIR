@@ -91,7 +91,11 @@ def acquire() -> bool:
 
 
 def release() -> None:
-    """Drop the claim. Never raises; the kernel does this anyway when we go."""
+    """Drop the *lock*. Never raises; the kernel does this anyway when we go.
+
+    Not to be confused with :func:`unclaim`, which drops a conversation's request to
+    be left running.
+    """
     global _LOCK_FH
     handle, _LOCK_FH = _LOCK_FH, None
     if handle is None:
@@ -244,6 +248,58 @@ def alive(entry: dict | None, *, probe: bool = True) -> bool:
         return True
     return port_answers(str(entry.get("host") or "localhost"),
                         int(entry.get("port") or 0))
+
+
+# ── Who asked for this server to survive ──────────────────────────────────────
+#
+# One process serves a workspace, and the redirect that makes it survivable is a
+# property of that process — so "detached" cannot mean one conversation's server lives
+# and another's dies. What *is* per conversation is the claim: each one can ask for the
+# run to be left going, with its own autonomy level, and the process survives for as
+# long as any claim stands. Releasing the last one is what makes it mortal again.
+#
+# Written as ``detached_sessions: {session id: autonomy}``, with ``detached`` kept
+# beside it as "anybody at all" — that one is what the extension reads to decide
+# whether to skip the kill, which is a decision about the process and stays right.
+
+
+def claims() -> dict[str, str]:
+    """This process's live claims, as ``{session id: autonomy}``.
+
+    Empty for an entry that is not ours: a stranger's claims are not ours to read as
+    our own, and acting on them would have one server keep itself alive for another's
+    conversations.
+    """
+    entry = read()
+    if not entry or int(entry.get("pid") or 0) != os.getpid():
+        return {}
+    held = entry.get("detached_sessions")
+    if not isinstance(held, dict):
+        return {}
+    return {str(k): str(v) for k, v in held.items() if k}
+
+
+def claim(session_ids: list[str], autonomy: str, **extra) -> dict[str, str]:
+    """Record that *session_ids* asked to be left running. Returns every live claim."""
+    merged = {**claims(), **{str(sid): autonomy for sid in session_ids if sid}}
+    update(detached_sessions=merged, detached=bool(merged), autonomy=autonomy, **extra)
+    return merged
+
+
+def unclaim(session_ids: list[str] | None = None) -> dict[str, str]:
+    """Drop the claims of *session_ids*, or every one of them. Returns what is left.
+
+    Named apart from :func:`release`, which drops the *lock*: one is about who may be
+    the server for this workspace, the other about who wants it to outlive a window.
+    """
+    held = claims()
+    if session_ids is None:
+        held = {}
+    else:
+        for sid in session_ids:
+            held.pop(str(sid), None)
+    update(detached_sessions=held, detached=bool(held))
+    return held
 
 
 def current(*, probe: bool = True) -> dict | None:

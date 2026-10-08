@@ -5,20 +5,10 @@ import { disconnectOutcome } from "./disconnectUtils";
 interface Props {
   /** The conversations still working — what the user is about to walk away from. */
   running: SessionMeta[];
-  /**
-   * Whether this window started the server it is talking to.
-   *
-   * It decides what disconnecting *does*: a server this window spawned is killed with
-   * it, one it merely attached to is left running. Both outcomes were described as the
-   * first, which told half the users the opposite of what would happen.
-   */
-  serverIsOurs: boolean;
   /** Keep them going: detach, then disconnect. */
   onDetach: () => void;
-  /** Disconnect, whatever that does to the runs here — see {@link disconnectOutcome}. */
+  /** Disconnect — which ends the server and their turns. */
   onDiscard: () => void;
-  /** Stop the server outright. Only offered where disconnecting would not. */
-  onStop: () => void;
   /** Neither: stay connected. Dismissing is this, which is why it is the safe one. */
   onCancel: () => void;
 }
@@ -38,9 +28,9 @@ interface Props {
  * not a decision and must not be made into one.
  */
 export const DisconnectPrompt: React.FC<Props> = ({
-  running, serverIsOurs, onDetach, onDiscard, onStop, onCancel,
+  running, onDetach, onDiscard, onCancel,
 }) => {
-  const outcome = disconnectOutcome(serverIsOurs);
+  const outcome = disconnectOutcome();
   const detachRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
@@ -90,11 +80,6 @@ export const DisconnectPrompt: React.FC<Props> = ({
           <button className="disconnect-secondary" onClick={onDiscard}>
             {outcome.discardLabel}
           </button>
-          {outcome.offerStop && (
-            <button className="disconnect-secondary" onClick={onStop}>
-              Stop the server
-            </button>
-          )}
         </div>
         <button className="disconnect-close" onClick={onCancel} aria-label="Stay connected">
           ×

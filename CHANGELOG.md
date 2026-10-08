@@ -16,6 +16,29 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [1.3.1] — 2026-10-08
 
 ### Changed
+- Detaching is now asked for and taken back one conversation at a time. The claim was
+  a single flag for the workspace, so detaching a second conversation at `auto`
+  brought the first one back under the `auto_all` of the other, and taking the claim
+  back for one made every other conversation's run mortal without anyone asking for
+  that. Each conversation now records its own level, and taking one back leaves the
+  others running. What stays indivisible is the process: one server serves a workspace
+  by construction, and the redirect that makes it survivable belongs to the process
+  rather than to a conversation — so it lives for as long as any conversation claims
+  it, and becomes mortal again when the last claim goes.
+- A server nobody asked to keep no longer outlives the window by accident. A server
+  existed in one of three states, and the third was nobody's intention: one a window
+  had merely attached to, not its to kill, still writing to a pipe whose reader had
+  gone — working on, unobserved, with nothing claiming it. It now stops once its last
+  client has been gone for `MIMIR_DETACH_GRACE`, whoever started it, whatever it is in
+  the middle of: the panel asks before the window goes, and "keep them going" is what
+  claims it. The decision is the server's own, because an extension host that is dying
+  has no time to end a process it does not own. A background run is not killed with
+  it — it has its own process session and an exit code trap, so what ends is the
+  watching, and the next agent built for its conversation picks it up again.
+- The disconnect dialog is back to one sentence. It briefly described two outcomes
+  depending on whether the window had started the server; with an unclaimed server
+  stopping either way that distinction answers nothing, and the sentence it was
+  guarding against is now simply true.
 - Revising the task checklist mid-work no longer costs the progress already on it.
   Only one shape of change existed for the list's contents — resend the whole thing —
   and it opened every step unticked, so a plan corrected at step six came back with

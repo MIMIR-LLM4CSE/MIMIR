@@ -43,34 +43,23 @@ export interface DisconnectOutcome {
   note: string;
   /** Label for the plain disconnect. */
   discardLabel: string;
-  /**
-   * Whether to offer stopping the server outright.
-   *
-   * Only when it is not this window's to kill: there, disconnecting leaves it running,
-   * so stopping it has to be asked for separately. When it *is* this window's,
-   * disconnecting already stops it and a second button would mean the same thing.
-   */
-  offerStop: boolean;
 }
 
-export function disconnectOutcome(serverIsOurs: boolean): DisconnectOutcome {
-  if (serverIsOurs) {
-    return {
-      note:
-        "Disconnecting ends the server, and their turns with it. Keeping them going " +
-        "leaves MIMIR running without this window — reopening the workspace comes " +
-        "back to it.",
-      discardLabel: "Disconnect anyway",
-      offerStop: false,
-    };
-  }
+/**
+ * What disconnecting does, now that it does one thing.
+ *
+ * A server exists claimed — detached, asked to be left running — or owned by the window
+ * that started it. There is no third state: one nobody claimed stops when its last
+ * client has been gone for the grace, whoever started it. So disconnecting ends it and
+ * the turns with it, and this dialog is only ever raised in that case: a claimed server
+ * survives a disconnect by definition, which is nothing to ask about.
+ */
+export function disconnectOutcome(): DisconnectOutcome {
   return {
     note:
-      "This server was not started by this window, so disconnecting leaves it " +
-      "running and their turns carry on — reopening the workspace comes back to " +
-      "them. Stopping it ends every turn, including any in another window of this " +
-      "workspace.",
-    discardLabel: "Disconnect, leave them running",
-    offerStop: true,
+      "Disconnecting ends the server, and their turns with it. Keeping them going " +
+      "leaves MIMIR running without this window — reopening the workspace comes " +
+      "back to it.",
+    discardLabel: "Disconnect anyway",
   };
 }

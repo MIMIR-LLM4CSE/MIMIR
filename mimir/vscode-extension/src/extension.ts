@@ -783,20 +783,6 @@ class MimirAgentViewProvider implements vscode.WebviewViewProvider {
    * closing this window leaves it working — which is what the user asked for. Read in
    * the host rather than the webview because it is the host that does the killing.
    */
-  /**
-   * Tell the webview whether closing this window stops the server.
-   *
-   * The host is the only one that knows: the server cannot tell whether the process it
-   * runs in was spawned by the window now talking to it. And it decides what the
-   * disconnect dialog may promise — a server this window started dies with it, one it
-   * attached to is deliberately left running, and describing both as the first told
-   * half the users the opposite of what would happen at the moment they were choosing.
-   */
-  private _postOwnership(): void {
-    const ours = !!serverProcess && !serverProcess.killed && !serverDetached;
-    this._view?.webview.postMessage({ type: "server_ownership", ours });
-  }
-
   private _noteOwnership(text: string): void {
     let msg: {
       type?: string; pid?: number; autonomy?: string; log?: string | null;
@@ -817,7 +803,6 @@ class MimirAgentViewProvider implements vscode.WebviewViewProvider {
         `This server belongs to this window again (pid ${msg.pid ?? "?"}); closing ` +
         `the window stops it.`
       );
-      this._postOwnership();
       return;
     }
     serverDetached = true;
@@ -826,7 +811,6 @@ class MimirAgentViewProvider implements vscode.WebviewViewProvider {
       `${msg.autonomy ?? "?"}). It is left running when the window closes; its ` +
       `output continues in ${msg.log ?? "its log"}.`
     );
-    this._postOwnership();
   }
 
   /** Hand the webview the model list the auto-connect probe already has. */
@@ -966,11 +950,6 @@ class MimirAgentViewProvider implements vscode.WebviewViewProvider {
         ws.send(m);
       }
       this._pendingMessages = [];
-      // Whose server this is, which only this layer knows and which decides what
-      // disconnecting does to the runs. Said on every connect rather than once, since
-      // a window can attach to a server it did not start after having had one of its
-      // own.
-      this._postOwnership();
     });
 
     ws.on("message", (data: WebSocket.RawData) => {

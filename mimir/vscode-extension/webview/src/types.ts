@@ -191,21 +191,6 @@ export interface ConfigMessage {
   running?: RunningServer | null;
 }
 
-/**
- * Whose server this window is talking to. Emitted by the extension host, not the
- * server: only the host knows whether it spawned the process it connected to.
- *
- * It decides what disconnecting means. The host kills a server it started and leaves
- * alone one it only attached to — another window of the same workspace may be reading
- * it, and a detached one was kept running on purpose — so the same click ends the runs
- * in one case and leaves them going in the other.
- */
-export interface ServerOwnershipMessage {
-  type: "server_ownership";
-  /** True when closing this window (or disconnecting) stops the server. */
-  ours: boolean;
-}
-
 /** A server already serving this workspace. */
 export interface RunningServer {
   url: string;
@@ -797,7 +782,6 @@ export type ServerMessage =
   | EnforcementModeMessage
   | ApprovalModeMessage
   | AgentModeMessage
-  | ServerOwnershipMessage
   | ThinkingDepthMessage
   | TemperatureMessage
   | StreamingStateMessage

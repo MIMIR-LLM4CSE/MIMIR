@@ -216,6 +216,10 @@ class _EventBus:
         # worker each tick, because the thread that needs to know — the one parked on
         # an approval — must not read loop state to find out.
         self._unattended_since: float | None = time.monotonic()
+        # Whether a client has ever been here. "Its last client left" presupposes one:
+        # a server started by hand and not yet connected to has lost nothing, and must
+        # not stop itself out from under the window that is about to attach.
+        self.ever_attached = False
         self._task: asyncio.Task | None = None
         self._wake = asyncio.Event()
         # Events nobody has claimed yet, by identity, each with what the pool would do
@@ -247,6 +251,7 @@ class _EventBus:
                   ) -> _Subscription:
         sub = _Subscription(self, session_filter)
         self._subs.append(sub)
+        self.ever_attached = True
         return sub
 
     def unsubscribe(self, sub: _Subscription) -> None:
@@ -352,6 +357,15 @@ class _EventBus:
                 logger.warning("bus: handling %s for %s failed", ev.get("type"),
                                ev.get("session_id"), exc_info=True)
         return taken
+
+    def unattended_for(self) -> float | None:
+        """Seconds since the last client left, or None while one is here.
+
+        None is "somebody is watching". A number is how long nobody has been — which
+        is what decides whether a server nobody asked to keep has any reason to live.
+        """
+        since = self._unattended_since
+        return None if since is None else max(0.0, time.monotonic() - since)
 
     def diagnostics(self) -> list[dict]:
         """What each link of the chain has actually done, as {label, detail} rows.

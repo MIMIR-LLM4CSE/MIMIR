@@ -238,11 +238,11 @@ class ComingBackToARunTests(unittest.IsolatedAsyncioTestCase):
         self.sess._active_session_id = "s1"
         self.sess._apply_setting = lambda name, *args: None
 
-    def _detached_at(self, level: str) -> None:
+    def _detached_at(self, level: str, sessions: list[str] | None = None) -> None:
         from mimir.client.ui.ws import server_registry
         server_registry.publish(url="ws://127.0.0.1:1", host="127.0.0.1", port=1,
                                 model="m")
-        server_registry.update(detached=True, autonomy=level, log=None)
+        server_registry.claim(sessions or ["s1"], level, log=None)
 
     def _notice(self) -> dict | None:
         found = [m for m in self.sent if m.get("type") == "command_output"]
@@ -285,6 +285,36 @@ class ComingBackToARunTests(unittest.IsolatedAsyncioTestCase):
         self._detached_at("manual")
         await self.sess._restore_detached_autonomy()
         self.assertIsNone(self._notice())
+
+    async def test_each_conversation_comes_back_under_its_own_level(self):
+        # The claim is per conversation and so is the level. One level for the whole
+        # pool would hand a conversation left at `auto` the `auto_all` of another.
+        from mimir.client.ui.ws import server_registry
+        server_registry.publish(url="ws://127.0.0.1:1", host="127.0.0.1", port=1,
+                                model="m")
+        server_registry.claim(["s1"], "auto")
+        server_registry.claim(["s2"], "auto_all")
+        self.assertEqual(server_registry.claims(), {"s1": "auto", "s2": "auto_all"})
+
+        await self.sess._restore_detached_autonomy()
+        modes = [m["mode"] for m in self.sent if m.get("type") == "approval_mode"]
+        self.assertEqual(modes, ["auto"], "the level of the conversation on screen")
+
+    async def test_taking_it_back_for_one_leaves_the_others_running(self):
+        # The process survives for as long as any conversation claims it. Clearing one
+        # flag for the whole workspace made another conversation's run mortal without
+        # anybody asking for that.
+        from mimir.client.ui.ws import server_registry
+        self._detached_at("auto_all", ["s1", "s2"])
+        left = server_registry.unclaim(["s1"])
+        self.assertEqual(left, {"s2": "auto_all"})
+        self.assertTrue(server_registry.read()["detached"])
+
+    async def test_taking_it_back_for_the_last_one_makes_it_mortal(self):
+        from mimir.client.ui.ws import server_registry
+        self._detached_at("auto_all", ["s1"])
+        self.assertEqual(server_registry.unclaim(["s1"]), {})
+        self.assertFalse(server_registry.read()["detached"])
 
     async def test_a_server_that_never_detached_says_nothing(self):
         from mimir.client.ui.ws import server_registry

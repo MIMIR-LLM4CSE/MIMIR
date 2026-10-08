@@ -116,12 +116,18 @@ Protocol — all messages are JSON objects, one per send/recv:
     {"type": "detached",       "detached": true, "log": "...",
                                "autonomy": "manual|auto|auto_all",
                                "sessions": [...], "pid": 0, "setsid": true}
-                                                       # the answer to ``detach``: this
-                                                       # server has re-pointed its output
-                                                       # at ``log`` and left the
-                                                       # extension host's process group,
-                                                       # so it survives the window. The
-                                                       # client must stop killing it
+                                                       # the answer to ``detach``, and
+                                                       # sent again on attach to a server
+                                                       # already claimed: it has
+                                                       # re-pointed its output at ``log``
+                                                       # and left the extension host's
+                                                       # process group, so it survives
+                                                       # the window. ``sessions`` are the
+                                                       # conversations claiming it, and
+                                                       # ``detached`` is whether any
+                                                       # does — false means the next
+                                                       # departure of the last client
+                                                       # ends it
     {"type": "replay",         "session_id": "...", "events": [...],
                                "through_seq": 0, "more": false, "truncated": false}
                                                        # what this conversation produced

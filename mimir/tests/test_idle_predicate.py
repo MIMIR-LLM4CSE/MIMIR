@@ -334,5 +334,72 @@ class TheClockTests(_IdleCase):
             self.assertEqual(_server_idle_ttl(), 7200.0)
 
 
+class NobodyAskedToKeepItTests(unittest.TestCase):
+    """A server exists claimed, or owned by a window. There is no third state.
+
+    What used to be possible was a server in neither: one a window had merely attached
+    to, nobody's to kill, still writing to a pipe whose reader had gone. It kept
+    working, unobserved, and nobody had asked it to — the fragile state the whole
+    detach path exists to avoid.
+    """
+
+    def _pool(self, *, claims: dict, unattended: float | None, ever: bool = True):
+        from unittest import mock
+        from mimir.client.ui.ws import server_registry, ws_pool
+        from mimir.client.ui.ws.ws_pool import _AgentPool
+
+        pool = object.__new__(_AgentPool)
+        pool.stop_requested = None
+
+        class _Bus:
+            ever_attached = ever
+
+            @staticmethod
+            def unattended_for():
+                return unattended
+
+        pool.bus = _Bus()
+        patcher = mock.patch.object(server_registry, "claims", lambda: claims)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        patcher = mock.patch.object(ws_pool, "_detach_grace", lambda: 30.0)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return pool
+
+    def test_a_window_still_here_keeps_it_whatever_the_claims(self):
+        pool = self._pool(claims={}, unattended=None)
+        self.assertFalse(pool._nobody_asked_to_keep_it())
+
+    def test_a_blink_is_not_a_departure(self):
+        # Reloading a VS Code window closes and reopens the socket.
+        pool = self._pool(claims={}, unattended=5.0)
+        self.assertFalse(pool._nobody_asked_to_keep_it())
+
+    def test_gone_past_the_grace_with_no_claim_is_the_end_of_it(self):
+        pool = self._pool(claims={}, unattended=45.0)
+        self.assertTrue(pool._nobody_asked_to_keep_it())
+
+    def test_one_conversation_asking_is_enough(self):
+        # One process serves the workspace, so any claim keeps all of it alive.
+        pool = self._pool(claims={"s2": "auto_all"}, unattended=9999.0)
+        self.assertFalse(pool._nobody_asked_to_keep_it())
+
+    def test_a_server_nobody_has_connected_to_yet_has_lost_nothing(self):
+        # "Its last client left" presupposes one. A server started by hand must not
+        # stop itself out from under the window about to attach.
+        pool = self._pool(claims={}, unattended=9999.0, ever=False)
+        self.assertFalse(pool._nobody_asked_to_keep_it())
+
+    def test_claims_that_cannot_be_read_are_not_read_as_nobody(self):
+        from unittest import mock
+        from mimir.client.ui.ws import server_registry
+
+        pool = self._pool(claims={}, unattended=9999.0)
+        with mock.patch.object(server_registry, "claims",
+                               side_effect=OSError("unreadable")):
+            self.assertFalse(pool._nobody_asked_to_keep_it())
+
+
 if __name__ == "__main__":
     unittest.main()

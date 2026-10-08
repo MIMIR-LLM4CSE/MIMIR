@@ -352,10 +352,14 @@ class ComingBackToARunningTurnTests(_ChainCase):
         self.addCleanup(patcher.stop)
         self.registry = server_registry
 
-    def _detached_run(self, autonomy: str) -> None:
-        """A registry entry describing a detached server, as `detach` leaves it."""
+    def _detached_run(self, autonomy: str, session: str = "s1") -> None:
+        """A registry entry describing a detached run, as `detach` leaves it.
+
+        The claim is per conversation: each one is left under its own level, and the
+        process survives for as long as any of them claims it.
+        """
         self.registry.publish(url="ws://127.0.0.1:1", host="127.0.0.1", port=1)
-        self.registry.update(detached=True, autonomy=autonomy)
+        self.registry.claim([session], autonomy)
 
     async def test_the_conversation_comes_back_under_the_level_it_was_left_on(self):
         self._stored_session("s1")

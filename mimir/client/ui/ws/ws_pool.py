@@ -37,12 +37,13 @@ import time
 from collections import deque
 from typing import Any, Callable, Iterator
 
+from . import server_registry
 from .event_bus import _EventBus
 from .job_scan import has_baseline, mark_wakes_reported, scan_all_sessions
 from .job_wakes import DURABLE_EVENTS, checkin_text, wake_text
 from .session_store import SessionStore
 from .turn_commit import commit_answer
-from .ws_worker import _AgentWorker
+from .ws_worker import _AgentWorker, _detach_grace
 
 logger = logging.getLogger(__name__)
 
@@ -923,6 +924,42 @@ class _AgentPool:
             except Exception:
                 logger.warning("pool: idle sweep failed", exc_info=True)
 
+    def _nobody_asked_to_keep_it(self) -> bool:
+        """Whether this process has lost its last window with no claim on it.
+
+        A server exists in one of two states and there is no third: claimed by at least
+        one conversation — detached, which redirected its output to a log and asked not
+        to be killed — or owned by the window that started it, dying with it. What used
+        to be possible was a server in neither: one a window had merely attached to,
+        nobody's to kill, still writing to a pipe whose reader is gone. It kept working,
+        indifferently and unobserved, and nobody had asked it to.
+
+        So a server nobody claimed stops when its last client has been gone for the
+        grace. Server-side, because the only place that can decide this reliably is the
+        process itself: an extension host that is dying has no time to end a process it
+        does not own, and may be killed before it tries. The grace is the one a parked
+        card already uses — a window reload closes and reopens the socket, and that is
+        not a departure.
+
+        This is deliberately not conditioned on what is in flight. A run still going
+        does not earn a server the right to survive unasked: the panel asks before the
+        window goes, and "keep them going" is what claims it. The run itself is not
+        killed either way — it has its own process session and an exit code trap, and
+        the next agent built for its conversation picks it up again.
+        """
+        if self.bus is None or not self.bus.ever_attached:
+            return False
+        unattended = self.bus.unattended_for()
+        if unattended is None or unattended < _detach_grace():
+            return False
+        try:
+            return not server_registry.claims()
+        except Exception:
+            # Unreadable means unknown, and unknown must not read as "nobody asked":
+            # erring that way stops a detached run because a file could not be read.
+            logger.warning("pool: the detach claims could not be read", exc_info=True)
+            return False
+
     def _consider_stopping(self) -> None:
         """Stop once nothing has needed this process for the whole TTL.
 
@@ -930,8 +967,17 @@ class _AgentPool:
         answer is "idle throughout" rather than "idle at some point" — which is the
         difference between stopping a forgotten server and stopping one between two
         turns of a conversation the user is coming back to.
+
+        Ahead of all of that: a server nobody claimed and nobody is watching has no
+        reason to live at all, whatever it is in the middle of. See
+        :meth:`_nobody_asked_to_keep_it`.
         """
         if self.stop_requested is None:
+            return
+        if self._nobody_asked_to_keep_it():
+            logger.info("pool: no window and no conversation asking to be left "
+                        "running — stopping")
+            self.request_stop()
             return
         report = self.idle_report()
         if not report["idle"]:

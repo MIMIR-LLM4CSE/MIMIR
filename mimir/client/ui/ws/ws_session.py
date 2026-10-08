@@ -1749,15 +1749,35 @@ class _Session:
         for — a mode that suppresses prompts being inherited by a later session that
         never asked for it.
         """
-        entry = server_registry.read()
-        if not entry or not entry.get("detached"):
+        held = {sid: lvl for sid, lvl in server_registry.claims().items()
+                if lvl in ("manual", "auto", "auto_all")}
+        if not held:
             return
-        level = str(entry.get("autonomy") or "manual")
-        if level not in ("manual", "auto", "auto_all"):
-            return
-        # Recorded as well as applied, so a worker built after this comes up on it.
+        # Each conversation gets back the level *it* was left under. Applied to its own
+        # agent, and recorded pool-wide only for the conversation on screen, which is
+        # the one a worker built next most likely belongs to; every other claimed
+        # conversation has its agent here already, since a claim is what kept it.
+        for sid, lvl in held.items():
+            worker = self.pool.get(sid)
+            if worker is None:
+                continue
+            try:
+                worker.set_approval_mode(lvl)
+            except Exception:
+                logger.warning("reattach: session %s refused the level %s it was left "
+                               "under", sid, lvl, exc_info=True)
+        level = held.get(self._active_session_id or "") or sorted(held.values())[-1]
         self._apply_setting("set_approval_mode", level)
         try:
+            # That the run is claimed, not only the level it is under. The panel decides
+            # from this what disconnecting costs: a claimed server survives it, so there
+            # is nothing to ask about — and a window that attached to one without being
+            # told would offer to end turns that are not going to end.
+            await self.ws.send(json.dumps({
+                "type": "detached", "detached": True, "log": None,
+                "autonomy": level, "sessions": sorted(held), "pid": os.getpid(),
+                "setsid": False,
+            }))
             await self.ws.send(json.dumps({"type": "approval_mode", "mode": level}))
             if level != "manual":
                 # Rendered, not notified: ``_notify`` writes to the transcript's
@@ -1775,9 +1795,13 @@ class _Session:
                 # that happened in the conversation. Stored, every later load would
                 # replay it — and a conversation rejoined twenty times would open on
                 # twenty of them, each claiming to be now.
-                await self._command_reply(
-                    "detach", f"still running under \u201c{level}\u201d",
-                    tone="quiet", transient=True)
+                # Named when more than one conversation was left running: the levels
+                # can differ, and "under auto_all" says nothing about which of them.
+                title = (f"still running under \u201c{level}\u201d" if len(held) == 1
+                         else f"{len(held)} conversations still running, this one "
+                              f"under \u201c{level}\u201d")
+                await self._command_reply("detach", title, tone="quiet",
+                                          transient=True)
         except Exception:
             return
         logger.info("reattach: autonomy restored to %s from the detached run", level)
@@ -2352,7 +2376,13 @@ class _Session:
         # is a decision, not a state of the process. So this clears the claim and leaves
         # the redirect in place.
         if msg.get("enabled") is False:
-            server_registry.update(detached=False)
+            # Per conversation, like the claim it undoes: naming some takes back only
+            # those, naming none takes back every one. The process goes on surviving
+            # for as long as any claim stands — it is one process, and the redirect
+            # that makes it survivable belongs to it rather than to a conversation.
+            named = msg.get("session_ids")
+            held = server_registry.unclaim(
+                [str(s) for s in named] if isinstance(named, list) and named else None)
             # Read before the send, not inside it: a getter that raises would otherwise
             # swallow the whole reply, and a client left believing the server is still
             # detached stops guarding something nothing is guarding.
@@ -2363,13 +2393,15 @@ class _Session:
                 level = "manual"
             try:
                 await self.ws.send(json.dumps({
-                    "type": "detached", "detached": False, "log": None,
-                    "autonomy": level, "sessions": [], "pid": os.getpid(),
+                    "type": "detached", "detached": bool(held), "log": None,
+                    "autonomy": level, "sessions": sorted(held), "pid": os.getpid(),
                     "setsid": False,
                 }))
             except Exception:
                 return
-            logger.info("detach: this server is this window's again")
+            logger.info("detach: taken back for %s; %d claim(s) left",
+                        ", ".join(str(s) for s in named) if isinstance(named, list)
+                        and named else "every conversation", len(held))
             return
 
         autonomy = str(msg.get("autonomy") or "manual")
@@ -2415,9 +2447,14 @@ class _Session:
 
         info = detach_process(_MIMIR_DIR_WS)
         # The entry already holds the address; this only adds what has changed about
-        # the process behind it, so a window that attaches later can say the run is
-        # detached and under which level.
-        server_registry.update(detached=True, log=info.get("log"), autonomy=autonomy)
+        # the process behind it, so a window that attaches later knows which
+        # conversations were left running and under which level each.
+        #
+        # Per conversation, because that is the unit the user chose. The *process* is
+        # not: one serves the whole workspace, and the redirect that makes it
+        # survivable is its own — so it lives for as long as any conversation claims
+        # it, and becomes mortal again when the last claim goes.
+        server_registry.claim(targeted or [], autonomy, log=info.get("log"))
 
         try:
             await self.ws.send(json.dumps({
