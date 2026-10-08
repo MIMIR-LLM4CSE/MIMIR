@@ -1739,11 +1739,17 @@ class _Session:
                 # Rendered, not notified: ``_notify`` writes to the transcript's
                 # transient channel, which is dropped. Being told the run has been
                 # approving sensitive calls on its own is not chatter.
+                #
+                # Quiet, though, and that is the point. It is not a warning: nothing
+                # has gone wrong, nothing needs answering, and the user cannot act on
+                # it except through a switcher that is already on screen. A badge and a
+                # coloured border read as a problem to deal with on a conversation the
+                # user has just walked back into — the one moment they are reading for
+                # what happened rather than for what to do. So it reads as a rule
+                # across the thread, marking where they rejoined and under what.
                 await self._command_reply(
-                    "detach", f"Still running under \u201c{level}\u201d",
-                    note="The level it was detached with. The switcher above the send "
-                         "button changes it.",
-                    tone="warn")
+                    "detach", f"still running under \u201c{level}\u201d",
+                    tone="quiet")
         except Exception:
             return
         logger.info("reattach: autonomy restored to %s from the detached run", level)
@@ -2832,7 +2838,9 @@ class _Session:
 
         ``tone`` says how the result should read: ``ok`` for routine, ``warn`` for
         something irreversible that just happened, ``empty`` for a listing with
-        nothing in it. ``items`` are ``{label, detail}`` rows.
+        nothing in it, ``quiet`` for a state the user has walked back into rather than
+        caused — drawn as a rule across the thread, with no badge and no border, since
+        there is nothing to deal with. ``items`` are ``{label, detail}`` rows.
         """
         await self.ws.send(json.dumps({
             "type":    "command_output",

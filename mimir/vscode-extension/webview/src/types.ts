@@ -57,7 +57,15 @@ export interface CommandItem {
  * How a command answer should read. "warn" is for something irreversible that has
  * just happened (a wipe), "empty" for a listing with nothing in it.
  */
-export type CommandTone = "ok" | "warn" | "empty";
+/**
+ * How a command's answer should read.
+ *
+ * `quiet` is not a weaker `ok`: it renders as a rule across the thread rather than as
+ * a result, for the one thing that is neither a listing nor something the user just
+ * did — a note about the state they have walked back into. A warning badge on that
+ * reads as a problem to deal with, and it is only a fact.
+ */
+export type CommandTone = "ok" | "warn" | "empty" | "quiet";
 
 /**
  * The answer to a session command the user typed ("/memory list", "/proxy clean x").

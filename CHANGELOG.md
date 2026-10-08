@@ -15,6 +15,17 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [1.3.1] — 2026-10-08
 
+### Changed
+- Rejoining a run that kept going is announced quietly. The panel has to say what
+  level the run is under — a worker rebuilt during the absence would otherwise come up
+  on the pool-wide record, and a run silently dropped from `auto_all` to `manual` parks
+  at its next sensitive call with nothing said — but saying it as a warning, with a
+  badge and a coloured border, read as a problem to deal with at the one moment the
+  user is looking for what happened rather than for what to do. It is now a rule across
+  the thread, grey and unremarkable: `──── still running under "auto_all" ────`. The
+  line explaining that the switcher above the send button changes it is gone; the
+  switcher is on screen.
+
 ### Fixed
 - Detaching now behaves like being there. A run finishing with the window shut got
   its turn, and the chain stopped at that one link: a connection does more when an

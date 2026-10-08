@@ -192,6 +192,100 @@ class LeaveProcessGroupTests(unittest.TestCase):
         self.assertTrue(info["redirected"])
 
 
+class ComingBackToARunTests(unittest.IsolatedAsyncioTestCase):
+    """What the panel says when it opens onto a run that never stopped.
+
+    The level has to be shown: a worker rebuilt during the absence would otherwise come
+    up on the pool-wide record, and a run quietly dropped from `auto_all` to `manual`
+    parks at its next sensitive call with nothing said. But showing it is all it is —
+    nothing has gone wrong, nothing needs answering, and the only control is a switcher
+    already on screen. Drawn as a warning it read as a problem to deal with, at the one
+    moment the user is reading for what happened rather than for what to do.
+    """
+
+    def setUp(self) -> None:
+        from unittest import mock
+        from mimir.client.ui.ws import server_registry, ws_session
+        from mimir.client.ui.ws.ws_session import _Session
+        from mimir.tests._fake_pool import FakePool
+
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        for target in (ws_session, server_registry):
+            patcher = mock.patch.object(target, "_MIMIR_DIR_WS", self._tmp.name)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+        self.sent: list[dict] = []
+
+        class _WS:
+            async def send(_self, payload):
+                self.sent.append(json.loads(payload))
+
+        class _Worker:
+            def __init__(self) -> None:
+                self.mode = "manual"
+
+            def set_approval_mode(self, mode):
+                self.mode = mode
+
+            def get_approval_mode(self):
+                return self.mode
+
+        self.sess = object.__new__(_Session)
+        self.sess.ws = _WS()
+        self.sess.pool = FakePool(_Worker(), active="s1")
+        self.sess._active_session_id = "s1"
+        self.sess._apply_setting = lambda name, *args: None
+
+    def _detached_at(self, level: str) -> None:
+        from mimir.client.ui.ws import server_registry
+        server_registry.publish(url="ws://127.0.0.1:1", host="127.0.0.1", port=1,
+                                model="m")
+        server_registry.update(detached=True, autonomy=level, log=None)
+
+    def _notice(self) -> dict | None:
+        found = [m for m in self.sent if m.get("type") == "command_output"]
+        return found[0] if found else None
+
+    async def test_it_says_what_the_run_is_under(self):
+        self._detached_at("auto_all")
+        await self.sess._restore_detached_autonomy()
+        self.assertIn("auto_all", (self._notice() or {}).get("title", ""))
+
+    async def test_it_is_informative_rather_than_a_warning(self):
+        # The tone is the whole of this: `warn` draws a badge and a coloured border,
+        # which is the vocabulary of something to deal with.
+        self._detached_at("auto_all")
+        await self.sess._restore_detached_autonomy()
+        self.assertEqual((self._notice() or {}).get("tone"), "quiet")
+
+    async def test_it_does_not_explain_a_control_already_on_screen(self):
+        self._detached_at("auto")
+        await self.sess._restore_detached_autonomy()
+        self.assertEqual((self._notice() or {}).get("note", ""), "")
+
+    async def test_the_level_still_reaches_the_panel_and_the_agents(self):
+        # The notice is chrome; this is the part that must not be lost with it.
+        self._detached_at("auto")
+        await self.sess._restore_detached_autonomy()
+        modes = [m for m in self.sent if m.get("type") == "approval_mode"]
+        self.assertEqual([m["mode"] for m in modes], ["auto"])
+
+    async def test_manual_says_nothing_at_all(self):
+        # Nothing was approving anything on its own, so there is nothing to report.
+        self._detached_at("manual")
+        await self.sess._restore_detached_autonomy()
+        self.assertIsNone(self._notice())
+
+    async def test_a_server_that_never_detached_says_nothing(self):
+        from mimir.client.ui.ws import server_registry
+        server_registry.publish(url="ws://127.0.0.1:1", host="127.0.0.1", port=1,
+                                model="m")
+        await self.sess._restore_detached_autonomy()
+        self.assertEqual(self.sent, [])
+
+
 class DetachHandlerTests(unittest.IsolatedAsyncioTestCase):
     """What the `detach` message does besides making the process survivable."""
 
