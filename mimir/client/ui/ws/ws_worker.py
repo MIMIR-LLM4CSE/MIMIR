@@ -1854,8 +1854,8 @@ class _AgentWorker:
 
     def get_enforcement(self) -> str:
         if self._agent is not None:
-            return getattr(self._agent, "enforcement", "strict")
-        return "strict"
+            return getattr(self._agent, "enforcement", "light")
+        return "light"
 
     def get_approval_mode(self) -> str:
         if self._agent is not None:

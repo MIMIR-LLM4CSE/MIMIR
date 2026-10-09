@@ -178,8 +178,7 @@ def enforcement_level(model: str) -> str:
 
     ``validation`` is deliberately absent from that list: checking a file one just
     modified is a reality check, not a reasoning shim, so it moved to the verification
-    layer and now runs at every level. This docstring said otherwise long after the
-    move.
+    layer and now runs at every level.
 
     **Default "light"**, with "strict" available as an explicit opt-in. The `light` set
     is already defined by the right criterion — a mistake that is expensive, hard to

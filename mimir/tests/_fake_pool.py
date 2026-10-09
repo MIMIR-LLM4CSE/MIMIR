@@ -132,7 +132,7 @@ class FakePool:
             "temperature": w.get_temperature_state() if hasattr(w, "get_temperature_state") else {},
             "agent_ready": w.agent_ready() if hasattr(w, "agent_ready") else False,
             "context_mode": w.get_context_mode() if hasattr(w, "get_context_mode") else "compact",
-            "enforcement": w.get_enforcement() if hasattr(w, "get_enforcement") else "strict",
+            "enforcement": w.get_enforcement() if hasattr(w, "get_enforcement") else "light",
             "approval_mode": w.get_approval_mode() if hasattr(w, "get_approval_mode") else "manual",
         }
 

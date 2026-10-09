@@ -174,7 +174,7 @@ export const App: React.FC = () => {
   const [streaming, setStreaming] = useState(true);
 
   const [contextMode, setContextMode] = useState<"compact" | "full">("full");
-  const [enforcement, setEnforcement] = useState<"strict" | "light" | "off">("strict");
+  const [enforcement, setEnforcement] = useState<"strict" | "light" | "off">("light");
   // Held by the server, per model and on disk: never replayed from here on connect.
   const [temperature, setTemperature] = useState<TemperatureState>({ supported: false, value: null });
   const [approvalMode, setApprovalMode] = useState<ApprovalMode>("manual");

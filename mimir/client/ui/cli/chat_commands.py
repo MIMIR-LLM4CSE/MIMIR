@@ -30,7 +30,7 @@ async def handle_chat_command(
     streaming: bool,
     batch_mode: bool,
     context_mode: str = "compact",
-    enforcement: str = "strict",
+    enforcement: str = "light",
     approval_mode: str = "manual",
     set_mode: Callable[[str], None],
     set_thinking: Callable[[bool], None],

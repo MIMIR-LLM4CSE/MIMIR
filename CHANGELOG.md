@@ -89,6 +89,14 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   trigger instead of the subject.
 
 ### Fixed
+- The enforcement dial read `strict` before anything had told it otherwise, in every
+  place that had to show a level without having one: the panel's own initial state, the
+  CLI's `/status` header, and the worker asked for a level before an agent exists. The
+  resolved default is `light` and has been since the first release, so each of those
+  announced a tier the model was not being held to — and the panel's radio sat on
+  `strict` until the server's first message corrected it, which is a visible flip on
+  every connect. They all fall back to `light` now, which is what `enforcement_level`
+  returns when a profile declares nothing.
 - A workspace that had ever submitted a Slurm job had a server that could never stop. A
   submission records a job id, an id never stops existing, and the scan that decides
   whether this workspace still has work running had no other evidence to read — so every
