@@ -1,4 +1,5 @@
 from .constants import (
+    GLOBAL_STATE_DIR,
     MIMIR_DIR,
     STATE_DIR,
     STATE_HOME,
@@ -52,6 +53,7 @@ __all__ = [
     "parse_temperature",
     "INTRA_QUERY_COMPACT_CHARS",
     "LLM_BACKEND",
+    "GLOBAL_STATE_DIR",
     "MIMIR_DIR",
     "STATE_DIR",
     "STATE_HOME",

@@ -2,8 +2,10 @@
 ``<STATE_DIR>/preferences.json`` (see config.constants.STATE_DIR).
 
 This is *operator config* — which MCP servers and skills the user has switched off
-from the toggle panel — part of the agent STATE (alongside the agent's own memory
-under ``<STATE_DIR>/memory/``), kept out of the workspace. The client reads it at
+from the toggle panel — part of the agent STATE (alongside the agent's own
+per-workspace memory under ``<STATE_DIR>/memory/``; the memory shared by every
+workspace sits one tier up, under ``<GLOBAL_STATE_DIR>/memory/``), kept out of the
+workspace. The client reads it at
 startup to decide which servers' tools
 to advertise to the LLM and which skills it lists as loadable; a switched-off skill is
 hidden from both `/<name>` and the model's own `load_skill`. The LLM never reads this

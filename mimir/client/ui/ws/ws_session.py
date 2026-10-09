@@ -3140,13 +3140,15 @@ class _Session:
             sub = parts[1] if len(parts) >= 2 else ""
             if sub == "list":
                 payload = await asyncio.wrap_future(
-                    self.worker.call_session_tool("memory_list_all", {}))
+                    self.worker.call_session_tool("memory_list_all", {"scope": "all"}))
                 entries = payload.get("memory") or []
                 await self._command_reply(
                     "/memory list",
                     f"{len(entries)} " + ("memory" if len(entries) == 1 else "memories")
                     if entries else "No memories stored",
-                    items=[{"label": e.get("name", "?"),
+                    # The scope rides on each label: a fact reaching every workspace and
+                    # one reaching only this project look identical without it.
+                    items=[{"label": f"[{e.get('scope', '?')}] " + e.get("name", "?"),
                             "detail": (e.get("description") or "").strip()}
                            for e in entries],
                     tone="ok" if entries else "empty",
@@ -3160,14 +3162,17 @@ class _Session:
                         "text": f"  ✗ {payload.get('error', 'delete failed')}\n"}))
                 else:
                     await self._command_reply(
-                        "/memory delete", "Deleted 1 memory",
+                        "/memory delete",
+                        f"Deleted 1 {payload.get('scope', '')} memory".replace("  ", " "),
                         items=[{"label": parts[2]}], tone="warn")
             elif sub == "clear":
+                # Workspace only, and named as such: the global memory is every other
+                # workspace's too, so this command does not wipe it on a bare word.
                 # Irreversible, and deliberately typed in full by the person whose
                 # memory it is. The count is reported so the effect is visible —
                 # a wipe that says nothing reads as a wipe that did not happen.
                 payload = await asyncio.wrap_future(
-                    self.worker.call_session_tool("memory_clear", {}))
+                    self.worker.call_session_tool("memory_clear", {"scope": "workspace"}))
                 if payload.get("status") != "ok":
                     await self.ws.send(json.dumps({
                         "type": "error",
@@ -3176,8 +3181,9 @@ class _Session:
                     n = payload.get("cleared", 0)
                     await self._command_reply(
                         "/memory clear",
-                        f"Cleared {n} " + ("memory" if n == 1 else "memories"),
-                        note="This cannot be undone.", tone="warn")
+                        f"Cleared {n} workspace " + ("memory" if n == 1 else "memories"),
+                        note="This cannot be undone. Global memory is untouched.",
+                        tone="warn")
             else:
                 await self.ws.send(json.dumps({
                     "type": "error",

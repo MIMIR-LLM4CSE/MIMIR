@@ -17,7 +17,7 @@ from mcp.client.stdio import stdio_client
 
 from .. import human_pause
 from ..context.capabilities import infer_tool_caps
-from ..config.constants import STATE_DIR, USER_QUESTION_TIMEOUT_SECS
+from ..config.constants import GLOBAL_STATE_DIR, STATE_DIR, USER_QUESTION_TIMEOUT_SECS
 from ...servers._shared.state_paths import scratch_home
 
 
@@ -305,6 +305,7 @@ async def connect_server(*, agent: Any, name: str, script: str) -> None:
         "MCP_FILES_ROOT": os.getcwd(),
         "SEARCH_ROOT": os.getcwd(),
         "MIMIR_STATE_DIR": STATE_DIR,
+        "MIMIR_GLOBAL_STATE_DIR": GLOBAL_STATE_DIR,
         "MIMIR_SCRATCH_DIR": scratch_home(),
         "MIMIR_SESSION_ID": getattr(agent, "session_id", "") or "",
         "MIMIR_DEFAULT_MODEL": getattr(agent, "model", "") or "",

@@ -31,6 +31,7 @@ from unittest.mock import patch
 
 from mimir.servers._shared.state_paths import (
     active_session_id,
+    global_state_dir,
     scratch_dir,
     session_state_dir,
 )
@@ -227,6 +228,70 @@ class AgentCarriesItsSessionTests(_StateDirCase):
         source = inspect.getsource(server_manager.connect_server)
         self.assertIn("MIMIR_SESSION_ID", source)
         self.assertIn('getattr(agent, "session_id", "")', source)
+
+
+class GlobalStateDirTests(unittest.TestCase):
+    """The tier above the workspace: one directory for the whole machine.
+
+    What is tested hardest here is where it must NOT land. This tier holds the memory
+    shared by every workspace, so a resolution that reaches the user's real home turns
+    any test run into a write to their own memory, and one that reaches ``/tmp``
+    directly puts it in a world-writable path shared between users.
+    """
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        # All three must be absent rather than empty: the suite may inherit any of them.
+        for var in ("MIMIR_GLOBAL_STATE_DIR", "MIMIR_STATE_HOME", "MIMIR_STATE_DIR"):
+            env = patch.dict(os.environ, {}, clear=False)
+            env.start()
+            self.addCleanup(env.stop)
+            os.environ.pop(var, None)
+
+    def test_the_explicit_variable_wins(self) -> None:
+        pinned = os.path.join(self._tmp.name, "pinned")
+        os.environ["MIMIR_GLOBAL_STATE_DIR"] = pinned
+        os.environ["MIMIR_STATE_HOME"] = os.path.join(self._tmp.name, "home")
+        self.assertEqual(global_state_dir(), pinned)
+        # A passed home does not override what the environment pins.
+        self.assertEqual(global_state_dir(os.path.join(self._tmp.name, "other")), pinned)
+
+    def test_a_passed_home_is_used_before_the_environment(self) -> None:
+        os.environ["MIMIR_STATE_HOME"] = os.path.join(self._tmp.name, "env-home")
+        home = os.path.join(self._tmp.name, "client-home")
+        self.assertEqual(global_state_dir(home), os.path.join(home, "global"))
+
+    def test_the_state_home_is_the_next_fallback(self) -> None:
+        home = os.path.join(self._tmp.name, "home")
+        os.environ["MIMIR_STATE_HOME"] = home
+        self.assertEqual(global_state_dir(), os.path.join(home, "global"))
+
+    def test_with_only_a_state_dir_it_stays_inside_it(self) -> None:
+        # Not dirname(state_dir): the suite points MIMIR_STATE_DIR at a mkdtemp(), whose
+        # parent is /tmp. Collapsing the tier inside the state dir is hermetic instead.
+        state = os.path.join(self._tmp.name, "state")
+        os.environ["MIMIR_STATE_DIR"] = state
+        resolved = global_state_dir()
+        self.assertEqual(resolved, os.path.join(state, "global"))
+        self.assertNotEqual(resolved, os.path.join(os.path.dirname(state), "global"))
+
+    def test_it_never_reaches_the_users_home_when_a_state_dir_is_set(self) -> None:
+        # The regression that would quietly write the developer's own global memory.
+        os.environ["MIMIR_STATE_DIR"] = os.path.join(self._tmp.name, "state")
+        self.assertFalse(
+            global_state_dir().startswith(os.path.realpath(os.path.expanduser("~")) + os.sep)
+        )
+
+    def test_with_only_a_files_root_it_stays_inside_the_workspace(self) -> None:
+        root = os.path.join(self._tmp.name, "workspace")
+        with patch.dict(os.environ, {"MCP_FILES_ROOT": root}, clear=False):
+            self.assertEqual(global_state_dir(),
+                             os.path.join(root, ".mimir", "global"))
+
+    def test_it_creates_nothing(self) -> None:
+        home = os.path.join(self._tmp.name, "home")
+        self.assertFalse(os.path.exists(global_state_dir(home)))
 
 
 if __name__ == "__main__":

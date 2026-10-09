@@ -10,8 +10,12 @@ When ``MIMIR_STATE_DIR`` is unset — standalone runs and the hermetic test suit
 which only set ``MCP_FILES_ROOT`` — we fall back to the legacy in-workspace
 ``<workspace>/.mimir`` so those callers keep working unchanged.
 
-Two tiers, and which one a path belongs to is the whole question:
+Three tiers, and which one a path belongs to is the whole question:
 
+* ``global_state_dir()`` — what belongs to the *user*, across every workspace on the
+  machine: facts that hold whichever repository they are in. One directory for the
+  whole machine, which means a session in another workspace may be writing it at this
+  very moment.
 * ``state_dir()`` — what belongs to the *workspace*: the memory store, the Python
   environments, the module catalogue. Common property, shared by every conversation,
   and expensive to rebuild.
@@ -48,6 +52,40 @@ def state_dir() -> str:
         return os.path.abspath(env)
     root = os.path.abspath(os.environ.get("MCP_FILES_ROOT") or os.getcwd())
     return os.path.join(root, ".mimir")
+
+
+def global_state_dir(home: str | None = None) -> str:
+    """Where state shared by *every* workspace lives: ``<STATE_HOME>/global/``.
+
+    A sibling of the per-workspace directories, not a parent of them — ``STATE_HOME``
+    is not a private namespace of workspace dirs: ``install.sh`` writes ``bin``,
+    ``python`` and ``pythons`` there too. A named tier keeps the agent's state out of
+    the installer's layout, and no workspace can collide with it since
+    :func:`workspace_id` always emits ``<basename>-<sha1[:8]>``.
+
+    *home* is the state home the caller already resolved, and the client must pass it:
+    ``MIMIR_STATE_DIR`` reaches only the server subprocesses' environment, never the
+    client's own (see client/guardrails/policy/gates.py), which is the same reason
+    :func:`session_state_dir` and :func:`scratch_dir` take a *base*.
+
+    Resolution order: ``MIMIR_GLOBAL_STATE_DIR`` (explicit, and what the client
+    publishes to the servers), then *home*, then ``MIMIR_STATE_HOME``, and finally
+    ``<state_dir()>/global``.
+
+    That last fallback is deliberate, and so is what it is *not*. Deriving the home
+    from ``dirname(MIMIR_STATE_DIR)`` would resolve to ``/tmp`` for the tests that
+    point the state dir at a ``mkdtemp()`` — a world-writable path shared between
+    users and between runs. Reaching for ``~`` would have the hermetic test suite,
+    which sets only ``MCP_FILES_ROOT``, write into the developer's real global memory.
+    Collapsing the tier inside the workspace state dir is instead hermetic, and a
+    harmless degradation: with one workspace, global and workspace mean the same thing.
+    """
+    env = os.environ.get("MIMIR_GLOBAL_STATE_DIR")
+    if env:
+        return os.path.abspath(env)
+    root = home or os.environ.get("MIMIR_STATE_HOME")
+    return os.path.join(os.path.abspath(root), "global") if root \
+        else os.path.join(state_dir(), "global")
 
 
 def active_session_id(base: str | None = None) -> str:

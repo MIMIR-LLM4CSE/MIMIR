@@ -1219,14 +1219,20 @@ class BashServerTests(unittest.TestCase):
         self._state_dir = tempfile.mkdtemp(prefix="mimir-contract-state-")
         self._prior_state = os.environ.get("MIMIR_STATE_DIR")
         os.environ["MIMIR_STATE_DIR"] = self._state_dir
+        # And the global tier, for the same reason: it is the memory shared by every
+        # workspace, so left at its default a test run writes the real one.
+        self._prior_global = os.environ.get("MIMIR_GLOBAL_STATE_DIR")
+        os.environ["MIMIR_GLOBAL_STATE_DIR"] = os.path.join(self._state_dir, "global")
 
     def tearDown(self) -> None:
         import os
         import shutil as _shutil
-        if self._prior_state is None:
-            os.environ.pop("MIMIR_STATE_DIR", None)
-        else:
-            os.environ["MIMIR_STATE_DIR"] = self._prior_state
+        for var, prior in (("MIMIR_STATE_DIR", self._prior_state),
+                           ("MIMIR_GLOBAL_STATE_DIR", self._prior_global)):
+            if prior is None:
+                os.environ.pop(var, None)
+            else:
+                os.environ[var] = prior
         _shutil.rmtree(self._state_dir, ignore_errors=True)
 
     def test_bash_run_rejects_arbitrary_system_executable_by_path(self) -> None:

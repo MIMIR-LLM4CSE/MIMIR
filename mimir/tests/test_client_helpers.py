@@ -2485,11 +2485,13 @@ class ClientHelperTests(unittest.TestCase):
                 memory_context_file=tmp_path,
             )
             self.assertIn("## Persistent memory", content)
-            self.assertLess(content.index("## Persistent memory"), content.index("Memory index"))
-            self.assertIn("Memory index", content)
+            self.assertLess(content.index("## Persistent memory"),
+                            content.index("Workspace memory index"))
             self.assertIn("user prefers qwen3 model", content)
             self.assertIn("project uses pytest for validation", content)
             self.assertIn("Index at:", content)
+            # No global index passed: nothing claims one exists.
+            self.assertNotIn("Global memory index", content)
         finally:
             import os; os.unlink(tmp_path)
 
@@ -2507,7 +2509,7 @@ class ClientHelperTests(unittest.TestCase):
             )
             self.assertIn("## Persistent memory", content)
             self.assertIn("No memory stored yet", content)
-            self.assertNotIn("Memory index", content)
+            self.assertNotIn("memory index", content)
         finally:
             import os; os.unlink(tmp_path)
 
@@ -2531,6 +2533,74 @@ class ClientHelperTests(unittest.TestCase):
                 self.assertIn(f"fact number {i}  (fact-{i}.md)", content)
         finally:
             import os; os.unlink(tmp_path)
+
+    def test_the_global_index_precedes_the_workspace_one(self) -> None:
+        # Ordered by how often each changes, the most stable first: what the local
+        # backends reuse as a KV prefix.
+        import tempfile
+        paths = {}
+        for scope, desc in (("global", "user writes in French"),
+                            ("workspace", "project targets python 3.11")):
+            with tempfile.NamedTemporaryFile(mode="w", suffix=".md", delete=False) as f:
+                f.write(f"# Memory Index\n\n- [{desc}]({scope}-fact.md) — 2026-03-15\n")
+                paths[scope] = f.name
+        try:
+            content = context_builder_module.build_system_content(
+                active_mode="agent",
+                tool_owner={},
+                sensitive_tools=set(),
+                memory_context_file=paths["workspace"],
+                global_memory_context_file=paths["global"],
+            )
+            self.assertIn("user writes in French", content)
+            self.assertIn("project targets python 3.11", content)
+            self.assertLess(content.index("Global memory index"),
+                            content.index("Workspace memory index"))
+        finally:
+            import os
+            for path in paths.values():
+                os.unlink(path)
+
+    def test_only_a_global_index_renders_only_that_block(self) -> None:
+        import tempfile
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".md", delete=False) as f:
+            f.write("# Memory Index\n\n- [user writes in French](user-french.md) — 2026-03-15\n")
+            tmp_path = f.name
+        try:
+            content = context_builder_module.build_system_content(
+                active_mode="agent",
+                tool_owner={},
+                sensitive_tools=set(),
+                memory_context_file="",
+                global_memory_context_file=tmp_path,
+            )
+            self.assertIn("Global memory index", content)
+            self.assertNotIn("Workspace memory index", content)
+        finally:
+            import os; os.unlink(tmp_path)
+
+    def test_the_empty_fallback_is_said_once_for_both_scopes(self) -> None:
+        # A fresh global store would otherwise print a near-identical paragraph on the
+        # first run of every workspace.
+        import tempfile
+        paths = []
+        for _ in range(2):
+            with tempfile.NamedTemporaryFile(mode="w", suffix=".md", delete=False) as f:
+                f.write("")
+                paths.append(f.name)
+        try:
+            content = context_builder_module.build_system_content(
+                active_mode="agent",
+                tool_owner={},
+                sensitive_tools=set(),
+                memory_context_file=paths[0],
+                global_memory_context_file=paths[1],
+            )
+            self.assertEqual(content.count("No memory stored yet"), 1)
+        finally:
+            import os
+            for path in paths:
+                os.unlink(path)
 
     def test_no_memory_section_without_the_memory_server(self) -> None:
         content = context_builder_module.build_system_content(

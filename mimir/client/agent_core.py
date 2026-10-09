@@ -16,6 +16,7 @@ from .config import (
     clamp_thinking_depth,
     TEMPERATURE_MAX,
     TEMPERATURE_MIN,
+    GLOBAL_STATE_DIR,
     STATE_DIR,
     SERVER_BASE,
     SKILL_BASE,
@@ -550,7 +551,13 @@ class MimirAgent:
         reads local files, and the async method stays because every caller in the
         loop is already a coroutine.
         """
-        memory_file = os.path.join(STATE_DIR, "memory", "MEMORY.md") if "memory_search" in self.tool_owner else ""
+        # Both indexes under one gate: the memory server owns the two scopes together,
+        # so either both are injectable or neither is.
+        has_memory = "memory_search" in self.tool_owner
+        memory_file = os.path.join(STATE_DIR, "memory", "MEMORY.md") if has_memory else ""
+        global_memory_file = (
+            os.path.join(GLOBAL_STATE_DIR, "memory", "MEMORY.md") if has_memory else ""
+        )
         todo_file = self._get_todo_file()
 
         return build_system_content(
@@ -558,6 +565,7 @@ class MimirAgent:
             tool_owner=self.tool_owner,
             sensitive_tools=self.approvals.sensitive_tools,
             memory_context_file=memory_file,
+            global_memory_context_file=global_memory_file,
             todo_file=todo_file,
             plan_todos=self.plan_todos,
             thinking_depth=self.thinking_depth,

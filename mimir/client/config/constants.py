@@ -6,7 +6,10 @@ import os
 # it is defined once, server-side, and imported here rather than duplicated. The
 # .mimir extension paths come from server-side too: the mimir_api server reports the
 # drop-in locations this module's loaders scan, so both ends read one definition.
-from ...servers._shared.state_paths import workspace_id  # noqa: F401  (re-exported)
+from ...servers._shared.state_paths import (  # noqa: F401  (re-exported)
+    global_state_dir,
+    workspace_id,
+)
 from ...servers._shared.extension_paths import (  # noqa: F401  (re-exported)
     MIMIR_DIRNAME,
     PLUGINS_DIR_ENV,
@@ -58,6 +61,13 @@ STATE_DIR = os.path.abspath(
     os.environ.get("MIMIR_STATE_DIR")
     or os.path.join(STATE_HOME, workspace_id(WORKSPACE_ROOT))
 )
+
+# The third tier: state shared by EVERY workspace, <STATE_HOME>/global/. Resolved here
+# rather than left to the servers because the client is the end that knows STATE_HOME —
+# MIMIR_STATE_DIR goes only into the server subprocesses' environment, never this one —
+# and the resolved path is published to them as MIMIR_GLOBAL_STATE_DIR (server_manager),
+# so both ends agree without either re-deriving it. Holds the global memory store.
+GLOBAL_STATE_DIR = global_state_dir(STATE_HOME)
 
 # The four extension locations re-exported at the top of this module (their env vars
 # and default names live in servers/_shared/extension_paths.py). Resolution is always

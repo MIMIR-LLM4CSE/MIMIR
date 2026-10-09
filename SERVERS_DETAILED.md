@@ -168,31 +168,64 @@ Tools:
 
 Purpose: persistent, timestamped memory — Claude-style, human-editable Markdown.
 
-Storage lives under the central per-workspace state dir (`<STATE_DIR>/memory/`, shared
-across every session of the workspace; see [state dir](#state-directory) below). Each
-memory is its own `<slug>.md` file (frontmatter: name / description / date / tags + body),
-indexed by `MEMORY.md` (one scannable line per memory, loaded into context each session).
-Adds are deduplicated (Jaccard word-overlap over the recent window) and the store is
-capped, pruning the oldest entries.
+**Two scopes**, and every write chooses one — there is no default, and a missing `scope`
+is an actionable error rather than a guess:
+
+| scope | location | holds |
+|---|---|---|
+| `workspace` | `<STATE_DIR>/memory/` | what is true of *this project*: its decisions and their reason, its conventions and constraints |
+| `global` | `<GLOBAL_STATE_DIR>/memory/` — `~/.mimir/global/memory/` | what is true of the *user* whichever repository they are in: preferences, corrections about how to work |
+
+The layout is identical in both: each memory is its own `<slug>.md` file (frontmatter:
+name / description / date / tags + body), indexed by `MEMORY.md` (one scannable line per
+memory, loaded into context each session — both indexes are injected, the global one
+first). See [state dir](#state-directory) below for how the two tiers resolve.
+
+Three rules follow from the global store's reach, and they are what the scopes buy:
+
+- **Deduplication is asymmetric.** An add is checked against its own scope always, and
+  against the global store when its target is the workspace: a fact that holds everywhere
+  should block a local copy of itself, while one project's note must never block a user
+  preference. (Jaccard word-overlap against every stored memory, not just recent ones.)
+- **The global store refuses at its cap; the workspace store prunes.** Aging out a
+  project's oldest note is tolerable. Silently deleting the preference the user asked to
+  be remembered is not, so a full global store returns an error naming what to update or
+  delete instead.
+- **Slugs are unique per scope, never across them.** The global store is written by
+  workspaces that never see each other, so cross-scope uniqueness is not enforceable.
+  Tools taking a name resolve a `(scope, name)` pair; a name living in both scopes is an
+  error asking which was meant, rather than a guess at which file to rewrite or delete.
 
 **Semantic search**: `memory_search` ranks memories by embedding similarity to the
 query (so reworded, synonymous, or other-language queries still match), falling back to
-case-insensitive substring matching when no embedding backend is reachable. Vectors are
-cached in a parallel `embeddings.json` (`slug → {model, vec}`, kept out of the
-human-readable `.md` files): written on add/update, pruned on delete/clear/aging, and
+case-insensitive substring matching when no embedding backend is reachable. It spans both
+scopes by default, each result tagged with the one it came from; scores stay comparable
+because it is one model and one metric, and a backfilled vector is written to its own
+scope's cache. Vectors are
+cached in a parallel `embeddings.json` **per scope** (`slug → {model, vec}`, kept out of
+the human-readable `.md` files; one shared file would be read-modify-written concurrently
+by agents in different workspaces, and the atomic write gives replacement, not
+lost-update protection): written on add/update, pruned on delete/clear/aging, and
 lazily backfilled for pre-existing memories on first search. A model change invalidates
 stale vectors (the model id is stored alongside each vector). The embedding backend and
 model are configured via the shared `_shared/embed.py` helper — see the `MIMIR_EMBED_*`
 env vars in [SETUP.md](SETUP.md). The `memory://all` index injection is unchanged.
 
-Tools:
-- `memory_add` — store a fact as its own `.md` file (auto-slug, dedup)
-- `memory_search` — semantic top-k retrieval (`limit`, `tag` filters; per-result
-  `score`), with substring fallback
-- `memory_update` — edit a memory in place by slug (re-embeds on change)
-- `memory_list_all`
-- `memory_delete` — remove one memory by slug
-- `memory_clear` — wipe all memory (irreversible)
+Tools (`scope` is `"workspace"` or `"global"`; `"all"` where both can be read at once):
+- `memory_add(text, scope, …)` — store a fact as its own `.md` file (auto-slug, dedup).
+  `scope` is **required**; the result carries the scope and path it wrote to
+- `memory_search(query, …, scope="all")` — semantic top-k retrieval (`limit`, `tag`
+  filters; per-result `score` and `scope`), with substring fallback
+- `memory_update(name, …, scope=None)` — edit a memory in place by slug (re-embeds on
+  change). Omit `scope` to resolve the name in whichever store holds it
+- `memory_list_all(scope="all")`
+- `memory_delete(name, scope=None)` — remove one memory by slug
+- `memory_clear(scope="workspace")` — wipe one scope (irreversible). No `"all"`: clearing
+  both is two deliberate decisions, since a global wipe reaches every workspace
+
+`/memory list` shows every entry with its scope. `/memory clear` wipes the **workspace**
+store only and says so — the global memory is every other workspace's too, so it is not
+something a bare command wipes.
 
 ## agent_state/server_todo.py
 
@@ -254,6 +287,25 @@ resolves paths off a single per-workspace **state dir**. The client computes
 env var (`client/integration/server_manager.py`); servers read it through
 `servers/_shared/state_paths.py`. When `MIMIR_STATE_DIR` is unset (standalone runs, the
 hermetic test suite), they fall back to the legacy in-workspace `<workspace>/.mimir`.
+
+Above it sits the **global state dir**, `~/.mimir/global/` — what belongs to the *user*
+rather than to one repository, which today is the global memory store. The client
+resolves it as `global_state_dir(STATE_HOME)` and publishes it as
+`MIMIR_GLOBAL_STATE_DIR`, the same way it publishes the state dir. It is a *sibling* of
+the per-workspace directories, not a parent: `~/.mimir` also holds the installer's
+`bin`, `python` and `pythons`, and a named tier keeps agent state out of that layout
+while leaving room for other machine-wide state later. No workspace can collide with the
+name, since `workspace_id()` always emits `<basename>-<sha1[:8]>`.
+
+Resolution order is `MIMIR_GLOBAL_STATE_DIR`, then a *home* passed by the caller (the
+client must pass one: `MIMIR_STATE_DIR` reaches only the server subprocesses'
+environment, never the client's own), then `MIMIR_STATE_HOME`, and finally
+`<state_dir()>/global`. That last fallback is chosen for what it avoids: deriving the
+home from `dirname(MIMIR_STATE_DIR)` would land in `/tmp` for the tests that point the
+state dir at a `mkdtemp()`, and reaching for `~` would have the hermetic suite write the
+developer's real global memory. Collapsing the tier inside the workspace state dir is
+hermetic, and a harmless degradation — with one workspace, global and workspace mean the
+same thing.
 
 The same module owns the agent **scratchpad**, which lives under the temp dir rather than
 the state dir: `scratch_home()` → `MIMIR_SCRATCH_DIR` if set, else

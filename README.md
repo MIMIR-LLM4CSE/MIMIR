@@ -269,7 +269,7 @@ The client registers 20 servers by default; the authoritative registry lives in
 | `strings` | reverse/case/strip/replace/split/contains/count/prefix/suffix/title |
 | `datetime` | Current time, day-of-week, date arithmetic, formatting, timestamp conversion |
 | `symbolic_math` | SymPy: simplify/expand/factor/differentiate/integrate/solve/limit/series/matrix |
-| `memory` | Persistent memory with tags, search, list, delete, clear |
+| `memory` | Persistent memory with tags, search, list, delete, clear — in two scopes: per-workspace and global (every workspace on the machine) |
 | `files` | Root-scoped file CRUD, surgical edits (`replace_in_file`, `replace_lines`), batch edits |
 | `search` | File/pattern search, file reads, cached tree summaries, directory listing, ranking |
 | `web` | Safe HTTP GET/POST, JSON parsing and field extraction (SSRF-hardened) |
@@ -427,7 +427,11 @@ drop-in path *your* workspace resolves, and the shipped template for the type. A
 "what can I extend, and where does the file go?" is the one-call version.
 
 Agent **state** lives elsewhere, in a central per-workspace dir (`~/.mimir/<workspace-id>/`,
-override `MIMIR_STATE_DIR`): memory, sessions, plans, todos, and the module catalogue. The agent's **scratchpad** sits
+override `MIMIR_STATE_DIR`): memory, sessions, plans, todos, and the module catalogue. One
+tier above it, `~/.mimir/global/` (override `MIMIR_GLOBAL_STATE_DIR`) holds what belongs to
+*you* rather than to one repository — today the **global memory**, shared by every workspace
+on the machine, so a preference or a correction is stored once instead of once per project.
+The agent's **scratchpad** sits
 under the temp dir instead — `<TMPDIR or /tmp>/mimir-<uid>-<workspace-id>/<session-id>/`,
 override `MIMIR_SCRATCH_DIR`. It is writable without approval and is where throwaway scripts,
 probes, intermediate data and diagnostic plots belong; nothing written there is reported as

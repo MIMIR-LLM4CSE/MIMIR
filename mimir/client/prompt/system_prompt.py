@@ -337,16 +337,26 @@ _SECTION_SUBAGENTS = (
 # is the model's call alone: no memory is stored on its behalf at the end of a turn.
 _SECTION_MEMORY = (
     "## Persistent memory\n"
-    "Memory is shared by every session of this workspace. It is a small set of facts, one per "
-    "file, and the index below lists all of them. Keep it that way.\n"
-    "- What belongs there: user preferences and corrections, project decisions and their "
-    "reason, conventions or constraints you could not find in the repository. What does not: "
-    "task summaries, progress, anything the code or git history already records, anything "
-    "that only matters to this conversation.\n"
-    "- Before writing, check the index (and search if in doubt). If a memory already covers "
-    "the subject, edit it in place — never add a second one. If a new fact contradicts a "
-    "memory, rewrite that memory to the current truth (or delete it); two memories must never "
-    "disagree.\n"
+    "A small set of facts, one per file, in two memories — the indexes below list every one "
+    "of them. Keep it that way.\n"
+    "- **Workspace memory** is shared by every session of this workspace, and holds what is "
+    "true of THIS project: its decisions and their reason, its conventions and constraints, "
+    "what you could not find in the repository. **Global memory** is shared by every "
+    "workspace on this machine, and holds what is true of the user whichever repository "
+    "they are in: their preferences, and their corrections about how you should work.\n"
+    "- The scope is yours to choose on every write, and there is no default. A fact that is "
+    "only true of this project never goes global — it would follow the user into every other "
+    "one. A preference or a correction about how to work does not belong to this project — "
+    "filing it here means being corrected again in the next repository. When it could "
+    "honestly be either, ask the user rather than guessing, and say which memory you wrote "
+    "to when you report back.\n"
+    "- What belongs in neither: task summaries, progress, anything the code or git history "
+    "already records, anything that only matters to this conversation.\n"
+    "- Before writing, check the indexes (and search if in doubt). If a memory already covers "
+    "the subject, edit it in place — never add a second one, in either scope. If a new fact "
+    "contradicts a memory, rewrite that memory to the current truth (or delete it); two "
+    "memories must never disagree, and a global one contradicted by this project is the one "
+    "to fix.\n"
     "- One fact per memory, with a description precise enough to recognise it from the index "
     "alone.\n"
     "- A memory is what was true when written. Verify on disk before acting on it, and when it "
@@ -491,8 +501,11 @@ _INDEX_LINE_RE = re.compile(
 )
 
 
-# The memory server's own cap on stored memories. The whole index is injected: a memory
-# the model cannot see is one it writes a second time, or contradicts.
+# The memory server's own cap on stored memories, applied per index: the whole of each
+# is injected, because a memory the model cannot see is one it writes a second time, or
+# contradicts. A budget shared between the two scopes would break that invariant in
+# silence as soon as their sum passed it; what bounds the total instead is the server's
+# lower cap on the global store.
 _MAX_INDEXED_MEMORIES = 50
 
 
@@ -678,6 +691,32 @@ def _section(body: str) -> str:
     return "\n" + body
 
 
+# Said once, above both indexes rather than inside each: it applies to every memory
+# whatever its scope, and a second verbatim copy would spend tokens restating it.
+_MEMORY_INDEX_CAVEAT = (
+    "Every stored memory, one line each — historical context only; files listed may have "
+    "changed or been deleted since, so always verify on disk before assuming something "
+    "exists, and a memory saying a piece of work was done is not evidence that it still "
+    "is. Search or read the individual memory file for the full note."
+)
+
+
+def _render_memory_block(label: str, index_file: str, entries: list[dict]) -> str:
+    """One scope's index, as the lines the prompt carries."""
+    lines = []
+    for e in entries:
+        ts = e.get("timestamp", "")[:10]  # date only
+        text = e.get("text", "").strip()
+        slug = e.get("slug", "")
+        suffix = f"  ({slug}.md)" if slug else ""
+        lines.append(f"[{ts}] {text}{suffix}")
+    return (
+        f"{label}:\n"
+        + "\n".join(lines)
+        + "\n(Index at: " + index_file + ")"
+    )
+
+
 def _render_checklist(items: list[dict]) -> list[str]:
     """Render todo items as ``[x] text`` / ``[ ] text`` lines."""
     return [f"[{'x' if it.get('done') else ' '}] {it['text']}" for it in items]
@@ -689,6 +728,8 @@ def build_system_content(
     tool_owner: dict[str, str],
     sensitive_tools: set[str],
     memory_context_file: str = "",
+    # Defaults to "" like its sibling: existing callers pass only the workspace index.
+    global_memory_context_file: str = "",
     todo_file: str = "",
     plan_todos: list[str] | None = None,
     context_file: str = "",
@@ -761,32 +802,33 @@ def build_system_content(
         "is to patch another file. Deliverables go in the workspace, or wherever the user asked."
     )
 
-    if memory_context_file:
-        entries = _load_recent_memories(memory_context_file)
-        if entries:
-            lines = []
-            for e in entries:
-                ts = e.get("timestamp", "")[:10]  # date only
-                text = e.get("text", "").strip()
-                slug = e.get("slug", "")
-                suffix = f"  ({slug}.md)" if slug else ""
-                lines.append(f"[{ts}] {text}{suffix}")
-            memory_block = (
-                "Memory index (every stored memory, one line each — historical context only; "
-                "files listed may have changed or been deleted since, so always verify on disk "
-                "before assuming something exists, and a memory saying a piece of work was done "
-                "is not evidence that it still is). Search or read the individual "
-                "memory file for the full note:\n"
-                + "\n".join(lines)
-                + "\n(Index at: " + memory_context_file + ")"
-            )
+    if memory_context_file or global_memory_context_file:
+        # Global first, then workspace: inside the section, the blocks are ordered by how
+        # often they change, the most stable one earliest. That is free on the Anthropic
+        # backend, where the whole system prompt is one cached block and any byte
+        # invalidates it, and it is what the local backends (ollama, vLLM) reuse, since
+        # their KV cache hits on the longest common token prefix.
+        blocks = []
+        for label, path in (
+            ("Global memory index — shared by every workspace on this machine",
+             global_memory_context_file),
+            ("Workspace memory index — this project", memory_context_file),
+        ):
+            entries = _load_recent_memories(path) if path else []
+            if entries:
+                blocks.append(_render_memory_block(label, path, entries))
+        if blocks:
+            blocks.insert(0, _MEMORY_INDEX_CAVEAT)
         else:
-            memory_block = (
-                "No memory stored yet. Memories are stored under: "
-                + os.path.dirname(memory_context_file)
+            # One line, not one per scope: a fresh global store would otherwise print a
+            # near-identical paragraph on the first run of every workspace. No caveat
+            # either — there is nothing yet for it to warn about.
+            dirs = " and ".join(
+                os.path.dirname(p) for p in (global_memory_context_file, memory_context_file) if p
             )
+            blocks = ["No memory stored yet. Memories are stored under: " + dirs]
         # Leading blank line, as for the other headed sections: _section only prepends one.
-        system_content += _section("\n" + _SECTION_MEMORY + "\n\n" + memory_block)
+        system_content += _section("\n" + _SECTION_MEMORY + "\n\n" + "\n\n".join(blocks))
 
     if active_mode == "agent":
         if todo_file:

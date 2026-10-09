@@ -13,9 +13,21 @@ the server of the same checkout, so the two always move together.
 How to release is in [CONTRIBUTING.md](CONTRIBUTING.md#releasing). The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased]
+## [1.4.0] — 2026-10-09
 
 ### Added
+- A **global memory**, beside the per-workspace one, for what belongs to the user rather
+  than to one repository: their preferences, and their corrections about how to work.
+  Stored under `~/.mimir/global/memory/` (override `MIMIR_GLOBAL_STATE_DIR`), in the same
+  human-editable format, and shared by every workspace on the machine — so a correction
+  is given once instead of once per project. Both indexes are injected into the prompt,
+  the global one first. Every memory tool takes a `scope`, and `memory_add` requires one:
+  the model files each fact where it belongs and asks when it could honestly be either,
+  rather than a default quietly deciding. The global store refuses at its cap instead of
+  aging out its oldest entry — a preference you asked to be kept must not disappear on
+  its own — and a fact already stored globally blocks a workspace copy of itself, while
+  one project's note never blocks a user preference. `/memory list` shows each entry's
+  scope; `/memory clear` still wipes only this workspace, and says so.
 - Four skills for the pipeline the acronym names, each grounded in tools that exist
   rather than in a kind of task in the abstract. `derive-model` does the algebra with
   the `symbolic` tool instead of recalling it — truncation error and order from a
