@@ -1,10 +1,12 @@
 ---
 name: proxy-optimize
-description: Iteratively optimize a scientific computing proxy to meet performance and accuracy requirements using the proxy tools.
+description: Optimize a registered proxy through the eval loop — a ratchet that keeps a change only when it improved the metric and broke no constraint.
 disable-model-invocation: false
 ---
 
-You are running a proxy optimization **ratchet**.
+An optimization without a ratchet keeps whatever was measured last, and what was
+measured last is usually noise. This is the ratchet: nothing is kept that was not shown
+to be better than the best already on record.
 
 The session **minimizes (or maximizes) a primary metric subject to the
 requirements as pass/fail constraints**. A completed run that satisfies every
@@ -56,11 +58,11 @@ field naming the exact next call — follow it.
 
    **Write the harness under `proxy_bench/harnesses/`.** Everything else the proxy owns
    already lives in `<workspace>/proxy_bench/` — the registry, the sealed references, the
-   runs, the optimisation state, the snapshot repository, and the harnesses
+   runs, the optimization state, the snapshot repository, and the harnesses
    `proxy_manage(op='scaffold')` generates. A harness written by hand belongs with them,
    and putting it anywhere else leaves a project with two directories for one activity:
    observed as a `benchmarks/` beside a `proxy_bench/`, with nothing to say which held
-   what. `proxy_manage(op='clean')` removes runs, optimisation state and snapshots — it
+   what. `proxy_manage(op='clean')` removes runs, optimization state and snapshots — it
    does not touch harnesses, so they survive a reset like the references do. Keeping the
    harness in the repo instead is a legitimate choice when it is a deliverable the user
    maintains; drifting there by accident is not.
@@ -158,7 +160,7 @@ these requirements.
    instrument, not the subject.
 4. **Compare runs**: `proxy_eval_status(op='diff')` or `(op='runs')` (note `is_best`).
 
-## Rules
+## Invariants of the loop
 
 - Read the file you are about to change before every modification. Never edit blind.
 - Make one focused change per run cycle — do not batch multiple unrelated edits.
@@ -185,7 +187,9 @@ these requirements.
 
 The loop is the same; only where a run happens changes. `proxy_slurm(op='eval',
 partition=..., confirm=True)` submits it instead of running it here, and returns while
-the job is still queued — end your turn, you are resumed when it lands.
+the job is still queued — end your turn, you are resumed when it lands. Picking the
+partition and the node type, and building for the node rather than for the login host,
+is the `run-on-cluster` method; what follows is only what the ratchet adds to it.
 
 Say where the **build** goes, separately from where the run goes. A node dedicated to
 GPU simulation is not a node to compile on, and compiling there burns the allocation

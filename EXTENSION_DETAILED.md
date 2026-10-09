@@ -205,7 +205,7 @@ component + keyboard nav with `wrapIndex`):
 - **"@" mentions** — attach MCP resources or workspace files/line-ranges as context.
   `mentionUtils.detectMentionQuery` fires whenever "@" starts a token (start of input or
   after whitespace), anywhere in the message. Picks insert `@name ` at the caret.
-- **"/" slash commands** — invoke a skill explicitly (e.g. `/fix-bug …`).
+- **"/" slash commands** — invoke a skill explicitly (e.g. `/debug-numerics …`).
   `slashUtils.detectSlashQuery` fires **only** when "/" is the first non-whitespace
   character of the input, mirroring the backend rule (`agent_loop.py`:
   `query.strip().startswith("/")`). The dropdown lists skills from `skillToggles`; picks

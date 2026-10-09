@@ -11,6 +11,7 @@ import importlib.util
 import os
 import pathlib
 import sys
+import tempfile
 import unittest
 from unittest import mock
 
@@ -221,10 +222,10 @@ class LoadSkillTests(unittest.TestCase):
 
     def test_the_body_is_the_file_verbatim(self):
         from mimir.client.agent_core import _parse_skill_markdown
-        source = (pathlib.Path(k.SKILL_BASE) / "fix-bug" / "SKILL.md").read_text()
-        result = api.load_skill("fix-bug")
+        source = (pathlib.Path(k.SKILL_BASE) / "debug-numerics" / "SKILL.md").read_text()
+        result = api.load_skill("debug-numerics")
         self.assertEqual(result["status"], "ok")
-        self.assertEqual(result["skill"], "fix-bug")
+        self.assertEqual(result["skill"], "debug-numerics")
         # Parity with the client's own parser, which is what the user's /<name> path
         # folds into messages[0]: the two routes must hand over the same text.
         self.assertEqual(result["instructions"],
@@ -232,25 +233,35 @@ class LoadSkillTests(unittest.TestCase):
         self.assertTrue(result["description"])
 
     def test_a_user_invoked_only_skill_is_refused_with_its_slash_command(self):
-        # prepare-pr ships with disable-model-invocation: true. Before that field was
-        # honoured it was parsed and dropped, so the skill was reachable by the model
-        # against its own declaration.
-        result = api.load_skill("prepare-pr")
+        # Declared in a workspace skill rather than in a bundled one: no shipped skill
+        # sets the field, and making one carry it to keep a test fed would be the test
+        # choosing what MIMIR ships. Before the field was honoured it was parsed and
+        # dropped, so such a skill was reachable by the model against its own
+        # declaration.
+        with tempfile.TemporaryDirectory() as d:
+            skill = pathlib.Path(d) / "mine-only"
+            skill.mkdir()
+            (skill / "SKILL.md").write_text(
+                "---\nname: mine-only\ndescription: user's to invoke\n"
+                "disable-model-invocation: true\n---\n\nThe method.\n"
+            )
+            with mock.patch.dict(os.environ, {k.SKILLS_DIR_ENV: d}):
+                result = api.load_skill("mine-only")
         self.assertEqual(result["status"], "error")
         self.assertIn("user-invoked only", result["error"])
-        self.assertIn("/prepare-pr", result["hint"])
+        self.assertIn("/mine-only", result["hint"])
 
     def test_an_unknown_name_is_refused_with_the_available_ones(self):
         result = api.load_skill("no-such-skill")
         self.assertEqual(result["status"], "error")
         self.assertIn("No skill named", result["error"])
-        self.assertIn("fix-bug", result["hint"])
+        self.assertIn("debug-numerics", result["hint"])
 
     def test_a_name_that_could_leave_its_directory_is_never_joined(self):
         # The one path-traversal surface this server adds: `name` arrives from the
         # model and is joined onto the skills directories.
         for name in ("../../etc/passwd", "a/b", ".hidden", "", "..",
-                     "fix-bug/../../../etc/passwd"):
+                     "debug-numerics/../../../etc/passwd"):
             with self.subTest(name=name):
                 result = api.load_skill(name)
                 self.assertEqual(result["status"], "error")
@@ -259,13 +270,13 @@ class LoadSkillTests(unittest.TestCase):
         import tempfile
         from mimir.client.agent_core import MimirAgent
         with tempfile.TemporaryDirectory() as d:
-            skill_dir = pathlib.Path(d) / "fix-bug"
+            skill_dir = pathlib.Path(d) / "write-tests"
             skill_dir.mkdir()
             (skill_dir / "SKILL.md").write_text(
-                "---\nname: fix-bug\ndescription: OVERRIDDEN\n---\nMy own method.\n"
+                "---\nname: write-tests\ndescription: OVERRIDDEN\n---\nMy own method.\n"
             )
             with mock.patch.dict(os.environ, {extension_paths.SKILLS_DIR_ENV: d}):
-                result = api.load_skill("fix-bug")
+                result = api.load_skill("write-tests")
                 self.assertEqual(result["instructions"], "My own method.")
                 self.assertEqual(result["description"], "OVERRIDDEN")
                 # And the client's loader agrees: the override rule is restated across
@@ -274,12 +285,19 @@ class LoadSkillTests(unittest.TestCase):
                 agent.skills = {}
                 agent.load_skills(k.SKILL_BASE)
                 agent.load_skills(resolve_skills_dir(), merge=True)
-                self.assertEqual(agent.skills["fix-bug"]["content"], "My own method.")
+                self.assertEqual(agent.skills["write-tests"]["content"], "My own method.")
 
     def test_the_inventory_reports_which_skills_the_model_may_load(self):
-        by_name = {entry["name"]: entry for entry in api._bundled_skill_names()}
-        self.assertFalse(by_name["prepare-pr"]["model_invocable"])
-        self.assertTrue(by_name["fix-bug"]["model_invocable"])
+        # Every bundled skill is the model's to pull: each one is a method it has to be
+        # able to reach at the step its own reading says the method applies, and a
+        # shipped skill gated behind a slash command would be one the model can see in
+        # its index and never load. The field is still reported, for the workspace
+        # skills that do set it — see the refusal test above.
+        entries = api._bundled_skill_names()
+        self.assertTrue(entries)
+        for entry in entries:
+            with self.subTest(skill=entry["name"]):
+                self.assertTrue(entry["model_invocable"])
 
 
 if __name__ == "__main__":

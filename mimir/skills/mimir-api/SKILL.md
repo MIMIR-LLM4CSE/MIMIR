@@ -9,7 +9,8 @@ write. Read the API from `mimir_api` before answering. The tool reports the buil
 is running — its capability vocabulary, its drop-in paths, its shipped templates — and
 that is the authority here. What you remember about MIMIR is a previous version.
 
-Workflow:
+## Read the API first
+
 1. `mimir_api(topic="index")` — the extension types, where each file goes in this
    workspace, and the rules common to all of them. Enough on its own to answer "what
    can I extend?" or "where does X go?".
@@ -23,6 +24,8 @@ Workflow:
    extensions this workspace has, which server namespaces are taken, which bundled
    skill a new one would override.
 
+## Choosing the type
+
 Choosing the type is most of the work. Match the moment, not the wording of the request:
 
 - it should change **how the agent works** on a kind of task → **skill**
@@ -35,7 +38,7 @@ Choosing the type is most of the work. Match the moment, not the wording of the 
 A rule that must always hold is a policy, not a nudge: a nudge the user turns off is a
 rule that stops holding. A nudge that must never be ignored was a policy all along.
 
-Writing it:
+## Writing it
 
 - The file goes under the workspace `.mimir/` (or the `MIMIR_*_DIR` the API names), and
   nowhere else. Never edit the installed MIMIR package to extend it: an install is
@@ -54,6 +57,8 @@ Writing it:
   means the pack is skipped at startup with only a log line. Ask the user before
   importing or running one you wrote — importing a plugin pack executes its
   registration.
+
+## What takes effect when
 
 Finish by telling the user what takes effect when. Extensions are discovered by
 directory scan at agent start, so a new or edited file is live on the next start —

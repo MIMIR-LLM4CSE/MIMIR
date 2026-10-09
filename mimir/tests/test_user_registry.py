@@ -81,14 +81,14 @@ class UserSkillLoadingTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             # A brand-new user skill…
             _write(os.path.join(d, "mytask", "SKILL.md"), _SKILL_MD.format(name="mytask", desc="my custom skill"))
-            # …and an override of a bundled one (fix-bug ships in mimir/skills).
-            _write(os.path.join(d, "fix-bug", "SKILL.md"), _SKILL_MD.format(name="fix-bug", desc="OVERRIDDEN"))
+            # …and an override of a bundled one (write-tests ships in mimir/skills).
+            _write(os.path.join(d, "write-tests", "SKILL.md"), _SKILL_MD.format(name="write-tests", desc="OVERRIDDEN"))
             with mock.patch.dict(os.environ, {SKILLS_DIR_ENV: d}):
                 agent = self._agent()
         self.assertIn("mytask", agent.skills)
         self.assertEqual(agent.skills["mytask"]["description"], "my custom skill")
-        self.assertEqual(agent.skills["fix-bug"]["description"], "OVERRIDDEN")  # user wins
-        self.assertIn("write-tests", agent.skills)  # other bundled skills intact
+        self.assertEqual(agent.skills["write-tests"]["description"], "OVERRIDDEN")  # user wins
+        self.assertIn("derive-model", agent.skills)  # other bundled skills intact
 
     def test_user_server_appears_in_toggles(self) -> None:
         with tempfile.TemporaryDirectory() as d:

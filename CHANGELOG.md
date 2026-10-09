@@ -13,6 +13,49 @@ the server of the same checkout, so the two always move together.
 How to release is in [CONTRIBUTING.md](CONTRIBUTING.md#releasing). The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Added
+- Four skills for the pipeline the acronym names, each grounded in tools that exist
+  rather than in a kind of task in the abstract. `derive-model` does the algebra with
+  the `symbolic` tool instead of recalling it — truncation error and order from a
+  series expansion, a stability limit from a characteristic polynomial, a closed form
+  verified in the direction the tool did not go. `debug-numerics` is for the run that
+  produces numbers and the numbers are wrong: shrink it until one step is readable, read
+  the mode of failure for the suspect it names, bisect by feeding in a solution you know
+  exactly, and keep the check that failed before the fix as the evidence it is fixed.
+  `parallelize-kernel` guards the two failures that stay quiet — an answer changed by a
+  race that still passes a tolerance, and a speedup that was a warm cache — with a
+  measured baseline, one axis at a time, a scaling sweep instead of a spot check, and
+  Amdahl's ceiling as the test of the measurement rather than of the code.
+  `run-on-cluster` starts from the fact that the host answering your probes is not the
+  host that will run the job: size the request from the node inventory, because a
+  request no node satisfies pends forever instead of failing; carry the build's modules
+  into the job, because a batch shell is a fresh one; and submit a proxy's work through
+  `proxy_slurm`, never by hand.
+
+### Changed
+- The surviving skills read as one set. `write-tests` and `explore-repo` were written in
+  a register of their own — "You are writing tests.", then a flat list of rules — which
+  said nothing about when the method applies and buried the part that matters:
+  for `write-tests`, that a test which has only ever been green has established nothing.
+  Every skill now opens on the failure it exists to prevent, is sectioned, and closes on
+  what does not count as done. Their one-line descriptions were titles, and the index is
+  the only thing the model sees before deciding to load one, so each now states the
+  trigger instead of the subject.
+
+### Removed
+- `fix-bug`, `refactor-code`, `analyze-only` and `prepare-pr`. Each restated what the
+  system prompt already requires — make the minimum change, read before editing,
+  validate what you modified, leave unrelated files alone — so each cost a line of
+  every query's context to say nothing new, and loading one spent one of the three
+  slots a task has on a method the model was already following. A skill earns its line
+  by carrying a method the base instructions do not. Restore one as a workspace skill
+  under `.mimir/skills/<name>/SKILL.md` if your own practice wants it.
+- No bundled skill now sets `disable-model-invocation: true` — `prepare-pr` was the
+  only one. The field is still honoured for workspace skills, and its test now declares
+  one rather than leaning on a shipped skill to carry the flag.
+
 ## [1.3.1] — 2026-10-08
 
 ### Changed

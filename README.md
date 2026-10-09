@@ -377,21 +377,27 @@ Skills are reusable methodology prompts. They guide *how* the agent works withou
 the base system instructions, which stay authoritative. Their names and one-line descriptions
 are in the agent's instructions; a body enters the context only when it is loaded.
 
+The bundled set covers the pipeline the acronym names — math, modelling, implementation,
+runtime — and deliberately stops there. A skill restating what the system prompt already
+requires (make the minimum change, read before editing, validate what you modified) costs a
+line of every query's context and, loaded, spends one of the three slots a task has on a
+method the agent was already following.
+
 Each lives at `mimir/skills/<skill-name>/SKILL.md` with YAML front-matter (`name` must match
 the directory) followed by the methodology body. Built-in skills:
 
 | Skill | Description |
 |-------|-------------|
-| `fix-bug` | Fix a bug with minimal, safe changes and validate the result |
-| `refactor-code` | Improve code structure without changing external behavior |
-| `write-tests` | Write tests for existing code |
-| `explore-repo` | Systematically explore and summarize a repository |
-| `analyze-only` | Analyse code and report findings without making edits |
-| `prepare-pr` | Prepare a pull-request description from recent changes |
-| `proxy-optimize` | Optimize a registered proxy through the iterative eval loop |
+| `derive-model` | Derive or verify the mathematics symbolically before implementing it |
+| `write-tests` | Write tests that discriminate, against something independent of the code |
+| `debug-numerics` | Diagnose a computation that runs and is wrong |
+| `parallelize-kernel` | Thread, vectorise or distribute a kernel, and prove the speedup is real |
+| `run-on-cluster` | Build for the target node, size and submit a Slurm job, read what came back |
+| `proxy-optimize` | Optimize a registered proxy through the eval loop's accept/reject ratchet |
+| `explore-repo` | Map unfamiliar code, and stop once the files and symbols are named |
 | `mimir-api` | Author a `.mimir` extension — skill, tool server, policy, hook, nudge — from MIMIR's own API |
 
-Trigger a skill explicitly with a slash command (`/fix-bug the import error in …`), which
+Trigger a skill explicitly with a slash command (`/debug-numerics the solver blows up at step 40 …`), which
 folds its method into the system prompt for the whole query. Otherwise the model loads one
 itself: the index of available skills is in its instructions, and `load_skill(<name>)` reads
 the body — on the first step when the request already says so, and equally at the twentieth,

@@ -45,7 +45,7 @@ directory name) followed by the methodology body:
 
 ```markdown
 ---
-name: fix-bug
+name: check-units
 description: One line — when this skill applies. The model reads it to decide
   whether to load the body, so write the trigger, not a title.
 disable-model-invocation: false   # true = /name only, never the model's own pull
@@ -58,7 +58,11 @@ Steps:
 2. ...
 ```
 
-Triggered explicitly (`/fix-bug …`), which folds the body into the system prompt for the
+A skill earns its line in the system prompt by teaching a method the base instructions do
+not already carry. One that restates them — make the minimum change, validate what you
+modified — costs context on every query and buys nothing when it is loaded.
+
+Triggered explicitly (`/check-units …`), which folds the body into the system prompt for the
 whole query, or loaded by the model itself with `load_skill(<name>)` when its own reading
 says the method applies — the index of names and descriptions is in the system prompt, the
 bodies are not. A user skill whose name matches a bundled one **overrides** it. Example:
