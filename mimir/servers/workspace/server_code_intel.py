@@ -353,7 +353,7 @@ def _flatten_doc_symbols(symbols: list, out: list, depth: int = 0) -> None:
 
 # ── tools ─────────────────────────────────────────────────────────────────────
 
-@mcp.tool(**tool_caps(
+@mcp.tool(**tool_caps(kind="search",
     caps=[CODE_NAV, READ, CACHEABLE, SEARCH, SEARCH_WITH_PATH, CANDIDATE_SEARCH],
     label="Finding definition of {name}",
 ))
@@ -409,7 +409,7 @@ def find_definition(name: str, context_lines: int = _DEFAULT_CONTEXT_LINES) -> d
     )
 
 
-@mcp.tool(**tool_caps(
+@mcp.tool(**tool_caps(kind="search",
     caps=[READ, CACHEABLE, SEARCH, SEARCH_WITH_PATH],
     label="Finding references to {name}",
 ))
@@ -493,7 +493,7 @@ def _fill_end_lines(entries: list[dict], total_lines: int) -> list[dict]:
     return ordered
 
 
-@mcp.tool(**tool_caps(
+@mcp.tool(**tool_caps(kind="outline",
     caps=[CODE_NAV, READ, CACHEABLE],
     path_args=["path"],
     label="Outlining symbols in {path}",
@@ -555,7 +555,7 @@ def symbol_outline(path: str) -> dict:
     )
 
 
-@mcp.tool(**tool_caps(caps=[READ, CACHEABLE], path_args=["path"],
+@mcp.tool(**tool_caps(kind="outline", caps=[READ, CACHEABLE], path_args=["path"],
                       label="Hovering {symbol} in {path}"))
 def hover(path: str, line: int, symbol: str = "") -> dict:
     """Type / signature / doc info for a symbol at a position (LSP-only).

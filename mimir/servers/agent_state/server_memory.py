@@ -436,7 +436,7 @@ def _semantic_search(query: str, candidates: list, limit: int) -> list | None:
 
 # ── tools ─────────────────────────────────────────────────────────────────────
 
-@mcp.tool()
+@mcp.tool(**tool_caps(kind="memory"))
 def memory_add(text: str, scope: str = "", description: str = None, tags: list = None) -> dict:
     """Store a fact as its own timestamped Markdown memory file.
 
@@ -540,7 +540,7 @@ def memory_add(text: str, scope: str = "", description: str = None, tags: list =
     return ok({"name": name, "scope": scope, "path": path, "stored": text})
 
 
-@mcp.tool()
+@mcp.tool(**tool_caps(kind="memory"))
 def memory_search(query: str, tag: str = None, limit: int = 5, scope: str = "all") -> dict:
     """Search memories by meaning, ranked most-relevant first, across both scopes.
 
@@ -585,7 +585,7 @@ def memory_search(query: str, tag: str = None, limit: int = 5, scope: str = "all
     return ok({"results": results, "count": len(results)})
 
 
-@mcp.tool()
+@mcp.tool(**tool_caps(kind="memory"))
 def memory_list_all(scope: str = "all") -> dict:
     """Return every stored memory with its name, scope, description, date, tags, and text.
 
@@ -606,7 +606,7 @@ def memory_list_all(scope: str = "all") -> dict:
     return ok({"memory": memory, "count": len(memory)})
 
 
-@mcp.tool()
+@mcp.tool(**tool_caps(kind="memory"))
 def memory_update(
     name: str,
     text: str = None,
@@ -663,7 +663,7 @@ def memory_update(
     return ok({"name": name, "scope": entry["scope"], "path": path, "updated": entry})
 
 
-@mcp.tool(**tool_caps(
+@mcp.tool(**tool_caps(kind="memory",
     caps=[PLAN_BLOCKED], reversibility=RECOVERABLE, non_batch=True,
     risk_note="deletes a persistent memory file",
 ))
@@ -697,7 +697,7 @@ def memory_delete(name: str, scope: str = None) -> dict:
     return ok({"deleted": match, "scope": match["scope"]})
 
 
-@mcp.tool(**tool_caps(
+@mcp.tool(**tool_caps(kind="memory",
     caps=[PLAN_BLOCKED], reversibility=RECOVERABLE, non_batch=True,
     risk_note="wipes all persistent memory files of one scope; a global wipe "
               "affects every workspace on the machine",

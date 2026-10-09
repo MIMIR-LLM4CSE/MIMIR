@@ -160,6 +160,32 @@ vocabulary had grown past it. Note that `is_write` (= `EDIT`∪`CONTENT_WRITE`�
 `clears_edit_loop` (= `READ`∪`VALIDATE`) are **derived helpers, not declarable flags**:
 declaring `EDIT` is enough, there is no umbrella to forget.
 
+### The work family (`kind`) — what your tool's row says
+
+Alongside the flags, declare the **family of work** your tool belongs to. It is the word
+its activity row shows, and the icon the UI draws beside it comes from the same word — so
+the two cannot disagree:
+
+```python
+@mcp.tool(**tool_caps(kind="shell", caps=[CODE_EXEC], label="Running the benchmark"))
+def benchmark(target: str) -> dict:
+    ...
+```
+
+A family, never a tool's identity: several tools share one. The vocabulary is `TOOL_KINDS`
+in `_shared/capabilities.py`, mirrored client-side and served live by
+`mimir_api(topic="capabilities")` under `kinds` — ask the tool rather than trusting a
+table here. Name a family of your own and your word still shows, with the generic glyph.
+
+Declaring it is optional: omitted, a family is derived from your capabilities (`EDIT` →
+`edit`, `CODE_EXEC` → `shell`, `READ` → `read`, …), so your tool renders sensibly either
+way. Declare one when that derivation would be wrong or merely vague — which is why the
+first-party `symbolic` tool declares it and nothing in its flags could have.
+
+Beside the family, each row carries a one-line description **the model writes per call**.
+That needs nothing from you: the client adds a `doing` parameter to every tool's schema
+and strips it before your tool is called, so you neither declare it nor receive it.
+
 ### Reversibility (and why you never declare `SENSITIVE`)
 
 State **how far your tool's effect can be taken back**; approval-gating follows from it.

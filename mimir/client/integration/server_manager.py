@@ -17,6 +17,7 @@ from mcp.client.stdio import stdio_client
 
 from .. import human_pause
 from ..context.capabilities import infer_tool_caps
+from ..tool_execution.tool_status_messages import DOING_ARG
 from ..config.constants import GLOBAL_STATE_DIR, STATE_DIR, USER_QUESTION_TIMEOUT_SECS
 from ...servers._shared.state_paths import scratch_home
 
@@ -96,7 +97,7 @@ def _args_block_descriptions(doc: str) -> dict[str, str]:
 def _description_without_args_block(doc: str, parameters: dict) -> str:
     """*doc* minus the ``Args:`` entries the schema already carries word for word.
 
-    The block is lifted into the parameters (:func:`_schema_with_arg_descriptions`),
+    The block is lifted into the parameters (:func:`_schema_for_model`),
     and it was also left in the description: every parameter was sent twice, on every
     call. On one deployment that was a fifth of a ~31k-token tools schema.
 
@@ -135,10 +136,35 @@ def _description_without_args_block(doc: str, parameters: dict) -> str:
         return doc
 
 
-def _schema_with_arg_descriptions(tool: Any) -> dict:
-    """The tool's input schema with every missing parameter ``description`` filled in.
+# The one argument every tool takes, added to each schema below rather than declared by
+# 60-odd servers. It is the model's own sentence about *this* call — what the user reads
+# beside the tool's family while it runs — and the only part of a row that knows why the
+# call is happening. The dispatcher strips it before the call is executed (see
+# ``query_engine.dispatch``): no server ever receives it.
+#
+# Deliberately never added to ``required``: a backend that validates the schema would
+# refuse a call that omits it, and a row without a description is a case the UI already
+# renders (its family and its target still say what it touched).
+_DOING_PROPERTY = {
+    "type": "string",
+    "description": (
+        "What this particular call does, in under 15 words, as a phrase: \"searching "
+        "for the off-by-one bound\", \"running the row-display tests\", \"submitting "
+        "the job on genoa\". Shown to the user beside the tool while the call runs, so "
+        "it names the concrete thing this call is for — not the tool's category, and "
+        "not a restatement of the arguments."
+    ),
+}
 
-    The constraint a tool documents only in prose does not change what the model does.
+
+def _schema_for_model(tool: Any) -> dict:
+    """The tool's input schema as the model sees it: ``doing`` added, ``Args:`` lifted.
+
+    Both changes are here for the same reason — the schema is the part that gets read.
+    ``doing`` is the universal per-call description (see :data:`DOING_ARG`), added to
+    every tool rather than declared sixty times.
+
+    As for the rest: the constraint a tool documents only in prose does not change what the model does.
     Observed on a real run: the model dropped `report_verdict`'s required `verdict`
     twice, called `proxy_get` with `op="help"` (not one of the six the docstring lists)
     and with `op="report"` while the same docstring says "requires: name", and hit
@@ -158,11 +184,13 @@ def _schema_with_arg_descriptions(tool: Any) -> dict:
     """
     schema = getattr(tool, "inputSchema", None)
     if not isinstance(schema, dict):
-        return {"type": "object", "properties": {}}
+        schema = {"type": "object", "properties": {}}
     schema = copy.deepcopy(schema)
     props = schema.get("properties")
     if not isinstance(props, dict):
-        return schema
+        props = schema["properties"] = {}
+    # A server that declares its own `doing` keeps it, like a hand-written description.
+    props.setdefault(DOING_ARG, dict(_DOING_PROPERTY))
     try:
         described = _args_block_descriptions(getattr(tool, "description", "") or "")
     except Exception:  # pragma: no cover - a docstring must never break registration
@@ -334,7 +362,7 @@ async def connect_server(*, agent: Any, name: str, script: str) -> None:
         # Parameter descriptions lifted out of the docstring's `Args:` block: a
         # constraint only stated in prose does not get followed. Lifted, the block
         # leaves the description, or every parameter is paid for twice.
-        parameters = _schema_with_arg_descriptions(tool)
+        parameters = _schema_for_model(tool)
         agent.tools.append({
             "type": "function",
             "function": {

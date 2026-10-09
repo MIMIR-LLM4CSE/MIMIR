@@ -6,7 +6,7 @@ import type { ChatMessage, ToolActivity } from "../types";
 
 function tool(extra: Partial<ToolActivity> = {}): ToolActivity {
   return {
-    id: "c1", name: "bash", icon: "💻", label: "Running", detail: "",
+    id: "c1", name: "bash", label: "Running", detail: "",
     status: "ok", startedAt: 1_000, ...extra,
   };
 }

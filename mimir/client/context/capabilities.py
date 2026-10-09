@@ -92,6 +92,35 @@ RECOVERABLE = "recoverable"            # undoable by hand, off the client's reco
 IRREVERSIBLE = "irreversible"          # leaves the machine or spends something real (cluster hours, outbound POST)
 REVERSIBILITY_LEVELS = (REVERSIBLE, RECOVERABLE, IRREVERSIBLE)
 
+# --- Work families --------------------------------------------------------
+# The one word a tool-activity row shows, and the icon the UI draws with it. A family
+# of work, never a tool's identity: several tools share one kind, and one declared fact
+# drives both halves of the row — so the glyph and the word cannot drift apart, which
+# is exactly what a separate icon table keyed on tool names did.
+#
+# The kind says what the call *is*; what it is *doing* is the model's own per-call
+# sentence. Declared rather than derived because the distinctions that matter are
+# invisible in the capabilities: nothing separates `symbolic` from `evaluate`, and
+# nothing marks `proxy_eval` as the one proxy tool that launches a run. `kind_for`
+# still derives a family for a tool that declares none, so a third-party server works.
+# Mirrored in servers/_shared/capabilities.py (test_capabilities.test_kind_vocab_in_sync).
+TOOL_KINDS = (
+    "read", "search", "list", "outline",            # discovery
+    "write", "edit", "delete",                      # file mutation
+    "shell", "job", "verdict",                      # local execution
+    "eval", "symbolic", "string", "date",           # calculation
+    "slurm", "env", "modules",                      # cluster & environment
+    "proxy", "proxy eval",                          # the proxy harness
+    "memory", "plan", "skill", "agent", "ask",      # agent state
+    "web", "github", "system",                      # outside the workspace
+    "tool",                                         # the unknown default
+)
+# The family of a tool that declares none and whose capabilities derive none. Spelled as
+# the vocabulary's own last entry rather than as a second string literal: a bare
+# `NAME = "value"` line in this module is read as a capability flag by the live
+# `mimir_api(topic="capabilities")` parser, which this is not.
+DEFAULT_TOOL_KIND = TOOL_KINDS[-1]
+
 SENSITIVE = "sensitive"                # requires approval — DERIVED: reversibility != REVERSIBLE
 NON_BATCH = "non_batch"                # always prompt immediately; never batch
 # Both names predate ask mode and are kept for compatibility: they gate every mode in
@@ -140,6 +169,9 @@ class ToolCaps:
     arg_roles: dict[str, tuple[str, ...]] = field(default_factory=dict)
     fallbacks: tuple[str, ...] = ()
     label: str | None = None
+    # The work family this tool belongs to (see TOOL_KINDS) — the word its activity row
+    # shows and the icon drawn beside it. None -> `kind_for` derives one.
+    kind: str | None = None
     # Session-approval scope narrowing: {"args": [...], "kind": "<kind>", "noun": ...}.
     # Lets "always" narrow to one command family / host / package set instead of the
     # whole tool. None -> coarse server:tool scope.
@@ -232,6 +264,19 @@ def _readonly_when(value: Any) -> dict[str, Any] | None:
     return {"arg": arg, "values": [str(v) for v in values]}
 
 
+def _kind(value: Any) -> str | None:
+    """Normalise a declared work family; drop anything that is not a usable word.
+
+    Not checked against :data:`TOOL_KINDS`: a server that names a family of its own
+    gets its word on the row with the default icon, which says more than the capability
+    derivation it would otherwise fall back to. First-party tools are held to the
+    vocabulary by the catalog test, not here.
+    """
+    if not isinstance(value, str) or not value.strip():
+        return None
+    return " ".join(value.lower().split())[:16]
+
+
 def _caps_from_meta(name: str, desc: dict) -> ToolCaps:
     caps = set(desc.get("capabilities", []) or [])
     # Derived for file mutations so a server can't forget to declare it alongside its
@@ -267,6 +312,7 @@ def _caps_from_meta(name: str, desc: dict) -> ToolCaps:
         arg_roles=arg_roles,
         fallbacks=tuple(approval.get("fallbacks", []) or ()),
         label=desc.get("label"),
+        kind=_kind(desc.get("kind")),
         scope=scope,
         risk_note=desc.get("risk_note"),
         preview=preview,
@@ -470,6 +516,52 @@ def label_for(name: str, args: dict | None = None, registry: dict[str, ToolCaps]
         return c.label.format(**(args or {}))
     except (KeyError, IndexError):
         return None
+
+
+def kind_for(name: str, registry: dict[str, ToolCaps] | None = None) -> str:
+    """The work family of *name* — the word its activity row shows (see TOOL_KINDS).
+
+    Three layers, the same precedence :func:`infer_tool_caps` uses for everything else:
+    the declared kind, else one derived from the capabilities, else the default. So a
+    third-party server that declares nothing still gets a family that fits what its
+    tool does, and the UI never has to know a tool's name to draw its icon.
+
+    The derivation is ordered by effect, not by alphabet: a tool that both reads a file
+    and rewrites it is an ``edit``, and one that both searches and executes is a
+    ``shell``. Reading is the last thing checked because almost everything reads.
+    """
+    c = _registry(registry).get(name)
+    if c and c.kind:
+        return c.kind
+    caps = c.capabilities if c else frozenset()
+    for cap, kind in _DERIVED_KINDS:
+        if cap in caps:
+            return kind
+    return DEFAULT_TOOL_KIND
+
+
+# Capability -> work family, in order of precedence. Consulted only for a tool that
+# declares no kind of its own. Ordered by effect: what a call *does* outranks what it
+# merely also reads, so an editor is an "edit" and not a "read".
+_DERIVED_KINDS: tuple[tuple[str, str], ...] = (
+    (REMOVE, "delete"),
+    (EDIT, "edit"),
+    (CONTENT_WRITE, "write"),
+    (CLUSTER_SUBMIT, "slurm"),
+    (ENV_MUTATE, "env"),
+    (CODE_EXEC, "shell"),
+    (DELEGATE, "agent"),
+    (JUDGE, "verdict"),
+    (TASK_PLANNING, "plan"),
+    (EXTERNAL_FETCH, "web"),
+    (SEARCH_WITH_PATH, "search"),
+    (SEARCH, "search"),
+    (CANDIDATE_SEARCH, "search"),
+    (CODE_NAV, "search"),
+    (INSPECT_DIR, "list"),
+    (ENV_DISCOVERY, "env"),
+    (READ, "read"),
+)
 
 
 def run_outcome_spec(

@@ -140,7 +140,7 @@ def _op_uptime() -> dict:
     return ok(result)
 
 
-@mcp.tool(**tool_caps(label="System {op}"))
+@mcp.tool(**tool_caps(kind="system", label="System {op}"))
 def system(
     op: Annotated[str, Field(
         description="Which operation to perform. Required — it selects everything else, and the parameters each one needs.",

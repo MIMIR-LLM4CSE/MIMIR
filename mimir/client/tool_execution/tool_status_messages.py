@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import os
+from typing import Any
 
 from ..context.capabilities import READ, SEARCH_WITH_PATH, has_cap
 
@@ -201,6 +202,30 @@ def tool_arg_preview(name: str, args: dict) -> str:
             return _relpath(val.strip())
 
     return ""
+
+
+# The argument the model's per-call description arrives in. Named here, with the helper
+# that renders it, so the schema builder that adds the parameter and the dispatcher that
+# strips it cannot disagree about its spelling.
+DOING_ARG = "doing"
+
+# Upper bound on the model's per-call description. The 15-word limit is asked of the
+# model, not enforced here: a sentence cut mid-word reads worse than a long one, and
+# this exists only so a model that ignores the limit entirely cannot push the rest of
+# the row off screen (the stylesheet ellipsises what is still too long for the window).
+_DOING_LIMIT = 120
+
+
+def clip_doing(doing: Any) -> str:
+    """The model's description of a call, as one line fit for a row.
+
+    First line only: the row is a single line, and a description that arrives with a
+    newline in it would otherwise take the layout with it.
+    """
+    if not isinstance(doing, str) or not doing.strip():
+        return ""
+    first = next((ln for ln in doing.splitlines() if ln.strip()), "").strip()
+    return first if len(first) <= _DOING_LIMIT else first[:_DOING_LIMIT - 1] + "…"
 
 
 def dedup_row_detail(label: str, detail: str) -> str:

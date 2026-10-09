@@ -275,7 +275,8 @@ vocabulary; `SENSITIVE` is derived from them rather than declared beside them.
   the coarse path for a foreign server), then a conservative default of empty caps plus
   path-arg inference from the input schema.
 - Query helpers — `names_with_cap`, `has_cap`, `path_args`, `arg_role`, `fallbacks`,
-  `label_for`, `timeout_for`, `scope_spec`, `name_for_cap`, `unannotated_live_tools` — all
+  `label_for`, `kind_for`, `timeout_for`, `scope_spec`, `name_for_cap`,
+  `unannotated_live_tools` — all
   take the per-agent registry, and **with no registry they resolve to empty**. There is no
   static fallback, deliberately.
 
@@ -659,8 +660,11 @@ format in [POLICY.md](POLICY.md#verification-ledger).
 - **`_stream_chat()`** — iterative streaming backend calls, retrying transient failures with exponential backoff and jitter, cancel-aware. Thinking
   blocks stream for live display but are **excluded from history**: reasoning is never
   re-fed. UI events go through `emit()`.
-- **`_dispatch_tool_calls()`** — dedups `(name, args)` within a step, and across steps for
-  writes. Reads run concurrently through `asyncio.gather`; **writes are serialized**, so two
+- **`_dispatch_tool_calls()`** — takes the model's per-call `doing` description out of the
+  arguments first (the client adds that parameter to every tool's schema; no server declares
+  or receives it), *before* the dedup key, so two identical calls with reworded descriptions
+  stay one call instead of walking past the repeat guards. Then dedups `(name, args)` within
+  a step, and across steps for writes. Reads run concurrently through `asyncio.gather`; **writes are serialized**, so two
   edits to one file, or a read racing a write, cannot interleave. Each call is wrapped in
   `asyncio.wait_for` with the wall `capabilities.timeout_for` resolves — the tool's own
   `timeout_secs` if it declared one, else `TOOL_CALL_TIMEOUT_SECS`, clamped by
@@ -864,6 +868,16 @@ never a parse of the command, which is the guess the module exists to avoid. See
   user to authorise *locations*, so the card carries the paths verbatim and the CLI prints
   each absolute path on its own line. Readability wins in the activity log; precision wins
   in a consent prompt.
+
+  `clip_doing()` is the row's other half: the model's own description of the call, cut to
+  its first line and bounded. The 15-word limit is asked of the model and not enforced —
+  a sentence cut mid-word reads worse than a long one — and this only stops a model that
+  ignores it entirely from pushing the rest of the row off screen.
+
+  The name-derived label is no longer what a row shows. The row shows the tool's declared
+  work family (`kind_for`) and that description; the label remains its tooltip, and is
+  what approval cards and policy messages are written from. So all of the above is still
+  live — just not in the activity row.
 
 ---
 

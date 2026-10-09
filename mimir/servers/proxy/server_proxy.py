@@ -141,7 +141,7 @@ def _missing_args(op: str, **required) -> dict | None:
 _GET_OPS = ("proxies", "proxy", "references", "suites", "suite", "report")
 
 
-@mcp.tool(**tool_caps(label="Proxy info: {op}"))
+@mcp.tool(**tool_caps(kind="proxy", label="Proxy info: {op}"))
 def proxy_get(
     op: Annotated[str, Field(
         description="Which operation to perform. Required — it selects everything else, and the parameters each one needs.",
@@ -182,7 +182,7 @@ def proxy_get(
 _RUNS_OPS = ("list", "status", "logs", "diff", "compare", "aggregate")
 
 
-@mcp.tool(**tool_caps(label="Proxy runs: {op}"))
+@mcp.tool(**tool_caps(kind="proxy", label="Proxy runs: {op}"))
 def proxy_runs(
     op: Annotated[str, Field(
         description="Which operation to perform (default 'list'). It selects everything else, and the parameters each one needs.",
@@ -255,7 +255,7 @@ _RUN_OUTCOME = {
 _EVAL_STATUS_OPS = ("status", "results", "log", "runs", "diff", "config")
 
 
-@mcp.tool(**tool_caps(label="Proxy eval status: {op}", run_outcome=_RUN_OUTCOME))
+@mcp.tool(**tool_caps(kind="proxy eval", label="Proxy eval status: {op}", run_outcome=_RUN_OUTCOME))
 def proxy_eval_status(
     op: Annotated[str, Field(
         description="Which operation to perform (default 'status'). It selects everything else, and the parameters each one needs.",
@@ -308,7 +308,7 @@ _MANAGE_OPS = ("register", "update", "unregister",
                "suite_define", "suite_update", "suite_delete", "scaffold", "clean")
 
 
-@mcp.tool(**tool_caps(caps=[PLAN_BLOCKED], reversibility=RECOVERABLE, non_batch=True,
+@mcp.tool(**tool_caps(kind="proxy", caps=[PLAN_BLOCKED], reversibility=RECOVERABLE, non_batch=True,
                       label="Proxy manage: {op}"))
 def proxy_manage(
     op: Annotated[str, Field(
@@ -452,7 +452,7 @@ def proxy_manage(
 _EXEC_OPS = ("run", "reference", "suite", "benchmark_create", "cancel")
 
 
-@mcp.tool(**tool_caps(caps=[PLAN_BLOCKED, CODE_EXEC], reversibility=RECOVERABLE, non_batch=True,
+@mcp.tool(**tool_caps(kind="proxy", caps=[PLAN_BLOCKED, CODE_EXEC], reversibility=RECOVERABLE, non_batch=True,
                       label="Proxy exec: {op}",
                       run_outcome={**_RUN_OUTCOME,
                                    "rows": {"field": "rows", "id": "run_dir",
@@ -559,7 +559,7 @@ _EVAL_OPS = ("init", "configure", "run", "stop", "reset", "reset_to_best",
 _EVAL_RUN_TIMEOUT = 1800
 
 
-@mcp.tool(**tool_caps(caps=[PLAN_BLOCKED, CODE_EXEC, BACKGROUNDABLE, DIVERTIBLE],
+@mcp.tool(**tool_caps(kind="proxy eval", caps=[PLAN_BLOCKED, CODE_EXEC, BACKGROUNDABLE, DIVERTIBLE],
                       reversibility=RECOVERABLE, non_batch=True,
                       label="Proxy eval: {op}", run_outcome=_RUN_OUTCOME,
                       timeout_secs=_EVAL_RUN_TIMEOUT))
@@ -744,7 +744,7 @@ def _build_op_owners() -> dict[str, list[str]]:
 _OP_OWNERS: dict[str, list[str]] = _build_op_owners()
 
 
-@mcp.tool(**tool_caps(caps=[PLAN_BLOCKED, CLUSTER_SUBMIT, BACKGROUNDABLE], reversibility=IRREVERSIBLE, non_batch=True,
+@mcp.tool(**tool_caps(kind="proxy", caps=[PLAN_BLOCKED, CLUSTER_SUBMIT, BACKGROUNDABLE], reversibility=IRREVERSIBLE, non_batch=True,
                       label="Proxy Slurm: {op}",
                       risk_note="Submits Slurm batch jobs that consume cluster allocation hours."))
 def proxy_slurm(

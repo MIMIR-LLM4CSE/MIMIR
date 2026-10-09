@@ -974,7 +974,7 @@ def _launch_background(command: str, cwd: str, preamble: str) -> dict:
     })
 
 
-@mcp.tool(**tool_caps(
+@mcp.tool(**tool_caps(kind="shell",
     caps=[PLAN_READONLY, CODE_EXEC, BACKGROUNDABLE, DIVERTIBLE],
     reversibility=RECOVERABLE,
     non_batch=True,
@@ -1089,7 +1089,7 @@ def bash_run(command: str, timeout: int = _DEFAULT_TIMEOUT,
 _JOB_OPS = ("status", "output", "list")
 
 
-@mcp.tool(**tool_caps(label="Background job: {op}"))
+@mcp.tool(**tool_caps(kind="job", label="Background job: {op}"))
 def bash_job(
     op: Annotated[str, Field(
         description="status (default) | output | list")] = "status",
@@ -1175,7 +1175,7 @@ def _job_payload(payload: dict) -> dict:
     return ok(payload)
 
 
-@mcp.tool(**tool_caps(
+@mcp.tool(**tool_caps(kind="job",
     caps=[PLAN_BLOCKED], reversibility=RECOVERABLE, non_batch=True,
     risk_note="kills a running background command",
     label="Stopping background job",
@@ -1201,7 +1201,7 @@ def bash_job_stop(job_key: str) -> dict:
 _VERDICT_VALUES = ("pass", "fail", "unknown", "blocked", "rejected")
 
 
-@mcp.tool(**tool_caps(
+@mcp.tool(**tool_caps(kind="verdict",
     caps=[JUDGE],
     arg_roles={
         "verdict": ["verdict"], "verdict_reason": ["reason"], "verdict_scope": ["run"],

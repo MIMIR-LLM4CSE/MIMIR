@@ -4,6 +4,7 @@ import katex from "katex";
 import type { ExecResult, FileTarget, MathResult, ToolActivity } from "../types";
 import { vscodePostMessage } from "../hooks/useWebSocket";
 import { subAgentTail } from "./subAgentUtils";
+import { iconForKind } from "./toolIcons";
 import { useElapsed, formatDuration } from "../hooks/useElapsed";
 
 /** Terminal-style in/out panel for an exec-shaped tool result (shell, code
@@ -209,19 +210,27 @@ function withFileLink(text: string, target?: FileTarget): React.ReactNode {
   );
 }
 
-/** Tool label with its leading verb emphasized: "**Reading** file: x.py".
- *  The verb carries the meaning at a glance; the rest stays dim. The file name,
- *  when the call succeeded on one, opens it. */
-const ToolLabel: React.FC<{ label: string; target?: FileTarget }> = ({ label, target }) => {
-  const space = label.indexOf(" ");
-  if (space <= 0) return <span className="tool-label">{withFileLink(label, target)}</span>;
-  return (
-    <span className="tool-label">
-      <span className="tool-label-verb">{label.slice(0, space)}</span>
-      {withFileLink(label.slice(space), target)}
-    </span>
-  );
-};
+/** What the row says: the tool's family of work, then what this call is doing.
+ *
+ *  The family is one declared word — "edit", "shell", "proxy eval" — in full colour,
+ *  and it is the same word the icon was picked from. Beside it, dim, the model's own
+ *  sentence about this particular call, which is the only part of the row that knows
+ *  *why* it is happening. A derived label ("Running shell command") said neither: ten
+ *  identical calls read as ten identical rows. It survives as the row's tooltip.
+ *
+ *  No sentence, and the family stands alone: the model did not write one, or the row
+ *  comes from a session recorded before this existed. The target and the arg preview
+ *  beside it still say what the call touched. */
+const ToolHead: React.FC<{
+  kind: string;
+  doing?: string;
+  target?: FileTarget;
+}> = ({ kind, doing, target }) => (
+  <>
+    <span className="tool-kind">{kind}</span>
+    {doing && <span className="tool-doing">{withFileLink(doing, target)}</span>}
+  </>
+);
 
 interface RowProps {
   tool: ToolActivity;
@@ -288,10 +297,32 @@ const ToolRow: React.FC<RowProps> = ({ tool, childRows = [], onDivert }) => {
 
   // The file name opens the file only once the call has succeeded on it: a failed
   // read or edit says nothing reliable about the file, and a running write may not
-  // have created it yet. The label carries the link; the detail only when the label
-  // does not show the name.
+  // have created it yet. The description carries the link when the model happened to
+  // name the file; otherwise the detail does, so it is never shown twice.
   const fileTarget = tool.status === "ok" ? tool.target : undefined;
-  const linkInLabel = !!fileTarget && tool.label.includes(fileTarget.name);
+  const linkInDoing = !!fileTarget && !!tool.doing?.includes(fileTarget.name);
+
+  // The family of work: the word the row shows, and what its icon is drawn from. Both
+  // derived here rather than carried on the row, because the icon is a *function* of the
+  // family — and because one of them is an element (the GitHub mark), which would not
+  // survive the trip through the stored transcript's JSON and would come back as a dead
+  // object React refuses to render.
+  //
+  // Defaulted here and not only server-side: a row restored from a session recorded
+  // before the field existed has no family, and the generic glyph is the honest answer.
+  const kind = tool.kind || "tool";
+
+  // With a description in hand, the arg preview is the mechanical half of the same
+  // fact — and the command it previews is already in the IN pane below, which opens
+  // itself on a successful run. So the detail yields to the description, with one
+  // exception that matters: the file name, which is a link and not a sentence, stays
+  // as long as the description does not already carry it.
+  //
+  // A row with NO description keeps its preview: a failed shell row is collapsed, and
+  // without it the row would say nothing but "shell".
+  const detail = tool.doing
+    ? (!linkInDoing && fileTarget ? fileTarget.name : "")
+    : tool.detail;
 
   const running = tool.status === "running";
   // Latched locally rather than waiting for the row to change status: the request
@@ -337,7 +368,7 @@ const ToolRow: React.FC<RowProps> = ({ tool, childRows = [], onDivert }) => {
         aria-valuenow={hasProgress ? pct : undefined}
         aria-valuemin={hasProgress ? 0 : undefined}
         aria-valuemax={hasProgress ? 100 : undefined}
-        aria-label={hasProgress ? tool.phase || tool.label : undefined}
+        aria-label={hasProgress ? tool.phase || tool.doing || tool.label : undefined}
       >
       <button
         className="tool-row-head"
@@ -346,7 +377,7 @@ const ToolRow: React.FC<RowProps> = ({ tool, childRows = [], onDivert }) => {
         // and the file name inside it must still open the file.
         aria-disabled={!canExpand || undefined}
         tabIndex={canExpand ? undefined : -1}
-        title={tool.error || tool.detail || tool.label}
+        title={tool.error || tool.label || tool.detail}
       >
         {/* Success is the norm and needs no mark; only failure gets a glyph, and it
             leads the row so the status is read before the label. */}
@@ -360,7 +391,7 @@ const ToolRow: React.FC<RowProps> = ({ tool, childRows = [], onDivert }) => {
         {running && !hasProgress ? (
           <span className="tb-spinner" aria-hidden="true" />
         ) : (
-          <span className="tool-icon" aria-hidden="true">{tool.icon}</span>
+          <span className="tool-icon" aria-hidden="true">{iconForKind(kind)}</span>
         )}
         {/* Whose work this is. Several sub-agents run at once, and their rows sit in
             the same list as the agent's own — without the badge a reader cannot tell
@@ -370,10 +401,14 @@ const ToolRow: React.FC<RowProps> = ({ tool, childRows = [], onDivert }) => {
             {tool.origin}
           </span>
         )}
-        <ToolLabel label={tool.label} target={linkInLabel ? fileTarget : undefined} />
-        {tool.detail && !showsCommandBelow && (
+        <ToolHead
+          kind={kind}
+          doing={tool.doing}
+          target={linkInDoing ? fileTarget : undefined}
+        />
+        {detail && !showsCommandBelow && (
           <span className="tool-detail">
-            {withFileLink(tool.detail, linkInLabel ? undefined : fileTarget)}
+            {withFileLink(detail, linkInDoing ? undefined : fileTarget)}
           </span>
         )}
         <span className="tool-row-tail">

@@ -1146,6 +1146,12 @@ body {
   font-size: 12px;
   line-height: 1;
 }
+/* Same mark as the activity row's — see .tool-icon svg. */
+.ap-icon svg {
+  width: 1em;
+  height: 1em;
+  vertical-align: -0.1em;
+}
 .ap-title {
   flex: 1 1 auto;
   min-width: 0;
@@ -1480,21 +1486,36 @@ body {
   opacity: 0.7;
 }
 
-/* Dim by default; the leading verb carries the weight (see .tool-label-verb). */
-.tool-label {
+/* The GitHub mark is the one icon in the set drawn rather than typed. Sized in `em`
+   off the box above so it lands at the size of the emoji beside it, and nudged onto
+   their baseline — an svg sits on the text baseline, where an emoji sits slightly
+   below it. It paints in currentColor, so it follows the theme. */
+.tool-icon svg {
+  width: 1em;
+  height: 1em;
+  vertical-align: -0.1em;
+}
+
+/* The tool's family of work — one declared word, and the only thing in the row head
+   at full strength. Never truncated: it is two syllables, and it is what the reader
+   scans the column for. */
+.tool-kind {
+  color: var(--fg);
+  font-weight: 600;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+/* What this call is doing, in the model's own words. Dim, and the elastic part of the
+   row: it is the one slot whose length is not bounded by anything but the window, so
+   it is what gives way when the pane is narrow — never the family, never the tail. */
+.tool-doing {
   color: var(--fg-dim);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  /* Shrinkable so a long label truncates with an ellipsis instead of pushing
-     the row wider than the (often narrow) chat pane and spilling off the right. */
   flex-shrink: 1;
   min-width: 0;
-  max-width: 260px;
-}
-.tool-label-verb {
-  color: var(--fg);
-  font-weight: 600;
 }
 
 /* A file name the row can open: in the chat's normal text colour, underlined on

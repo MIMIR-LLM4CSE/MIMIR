@@ -360,6 +360,47 @@ failure, say) keeps the command already on the row rather than erasing it.
 
 ---
 
+## What a tool row says
+
+| Slot | Comes from | How it reads |
+| --- | --- | --- |
+| icon | `kind`, via `KIND_ICONS` (`components/toolIcons.tsx`) | one glyph per family of work |
+| family | `kind`, verbatim | `--fg`, semibold, never truncated |
+| description | `doing`, written by the model per call | `--fg-dim`, the elastic slot |
+| detail | the file name, or the command when there is no description | `--fg-dim`, mono |
+
+Both of the first two come from **one** declared fact. A server names its tool's family
+of work in its own declaration — `tool_caps(kind="edit")`, vocabulary in
+`servers/_shared/capabilities.py` — and the row shows that word and draws its icon from
+it, so the glyph and the label cannot disagree. What this replaced was a table in the
+reducer keyed on *tool names*, of which ten of twelve named tools that no longer
+existed: `evaluate` and `symbolic` both came out as a wrench. A tool that declares no
+family gets one derived from its capabilities (`kind_for`), so a third-party server
+still lands on a sensible glyph without the client knowing anything about it.
+
+The icon is **derived at render time** and never stored on the row. It is a function of
+the family, so a second copy could only go stale — and one of them is an element rather
+than a character (the GitHub mark), which would not survive the stored transcript's JSON
+and would come back as a dead object React refuses to render.
+
+The description is the model's own sentence about **this** call, under 15 words, and it
+is the only part of the row that knows *why* the call is happening. It arrives as a
+`doing` argument the client adds to every tool's schema (`_schema_for_model`) and the
+dispatcher strips before the call runs — so no server declares it and none receives it.
+Stripped *before the dedup key*, too: two identical calls with reworded descriptions are
+one call, and left in the arguments they would walk past the repeat guards.
+
+The model will sometimes omit it, a third-party tool's row has none, and a transcript
+recorded before any of this existed has neither field. Then the family stands alone and
+the detail returns to the arg preview — which is why a failed shell row, collapsed, still
+shows its command line.
+
+The derived label (`"Reading file: x.py"`, from the `label` template) is still on the
+wire and still used: it is the row's tooltip and `aria-label`, and approval cards and
+policy messages are written from it. It is simply no longer what the row says.
+
+---
+
 ## Clickable file names in the tool rows
 
 | Event | What it carries | What the row shows |
@@ -502,14 +543,25 @@ const [expanded, setExpanded] = useState(false);
 const [expanded, setExpanded] = useState(true);
 ```
 
-### Example 2 — Add an emoji icon for a new tool category in "Working…" blocks
+### Example 2 — Add an icon for a new tool category in "Working…" blocks
 
-`state/chatReducer.ts`, inside `iconForTool()` — the reducer assigns each tool row its
-icon, so the glyph is chosen once where the row is built rather than at render time:
-```typescript
-// Add before the fallback return:
-if (t.startsWith("benchmarking")) return "⏱️";
+A tool row's glyph is picked from the *work family* its server declares, never from the
+tool's name — so a new category is one entry in `components/toolIcons.tsx`:
+```tsx
+export const KIND_ICONS: Record<string, ReactNode> = {
+  // ...
+  benchmark: "⏱️",   // ← add this
+};
 ```
+Then declare the family on the tools that belong to it, server-side, and add it to
+`TOOL_KINDS` in `servers/_shared/capabilities.py` (mirrored in
+`client/context/capabilities.py`):
+```python
+@mcp.tool(**tool_caps(kind="benchmark", caps=[CODE_EXEC], label="Benchmarking {target}"))
+```
+The declared word is both what the row shows and what the icon is drawn from, so the
+two cannot disagree. A family with no icon still renders — its word, with the default
+glyph — and `mimir/tests/test_phase_b_servers.py` fails if a tool declares none at all.
 
 ### Example 3 — Filter out a noisy status message from the thinking block
 

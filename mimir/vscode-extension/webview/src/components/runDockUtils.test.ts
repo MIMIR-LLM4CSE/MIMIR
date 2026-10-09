@@ -5,7 +5,6 @@ import type { ChatMessage, ToolActivity } from "../types";
 function tool(over: Partial<ToolActivity> & { id: string }): ToolActivity {
   return {
     name: "proxy_eval",
-    icon: "🖥️",
     label: "Proxy eval: run",
     detail: "",
     status: "running",

@@ -78,35 +78,6 @@ export type ChatAction =
   | { type: "toggle_thinking"; id: string }
   | { type: "approval_response"; id: string; choice: "y" | "n" | "a" };
 
-// Tool name → icon. Keyed on the structured tool name (robust to wording),
-// with prefix fallbacks so unknown/new tools still get a sensible glyph.
-const TOOL_ICONS: Record<string, string> = {
-  read_file: "📖", read_file_lines: "📖",
-  grep: "🔍", search_code_patterns: "🔍", find_similar_files: "🔍", find_files: "🔍",
-  list_directory: "📂", list_files: "📂", file_exists: "📂", get_file_info: "📂",
-  tree_summary: "🌳",
-  write_file: "✏️", append_file: "✏️", replace_all_in_file: "✏️",
-  insert_text: "✏️", replace_lines: "✏️",
-  delete_file: "🗑️",
-  web_fetch: "🌐",
-};
-
-/** Returns an icon for a structured tool by name (exact, then prefix, then default). */
-export function iconForTool(name: string): string {
-  if (name in TOOL_ICONS) return TOOL_ICONS[name];
-  if (name.includes("bash") || name.includes("shell") || name.includes("terminal")) return "💻";
-  if (name.startsWith("code_")) return "⚡";
-  if (name.startsWith("db_")) return "🗄️";
-  if (name.startsWith("proxy_") || name.startsWith("platform_")) return "🖥️";
-  if (name.startsWith("salloc") || name.startsWith("slurm") || name.startsWith("hpc_")) return "🏗️";
-  if (name.includes("task") || name.includes("todo")) return "📋";
-  if (name.includes("memory")) return "🧠";
-  if (name.includes("search") || name.includes("find") || name.includes("grep")) return "🔍";
-  if (name.includes("read") || name.includes("get")) return "📖";
-  if (name.includes("write") || name.includes("edit") || name.includes("replace")) return "✏️";
-  return "🔧";
-}
-
 /**
  * Apply *transform* to whichever list currently holds the row *id*.
  *
@@ -854,9 +825,10 @@ export function createChatReducer(makeId: () => string) {
         const activity: ToolActivity = {
           id: action.id,
           name: action.name,
-          icon: iconForTool(action.name),
           label: action.label,
           detail: action.detail,
+          kind: action.kind,
+          doing: action.doing,
           status: "running",
           divertible: action.divertible,
           // Present for an exec-shaped call: the command, with no output yet. It
@@ -994,9 +966,10 @@ export function createChatReducer(makeId: () => string) {
               const child: ToolActivity = {
                 id: action.id ?? `${parentId}:?`,
                 name: action.name ?? "",
-                icon: iconForTool(action.name ?? ""),
                 label: action.label ?? "",
                 detail: action.detail ?? "",
+                kind: action.tool_kind,
+                doing: action.doing,
                 status: "running",
                 startedAt: Date.now(),
                 parentId,

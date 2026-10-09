@@ -27,6 +27,29 @@ class DeclaredClassificationTest(unittest.TestCase):
             with self.subTest(cap=cap):
                 self.assertEqual(caps.names_with_cap(cap, self.reg), expected)
 
+    def test_every_tool_declares_a_known_work_family(self):
+        """Every tool names the family its activity row shows, from the shared vocabulary.
+
+        The row's word and its icon are both drawn from this one declaration, so a tool
+        that forgets it shows up as a generic "tool" with a wrench — which is what the
+        icon table this replaced had decayed into, silently, for ten of its twelve
+        entries. Here it is a failure instead.
+        """
+        from mimir.servers._shared import capabilities as srv
+        for name, declared in sorted(self.reg.items()):
+            with self.subTest(tool=name):
+                self.assertTrue(declared.kind, f"{name} declares no kind")
+                self.assertIn(declared.kind, srv.TOOL_KINDS)
+
+    def test_families_group_tools_rather_than_naming_them(self):
+        """A kind is a family of work, not a tool's identity.
+
+        One kind per tool would be the icon-per-tool table under another name. The
+        bound is deliberately loose — it catches the drift, not the exact catalog.
+        """
+        kinds = {c.kind for c in self.reg.values()}
+        self.assertLess(len(kinds), len(self.reg) / 2)
+
     def test_path_args_match_golden(self):
         for tool, expected in golden.PATH_ARGS_BY_TOOL.items():
             with self.subTest(tool=tool):

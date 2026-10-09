@@ -298,15 +298,32 @@ describe("chatReducer", () => {
 
   it("creates a running tool activity in liveToolCalls on tool_call", () => {
     const state = run([
-      { type: "tool_call", id: "c1", name: "grep", label: "Searching", detail: "def foo" },
+      {
+        type: "tool_call", id: "c1", name: "find_references", label: "Searching",
+        detail: "def foo", kind: "search", doing: "finding the callers of dispatch",
+      },
     ]);
     // Tools live in their own stream — decorrelated from thinking.
     expect(state.liveThinkingBlocks).toHaveLength(0);
     expect(state.liveToolCalls).toHaveLength(1);
+    // The row carries the declared family; the icon is derived from it at render
+    // time (see ToolActivityList) and is deliberately not state.
     expect(state.liveToolCalls[0]).toMatchObject({
-      id: "c1", name: "grep", icon: "🔍", label: "Searching", detail: "def foo", status: "running",
+      id: "c1", name: "find_references", label: "Searching",
+      detail: "def foo", kind: "search", doing: "finding the callers of dispatch",
+      status: "running",
     });
     expect(state.toolCallAfterToken).toBe(true);
+  });
+
+  it("leaves a row that declares no family without one", () => {
+    // A session recorded before the row carried a kind, or a third-party server whose
+    // tool declares nothing and whose capabilities derive no family. The row still
+    // renders — ToolActivityList defaults it to "tool" and its generic glyph.
+    const state = run([
+      { type: "tool_call", id: "c1", name: "whatever", label: "Doing", detail: "" },
+    ]);
+    expect(state.liveToolCalls[0]).toMatchObject({ kind: undefined });
   });
 
   it("marks the matching activity done with duration on tool_result", () => {
@@ -559,7 +576,7 @@ describe("chatReducer", () => {
             kind: "tools",
             tools: [
               {
-                id: "c1", name: "proxy_eval", icon: "x", label: "Proxy eval: run",
+                id: "c1", name: "proxy_eval", label: "Proxy eval: run",
                 detail: "", status: "background", startedAt: 0,
                 jobKey: "J1", phase: "building", percent: 40,
               },
@@ -576,11 +593,11 @@ describe("chatReducer", () => {
     expect(restored.jobKey).toBe("J1");
   });
 
-  it("renders an activity for an unknown tool (icon fallback)", () => {
+  it("renders an activity for a tool it has never heard of", () => {
     const state = run([
       { type: "tool_call", id: "c1", name: "some_new_tool", label: "Performing", detail: "" },
     ]);
-    expect(state.liveToolCalls[0].icon).toBe("🔧");
+    expect(state.liveToolCalls[0].status).toBe("running");
   });
 
   it("freezes tool activity into a tools message on the next LLM step", () => {

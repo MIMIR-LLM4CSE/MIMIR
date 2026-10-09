@@ -386,6 +386,9 @@ def _make_subagent_progress_cb(call_id: str):
                 "type": "subagent_event", "kind": "tool_call", "parent_id": call_id,
                 "id": child_id, "name": payload.get("n", ""),
                 "label": payload.get("l", ""), "detail": payload.get("d", ""),
+                # `tool_kind`, not `kind`: this event's own `kind` already says which
+                # half of the child's activity it carries.
+                "tool_kind": payload.get("k", ""), "doing": payload.get("w", ""),
             })
         elif kind == "tr":
             emit_event({

@@ -91,7 +91,11 @@ _SECTION_TOOL_RESULTS = (
     "- After every tool call, read all returned fields: stdout, stderr, status, error, hint.\n"
     "- If the same error occurs twice, stop and report it.\n"
     "- Independent calls go out in the SAME response — issued together they run in parallel, "
-    "one per turn they do not. Never serialise reads or searches that do not depend on each other."
+    "one per turn they do not. Never serialise reads or searches that do not depend on each other.\n"
+    "- Every call takes `doing`: what THIS call is for, under 15 words "
+    "(\"searching for the off-by-one bound\", \"submitting the job on genoa\"). It is the line "
+    "the user watches while the call runs, so it says the concrete thing — never the tool's "
+    "category, never a restatement of the arguments."
 )
 
 _SECTION_STYLE = (

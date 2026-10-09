@@ -2151,7 +2151,7 @@ class EveryToolDescribesItsParametersTests(unittest.IsolatedAsyncioTestCase):
     four times against a docstring that says to raise it — 9 wasted turns in 107 calls.
     The prose reached the model every time; only the schema changes behaviour.
 
-    `_schema_with_arg_descriptions` closes that by lifting each tool's `Args:` block
+    `_schema_for_model` closes that by lifting each tool's `Args:` block
     into its schema, so the fix costs no new prose. This test is what keeps it closed:
     without it the invariant lapses at the first tool added with an undocumented
     parameter, and nothing would say so.
@@ -2161,7 +2161,7 @@ class EveryToolDescribesItsParametersTests(unittest.IsolatedAsyncioTestCase):
         import glob
         import importlib
         import os
-        from mimir.client.integration.server_manager import _schema_with_arg_descriptions
+        from mimir.client.integration.server_manager import _schema_for_model
 
         undescribed, total = [], 0
         # Anchored at this file, not at the current directory: globbing "mimir/servers/…"
@@ -2178,7 +2178,7 @@ class EveryToolDescribesItsParametersTests(unittest.IsolatedAsyncioTestCase):
             if mcp is None:
                 continue
             for tool in await mcp.list_tools():
-                props = _schema_with_arg_descriptions(tool).get("properties") or {}
+                props = _schema_for_model(tool).get("properties") or {}
                 for name, prop in props.items():
                     total += 1
                     if not prop.get("description"):

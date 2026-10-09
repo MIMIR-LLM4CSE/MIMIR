@@ -145,7 +145,7 @@ def _parse_answer(raw_answer: Any) -> dict[str, Any]:
     return {"selected": selected, "other_text": other_text}
 
 
-@mcp.tool(**tool_caps(read_only=True, label="Asking the user"))
+@mcp.tool(**tool_caps(kind="ask", read_only=True, label="Asking the user"))
 async def ask_user_question(
     questions: list[dict[str, Any]],
     *,

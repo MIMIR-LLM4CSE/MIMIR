@@ -129,6 +129,9 @@ export interface ApprovalMessage extends Attributed {
   scope: string;
   /** Canonical human label ("Proxy exec: run"); absent for tools with no template. */
   label?: string;
+  /** The tool's family of work, so the card carries the same icon as the activity row
+   *  for this call. Absent on a card from a server that predates the field. */
+  kind?: string;
   /** Set when the call is held because it touches paths outside the workspace.
    *  Every outside path the call names travels in this one card — the user judges
    *  the call, not each of its operands. The rest of the card describes the tool
@@ -258,12 +261,20 @@ export interface ToolCallMessage {
   type: "tool_call";
   /** Correlation id matching a later tool_result. */
   id: string;
-  /** Raw tool name (used to pick an icon). */
+  /** Raw tool name. Never shown — the row is drawn from `kind` and `doing`. */
   name: string;
-  /** Human-readable label, e.g. "Reading file: x.py". */
+  /** Human-readable label, e.g. "Reading file: x.py". The row's tooltip; approval
+   *  cards and policy messages carry the same string. */
   label: string;
   /** Short arg preview, e.g. a command line or search pattern (may be empty). */
   detail: string;
+  /** The tool's family of work — "edit", "shell", "proxy eval" (see TOOL_KINDS
+   *  server-side). The word the row shows, and what its icon is picked from.
+   *  Absent on rows from a session recorded before the row carried one. */
+  kind?: string;
+  /** The model's own sentence about THIS call, under ~15 words: "fixing the
+   *  off-by-one bound". Empty whenever the model did not write one. */
+  doing?: string;
   /** Whether this row may be detached to the background while it runs. Decided by
    *  the server from the tool registry — the UI never learns which tool is a shell. */
   divertible?: boolean;
@@ -383,6 +394,11 @@ export interface SubAgentEventMessage {
   name?: string;
   label?: string;
   detail?: string;
+  /** On "tool_call": the child step's family of work. Named `tool_kind` because this
+   *  event's own `kind` already says which half of the child's activity it carries. */
+  tool_kind?: string;
+  /** On "tool_call": the child model's sentence about its own call. */
+  doing?: string;
   ok?: boolean;
   summary?: string;
   duration_ms?: number;
@@ -997,10 +1013,18 @@ export type MessageKind =
 /** A single tool invocation tracked from start (tool_call) to finish (tool_result). */
 export interface ToolActivity {
   id: string;
+  /** The structured tool name. Nothing renders it — the row is drawn from `kind` and
+   *  `doing` — but it is what a stored transcript is read back by. */
   name: string;
-  icon: string;
   label: string;
   detail: string;
+  /** The family of work this call belongs to: the word shown in the row, in full
+   *  colour, and what its icon is derived from at render time. The icon is deliberately
+   *  NOT stored here: it is a function of this, and one of them is an element that
+   *  would not survive the stored transcript's JSON. See ToolCallMessage.kind. */
+  kind?: string;
+  /** The model's sentence about this call, shown dim beside the family. */
+  doing?: string;
   /** "background" is a running row the user detached: settled for this turn, but the
    *  job carries on and a later job_complete fills in how it really ended. */
   status: "running" | "ok" | "error" | "background";

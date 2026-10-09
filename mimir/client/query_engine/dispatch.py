@@ -25,7 +25,7 @@ from ..config.constants import (
 from ..event_sink import emit
 from .. import human_pause
 from ..context.capabilities import (
-    CODE_EXEC, DIVERTIBLE, EDIT, has_cap, label_for, scope_spec, timeout_for,
+    CODE_EXEC, DIVERTIBLE, EDIT, has_cap, kind_for, label_for, scope_spec, timeout_for,
 )
 from ..context.execution_context import loop_control, nudge_count
 from ..tool_execution.normalizer import _make_hashable
@@ -34,6 +34,8 @@ from ..tool_execution.exec_preview import exec_input_preview, extract_exec_previ
 from ..tool_execution.math_preview import extract_math_preview
 from ..tool_execution.file_target import file_target
 from ..tool_execution.tool_status_messages import (
+    DOING_ARG,
+    clip_doing,
     tool_status_message,
     tool_arg_preview,
     dedup_row_detail,
@@ -286,6 +288,10 @@ async def _dispatch_tool_calls(
     original order so the conversation history stays deterministic.
     """
     normalized: list[tuple[str, dict, str]] = []
+    # call_id -> the model's own sentence about that call. Beside the calls rather than
+    # inside them: it is display, and everything downstream of here — dedup, policy,
+    # execution — must see the arguments the tool will actually be given.
+    row_doing: dict[str, str] = {}
     seen_calls: set[tuple] = set()
     # Per-query loop-control state (dedup + spin guards), kept in a dedicated object
     # outside the ExecutionContext schema. Created lazily on first dispatch.
@@ -305,7 +311,25 @@ async def _dispatch_tool_calls(
         fn = _to_dict(tc.get("function", {}))
         name = fn.get("name", "")
         args = agent._normalize_arguments(fn.get("arguments") or {})
+        # The universal per-call description (server_manager.DOING_ARG) is taken out of
+        # the arguments here, before anything else reads them. Before the dedup key,
+        # because two otherwise identical calls that differ only in their description
+        # are the same call — left in, they would walk straight past the dedup and the
+        # repeat guard, which is the exact spin those exist to stop. And before
+        # execution, because no server declares the parameter: it would arrive as an
+        # unexpected keyword argument.
+        #
+        # Into a COPY, never popped in place. `normalize_arguments` hands back the very
+        # dict the assistant message holds, and that message is the record of what the
+        # model issued — `take_deferred_calls` reads the calls back out of it to resume
+        # a deferred step. Popped in place, the description was erased from the record,
+        # and a call resumed after an approval came back with nothing to say.
+        doing = ""
+        if isinstance(args, dict) and DOING_ARG in args:
+            doing = clip_doing(args[DOING_ARG])
+            args = {k: v for k, v in args.items() if k != DOING_ARG}
         call_id = tc.get("id") if isinstance(tc.get("id"), str) and tc.get("id") else f"call_{idx}"
+        row_doing[call_id] = doing
         # Deduplicate: skip exact (name, args) duplicates within one step.
         key = (name, _make_hashable(args))
         if key in seen_calls:
@@ -369,6 +393,12 @@ async def _dispatch_tool_calls(
             "name": display_name,
             "label": row_label,
             "detail": row_detail,
+            # What the row shows: the tool's work family in place of the derived label,
+            # and the model's sentence about this call beside it. The label stays on the
+            # wire — approval cards, policy messages and the row's own tooltip read it —
+            # but it is no longer what the row says.
+            "kind": kind_for(display_name, agent.tool_caps),
+            "doing": row_doing.get(call_id, ""),
             # Whether the front-end may offer to detach this row while it runs. Read
             # off the registry, like every other row property: the UI must not learn
             # which tool happens to be a shell. DIVERTIBLE, not BACKGROUNDABLE: the

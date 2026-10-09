@@ -102,6 +102,19 @@ _REVERSIBILITY = ("reversible", "recoverable", "irreversible")
 _DERIVED = frozenset({"sensitive"})
 
 
+def _tool_kinds() -> tuple[str, ...]:
+    """The live work-family vocabulary, read off the capability module's own tuple.
+
+    Parsed from the source like the flags above, and for the same reason: the installed
+    build is the answer, not whatever this file remembers.
+    """
+    text = _read_text(_CAP_SOURCE, limit=200_000)
+    match = re.search(r"^TOOL_KINDS\s*=\s*\((.*?)^\)", text, re.S | re.M)
+    if not match:
+        return ()
+    return tuple(re.findall(r'"([a-z][a-z ]*)"', match.group(1)))
+
+
 def _capability_vocabulary() -> dict:
     """The live capability vocabulary, parsed from the capability module's source.
 
@@ -295,6 +308,9 @@ _TYPES: dict[str, dict] = {
             "what makes MIMIR's policies, caching and nudges treat the tool correctly.",
             "Declare `reversibility` instead of `sensitive`: approval-gating is derived "
             "from it, so the tool states one fact about its effect rather than two.",
+            "Declare a `kind`: the tool's family of work (`tool_caps(kind=\"edit\")`), "
+            "which is the word its activity row shows and the icon drawn beside it. Ask "
+            "topic `capabilities` for the vocabulary.",
             "A tool that names a file takes an absolute path (see _shared/root_paths).",
             "Answer with the `ok()` / `err()` payload shape from _shared/responses.",
             "Document each parameter in an `Args:` block — those lines are lifted into "
@@ -394,7 +410,7 @@ def _type_entry(kind: str) -> dict:
 
 # ── the tool ──────────────────────────────────────────────────────────────────
 
-@mcp.tool(**tool_caps(
+@mcp.tool(**tool_caps(kind="skill",
     caps=[CACHEABLE],
     label="Reading MIMIR's extension API: {topic}",
 ))
@@ -449,6 +465,7 @@ def mimir_api(topic: str = "index", name: str = "") -> dict:
             "flags": vocab["flags"],
             "count": len(vocab["flags"]),
             "reversibility": vocab["reversibility"],
+            "kinds": list(_tool_kinds()),
             "notes": [
                 "A flag marked `declarable: false` is derived by the client from what "
                 "you did declare — declaring it yourself says nothing new.",
@@ -459,6 +476,12 @@ def mimir_api(topic: str = "index", name: str = "") -> dict:
                 "your tool, as it cannot know an HTTP tool *sends* rather than reads.",
                 "`is_write` (edit ∪ content_write ∪ remove) and `clears_edit_loop` "
                 "(read ∪ validate) are derived helpers, not declarable flags.",
+                "`kinds` is a separate vocabulary from the flags: a tool's `kind` is its "
+                "family of work — the word its activity row shows, and the icon drawn "
+                "from it. One per tool, several tools per family. Declared because the "
+                "distinction is often invisible in the flags (nothing tells a symbolic "
+                "solver apart from a calculator); omitted, one is derived from the "
+                "capabilities, so a tool still renders correctly either way.",
                 "Beyond the flags, a declaration carries arg-roles (which argument is a "
                 "path, which carries the steps of a plan, which the verdict), an "
                 "approval scope, a risk note, a preview shape and a timeout — see the "
@@ -577,7 +600,7 @@ def _rejects_as_path(name: str) -> bool:
             or any(sep in name for sep in separators))
 
 
-@mcp.tool(**tool_caps(
+@mcp.tool(**tool_caps(kind="skill",
     caps=[CACHEABLE],
     label="Loading the {name} skill",
 ))

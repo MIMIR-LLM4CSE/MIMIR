@@ -130,7 +130,7 @@ def _timeout_handler(signum, frame):
     raise TimeoutError("Expression evaluation timed out.")
 
 
-@mcp.tool(**tool_caps(label="Evaluating {expression}"))
+@mcp.tool(**tool_caps(kind="eval", label="Evaluating {expression}"))
 def evaluate(expression: str) -> dict:
     """Safely evaluate a mathematical expression string and return the result.
 

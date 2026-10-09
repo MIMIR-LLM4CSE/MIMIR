@@ -10,11 +10,13 @@ Run:
     python -m unittest mimir.tests.test_tool_row_display -v
 """
 
+import asyncio
 import json
 import unittest
 
 from mimir.client.context.capabilities import ToolCaps, READ, SEARCH_WITH_PATH
 from mimir.client.tool_execution.tool_status_messages import (
+    clip_doing,
     summarize_tool_result,
     dedup_row_detail,
     error_detail,
@@ -311,3 +313,159 @@ class RowPathsAreShortenedTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ClipDoingTests(unittest.TestCase):
+    """The model's per-call description, made fit for a one-line row.
+
+    The 15-word limit is asked of the model, not enforced here: a sentence cut
+    mid-word reads worse than a long one. This only stops a model that ignores the
+    limit entirely from pushing the rest of the row off screen.
+    """
+
+    def test_nothing_in_nothing_out(self) -> None:
+        for empty in (None, "", "   ", 42, {"a": 1}):
+            self.assertEqual(clip_doing(empty), "")
+
+    def test_a_sentence_passes_through_trimmed(self) -> None:
+        self.assertEqual(clip_doing("  fixing the off-by-one bound  "),
+                         "fixing the off-by-one bound")
+
+    def test_only_the_first_line_survives(self) -> None:
+        # A row is one line; a description with a newline would take the layout with it.
+        self.assertEqual(clip_doing("\n\nreading the loop\nand then some\n"),
+                         "reading the loop")
+
+    def test_a_runaway_description_is_bounded(self) -> None:
+        clipped = clip_doing("word " * 200)
+        self.assertLess(len(clipped), 130)
+        self.assertTrue(clipped.endswith("…"))
+
+
+class _FakeAgent:
+    """The slice of the agent ``_dispatch_tool_calls`` touches."""
+
+    def __init__(self, registry):
+        self.tool_caps = registry
+        self.tool_owner = {name: "fake" for name in registry}
+        self.model = "fake-model"
+        self.approvals = None
+        self.calls: list[tuple[str, dict]] = []
+
+    def _normalize_arguments(self, args):
+        # The real one hands back the dict it was given (formatter.normalize_arguments).
+        # Copying here would hide exactly the mutation these tests are watching for.
+        from mimir.client.tool_execution.formatter import normalize_arguments
+        return normalize_arguments(args)
+
+    def _rewrite_tool_for_context(self, name, args):
+        return name, args
+
+    def _is_write_tool(self, name):
+        return False
+
+    def get_tool_file_targets(self, *a, **k):
+        return []
+
+    async def _run_tool(self, name, args, **kwargs):
+        self.calls.append((name, dict(args)))
+        return json.dumps({"status": "ok"})
+
+
+class DispatchRowFieldsTests(unittest.TestCase):
+    """What the dispatcher puts on a row, and what it keeps off the call.
+
+    ``doing`` is added to every tool's schema by the client (it is the user-facing
+    description of the call, not an input), so the dispatcher is the one place that has
+    to take it back out again — before the dedup key, and before the tool runs.
+    """
+
+    def _dispatch(self, tool_calls, registry=None, messages=None):
+        from unittest.mock import patch
+        from mimir.client.query_engine import dispatch as d
+
+        agent = _FakeAgent(registry if registry is not None else dict(_REG))
+        events: list[dict] = []
+        with patch.object(d, "emit", events.append), \
+             patch.object(d, "run_post_tool_annotations", lambda *a, **k: None):
+            asyncio.run(d._dispatch_tool_calls(
+                tool_calls, agent, [] if messages is None else messages, {}))
+        return agent, [e for e in events if e.get("type") == "tool_call"]
+
+    @staticmethod
+    def _call(call_id, name, args):
+        return {"id": call_id, "function": {"name": name, "arguments": args}}
+
+    def test_the_row_carries_the_family_and_the_description(self) -> None:
+        _agent, rows = self._dispatch([
+            self._call("c1", "read_file_lines",
+                       {"path": "/w/dispatch.py", "doing": "reading the dispatch loop"}),
+        ])
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["kind"], "read")
+        self.assertEqual(rows[0]["doing"], "reading the dispatch loop")
+        # The derived label stays on the wire: approval cards and the row's own
+        # tooltip read it, even though the row no longer says it.
+        self.assertTrue(rows[0]["label"])
+
+    def test_the_description_never_reaches_the_tool(self) -> None:
+        # No server declares the parameter — it would arrive as an unexpected kwarg.
+        agent, _rows = self._dispatch([
+            self._call("c1", "read_file_lines",
+                       {"path": "/w/dispatch.py", "doing": "reading the loop"}),
+        ])
+        self.assertEqual(agent.calls, [("read_file_lines", {"path": "/w/dispatch.py"})])
+
+    def test_two_calls_differing_only_in_description_are_one_call(self) -> None:
+        # Left in the arguments, a reworded description walks straight past the dedup
+        # and the repeat guard — the exact spin they exist to stop.
+        agent, rows = self._dispatch([
+            self._call("c1", "read_file_lines", {"path": "/w/a.py", "doing": "reading it"}),
+            self._call("c2", "read_file_lines", {"path": "/w/a.py", "doing": "checking it"}),
+        ])
+        self.assertEqual(len(agent.calls), 1)
+        self.assertEqual(len(rows), 1)
+
+    def test_a_call_with_no_description_still_makes_a_row(self) -> None:
+        # The model will forget. The family and the target carry the row alone.
+        _agent, rows = self._dispatch([
+            self._call("c1", "read_file_lines", {"path": "/w/a.py"}),
+        ])
+        self.assertEqual(rows[0]["doing"], "")
+        self.assertEqual(rows[0]["kind"], "read")
+
+    def test_a_description_is_clipped_before_it_is_sent(self) -> None:
+        _agent, rows = self._dispatch([
+            self._call("c1", "read_file_lines",
+                       {"path": "/w/a.py", "doing": "reading it\nand explaining myself"}),
+        ])
+        self.assertEqual(rows[0]["doing"], "reading it")
+
+    def test_the_model_s_own_message_is_left_as_it_issued_it(self) -> None:
+        """The description is read out of the call, never popped out of it.
+
+        ``normalize_arguments`` hands back the very dict the assistant message holds,
+        and that message is the record of what the model issued — ``take_deferred_calls``
+        reads the calls back out of it to resume a step that waited on the user. Popped
+        in place, the description was erased from the record, and a call resumed after
+        an approval came back with nothing to say.
+        """
+        from mimir.client.query_engine.deferral import take_deferred_calls
+
+        call = self._call("c1", "read_file_lines",
+                          {"path": "/w/a.py", "doing": "reading the loop"})
+        messages = [{"role": "assistant", "tool_calls": [call]}]
+        agent, rows = self._dispatch([call], messages=messages)
+
+        self.assertEqual(rows[0]["doing"], "reading the loop")      # the row has it
+        self.assertEqual(agent.calls[0][1], {"path": "/w/a.py"})    # the tool does not
+        resumed = take_deferred_calls(messages, ["c1"])             # and the record kept it
+        self.assertEqual(resumed[0]["function"]["arguments"],
+                         {"path": "/w/a.py", "doing": "reading the loop"})
+
+    def test_an_undeclared_tool_still_gets_a_family(self) -> None:
+        _agent, rows = self._dispatch(
+            [self._call("c1", "mystery_tool", {"doing": "doing something"})],
+            registry={"mystery_tool": ToolCaps(name="mystery_tool")},
+        )
+        self.assertEqual(rows[0]["kind"], "tool")

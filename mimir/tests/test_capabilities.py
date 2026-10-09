@@ -121,6 +121,71 @@ class ServerDeclarationTest(unittest.TestCase):
         }
         self.assertEqual(client_vocab, server_vocab)
 
+    def test_kind_vocab_in_sync(self):
+        """The work families are one vocabulary, declared server-side, read client-side."""
+        from mimir.servers._shared import capabilities as srv
+        self.assertEqual(set(caps.TOOL_KINDS), set(srv.TOOL_KINDS))
+        self.assertIn(caps.DEFAULT_TOOL_KIND, caps.TOOL_KINDS)
+
+    def test_a_declared_kind_round_trips(self):
+        from mimir.servers._shared import capabilities as srv
+        desc = srv.build_descriptor(kind="proxy eval")
+        fake = types.SimpleNamespace(
+            name="proxy_eval", meta={"mimir": desc}, annotations=None, inputSchema=None,
+        )
+        reg = {"proxy_eval": caps.infer_tool_caps(fake)}
+        self.assertEqual(caps.kind_for("proxy_eval", reg), "proxy eval")
+
+    def test_a_kind_is_normalised_not_trusted_verbatim(self):
+        from mimir.servers._shared import capabilities as srv
+        self.assertEqual(srv.build_descriptor(kind="  Proxy   EVAL ")["kind"], "proxy eval")
+        # Nothing usable is not a declaration.
+        self.assertNotIn("kind", srv.build_descriptor(kind="   "))
+        self.assertNotIn("kind", srv.build_descriptor())
+
+
+class WorkFamilyTest(unittest.TestCase):
+    """``kind_for`` resolves declared > derived-from-capabilities > default."""
+
+    @staticmethod
+    def _reg(name, **kwargs):
+        return {name: caps.ToolCaps(name=name, **kwargs)}
+
+    def test_a_declared_family_wins_over_the_derivation(self):
+        # `symbolic` carries no capability that tells it apart from `evaluate` — which
+        # is the whole reason the family is declared rather than inferred.
+        reg = self._reg("symbolic", kind="symbolic", capabilities=frozenset({caps.CACHEABLE}))
+        self.assertEqual(caps.kind_for("symbolic", reg), "symbolic")
+
+    def test_an_undeclared_tool_is_derived_from_what_it_does(self):
+        # A third-party server that declares capabilities but no family.
+        for declared, expected in (
+            ({caps.EDIT, caps.READ}, "edit"),          # it rewrites; reading is incidental
+            ({caps.REMOVE, caps.READ}, "delete"),
+            ({caps.CONTENT_WRITE}, "write"),
+            ({caps.CODE_EXEC, caps.SEARCH}, "shell"),  # it executes; searching is incidental
+            ({caps.CLUSTER_SUBMIT, caps.CODE_EXEC}, "slurm"),
+            ({caps.SEARCH_WITH_PATH}, "search"),
+            ({caps.CODE_NAV}, "search"),
+            ({caps.INSPECT_DIR}, "list"),
+            ({caps.DELEGATE}, "agent"),
+            ({caps.EXTERNAL_FETCH}, "web"),
+            ({caps.READ}, "read"),
+        ):
+            with self.subTest(caps=sorted(declared)):
+                reg = self._reg("foreign_tool", capabilities=frozenset(declared))
+                self.assertEqual(caps.kind_for("foreign_tool", reg), expected)
+
+    def test_a_tool_that_says_nothing_gets_the_default(self):
+        self.assertEqual(caps.kind_for("foreign_tool", self._reg("foreign_tool")), "tool")
+        # And so does a name no registry has heard of.
+        self.assertEqual(caps.kind_for("ghost", {}), caps.DEFAULT_TOOL_KIND)
+
+    def test_every_derived_family_is_in_the_vocabulary(self):
+        for cap, kind in caps._DERIVED_KINDS:
+            with self.subTest(cap=cap):
+                self.assertIn(kind, caps.TOOL_KINDS)
+
     def test_declared_timeout_round_trips_and_is_clamped(self):
         from mimir.client.config.constants import TOOL_CALL_TIMEOUT_MAX_SECS
         from mimir.servers._shared import capabilities as srv

@@ -240,7 +240,7 @@ def _validate_comment(value: str) -> str | None:
     return None
 
 
-@mcp.tool()
+@mcp.tool(**tool_caps(kind="slurm"))
 def slurm_partitions() -> dict:
     """List Slurm partitions with key scheduling attributes."""
     cmd = "sinfo -h -o '%P|%a|%l|%D|%t|%c|%m'"
@@ -292,7 +292,7 @@ def _sinfo_nodes() -> list[dict]:
     return nodes
 
 
-@mcp.tool()
+@mcp.tool(**tool_caps(kind="slurm"))
 def slurm_nodes(partition: str = "", states: str = "", node: str = "", detail: bool = False) -> dict:
     """Inventory the cluster's compute nodes: hardware, GPUs, and what is free right now.
 
@@ -351,7 +351,7 @@ def slurm_nodes(partition: str = "", states: str = "", node: str = "", detail: b
     return ok(payload)
 
 
-@mcp.tool()
+@mcp.tool(**tool_caps(kind="slurm"))
 def slurm_queue(user_only: bool = True, states: str = "") -> dict:
     """List jobs from Slurm queue.
 
@@ -436,7 +436,7 @@ def _salloc_argv(partition: str, account: str, qos: str, nodes: int, ntasks: int
     return argv, None
 
 
-@mcp.tool(**tool_caps(
+@mcp.tool(**tool_caps(kind="slurm",
     caps=[PLAN_BLOCKED, CLUSTER_SUBMIT], reversibility=IRREVERSIBLE, non_batch=True,
     risk_note="requests Slurm resource allocation",
 ))
@@ -548,7 +548,7 @@ def _normalized_job_state(job_id: str) -> tuple[str, str]:
     return "unknown", ""
 
 
-@mcp.tool()
+@mcp.tool(**tool_caps(kind="slurm"))
 def slurm_job_status(job_id: str) -> dict:
     """Normalized status of a single Slurm job (poll target for background jobs).
 
@@ -611,7 +611,7 @@ def _current_user() -> str:
         return os.environ.get("USER", "")
 
 
-@mcp.tool(**tool_caps(
+@mcp.tool(**tool_caps(kind="slurm",
     caps=[PLAN_BLOCKED], reversibility=IRREVERSIBLE, non_batch=True,
     risk_note="Cancels a Slurm job; whatever it had not written yet is lost.",
     label="Slurm cancel {job_id}",
@@ -685,7 +685,7 @@ def _sbatch_header(job_name: str, partition: str, cpus_per_task: int, gpus: int,
     return lines
 
 
-@mcp.tool(**tool_caps(
+@mcp.tool(**tool_caps(kind="slurm",
     caps=[PLAN_BLOCKED, CLUSTER_SUBMIT, BACKGROUNDABLE], reversibility=IRREVERSIBLE, non_batch=True,
     risk_note="Submits a Slurm batch job that consumes cluster allocation hours.",
     label="Slurm sbatch submit",

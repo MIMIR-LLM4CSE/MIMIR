@@ -1043,7 +1043,7 @@ class _AgentWorker:
         prompt to the client and puts the response in _approval_q.
         """
         from ...context.capabilities import (
-            label_for, preview_spec, reversibility_of,
+            kind_for, label_for, preview_spec, reversibility_of,
         )
         from ...tool_execution.tool_status_messages import shorten_display_args
         from .file_preview import build_preview_diffs
@@ -1083,6 +1083,10 @@ class _AgentWorker:
             "reversibility": reversibility_of(tool_name, agent.tool_caps),
             "scope": scope_label,
             "label": label,
+            # The tool's work family, so the card is drawn with the same icon as the
+            # activity row for the same call. Read off the registry like everything else
+            # here — the front-end must not learn which tool happens to be a shell.
+            "kind": kind_for(tool_name, agent.tool_caps),
         }
         self._emit_prompt(payload)
 
@@ -1119,7 +1123,7 @@ class _AgentWorker:
         per-path loop this replaced parked the agent on one queue behind several
         identical questions.
         """
-        from ...context.capabilities import IRREVERSIBLE, label_for
+        from ...context.capabilities import IRREVERSIBLE, kind_for, label_for
         from ...tool_execution.tool_status_messages import shorten_display_args
 
         agent = self._agent
@@ -1147,6 +1151,8 @@ class _AgentWorker:
                 shorten_display_args(tool_name, arguments or {}, agent.tool_caps),
                 agent.tool_caps,
             ),
+            # Same family (and so the same icon) as the row for this call.
+            "kind": kind_for(tool_name, agent.tool_caps),
             "oow_paths": list(paths),
             # Kept alongside the list so a client built against the single-path payload
             # still renders a path rather than nothing.

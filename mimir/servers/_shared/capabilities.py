@@ -23,6 +23,7 @@ The descriptor schema mirrors the client contract exactly:
       "arg_roles": {"path": [...], ...},
       "approval": {"sensitive": bool, "non_batch": bool, "fallbacks": [...]},
       "label": "Reading file: {path}",  # optional status template
+      "kind": "read",                   # work family: the row's word + icon
       "preview": {"kind": "...", "args": [...]},  # optional pre-write diff shape
     }
 
@@ -119,6 +120,39 @@ IRREVERSIBLE = "irreversible"
 REVERSIBILITY_LEVELS = (REVERSIBLE, RECOVERABLE, IRREVERSIBLE)
 
 
+# ── Work families: the one word a tool-activity row shows, and the icon with it ─
+#
+# A *family of work*, never a tool's identity: several tools share one kind, and the
+# UI maps the kind to an icon. One declared fact drives both halves of the row, so the
+# glyph and the word cannot drift apart the way a separate icon table did.
+#
+# The kind is what the row says the call *is*; what it is *doing* comes from the model,
+# per call (the `doing` argument). A tool whose family cannot be read off its
+# capabilities is exactly why this is declared rather than derived — nothing in
+# `symbolic`'s flags distinguishes it from `evaluate`, and nothing in `proxy_eval`'s
+# says it is the one proxy tool that launches a run.
+TOOL_KINDS = (
+    # discovery
+    "read", "search", "list", "outline",
+    # file mutation
+    "write", "edit", "delete",
+    # local execution
+    "shell", "job", "verdict",
+    # calculation
+    "eval", "symbolic", "string", "date",
+    # cluster & environment
+    "slurm", "env", "modules",
+    # the proxy harness
+    "proxy", "proxy eval",
+    # agent state
+    "memory", "plan", "skill", "agent", "ask",
+    # outside the workspace
+    "web", "github", "system",
+    # the unknown default (the client supplies it; never declared)
+    "tool",
+)
+
+
 # Condition kinds a run-outcome spec may carry. The `_present` forms fire on a field
 # merely being there and truthy — a per-case error string has no enumerable value set.
 # `measured_when` is the one positive form, and it credits *evidence level* only —
@@ -154,6 +188,7 @@ def build_descriptor(
     non_batch: bool = False,
     fallbacks: Iterable[str] | None = None,
     label: str | None = None,
+    kind: str | None = None,
     scope: dict[str, Any] | None = None,
     risk_note: str | None = None,
     preview: dict[str, Any] | None = None,
@@ -194,6 +229,13 @@ def build_descriptor(
 
     if label:
         descriptor["label"] = label
+
+    # The work family (see TOOL_KINDS). Normalised but NOT restricted to the vocabulary:
+    # an extension-pack server naming a family of its own gets its word on the row with
+    # the default icon, which reads better than the derivation it would fall back to.
+    # First-party tools are held to the vocabulary by test_capabilities instead.
+    if isinstance(kind, str) and kind.strip():
+        descriptor["kind"] = " ".join(kind.lower().split())[:16]
 
     # Session-approval scope narrowing: which arg(s) carry the scope, which generic
     # client-side derivation `kind` to apply, and the human label noun. Normalised so
@@ -283,6 +325,7 @@ def tool_caps(
     non_batch: bool = False,
     fallbacks: Iterable[str] | None = None,
     label: str | None = None,
+    kind: str | None = None,
     scope: dict[str, Any] | None = None,
     risk_note: str | None = None,
     preview: dict[str, Any] | None = None,
@@ -311,6 +354,7 @@ def tool_caps(
         non_batch=non_batch,
         fallbacks=fallbacks,
         label=label,
+        kind=kind,
         scope=scope,
         risk_note=risk_note,
         preview=preview,

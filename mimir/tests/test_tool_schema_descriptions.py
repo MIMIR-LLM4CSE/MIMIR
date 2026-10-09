@@ -16,9 +16,10 @@ docstring must never stop a tool being registered.
 import unittest
 
 from mimir.client.integration.server_manager import (
+    DOING_ARG,
     _args_block_descriptions,
     _description_without_args_block,
-    _schema_with_arg_descriptions,
+    _schema_for_model,
 )
 
 
@@ -80,7 +81,7 @@ class ArgsBlockParsingTests(unittest.TestCase):
 class SchemaEnrichmentTests(unittest.TestCase):
     def test_missing_descriptions_are_filled(self) -> None:
         tool = _Tool("Args:\n    path: The file to read.\n", _schema("path"))
-        out = _schema_with_arg_descriptions(tool)
+        out = _schema_for_model(tool)
         self.assertEqual(out["properties"]["path"]["description"], "The file to read.")
 
     def test_a_hand_written_description_always_wins(self) -> None:
@@ -89,7 +90,7 @@ class SchemaEnrichmentTests(unittest.TestCase):
         schema = _schema("verdict")
         schema["properties"]["verdict"]["description"] = "written by hand"
         tool = _Tool("Args:\n    verdict: from the docstring.\n", schema)
-        out = _schema_with_arg_descriptions(tool)
+        out = _schema_for_model(tool)
         self.assertEqual(out["properties"]["verdict"]["description"], "written by hand")
 
     def test_the_servers_schema_is_never_mutated(self) -> None:
@@ -97,25 +98,68 @@ class SchemaEnrichmentTests(unittest.TestCase):
         # the server declared.
         schema = _schema("path")
         tool = _Tool("Args:\n    path: The file.\n", schema)
-        _schema_with_arg_descriptions(tool)
+        _schema_for_model(tool)
         self.assertNotIn("description", schema["properties"]["path"])
 
     def test_a_name_the_schema_does_not_have_is_ignored(self) -> None:
         tool = _Tool("Args:\n    ghost: Not a parameter.\n", _schema("path"))
-        out = _schema_with_arg_descriptions(tool)
-        self.assertEqual(list(out["properties"]), ["path"])
+        out = _schema_for_model(tool)
+        self.assertEqual(list(out["properties"]), ["path", DOING_ARG])
 
-    def test_a_tool_with_no_args_block_is_returned_unchanged(self) -> None:
+    def test_a_tool_with_no_args_block_keeps_its_own_parameters(self) -> None:
         tool = _Tool("Just a summary.", _schema("path"))
-        self.assertEqual(_schema_with_arg_descriptions(tool), _schema("path"))
+        out = _schema_for_model(tool)
+        self.assertEqual(out["properties"]["path"], {"type": "string"})
+        self.assertEqual(list(out["properties"]), ["path", DOING_ARG])
+
+
+class DoingArgumentTests(unittest.TestCase):
+    """Every tool takes the model's per-call description, added here once.
+
+    It is not declared by the servers: it is the same argument on all 71 of them, it
+    never reaches any of them (the dispatcher strips it), and it exists for the UI.
+    """
+
+    def test_every_tool_gets_it(self) -> None:
+        for doc, schema in (
+            ("Args:\n    path: The file.\n", _schema("path")),
+            ("Just a summary.", _schema()),
+            (None, None),
+        ):
+            out = _schema_for_model(_Tool(doc, schema))
+            self.assertIn(DOING_ARG, out["properties"], doc)
+            self.assertEqual(out["properties"][DOING_ARG]["type"], "string")
+            self.assertTrue(out["properties"][DOING_ARG]["description"])
+
+    def test_it_is_never_required(self) -> None:
+        # A backend that validates the schema would refuse a call that omits it, and a
+        # row with no description is a case the UI renders (its family still shows).
+        schema = _schema("path")
+        schema["required"] = ["path"]
+        out = _schema_for_model(_Tool("Args:\n    path: The file.\n", schema))
+        self.assertEqual(out.get("required"), ["path"])
+
+    def test_a_server_declaring_its_own_wins(self) -> None:
+        # Same rule as a hand-written Field(description=...): a deliberate act wins.
+        schema = _schema("path", DOING_ARG)
+        schema["properties"][DOING_ARG]["description"] = "this tool's own wording"
+        out = _schema_for_model(_Tool("Just a summary.", schema))
+        self.assertEqual(
+            out["properties"][DOING_ARG]["description"], "this tool's own wording"
+        )
+
+    def test_the_servers_schema_is_never_mutated(self) -> None:
+        schema = _schema("path")
+        _schema_for_model(_Tool("Just a summary.", schema))
+        self.assertNotIn(DOING_ARG, schema["properties"])
 
     def test_a_malformed_schema_does_not_raise(self) -> None:
         # Registration must survive anything a server hands it.
-        self.assertIsInstance(_schema_with_arg_descriptions(_Tool("Args:\n  a: b\n", None)), dict)
+        self.assertIsInstance(_schema_for_model(_Tool("Args:\n  a: b\n", None)), dict)
         self.assertIsInstance(
-            _schema_with_arg_descriptions(_Tool(None, {"properties": "not a dict"})), dict
+            _schema_for_model(_Tool(None, {"properties": "not a dict"})), dict
         )
-        self.assertIsInstance(_schema_with_arg_descriptions(_Tool(None, {})), dict)
+        self.assertIsInstance(_schema_for_model(_Tool(None, {})), dict)
 
 
 class ArgsBlockLeavesTheDescriptionTests(unittest.TestCase):
@@ -127,7 +171,7 @@ class ArgsBlockLeavesTheDescriptionTests(unittest.TestCase):
 
     def _cut(self, doc, names):
         tool = _Tool(doc, _schema(*names))
-        return _description_without_args_block(doc, _schema_with_arg_descriptions(tool))
+        return _description_without_args_block(doc, _schema_for_model(tool))
 
     def test_a_fully_lifted_block_is_cut_and_the_rest_kept(self) -> None:
         self.assertEqual(self._cut(self._DOC, ["path", "line"]),
@@ -150,7 +194,7 @@ class ArgsBlockLeavesTheDescriptionTests(unittest.TestCase):
                "    path: The file.\n")
         tool = _Tool(doc, schema)
         self.assertEqual(
-            _description_without_args_block(doc, _schema_with_arg_descriptions(tool)),
+            _description_without_args_block(doc, _schema_for_model(tool)),
             "Report.\n\nArgs:\n    verdict: from the docstring,\n        and more.",
         )
 

@@ -1445,12 +1445,26 @@ the MCP `Tool` model through `list_tools()`:
 ```python
 from _shared.capabilities import tool_caps, READ, SEARCH, EDIT, SENSITIVE
 
-@mcp.tool(**tool_caps(caps=[READ], path_args=["path"], label="Reading file: {path}"))
+@mcp.tool(**tool_caps(kind="read", caps=[READ], path_args=["path"],
+                      label="Reading file: {path}"))
 def read_file_lines(path: str, start_line: int = 1, end_line: int = 200) -> dict: ...
 
-@mcp.tool(**tool_caps(caps=[EDIT], path_args=["path"], sensitive=False))
+@mcp.tool(**tool_caps(kind="write", caps=[EDIT], path_args=["path"], sensitive=False))
 def write_file(path: str, content: str) -> dict: ...
 ```
+
+`kind` is the tool's **family of work** — the word its activity row shows, and the icon
+the UI draws beside it, from the one declaration. The vocabulary is `TOOL_KINDS`, next
+to the capabilities and mirrored the same way (`test_capabilities.test_kind_vocab_in_sync`).
+It is a family and never a tool's identity: several tools share one, and
+`test_phase_b_servers` fails a tool that declares none. It is declared rather than derived
+because the distinctions that matter are invisible in the capability flags — nothing tells
+`symbolic` apart from `evaluate`, and nothing marks `proxy_eval` as the one proxy tool
+that launches a run. A tool from a third-party server that declares none still gets a
+family derived from its capabilities (`kind_for`), so it renders correctly regardless.
+
+Pure tools, which declare no capabilities at all, still declare a `kind`: the row is
+drawn for every call, not only for the classified ones.
 
 The capability vocabulary is defined once in `_shared/capabilities.py` and mirrored
 exactly in `client/context/capabilities.py` (parity guarded by
@@ -1474,7 +1488,8 @@ declare surfaces instead of silently losing its policy/approval/caching semantic
 `bash`, `web`, `memory`, `todo`, `hpc`,
 `proxy`) self-declares via
 `@mcp.tool(**tool_caps(...))`. Pure tools (math, string, datetime ops, read-only
-queries/advisors) declare nothing — they correctly carry no capability.
+queries/advisors) declare no *capability* — they correctly carry none — but do declare
+their `kind`.
 The expected classification is the golden oracle in `mimir/tests/_golden_caps.py`;
 `test_phase_b_servers.py` AST-parses every decorator and asserts the resulting
 registry reproduces it. A new server "just works": declare each tool's caps and the

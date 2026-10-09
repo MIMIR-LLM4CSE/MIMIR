@@ -581,7 +581,7 @@ def list_files(subdir: str = ".") -> dict:
     })
 
 
-@mcp.tool(**tool_caps(
+@mcp.tool(**tool_caps(kind="write",
     caps=[CONTENT_WRITE, OVERWRITE, EDIT],
     fallbacks=["replace_in_file", "read_file_lines"],
     arg_roles={"edit_sig": ["content"]},
@@ -641,7 +641,7 @@ def write_file(path: str, content: str, overwrite: bool = False) -> dict:
         return err(str(e))
 
 
-@mcp.tool(**tool_caps(
+@mcp.tool(**tool_caps(kind="write",
     caps=[CONTENT_WRITE, EDIT],
     arg_roles={"edit_sig": ["content"]},
     risk_note="modifies files in the sandbox",
@@ -692,7 +692,7 @@ def append_file(path: str, content: str) -> dict:
         return err(str(e))
 
 
-@mcp.tool(**tool_caps(
+@mcp.tool(**tool_caps(kind="delete",
     caps=[REMOVE],
     reversibility=RECOVERABLE,
     fallbacks=["read_file_lines"],
@@ -732,7 +732,7 @@ def delete_file(path: str, confirm: bool = False) -> dict:
         return err(str(e))
 
 
-@mcp.tool(**tool_caps(
+@mcp.tool(**tool_caps(kind="edit",
     caps=[EDIT, REPLACEMENT_TRACK],
     arg_roles={"edit_sig": ["old_text", "new_text"]},
     risk_note="replaces content inside an existing file",
@@ -818,7 +818,7 @@ def replace_in_file(path: str, old_text: str, new_text: str) -> dict:
         return err(str(e))
 
 
-@mcp.tool(**tool_caps(
+@mcp.tool(**tool_caps(kind="edit",
     caps=[EDIT],
     arg_roles={"edit_sig": ["start_line", "end_line", "new_content"]},
     preview={"kind": "line_splice", "args": ["start_line", "end_line", "new_content"]},
@@ -905,7 +905,7 @@ def replace_lines(path: str, start_line: int, end_line: int, new_content: str) -
         return err(str(e))
 
 
-@mcp.tool(**tool_caps(
+@mcp.tool(**tool_caps(kind="edit",
     caps=[EDIT, REPLACEMENT_TRACK],
     arg_roles={"confirm_gate": ["confirm"]},
     risk_note="replaces all occurrences of a pattern in a file",

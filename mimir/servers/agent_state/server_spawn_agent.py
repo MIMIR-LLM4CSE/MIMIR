@@ -126,6 +126,11 @@ def _compact_event(ev: dict) -> dict | None:
             "n": str(ev.get("name") or ""),
             "l": _clip(ev.get("label"), 120),
             "d": _clip(ev.get("detail"), 160),
+            # The row's work family and the child model's own sentence about the call —
+            # what a child row shows, exactly as a top-level one does. `w` for the
+            # second: `d` is already the argument preview.
+            "k": _clip(ev.get("kind"), 16),
+            "w": _clip(ev.get("doing"), 120),
         }
     if kind == "tool_result":
         out = {
@@ -216,7 +221,7 @@ def _caller_approval_mode(ctx: Context | None) -> str:
 
 # ── Tool ──────────────────────────────────────────────────────────────────────
 
-@mcp.tool(**tool_caps(
+@mcp.tool(**tool_caps(kind="agent",
     caps=[DELEGATE, PLAN_READONLY],
     # Reversible, hence not approval-gated: a card in front of every exploration is a
     # card in front of the behaviour this tool exists to make cheap. A writing child

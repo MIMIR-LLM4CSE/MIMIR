@@ -1131,7 +1131,7 @@ def _build_profile() -> dict:
 
 
 
-@mcp.tool(**tool_caps(caps=[ENV_DISCOVERY]))
+@mcp.tool(**tool_caps(kind="modules", caps=[ENV_DISCOVERY]))
 def platform_probe() -> dict:
     """Collect and return a fresh platform profile.
 
@@ -1145,7 +1145,7 @@ def platform_probe() -> dict:
     return ok({"profile": profile, "elapsed_s": round(elapsed, 3)})
 
 
-@mcp.tool(**tool_caps(caps=[ENV_DISCOVERY]))
+@mcp.tool(**tool_caps(kind="modules", caps=[ENV_DISCOVERY]))
 def platform_get_profile() -> dict:
     """Return a fresh platform profile for the current host, with live sinfo data.
 
@@ -1156,7 +1156,7 @@ def platform_get_profile() -> dict:
     return ok({"profile": _build_profile(), "sinfo": _collect_sinfo()})
 
 
-@mcp.tool(**tool_caps(
+@mcp.tool(**tool_caps(kind="modules",
     caps=[ENV_DISCOVERY, CACHEABLE],
     label="Searching modules: {query}",
 ))
@@ -1220,7 +1220,7 @@ def platform_search(query: str, limit: int = 10, refresh: bool = False) -> dict:
     return ok(payload)
 
 
-@mcp.tool(**tool_caps(caps=[ENV_DISCOVERY, CACHEABLE]))
+@mcp.tool(**tool_caps(kind="modules", caps=[ENV_DISCOVERY, CACHEABLE]))
 def platform_catalogue_status() -> dict:
     """Report the module catalogue's state without building or refreshing it.
 
