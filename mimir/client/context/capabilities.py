@@ -111,7 +111,7 @@ TOOL_KINDS = (
     "eval", "symbolic", "string", "date",           # calculation
     "slurm", "env", "modules",                      # cluster & environment
     "proxy", "proxy eval",                          # the proxy harness
-    "memory", "plan", "skill", "agent", "ask",      # agent state
+    "memory", "plan", "todo", "skill", "agent", "ask",  # agent state
     "web", "github", "system",                      # outside the workspace
     "tool",                                         # the unknown default
 )
@@ -552,7 +552,7 @@ _DERIVED_KINDS: tuple[tuple[str, str], ...] = (
     (CODE_EXEC, "shell"),
     (DELEGATE, "agent"),
     (JUDGE, "verdict"),
-    (TASK_PLANNING, "plan"),
+    (TASK_PLANNING, "todo"),
     (EXTERNAL_FETCH, "web"),
     (SEARCH_WITH_PATH, "search"),
     (SEARCH, "search"),

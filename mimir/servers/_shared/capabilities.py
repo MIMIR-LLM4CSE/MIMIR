@@ -146,8 +146,10 @@ TOOL_KINDS = (
     "slurm", "env", "modules",
     # the proxy harness
     "proxy", "proxy eval",
-    # agent state
-    "memory", "plan", "skill", "agent", "ask",
+    # agent state. `plan` is a saved, titled plan in prose; `todo` is the ordered
+    # checklist of steps. One server holds both, and they are not the same object:
+    # writing the checklist and recording a plan are different acts on different things.
+    "memory", "plan", "todo", "skill", "agent", "ask",
     # outside the workspace
     "web", "github", "system",
     # the unknown default (the client supplies it; never declared)

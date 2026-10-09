@@ -220,17 +220,23 @@ function withFileLink(text: string, target?: FileTarget): React.ReactNode {
  *  *why* it is happening. A derived label ("Running shell command") said neither: ten
  *  identical calls read as ten identical rows. It survives as the row's tooltip.
  *
- *  No sentence, and the family stands alone: the model did not write one, or the row
- *  comes from a session recorded before this existed. The target and the arg preview
- *  beside it still say what the call touched. */
+ *  No sentence — the model did not write one, or the row comes from a session recorded
+ *  before this existed — and the derived label stands in for it. The family alone was
+ *  tried first and is too coarse to read: eight tools answer to "Plan", so a bare
+ *  `Plan` row left no way to tell a checklist being written from one being read. The
+ *  label is the one thing that always says which call this was, and it is already on
+ *  the wire for the tooltip and the approval card. */
 const ToolHead: React.FC<{
   kind: string;
   doing?: string;
   target?: FileTarget;
-}> = ({ kind, doing, target }) => (
+  label: string;
+}> = ({ kind, doing, label, target }) => (
   <>
     <span className="tool-kind">{labelForKind(kind)}</span>
-    {doing && <span className="tool-doing">{withFileLink(doing, target)}</span>}
+    {(doing || label) && (
+      <span className="tool-doing">{withFileLink(doing || label, target)}</span>
+    )}
   </>
 );
 
@@ -302,7 +308,10 @@ const ToolRow: React.FC<RowProps> = ({ tool, childRows = [], onDivert }) => {
   // have created it yet. The description carries the link when the model happened to
   // name the file; otherwise the detail does, so it is never shown twice.
   const fileTarget = tool.status === "ok" ? tool.target : undefined;
-  const linkInDoing = !!fileTarget && !!tool.doing?.includes(fileTarget.name);
+  // Whichever of the two the row is showing is the one that may already carry the file
+  // name — the label templates name it as often as a description does.
+  const said = tool.doing || tool.label;
+  const linkInDoing = !!fileTarget && said.includes(fileTarget.name);
 
   // The family of work: the word the row shows, and what its icon is drawn from. Both
   // derived here rather than carried on the row, because the icon is a *function* of the
@@ -408,6 +417,7 @@ const ToolRow: React.FC<RowProps> = ({ tool, childRows = [], onDivert }) => {
         <ToolHead
           kind={kind}
           doing={tool.doing}
+          label={tool.label}
           target={linkInDoing ? fileTarget : undefined}
         />
         {detail && !panelRestatesIt && (

@@ -12,7 +12,7 @@ const TOOL_KINDS = [
   "eval", "symbolic", "string", "date",
   "slurm", "env", "modules",
   "proxy", "proxy eval",
-  "memory", "plan", "skill", "agent", "ask",
+  "memory", "plan", "todo", "skill", "agent", "ask",
   "web", "github", "system",
   "tool",
 ];

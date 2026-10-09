@@ -38,7 +38,7 @@ export const KIND_ICONS: Record<string, ReactNode> = {
   // the proxy harness
   proxy: "🧪", "proxy eval": "⚡",
   // agent state
-  memory: "🧠", plan: "📋", skill: "📘", agent: "🤝", ask: "❓",
+  memory: "🧠", plan: "🗺️", todo: "📋", skill: "📘", agent: "🤝", ask: "❓",
   // outside the workspace
   web: "🌐", github: <GitHubMark />, system: "🖥️",
   // the unknown default

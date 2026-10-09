@@ -184,7 +184,7 @@ _PATH_KEYS = ("path", "filepath", "file")
 _OBJECT_KEYS = (
     "verdict", "query", "expression", "equation",
     "symbol", "name", "job_id", "job_key", "target", "packages",
-    "key_path", "partition", "title", "role", "scope", "op",
+    "key_path", "partition", "title", "steps", "role", "scope", "op",
 )
 # A pair of arguments that names one thing between them. Checked before the single keys,
 # since either half alone is the wrong answer: `repo` without its owner does not say
@@ -272,13 +272,20 @@ def tool_arg_preview(name: str, args: dict) -> str:
             return _clip(" ".join(val.split()), _PREVIEW_LIMIT)
         if isinstance(val, (int, float)) and not isinstance(val, bool):
             return str(val)
-        # A list names several things at once — the packages of an install, the states
-        # of a query. Joined rather than counted: "numpy scipy" is the row, "2 items"
-        # is a row that has to be expanded to say anything.
+        # A list names several things at once — the packages of an install, the steps of
+        # a plan. Joined while they fit, because "numpy · scipy" is the row and "2
+        # packages" is a row that has to be expanded to say anything; counted once they
+        # do not, because seven steps of a plan clipped mid-sentence say less than their
+        # number does. The noun of the count is the argument's own name, so this needs
+        # no list of keys either.
         if isinstance(val, (list, tuple)) and val:
-            joined = " ".join(str(v).strip() for v in val if str(v).strip())
-            if joined:
-                return _clip(joined, _PREVIEW_LIMIT)
+            parts = [" ".join(str(v).split()) for v in val if str(v).strip()]
+            if not parts:
+                continue
+            joined = " · ".join(parts)
+            if len(joined) <= _PREVIEW_LIMIT:
+                return joined
+            return f"{len(parts)} {key}" if len(parts) > 1 else _clip(parts[0], _PREVIEW_LIMIT)
 
     return ""
 

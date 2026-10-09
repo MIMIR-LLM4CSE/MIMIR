@@ -131,9 +131,19 @@ class DedupRowDetailTests(unittest.TestCase):
     def test_the_same_word_on_its_own_still_drops(self) -> None:
         self.assertEqual(dedup_row_detail("recording what the run showed: pass", "pass"), "")
 
-    def test_no_description_keeps_the_preview_unconditionally(self) -> None:
-        # Then it is the only thing on the row besides its family.
+    def test_no_text_at_all_keeps_the_preview(self) -> None:
         self.assertEqual(dedup_row_detail("", "wave2d_proxy.py"), "wave2d_proxy.py")
+
+    def test_it_is_the_label_that_is_matched_when_no_description_was_written(self) -> None:
+        """Whatever the row shows beside the preview is what it is matched against.
+
+        The dispatcher passes the description or, when the model wrote none, the label —
+        which is what the row then shows. Against the description alone, a row read
+        "Recording the plan: refonte des lignes" and then "refonte des lignes" again.
+        """
+        self.assertEqual(
+            dedup_row_detail("Recording the plan: refonte des lignes",
+                             "refonte des lignes"), "")
 
     def test_empty_detail_stays_empty(self) -> None:
         self.assertEqual(dedup_row_detail("reading the loop", ""), "")
@@ -208,13 +218,22 @@ class ObjectPreviewTests(unittest.TestCase):
         self.assertLessEqual(len(out), 48)
         self.assertTrue(out.endswith("solver.cpp"), out)
 
-    def test_several_things_at_once_are_joined_not_counted(self) -> None:
-        # "numpy scipy" is the row; "2 items" is a row that must be expanded to say
-        # anything at all.
+    def test_a_short_list_is_joined(self) -> None:
+        # "numpy · scipy" is the row; "2 packages" is a row that must be expanded to
+        # say anything at all.
         self.assertEqual(
             tool_arg_preview("t", {"packages": ["numpy", "scipy"],
                                    "python_executable": "/x/py"}),
-            "numpy scipy")
+            "numpy · scipy")
+
+    def test_a_list_too_long_to_join_is_counted_by_its_own_name(self) -> None:
+        # Seven steps clipped mid-sentence say less than their number does, and the
+        # noun of the count is the argument's own name — no list of keys needed.
+        self.assertEqual(
+            tool_arg_preview("t", {"steps": [
+                "read the dispatch loop", "fix the off-by-one bound",
+                "run the row-display tests", "update the changelog"]}),
+            "4 steps")
 
     def test_the_object_wins_over_the_action(self) -> None:
         # `op` selects an action, which the description already carries; the name of the

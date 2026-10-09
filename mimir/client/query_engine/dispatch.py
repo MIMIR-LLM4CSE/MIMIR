@@ -384,12 +384,15 @@ async def _dispatch_tool_calls(
         row_label = (label_for(display_name, row_args, agent.tool_caps)
                      or tool_status_message(display_name, row_args))
         # The salient argument of the call — the url, the file, the job id, the verdict.
-        # Deduplicated against the model's own description rather than against the label:
-        # the label is not what the row shows any more, so deduplicating against it both
-        # dropped previews the row needed (the basename under "Reading file: x.py", with
-        # nothing else left to name the file) and kept ones it did not.
+        # Deduplicated against whichever text the row will actually put beside it: the
+        # model's description when it wrote one, the label when it did not. Against the
+        # label alone it dropped previews the row needed (the basename under "Reading
+        # file: x.py", with nothing else left to name the file); against the description
+        # alone it kept ones the row then said twice — "Recording the plan: refonte des
+        # lignes" followed by "refonte des lignes".
         row_detail = dedup_row_detail(
-            row_doing.get(call_id, ""), tool_arg_preview(display_name, row_args))
+            row_doing.get(call_id, "") or row_label,
+            tool_arg_preview(display_name, row_args))
         call_event = {
             "type": "tool_call",
             "id": call_id,

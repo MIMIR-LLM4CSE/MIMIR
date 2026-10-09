@@ -267,7 +267,7 @@ def _delete_deps() -> None:
 
 # ── tools ─────────────────────────────────────────────────────────────────────
 
-@mcp.tool(**tool_caps(kind="plan",
+@mcp.tool(**tool_caps(kind="plan", label="Recording the plan: {title}",
     caps=[TASK_PLANNING],
     # Two roles, because two client-side consumers need to find different arguments
     # without knowing this tool's name: the plan loop pins the title so a revision
@@ -338,7 +338,7 @@ def todo_set_plan(text: str, title: str) -> dict:
     })
 
 
-@mcp.tool(**tool_caps(kind="plan"))
+@mcp.tool(**tool_caps(kind="plan", label="Reading a saved plan"))
 def todo_read_plan(name: str = None) -> dict:
     """Return a prose plan written by todo_set_plan.
 
@@ -377,7 +377,7 @@ def todo_read_plan(name: str = None) -> dict:
     })
 
 
-@mcp.tool(**tool_caps(kind="plan"))
+@mcp.tool(**tool_caps(kind="plan", label="Listing the saved plans"))
 def todo_list_plans() -> dict:
     """List every plan in the active session, newest first.
 
@@ -392,7 +392,7 @@ def todo_list_plans() -> dict:
     return ok({"plans": summary, "count": len(summary)})
 
 
-@mcp.tool(**tool_caps(kind="plan",
+@mcp.tool(**tool_caps(kind="plan", label="Deleting the saved plan: {name}",
     reversibility=RECOVERABLE, non_batch=True,
     risk_note="deletes a persistent plan file",
 ))
@@ -437,7 +437,8 @@ def todo_delete_plan(name: str) -> dict:
     return ok({"deleted": target})
 
 
-@mcp.tool(**tool_caps(kind="plan", caps=[TASK_PLANNING], arg_roles={"plan_steps": ["steps"]}))
+@mcp.tool(**tool_caps(kind="todo", label="Writing the checklist",
+                      caps=[TASK_PLANNING], arg_roles={"plan_steps": ["steps"]}))
 def todo_write(steps: list[str], depends_on: list[list[int]] | None = None) -> dict:
     """Replace the whole todo list with a new ordered list of steps.
 
@@ -482,7 +483,7 @@ def todo_write(steps: list[str], depends_on: list[list[int]] | None = None) -> d
     })
 
 
-@mcp.tool(**tool_caps(kind="plan"))
+@mcp.tool(**tool_caps(kind="todo", label="Reading the checklist"))
 def todo_read() -> dict:
     """Return the current todo list.
 
@@ -495,7 +496,7 @@ def todo_read() -> dict:
     return ok({"items": items, "pending": pending, "done": done})
 
 
-@mcp.tool(**tool_caps(kind="plan"))
+@mcp.tool(**tool_caps(kind="todo", label="Reading the steps ready to start"))
 def todo_read_ready() -> dict:
     """Return todo items that are ready to execute right now.
 
@@ -528,7 +529,7 @@ def todo_read_ready() -> dict:
     return ok({"ready": ready, "blocked": blocked, "pending": len(ready) + len(blocked)})
 
 
-@mcp.tool(**tool_caps(kind="plan"))
+@mcp.tool(**tool_caps(kind="todo", label="Updating checklist step {index}"))
 def todo_update(index: int, done: bool | None = None, text: str | None = None) -> dict:
     """Update one todo item in place: tick it off, reopen it, and/or reword it.
 

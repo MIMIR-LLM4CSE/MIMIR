@@ -82,11 +82,11 @@ describe("the tool row", () => {
     // moment the call is made — a failed row is collapsed, not empty. Cropped at a
     // share of the line, the command was a fragment pretending to be one.
     const read = asRead([row({
-      kind: "bash", status: "error", error: "boom",
+      kind: "bash", status: "error", error: "boom", doing: "running the whole suite",
       detail: "pytest -q mimir/tests/test_very_long_name.py",
       exec: { command: "pytest -q mimir/tests/test_very_long_name.py", stdout: "", stderr: "" },
     })]);
-    expect(read).toBe("✕ 💻 Bash 12ms ▸");
+    expect(read).toBe("✕ 💻 Bash running the whole suite 12ms ▸");
   });
 
   it("gives a preview its own tooltip, since it is the slot that gets cut", () => {
@@ -101,9 +101,29 @@ describe("the tool row", () => {
     expect(html).toContain('title="MIMIR-LLM4CSE/MIMIR/.github/workflows/ci.yml"');
   });
 
+  it("falls back to the derived label when the model wrote no description", () => {
+    // The family alone is too coarse to read: four tools answer to "Todo", so a bare
+    // `Todo` row left no way to tell a checklist being written from one being read.
+    const read = asRead([row({
+      kind: "todo", doing: undefined, label: "Updating checklist step 2",
+    })]);
+    expect(read).toBe("📋 Todo Updating checklist step 2 12ms");
+  });
+
+  it("keeps a saved plan and the checklist apart", () => {
+    // One server holds both, and they are different objects.
+    const read = asRead([
+      row({ id: "1", kind: "plan", label: "Recording the plan: the refonte" }),
+      row({ id: "2", kind: "todo", label: "Writing the checklist", detail: "4 steps" }),
+    ]);
+    expect(read).toBe(
+      "🗺️ Plan Recording the plan: the refonte 12ms 📋 Todo Writing the checklist 4 steps 12ms"
+    );
+  });
+
   it("renders a row recorded before the family existed", () => {
     const read = asRead([row({ kind: undefined, doing: undefined, detail: "legacy.py" })]);
-    expect(read).toBe("🔧 Tool legacy.py 12ms");
+    expect(read).toBe("🔧 Tool Derived label legacy.py 12ms");
   });
 
   it("draws the GitHub mark in the icon slot", () => {

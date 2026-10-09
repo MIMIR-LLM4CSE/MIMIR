@@ -425,8 +425,13 @@ is cut with an ellipsis, and it carries its untruncated text in its own `title`.
 head's tooltip says what was called; this one says what it was called on.
 
 The model will sometimes omit the description, a third-party tool's row has none, and a
-transcript recorded before any of this existed has neither field. Then the family and
-the argument stand alone, which is still a readable row.
+transcript recorded before any of this existed has neither field. Then the **derived
+label takes the slot**. Leaving the family alone there was tried first and is too coarse
+to read: four tools answer to `Todo`, so a bare `Todo` row gave no way to tell a
+checklist being written from one being read. The label is the one thing that always says
+which call it was, and it is already on the wire. It is matched for duplication the same
+way a description is, so a row does not say "Recording the plan: refonte des lignes" and
+then "refonte des lignes" again.
 
 The derived label (`"Reading file: x.py"`, from the `label` template) is still on the
 wire and still used: it is the row's tooltip and `aria-label`, and approval cards and

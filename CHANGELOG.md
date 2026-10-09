@@ -74,10 +74,15 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   shortened to its file name. A url shows its host and path without its query, and a
   `user:password@` in one no longer reaches the screen at all: not the row, not the
   tooltip, not the approval card, and not the stored transcript, which carried it
-  through the label before this. The derived label is still the row's tooltip, and the
-  approval card for a call now carries the family too, so it shows the same icon as the
-  row — as does the dock card for a run that has scrolled out of the thread, which
-  described the same call a second way. GitHub gets its own mark, the one drawn icon in
+  through the label before this. When the model writes no description, the derived
+  label takes that slot rather than leaving the family alone there — four tools answer
+  to `Todo`, and a bare `Todo` row gave no way to tell a checklist being written from
+  one being read. `plan` and `todo` are two families for that reason as well: a saved
+  titled plan and the ordered checklist of steps are different objects, even though one
+  server holds both. The label is still the row's tooltip, and the approval card for a
+  call now carries the family too, so it shows the same icon as the row — as does the
+  dock card for a run that has scrolled out of the thread, which described the same call
+  a second way. GitHub gets its own mark, the one drawn icon in
   a set that is otherwise emoji.
 - The surviving skills read as one set. `write-tests` and `explore-repo` were written in
   a register of their own — "You are writing tests.", then a flat list of rules — which
