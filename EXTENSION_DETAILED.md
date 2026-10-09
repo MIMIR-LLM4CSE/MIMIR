@@ -365,7 +365,7 @@ failure, say) keeps the command already on the row rather than erasing it.
 | Slot | Comes from | How it reads |
 | --- | --- | --- |
 | icon | `kind`, via `KIND_ICONS` (`components/toolIcons.tsx`) | one glyph per family of work |
-| family | `kind`, verbatim | `--fg`, semibold, never truncated |
+| family | `kind`, capitalised (`labelForKind`) | `--fg`, semibold, never truncated |
 | description | `doing`, written by the model per call | `--fg-dim`, the elastic slot |
 | detail | the file name, or the command when there is no description | `--fg-dim`, mono |
 
@@ -377,6 +377,11 @@ reducer keyed on *tool names*, of which ten of twelve named tools that no longer
 existed: `evaluate` and `symbolic` both came out as a wrench. A tool that declares no
 family gets one derived from its capabilities (`kind_for`), so a third-party server
 still lands on a sensible glyph without the client knowing anything about it.
+
+The declared value is lower case — that is what the servers write, the wire carries and
+the icon table is keyed on — and the row writes it with a capital: `Bash`, `Proxy eval`.
+The first letter only, since a family is a phrase in sentence case and not a title, with
+`KIND_LABELS` holding the one brand whose capital is not its first letter (`GitHub`).
 
 The icon is **derived at render time** and never stored on the row. It is a function of
 the family, so a second copy could only go stale — and one of them is an element rather
@@ -392,7 +397,7 @@ one call, and left in the arguments they would walk past the repeat guards.
 
 The model will sometimes omit it, a third-party tool's row has none, and a transcript
 recorded before any of this existed has neither field. Then the family stands alone and
-the detail returns to the arg preview — which is why a failed shell row, collapsed, still
+the detail returns to the arg preview — which is why a failed `bash` row, collapsed, still
 shows its command line.
 
 The derived label (`"Reading file: x.py"`, from the `label` template) is still on the

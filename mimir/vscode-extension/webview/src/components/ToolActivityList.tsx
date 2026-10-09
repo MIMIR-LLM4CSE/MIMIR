@@ -4,7 +4,7 @@ import katex from "katex";
 import type { ExecResult, FileTarget, MathResult, ToolActivity } from "../types";
 import { vscodePostMessage } from "../hooks/useWebSocket";
 import { subAgentTail } from "./subAgentUtils";
-import { iconForKind } from "./toolIcons";
+import { iconForKind, labelForKind } from "./toolIcons";
 import { useElapsed, formatDuration } from "../hooks/useElapsed";
 
 /** Terminal-style in/out panel for an exec-shaped tool result (shell, code
@@ -212,8 +212,10 @@ function withFileLink(text: string, target?: FileTarget): React.ReactNode {
 
 /** What the row says: the tool's family of work, then what this call is doing.
  *
- *  The family is one declared word — "edit", "shell", "proxy eval" — in full colour,
- *  and it is the same word the icon was picked from. Beside it, dim, the model's own
+ *  The family is one declared word — "edit", "bash", "proxy eval" — in full colour,
+ *  and it is the same word the icon was picked from. Shown with a capital — see
+ *  `labelForKind`, which also keeps the one brand whose capital is not its first letter.
+ *  Beside it, dim, the model's own
  *  sentence about this particular call, which is the only part of the row that knows
  *  *why* it is happening. A derived label ("Running shell command") said neither: ten
  *  identical calls read as ten identical rows. It survives as the row's tooltip.
@@ -227,7 +229,7 @@ const ToolHead: React.FC<{
   target?: FileTarget;
 }> = ({ kind, doing, target }) => (
   <>
-    <span className="tool-kind">{kind}</span>
+    <span className="tool-kind">{labelForKind(kind)}</span>
     {doing && <span className="tool-doing">{withFileLink(doing, target)}</span>}
   </>
 );

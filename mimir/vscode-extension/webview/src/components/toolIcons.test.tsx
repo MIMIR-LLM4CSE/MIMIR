@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { isValidElement } from "react";
-import { KIND_ICONS, iconForKind } from "./toolIcons";
+import { KIND_ICONS, iconForKind, labelForKind } from "./toolIcons";
 
 // The families the servers declare (servers/_shared/capabilities.py TOOL_KINDS). Kept
 // here as a literal rather than imported: this is the UI's end of a wire contract, and
@@ -8,7 +8,7 @@ import { KIND_ICONS, iconForKind } from "./toolIcons";
 const TOOL_KINDS = [
   "read", "search", "list", "outline",
   "write", "edit", "delete",
-  "shell", "job", "verdict",
+  "bash", "shell", "job", "verdict",
   "eval", "symbolic", "string", "date",
   "slurm", "env", "modules",
   "proxy", "proxy eval",
@@ -46,6 +46,22 @@ describe("iconForKind", () => {
       expect(/\p{Extended_Pictographic}/u.test(icon as string), `"${kind}" is not an emoji`)
         .toBe(true);
     }
+  });
+
+  it("writes every family with a capital", () => {
+    for (const kind of TOOL_KINDS) {
+      expect(labelForKind(kind)[0], kind).toBe(kind[0].toUpperCase());
+    }
+  });
+
+  it("capitalises the first letter only, not every word", () => {
+    // A family is a phrase in sentence case, not a title: `text-transform: capitalize`
+    // would render this one "Proxy Eval".
+    expect(labelForKind("proxy eval")).toBe("Proxy eval");
+  });
+
+  it("keeps the inner capital of a brand the general rule would flatten", () => {
+    expect(labelForKind("github")).toBe("GitHub");
   });
 
   it("falls back to the generic glyph for an unknown or missing family", () => {

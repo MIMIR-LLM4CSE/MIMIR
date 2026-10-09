@@ -974,7 +974,7 @@ def _launch_background(command: str, cwd: str, preamble: str) -> dict:
     })
 
 
-@mcp.tool(**tool_caps(kind="shell",
+@mcp.tool(**tool_caps(kind="bash",
     caps=[PLAN_READONLY, CODE_EXEC, BACKGROUNDABLE, DIVERTIBLE],
     reversibility=RECOVERABLE,
     non_batch=True,

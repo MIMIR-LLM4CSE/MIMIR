@@ -107,7 +107,7 @@ REVERSIBILITY_LEVELS = (REVERSIBLE, RECOVERABLE, IRREVERSIBLE)
 TOOL_KINDS = (
     "read", "search", "list", "outline",            # discovery
     "write", "edit", "delete",                      # file mutation
-    "shell", "job", "verdict",                      # local execution
+    "bash", "shell", "job", "verdict",              # local execution
     "eval", "symbolic", "string", "date",           # calculation
     "slurm", "env", "modules",                      # cluster & environment
     "proxy", "proxy eval",                          # the proxy harness

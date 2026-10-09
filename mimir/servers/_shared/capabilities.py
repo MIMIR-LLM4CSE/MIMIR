@@ -136,8 +136,10 @@ TOOL_KINDS = (
     "read", "search", "list", "outline",
     # file mutation
     "write", "edit", "delete",
-    # local execution
-    "shell", "job", "verdict",
+    # local execution. `bash` is what the shell tool actually runs (and `/bin/sh` is
+    # refused outright, so it is never vaguer than that); `shell` is the generic family a
+    # third-party execution tool derives, since nothing says it runs bash.
+    "bash", "shell", "job", "verdict",
     # calculation
     "eval", "symbolic", "string", "date",
     # cluster & environment

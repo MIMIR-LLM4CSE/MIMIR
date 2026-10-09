@@ -29,8 +29,8 @@ export const KIND_ICONS: Record<string, ReactNode> = {
   read: "📖", search: "🔍", list: "📂", outline: "🧭",
   // file mutation
   write: "📝", edit: "✏️", delete: "🗑️",
-  // local execution
-  shell: "💻", job: "⏱️", verdict: "⚖️",
+  // local execution — `bash` is the shell tool here, `shell` a foreign one
+  bash: "💻", shell: "⌨️", job: "⏱️", verdict: "⚖️",
   // calculation
   eval: "🧮", symbolic: "📐", string: "🔤", date: "📅",
   // cluster & environment
@@ -44,6 +44,25 @@ export const KIND_ICONS: Record<string, ReactNode> = {
   // the unknown default
   tool: "🔧",
 };
+
+/** Families whose displayed name is not just their declared value with a capital.
+ *
+ *  One entry, and it earns itself: `github` capitalised by the first letter alone reads
+ *  "Github", and the brand has an inner capital. Everything else is an ordinary word or
+ *  a phrase in sentence case, which the general rule gets right. */
+const KIND_LABELS: Record<string, string> = {
+  github: "GitHub",
+};
+
+/** How a work family is written in a row: its declared value, shown with a capital.
+ *
+ *  The declared value stays lower case — that is what the servers write, what the wire
+ *  carries and what the icon table is keyed on — and this is the presentation of it.
+ *  First letter only: a family is a phrase in sentence case, so "proxy eval" becomes
+ *  "Proxy eval" and not the "Proxy Eval" that `text-transform: capitalize` would give. */
+export function labelForKind(kind: string): string {
+  return KIND_LABELS[kind] ?? kind.charAt(0).toUpperCase() + kind.slice(1);
+}
 
 /** The icon for a work family, falling back to the generic tool glyph.
  *
