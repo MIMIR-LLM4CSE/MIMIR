@@ -101,14 +101,19 @@ class AdvertisedCommandsExistTests(unittest.TestCase):
 
 
 class DetachOwnershipTests(unittest.TestCase):
-    """Asking to detach is what stops the kill, not hearing back about it.
+    """Who ends the server, and how the host knows it is not its to end.
 
-    There is a round trip between the click and the server having detached. A host that
-    waits for the reply leaves a window in which the user has asked to keep the run
-    going, the badge has not changed yet, and closing the editor still ends it. The two
-    outcomes are not symmetric: a server left running that failed to detach is findable
-    through the registry and endable with the stop command, while one killed after the
-    user asked to keep it is work gone.
+    Asking to detach is what stops the kill, not hearing back about it: there is a round
+    trip between the click and the server having detached, and a host that waits for the
+    reply leaves a window in which the user has asked to keep the run going, the badge
+    has not changed yet, and closing the editor still ends it. The two outcomes are not
+    symmetric — a server left running that failed to detach is findable through the
+    registry and endable with the stop command, while one killed after the user asked to
+    keep it is work gone.
+
+    The other half is having a handle at all. A window that attached to a server holds no
+    child process, so the pid from the registry entry stands in for one; without it the
+    departures that are supposed to end a server ended nothing.
     """
 
     def _extension(self) -> str:
@@ -123,28 +128,64 @@ class DetachOwnershipTests(unittest.TestCase):
         self.assertIn("serverDetached = true", send,
                       "the kill is only called off once the server answers")
 
-    def test_every_kill_site_consults_it(self) -> None:
-        """All of them, found by enumerating the calls rather than the ones I knew.
+    def _helper_lines(self, lines: list[str]) -> range:
+        """The line range of the one function that ends the server."""
+        start = next(i for i, line in enumerate(lines)
+                     if line.startswith("function endServerUnlessKeptRunning("))
+        end = next(i for i, line in enumerate(lines[start:], start=start)
+                   if line == "}")
+        return range(start, end + 1)
 
-        Three sites end the server, and a guard on two of them is a detachment that
-        holds until the user presses the third. The enumeration is the test: a fourth
-        added later fails here rather than in somebody's overnight run.
+    def test_only_one_place_ends_the_server_and_it_consults_the_flag(self) -> None:
+        """Found by enumerating the calls rather than the ones I knew.
+
+        A guard on some of the paths out is a detachment that holds until the user
+        leaves through another one. So there is a single function that signals a
+        server — a spawned child and an attached pid alike — and the enumeration is
+        the test: a kill written anywhere else fails here rather than in somebody's
+        overnight run.
         """
         lines = self._extension().splitlines()
+        inside = self._helper_lines(lines)
         # Real calls only: the spawn comment mentions the same expression to explain
         # why `exec` is used, and a test that counted prose would be satisfied by it.
         sites = [
             i for i, line in enumerate(lines)
-            if ("serverProcess.kill()" in line or "serverProcess?.kill()" in line)
+            if ("serverProcess.kill()" in line or "serverProcess?.kill()" in line
+                or "process.kill(attachedPid" in line)
             and not line.lstrip().startswith(("//", "*", "/*"))
         ]
-        self.assertGreaterEqual(len(sites), 4, "the kill sites moved; re-read them")
+        self.assertEqual(len(sites), 2,
+                         "a child and an attached pid; the kill sites moved")
         for i in sites:
-            # The guard sits on the branch immediately around the call.
-            window = "\n".join(lines[max(0, i - 6):i + 1])
-            self.assertIn(
-                "serverDetached", window,
-                f"the kill on line {i + 1} does not consult the flag:\n{window}")
+            self.assertIn(i, inside,
+                          f"the kill on line {i + 1} is outside the one path out:\n"
+                          f"{lines[i]}")
+        self.assertIn("serverDetached", "\n".join(lines[i] for i in inside),
+                      "the one path out does not consult the flag")
+
+    def test_every_way_out_of_a_window_goes_through_it(self) -> None:
+        # The window closing, a connect releasing the previous server, and the panel's
+        # own disconnect. Each one is a departure, and a departure that skipped the
+        # helper would leave a server nobody is watching and nobody asked to keep.
+        src = self._extension()
+        for site, opens in (("export function deactivate(): void {", "}"),
+                            ("private _teardownServer(): void {", "}"),
+                            ('if (m.type === "disconnect") {', "}")):
+            body = src[src.index(site):]
+            body = body[:body.index("\n  " + opens)]
+            self.assertIn("endServerUnlessKeptRunning()", body,
+                          f"{site.strip()} does not end the server it is leaving")
+
+    def test_an_attached_server_is_endable_at_all(self) -> None:
+        # The pid is the whole handle: a window that spawned nothing has no child to
+        # kill, and without this the deliberate departures ended nothing — the run
+        # outlived every one of them and was found again on the next connect.
+        src = self._extension()
+        attach = src[src.index("private async _attachToRunningServer("):]
+        attach = attach[:attach.index("\n  /**")]
+        self.assertIn("attachedPid = entry.pid", attach,
+                      "attaching to a server leaves nothing able to end it")
 
     def test_the_server_is_spawned_in_its_own_session(self) -> None:
         # Arranging it afterwards depends on the process not already being a group

@@ -17,6 +17,17 @@ let serverProcess: cp.ChildProcess | undefined;
 // `deactivate()` reads both.
 let serverDetached = false;
 
+// The pid of a server this window attached to rather than started, from the registry
+// entry it was found through. The third answer to "who owns this process", and the one
+// that was missing: `serverProcess` is undefined for an attached server, so a window
+// leaving had nothing to end and the run outlived every departure — including the
+// deliberate ones, where the panel had just promised the opposite.
+//
+// Only ever this workspace's own entry. A server reached through `mimir.wsUrl` is the
+// user's own statement about where a server is — possibly one they run by hand, for
+// several windows — and is not ours to kill.
+let attachedPid: number | undefined;
+
 // The timer mirroring a server's log into its output channel, reachable from
 // `deactivate()`.
 let _stopLogTail: vscode.Disposable | undefined;
@@ -538,16 +549,42 @@ export function activate(context: vscode.ExtensionContext): void {
   );
 }
 
+/**
+ * End the server this window is responsible for, if it is responsible for one.
+ *
+ * Two handles, one decision. A server we spawned is a child process; one we attached to
+ * is a pid read out of this workspace's registry entry — and SIGTERM is what both get,
+ * because it is the server's own handler that unwinds each agent's exit stack and so
+ * reaps the MCP servers. A SIGKILL, or no signal at all, leaves those behind.
+ *
+ * A detached server is exempt: it was deliberately kept going, and killing it here
+ * would make "continue without me" mean nothing at the one moment it takes effect.
+ * Nothing else is: a server nobody claimed dies with the window that was watching it,
+ * whether or not that window started it.
+ */
+function endServerUnlessKeptRunning(): void {
+  if (!serverDetached) {
+    if (serverProcess && !serverProcess.killed) {
+      serverProcess.kill();
+    } else if (attachedPid !== undefined) {
+      try {
+        process.kill(attachedPid, "SIGTERM");
+      } catch {
+        // Already gone, or not ours to signal. Either way there is nothing to end,
+        // and a window closing must not fail over it.
+      }
+    }
+  }
+  serverProcess = undefined;
+  attachedPid = undefined;
+}
+
 export function deactivate(): void {
   _stopPreviewWatch();
   // The server is deliberately left running when detached; an interval in a disposed
   // extension host is the one part of that which must not survive.
   _stopLogTail?.dispose();
-  // A detached server is left running on purpose — that is the whole point of having
-  // asked. Killing it here would make "continue without me" mean nothing at the one
-  // moment it is supposed to take effect.
-  if (!serverDetached) serverProcess?.kill();
-  serverProcess = undefined;
+  endServerUnlessKeptRunning();
 }
 
 // ── Sidebar WebviewViewProvider ───────────────────────────────────────────────
@@ -728,10 +765,12 @@ class MimirAgentViewProvider implements vscode.WebviewViewProvider {
   /**
    * Attach to the server this workspace already has, if it has one.
    *
-   * Reuses the attach path `mimir.wsUrl` has always taken: nothing is started, so
-   * `serverProcess` stays undefined and this server is never torn down — it is not
-   * ours to kill. That is exactly the right relationship with a server that was
-   * deliberately left running.
+   * Nothing is started, so `serverProcess` stays undefined; what stands in for it is
+   * the pid from the entry this server was found through, because attaching to a run
+   * is taking it back. The server drops the claim that kept it alive the moment this
+   * socket arrives, so from here on it lives exactly as long as this window does —
+   * leaving it running again is a decision, made with the same button that made it the
+   * first time.
    *
    * Returns whether it attached, so the caller can skip the connect form entirely:
    * a window that reopens on a live run must not ask the user to connect to it.
@@ -759,10 +798,13 @@ class MimirAgentViewProvider implements vscode.WebviewViewProvider {
     if (!silent) log.show();
     log.appendLine(
       `Attaching to the MIMIR server already running for this workspace ` +
-      `(${entry.url}, pid ${entry.pid}). It was not started by this window, so it is ` +
-      `left running when the window closes. Starting a second server for one ` +
-      `workspace would have both write the same session journal.`
+      `(${entry.url}, pid ${entry.pid}). This window takes it over: closing it stops ` +
+      `the server, unless the run is left going again. Starting a second server for ` +
+      `one workspace would have both write the same session journal.`
     );
+    // The handle a window that spawns nothing would otherwise lack. Set before the
+    // connect, so a socket that closes immediately still leaves something to end.
+    attachedPid = entry.pid;
     this._attachLog = log;
     this._autoConnectStarted = true;
     // So a webview that mounts after this shows "connecting" rather than the form.
@@ -1142,14 +1184,14 @@ class MimirAgentViewProvider implements vscode.WebviewViewProvider {
     });
   }
 
-  // Release the ws_server this window owns so a fresh connect always starts from a
-  // clean slate. The spawn command `exec`s python, so the process we track is the
-  // server itself and killing it frees its port — no other window is touched.
+  // Release the ws_server this window is responsible for so a fresh connect always
+  // starts from a clean slate. The spawn command `exec`s python, so the process we
+  // track is the server itself and killing it frees its port — no other window is
+  // touched, and an attached one is signalled by the pid its registry entry gave us.
   //
-  // Three are not ours to end, each for its own reason: one we only attached to
-  // (`mimir.wsUrl`, or a server another window started), where `serverProcess` is
-  // undefined anyway; one that has detached, which was deliberately kept going; and
-  // one already gone. In those cases the socket is dropped and the process left alone.
+  // Two are not ours to end: one that has detached, which was deliberately kept going,
+  // and one reached through `mimir.wsUrl`, which is the user's own. In those cases the
+  // socket is dropped and the process left alone.
   private _teardownServer(): void {
     // The socket belongs to the process being released: retiring the generation
     // stops its retry chain from outliving it and hunting a port nobody serves.
@@ -1158,10 +1200,7 @@ class MimirAgentViewProvider implements vscode.WebviewViewProvider {
     this._logTail = undefined;
     this._ws?.close();
     this._ws = undefined;
-    if (!serverDetached && serverProcess && !serverProcess.killed) {
-      serverProcess.kill();
-    }
-    serverProcess = undefined;
+    endServerUnlessKeptRunning();
   }
 
   /**
@@ -1281,6 +1320,8 @@ class MimirAgentViewProvider implements vscode.WebviewViewProvider {
     // their shell don't have to retype it in the form).
     const anthropicEnv =
       backend === "anthropic" && anthropicApiKey ? { ANTHROPIC_API_KEY: anthropicApiKey } : {};
+    // See the other spawn site: our own child supersedes any attached pid.
+    attachedPid = undefined;
     serverProcess = cp.spawn("bash", ["-c", spawnCmd], {
       cwd,
       // Anchor the agent's per-workspace state dir (.mimir) and the file-server
@@ -1333,10 +1374,12 @@ class MimirAgentViewProvider implements vscode.WebviewViewProvider {
     }
     if (entry.pid !== serverProcess?.pid) {
       // Ours stood down: this workspace already had a server, and starting a second
-      // would have both write the same session journal.
+      // would have both write the same session journal. We are responsible for the one
+      // that won, so its pid takes the place of the child we no longer have.
       outputChannel.appendLine(
         `\nThis workspace already had a server (pid ${entry.pid}); attached to it.`);
       serverProcess = undefined;
+      attachedPid = entry.pid;
     }
     this._wsUrl = entry.url;
     this._connectToServer(entry.url);
@@ -1569,11 +1612,9 @@ class MimirAgentViewProvider implements vscode.WebviewViewProvider {
       this._logTail = undefined;
       // A detached server is not this window's to end. Disconnecting from one is
       // leaving the room, not turning the lights off: the run was deliberately kept
-      // going, and the panel offered to keep it going on this very click.
-      if (!serverDetached && serverProcess && !serverProcess.killed) {
-        serverProcess.kill();
-      }
-      serverProcess = undefined;
+      // going, and the panel offered to keep it going on this very click. Any other
+      // server ends here, which is what the dialog says it does.
+      endServerUnlessKeptRunning();
       this._view?.webview.postMessage({ type: "ws_closed" });
       return;
     }
@@ -1711,6 +1752,7 @@ async function stopServer(): Promise<void> {
   }
   serverDetached = false;
   serverProcess = undefined;
+  attachedPid = undefined;
   vscode.window.showInformationMessage(`Asked pid ${entry.pid} to stop.`);
 }
 
@@ -1743,6 +1785,9 @@ function startServer(context: vscode.ExtensionContext): void {
     ? { MIMIR_VLLM_MAX_MODEL_LEN: String(maxLen), MIMIR_RAY_MAX_MODEL_LEN: String(maxLen) }
     : {};
 
+  // A child of our own from here on: whatever pid we were attached to before is not
+  // the server this window is responsible for any more.
+  attachedPid = undefined;
   serverProcess = cp.spawn("bash", ["-c", spawnCmd], {
     cwd,
     // Anchor the agent's per-workspace state dir (.mimir) and the file-server
@@ -1764,7 +1809,8 @@ function startServer(context: vscode.ExtensionContext): void {
     dispose: () => {
       // Not a detached one: this command exists to start a server you then point
       // `mimir.wsUrl` at, and ending it on window close is the opposite of that.
-      if (!serverDetached) serverProcess?.kill();
+      // Through the one path out, like every other departure.
+      endServerUnlessKeptRunning();
     },
   });
 }

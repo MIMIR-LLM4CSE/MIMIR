@@ -15,6 +15,17 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [1.4.1] — 2026-10-09
 
+### Fixed
+- **A run taken back is now a run that ends with the window.** Reopening a workspace on a
+  server that had been left running picked the conversation back up but kept the claim that
+  made the process immortal — and a window that attaches to a server holds no child process
+  to kill, so quitting MIMIR deliberately ended nothing: the server was simply found again
+  on the next connect, after the panel had said closing the window would stop it. Attaching
+  is now the take-back. The claim is dropped on arrival, the thread says so and says what
+  closing the window now costs, and the window keeps the pid the registry gave it so it has
+  something to signal. Leaving a run going a second time is a decision, made with the same
+  button as the first time.
+
 ### Changed
 - **Start-up no longer pays for each tool server in turn.** The twenty MCP servers were
   spawned and handshaken one after the next, and what a handshake waits for is the child

@@ -1735,13 +1735,21 @@ class _Session:
                 })
 
     async def _restore_detached_autonomy(self) -> None:
-        """Come back to the conversation in the mode it was left running under.
+        """Take a run that was left going back, in the mode it was left under.
 
-        A reattach is a window opening onto a run that never stopped, so the run's own
-        level is the truth and the panel has to show it. Two things can disagree with it
-        otherwise: a webview arrives on its default, and a worker rebuilt during the
+        A window opening onto a run that never stopped is the user who left it coming
+        back, so attaching *is* the take-back: the claim that kept the process alive is
+        dropped here, and the panel is told the server is attached. That is what makes
+        closing this window end the run again — a server no conversation claims stops
+        once its last client has been gone for the grace, and a claim nothing drops on
+        arrival makes the process immortal, since a window that merely attached to a
+        server holds no handle on it to kill.
+
+        The level is a separate question, and the run's own answer is the truth: it is
+        read before the claim goes and applied to the agents. Two things disagree with
+        it otherwise — a webview arrives on its default, and a worker rebuilt during the
         absence comes up on the pool-wide record rather than the level chosen for this
-        session — which would quietly drop a run from ``auto`` to ``manual`` and park it
+        session, which would quietly drop a run from ``auto`` to ``manual`` and park it
         at its next sensitive call, with nothing said.
 
         Scoped to the run, not persisted past it: the level is read from the registry
@@ -1769,52 +1777,72 @@ class _Session:
                                "under", sid, lvl, exc_info=True)
         level = held.get(self._active_session_id or "") or sorted(held.values())[-1]
         self._apply_setting("set_approval_mode", level)
+        # Before anything is announced, because what the panel is about to be told —
+        # that this window owns the server — has to be true of the registry the idle
+        # sweep reads, and not only of the message. Every claim at once: one process
+        # serves the whole workspace and this window is the only one looking at it, so
+        # there is no conversation left for a claim to be held on behalf of.
         try:
-            # That the run is claimed, not only the level it is under. The panel decides
-            # from this what disconnecting costs: a claimed server survives it, so there
-            # is nothing to ask about — and a window that attached to one without being
-            # told would offer to end turns that are not going to end.
+            server_registry.unclaim(None)
+        except Exception:
+            # Reported and stepped over: the level below is the half the user can be
+            # harmed by losing, and a claim that could not be dropped costs a process
+            # that outlives this window — recoverable with the stop command.
+            logger.warning("reattach: the detach claims could not be dropped",
+                           exc_info=True)
+        try:
+            # That the server is this window's again, not only the level the run is
+            # under. The panel decides from this what disconnecting costs, and it now
+            # costs the runs: a window told otherwise would offer to walk away from
+            # turns that end the moment it does.
             await self.ws.send(json.dumps({
-                "type": "detached", "detached": True, "log": None,
-                "autonomy": level, "sessions": sorted(held), "pid": os.getpid(),
+                "type": "detached", "detached": False, "log": None,
+                "autonomy": level, "sessions": [], "pid": os.getpid(),
                 "setsid": False,
             }))
             await self.ws.send(json.dumps({"type": "approval_mode", "mode": level}))
-            if level != "manual":
-                # Rendered, not notified: ``_notify`` writes to the transcript's
-                # transient channel, which is dropped. Being told the run has been
-                # approving sensitive calls on its own is not chatter.
-                #
-                # Quiet, though, and that is the point. It is not a warning: nothing
-                # has gone wrong, nothing needs answering, and the user cannot act on
-                # it except through a switcher that is already on screen. A badge and a
-                # coloured border read as a problem to deal with on a conversation the
-                # user has just walked back into — the one moment they are reading for
-                # what happened rather than for what to do. So it reads as a rule
-                # across the thread, marking where they rejoined and under what.
-                # Transient: it describes the state at this attachment, not anything
-                # that happened in the conversation. Stored, every later load would
-                # replay it — and a conversation rejoined twenty times would open on
-                # twenty of them, each claiming to be now.
-                # Named when more than one conversation was left running: the levels
-                # can differ, and "under auto_all" says nothing about which of them.
-                #
-                # It opens with the state the toggle shows — "detached" — because that
-                # is the word the button answers to, and a line that only says what the
-                # run has been doing leaves the user to work out which of the two
-                # positions they are in. Then what detached means here: it worked with
-                # no window watching, and at this level.
-                title = (
-                    f"detached — this conversation kept working with no window "
-                    f"open, under “{level}”"
-                    if len(held) == 1 else
-                    f"detached — {len(held)} conversations kept working with no "
-                    f"window open, this one under “{level}”")
-                await self._command_reply("detach", title, tone="quiet",
-                                          transient=True)
+            # Rendered, not notified: ``_notify`` writes to the transcript's transient
+            # channel, which is dropped. Both halves of this are the kind of thing a
+            # user walks back in needing to know — that the run has been approving
+            # sensitive calls on its own, and that closing this window now ends it —
+            # and neither is chatter.
+            #
+            # Quiet, though, and that is the point. It is not a warning: nothing has
+            # gone wrong, nothing needs answering, and the user cannot act on it except
+            # through controls already on screen. A badge and a coloured border read as
+            # a problem to deal with on a conversation the user has just walked back
+            # into — the one moment they are reading for what happened rather than for
+            # what to do. So it reads as a rule across the thread, marking where they
+            # rejoined and under what.
+            #
+            # Transient: it describes the state at this attachment, not anything that
+            # happened in the conversation. Stored, every later load would replay it —
+            # and a conversation rejoined twenty times would open on twenty of them,
+            # each claiming to be now.
+            #
+            # It opens with the state the toggle shows — "attached" — because that is
+            # the word the button answers to, and a line that only says what the run
+            # has been doing leaves the user to work out which of the two positions
+            # they are in. Then the consequence, which the glyph cannot show: the
+            # process survived their absence and will not survive the next one unless
+            # they ask again.
+            #
+            # The level is named only when something was deciding on its own, and the
+            # count only when more than one conversation was left running: the levels
+            # can differ, and "under auto_all" says nothing about which of them.
+            under = f", under “{level}”" if level != "manual" else ""
+            title = (
+                f"attached — this conversation kept working with no window open"
+                f"{under}; closing this window now stops it"
+                if len(held) == 1 else
+                f"attached — {len(held)} conversations kept working with no window "
+                f"open, this one{under or ' at manual'}; closing this window now "
+                f"stops them")
+            await self._command_reply("detach", title, tone="quiet", transient=True)
         except Exception:
             return
-        logger.info("reattach: autonomy restored to %s from the detached run", level)
+        logger.info("reattach: %d claim(s) taken back; autonomy restored to %s from "
+                    "the detached run", len(held), level)
 
     async def _send_replay(self) -> None:
         """Send what this session produced past the client's watermark, then go live.

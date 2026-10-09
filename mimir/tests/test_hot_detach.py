@@ -193,14 +193,20 @@ class LeaveProcessGroupTests(unittest.TestCase):
 
 
 class ComingBackToARunTests(unittest.IsolatedAsyncioTestCase):
-    """What the panel says when it opens onto a run that never stopped.
+    """What happens when a window opens onto a run that never stopped.
 
-    The level has to be shown: a worker rebuilt during the absence would otherwise come
-    up on the pool-wide record, and a run quietly dropped from `auto_all` to `manual`
-    parks at its next sensitive call with nothing said. But showing it is all it is —
-    nothing has gone wrong, nothing needs answering, and the only control is a switcher
-    already on screen. Drawn as a warning it read as a problem to deal with, at the one
-    moment the user is reading for what happened rather than for what to do.
+    Attaching is the take-back: the user who left is back, so the claim that kept the
+    process alive is dropped and the panel is told the server is this window's again.
+    That is what makes closing the window end the run — nothing else can, since a window
+    that attached to a server holds no child process to kill.
+
+    The level is the other half, and it has to be shown: a worker rebuilt during the
+    absence would otherwise come up on the pool-wide record, and a run quietly dropped
+    from `auto_all` to `manual` parks at its next sensitive call with nothing said. But
+    showing it is all it is — nothing has gone wrong, nothing needs answering, and the
+    only control is a switcher already on screen. Drawn as a warning it reads as a
+    problem to deal with, at the one moment the user is reading for what happened
+    rather than for what to do.
     """
 
     def setUp(self) -> None:
@@ -280,11 +286,49 @@ class ComingBackToARunTests(unittest.IsolatedAsyncioTestCase):
         modes = [m for m in self.sent if m.get("type") == "approval_mode"]
         self.assertEqual([m["mode"] for m in modes], ["auto"])
 
-    async def test_manual_says_nothing_at_all(self):
-        # Nothing was approving anything on its own, so there is nothing to report.
+    async def test_manual_names_no_level_but_still_says_who_owns_it(self):
+        # Nothing was approving anything on its own, so there is no level to report.
+        # What there is to report is the ownership: the run survived one absence and
+        # will not survive the next unless the user asks again, and that is the half
+        # whose silence let a window be closed on a run believed immortal.
         self._detached_at("manual")
         await self.sess._restore_detached_autonomy()
-        self.assertIsNone(self._notice())
+        title = (self._notice() or {}).get("title", "")
+        self.assertIn("closing this window now stops it", title)
+        self.assertNotIn("manual", title)
+
+    async def test_arriving_takes_the_claim_back(self):
+        # The whole of why a run that was left going dies with the next window: a claim
+        # nothing drops on arrival makes the process immortal, because a window that
+        # attached to a server holds no handle on it either.
+        from mimir.client.ui.ws import server_registry
+        self._detached_at("auto_all", ["s1", "s2"])
+        await self.sess._restore_detached_autonomy()
+        self.assertEqual(server_registry.claims(), {})
+        self.assertFalse(server_registry.read()["detached"])
+
+    async def test_the_panel_is_told_the_server_is_attached(self):
+        # What the panel decides from this is what disconnecting costs. Told the server
+        # is still claimed, it would offer to walk away from turns that end the moment
+        # the window does.
+        self._detached_at("auto")
+        await self.sess._restore_detached_autonomy()
+        owner = [m for m in self.sent if m.get("type") == "detached"]
+        self.assertEqual([m["detached"] for m in owner], [False])
+        self.assertEqual(owner[0]["sessions"], [])
+
+    async def test_a_claim_that_cannot_be_dropped_still_restores_the_level(self):
+        # The level is the half the user is harmed by losing — a run quietly dropped to
+        # `manual` parks at its next sensitive call. A registry that refuses a write
+        # costs a process that outlives the window, which the stop command can end.
+        from unittest import mock
+        from mimir.client.ui.ws import server_registry
+        self._detached_at("auto_all")
+        with mock.patch.object(server_registry, "unclaim",
+                               side_effect=OSError("read-only")):
+            await self.sess._restore_detached_autonomy()
+        modes = [m["mode"] for m in self.sent if m.get("type") == "approval_mode"]
+        self.assertEqual(modes, ["auto_all"])
 
     async def test_each_conversation_comes_back_under_its_own_level(self):
         # The claim is per conversation and so is the level. One level for the whole
