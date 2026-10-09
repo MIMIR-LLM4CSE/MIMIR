@@ -47,6 +47,24 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `proxy_slurm`, never by hand.
 
 ### Changed
+- A tool-activity row now says **what the call is for** instead of which function ran.
+  Its label was derived from the tool's name, so ten reads of ten files read as ten
+  copies of "Reading file:" and none of them said why; its icon came from a table keyed
+  on tool names that had decayed unnoticed — ten of its twelve keys named tools that no
+  longer exist, and `evaluate` and `symbolic` both came out as a wrench. A row is built
+  from two facts instead. The server declares its tool's **family of work** — one word,
+  `edit`, `shell`, `proxy eval` — and the row shows that word and draws its glyph from
+  the same word, so the two cannot disagree; a tool that declares none still gets a
+  family derived from its capabilities, so a third-party server renders correctly having
+  said nothing. Beside it, the model writes **one sentence about this call**, under
+  fifteen words ("fixing the off-by-one bound", "submitting the job on genoa"): every
+  tool now takes a `doing` argument the client adds to its schema and the dispatcher
+  strips before the call runs, so no server declares it and none receives it. When there
+  is no sentence — an older transcript, a third-party tool, a model that forgot — the
+  family stands alone and the argument preview returns to the row. The derived label is
+  still the row's tooltip, and the approval card for a call now carries the family too,
+  so it shows the same icon as the row. GitHub gets its own mark, the one drawn icon in
+  a set that is otherwise emoji.
 - The surviving skills read as one set. `write-tests` and `explore-repo` were written in
   a register of their own — "You are writing tests.", then a flat list of rules — which
   said nothing about when the method applies and buried the part that matters:
