@@ -467,8 +467,7 @@ class _AgentWorker:
                 from mimir.client.extensions import all_servers
 
             agent = building = MimirAgent(model=self.model, session_id=self.session_id)
-            for name, script in all_servers().items():
-                await agent.connect_server(name, script)
+            await agent.connect_servers(all_servers())
             agent.seed_classification_from_caps()
 
             # Patch approval to route through WS.

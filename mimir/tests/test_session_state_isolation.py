@@ -225,7 +225,8 @@ class AgentCarriesItsSessionTests(_StateDirCase):
         """What makes every server-side state path per-conversation."""
         import inspect
         from mimir.client.integration import server_manager
-        source = inspect.getsource(server_manager.connect_server)
+        # The spawn half holds the frozen environment every server is started with.
+        source = inspect.getsource(server_manager._spawn_session)
         self.assertIn("MIMIR_SESSION_ID", source)
         self.assertIn('getattr(agent, "session_id", "")', source)
 

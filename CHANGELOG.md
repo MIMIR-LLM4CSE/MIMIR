@@ -13,6 +13,19 @@ the server of the same checkout, so the two always move together.
 How to release is in [CONTRIBUTING.md](CONTRIBUTING.md#releasing). The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.4.1] — 2026-10-09
+
+### Changed
+- **Start-up no longer pays for each tool server in turn.** The twenty MCP servers were
+  spawned and handshaken one after the next, and what a handshake waits for is the child
+  interpreter importing the MCP SDK — about two thirds of a second, the same two thirds
+  in every one of them. That was fourteen seconds between launching MIMIR and being able
+  to ask it anything, which is where the wait before a first query came from. The
+  processes are now started together and the handshakes awaited at once: the same
+  registry connects in a little over a second. Nothing about the result changes — the
+  tools are registered in registry order, as before, because that order is the prompt
+  prefix the backend caches.
+
 ## [1.4.0] — 2026-10-09
 
 ### Added

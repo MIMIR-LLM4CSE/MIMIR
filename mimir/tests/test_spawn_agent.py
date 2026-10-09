@@ -53,8 +53,8 @@ class _FakeAgent:
     def set_thinking_depth(self, depth): self.thinking_depth = depth
     def seed_classification_from_caps(self): pass
 
-    async def connect_server(self, name, script):
-        self.connected.append(name)
+    async def connect_servers(self, registry, on_error=None):
+        self.connected.extend(registry)
 
     async def run(self, **kwargs):
         self.run_kwargs = kwargs

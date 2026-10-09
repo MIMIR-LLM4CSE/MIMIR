@@ -481,11 +481,10 @@ async def _drive_sub_agent(
         else {k: v for k, v in _servers.items() if k != "agent"}  # avoid recursive spawn
     )
 
-    for name, script in servers_to_connect.items():
-        try:
-            await agent.connect_server(name, script)
-        except Exception as exc:
-            print(f"spawn_agent: could not connect server '{name}': {exc}", file=sys.stderr)
+    def _unconnected(name: str, exc: BaseException) -> None:
+        print(f"spawn_agent: could not connect server '{name}': {exc}", file=sys.stderr)
+
+    await agent.connect_servers(servers_to_connect, on_error=_unconnected)
 
     # Seed classification from this sub-agent's own (subset) registry — keeps
     # approval/plan-block/caching correct and per-agent (the sub-agent connects

@@ -438,6 +438,21 @@ discovers its tools, registers them in `agent.tool_owner` / `agent.tools`, and b
 `agent.tool_caps[name] = infer_tool_caps(tool)` — the per-session registry every other layer
 queries.
 
+`connect_servers()` is the startup path, and connects a whole registry in two phases:
+every server process is started first (immediate — the spawn does not wait on the child),
+then the handshakes are awaited together. What a handshake waits for is the child
+interpreter importing the MCP SDK, about two thirds of a second and the same two thirds
+in each of the twenty, so done one after the next it *was* the startup — fourteen seconds
+before a first query could be answered, against a little over one for the same registry
+overlapped. The two phases also keep the asynchronous contract intact: each session is
+entered on `agent.exit_stack` from the caller's own task, so the stack stays single-task
+and `stdio_client`'s cancel scope is unwound where it was opened. Registration stays
+sequential and in registry order — `agent.tools` is sent to the backend on every request,
+so an order that depended on which child answered first would move the prompt prefix and
+cost the backend's cache. A caller that can do without a given server passes `on_error`
+and gets the rest (`spawn_agent`); with no handler the first failure is raised and the
+caller closes the half-built agent (the CLI and the WS worker).
+
 ---
 
 ## query_engine.backends

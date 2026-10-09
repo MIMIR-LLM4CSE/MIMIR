@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+from collections.abc import Callable
 from contextlib import AsyncExitStack
 from typing import Any
 
@@ -56,6 +57,7 @@ from .tool_execution.validation import (
     auto_validate_written_file,
 )
 from .integration.server_manager import connect_server as connect_server_runtime
+from .integration.server_manager import connect_servers as connect_servers_runtime
 from .query_engine import run_agent_query
 from .query_engine.toollist import tools_for_readonly_mode
 from .event_sink import set_event_sink, reset_event_sink
@@ -842,6 +844,19 @@ class MimirAgent:
 
     async def connect_server(self, name: str, script: str) -> None:
         await connect_server_runtime(agent=self, name=name, script=script)
+
+    async def connect_servers(
+        self,
+        registry: dict[str, str],
+        on_error: Callable[[str, BaseException], None] | None = None,
+    ) -> None:
+        """Connect a whole server registry at once — the startup path.
+
+        Prefer this to a loop over :meth:`connect_server`: the handshakes overlap,
+        which is the difference between a registry costing the sum of its servers'
+        start-up and costing the slowest one.
+        """
+        await connect_servers_runtime(agent=self, registry=registry, on_error=on_error)
 
     async def read_resource(self, uri: str) -> str:
         """Read an MCP resource's text content by URI (best-effort).

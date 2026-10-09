@@ -107,7 +107,7 @@ async def run_one(
             for name in server_names:
                 if name not in registry:
                     raise KeyError(f"unknown server '{name}' for task '{task.id}'")
-                await agent.connect_server(name, registry[name])
+            await agent.connect_servers({n: registry[n] for n in server_names})
             agent.seed_classification_from_caps()
 
             answer = await agent.run(

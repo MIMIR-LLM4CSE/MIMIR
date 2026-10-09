@@ -9,6 +9,7 @@ import json
 import os
 import re
 import sys
+from collections.abc import Callable
 from typing import Any
 
 import mcp.types as types
@@ -303,8 +304,17 @@ def _make_elicitation_callback(agent: Any):
     return _callback
 
 
-async def connect_server(*, agent: Any, name: str, script: str) -> None:
-    """Spawn an MCP server process and register its tools on the agent."""
+async def _spawn_session(*, agent: Any, name: str, script: str) -> Any:
+    """Start a server process and open its session, stopping short of ``initialize``.
+
+    Split from the registration half so a whole registry can be started at once:
+    launching the process is immediate, while the handshake waits on the child's
+    interpreter importing the MCP SDK — two thirds of a second, the same two thirds
+    in every one of them. Serialized that is the startup; overlapped it is paid once.
+    Every session is entered on the agent's own exit stack from the caller's task,
+    so the stack stays single-task and ``stdio_client``'s cancel scope is unwound
+    where it was opened.
+    """
     if not (script.endswith(".py") or script.endswith(".js")):
         raise ValueError("Server script must be a .py or .js file")
 
@@ -343,14 +353,20 @@ async def connect_server(*, agent: Any, name: str, script: str) -> None:
 
     transport = await agent.exit_stack.enter_async_context(stdio_client(params))
     stdio, write = transport
-    session = await agent.exit_stack.enter_async_context(
+    return await agent.exit_stack.enter_async_context(
         ClientSession(stdio, write, elicitation_callback=_make_elicitation_callback(agent))
     )
-    await session.initialize()
 
+
+async def _register_session(*, agent: Any, name: str, session: Any, listing: Any) -> None:
+    """Record an initialized session's tools and resources on the agent.
+
+    Callers register one server at a time, in registry order: the tool schema is sent
+    in ``agent.tools`` order on every request, so an order that varies between runs
+    moves the prompt prefix and costs the backend's cache.
+    """
     agent.sessions[name] = session
 
-    listing = await session.list_tools()
     for tool in listing.tools:
         agent.tool_owner[tool.name] = name
         # Derive the tool's semantics (capabilities, arg roles, fallbacks, label)
@@ -380,6 +396,62 @@ async def connect_server(*, agent: Any, name: str, script: str) -> None:
 
     suffix = f", {n_resources} resources" if n_resources else ""
     print(f"✅ [{name}]  {len(tool_names)} tools{suffix}: {tool_names}")
+
+
+async def _handshake(session: Any) -> Any:
+    """Complete the MCP handshake on *session* and return its tool listing."""
+    await session.initialize()
+    return await session.list_tools()
+
+
+async def connect_server(*, agent: Any, name: str, script: str) -> None:
+    """Spawn one MCP server process and register its tools on the agent."""
+    session = await _spawn_session(agent=agent, name=name, script=script)
+    listing = await _handshake(session)
+    await _register_session(agent=agent, name=name, session=session, listing=listing)
+
+
+async def connect_servers(
+    *,
+    agent: Any,
+    registry: dict[str, str],
+    on_error: Callable[[str, BaseException], None] | None = None,
+) -> None:
+    """Connect every server in *registry*, overlapping the handshakes.
+
+    Start to answering a first query, the registry is the wait: a score of child
+    interpreters each importing the same SDK, one after the next. The processes are
+    started together instead and the handshakes awaited at once, which puts the whole
+    registry at the cost of its slowest member rather than the sum of all of them.
+
+    Registration stays sequential and in *registry* order, so the tool schema the
+    model is sent does not depend on which child answered first.
+
+    *on_error* receives the name and the failure of a server that could not be
+    connected, and the rest still connect — that is how a sub-agent tolerates a
+    server it does not need. With no handler the first failure is raised, leaving
+    the caller to close the agent.
+    """
+    spawned: list[tuple[str, Any]] = []
+    for name, script in registry.items():
+        try:
+            spawned.append((name, await _spawn_session(agent=agent, name=name, script=script)))
+        except Exception as exc:
+            if on_error is None:
+                raise
+            on_error(name, exc)
+
+    listings = await asyncio.gather(
+        *(_handshake(session) for _, session in spawned), return_exceptions=True
+    )
+
+    for (name, session), listing in zip(spawned, listings):
+        if isinstance(listing, BaseException):
+            if on_error is None:
+                raise listing
+            on_error(name, listing)
+            continue
+        await _register_session(agent=agent, name=name, session=session, listing=listing)
 
 
 async def register_resources(*, agent: Any, name: str, session: Any) -> int:
