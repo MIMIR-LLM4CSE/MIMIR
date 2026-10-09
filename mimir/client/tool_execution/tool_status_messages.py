@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from typing import Any
 
 from ..context.capabilities import READ, SEARCH_WITH_PATH, has_cap
@@ -44,10 +45,13 @@ def shorten_display_args(name: str, args: dict, tool_caps=None) -> dict:
     ``guardrails.observations`` already apply for the same reason, and these are
     argument names, never tool identities.
 
-    The fallback shortens only values that are absolute, since that is the whole of
-    the problem it exists for. An argument named ``path`` that holds a path relative
-    to somewhere else — a repository path on a remote-fetch tool — is already short,
-    and is the one its label means.
+    Only values that are absolute are shortened, since that is the whole of the problem:
+    a tool that names a workspace file is given an absolute path (``_require_abs``), so
+    every path this exists for is one. An argument named ``path`` that holds a path
+    relative to somewhere else — a repository path on a remote-fetch tool — is already
+    short, and is the one the row means: reduced to its basename, the GitHub row said
+    ``ci.yml`` where the call was for ``.github/workflows/ci.yml``. That holds whether or
+    not the tool declared the role, which is why the rule is one rule.
     """
     if not isinstance(args, dict):
         return args
@@ -55,12 +59,24 @@ def shorten_display_args(name: str, args: dict, tool_caps=None) -> dict:
     declared = arg_role(name, "path", tool_caps) or ()
     keys = declared or _PATH_KEYS
     shortened = dict(args)
+    # A url's `user:password@` never belongs on screen. It is not part of any decision
+    # — a consent prompt asks about the host and the path — and the label it lands in
+    # is the row's tooltip, the approval card's header and a line of the stored
+    # transcript. This removes it from all four at once, which is the whole reason the
+    # display copy of the arguments exists.
+    #
+    # It does NOT make the credential confidential: the model wrote it into the call,
+    # and the call is in the conversation history either way. What it stops is the
+    # incidental copy — on screen, and in the transcript the user shares.
+    url = shortened.get("url")
+    if isinstance(url, str) and "@" in url:
+        shortened["url"] = _without_userinfo(url)
     for key in keys:
         val = shortened.get(key)
         if not isinstance(val, str) or not val.strip():
             continue
         val = val.strip()
-        if declared or os.path.isabs(val):
+        if os.path.isabs(val):
             shortened[key] = _relpath(val)
     return shortened
 
@@ -152,6 +168,32 @@ def tool_status_message(name: str, args: dict) -> str:
 # Argument keys that carry a runnable command / code body, in priority order.
 _COMMAND_KEYS = ("command", "cmd", "script", "code")
 _PATH_KEYS = ("path", "filepath", "file")
+# The *object* of a call, in priority order: the thing it is acting on or asking about.
+# Argument names, never tool identities — the same convention `shorten_display_args`
+# and `file_preview` already follow, and the reason a new tool needs no entry anywhere.
+#
+# These used to reach the row through each server's label template ("Slurm cancel
+# {job_id}", "Searching modules: {query}", "Verdict: {verdict}"), which the row no
+# longer shows. The description says what the call is for; this says what it is for
+# *on*, and losing it took the verdict, the url, the job id and the queried module name
+# off the screen with it.
+#
+# Identifiers come before `op`, which is last on purpose: an op selects an action, which
+# is the half the model's own description already carries, so it is what a row falls back
+# to when the call names no object at all (`system`, `date_op`).
+_OBJECT_KEYS = (
+    "verdict", "query", "expression", "equation",
+    "symbol", "name", "job_id", "job_key", "target", "packages",
+    "key_path", "partition", "title", "role", "scope", "op",
+)
+# A pair of arguments that names one thing between them. Checked before the single keys,
+# since either half alone is the wrong answer: `repo` without its owner does not say
+# which repository, and that is the whole of what a GitHub row is for.
+_OBJECT_PAIRS = (("owner", "repo"),)
+# Upper bound on a preview: the row's elastic slot is the description, and this one sits
+# beside it. Long enough for a url with a path or a short expression, short enough that
+# it cannot become the row.
+_PREVIEW_LIMIT = 48
 # Result-list key → its singular, for the row count of a search that reports hits.
 _SEARCH_RESULT_KEYS = {
     "matches": "match",
@@ -161,12 +203,18 @@ _SEARCH_RESULT_KEYS = {
 
 
 def tool_arg_preview(name: str, args: dict) -> str:
-    """Return a short, human-meaningful preview of a tool's key argument.
+    """The salient argument of a call, as the row shows it beside the description.
 
-    Generic and key-based so it works for any tool (including ones not in the
-    hardcoded status map): commands/code show their first line, search tools
-    show the pattern, web fetches show the host, file tools show the basename.
-    Returns "" when there is nothing useful to show.
+    What the call is *on*, where the description says what it is *for*. Keyed on
+    argument names in priority order — a command or code body, a search pattern, a url,
+    a file, then the object keys and finally ``op`` (see :data:`_OBJECT_KEYS`) — so any
+    tool is covered and a new one needs no entry. Returns "" when the call names nothing
+    worth showing (``{"max_depth": 2, "use_cache": True}``).
+
+    A command keeps its first line up to 80 characters, since on a collapsed failed row
+    it is the only trace of what ran; everything else is held to
+    :data:`_PREVIEW_LIMIT`, which is what fits beside a description without competing
+    with it. The stylesheet truncates whatever is still too wide for the pane.
     """
     if not isinstance(args, dict):
         return ""
@@ -183,25 +231,120 @@ def tool_arg_preview(name: str, args: dict) -> str:
     if isinstance(pattern, str) and pattern.strip():
         return pattern.strip()[:80]
 
-    # Web URL → hostname only.
+    # Web URL → host and path, without the scheme. The host alone answered "is it
+    # reaching the network" but not "for what", and a row whose whole point is the
+    # outbound call said `api.github.com` for every one of them.
     url = args.get("url")
     if isinstance(url, str) and url.strip():
-        try:
-            from urllib.parse import urlparse
-            host = urlparse(url).hostname
-            if host:
-                return host
-        except Exception:
-            pass
-        return url.strip()[:80]
+        return _url_preview(url.strip())
 
-    # Fall back to a file basename.
+    # Two arguments that name one thing between them — an owner and a repository (see
+    # _OBJECT_PAIRS). Before the path, and it takes the path with it: a remote file is
+    # identified by the repository it is in, and `ci.yml` alone does not say which one.
+    # That whole string is what a GitHub row is for.
+    for left, right in _OBJECT_PAIRS:
+        a, b = args.get(left), args.get(right)
+        if isinstance(a, str) and a.strip() and isinstance(b, str) and b.strip():
+            whole = f"{a.strip()}/{b.strip()}"
+            for key in _PATH_KEYS:
+                val = args.get(key)
+                if isinstance(val, str) and val.strip():
+                    whole += "/" + val.strip().lstrip("/")
+                    break
+            # Clipped from the left of the tail, like a url: the end names the thing.
+            return whole if len(whole) <= _PREVIEW_LIMIT else "…" + whole[-(_PREVIEW_LIMIT - 1):]
+
+    # A file this call names. Absolute → its file name, the same rule and the same
+    # reason as `shorten_display_args`; relative → as written, because a repository
+    # path on a remote-fetch tool is already short and its leading segments are what
+    # identify it. Applied here and not only there because `policy.gates` previews the
+    # raw arguments.
     for key in _PATH_KEYS:
         val = args.get(key)
         if isinstance(val, str) and val.strip():
-            return _relpath(val.strip())
+            val = val.strip()
+            return _relpath(val) if os.path.isabs(val) else _clip(val, _PREVIEW_LIMIT)
+
+    # What the call is acting on, else the action it selects (see _OBJECT_KEYS).
+    for key in _OBJECT_KEYS:
+        val = args.get(key)
+        if isinstance(val, str) and val.strip():
+            return _clip(" ".join(val.split()), _PREVIEW_LIMIT)
+        if isinstance(val, (int, float)) and not isinstance(val, bool):
+            return str(val)
+        # A list names several things at once — the packages of an install, the states
+        # of a query. Joined rather than counted: "numpy scipy" is the row, "2 items"
+        # is a row that has to be expanded to say anything.
+        if isinstance(val, (list, tuple)) and val:
+            joined = " ".join(str(v).strip() for v in val if str(v).strip())
+            if joined:
+                return _clip(joined, _PREVIEW_LIMIT)
 
     return ""
+
+
+def _clip(text: str, limit: int) -> str:
+    return text if len(text) <= limit else text[:limit - 1] + "…"
+
+
+def _without_userinfo(url: str) -> str:
+    """*url* with any ``user:password@`` removed, scheme and query intact.
+
+    For the label and the approval card, which keep the whole url otherwise: a consent
+    prompt asks about a precise call, and only the credential is never part of it.
+    """
+    head, sep, rest = url.partition("://")
+    authority = (rest if sep else head).split("/", 1)[0]
+    if "@" not in authority:
+        return url
+    cleaned = authority[authority.rindex("@") + 1:]
+    return url.replace(authority, cleaned, 1)
+
+
+def _bare_authority(url: str) -> str:
+    """*url* with any ``user:password@`` and any ``?query`` removed, for the fallback.
+
+    The parsed path above never carries either — ``hostname`` drops the userinfo and
+    ``path`` stops before the query. The fallback echoes the value as written, though,
+    and a url the parser cannot read is exactly where a credential survives: a
+    schemeless ``user:secret@host/x`` parses to no host at all, and the secret went
+    onto the row and into the stored transcript with it. A query is dropped on the
+    same grounds — an api key is usually in one — and it is not what identifies the
+    call either.
+    """
+    text = url.split("?", 1)[0].split("#", 1)[0]
+    head = text.split("/", 1)[0]
+    if "@" in head:
+        text = text[text.index("@") + 1:]
+    return text
+
+
+def _url_preview(url: str) -> str:
+    """``host/path`` of *url*, clipped — the scheme and the query are not the point.
+
+    A path is kept because it is what distinguishes one call from the next, and clipped
+    from the *left* of its tail rather than the right when it is long: the end of a path
+    names the thing, the middle is navigation.
+    """
+    try:
+        from urllib.parse import urlparse
+        parsed = urlparse(url)
+        # `hostname`, never `netloc`: a url may carry `user:password@`, and a row is
+        # read over a shoulder and saved into a transcript. The port is added back
+        # because it is what tells two local services apart.
+        host, path = parsed.hostname or "", parsed.path or ""
+        if host and parsed.port:
+            host = f"{host}:{parsed.port}"
+    except Exception:
+        return _clip(_bare_authority(url), _PREVIEW_LIMIT)
+    if not host:
+        return _clip(_bare_authority(url), _PREVIEW_LIMIT)
+    whole = host + path.rstrip("/")
+    if len(whole) <= _PREVIEW_LIMIT:
+        return whole
+    room = _PREVIEW_LIMIT - len(host) - 2
+    tail = path.rstrip("/")
+    return host + "/…" + tail[-room:] if room > 4 else _clip(host, _PREVIEW_LIMIT)
 
 
 # The argument the model's per-call description arrives in. Named here, with the helper
@@ -228,14 +371,30 @@ def clip_doing(doing: Any) -> str:
     return first if len(first) <= _DOING_LIMIT else first[:_DOING_LIMIT - 1] + "…"
 
 
-def dedup_row_detail(label: str, detail: str) -> str:
-    """Drop a row *detail* that just repeats what the *label* already shows.
+def dedup_row_detail(shown: str, detail: str) -> str:
+    """Drop a row *detail* that just repeats what the row already says.
 
-    A server label template like "Reading file: {path}" already names the target,
-    so the basename detail is pure duplication. The detail stays when it adds
-    something new (e.g. the command line under a generic "Running shell command").
+    *shown* is the text the row puts beside it — the model's own description of the
+    call. A description that already names the file or the url makes the preview pure
+    duplication; it stays whenever it adds something, which is most of the time, since
+    a description says what the call is for and this says what it is for *on*.
+
+    Empty *shown* (no description was written) keeps the detail unconditionally: it is
+    then the only thing on the row besides its family.
+
+    Matched on word boundaries, not as a substring. The previews are now short words —
+    a verdict is "pass", an op is "now" or "info" — and a substring test loses every one
+    of them to an ordinary sentence: "pass" inside "recording the passing run", "now"
+    inside "knowing the time", "info" inside "informing the user". The verdict going
+    missing was the whole reason these previews came back to the row.
+
+    Fails towards keeping: a detail whose edges are not word characters (a trailing
+    slash, a closing bracket) simply does not match, and a repeated preview reads better
+    than a lost one.
     """
-    if detail and label and detail.lower() in label.lower():
+    if not detail or not shown:
+        return detail
+    if re.search(r"\b" + re.escape(detail) + r"\b", shown, re.IGNORECASE):
         return ""
     return detail
 

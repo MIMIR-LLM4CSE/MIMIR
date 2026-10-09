@@ -367,7 +367,7 @@ failure, say) keeps the command already on the row rather than erasing it.
 | icon | `kind`, via `KIND_ICONS` (`components/toolIcons.tsx`) | one glyph per family of work |
 | family | `kind`, capitalised (`labelForKind`) | `--fg`, semibold, never truncated |
 | description | `doing`, written by the model per call | `--fg-dim`, the elastic slot |
-| detail | the file name, or the command when there is no description | `--fg-dim`, mono |
+| detail | the call's salient argument (`tool_arg_preview`) | `--fg-dim`, mono, yields first |
 
 Both of the first two come from **one** declared fact. A server names its tool's family
 of work in its own declaration — `tool_caps(kind="edit")`, vocabulary in
@@ -395,10 +395,38 @@ dispatcher strips before the call runs — so no server declares it and none rec
 Stripped *before the dedup key*, too: two identical calls with reworded descriptions are
 one call, and left in the arguments they would walk past the repeat guards.
 
-The model will sometimes omit it, a third-party tool's row has none, and a transcript
-recorded before any of this existed has neither field. Then the family stands alone and
-the detail returns to the arg preview — which is why a failed `bash` row, collapsed, still
-shows its command line.
+Beside it sits the call's **salient argument** — the url it is reaching, the job id it
+is cancelling, the verdict it is recording, the file it is reading. The description says
+what the call is for and this says what it is for *on*, so they are two facts rather than
+two renderings of one. It is computed server-side by `tool_arg_preview` from argument
+*names* in priority order: a command or code body, a search pattern, a url, an
+`owner`+`repo` pair (which takes the path with it — `ci.yml` alone does not say which
+repository the call reached into), a path, then the object keys (`verdict`, `query`,
+`expression`, `name`, `job_id`, `packages`, …) and `op` last, since an op selects an
+action and the description already carries that half. Of the 71 tools, 13 show nothing:
+seven take no arguments at all, and the rest carry only a payload — a plan's text, a
+json body — which the description describes better than an excerpt would. Every one of these used to reach the row
+through the server's label template — "Slurm cancel {job_id}", "Verdict: {verdict}" — and
+went off screen with the label until this replaced it.
+
+It is dropped in two cases: when the model's own description already names it
+(`dedup_row_detail`, server-side), and when the panel below carries it in full — the
+command of an exec row, the expression under its typeset equation. The second holds
+whether that panel is open or closed, because it exists from the moment the call is made:
+the IN half travels on the `tool_call` event itself, so a failed exec row is collapsed
+rather than empty and its command is one click away. Cropped into a share of a line, a
+command was a fragment pretending to be one.
+
+Visually the slot is subordinate on every axis: dimmer, monospaced, capped at 38% of the
+line, and `flex-shrink: 3` against the description's `1`, so it is the first thing to
+give way when the pane narrows. Nothing on the row can wrap to a second line — the head
+sets no `flex-wrap` and every text span is `white-space: nowrap` — so an over-long value
+is cut with an ellipsis, and it carries its untruncated text in its own `title`. The
+head's tooltip says what was called; this one says what it was called on.
+
+The model will sometimes omit the description, a third-party tool's row has none, and a
+transcript recorded before any of this existed has neither field. Then the family and
+the argument stand alone, which is still a readable row.
 
 The derived label (`"Reading file: x.py"`, from the `label` template) is still on the
 wire and still used: it is the row's tooltip and `aria-label`, and approval cards and

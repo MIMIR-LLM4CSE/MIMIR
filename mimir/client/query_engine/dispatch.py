@@ -383,10 +383,13 @@ async def _dispatch_tool_calls(
         row_args = shorten_display_args(display_name, display_args, agent.tool_caps)
         row_label = (label_for(display_name, row_args, agent.tool_caps)
                      or tool_status_message(display_name, row_args))
-        # Drop a detail that just repeats the label (e.g. the basename when the
-        # label already shows the full path) — see dedup_row_detail.
+        # The salient argument of the call — the url, the file, the job id, the verdict.
+        # Deduplicated against the model's own description rather than against the label:
+        # the label is not what the row shows any more, so deduplicating against it both
+        # dropped previews the row needed (the basename under "Reading file: x.py", with
+        # nothing else left to name the file) and kept ones it did not.
         row_detail = dedup_row_detail(
-            row_label, tool_arg_preview(display_name, row_args))
+            row_doing.get(call_id, ""), tool_arg_preview(display_name, row_args))
         call_event = {
             "type": "tool_call",
             "id": call_id,

@@ -859,15 +859,36 @@ never a parse of the command, which is the guess the module exists to avoid. See
   `json_error_payload()`, `parse_tool_payload()`.
 - `tool_status_messages.py` — `tool_status_message()` derives a human-readable status from
   the tool *name*, with no per-tool table: a verb is located in a reusable lexicon, rendered
-  as a gerund, and the remaining tokens appended. `shorten_display_args()` reduces declared
-  path arguments to their **file name** for display, capability-driven off the `path`
-  arg-role. A row reading `Reading file: /shared/data1/Projects/.../observations.py` buries
-  the one token the user is scanning for; it becomes `Reading file: observations.py`.
+  as a gerund, and the remaining tokens appended. `shorten_display_args()` reduces
+  **absolute** path arguments to their file name for display — a row carrying
+  `/long/absolute/path/.../observations.py` buries the one token the reader is scanning
+  for. Only absolute ones, since a tool that names a workspace file is given an absolute
+  path, while a repository path on a remote-fetch tool is already short and its leading
+  segments are what identify it: basenamed, the GitHub row said `ci.yml` for a call on
+  `.github/workflows/ci.yml`.
+
+  It also strips a url's `user:password@` from the display copy. The label interpolates
+  the url verbatim ("Fetching {url}"), and that label is the row's tooltip, the approval
+  card's header and a line of the stored transcript — so the credential reached all four.
+  The scheme and the query stay: a consent prompt asks about a precise call, and only the
+  credential is never part of one. It does not make the credential *confidential* — the
+  model wrote it into the call and the call is in the history either way — it removes the
+  incidental copy, on screen and in the transcript the user shares.
 
   **Never applied where the path is the decision.** An out-of-workspace approval asks the
   user to authorise *locations*, so the card carries the paths verbatim and the CLI prints
   each absolute path on its own line. Readability wins in the activity log; precision wins
   in a consent prompt.
+
+  `tool_arg_preview()` finds the call's **salient argument** — the url, the file, the
+  verdict, the job id, the queried name — from argument *names* in priority order, with
+  `op` last, since an op selects an action and the model's own description already
+  carries that half. Every one of these used to reach the row through the server's label
+  template, and went off screen with it. A url keeps its host and path and sheds its
+  userinfo and query on both branches, parsed or not: a row is read over a shoulder and
+  then stored. `dedup_row_detail()` drops the preview when the description already says
+  it, matched on **word boundaries** — as a substring, a verdict of `pass` was eaten by
+  "recording the passing run" and an op of `now` by "knowing the time".
 
   `clip_doing()` is the row's other half: the model's own description of the call, cut to
   its first line and bounded. The 15-word limit is asked of the model and not enforced —
@@ -875,7 +896,8 @@ never a parse of the command, which is the guess the module exists to avoid. See
   ignores it entirely from pushing the rest of the row off screen.
 
   The name-derived label is no longer what a row shows. The row shows the tool's declared
-  work family (`kind_for`) and that description; the label remains its tooltip, and is
+  work family (`kind_for`), that description and that preview; the label remains its
+  tooltip, and is
   what approval cards and policy messages are written from. So all of the above is still
   live — just not in the activity row.
 

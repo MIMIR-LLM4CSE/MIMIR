@@ -289,13 +289,13 @@ const ToolRow: React.FC<RowProps> = ({ tool, childRows = [], onDivert }) => {
       return typeof next === "function" ? next(current) : next;
     });
 
-  // The row's arg preview IS the command line for an exec-shaped row, so while the
-  // IN pane below is open it says it twice — cropped up here, in full down there.
-  // Dropped only while the panel is open: collapsed, the one-liner is the only
-  // trace of what ran.
-  // The same holds for a calculation: the equation below restates the expression.
-  const showsCommandBelow =
-    expanded && ((hasExec && !!tool.exec?.command) || hasMath);
+  // A row whose panel below carries the same thing in full does not say it on the line
+  // too: the command of an exec row, the expression under its typeset equation. The
+  // panel exists from the moment the call is made — the IN half is sent with the
+  // `tool_call` event — so this holds whether it is open or closed. A failed exec row
+  // is collapsed and still has its command one click away, which is where it belongs:
+  // cropped at 38% of a line, it was a fragment of a command pretending to be one.
+  const panelRestatesIt = (hasExec && !!tool.exec?.command) || hasMath;
 
   // The file name opens the file only once the call has succeeded on it: a failed
   // read or edit says nothing reliable about the file, and a running write may not
@@ -314,17 +314,19 @@ const ToolRow: React.FC<RowProps> = ({ tool, childRows = [], onDivert }) => {
   // before the field existed has no family, and the generic glyph is the honest answer.
   const kind = tool.kind || "tool";
 
-  // With a description in hand, the arg preview is the mechanical half of the same
-  // fact — and the command it previews is already in the IN pane below, which opens
-  // itself on a successful run. So the detail yields to the description, with one
-  // exception that matters: the file name, which is a link and not a sentence, stays
-  // as long as the description does not already carry it.
+  // Beside the description, the salient argument of the call: the url it is reaching,
+  // the job id it is cancelling, the verdict it is recording, the file it is reading.
+  // The description says what the call is for and this says what it is for *on*, so
+  // they are two facts and not two renderings of one — the server has already dropped
+  // this when the description happens to name it (`dedup_row_detail`).
   //
-  // A row with NO description keeps its preview: a failed shell row is collapsed, and
-  // without it the row would say nothing but "shell".
-  const detail = tool.doing
-    ? (!linkInDoing && fileTarget ? fileTarget.name : "")
-    : tool.detail;
+  // Dropped only where the panel below restates it in full: a command under an open IN
+  // pane, an expression under its typeset equation. A *failed* exec row is collapsed,
+  // so its command stays on the line — that row would otherwise read "Bash" alone.
+  //
+  // The file name stands in when there is no preview, since it is a link rather than a
+  // sentence and the row is where the file is opened from.
+  const detail = tool.detail || (!linkInDoing && fileTarget ? fileTarget.name : "");
 
   const running = tool.status === "running";
   // Latched locally rather than waiting for the row to change status: the request
@@ -408,8 +410,12 @@ const ToolRow: React.FC<RowProps> = ({ tool, childRows = [], onDivert }) => {
           doing={tool.doing}
           target={linkInDoing ? fileTarget : undefined}
         />
-        {detail && !showsCommandBelow && (
-          <span className="tool-detail">
+        {detail && !panelRestatesIt && (
+          // Its own tooltip, because this is the slot that gets cut: it is capped at a
+          // share of the line and ellipsised there, and a url or a repository path is
+          // exactly the kind of value whose *end* was the point. The head's tooltip
+          // says what was called; this one says what it was called on.
+          <span className="tool-detail" title={detail}>
             {withFileLink(detail, linkInDoing ? undefined : fileTarget)}
           </span>
         )}

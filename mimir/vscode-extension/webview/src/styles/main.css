@@ -1531,6 +1531,10 @@ body {
   outline: none;
 }
 
+/* The salient argument of the call, beside the description. Subordinate to it on every
+   axis: dimmer, monospaced, and the first thing to give way — `flex-shrink: 3` against
+   the description's 1, with a cap so a long url cannot take the line even when there is
+   room. The description is what the reader is following; this is what they check. */
 .tool-detail {
   font-family: var(--mono);
   font-size: 0.85em;
@@ -1539,8 +1543,9 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  flex: 1;
+  flex: 0 3 auto;
   min-width: 0;
+  max-width: 38%;
 }
 
 .tool-row-tail {

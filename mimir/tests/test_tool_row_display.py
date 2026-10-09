@@ -89,23 +89,157 @@ class SearchRowCountTests(unittest.TestCase):
 
 
 class DedupRowDetailTests(unittest.TestCase):
-    def test_basename_in_path_label_dropped(self) -> None:
-        label = "Reading file: /work/proj/ratchet_demo/wave2d_proxy.py"
-        self.assertEqual(dedup_row_detail(label, "wave2d_proxy.py"), "")
+    """The preview is dropped only when the row already says it.
 
-    def test_relpath_detail_in_absolute_label_dropped(self) -> None:
-        label = "Reading file: /work/proj/ratchet_demo/wave2d_proxy.py"
-        self.assertEqual(
-            dedup_row_detail(label, "ratchet_demo/wave2d_proxy.py"), "")
+    What it is deduplicated against is the model's own description of the call, since
+    that is what the row puts beside it. Against the derived label — which the row no
+    longer shows — it dropped previews the row needed and kept ones it did not.
+    """
 
-    def test_command_detail_under_generic_label_kept(self) -> None:
-        # bash_run: generic label, the command adds real information → keep it.
+    def test_a_description_naming_the_file_drops_the_basename(self) -> None:
         self.assertEqual(
-            dedup_row_detail("Running shell command", "python3 wave2d_proxy.py"),
+            dedup_row_detail("reading the loop in wave2d_proxy.py", "wave2d_proxy.py"), "")
+
+    def test_matching_is_case_insensitive(self) -> None:
+        self.assertEqual(dedup_row_detail("Checking Solver.py", "solver.py"), "")
+
+    def test_a_preview_that_adds_something_is_kept(self) -> None:
+        # The description says what the call is for; the preview says what it is for on.
+        self.assertEqual(
+            dedup_row_detail("running the regression suite", "python3 wave2d_proxy.py"),
             "python3 wave2d_proxy.py")
+        self.assertEqual(
+            dedup_row_detail("fetching the workflow file", "api.github.com/repos/foo/bar"),
+            "api.github.com/repos/foo/bar")
+
+    def test_a_short_preview_is_not_eaten_by_a_longer_word(self) -> None:
+        """Matched on word boundaries, never as a substring.
+
+        The previews are short words — a verdict is "pass", an op is "now" or "info" —
+        and a substring test loses every one of them to an ordinary sentence. The
+        verdict going missing from the row is why these previews exist.
+        """
+        for shown, detail in (
+            ("recording the passing run", "pass"),
+            ("knowing the time", "now"),
+            ("informing the user", "info"),
+            ("submitting it to the genoa partition", "gen"),
+        ):
+            with self.subTest(shown=shown):
+                self.assertEqual(dedup_row_detail(shown, detail), detail)
+
+    def test_the_same_word_on_its_own_still_drops(self) -> None:
+        self.assertEqual(dedup_row_detail("recording what the run showed: pass", "pass"), "")
+
+    def test_no_description_keeps_the_preview_unconditionally(self) -> None:
+        # Then it is the only thing on the row besides its family.
+        self.assertEqual(dedup_row_detail("", "wave2d_proxy.py"), "wave2d_proxy.py")
 
     def test_empty_detail_stays_empty(self) -> None:
-        self.assertEqual(dedup_row_detail("Reading file: x.py", ""), "")
+        self.assertEqual(dedup_row_detail("reading the loop", ""), "")
+
+
+class ObjectPreviewTests(unittest.TestCase):
+    """The salient argument of a call: what it is acting on, or asking about.
+
+    These reached the row through each server's label template ("Slurm cancel
+    {job_id}", "Verdict: {verdict}") until the row stopped showing the label. Keyed on
+    argument names, so a new tool needs no entry.
+    """
+
+    def test_the_verdict_a_call_records(self) -> None:
+        self.assertEqual(tool_arg_preview("t", {"verdict": "pass", "reason": "14 passed"}),
+                         "pass")
+
+    def test_a_url_keeps_its_path(self) -> None:
+        # The host alone said "it is reaching the network" and nothing about for what.
+        self.assertEqual(
+            tool_arg_preview("t", {"url": "https://api.github.com/repos/foo/bar/x.py"}),
+            "api.github.com/repos/foo/bar/x.py")
+
+    def test_a_long_url_keeps_the_end_of_its_path(self) -> None:
+        # The end of a path names the thing; the middle is navigation.
+        out = tool_arg_preview("t", {"url": "https://h.io/" + "deep/" * 20 + "solver.py"})
+        self.assertTrue(out.startswith("h.io/…"), out)
+        self.assertTrue(out.endswith("solver.py"), out)
+        self.assertLessEqual(len(out), 48)
+
+    def test_a_url_never_carries_its_credentials(self) -> None:
+        """`hostname`, never `netloc`: a row is read over a shoulder and then stored.
+
+        The port comes back, since it is what tells two local services apart.
+        """
+        out = tool_arg_preview("t", {"url": "http://user:secret@localhost:8080/v1/models"})
+        self.assertEqual(out, "localhost:8080/v1/models")
+        self.assertNotIn("secret", out)
+
+    def test_a_url_the_parser_cannot_read_still_sheds_its_secrets(self) -> None:
+        """The fallback echoes the value as written, which is where one survives.
+
+        A schemeless `user:secret@host/x` parses to no host at all, so it took the
+        branch that returns the string — and the secret went onto the row and into the
+        stored transcript with it. A query goes the same way: an api key is usually in
+        one, and it is not what identifies the call.
+        """
+        self.assertEqual(tool_arg_preview("t", {"url": "user:secret@host.io/x"}), "host.io/x")
+        self.assertEqual(
+            tool_arg_preview("t", {"url": "https://tok:x@api.example.com/v1?key=abcd1234"}),
+            "api.example.com/v1")
+        for leak in ("secret", "abcd1234"):
+            for url in ("user:secret@host.io/x", "https://tok:x@api.example.com/v1?key=abcd1234"):
+                self.assertNotIn(leak, tool_arg_preview("t", {"url": url}))
+
+    def test_a_remote_file_is_named_with_its_repository(self) -> None:
+        """`ci.yml` alone does not say which repository the call reached into.
+
+        A GitHub row exists to show the remote it is touching, so the owner and the
+        repository come before the path and take it with them. Clipped from the left,
+        like a url: the end of the string names the thing.
+        """
+        self.assertEqual(
+            tool_arg_preview("t", {"owner": "MIMIR-LLM4CSE", "repo": "MIMIR",
+                                   "path": ".github/workflows/ci.yml"}),
+            "MIMIR-LLM4CSE/MIMIR/.github/workflows/ci.yml")
+        # No path: the repository is the object.
+        self.assertEqual(tool_arg_preview("t", {"owner": "f", "repo": "b", "limit": 5}),
+                         "f/b")
+        out = tool_arg_preview("t", {"owner": "an-organisation-with-a-long-name",
+                                     "repo": "a-long-repository", "path": "x/solver.cpp"})
+        self.assertLessEqual(len(out), 48)
+        self.assertTrue(out.endswith("solver.cpp"), out)
+
+    def test_several_things_at_once_are_joined_not_counted(self) -> None:
+        # "numpy scipy" is the row; "2 items" is a row that must be expanded to say
+        # anything at all.
+        self.assertEqual(
+            tool_arg_preview("t", {"packages": ["numpy", "scipy"],
+                                   "python_executable": "/x/py"}),
+            "numpy scipy")
+
+    def test_the_object_wins_over_the_action(self) -> None:
+        # `op` selects an action, which the description already carries; the name of the
+        # thing acted on is what the row cannot say otherwise.
+        self.assertEqual(tool_arg_preview("t", {"op": "start", "name": "geos"}), "geos")
+        self.assertEqual(tool_arg_preview("t", {"op": "solve", "equation": "x**2-4"}),
+                         "x**2-4")
+
+    def test_a_memory_operation_says_which_store_it_touched(self) -> None:
+        # Two stores since 1.4.0, and one of these operations wipes one of them.
+        self.assertEqual(
+            tool_arg_preview("t", {"scope": "global", "text": "a fact worth keeping"}),
+            "global")
+
+    def test_the_action_is_the_fallback_when_there_is_no_object(self) -> None:
+        self.assertEqual(tool_arg_preview("t", {"op": "disk_usage"}), "disk_usage")
+
+    def test_a_numeric_identifier_is_not_dropped(self) -> None:
+        self.assertEqual(tool_arg_preview("t", {"job_id": 12345}), "12345")
+
+    def test_a_boolean_is_never_a_preview(self) -> None:
+        self.assertEqual(tool_arg_preview("t", {"confirm": True, "op": "cancel"}), "cancel")
+
+    def test_nothing_salient_reads_empty(self) -> None:
+        self.assertEqual(tool_arg_preview("t", {"max_depth": 2, "use_cache": True}), "")
 
 
 class PolicyBlockSummaryTests(unittest.TestCase):
@@ -261,15 +395,46 @@ class RowPathsAreShortenedTests(unittest.TestCase):
         short = shorten_display_args("t", {"path": self.ABS}, reg)
         self.assertEqual(short["path"], "observations.py")
 
-    def test_fallback_leaves_a_relative_path_alone(self):
-        """An argument named `path` is not always a filesystem path.
+    def test_a_url_loses_its_credentials_in_the_display_copy(self):
+        """Not just in the row's preview: in the label, which is the wider carrier.
 
-        A remote-fetch tool's repository path is already short, and is the one its
-        label means. Only an absolute value is the problem the fallback exists for.
+        `label_for` interpolates the url verbatim ("Fetching {url}"), and that label is
+        the row's tooltip, the approval card's header and a line of the stored
+        transcript. The display copy of the arguments is where that is fixed for all of
+        them at once. The scheme and the query stay — a consent prompt asks about a
+        precise call, and only the credential is never part of it.
         """
         reg = {"t": ToolCaps(name="t")}
-        short = shorten_display_args("t", {"path": "src/solver/core.cpp"}, reg)
-        self.assertEqual(short["path"], "src/solver/core.cpp")
+        short = shorten_display_args(
+            "t", {"url": "https://tok:s3cr3t@api.example.com/v1?key=k"}, reg)
+        self.assertEqual(short["url"], "https://api.example.com/v1?key=k")
+
+    def test_a_url_without_credentials_is_untouched(self):
+        reg = {"t": ToolCaps(name="t")}
+        for url in ("https://api.example.com/v1/models?q=a@b", "host.io/a/b"):
+            with self.subTest(url=url):
+                self.assertEqual(shorten_display_args("t", {"url": url}, reg)["url"], url)
+
+    def test_the_arguments_sent_keep_their_credentials(self):
+        # Display-only: the call still has to be able to authenticate.
+        reg = {"t": ToolCaps(name="t")}
+        args = {"url": "https://tok:s3cr3t@api.example.com/v1"}
+        shorten_display_args("t", args, reg)
+        self.assertEqual(args["url"], "https://tok:s3cr3t@api.example.com/v1")
+
+    def test_a_relative_path_is_left_alone_declared_or_not(self):
+        """An argument named `path` is not always a filesystem path.
+
+        A remote-fetch tool's repository path is already short, and is the one the row
+        means: reduced to its basename, the GitHub row read `ci.yml` where the call was
+        for `.github/workflows/ci.yml`. Only an absolute value is the problem this
+        exists for, and a tool that names a workspace file is given one.
+        """
+        for reg in ({"t": ToolCaps(name="t")},
+                    {"t": ToolCaps(name="t", arg_roles={"path": ("path",)})}):
+            with self.subTest(declared="path" in (reg["t"].arg_roles or {})):
+                short = shorten_display_args("t", {"path": "src/solver/core.cpp"}, reg)
+                self.assertEqual(short["path"], "src/solver/core.cpp")
 
     def test_fallback_does_not_mutate_the_arguments_sent(self):
         reg = {"t": ToolCaps(name="t")}
@@ -286,6 +451,12 @@ class RowPathsAreShortenedTests(unittest.TestCase):
 
     def test_preview_also_shows_the_file_name(self):
         self.assertEqual(tool_arg_preview("t", {"path": self.ABS}), "observations.py")
+
+    def test_preview_keeps_a_remote_path_whole(self):
+        # `policy.gates` previews the raw arguments, so the rule lives here too.
+        self.assertEqual(
+            tool_arg_preview("t", {"path": ".github/workflows/ci.yml"}),
+            ".github/workflows/ci.yml")
 
     def test_directory_path_keeps_its_last_component(self):
         self.assertEqual(

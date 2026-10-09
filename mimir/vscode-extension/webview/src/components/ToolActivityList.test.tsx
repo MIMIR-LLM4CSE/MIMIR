@@ -54,8 +54,22 @@ describe("the tool row", () => {
     expect(read).toBe("✏️ Edit fixing the bound in dispatch.py 12ms");
   });
 
-  it("drops the command preview when a description says what the run is for", () => {
-    // The command is in the IN pane below, which opens itself on a successful run.
+  it("shows the salient argument beside the description", () => {
+    // What the call is for, and what it is for *on*. These reached the row through the
+    // server's label template until the row stopped showing the label, and the verdict,
+    // the url and the job id went off screen with it.
+    expect(asRead([row({ kind: "verdict", doing: "recording what the suite showed",
+                         detail: "pass" })]))
+      .toBe("⚖️ Verdict recording what the suite showed pass 12ms");
+    expect(asRead([row({ kind: "web", doing: "fetching the solver docs",
+                         detail: "api.github.com/repos/foo/bar/x.py" })]))
+      .toBe("🌐 Web fetching the solver docs api.github.com/repos/foo/bar/x.py 12ms");
+    expect(asRead([row({ kind: "slurm", doing: "cancelling the stuck allocation",
+                         detail: "12345" })]))
+      .toBe("🛰️ Slurm cancelling the stuck allocation 12345 12ms");
+  });
+
+  it("never says on the line what the panel below carries in full", () => {
     const read = asRead([row({
       kind: "bash", doing: "running the row-display tests", detail: "pytest -q",
       exec: { command: "pytest -q", stdout: "14 passed", stderr: "", returncode: 0 },
@@ -63,12 +77,28 @@ describe("the tool row", () => {
     expect(read).toBe("💻 Bash running the row-display tests 12ms ▾ IN $ pytest -q OUT 14 passed");
   });
 
-  it("brings the command preview back on a row with no description", () => {
-    // A failed row is collapsed: without the preview it would say nothing but "Bash".
+  it("keeps the command off a failed row too, where the panel is closed", () => {
+    // The IN half is sent with the `tool_call` event, so the panel exists from the
+    // moment the call is made — a failed row is collapsed, not empty. Cropped at a
+    // share of the line, the command was a fragment pretending to be one.
     const read = asRead([row({
-      kind: "bash", status: "error", detail: "pytest -q", error: "boom",
+      kind: "bash", status: "error", error: "boom",
+      detail: "pytest -q mimir/tests/test_very_long_name.py",
+      exec: { command: "pytest -q mimir/tests/test_very_long_name.py", stdout: "", stderr: "" },
     })]);
-    expect(read).toBe("✕ 💻 Bash pytest -q 12ms ▸");
+    expect(read).toBe("✕ 💻 Bash 12ms ▸");
+  });
+
+  it("gives a preview its own tooltip, since it is the slot that gets cut", () => {
+    // Capped at a share of the line and ellipsised there, and the end of a url or a
+    // repository path is what the row was for.
+    const html = renderToStaticMarkup(
+      <ToolActivityList tools={[row({
+        kind: "github", doing: "seeing which versions CI covers",
+        detail: "MIMIR-LLM4CSE/MIMIR/.github/workflows/ci.yml",
+      })]} />
+    );
+    expect(html).toContain('title="MIMIR-LLM4CSE/MIMIR/.github/workflows/ci.yml"');
   });
 
   it("renders a row recorded before the family existed", () => {

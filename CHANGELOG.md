@@ -57,15 +57,28 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   glyph from the same word, so the two cannot disagree; a tool that declares none still
   gets a family derived from its capabilities, so a third-party server renders correctly
   having said nothing. Beside it, the model writes **one sentence about this call**,
-  under fifteen words ("fixing the off-by-one bound", "submitting the job on genoa"): every
-  tool now takes a `doing` argument the client adds to its schema and the dispatcher
-  strips before the call runs, so no server declares it and none receives it. When there
-  is no sentence — an older transcript, a third-party tool, a model that forgot — the
-  family stands alone and the argument preview returns to the row. The derived label is
-  still the row's tooltip, and the approval card for a call now carries the family too,
-  so it shows the same icon as the row — as does the dock card for a run that has
-  scrolled out of the thread, which described the same call a second way. GitHub gets
-  its own mark, the one drawn icon in a set that is otherwise emoji.
+  under fifteen words ("fixing the off-by-one bound", "submitting the job on genoa"):
+  every tool now takes a `doing` argument the client adds to its schema and the
+  dispatcher strips before the call runs, so no server declares it and none receives it.
+  Last on the line, the call's **salient argument** — the url it is reaching, the job id
+  it is cancelling, the verdict it is recording, the file it is reading. Every one of
+  those used to arrive through the server's label template ("Slurm cancel {job_id}",
+  "Verdict: {verdict}") and would have left the screen with it; they are read off the
+  call's own arguments by name instead, so a new tool needs no entry anywhere, and shown
+  unless the description already says it or the panel below carries it in full — an exec
+  row's command lives in its IN pane, open or closed, and never on the line as a
+  fragment. Too long for the pane, a value is cut with an ellipsis and keeps its whole
+  text in its tooltip. A remote path keeps its leading segments — reduced to a basename,
+  the GitHub row said
+  `ci.yml` for a call on `.github/workflows/ci.yml` — while a workspace path is still
+  shortened to its file name. A url shows its host and path without its query, and a
+  `user:password@` in one no longer reaches the screen at all: not the row, not the
+  tooltip, not the approval card, and not the stored transcript, which carried it
+  through the label before this. The derived label is still the row's tooltip, and the
+  approval card for a call now carries the family too, so it shows the same icon as the
+  row — as does the dock card for a run that has scrolled out of the thread, which
+  described the same call a second way. GitHub gets its own mark, the one drawn icon in
+  a set that is otherwise emoji.
 - The surviving skills read as one set. `write-tests` and `explore-repo` were written in
   a register of their own — "You are writing tests.", then a flat list of rules — which
   said nothing about when the method applies and buried the part that matters:
