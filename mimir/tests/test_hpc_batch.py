@@ -153,6 +153,70 @@ class SbatchSubmitTests(unittest.TestCase):
         self.assertEqual(status["job_dir"], submitted)
         self.assertNotIn("submitted_by_another_session", status)
 
+    def _status_as(self, state: str, job_id: str = "4242") -> dict:
+        self.addCleanup(setattr, server_hpc, "_normalized_job_state",
+                        server_hpc._normalized_job_state)
+        server_hpc._normalized_job_state = lambda jid: (state, state.upper())
+        return server_hpc.slurm_job_status(job_id=job_id)
+
+    def test_a_terminal_poll_settles_the_submission_directory(self) -> None:
+        """The counterpart of a shell job's exit-code trap.
+
+        A submission records an id, and an id never stops existing — so whoever asks
+        later whether this workspace still has work running reads the directory as live
+        for ever. This poll is the only thing that will ever know otherwise.
+        """
+        with patch.dict(os.environ, {"MIMIR_SESSION_ID": "session-a"}):
+            job_dir = self._submit()["job_dir"]
+            self._status_as("done")
+        with open(os.path.join(job_dir, "slurm_state")) as fh:
+            self.assertEqual(fh.read().strip(), "done")
+
+    def test_a_job_still_in_the_queue_is_not_settled(self) -> None:
+        for state in ("running", "pending"):
+            with self.subTest(state=state), \
+                 patch.dict(os.environ, {"MIMIR_SESSION_ID": "session-a"}):
+                job_dir = self._submit()["job_dir"]
+                self._status_as(state)
+                self.assertFalse(os.path.exists(os.path.join(job_dir, "slurm_state")))
+
+    def test_a_job_slurm_has_forgotten_is_settled_as_unknown(self) -> None:
+        # Terminal and claiming nothing. Leaving it blank would read as "still running"
+        # for ever, which is the failure this whole record exists to end.
+        with patch.dict(os.environ, {"MIMIR_SESSION_ID": "session-a"}):
+            job_dir = self._submit()["job_dir"]
+            self._status_as("unknown")
+        with open(os.path.join(job_dir, "slurm_state")) as fh:
+            self.assertEqual(fh.read().strip(), "unknown")
+
+    def test_the_first_observation_stands(self) -> None:
+        # sacct's retention window expires and the same job then reads 'unknown'.
+        # Overwriting would turn every recorded outcome into "forgotten" given time.
+        with patch.dict(os.environ, {"MIMIR_SESSION_ID": "session-a"}):
+            job_dir = self._submit()["job_dir"]
+            self._status_as("crashed")
+            server_hpc._normalized_job_state = lambda jid: ("unknown", "")
+            server_hpc.slurm_job_status(job_id="4242")
+        with open(os.path.join(job_dir, "slurm_state")) as fh:
+            self.assertEqual(fh.read().strip(), "crashed")
+
+    def test_another_session_s_poll_settles_it_too(self) -> None:
+        # The record belongs to the job, not to whoever looked — and the reader that
+        # needs it most is scanning sessions that may have no agent at all.
+        with patch.dict(os.environ, {"MIMIR_SESSION_ID": "session-a"}):
+            job_dir = self._submit()["job_dir"]
+        with patch.dict(os.environ, {"MIMIR_SESSION_ID": "session-b"}):
+            self._status_as("done")
+        self.assertTrue(os.path.exists(os.path.join(job_dir, "slurm_state")))
+
+    def test_an_unwritable_directory_does_not_cost_the_answer(self) -> None:
+        with patch.dict(os.environ, {"MIMIR_SESSION_ID": "session-a"}):
+            job_dir = self._submit()["job_dir"]
+            os.chmod(job_dir, 0o500)
+            self.addCleanup(os.chmod, job_dir, 0o700)
+            status = self._status_as("done")
+        self.assertEqual(status["state"], "done")
+
     def test_requires_confirm(self) -> None:
         res = server_hpc.sbatch_submit(command="echo hi", partition="cpu")
         self.assertEqual(res.get("status"), "error")

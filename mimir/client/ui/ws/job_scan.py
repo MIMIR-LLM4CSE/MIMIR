@@ -22,6 +22,12 @@ contract that matters, and that must change in both places together: a pid is al
 if it exists, its start time matches the one recorded (a recycled pid wears the same
 number), and it is not a zombie (nothing reaps a detached child, so a finished job lingers
 in the process table and would otherwise never reach a terminal state).
+
+A Slurm submission settles by a second shared contract, with ``servers/hpc/server_hpc.py``:
+nothing here can inspect a job whose state lives in a controller, so the poll that finds
+Slurm has let it go writes that state into the submission's own directory, and this module
+reads it. The file name ``slurm_state`` and its three words are what the two agree on, the
+way ``exit_code`` is what this module and ``_bash_jobs`` agree on.
 """
 
 from __future__ import annotations
@@ -65,7 +71,11 @@ class DetachedJob:
     def status_op(self) -> dict:
         """The read-only op a watcher polls this run with."""
         if self.kind == "slurm":
-            return {"tool": "slurm_status", "args": {"job_id": self.job_key}}
+            # The name the HPC server actually registers, and it has to be: a watcher
+            # polling a tool nothing answers to reads unreadable answers until it gives
+            # the run up as untrackable, settling nothing — so the next scan re-arms it,
+            # and the one after that, for as long as the process lives.
+            return {"tool": "slurm_job_status", "args": {"job_id": self.job_key}}
         return {"tool": "bash_job", "args": {"job_key": self.job_key}}
 
     def descriptor(self) -> dict:
@@ -118,6 +128,74 @@ def _read_json(path: str) -> dict | None:
         return None
 
 
+# What ``server_hpc`` writes into a submission's directory once Slurm has let the job go:
+# one of done|crashed|unknown. The name is shared with that module by convention, the way
+# ``exit_code`` is shared with ``_bash_jobs`` — see this module's docstring on twins.
+_SLURM_STATE = "slurm_state"
+
+# How long an unsettled Slurm submission is read as still running. A job's state lives in
+# the controller, so nothing here can conclude it ended; what this bounds is the opposite
+# failure — a descriptor nobody can settle holding a workspace open for ever, which is
+# reachable whenever no conversation is left to poll the job it belongs to.
+#
+# Generous on purpose, and far longer than any partition's wall-time: while a server is up
+# its watcher settles a finished job within a poll, so this only ever bites a submission
+# nothing is watching at all. Erring short is the worse mistake — it stops a server that
+# still owes a conversation its wake.
+_DEFAULT_SLURM_STALE_AFTER = 7 * 24 * 3600.0
+
+
+def _slurm_stale_after() -> float:
+    try:
+        return max(3600.0, float(os.environ.get("MIMIR_SLURM_STALE_AFTER", "")
+                                 or _DEFAULT_SLURM_STALE_AFTER))
+    except (TypeError, ValueError):
+        return _DEFAULT_SLURM_STALE_AFTER
+
+
+def _read_slurm_state(job_dir: str) -> str | None:
+    """The terminal state recorded for this submission, or None while it has none."""
+    try:
+        with open(os.path.join(job_dir, _SLURM_STATE), encoding="utf-8") as fh:
+            word = fh.read().strip()
+    except OSError:
+        return None
+    return word if word in ("done", "crashed", "unknown") else None
+
+
+def _older_than(path: str, age: float) -> bool:
+    """Whether *path* was last written more than *age* ago. False when unreadable.
+
+    Unreadable means unknown, and unknown must not age a submission out: that direction
+    stops a server over a stat() that failed.
+    """
+    try:
+        return (time.time() - os.path.getmtime(path)) > age
+    except OSError:
+        return False
+
+
+def _written_at(path: str) -> float | None:
+    """When *path* was last written. The submission time of a Slurm job, since the file
+    that carries its id is written once, as the job is submitted."""
+    try:
+        return os.path.getmtime(path)
+    except OSError:
+        return None
+
+
+def is_settled(job_dir: str) -> bool:
+    """Whether a run's directory records that it is over, either kind.
+
+    One predicate because there is one question: a shell job settles when its trap writes
+    an exit code, a Slurm submission when a poll writes the state Slurm last gave. A
+    reader that knows only the first reads every Slurm job this workspace ever submitted
+    as still running.
+    """
+    return (os.path.exists(os.path.join(job_dir, "exit_code"))
+            or _read_slurm_state(job_dir) is not None)
+
+
 def _read_exit_code(job_dir: str) -> int | None:
     path = os.path.join(job_dir, "exit_code")
     try:
@@ -162,11 +240,22 @@ def _scan_shell_jobs(session_id: str) -> list[DetachedJob]:
 
 
 def _scan_slurm_jobs(session_id: str) -> list[DetachedJob]:
-    """Slurm jobs, which are never declared finished by inspection.
+    """Slurm jobs, which are finished only once a poll has written down that they are.
 
-    Their state lives in the controller, not in a pid on this machine, so the only
-    honest reading here is "there is a job, ask Slurm". They come back as live so a
-    watcher is put on them, and the watcher's first poll is what settles it.
+    Their state lives in the controller, not in a pid on this machine, so inspection
+    cannot conclude a job ended: the honest reading of a bare submission is "there is a
+    job, ask Slurm", and it comes back live so a watcher is put on it.
+
+    What makes that terminable is the record the poll leaves behind. ``slurm_job_status``
+    writes the state into the submission's own directory the first time Slurm has let the
+    job go, which is this scan's equivalent of a shell job's exit-code trap — and the
+    reason the record has to exist at all: an id never stops existing, so a directory
+    holding nothing else reads as live for ever, and one submission is then enough to
+    make a workspace's server un-stoppable whatever it is or is not doing.
+
+    The age check is the other half, for a submission nothing will ever settle: no
+    conversation left to poll it, or a machine where the Slurm tools have gone. See
+    :data:`_DEFAULT_SLURM_STALE_AFTER` for why it is deliberately far longer than any job.
     """
     root = os.path.join(_sessions_root(), session_id, "hpc_jobs")
     if not os.path.isdir(root):
@@ -182,8 +271,21 @@ def _scan_slurm_jobs(session_id: str) -> list[DetachedJob]:
             continue
         if not job_id:
             continue
-        found.append(DetachedJob(session_id=session_id, job_key=job_id,
-                                 kind="slurm", live=True, exit_code=None))
+        state = _read_slurm_state(job_dir)
+        if state is None and _older_than(id_path, _slurm_stale_after()):
+            logger.info("job scan: Slurm submission %s of session %s has gone "
+                        "unsettled past the horizon; reading it as untrackable",
+                        job_id, session_id)
+            state = "unknown"
+        # ``unknown`` is a terminal state with no outcome, which is exactly what a None
+        # exit code means to DetachedJob.state — so the mapping is total and says what
+        # was observed rather than guessing an outcome nobody saw.
+        found.append(DetachedJob(
+            session_id=session_id, job_key=job_id, kind="slurm",
+            live=state is None,
+            exit_code={"done": 0, "crashed": 1}.get(state or ""),
+            started_at=_written_at(id_path),
+        ))
     return found
 
 
@@ -217,8 +319,46 @@ _BASELINE = ".wake_baseline"
 
 
 def _job_dir(session_id: str, job_key: str, kind: str = "shell") -> str:
-    sub = "hpc_jobs" if kind == "slurm" else "jobs"
-    return os.path.join(_sessions_root(), session_id, sub, job_key)
+    """The directory a run's markers belong in.
+
+    A shell job's key *is* its directory name. A Slurm job's is not: the submission is
+    filed under a timestamped name and the id lives in a file inside it, so the key has
+    to be resolved back to the directory that holds it — otherwise a marker lands beside
+    the real descriptor in a directory of its own, where nothing else about the job is.
+    """
+    if kind == "slurm":
+        return _slurm_job_dir(session_id, job_key)
+    return os.path.join(_sessions_root(), session_id, "jobs", job_key)
+
+
+def _slurm_hpc_root(session_id: str) -> str:
+    return os.path.join(_sessions_root(), session_id, "hpc_jobs")
+
+
+def _slurm_job_dir(session_id: str, job_id: str) -> str:
+    """Where *job_id* was recorded by this session.
+
+    Twin of ``server_hpc._find_job_dir``, narrowed to one session: a marker is written
+    where the run was filed, and this module is only ever asked about runs it scanned out
+    of that session's own directory.
+
+    Falls back to ``hpc_jobs/<job id>`` when no descriptor carries the id — a run whose
+    directory has been deleted can still be marked, and that fallback is also where
+    markers written before the id was resolved are to be found.
+    """
+    root = _slurm_hpc_root(session_id)
+    try:
+        names = sorted(os.listdir(root))
+    except OSError:
+        names = []
+    for name in names:
+        try:
+            with open(os.path.join(root, name, "slurm_job_id"), encoding="utf-8") as fh:
+                if fh.read().strip() == job_id:
+                    return os.path.join(root, name)
+        except OSError:
+            continue
+    return os.path.join(root, job_id)
 
 
 def _baseline_path(session_id: str) -> str:
@@ -255,9 +395,17 @@ def establish_baseline(session_id: str, jobs: list[DetachedJob]) -> None:
 
 
 def was_reported(job: DetachedJob) -> bool:
-    """Whether this run's ending has already been announced."""
-    return os.path.exists(os.path.join(
-        _job_dir(job.session_id, job.job_key, job.kind), _REPORTED))
+    """Whether this run's ending has already been announced.
+
+    Both candidate directories are checked for a Slurm job: markers written before its id
+    was resolved to a descriptor sit under the id itself, and reading only the resolved
+    directory would announce every one of those runs a second time.
+    """
+    candidates = [_job_dir(job.session_id, job.job_key, job.kind)]
+    if job.kind == "slurm":
+        candidates.append(os.path.join(_slurm_hpc_root(job.session_id), job.job_key))
+    return any(os.path.exists(os.path.join(base, _REPORTED))
+               for base in dict.fromkeys(candidates))
 
 
 def mark_reported(job: DetachedJob) -> None:

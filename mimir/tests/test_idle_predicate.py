@@ -88,6 +88,19 @@ class _IdleCase(unittest.TestCase):
         with open(os.path.join(job_dir, "exit_code"), "w") as fh:
             fh.write("0")
 
+    def _slurm_job(self, session_id: str, job_id: str, state: str | None = None,
+                   dir_name: str = "20261008T190000Z-ab12") -> str:
+        """A Slurm submission as ``sbatch_submit`` leaves it: a directory and an id."""
+        job_dir = os.path.join(self._tmp.name, "sessions", session_id,
+                               "hpc_jobs", dir_name)
+        os.makedirs(job_dir, exist_ok=True)
+        with open(os.path.join(job_dir, "slurm_job_id"), "w") as fh:
+            fh.write(job_id)
+        if state is not None:
+            with open(os.path.join(job_dir, "slurm_state"), "w") as fh:
+                fh.write(state)
+        return job_dir
+
     def _baseline(self, session_id: str) -> None:
         """Say this session has been scanned before — the ordinary state."""
         path = os.path.join(self._tmp.name, "sessions", session_id)
@@ -141,6 +154,59 @@ class WhatCountsAsFinishedTests(_IdleCase):
         w.out_q.put({"type": "output", "text": "a new turn speaks\n"})
         pool.bus.pump_once()
         self.assertFalse(pool.idle_report()["idle"])
+
+
+class SlurmSubmissionsEndTests(_IdleCase):
+    """A Slurm job holds the process open, and stops holding it.
+
+    The second half is the one that was missing, and it cost a night: a submission
+    records an id and an id never stops existing, so a workspace that had ever submitted
+    one job had a server that could never be idle — whatever it was or was not doing,
+    however long ago the job ended. The process does not decide a Slurm job is over by
+    inspection; it reads the state a poll wrote down.
+    """
+
+    def test_a_submitted_job_holds_the_process_open(self):
+        w = _Worker()
+        pool = self._pool({"s1": w})
+        self._conclude(pool, "s1", w)
+        self._slurm_job("s1", "123456")
+        report = pool.idle_report()
+        self.assertFalse(report["idle"])
+        self.assertTrue(any("still going" in r for r in report["reasons"]))
+
+    def test_a_job_slurm_has_finished_does_not(self):
+        w = _Worker()
+        pool = self._pool({"s1": w})
+        self._conclude(pool, "s1", w)
+        self._baseline("s1")
+        self._slurm_job("s1", "123456", state="done")
+        job_scan.mark_job_reported("s1", "123456", "hpc")
+        self.assertTrue(pool.idle_report()["idle"], pool.idle_report()["reasons"])
+
+    def test_a_finished_job_still_owed_its_wake_keeps_holding(self):
+        # Settled is not delivered: the conversation is still owed the turn, which is
+        # the one thing that must outlast the job itself.
+        w = _Worker()
+        pool = self._pool({"s1": w})
+        self._conclude(pool, "s1", w)
+        self._baseline("s1")
+        self._slurm_job("s1", "123456", state="done")
+        report = pool.idle_report()
+        self.assertFalse(report["idle"])
+        self.assertTrue(any("nobody has taken in" in r for r in report["reasons"]),
+                        report["reasons"])
+
+    def test_a_submission_nothing_can_settle_stops_holding_eventually(self):
+        w = _Worker()
+        pool = self._pool({"s1": w})
+        self._conclude(pool, "s1", w)
+        self._baseline("s1")
+        job_dir = self._slurm_job("s1", "123456")
+        aged = time.time() - 30 * 24 * 3600
+        os.utime(os.path.join(job_dir, "slurm_job_id"), (aged, aged))
+        job_scan.mark_job_reported("s1", "123456", "hpc")
+        self.assertTrue(pool.idle_report()["idle"], pool.idle_report()["reasons"])
 
 
 class JobsHoldItOpenTests(_IdleCase):

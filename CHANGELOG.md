@@ -56,6 +56,23 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the only thing the model sees before deciding to load one, so each now states the
   trigger instead of the subject.
 
+### Fixed
+- A workspace that had ever submitted a Slurm job had a server that could never stop. A
+  submission records a job id, an id never stops existing, and the scan that decides
+  whether this workspace still has work running had no other evidence to read — so every
+  past job counted as a run in flight, the idle TTL was never reached, and the process
+  outlived the window, the conversation and the work by days. A poll that finds Slurm has
+  let the job go now records that state in the submission's own directory, which is the
+  counterpart of a detached shell job's exit-code trap; the scan reads it, and a
+  submission nothing can ever settle ages out (`MIMIR_SLURM_STALE_AFTER`, a week by
+  default) rather than holding the workspace open for ever. Deleting a conversation
+  reports its live work from the same record, where it had been asking about every Slurm
+  job that conversation ever ran.
+- A watcher put back on a Slurm job polled `slurm_status`, which no server registers —
+  the tool is `slurm_job_status`. It read five unreadable answers, gave the run up as
+  untrackable, and left nothing behind, so the next scan re-armed it and the job's real
+  ending was never reported. A test asserted the wrong name, which is why it held.
+
 ### Removed
 - `fix-bug`, `refactor-code`, `analyze-only` and `prepare-pr`. Each restated what the
   system prompt already requires — make the minimum change, read before editing,

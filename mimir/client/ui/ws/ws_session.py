@@ -28,6 +28,7 @@ from .transcript_log import read_since
 from .job_scan import (
     establish_baseline,
     has_baseline,
+    is_settled,
     mark_wakes_reported,
     scan_all_sessions,
 )
@@ -2822,8 +2823,11 @@ class _Session:
 
         Read off the files rather than any in-memory registry: the job outlives the
         worker that launched it, and may outlive the server. A shell job is live when it
-        wrote no ``exit_code``; a Slurm submission is live when it recorded an id and no
-        exit code — neither is a certainty, which is why this reports and does not act.
+        wrote no ``exit_code``, a Slurm submission when no poll has recorded the state
+        Slurm last gave it — ``job_scan.is_settled`` holds both halves of that question,
+        because a Slurm job records no exit code and asking only for one reads every job
+        a conversation ever submitted as still running. Neither is a certainty, which is
+        why this reports and does not act.
         """
         base = os.path.join(_MIMIR_DIR_WS, "sessions", session_id)
         live = []
@@ -2840,7 +2844,7 @@ class _Session:
                 # deleting the conversation ask about work that does not exist.
                 if not os.path.isdir(job):
                     continue
-                if os.path.exists(os.path.join(job, "exit_code")):
+                if is_settled(job):
                     continue
                 label = key
                 try:

@@ -19,6 +19,28 @@ from mimir.client.ui.ws.job_scan import DetachedJob, scan_all_sessions, scan_ses
 from mimir.client.ui.ws.ws_worker import _AgentWorker
 
 
+def _hpc_tool_names() -> set[str]:
+    """The tools the HPC server actually registers, read off its source.
+
+    Read rather than imported: this is a client-side test, and what it needs to know is
+    one fact about the other tree — that the name a re-armed watcher will call is a name
+    something answers to. Nothing else here should have to import an MCP server.
+    """
+    import ast
+    from pathlib import Path
+    source = (Path(__file__).resolve().parents[1]
+              / "servers" / "hpc" / "server_hpc.py").read_text()
+    names = set()
+    for node in ast.walk(ast.parse(source)):
+        if not isinstance(node, ast.FunctionDef):
+            continue
+        for dec in node.decorator_list:
+            call = dec.func if isinstance(dec, ast.Call) else dec
+            if isinstance(call, ast.Attribute) and call.attr == "tool":
+                names.add(node.name)
+    return names
+
+
 class _ScanCase(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
@@ -66,12 +88,17 @@ class _ScanCase(unittest.TestCase):
         self._baseline(session_id)
         return job_dir
 
-    def _slurm_job(self, session_id: str, dir_name: str, job_id: str) -> None:
+    def _slurm_job(self, session_id: str, dir_name: str, job_id: str,
+                   state: str | None = None) -> None:
         job_dir = os.path.join(self._tmp.name, "sessions", session_id,
                                "hpc_jobs", dir_name)
         os.makedirs(job_dir, exist_ok=True)
         with open(os.path.join(job_dir, "slurm_job_id"), "w") as fh:
             fh.write(job_id)
+        if state is not None:
+            with open(os.path.join(job_dir, "slurm_state"), "w") as fh:
+                fh.write(state)
+        self._baseline(session_id)
 
     @staticmethod
     def _dead_pid() -> int:
@@ -143,8 +170,75 @@ class ScanTests(_ScanCase):
         self._slurm_job("s1", "run-1", "12345")
         job = [j for j in scan_session("s1") if j.kind == "slurm"][0]
         self.assertTrue(job.live)
-        self.assertEqual(job.status_op()["tool"], "slurm_status")
         self.assertEqual(job.status_op()["args"]["job_id"], "12345")
+
+    def test_the_slurm_status_op_names_a_tool_the_server_has(self):
+        # The tool name is the whole of the promise: a watcher polling one that does not
+        # exist reads five unreadable answers, gives the run up, and settles nothing —
+        # so the next scan re-arms it, for as long as the process lives.
+        self._slurm_job("s1", "run-1", "12345")
+        job = [j for j in scan_session("s1") if j.kind == "slurm"][0]
+        self.assertEqual(job.status_op()["tool"], "slurm_job_status")
+        self.assertIn(job.status_op()["tool"], _hpc_tool_names())
+
+    def test_a_recorded_terminal_state_ends_a_slurm_job(self):
+        # What the exit-code trap is to a shell job. Without it the directory says
+        # "there is a job" for ever: an id never stops existing.
+        self._slurm_job("s1", "run-1", "12345", state="done")
+        job = [j for j in scan_session("s1") if j.kind == "slurm"][0]
+        self.assertFalse(job.live)
+        self.assertEqual(job.state, "done")
+
+    def test_a_crashed_slurm_job_reports_as_crashed(self):
+        self._slurm_job("s1", "run-1", "12345", state="crashed")
+        self.assertEqual(scan_session("s1")[0].state, "crashed")
+
+    def test_a_slurm_job_slurm_has_forgotten_is_over_without_an_outcome(self):
+        # 'unknown' is terminal and claims nothing: the scheduler let go, and no outcome
+        # was ever observed. Claiming 'done' here would invent one.
+        self._slurm_job("s1", "run-1", "12345", state="unknown")
+        job = scan_session("s1")[0]
+        self.assertFalse(job.live)
+        self.assertEqual(job.state, "unknown")
+        self.assertIsNone(job.exit_code)
+
+    def test_an_unreadable_state_word_is_not_a_settlement(self):
+        self._slurm_job("s1", "run-1", "12345", state="PENDING-ish")
+        self.assertTrue(scan_session("s1")[0].live)
+
+    def test_an_unsettled_submission_ages_out(self):
+        # The case nothing will ever settle: no conversation left to poll the job, or a
+        # machine whose Slurm tools have gone. Bounded so one submission cannot hold a
+        # workspace open for ever.
+        self._slurm_job("s1", "run-1", "12345")
+        id_path = os.path.join(self._tmp.name, "sessions", "s1", "hpc_jobs",
+                               "run-1", "slurm_job_id")
+        aged = time.time() - 2 * 3600
+        os.utime(id_path, (aged, aged))
+        self.assertTrue(scan_session("s1")[0].live)   # two hours is no evidence at all
+        with mock.patch.dict(os.environ, {"MIMIR_SLURM_STALE_AFTER": "3600"}):
+            job = scan_session("s1")[0]
+        self.assertFalse(job.live)
+        self.assertEqual(job.state, "unknown")
+
+    def test_a_marker_lands_in_the_submission_own_directory(self):
+        # A Slurm key is an id, not a directory name, so marking has to resolve it back
+        # to the descriptor that holds it.
+        self._slurm_job("s1", "run-1", "12345", state="done")
+        job_scan.mark_job_reported("s1", "12345", "hpc")
+        self.assertTrue(os.path.exists(os.path.join(
+            self._tmp.name, "sessions", "s1", "hpc_jobs", "run-1", "reported")))
+        self.assertEqual([j for j in scan_session("s1") if j.kind == "slurm"], [])
+
+    def test_a_marker_written_under_the_bare_id_still_counts(self):
+        # Where markers landed before the id was resolved. Reading only the resolved
+        # directory would announce every one of those runs a second time.
+        self._slurm_job("s1", "run-1", "12345", state="done")
+        legacy = os.path.join(self._tmp.name, "sessions", "s1", "hpc_jobs", "12345")
+        os.makedirs(legacy, exist_ok=True)
+        with open(os.path.join(legacy, "reported"), "w") as fh:
+            fh.write("1")
+        self.assertEqual([j for j in scan_session("s1") if j.kind == "slurm"], [])
 
     def test_a_slurm_dir_with_no_id_is_skipped(self):
         os.makedirs(os.path.join(self._tmp.name, "sessions", "s1", "hpc_jobs", "x"))

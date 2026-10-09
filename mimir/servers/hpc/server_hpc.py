@@ -124,6 +124,45 @@ def _find_job_dir(job_id: str) -> tuple[str, str]:
     return "", ""
 
 
+# The word a poll writes into a submission's directory once Slurm has stopped having an
+# opinion about the job. This is the counterpart of a detached shell job's exit-code
+# trap, and it exists for the same reader: whoever asks later whether this workspace
+# still has work running has nothing but the descriptors on disk, and cannot ask Slurm.
+# Without it a submission's directory says "there is a job" for ever — the one thing it
+# records is an id, and an id never stops existing.
+_STATE_FILE = "slurm_state"
+
+# The states that mean Slurm is done answering for a job. ``unknown`` belongs here and is
+# not a failure: it is what a job that has left both squeue and sacct reads as — the
+# scheduler has forgotten it — and it is already what the client's watcher treats as
+# terminal. Recording it keeps the directory saying what the watcher concluded, where
+# leaving it blank would read as "still running" for ever.
+_TERMINAL_STATES = ("done", "crashed", "unknown")
+
+
+def _record_terminal_state(job_dir: str, state: str) -> None:
+    """Settle *job_dir* at the first poll that finds Slurm has let the job go.
+
+    Write-once, and that is the point: the first observation of a terminal state is the
+    truest one available. A later poll of the same job reads ``unknown`` once sacct's
+    retention window has passed, and letting that overwrite a recorded ``crashed`` would
+    turn every outcome into "the scheduler has forgotten it" given enough time.
+
+    Best-effort, like the markers in ``job_scan``: a status answer is worth more than the
+    record of it, so a directory that cannot be written costs a settled descriptor, never
+    the reply. Written for another conversation's job too — the record belongs to the job,
+    not to whoever happened to look, and the reader that needs it most is scanning
+    sessions that may have no agent at all.
+    """
+    try:
+        with open(os.path.join(job_dir, _STATE_FILE), "x") as fh:
+            fh.write(state)
+    except FileExistsError:
+        pass
+    except OSError:
+        pass
+
+
 def _run_bash(script: str, timeout: int) -> dict:
     try:
         res = subprocess.run(
@@ -516,6 +555,9 @@ def slurm_job_status(job_id: str) -> dict:
     Returns ``state`` in running|pending|done|crashed|unknown (squeue for active
     jobs, sacct for finished ones) plus the raw Slurm state string.
 
+    A terminal answer also settles the submission's directory, so that the readers which
+    cannot ask Slurm stop reading the job as live — see :func:`_record_terminal_state`.
+
     Args:
         job_id: The Slurm job ID to poll, as returned when the job was submitted.
     """
@@ -533,6 +575,11 @@ def slurm_job_status(job_id: str) -> dict:
         payload["log"] = os.path.join(job_dir, "slurm.log")
         if from_session:
             payload["submitted_by_another_session"] = from_session
+        # And if Slurm has let go, say so in the directory. See _record_terminal_state:
+        # this poll is the only thing that will ever know, and the readers that decide
+        # whether a workspace still has work running cannot ask the scheduler.
+        if state in _TERMINAL_STATES:
+            _record_terminal_state(job_dir, state)
     # A handle for a job of *this* conversation that is still in flight, so asking
     # where it is at puts a watcher back on it — the watchers do not survive the agent
     # that made them, and a window reload is enough to lose every one of them.
