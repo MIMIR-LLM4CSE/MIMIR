@@ -13,7 +13,6 @@ import json
 import os
 import tempfile
 import unittest
-from pathlib import Path
 
 from _memory_fixtures import load_memory_server, point_stores
 

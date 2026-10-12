@@ -136,8 +136,7 @@ def _add_unwatched(payload: dict) -> None:
     Best effort: a scheduler that will not answer leaves the payload alone rather than
     turning a successful submission into an error.
     """
-    by_host = slurm_unwatched_by_host(slurm_queued_by_host(_TIMEOUT_READ),
-                                      _hpc_jobs_dir())
+    by_host = slurm_unwatched_by_host(slurm_queued_by_host(_TIMEOUT_READ))
     if not by_host:
         return
     # Flat, and in inventory order: the client's nudge reads a list of ids, and the
@@ -688,7 +687,7 @@ def slurm_queue(user_only: bool = True, states: str = "", scheduler: str = "") -
     # Asked of *this* scheduler, which is why the descriptors are keyed by host: the
     # same number is a watched production run here and somebody else's sweep there, and
     # an id alone would report the second as covered by the first's descriptor.
-    recorded = _recorded_jobs(_hpc_jobs_dir())
+    recorded = _recorded_jobs()
     ids = [str(row.get("job_id") or "") for row in rows]
     for row, job_id in zip(rows, ids):
         row["watched"] = _covered_by(job_id, recorded, host)
@@ -696,7 +695,7 @@ def slurm_queue(user_only: bool = True, states: str = "", scheduler: str = "") -
     # Per row above, by array here: eight task rows name one descriptor to write, and
     # listing them one by one would ask for eight calls that all land on "already
     # recorded".
-    missing = slurm_unwatched(ids, _hpc_jobs_dir(), host=host)
+    missing = slurm_unwatched(ids, host=host)
     if missing:
         payload["unwatched"] = missing
         payload["unwatched_hint"] = slurm_unwatched_hint({host: missing})

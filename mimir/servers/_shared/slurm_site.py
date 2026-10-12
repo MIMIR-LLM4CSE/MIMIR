@@ -463,7 +463,7 @@ def record_job_dir(job_id: str, **files: str) -> str:
     return job_dir
 
 
-def recorded_jobs(*extra_roots: str) -> set[tuple[str | None, str]]:
+def recorded_jobs() -> set[tuple[str | None, str]]:
     """Every job this workspace holds a descriptor for, as ``(host, id)`` pairs.
 
     A set rather than a search per id: the callers are listings, and a search only
@@ -478,15 +478,18 @@ def recorded_jobs(*extra_roots: str) -> set[tuple[str | None, str]]:
     :func:`covered_by` lets it vouch for any: an older submission must not be read as
     unwatched work.
 
-    :func:`jobs_dir` is always read, not only the sessions tree below it. The two can
-    name different directories — outside a session, and under the test override — and
-    a reader that saw only one of them would call this session's own submissions
-    unwatched, which is the one answer this must never give wrongly.
+    Read from :func:`jobs_dir` and from every session's directory under it. Both,
+    because the two name different places outside a session and under the test
+    override, and a reader seeing one of them calls this session's own submissions
+    unwatched — the one answer this must never give wrongly.
 
-    *extra_roots* is for a caller holding descriptors somewhere else again.
+    There is nowhere else to look, and that is a decision rather than a coincidence.
+    A submitter that filed its jobs in a tree of its own — the proxy did — is one whose
+    runs read as work nobody is watching to everything built on this, so
+    :func:`record_job_dir` is the only writer there is.
     """
     found: set[tuple[str | None, str]] = set()
-    roots = [jobs_dir(), *extra_roots]
+    roots = [jobs_dir()]
     sessions = os.path.join(state_dir(), "sessions")
     try:
         roots += [os.path.join(sessions, sid, _JOBS_SUBDIR)
@@ -558,14 +561,14 @@ _UNWATCHED_HINT = (
     "for them. slurm_watch(job_id) adopts one — an array's base id covers every task.")
 
 
-def unwatched(queued_ids, *extra_roots: str, host: str) -> list[str]:
+def unwatched(queued_ids, *, host: str) -> list[str]:
     """The ids in *queued_ids* that no descriptor covers, by array rather than by task.
 
     Eight task rows of one array name one descriptor to write, so they collapse to
     their base: listed one by one, a reminder built on this would ask for eight calls
     that all land on "already recorded". Ordered, so the answer reads in queue order.
     """
-    recorded = recorded_jobs(*extra_roots)
+    recorded = recorded_jobs()
     out: dict[str, None] = {}
     for job_id in queued_ids:
         if job_id and not covered_by(job_id, recorded, host):
@@ -573,8 +576,7 @@ def unwatched(queued_ids, *extra_roots: str, host: str) -> list[str]:
     return list(out)
 
 
-def unwatched_by_host(queued: dict[str, list[str] | None],
-                      *extra_roots: str) -> dict[str, list[str]]:
+def unwatched_by_host(queued: dict[str, list[str] | None]) -> dict[str, list[str]]:
     """Per scheduler, what it is running that no descriptor covers.
 
     Takes :func:`queued_by_host`'s answer, so a cluster that did not reply contributes
@@ -585,7 +587,7 @@ def unwatched_by_host(queued: dict[str, list[str] | None],
     for host, ids in queued.items():
         if ids is None:
             continue
-        missing = unwatched(ids, *extra_roots, host=host)
+        missing = unwatched(ids, host=host)
         if missing:
             out[host] = missing
     return out
