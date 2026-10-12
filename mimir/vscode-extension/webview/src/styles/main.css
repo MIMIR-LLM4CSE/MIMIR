@@ -753,6 +753,44 @@ body {
 
 .user-text { white-space: pre-wrap; word-break: break-word; }
 
+/* ── Attached context inside a sent message ───────────────────────────────────
+   An "@"-mention is the part of a message the user comes back to, so it is drawn
+   as a chip rather than left in the prose. A file one is a button that opens the
+   file; both read the same, because what matters first is spotting them. */
+.ctx-mention {
+  display: inline;
+  font-family: var(--mono);
+  font-size: 0.95em;
+  padding: 1px 4px;
+  margin: 0 1px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: var(--vscode-editor-findMatchHighlightBackground, rgba(14, 99, 156, 0.35));
+  color: var(--fg);
+  white-space: normal;
+  word-break: break-all;
+}
+
+button.ctx-mention {
+  cursor: pointer;
+  text-align: left;
+}
+
+button.ctx-mention:hover {
+  border-color: var(--accent);
+  text-decoration: underline;
+}
+
+button.ctx-mention:focus-visible {
+  outline: 1px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+
+/* A resource mention addresses a server, not a path: marked, but not a link. */
+.ctx-mention--plain {
+  opacity: 0.9;
+}
+
 /* Mid-run steer message awaiting injection into the running turn. */
 .steer-badge {
   display: inline-block;
@@ -1916,12 +1954,17 @@ body {
 
 .mention-item {
   display: grid;
-  grid-template-columns: auto 1fr;
+  grid-template-columns: auto auto 1fr;
   align-items: baseline;
   gap: 8px;
   padding: 5px 8px;
   border-radius: 4px;
   cursor: pointer;
+}
+
+.mention-icon {
+  font-size: 0.9em;
+  opacity: 0.8;
 }
 
 .mention-item.active,
@@ -1946,7 +1989,7 @@ body {
 }
 
 .mention-desc {
-  grid-column: 1 / -1;
+  grid-column: 2 / -1;
   color: var(--fg-dim);
   font-size: 0.85em;
 }

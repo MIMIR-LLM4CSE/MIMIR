@@ -747,6 +747,14 @@ export interface ResourcesMessage {
   resources: ResourceItem[];
 }
 
+/** Workspace files matching an "@" query, ranked by the extension host.
+ *  `query` echoes the request so a reply overtaken by further typing is dropped. */
+export interface FileResultsMessage {
+  type: "file_results";
+  query: string;
+  files: string[]; // workspace-relative paths, best match first
+}
+
 /** The file (and optional selected line range) focused in the VS Code editor. */
 export interface ActiveEditorMessage {
   type: "active_editor";
@@ -806,6 +814,7 @@ export type ServerMessage =
   | JobCheckinMessage
   | TogglesListMessage
   | ResourcesMessage
+  | FileResultsMessage
   | ActiveEditorMessage
   | OpenEditorMessage
   | UserQuestionMessage

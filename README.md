@@ -406,7 +406,8 @@ never the same one twice. A skill whose front-matter sets `disable-model-invocat
 stays available to the slash command and refuses the model's own pull.
 
 In the VS Code chat, typing `/` at the start of the input opens an autocomplete dropdown of
-available skills (mirroring the `@` resource-attach menu).
+available skills (mirroring the `@` attach menu, which lists the workspace's files and the
+MCP resources — `@src/solver.py:40-80` attaches those lines).
 
 ## Extending MIMIR
 

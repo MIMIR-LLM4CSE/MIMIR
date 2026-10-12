@@ -13,6 +13,29 @@ the server of the same checkout, so the two always move together.
 How to release is in [CONTRIBUTING.md](CONTRIBUTING.md#releasing). The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Added
+- **The "@" menu lists the workspace's files.** Attaching a file meant typing its path
+  from memory: the dropdown offered the MCP resources a server exposes and nothing else,
+  so `@src/solver.py:40-80` worked only if you already knew the path, and a typo attached
+  nothing at all (an unresolved `@token` is left as prose, by design). The files now sit
+  under the resources, matched the way Quick Open matches — the typed letters in order,
+  so `apcx` finds `webview/src/App.tsx`, and a hit in the file name outranks one in the
+  directory. The list comes from the extension host, which is the only side that can see
+  the workspace: one scan per window, kept until a file appears or disappears, with the
+  dependency and cache trees (`node_modules`, `__pycache__`, `.venv`, …) left out.
+
+### Changed
+- **A sent message marks what it attached, and a file mention opens the file.** The
+  `@`-mentions in your own message were plain prose, which is where they were hardest to
+  find again — and they are the part of a turn you come back to: which file, which lines.
+  Each one is now drawn as a chip, and a file one is a button: it opens the file in an
+  editor tab, at the attached line range when the mention named one. A resource mention
+  is marked the same way but stays text — it addresses a server, not a path. The reading
+  of what counts as a mention is the server's own, so the chips are exactly the tokens
+  the agent will resolve.
+
 ## [1.5.0] — 2026-10-12
 
 ### Added

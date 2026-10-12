@@ -55,10 +55,11 @@ import { MentionAutocomplete } from "./components/MentionAutocomplete";
 import { SlashAutocomplete } from "./components/SlashAutocomplete";
 import {
   detectMentionQuery,
-  filterResources,
+  buildMentionItems,
   applyMention,
   wrapIndex,
   type MentionQuery,
+  type MentionItem,
 } from "./components/mentionUtils";
 import {
   detectSlashQuery,
@@ -149,13 +150,28 @@ export const App: React.FC = () => {
   // Whether the endpoint has answered the model-list question at all.
   const [modelsProbed, setModelsProbed] = useState(false);
   const [input, setInput] = useState("");
-  // ── @-mention autocomplete (attach MCP resources) ─────────────────────────
+  // ── @-mention autocomplete (attach MCP resources and workspace files) ─────
   const [resources, setResources] = useState<ResourceItem[]>([]);
+  // Workspace files matching the mention being typed, ranked by the extension host —
+  // the webview has no filesystem of its own to search. `query` is the ask they answer,
+  // so a reply overtaken by further typing can be ignored rather than shown.
+  const [fileMatches, setFileMatches] = useState<{ query: string; files: string[] }>(
+    { query: "", files: [] }
+  );
   const [mention, setMention] = useState<MentionQuery | null>(null);
   const [mentionIndex, setMentionIndex] = useState(0);
   const mentionItems = useMemo(
-    () => (mention ? filterResources(resources, mention.query) : []),
-    [mention, resources]
+    () =>
+      mention
+        ? buildMentionItems(
+            resources,
+            // Only the answer to this very query: showing the previous one's files
+            // under a narrower query puts rows in the list that do not match it.
+            fileMatches.query === mention.query ? fileMatches.files : [],
+            mention.query
+          )
+        : [],
+    [mention, resources, fileMatches]
   );
   const mentionOpen = mention !== null && mentionItems.length > 0;
   // ── "/"-command autocomplete (run a skill) ─────────────────────────────────
@@ -264,6 +280,8 @@ export const App: React.FC = () => {
 
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  /** The mention query the host was last asked about, so one ask per keystroke. */
+  const mentionFileQueryRef = useRef<string | null>(null);
   // Messages sent from this input, oldest first, recalled with the arrow keys.
   const sentHistoryRef = useRef<string[]>([]);
   const historyStateRef = useRef<HistoryState>(HISTORY_IDLE);
@@ -473,6 +491,10 @@ export const App: React.FC = () => {
 
       case "resources":
         setResources(msg.resources ?? []);
+        return;
+
+      case "file_results":
+        setFileMatches({ query: msg.query ?? "", files: msg.files ?? [] });
         return;
 
       case "active_editor":
@@ -978,8 +1000,18 @@ export const App: React.FC = () => {
   const syncMention = useCallback((el: HTMLTextAreaElement | null) => {
     if (!el) return;
     const caret = el.selectionStart ?? el.value.length;
-    setMention(detectMentionQuery(el.value, caret));
+    const next = detectMentionQuery(el.value, caret);
+    setMention(next);
     setMentionIndex(0);
+    // Each keystroke inside a mention asks the host to rank the workspace against it.
+    // Cheap on its side (one cached scan, then a sort), and asking per keystroke is
+    // what keeps the list honest: it is the only place the file names exist.
+    if (next && next.query !== mentionFileQueryRef.current) {
+      mentionFileQueryRef.current = next.query;
+      vscodePostMessage({ type: "file_search", query: next.query });
+    } else if (!next) {
+      mentionFileQueryRef.current = null;
+    }
   }, []);
 
   // Recompute the "/"-command query from the textarea's current value + caret.
@@ -992,7 +1024,7 @@ export const App: React.FC = () => {
 
   // Insert the chosen resource's token at the caret and refocus the input.
   const pickMention = useCallback(
-    (item: ResourceItem) => {
+    (item: MentionItem) => {
       const el = textareaRef.current;
       if (!el || !mention) return;
       const caret = el.selectionStart ?? el.value.length;
@@ -1000,10 +1032,13 @@ export const App: React.FC = () => {
         el.value,
         mention.start,
         caret,
-        item.name || item.uri
+        item.insert
       );
       setInput(text);
       setMention(null);
+      // The next mention asks again, even for the same letters: the workspace may
+      // have gained or lost a file since.
+      mentionFileQueryRef.current = null;
       requestAnimationFrame(() => {
         const t = textareaRef.current;
         if (t) {
@@ -1700,6 +1735,7 @@ export const App: React.FC = () => {
             }}
             onBlur={() => {
               setMention(null);
+              mentionFileQueryRef.current = null;
               setSlash(null);
             }}
             onKeyDown={handleKeyDown}

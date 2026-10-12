@@ -4,6 +4,7 @@ import {
   filterResources,
   applyMention,
   wrapIndex,
+  buildMentionItems,
 } from "./mentionUtils";
 import type { ResourceItem } from "../types";
 
@@ -78,4 +79,41 @@ describe("wrapIndex", () => {
   it("wraps past the end", () => expect(wrapIndex(3, 3)).toBe(0));
   it("wraps before the start", () => expect(wrapIndex(-1, 3)).toBe(2));
   it("handles empty", () => expect(wrapIndex(0, 0)).toBe(0));
+});
+
+describe("buildMentionItems", () => {
+  const resources: ResourceItem[] = [
+    { uri: "memory://all", name: "memory", description: "Stored notes" },
+  ];
+  const files = ["mimir/client/loop.py", "README.md"];
+
+  it("lists resources before files", () => {
+    const items = buildMentionItems(resources, files, "");
+    expect(items.map((i) => i.kind)).toEqual(["resource", "file", "file"]);
+    expect(items[0].insert).toBe("memory");
+  });
+
+  it("splits a file row into name and directory", () => {
+    const [file] = buildMentionItems([], files, "loop");
+    expect(file).toMatchObject({
+      kind: "file",
+      insert: "mimir/client/loop.py",
+      label: "loop.py",
+      detail: "mimir/client",
+    });
+  });
+
+  it("leaves the directory empty for a file at the root", () => {
+    const [file] = buildMentionItems([], ["README.md"], "");
+    expect(file.detail).toBe("");
+  });
+
+  it("drops the resources a query does not match", () => {
+    const items = buildMentionItems(resources, files, "loop");
+    expect(items.every((i) => i.kind === "file")).toBe(true);
+  });
+
+  it("honours the limit", () => {
+    expect(buildMentionItems(resources, files, "", 2)).toHaveLength(2);
+  });
 });

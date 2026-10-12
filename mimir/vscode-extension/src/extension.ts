@@ -7,6 +7,7 @@ import * as path from "path";
 import WebSocket = require("ws");
 import { explainFetchError, fetchModels, type DiscoverableBackend } from "./modelList";
 import { loadSiteConfig, compareVersions, resolveReleaseRoot } from "./release";
+import { isNoisePath, rankFiles } from "./fileIndex";
 
 let serverProcess: cp.ChildProcess | undefined;
 
@@ -650,6 +651,13 @@ class MimirAgentViewProvider implements vscode.WebviewViewProvider {
    * reconnect goes through this — there is no fixed address to fall back on.
    */
   private _wsUrl: string | undefined;
+  /**
+   * The workspace's file list, as a promise so concurrent keystrokes share one scan.
+   * Undefined means "not scanned, or invalidated by a file appearing or disappearing".
+   */
+  private _fileScan: Promise<string[]> | undefined;
+  /** Watcher behind that invalidation; created with the first scan, never replaced. */
+  private _fileWatcher: vscode.FileSystemWatcher | undefined;
 
   constructor(
     private readonly extensionUri: vscode.Uri,
@@ -925,6 +933,70 @@ class MimirAgentViewProvider implements vscode.WebviewViewProvider {
       selection = start === last ? `${start}` : `${start}-${last}`;
     }
     this._view?.webview.postMessage({ type: "active_editor", file, selection });
+  }
+
+  /**
+   * Answer the webview's "@" autocomplete with the workspace files matching `query`.
+   *
+   * The scan happens once per window and is kept: a keystroke must not cost a walk of
+   * the tree, and the dropdown is typed into a character at a time. A file created or
+   * deleted afterwards drops the cache (see `_watchWorkspaceFiles`), so the list stays
+   * true without rescanning on a timer.
+   *
+   * The query is echoed back because the answers are asynchronous and the user keeps
+   * typing: the webview drops a reply that no longer matches what is in the box.
+   */
+  private async _sendFileMatches(query: string): Promise<void> {
+    let files: string[];
+    try {
+      files = await this._workspaceFiles();
+    } catch {
+      // No workspace, or a scan the host refused — the dropdown still has the MCP
+      // resources, and a file path typed by hand resolves server-side either way.
+      files = [];
+    }
+    this._view?.webview.postMessage({
+      type: "file_results",
+      query,
+      files: rankFiles(files, query),
+    });
+  }
+
+  /** The cached workspace-relative file list, scanning on the first ask. */
+  private _workspaceFiles(): Promise<string[]> {
+    if (!this._fileScan) {
+      this._watchWorkspaceFiles();
+      // Capped: past a few tens of thousands of files the ranking is the wrong tool
+      // and the user is better served by typing more of the path. `undefined` as the
+      // exclude keeps the workspace's own `files.exclude`; `isNoisePath` adds the
+      // trees every repo has and nobody attaches.
+      const scan = Promise.resolve(
+        vscode.workspace.findFiles("**/*", undefined, 40000),
+      ).then((uris) =>
+        uris
+          .map((uri) => vscode.workspace.asRelativePath(uri, false))
+          .filter((rel) => !isNoisePath(rel)),
+      );
+      this._fileScan = scan;
+      return scan;
+    }
+    return this._fileScan;
+  }
+
+  /**
+   * Drop the cached file list when the workspace gains or loses a file.
+   *
+   * Content changes are ignored — the index holds paths, not text — and the watcher
+   * is created once, with the first scan, so a window whose user never types "@"
+   * installs nothing.
+   */
+  private _watchWorkspaceFiles(): void {
+    if (this._fileWatcher) return;
+    const watcher = vscode.workspace.createFileSystemWatcher("**/*", false, true, false);
+    const invalidate = () => { this._fileScan = undefined; };
+    watcher.onDidCreate(invalidate);
+    watcher.onDidDelete(invalidate);
+    this._fileWatcher = watcher;
   }
 
   /**
@@ -1616,6 +1688,12 @@ class MimirAgentViewProvider implements vscode.WebviewViewProvider {
       // server ends here, which is what the dialog says it does.
       endServerUnlessKeptRunning();
       this._view?.webview.postMessage({ type: "ws_closed" });
+      return;
+    }
+
+    if (m.type === "file_search") {
+      // The "@" dropdown, asking which workspace files match what has been typed.
+      void this._sendFileMatches(typeof m.query === "string" ? m.query : "");
       return;
     }
 

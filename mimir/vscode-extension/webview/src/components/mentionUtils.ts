@@ -78,3 +78,58 @@ export function wrapIndex(index: number, len: number): number {
   if (len <= 0) return 0;
   return ((index % len) + len) % len;
 }
+
+/** One row of the "@" dropdown: an MCP resource, or a workspace file. */
+export type MentionItem =
+  | {
+      kind: "resource";
+      /** React key, and what `applyMention` inserts after the "@". */
+      insert: string;
+      label: string;
+      detail: string;
+      description?: string;
+    }
+  | {
+      kind: "file";
+      insert: string;
+      /** The file name alone — the part worth reading first. */
+      label: string;
+      /** Its directory, empty at the workspace root. */
+      detail: string;
+    };
+
+/**
+ * The dropdown's rows for `query`: the matching resources, then the matching files.
+ *
+ * Resources lead because there are a handful of them against a workspace's thousands,
+ * so a file list would bury them, and because a name shorthand like `@memory` is
+ * otherwise indistinguishable from a path the user has half-typed.
+ *
+ * `files` arrives already ranked by the extension host (it owns the index); this only
+ * shapes it for display.
+ */
+export function buildMentionItems(
+  resources: ResourceItem[],
+  files: string[],
+  query: string,
+  limit = 40
+): MentionItem[] {
+  const items: MentionItem[] = filterResources(resources, query).map((r) => ({
+    kind: "resource" as const,
+    insert: r.name || r.uri,
+    label: `@${r.name || r.uri}`,
+    detail: r.uri,
+    description: r.description || undefined,
+  }));
+  for (const path of files) {
+    if (items.length >= limit) break;
+    const name = path.split("/").pop() || path;
+    items.push({
+      kind: "file",
+      insert: path,
+      label: name,
+      detail: path.slice(0, path.length - name.length).replace(/\/$/, ""),
+    });
+  }
+  return items.slice(0, limit);
+}

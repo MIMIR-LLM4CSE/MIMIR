@@ -54,7 +54,7 @@ webview handleServerMessage() → React state update → render
 
 Every Python→frontend message is a JSON object with a `type` field. The full set is defined in `webview/src/types.ts` as the `ServerMessage` discriminated union.
 
-Six message types never reach Python — the extension host answers them itself, before
+These message types never reach Python — the extension host answers them itself, before
 any server exists:
 
 | Message | Direction | Meaning |
@@ -65,6 +65,8 @@ any server exists:
 | `models` | host → webview | `{backend, models, error?}` — the result, or why it failed |
 | `connect` | webview → host | `{model, backend, baseUrl, anthropicApiKey?, remember?}` — start the WS server and attach |
 | `auto_connect` | host → webview | `{backend, baseUrl, model}` — the host reconnected on its own; show "connecting" |
+| `file_search` | webview → host | `{query}` — the workspace files matching what has been typed after an "@" |
+| `file_results` | host → webview | `{query, files}` — the ranked workspace-relative paths, with the query they answer |
 
 ### Remembering an address
 
@@ -181,7 +183,10 @@ webview/src/
     ├── AgentSettings.tsx      ← the settings popover
     ├── ConnectForm.tsx        ← connection form (backend · address · model)
     ├── ContextBar.tsx         ← context-window usage
-    ├── MentionAutocomplete.tsx / mentionUtils.ts   ← the `@` attach dropdown
+    ├── MentionAutocomplete.tsx / mentionUtils.ts   ← the `@` attach dropdown: the MCP
+    │                            resources, then the workspace files the host ranked
+    ├── MentionText.tsx / mentionHighlight.ts       ← the `@`-attachments of a sent
+    │                            message, drawn as chips; a file one opens the file
     ├── SlashAutocomplete.tsx  / slashUtils.ts      ← the `/` command dropdown
     ├── subAgentUtils.ts       ← sub-agent row grouping
     ├── RunProgressDock.tsx    ← runs still going whose rows have scrolled away, as small
@@ -205,6 +210,15 @@ component + keyboard nav with `wrapIndex`):
 - **"@" mentions** — attach MCP resources or workspace files/line-ranges as context.
   `mentionUtils.detectMentionQuery` fires whenever "@" starts a token (start of input or
   after whitespace), anywhere in the message. Picks insert `@name ` at the caret.
+  The rows are the matching MCP resources first, then the matching workspace files
+  (`mentionUtils.buildMentionItems`): a handful of resources against a repository's
+  thousands of files, and a name shorthand like `@memory` is otherwise indistinguishable
+  from a half-typed path. The file names come from the extension host — the webview has
+  no filesystem and its CSP reaches nothing else: each keystroke inside a mention posts
+  `file_search`, and the host answers `file_results` with the ranked paths
+  (`src/fileIndex.ts`; one cached `findFiles` scan per window, dropped when a file
+  appears or disappears). The reply echoes the query it answers, so one overtaken by
+  further typing is dropped rather than listed under a narrower query.
 - **"/" slash commands** — invoke a skill explicitly (e.g. `/debug-numerics …`).
   `slashUtils.detectSlashQuery` fires **only** when "/" is the first non-whitespace
   character of the input, mirroring the backend rule (`agent_loop.py`:
@@ -214,7 +228,17 @@ component + keyboard nav with `wrapIndex`):
 Both are wired identically in `App.tsx`: `syncMention`/`syncSlash` (on change/select),
 `pickMention`/`pickSlash`, and a shared `handleKeyDown` (Arrow/Enter/Tab/Esc) that routes
 to whichever dropdown is open. Helper logic lives outside React so it is unit-tested with
-vitest (`mentionUtils.test.ts`, `slashUtils.test.ts`).
+vitest (`mentionUtils.test.ts`, `slashUtils.test.ts`, `fileIndex.test.ts`).
+
+Once sent, the mentions are marked in the bubble rather than left in the prose: what was
+attached is the part of a message the user comes back to, and as plain text it is the
+hardest part to find again. `mentionHighlight.splitMentionSegments` re-reads the message
+with the backend's own rule (`(?<!\S)@(\S+)`, trailing sentence punctuation peeled off)
+and `MentionText.tsx` renders each mention as a chip. A file mention is a button: it
+posts `open_file` with the attached line range, the same host handler the edit cards use,
+so clicking it opens the file in an editor tab at those lines. A resource mention
+(`@memory://all`) is marked the same way but is not a link — it addresses a server, not
+a path.
 
 
 ---
