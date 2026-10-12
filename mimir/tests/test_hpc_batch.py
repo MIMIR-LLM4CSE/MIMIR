@@ -23,6 +23,7 @@ for _p in (_SERVERS / "_shared", _SERVERS / "hpc"):
         sys.path.insert(0, str(_p))
 
 import server_hpc  # noqa: E402
+import slurm_digest  # noqa: E402
 import slurm_site  # noqa: E402
 
 
@@ -848,6 +849,19 @@ class ManySchedulersOneSessionTests(unittest.TestCase):
         server_hpc.slurm_queued_by_host = lambda *_a, **_k: {}
         self.addCleanup(lambda: setattr(server_hpc, "slurm_queued_by_host",
                                         self._orig_queued))
+        # The inventory describes each host's hardware, so no real scheduler is asked.
+        self._hardware: dict[str, str | None] = {}
+        orig_capture = slurm_digest._capture
+        slurm_digest._capture = self._capture
+        self.addCleanup(setattr, slurm_digest, "_capture", orig_capture)
+        slurm_digest.forget_cluster_digest()
+        self.addCleanup(slurm_digest.forget_cluster_digest)
+
+    def _capture(self, script, host, timeout):
+        answer = self._hardware.get(host, _SCONTROL)
+        if answer is None or not script.startswith("scontrol"):
+            return None
+        return answer
 
     def _reaching(self, *hosts: str) -> None:
         """Make the session reach exactly *hosts* ("" being this machine's own)."""
@@ -964,6 +978,27 @@ class ManySchedulersOneSessionTests(unittest.TestCase):
         self.assertEqual([entry["local"] for entry in res["schedulers"]],
                          [True, False])
         self.assertIn("names its scheduler", res["note"])
+
+    def test_each_entry_says_what_its_machines_are(self) -> None:
+        """Half the choice is hardware, and it has to be here to be made here.
+
+        A model that must spend a slurm_nodes call per candidate before it can pick
+        one picks without looking.
+        """
+        self._reaching("", "host-b")
+        entries = server_hpc.slurm_schedulers()["schedulers"]
+        self.assertIn("node type", entries[0]["hardware"])
+        self.assertIn("x86_64", entries[0]["hardware"])
+        self.assertEqual(len(entries[1]["node_types"]), 2)
+
+    def test_a_silent_host_is_listed_without_being_called_empty(self) -> None:
+        """Unknown hardware is not absent hardware, and neither is an error."""
+        self._hardware["host-b"] = None
+        self._reaching("", "host-b")
+        entries = server_hpc.slurm_schedulers()["schedulers"]
+        self.assertIn("node type", entries[0]["hardware"])
+        self.assertEqual(entries[1]["hardware"], "")
+        self.assertIn("unknown, not absent", entries[1]["hardware_note"])
 
     def test_a_host_is_verified_before_it_is_added(self) -> None:
         # Nothing is recorded on a guess: an unreachable host in the inventory is a

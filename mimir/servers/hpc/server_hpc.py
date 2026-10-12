@@ -57,11 +57,17 @@ from slurm_site import (
     unwatched_by_host as slurm_unwatched_by_host,
     unwatched_hint as slurm_unwatched_hint,
 )
+from slurm_digest import (
+    cached_cluster_digest as _cluster_digest,
+    forget_cluster_digest as _forget_cluster_digest,
+)
 from slurm_nodes import (
+    SCONTROL_NODES_ARGV as _SCONTROL_NODES_ARGV,
+    SINFO_NODES_FORMAT as _SINFO_NODES_FORMAT,
     aggregate_node_types as _aggregate_node_types,
-    as_int as _as_int,
-    clean_gres as _clean_gres,
+    parse_pipe_table as _parse_pipe_table,
     parse_scontrol_nodes as _parse_scontrol_nodes,
+    parse_sinfo_nodes as _parse_sinfo_nodes,
 )
 
 mcp = FastMCP(
@@ -125,14 +131,14 @@ def _no_scheduler_hint(host: str = _LOCAL_HOST) -> str:
     known = slurm_hosts()
     if host:
         return (f"That went to {host}; check the host answers — "
-                "slurm_schedulers() lists what this session reaches.")
+                "slurm_schedulers() lists what this workspace reaches.")
     if known:
         return ("No Slurm command answered on this host. Reachable instead: "
                 + ", ".join(_host_name(h) for h in known)
                 + " — pass one as scheduler=.")
     return ("No Slurm command answered on this host, and no other scheduler has been "
             "reached yet. If one lives elsewhere, read its queue through the shell "
-            "once — ssh <host> \"squeue -u $USER\" — and it joins this session's "
+            "once — ssh <host> \"squeue -u $USER\" — and it joins this workspace's "
             "schedulers, or name it with slurm_schedulers(add=\"<host>\").")
 
 
@@ -145,9 +151,9 @@ def _add_unwatched(payload: dict) -> None:
     watcher's poll target, called on a timer for the life of every watched run, and a
     per-user queue read on it would be paid for ever.
 
-    Asked of every scheduler this session reaches, because work nobody is watching is
-    not more acceptable for being on the other cluster — and because the model holding
-    these ids has just chosen between those schedulers and can act on either.
+    Asked of every scheduler this workspace reaches, because work nobody is watching
+    is not more acceptable for being on the other cluster — and because the model
+    holding these ids has just chosen between those schedulers and can act on either.
 
     Best effort: a scheduler that will not answer leaves the payload alone rather than
     turning a successful submission into an error.
@@ -301,8 +307,8 @@ def _record_terminal_state(job_dir: str, state: str) -> None:
 
 # ── Which scheduler a call goes to ────────────────────────────────────────────
 #
-# An inventory, not a setting: ``_shared/slurm_site`` holds the schedulers this session
-# reaches — this machine's own when it has one, plus every host a successful
+# An inventory, not a setting: ``_shared/slurm_site`` holds the schedulers this
+# workspace reaches — this machine's own when it has one, plus every host a successful
 # ``ssh host "squeue …"`` has proved — and a caller names which. See that module for why
 # a variable nobody sets before the first lost night is the wrong mechanism, and for how
 # a command is run over there.
@@ -347,7 +353,7 @@ def _chosen_host(scheduler: str) -> tuple[str, dict | None]:
 
 def _locate_job(job_id: str, requested: str = "",
                 job_dir: str = "") -> tuple[str, str, str]:
-    """Find *job_id* among the schedulers this session reaches: ``(host, state, raw)``.
+    """Find *job_id* among the schedulers this workspace reaches: ``(host, state, raw)``.
 
     The hint first — the descriptor's own record, which makes the common case one call
     — then every other reachable scheduler until one knows the id. That fallback is
@@ -420,18 +426,6 @@ def _run_bash(script: str, timeout: int, stdin: str | None = None, *,
         return err(str(e))
 
 
-def _parse_pipe_table(stdout: str, columns: list[str]) -> list[dict]:
-    rows = []
-    for line in stdout.splitlines():
-        if not line.strip():
-            continue
-        parts = [p.strip() for p in line.split("|")]
-        if len(parts) != len(columns):
-            continue
-        rows.append({columns[i]: parts[i] for i in range(len(columns))})
-    return rows
-
-
 def _validate_time(value: str) -> bool:
     # Accept Slurm-like forms: MM, MM:SS, HH:MM:SS, D-HH, D-HH:MM, D-HH:MM:SS
     return bool(re.fullmatch(r"\d+(-\d{1,2}(:\d{2}(:\d{2})?)?|(:\d{2}){0,2})", value))
@@ -464,9 +458,38 @@ def _validate_comment(value: str) -> str | None:
     return None
 
 
+def _hardware_of(host: str) -> dict:
+    """What *host*'s machines are, for the listing a scheduler is chosen from.
+
+    A summary and the stable node types, never occupancy. A host that said nothing
+    carries neither and says so, because a cluster described as having no hardware
+    reads as a cluster not worth submitting to.
+    """
+    digest = _cluster_digest(host)
+    if not digest["source"]:
+        return {"hardware": "",
+                "hardware_note": "Did not answer; its hardware is unknown, not absent."}
+    types = digest["node_types"]
+    arches = sorted({t["arch"] for t in types if t["arch"]})
+    # The model, not the whole gres: a site with ten GPU shapes makes a line nobody
+    # scans, and the counts are on each node type below for whoever needs them.
+    gpus = sorted({t["gres"].split(":")[1] for t in types
+                   if t["gres"].startswith("gpu:") and t["gres"].count(":") >= 1})
+    parts = [f"{len(types)} node type{'s' if len(types) != 1 else ''}"]
+    if arches:
+        parts.append("/".join(arches))
+    if gpus:
+        parts.append(", ".join(gpus))
+    parts.append(f"{len(digest['partitions'])} partitions")
+    summary = {"hardware": " · ".join(parts), "node_types": types}
+    if digest["degraded"]:
+        summary["degraded"] = digest["degraded"]
+    return summary
+
+
 @mcp.tool(**tool_caps(kind="slurm"))
 def slurm_schedulers(add: str = "", forget: str = "") -> dict:
-    """The schedulers this session can submit to — read this before choosing one.
+    """The schedulers this workspace can submit to — read this before choosing one.
 
     A machine reaches more than one: its own Slurm when it has it, plus any host a
     successful ``ssh host "squeue …"`` has proved. Every cluster tool here takes a
@@ -474,9 +497,20 @@ def slurm_schedulers(add: str = "", forget: str = "") -> dict:
     the same way — the wake is owed wherever the work is.
 
     Which one a job goes to is a decision about the work, not a setting: the partitions
-    and GPUs it needs (slurm_partitions(scheduler=...), slurm_nodes(scheduler=...)),
-    and above all the filesystem holding its inputs and its work_dir, since a job can
-    only run where its files are. Ask the user when the task does not settle it.
+    and GPUs it needs, and above all the filesystem holding its inputs and its
+    work_dir, since a job can only run where its files are. Ask the user when the task
+    does not settle it.
+
+    Each entry therefore carries what its machines *are* — architectures, GPUs, the
+    kinds of node, how many partitions — because that is half the decision and a model
+    that must spend a slurm_nodes call per candidate before it can choose will choose
+    without looking. What is *free right now* is deliberately not here: that changes
+    between two reads and belongs to slurm_nodes(scheduler=...), which this is the
+    companion of rather than a substitute for.
+
+    Built once per host for the life of this server, so the first call pays a round
+    trip per cluster and the rest are free. A host that does not answer is listed
+    without its hardware rather than making the whole listing an error.
 
     Args:
         add: A host to add, verified before it is recorded — ``sbatch`` must answer
@@ -495,6 +529,8 @@ def slurm_schedulers(add: str = "", forget: str = "") -> dict:
                             "password: a scheduler that can ask for one hangs every "
                             "poll. Keys and ports belong in ~/.ssh/config.")
         _record_host(host)
+        # The explicit re-probe: a host named again is one the user may have changed.
+        _forget_cluster_digest(host)
         added = {"scheduler": host, "note": f"sbatch answers on {host}; added."}
 
     dropped: dict | None = None
@@ -507,9 +543,10 @@ def slurm_schedulers(add: str = "", forget: str = "") -> dict:
                                "the next call."}
         else:
             gone = _forget_host(host)
+            _forget_cluster_digest(host)
             dropped = {"scheduler": host,
                        "note": f"{host} dropped." if gone
-                               else f"{host} was not in this session's schedulers."}
+                               else f"{host} was not in this workspace's schedulers."}
 
     known = slurm_hosts()
     listed = [{
@@ -517,6 +554,7 @@ def slurm_schedulers(add: str = "", forget: str = "") -> dict:
         "local": not host,
         "reached": "Slurm answers on this host" if not host
                    else f"over ssh to {host}",
+        **_hardware_of(host),
     } for host in known]
     payload: dict = {"schedulers": listed, "count": len(listed)}
     if added:
@@ -533,8 +571,8 @@ def slurm_schedulers(add: str = "", forget: str = "") -> dict:
                            f"{_host_name(known[0])}.")
     else:
         payload["note"] = ("More than one, so every submission names its scheduler. "
-                           "The choice follows the job's resources and the filesystem "
-                           "its inputs are on.")
+                           "The choice follows the job's resources — the hardware on "
+                           "each entry above — and the filesystem its inputs are on.")
     return ok(payload)
 
 
@@ -544,7 +582,7 @@ def slurm_partitions(scheduler: str = "") -> dict:
 
     Args:
         scheduler: Which scheduler to ask — 'local' for this machine's own, or
-            a hostname. Omitted is fine when this session reaches only one;
+            a hostname. Omitted is fine when this workspace reaches only one;
             slurm_schedulers() lists them.
     """
     host, refusal = _chosen_host(scheduler)
@@ -569,36 +607,11 @@ def _sinfo_nodes(host: str = _LOCAL_HOST) -> list[dict]:
     sinfo is readable everywhere but does not carry the architecture, so callers are
     told the field is unknown rather than being handed a wrong default.
     """
-    result = _run_bash("sinfo -N -h -o '%N|%P|%t|%c|%m|%e|%G|%X|%Y|%Z'",
+    result = _run_bash(f"sinfo -N -h -o '{_SINFO_NODES_FORMAT}'",
                        _TIMEOUT_READ, host=host)
     if result["status"] != "ok":
         return []
-    rows = _parse_pipe_table(result.get("stdout", ""), [
-        "node", "partition", "state", "cpus", "mem_mb", "mem_free_mb", "gres",
-        "sockets", "cores_per_socket", "threads_per_core",
-    ])
-    # sinfo -N emits one row per (node, partition), so a node in three partitions
-    # appears three times; merge on the node name or every count is inflated.
-    nodes: list[dict] = []
-    by_name: dict[str, dict] = {}
-    for r in rows:
-        part = r["partition"].rstrip("*")
-        if r["node"] in by_name:
-            if part not in by_name[r["node"]]["partitions"]:
-                by_name[r["node"]]["partitions"].append(part)
-            continue
-        by_name[r["node"]] = {
-            "node": r["node"], "arch": "", "state": r["state"].upper(),
-            "partitions": [part],
-            "cpus": _as_int(r["cpus"].rstrip("+")), "cpus_allocated": None, "cpus_free": None,
-            "cpu_load": "", "sockets": _as_int(r["sockets"]),
-            "cores_per_socket": _as_int(r["cores_per_socket"]),
-            "threads_per_core": _as_int(r["threads_per_core"]),
-            "mem_mb": _as_int(r["mem_mb"]), "mem_free_mb": _as_int(r["mem_free_mb"]),
-            "gres": _clean_gres(r["gres"]), "features": "",
-        }
-        nodes.append(by_name[r["node"]])
-    return nodes
+    return _parse_sinfo_nodes(result.get("stdout", ""))
 
 
 @mcp.tool(**tool_caps(kind="slurm"))
@@ -622,14 +635,14 @@ def slurm_nodes(partition: str = "", states: str = "", node: str = "",
         node: A single node name; implies detail.
         detail: List every matching node individually instead of aggregating.
         scheduler: Which scheduler to ask — 'local' for this machine's own, or
-            a hostname. Omitted is fine when this session reaches only one;
+            a hostname. Omitted is fine when this workspace reaches only one;
             slurm_schedulers() lists them.
     """
     host, refusal = _chosen_host(scheduler)
     if refusal:
         return refusal
     degraded = ""
-    result = _run_argv(["scontrol", "show", "node", "-o"], _TIMEOUT_READ, host=host)
+    result = _run_argv(_SCONTROL_NODES_ARGV, _TIMEOUT_READ, host=host)
     if result["status"] == "ok":
         nodes = _parse_scontrol_nodes(result.get("stdout", ""))
     else:
@@ -672,7 +685,7 @@ def slurm_nodes(partition: str = "", states: str = "", node: str = "",
 def slurm_queue(user_only: bool = True, states: str = "", scheduler: str = "") -> dict:
     """List jobs from Slurm queue.
 
-    One scheduler's queue, because that is what a queue is. What this session is running
+    One scheduler's queue, because that is what a queue is. What this workspace runs
     elsewhere is in ``unwatched`` when nothing is tracking it, and slurm_schedulers()
     says where else to look.
 
@@ -680,7 +693,7 @@ def slurm_queue(user_only: bool = True, states: str = "", scheduler: str = "") -
         user_only: If true, show only jobs for the current user.
         states: Optional state filter (e.g. 'R,PD').
         scheduler: Which scheduler to ask — 'local' for this machine's own, or
-            a hostname. Omitted is fine when this session reaches only one;
+            a hostname. Omitted is fine when this workspace reaches only one;
             slurm_schedulers() lists them.
     """
     host, refusal = _chosen_host(scheduler)
@@ -966,8 +979,8 @@ def slurm_job_status(job_id: str, scheduler: str = "") -> dict:
     cannot ask Slurm stop reading the job as live — see :func:`_record_terminal_state`.
 
     The id is enough. Which scheduler is running the job is found — the descriptor's
-    own record first, then every other one this session reaches — so a poll works for a
-    job on any of them, including a watcher re-armed from disk after a window reload,
+    own record first, then every other one this workspace reaches — so a poll works
+    for a job on any of them, including a watcher re-armed from disk after a reload,
     which has nothing but the id to poll with.
 
     Args:
@@ -1048,7 +1061,7 @@ def slurm_watch(job_id: str, note: str = "", scheduler: str = "") -> dict:
             ``15306621_3``. An array's base id watches the whole array.
         note: What this job is, for whoever reads the directory later. Optional.
         scheduler: Which scheduler is running it, when known. Omitted, every one this
-            session reaches is asked — so an id alone is enough, and the one that
+            workspace reaches is asked — so an id alone is enough, and the one that
             answers is written down for the polls that follow.
     """
     job_id = str(job_id or "").strip()
@@ -1082,7 +1095,7 @@ def slurm_watch(job_id: str, note: str = "", scheduler: str = "") -> dict:
     host, state, raw = _locate_job(job_id, scheduler)
     if state == "unknown":
         known = ", ".join(_host_name(h) for h in slurm_hosts()) or "none reachable"
-        return err(f"No scheduler this session reaches knows job {job_id} ({known}).",
+        return err(f"No scheduler this workspace reaches knows job {job_id} ({known}).",
                    hint="Check the id with slurm_queue(). A job that has already left "
                         "both squeue and sacct cannot be watched, and one on a "
                         "scheduler not listed above needs it added — "
@@ -1168,7 +1181,7 @@ def slurm_cancel(job_id: str, confirm: bool = False, scheduler: str = "") -> dic
     host, located, located_raw = _locate_job(job_id, scheduler)
     if located == "unknown":
         known = ", ".join(_host_name(h) for h in slurm_hosts()) or "none reachable"
-        return err(f"No scheduler this session reaches knows job {job_id} ({known}), "
+        return err(f"No scheduler this workspace reaches knows job {job_id} ({known}), "
                    "so there is nothing to cancel.",
                    hint="List what is running with slurm_queue(scheduler=...).")
 

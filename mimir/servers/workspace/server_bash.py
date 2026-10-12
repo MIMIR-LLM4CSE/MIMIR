@@ -1108,9 +1108,9 @@ def _note_scheduler(segments: list[list[str]], result: dict) -> None:
     A command whose parse shows a Slurm head — locally, or past an ``ssh`` — and that
     *succeeded* has proved two things this server could not otherwise know: that there
     is a scheduler on that host, and that it answers. Both are then free to use. The
-    host is *added* to what this session reaches rather than becoming "the" scheduler:
-    a queue read on a second cluster is a destination gained, not a redirection of the
-    jobs already running on the first.
+    host is *added* to what this workspace reaches rather than becoming "the"
+    scheduler: a queue read on a second cluster is a destination gained, not a
+    redirection of the jobs already running on the first.
 
     The second is what closes the case this whole path exists for. A job submitted
     through a site launcher is tracked by nothing, and neither the launcher call nor the
@@ -1138,9 +1138,9 @@ def _note_scheduler(segments: list[list[str]], result: dict) -> None:
     if now - _QUEUE_ASKED_AT < _QUEUE_EVERY:
         return
     _QUEUE_ASKED_AT = now
-    # Asked of every scheduler this session reaches, through the same seam the cluster
-    # tools use, so one answer and not two. A cluster that does not reply contributes
-    # nothing rather than having its jobs reported as unwatched.
+    # Asked of every scheduler this workspace reaches, through the same seam the
+    # cluster tools use, so one answer and not two. A cluster that does not reply
+    # contributes nothing rather than having its jobs reported as unwatched.
     by_host = slurm_unwatched_by_host(slurm_queued_by_host())
     if not by_host:
         return

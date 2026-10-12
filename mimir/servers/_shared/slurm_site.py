@@ -1,4 +1,4 @@
-"""Which Slurm schedulers this session reaches, learned rather than configured.
+"""Which Slurm schedulers this workspace reaches, learned rather than configured.
 
 Slurm's tools are commands on a host, and the host MIMIR runs on is not always the one
 that has them: a login node holding the editor's remote session while the scheduler
@@ -28,11 +28,16 @@ Deterministic, which is what lets it be acted on: the signal is the shell valida
 own parse of the command — the same mechanism that refuses a bare ``sbatch`` — plus the
 exit status. Nothing here matches patterns against free text.
 
-Filed per *session*, because which schedulers are in play is a property of the
-conversation. One file for the whole machine makes the last ``ssh`` of any session an
-entry every other session reads, so a conversation offered a destination it has no
-business submitting to — a sibling's cluster, without its filesystems or its jobs.
-Each session learns its own, from its own calls.
+Filed per *workspace*, because the clusters in play are a property of the work and
+not of the conversation doing it. The sessions in one workspace share a project, the
+filesystems its inputs are on, and therefore the schedulers that can run it — so a
+host one of them proved is a host the next can submit to.
+
+That is also what makes the two halves of this module agree. :func:`recorded_jobs`
+below reads every session's descriptors, so a job submitted in one conversation is
+already findable from the next; filed per session instead, the registry would hand
+that conversation a job it cannot poll, because the scheduler running it is not in
+its inventory. One fact read at two scopes is how a run ends up watched by nobody.
 """
 
 from __future__ import annotations
@@ -41,7 +46,7 @@ import os
 import shlex
 import subprocess
 
-from state_paths import session_state_dir, state_dir
+from state_paths import state_dir
 
 # The commands that only exist where a scheduler does. A remote call whose head is one
 # of these, and that succeeded, proves the far side has a scheduler — no other host
@@ -67,7 +72,7 @@ LOCAL = ""
 # What the model spells to mean LOCAL, since "" at a tool boundary is "unspecified".
 LOCAL_NAME = "local"
 
-# The session's registry of reachable schedulers, one host per line.
+# The workspace's registry of reachable schedulers, one host per line.
 _FILENAME = "slurm_hosts"
 
 # In a job descriptor: the scheduler that job is on. Empty contents mean LOCAL, and an
@@ -207,14 +212,13 @@ def slurm_host_from_ssh(argv: list[str]) -> str:
 
 
 def _path() -> str:
-    """The file holding this session's registry of reachable schedulers.
+    """The file holding this workspace's registry of reachable schedulers.
 
-    Falls back to the workspace state dir outside any session, which is
-    :func:`session_state_dir`'s own rule: the ends without one — the CLI, a standalone
-    server, the tests — have a single conversation, so the two tiers mean the same
-    thing there.
+    One file for the workspace. Every session in it reads and appends to the same
+    inventory, which is what lets a scheduler proved by one conversation be a
+    destination for the next without an ``ssh`` that has already succeeded once.
     """
-    return os.path.join(session_state_dir(), _FILENAME)
+    return os.path.join(state_dir(), _FILENAME)
 
 
 def slurm_is_local() -> bool:
@@ -252,7 +256,7 @@ def name_of(host: str) -> str:
 
 
 def hosts() -> list[str]:
-    """Every scheduler this session can reach, the local one first when there is one.
+    """Every scheduler this workspace can reach, the local one first when there is one.
 
     The local one is a member by probe rather than by record: it is a fact about the
     machine, true before any call has been made, and there is nothing to learn. It
@@ -273,7 +277,7 @@ def hosts() -> list[str]:
 
 
 def record_host(host: str) -> None:
-    """Add *host* to this session's reachable schedulers. Never raises.
+    """Add *host* to this workspace's reachable schedulers. Never raises.
 
     Additive, and that is the whole of it: a scheduler learned displaces nothing, so a
     queue read on a second cluster adds a destination while every job already running
@@ -351,8 +355,9 @@ def resolve_host(requested: str = "") -> tuple[str, str]:
                     "ssh yet. Read a queue through the shell once — "
                     "ssh <host> \"squeue -u $USER\" — and it is learned, or name one "
                     "with slurm_schedulers(add=\"<host>\").")
-    return "", (f"This session reaches more than one scheduler ({_listed(known)}), so "
-                "where this goes is a choice rather than a default: pass scheduler=. "
+    return "", (f"This workspace reaches more than one scheduler ({_listed(known)}), "
+                "so where this goes is a choice rather than a default: pass "
+                "scheduler=. "
                 "It follows what the job needs — the GPUs, a compilation node, the "
                 "filesystem its inputs are on — or what the user asked for; ask them "
                 "when the task does not settle it.")
@@ -366,7 +371,7 @@ def _listed(known: list[str]) -> str:
 def _choices(known: list[str]) -> str:
     """A sentence naming what is left to choose from, for a refusal that can be acted on."""
     if not known:
-        return "No scheduler is reachable from this session at all."
+        return "No scheduler is reachable from this workspace at all."
     return f"Reachable: {_listed(known)}."
 
 

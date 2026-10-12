@@ -1,10 +1,14 @@
-"""Parsing and aggregation of Slurm's node inventory.
+"""Parsing and aggregation of Slurm's node inventory, in both spellings it comes in.
 
-Shared because two servers need the same view of the cluster's hardware from two
-angles: ``hpc/server_hpc`` answers "what is free right now", while
-``hpc/server_platform`` records the *stable* half — the kinds of machine the site
-has — in its persisted digest. Duplicating a ``scontrol`` parser to serve both is
-how the two would drift apart.
+Shared because the same view of the cluster's hardware is needed from several angles:
+``hpc/server_hpc`` answers "what is free right now", while ``_shared/slurm_digest``
+builds the *stable* half — the kinds of machine a site has — for every scheduler the
+workspace reaches, and ``hpc/server_platform`` reports that half for this one.
+Duplicating a ``scontrol`` parser to serve them is how they would drift apart.
+
+Pure: text in, dicts out. Nothing here runs a command or knows that a scheduler can be
+on another host — that is ``slurm_digest``'s half, and keeping the parsers free of it
+is what lets the degraded path below be tested on a string.
 """
 
 import hashlib
@@ -123,3 +127,80 @@ def stable_signature(nodes: list[dict]) -> str:
     payload = json.dumps(sorted(types, key=lambda t: json.dumps(t, sort_keys=True)),
                          sort_keys=True, ensure_ascii=False)
     return hashlib.sha1(payload.encode("utf-8")).hexdigest()
+
+
+# ── sinfo, the degraded spelling ──────────────────────────────────────────────
+#
+# ``scontrol show node`` is restricted on some sites. ``sinfo`` is readable everywhere
+# and carries most of the same fields, so a cluster that refuses the first is still
+# described — with the gaps named rather than defaulted, since a wrong architecture is
+# worse than an unknown one.
+
+# Asked for as one argv so the format string and the column list below cannot drift
+# apart: they are one fact in two halves, and separated they break in silence.
+SCONTROL_NODES_ARGV = ["scontrol", "show", "node", "-o"]
+
+SINFO_NODES_FORMAT = "%N|%P|%t|%c|%m|%e|%G|%X|%Y|%Z"
+
+_SINFO_NODES_COLUMNS = [
+    "node", "partition", "state", "cpus", "mem_mb", "mem_free_mb", "gres",
+    "sockets", "cores_per_socket", "threads_per_core",
+]
+
+
+def parse_pipe_table(stdout: str, columns: list[str]) -> list[dict]:
+    """Slurm's ``-o '%a|%b'`` output as dicts, one per line.
+
+    A row whose cell count disagrees with *columns* is dropped rather than padded. A
+    short line is a wrapped or truncated one, not a node with missing fields, and
+    padding it would invent values a caller cannot tell from real ones.
+    """
+    rows = []
+    for line in stdout.splitlines():
+        if not line.strip():
+            continue
+        parts = [p.strip() for p in line.split("|")]
+        if len(parts) != len(columns):
+            continue
+        rows.append({columns[i]: parts[i] for i in range(len(columns))})
+    return rows
+
+
+def parse_sinfo_nodes(stdout: str) -> list[dict]:
+    """``sinfo -N`` output in :func:`parse_scontrol_nodes`'s shape, gaps left empty.
+
+    The same fifteen keys, so :func:`aggregate_node_types` consumes either without
+    asking which it was handed. What sinfo cannot report says so: ``arch``, ``features``
+    and ``cpu_load`` are empty and the occupancy fields are None, rather than carrying a
+    default a caller would read as measured.
+
+    ``sinfo -N`` emits one row per (node, partition), so a node in three partitions
+    arrives three times; the rows are merged on the node name, or every count built on
+    this is inflated threefold.
+
+    The state vocabulary differs from scontrol's — ``mix`` here against ``MIXED+DRAIN``
+    there — which the stable projection never sees, since :data:`_STABLE_TYPE_FIELDS`
+    excludes state entirely. The one place it is read is
+    :func:`aggregate_node_types`'s ordering, and ``idle`` is spelled alike in both.
+    """
+    nodes: list[dict] = []
+    by_name: dict[str, dict] = {}
+    for r in parse_pipe_table(stdout, _SINFO_NODES_COLUMNS):
+        part = r["partition"].rstrip("*")
+        if r["node"] in by_name:
+            if part not in by_name[r["node"]]["partitions"]:
+                by_name[r["node"]]["partitions"].append(part)
+            continue
+        by_name[r["node"]] = {
+            "node": r["node"], "arch": "", "state": r["state"].upper(),
+            "partitions": [part],
+            "cpus": as_int(r["cpus"].rstrip("+")),
+            "cpus_allocated": None, "cpus_free": None,
+            "cpu_load": "", "sockets": as_int(r["sockets"]),
+            "cores_per_socket": as_int(r["cores_per_socket"]),
+            "threads_per_core": as_int(r["threads_per_core"]),
+            "mem_mb": as_int(r["mem_mb"]), "mem_free_mb": as_int(r["mem_free_mb"]),
+            "gres": clean_gres(r["gres"]), "features": "",
+        }
+        nodes.append(by_name[r["node"]])
+    return nodes

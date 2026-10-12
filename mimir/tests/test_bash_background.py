@@ -656,7 +656,7 @@ class AdoptingARunningProcessTests(unittest.TestCase):
 
 
 class LearnedSchedulersTests(unittest.TestCase):
-    """Which schedulers a session reaches, learned from calls it was making anyway.
+    """Which schedulers a workspace reaches, learned from calls it was making anyway.
 
     On a login node whose Slurm tools live on another host, every typed cluster tool
     answers "sbatch is not available" — so the work goes out as `ssh host "sbatch …"`,
@@ -735,7 +735,7 @@ class LearnedSchedulersTests(unittest.TestCase):
 
     def test_it_is_remembered_across_calls_and_written_once(self) -> None:
         self._ran(["ssh", "host-a", "squeue"])
-        path = os.path.join(slurm_site.session_state_dir(), "slurm_hosts")
+        path = os.path.join(slurm_site.state_dir(), "slurm_hosts")
         before = os.stat(path).st_mtime_ns
         self._ran(["ssh", "host-a", "sinfo"])
         self.assertEqual(os.stat(path).st_mtime_ns, before,
@@ -766,26 +766,32 @@ class LearnedSchedulersTests(unittest.TestCase):
         self._ran(["ssh", "host-b", "squeue -u $USER"])
         self.assertEqual(slurm_site.hosts(), ["", "host-b"])
 
-    def test_each_session_keeps_its_own_schedulers(self) -> None:
-        """The pollution this tier exists to prevent, on one machine and one user.
+    def test_the_sessions_of_one_workspace_share_the_schedulers(self) -> None:
+        """The inventory belongs to the work, not to the conversation doing it.
 
-        Two conversations on one login node work two schedulers — the local one and
-        another behind ``ssh``. Held for the machine, the last ``ssh`` of either is
-        read by both: the other session is then offered a destination it has no
-        business submitting to, a sibling's cluster without its filesystems or its
-        jobs. Nothing in either conversation shows why; the shell, which does not go
-        through this seam, keeps working.
+        Two conversations in one workspace are two conversations on one project, whose
+        inputs are on one set of filesystems and whose jobs therefore run on one set of
+        clusters. A scheduler the first proved reachable is one the second can submit
+        to, and it must not have to prove it again.
+
+        What makes it load-bearing rather than a convenience: a job's descriptor is
+        already read across every session of the workspace (``recorded_jobs``), so the
+        second conversation can find a job the first submitted. Learned per session,
+        the registry would hand it that job with no scheduler to poll it on — a run
+        nothing is watching, which is the failure this whole module exists against.
         """
         with patch.dict(os.environ, {"MIMIR_SESSION_ID": "sess-local"}, clear=False):
             self._ran(["ssh", "host-a", "squeue"])
             self.assertEqual(slurm_site.hosts(), ["host-a"])
         with patch.dict(os.environ, {"MIMIR_SESSION_ID": "sess-other"}, clear=False):
-            self.assertEqual(slurm_site.hosts(), [],
-                             "a session learns its schedulers from its own calls")
+            self.assertEqual(slurm_site.hosts(), ["host-a"],
+                             "a sibling's scheduler is reachable before this "
+                             "conversation has made a call of its own")
             self._ran(["ssh", "host-b", "squeue"])
-            self.assertEqual(slurm_site.hosts(), ["host-b"])
+            self.assertEqual(slurm_site.hosts(), ["host-a", "host-b"])
         with patch.dict(os.environ, {"MIMIR_SESSION_ID": "sess-local"}, clear=False):
-            self.assertEqual(slurm_site.hosts(), ["host-a"])
+            self.assertEqual(slurm_site.hosts(), ["host-a", "host-b"],
+                             "and the learning goes both ways")
 
 
     def test_a_named_host_is_taken_as_given(self) -> None:

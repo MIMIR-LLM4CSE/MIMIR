@@ -33,10 +33,14 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   configure: the call that teaches it is the one you were already making, and it is read
   from the shell validator's own parse plus the exit status rather than from the text of
   the command. ssh's own settings stay in `~/.ssh/config`, where they belong.
-- **`slurm_schedulers()` — every scheduler a session can submit to, and a choice made per
-  job.** A login node reaches its own scheduler and whatever `ssh` gets to, and one
+- **`slurm_schedulers()` — every scheduler the workspace can submit to, and a choice made
+  per job.** A login node reaches its own scheduler and whatever `ssh` gets to, and one
   conversation uses several: a reference run on the local scheduler while a sweep goes out
-  to another cluster. So every cluster tool now takes `scheduler=` (`'local'`, or a
+  to another cluster. The inventory belongs to the workspace rather than to the
+  conversation: a cluster one session proved reachable is one the next can submit to
+  without proving it again, which matches how a job's own record already works — any
+  session can find a job another submitted, and it needs that job's scheduler to poll it
+  on. So every cluster tool now takes `scheduler=` (`'local'`, or a
   hostname), learning a host *adds* a destination instead of replacing one, and a job
   submitted to any of them is watched and wakes you the same way. With two reachable, a
   submission that names none is refused with both listed rather than sent to one by
@@ -44,6 +48,18 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   filesystem holding its inputs, and that is a decision to make or to ask about, not to
   make silently. `slurm_schedulers(add=…)` records a host after checking `sbatch` answers
   there; `forget=` drops one.
+- **Each scheduler says what its machines are.** Picking a cluster is half a question
+  about hardware — the architectures, the GPUs, the partitions — and asking it of a
+  scheduler behind `ssh` cost a round trip per candidate, so it tended not to be asked:
+  the usual result is a binary built on the login node and submitted to nodes of another
+  architecture, which dies on an illegal instruction after the queue wait. Every entry in
+  `slurm_schedulers()` now carries that summary, built once per host for the life of the
+  server. What is *free right now* is deliberately not there — it changes between two
+  reads, and `slurm_nodes(scheduler=…)` stays the live answer. A cluster that does not
+  reply is listed without hardware rather than as a cluster with none, and the listing
+  never becomes an error because one of them is down. The same builder describes this
+  machine, so a site that restricts `scontrol` degrades to `sinfo` here as well, and a
+  Slurm that arrives from a modulefile is now found locally too.
 - **A job is found wherever it is running.** The scheduler a job went to is written beside
   its id, but only as a cache: a poll that has no record — a job adopted from a launcher's
   output, a watcher re-armed from disk after a window reload, which has nothing but the id
