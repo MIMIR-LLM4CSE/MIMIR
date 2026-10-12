@@ -86,6 +86,12 @@ class _TmpStorageTest(unittest.TestCase):
     The temp dir doubles as the WORKSPACE (``MCP_FILES_ROOT``): ``optimize_paths``
     are refused outside it, so a fixture with no workspace of its own would be
     measuring the repository it runs from.
+
+    ``MIMIR_STATE_DIR`` is pinned under it as well, because it is what
+    ``state_paths.state_dir`` reads first and the workspace root only its fallback.
+    Left to the ambient environment, a shell launched by MIMIR hands these tests the
+    real workspace's state: ``slurm_site.jobs_dir()`` then lists the session's actual
+    submissions, and a test counting what it filed counts those too.
     """
 
     def setUp(self) -> None:
@@ -95,6 +101,8 @@ class _TmpStorageTest(unittest.TestCase):
         self.root = self._tmp.name
         self._saved_ws = os.environ.get("MCP_FILES_ROOT")
         os.environ["MCP_FILES_ROOT"] = self._tmp.name
+        self._saved_state = os.environ.get("MIMIR_STATE_DIR")
+        os.environ["MIMIR_STATE_DIR"] = os.path.join(self._tmp.name, ".mimir")
 
     def tearDown(self) -> None:
         store._CACHE_DIR = self._saved_root
@@ -102,6 +110,10 @@ class _TmpStorageTest(unittest.TestCase):
             os.environ.pop("MCP_FILES_ROOT", None)
         else:
             os.environ["MCP_FILES_ROOT"] = self._saved_ws
+        if self._saved_state is None:
+            os.environ.pop("MIMIR_STATE_DIR", None)
+        else:
+            os.environ["MIMIR_STATE_DIR"] = self._saved_state
         self._tmp.cleanup()
 
     # -- fixtures ------------------------------------------------------------
