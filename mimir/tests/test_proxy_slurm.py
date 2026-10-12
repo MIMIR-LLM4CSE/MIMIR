@@ -12,6 +12,7 @@ Run:
     python -m unittest mimir.tests.test_proxy_slurm -v
 """
 
+import json
 import os
 import unittest
 from unittest import mock
@@ -19,6 +20,7 @@ from unittest import mock
 from mimir.tests._proxy_fixtures import (  # noqa: F401
     _FakeSbatchTest, _TmpStorageTest, build, procs, server_proxy, store,
 )
+from mimir.servers._shared import slurm_site
 
 
 class ValidateSlurmArgsTests(unittest.TestCase):
@@ -280,3 +282,78 @@ class SubmitEvalTests(_FakeSbatchTest):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ARunIsAJobOfTheWorkspaceTests(_FakeSbatchTest):
+    """A proxy run that submits to Slurm is two things, and must be filed as both.
+
+    It is this server's own state machine, in its run directory. It is also a job in a
+    queue, and every reader of ``slurm_site`` — the queue listing's ``watched`` column,
+    the conclude-phase reminder — answers "is anything watching this id" by looking for
+    a descriptor. Filed only in the run directory, the answer is no: the run is named as
+    unwatched work, and the remedy offered is to adopt the id, which puts a second
+    watcher on a run this server is already polling. One result, two wakes.
+    """
+
+    def _submitted(self, **kwargs) -> tuple[str, int]:
+        run_dir = os.path.join(store.runs_dir(), "run-0001")
+        os.makedirs(run_dir, exist_ok=True)
+        job_id, failure = procs._submit_sbatch(run_dir, "#!/bin/bash\necho hi\n",
+                                               **kwargs)
+        self.assertIsNone(failure)
+        return run_dir, job_id
+
+    def test_the_run_is_filed_where_the_workspace_accounts_for_its_jobs(self) -> None:
+        _, job_id = self._submitted()
+        self.assertIn(("", str(job_id)), slurm_site.recorded_jobs())
+
+    def test_so_it_is_not_named_as_work_nobody_is_watching(self) -> None:
+        _, job_id = self._submitted()
+        self.assertEqual(slurm_site.unwatched([str(job_id)], host=""), [])
+
+    def test_both_halves_of_a_split_submission_are_accounted_for(self) -> None:
+        """A build job sits in the same queue and is just as much somebody's row."""
+        run_dir, run_id = self._submitted()
+        build_id, failure = procs._submit_sbatch(
+            run_dir, "#!/bin/bash\nmake\n",
+            script_name="build_batch.sh", id_file="build_slurm_job_id")
+        self.assertIsNone(failure)
+        recorded = {job for _, job in slurm_site.recorded_jobs()}
+        self.assertEqual({str(run_id), str(build_id)} - recorded, set())
+
+    def test_the_descriptor_names_the_watcher_this_server_runs(self) -> None:
+        """So a reload re-arms *this* watcher rather than a stock poll beside it."""
+        run_dir, _ = self._submitted()
+        procs.background_descriptor(
+            run_dir, kind="proxy-eval",
+            status_op={"tool": "proxy_eval_status", "args": {"proxy_name": "solver"}},
+            summary_op={})
+        job_dir = procs._workspace_job_dir(run_dir)
+        with open(os.path.join(job_dir, slurm_site.WATCHER_FILE)) as fh:
+            watcher = json.load(fh)
+        self.assertEqual(watcher["server"], "proxy")
+        self.assertEqual(watcher["job_key"], "run-0001")
+        self.assertEqual(watcher["status_op"]["tool"], "proxy_eval_status")
+
+    def test_only_the_run_job_carries_the_watcher(self) -> None:
+        """Both jobs are accounted for; only the run's end is the run's end.
+
+        A watcher on the build job too would wake the conversation when the build
+        finished, which is the middle of the run rather than its result.
+        """
+        run_dir, run_id = self._submitted()
+        procs._submit_sbatch(run_dir, "#!/bin/bash\nmake\n",
+                             script_name="build_batch.sh",
+                             id_file="build_slurm_job_id")
+        procs.background_descriptor(
+            run_dir, kind="proxy-eval",
+            status_op={"tool": "proxy_eval_status", "args": {"proxy_name": "solver"}},
+            summary_op={})
+        dirs = [os.path.join(slurm_site.jobs_dir(), n)
+                for n in os.listdir(slurm_site.jobs_dir())]
+        carried = [d for d in dirs
+                   if os.path.exists(os.path.join(d, slurm_site.WATCHER_FILE))]
+        self.assertEqual(len(dirs), 2)
+        self.assertEqual(carried, [procs._workspace_job_dir(run_dir)])
+        with open(os.path.join(carried[0], "slurm_job_id")) as fh:
+            self.assertEqual(fh.read().strip(), str(run_id))

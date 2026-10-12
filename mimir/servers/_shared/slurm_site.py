@@ -45,8 +45,9 @@ from __future__ import annotations
 import os
 import shlex
 import subprocess
+import time
 
-from state_paths import state_dir
+from state_paths import session_state_dir, state_dir
 
 # The commands that only exist where a scheduler does. A remote call whose head is one
 # of these, and that succeeded, proves the far side has a scheduler — no other host
@@ -385,11 +386,81 @@ def _choices(known: list[str]) -> str:
 # neither call reaches a typed cluster tool. Two copies of this rule would drift, and
 # the one that drifted would be the one the night depends on.
 
-# The file a submission's directory is identified by. The hpc server writes it; this is
-# the name both sides agree on.
+# The file a submission's directory is identified by, and the name every reader of a
+# descriptor agrees on. :func:`record_job_dir` below is the one writer.
 ID_FILE = "slurm_job_id"
 
+# The descriptor a client watcher is to be re-armed from, when the job is not watched
+# by the stock poll. Written by a submitter that runs its own watcher — the proxy's
+# runs are Slurm jobs of this workspace and its own state machine both — so that a
+# reload puts *its* watcher back rather than a second one beside it, and so that
+# "is anything watching this id" has one answer. Absent for an ordinary submission,
+# whose watcher is slurm_job_status and needs nothing recorded.
+WATCHER_FILE = "watcher.json"
+
 _JOBS_SUBDIR = "hpc_jobs"
+
+
+def jobs_dir() -> str:
+    """Where this session files the jobs it submits.
+
+    Per session, unlike the registry above, and for the opposite reason: a submission
+    belongs to the conversation that made it, two conversations submitting in the same
+    second must not land on one directory, and a conversation's submissions go with it
+    when it is deleted. Reading is workspace-wide all the same — see
+    :func:`recorded_jobs` — because a job outlives the conversation that started it.
+
+    Env-overridable for tests, which is the one seam that lets a submission be filed
+    somewhere a test can see without standing up a session.
+    """
+    return os.environ.get("MIMIR_HPC_JOBS_DIR") or os.path.join(
+        session_state_dir(), _JOBS_SUBDIR)
+
+
+def _new_job_dir_name(base: str) -> str:
+    """A sortable, collision-free directory name for one submission.
+
+    The UTC stamp alone collides: it resolves to the second, and two submissions in
+    that second would share a directory and overwrite each other's script and id.
+    One second is a long time when two conversations are working at once.
+    """
+    stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+    while True:
+        name = f"{stamp}-{os.urandom(2).hex()}"
+        if not os.path.exists(os.path.join(base, name)):
+            return name
+
+
+def new_job_dir() -> str:
+    """An empty directory for a submission about to be made, created.
+
+    Split from :func:`record_job_dir` for the submitter that needs the directory
+    *before* it has an id: the batch script is written there and the id only exists
+    once ``sbatch`` has answered. Both halves name the directory the same way, which
+    is the whole reason they live together.
+    """
+    base = jobs_dir()
+    job_dir = os.path.join(base, _new_job_dir_name(base))
+    os.makedirs(job_dir, exist_ok=True)
+    return job_dir
+
+
+def record_job_dir(job_id: str, **files: str) -> str:
+    """File *job_id* as a job of this workspace and return its directory.
+
+    The one writer of the layout every reader here depends on, which is why it lives
+    beside them rather than in whichever server happens to submit. Three callers, and
+    the third is the point: a submission, an adoption, and the proxy — whose runs are
+    Slurm jobs of this workspace as much as they are its own state machine. Filed
+    anywhere else, they are jobs that "nothing is watching" to every reader of this
+    module, and the remedy it offers — adopt the id — arms a second watcher on a run
+    that already has one.
+    """
+    job_dir = new_job_dir()
+    for name, content in {ID_FILE: job_id, **files}.items():
+        with open(os.path.join(job_dir, name), "w") as fh:
+            fh.write(content)
+    return job_dir
 
 
 def recorded_jobs(*extra_roots: str) -> set[tuple[str | None, str]]:
@@ -407,11 +478,15 @@ def recorded_jobs(*extra_roots: str) -> set[tuple[str | None, str]]:
     :func:`covered_by` lets it vouch for any: an older submission must not be read as
     unwatched work.
 
-    *extra_roots* is for a caller whose own directory is not under the sessions tree,
-    which is how the hpc server's test override reaches this.
+    :func:`jobs_dir` is always read, not only the sessions tree below it. The two can
+    name different directories — outside a session, and under the test override — and
+    a reader that saw only one of them would call this session's own submissions
+    unwatched, which is the one answer this must never give wrongly.
+
+    *extra_roots* is for a caller holding descriptors somewhere else again.
     """
     found: set[tuple[str | None, str]] = set()
-    roots = list(extra_roots)
+    roots = [jobs_dir(), *extra_roots]
     sessions = os.path.join(state_dir(), "sessions")
     try:
         roots += [os.path.join(sessions, sid, _JOBS_SUBDIR)

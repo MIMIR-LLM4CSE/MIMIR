@@ -89,7 +89,7 @@ class _ScanCase(unittest.TestCase):
         return job_dir
 
     def _slurm_job(self, session_id: str, dir_name: str, job_id: str,
-                   state: str | None = None) -> None:
+                   state: str | None = None, watcher: dict | None = None) -> str:
         job_dir = os.path.join(self._tmp.name, "sessions", session_id,
                                "hpc_jobs", dir_name)
         os.makedirs(job_dir, exist_ok=True)
@@ -98,7 +98,20 @@ class _ScanCase(unittest.TestCase):
         if state is not None:
             with open(os.path.join(job_dir, "slurm_state"), "w") as fh:
                 fh.write(state)
+        if watcher is not None:
+            with open(os.path.join(job_dir, "watcher.json"), "w") as fh:
+                json.dump(watcher, fh)
         self._baseline(session_id)
+        return job_dir
+
+    @staticmethod
+    def _proxy_watcher(run_name: str = "run-0001") -> dict:
+        """The handle a proxy run's own server watches it with, as it records it."""
+        return {"server": "proxy", "run_dir": f"/w/proxy_bench/runs/{run_name}",
+                "job_key": run_name, "kind": "proxy-eval",
+                "status_op": {"tool": "proxy_eval_status",
+                              "args": {"proxy_name": "solver"}},
+                "summary_op": {"tool": "proxy_eval_report", "args": {}}}
 
     @staticmethod
     def _dead_pid() -> int:
@@ -514,3 +527,60 @@ class StateWordingTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ARunWatchedByItsOwnServerTests(_ScanCase):
+    """A proxy run is a Slurm job of this workspace *and* that server's state machine.
+
+    It is filed among the Slurm descriptors so that "is anything watching this id" has
+    one answer — otherwise the queue calls it unwatched and the remedy offered, adopting
+    the id, puts a second watcher on a run that already has one. But the watcher put
+    back after a reload must be *its* watcher: re-armed with the stock poll instead, the
+    run would be held twice under two different keys, which no dedup catches, and one
+    result would wake the conversation twice.
+    """
+
+    def test_the_scan_re_arms_the_watcher_the_run_recorded(self):
+        self._slurm_job("s1", "20260101T000000Z-aaaa", "9001",
+                        watcher=self._proxy_watcher())
+        job, = scan_session("s1")
+        self.assertTrue(job.live)
+        self.assertEqual(job.job_key, "run-0001")
+        self.assertEqual(job.descriptor()["server"], "proxy")
+        self.assertEqual(job.status_op()["tool"], "proxy_eval_status")
+
+    def test_an_ordinary_submission_still_gets_the_stock_poll(self):
+        self._slurm_job("s1", "20260101T000000Z-bbbb", "9002")
+        job, = scan_session("s1")
+        self.assertEqual(job.job_key, "9002")
+        self.assertEqual(job.descriptor()["server"], "hpc")
+        self.assertEqual(job.status_op()["tool"], "slurm_job_status")
+
+    def test_its_end_is_still_settled_by_the_slurm_record(self):
+        """Liveness comes from the descriptor, not from the watcher that owns it."""
+        self._slurm_job("s1", "20260101T000000Z-cccc", "9003", state="done",
+                        watcher=self._proxy_watcher("run-0003"))
+        job, = scan_session("s1")
+        self.assertFalse(job.live)
+        self.assertEqual(job.state, "done")
+        self.assertEqual(job.descriptor()["server"], "proxy")
+
+    def test_the_live_watcher_and_a_late_scan_settle_the_same_run(self):
+        """The wake must not be delivered twice because two writers spelled it apart.
+
+        A run reported by its own watcher while the window was open marks itself with
+        the key and server the watcher knows. A scan finding the same run afterwards
+        has to read that marker, or it announces a result the conversation already saw.
+        """
+        self._slurm_job("s1", "20260101T000000Z-dddd", "9004", state="done",
+                        watcher=self._proxy_watcher("run-0004"))
+        job_scan.mark_job_reported("s1", "run-0004", "proxy")
+        job, = scan_session("s1", include_reported=True)
+        self.assertTrue(job_scan.was_reported(job))
+
+    def test_a_local_proxy_run_keeps_its_own_tree(self):
+        """One that submitted nothing has no descriptor, and its marker stays put."""
+        self._job("s1", "run-local")
+        job_scan.mark_job_reported("s1", "run-local", "proxy")
+        self.assertTrue(os.path.exists(os.path.join(
+            self._tmp.name, "sessions", "s1", "jobs", "run-local", "reported")))

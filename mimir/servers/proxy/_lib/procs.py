@@ -19,6 +19,8 @@ from datetime import datetime, timezone
 import build_progress
 from responses import err
 from slurm_site import (
+    WATCHER_FILE as _WATCHER_FILE,
+    record_job_dir as _record_job_dir,
     HOST_FILE as _SLURM_HOST_FILE,
     LOCAL as _SLURM_LOCAL,
     exec_argv as _slurm_exec_argv,
@@ -104,6 +106,38 @@ def _write_slurm_host(run_dir: str, host: str) -> None:
             fh.write(host)
     except OSError:
         pass
+
+
+# Where this run's Slurm job is filed as a job *of the workspace*. A run is both: its
+# own state machine here, and a job in a queue that every reader of ``slurm_site`` has
+# to be able to account for. Kept as a pointer rather than re-derived, because the
+# descriptor's directory is named by the moment it was made and nothing else knows it.
+_WORKSPACE_JOB_DIR = "workspace_job_dir"
+
+
+def _record_workspace_job(run_dir: str, job_id: int, host: str) -> None:
+    """File this run's Slurm job where the workspace accounts for its jobs.
+
+    Without it the run is a job nothing is watching to every reader of ``slurm_site``:
+    the queue listing calls it unwatched, the conclude-phase reminder names its id, and
+    the remedy offered — adopt it — puts a second watcher on a run this server is
+    already polling, so one run ends and wakes its conversation twice. Best effort: a
+    run that could not be filed is still a run, and the submission has already happened.
+    """
+    try:
+        job_dir = _record_job_dir(str(job_id), **{_SLURM_HOST_FILE: host})
+        with open(os.path.join(run_dir, _WORKSPACE_JOB_DIR), "w") as fh:
+            fh.write(job_dir)
+    except OSError:
+        pass
+
+
+def _workspace_job_dir(run_dir: str) -> str:
+    try:
+        with open(os.path.join(run_dir, _WORKSPACE_JOB_DIR)) as fh:
+            return fh.read().strip()
+    except OSError:
+        return ""
 
 
 def _locate_slurm_job(run_dir: str, job_id: int) -> tuple[str, str]:
@@ -367,7 +401,7 @@ def background_descriptor(run_dir: str, *, kind: str,
     watching — the model is told to monitor it by hand, ends its turn because there is
     nothing left to do, and is never woken when the job lands.
     """
-    return {
+    descriptor = {
         "server":     "proxy",
         "run_dir":    run_dir,
         "job_key":    os.path.basename(run_dir),
@@ -375,6 +409,17 @@ def background_descriptor(run_dir: str, *, kind: str,
         "status_op":  status_op,
         "summary_op": summary_op,
     }
+    # Recorded beside the job id when this run is a Slurm job, so a window that closes
+    # and comes back re-arms *this* watcher rather than a stock poll beside it: two
+    # watchers on one run are two wakes for one result.
+    job_dir = _workspace_job_dir(run_dir)
+    if job_dir:
+        try:
+            with open(os.path.join(job_dir, _WATCHER_FILE), "w") as fh:
+                json.dump(descriptor, fh)
+        except OSError:
+            pass
+    return descriptor
 
 
 # ── run lifecycle ─────────────────────────────────────────────────────────────
@@ -490,6 +535,16 @@ def _submit_sbatch(
     if host:
         # A submission that succeeded is proof this host reaches that scheduler.
         _record_slurm_host(host)
+    # Only the run job carries the pointer: a split build/run submission files both, so
+    # neither is reported as unaccounted for, but the run is the one whose end is the
+    # run's end and therefore the one a watcher is re-armed on.
+    if id_file == "slurm_job_id":
+        _record_workspace_job(run_dir, job_id, host)
+    else:
+        try:
+            _record_job_dir(str(job_id), **{_SLURM_HOST_FILE: host})
+        except OSError:
+            pass
     return job_id, None
 
 

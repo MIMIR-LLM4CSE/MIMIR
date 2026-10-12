@@ -60,6 +60,16 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   never becomes an error because one of them is down. The same builder describes this
   machine, so a site that restricts `scontrol` degrades to `sinfo` here as well, and a
   Slurm that arrives from a modulefile is now found locally too.
+- **A proxy run on Slurm is a job of the workspace too.** It is the proxy's own state
+  machine and a row in a queue at the same time, and it was filed only as the first. So
+  everything that asks "is anything watching this id" — the `watched` column of
+  `slurm_queue`, the reminder that fires when a turn ends with work still running — read
+  it as unwatched, and the fix they offer is to adopt the id, which puts a second watcher
+  on a run already being polled: one result, two wakes. Its Slurm jobs are now recorded
+  where those readers look, both halves of a split build/run submission. And a window
+  that closes and comes back re-arms the proxy's *own* watcher, from the handle the run
+  recorded beside its id — so a run that finishes while nothing is listening still wakes
+  its conversation, which until now only happened for `sbatch_submit`.
 - **A job is found wherever it is running.** The scheduler a job went to is written beside
   its id, but only as a cache: a poll that has no record — a job adopted from a launcher's
   output, a watcher re-armed from disk after a window reload, which has nothing but the id

@@ -36,7 +36,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'
 from mcp.server.fastmcp import FastMCP
 from capabilities import tool_caps, PLAN_BLOCKED, CLUSTER_SUBMIT, BACKGROUNDABLE, IRREVERSIBLE
 from responses import err, ok
-from state_paths import session_state_dir, state_dir
+from state_paths import state_dir
 from slurm_site import (
     HOST_FILE as _HOST_FILE,
     ID_FILE as _ID_FILE,
@@ -46,6 +46,9 @@ from slurm_site import (
     hosts as slurm_hosts,
     job_host as _job_host,
     name_of as _host_name,
+    jobs_dir as _hpc_jobs_dir,
+    new_job_dir as _new_job_dir,
+    record_job_dir as _record_job_dir,
     recorded_jobs as _recorded_jobs,
     resolve_host as _resolve_host,
     argv_for as slurm_argv,
@@ -94,31 +97,6 @@ _MAX_OUTPUT = 128 * 1024
 # sessions read-only and says where it came from. Per session buys two things: two
 # conversations submitting at the same moment cannot land on each other's directory, and a
 # conversation's submissions go with it when it is deleted.
-def _hpc_jobs_dir() -> str:
-    env = os.environ.get("MIMIR_HPC_JOBS_DIR")
-    if env:
-        return env
-    return os.path.join(session_state_dir(), "hpc_jobs")
-
-
-def _new_job_dir_name() -> str:
-    """A sortable, collision-free directory name for one submission.
-
-    Shares ``_bash_jobs``' key shape — UTC stamp plus four random hex — because the stamp
-    alone collides: it resolves to the second, and with ``makedirs(exist_ok=True)`` two
-    submissions in that second would share one directory and overwrite each other's
-    batch_script.sh and slurm_job_id. One second is a long time when two sessions are
-    working at once.
-    """
-    import time as _time
-    stamp = _time.strftime("%Y%m%dT%H%M%SZ", _time.gmtime())
-    base = _hpc_jobs_dir()
-    while True:
-        name = f"{stamp}-{os.urandom(2).hex()}"
-        if not os.path.exists(os.path.join(base, name)):
-            return name
-
-
 def _no_scheduler_hint(host: str = _LOCAL_HOST) -> str:
     """What to do when a Slurm command did not answer. Self-documenting on purpose.
 
@@ -216,21 +194,6 @@ _LOG_NAME = "slurm-%j.log"
 # Where that resolved path is written down, so a later status answer can name the file
 # instead of re-deriving a rule that may have changed since the job was submitted.
 _LOG_FILE = "log"
-
-
-def _record_job_dir(job_id: str, **files: str) -> str:
-    """Make this session's directory for *job_id* and return it.
-
-    The one writer of the descriptor layout every reader depends on. Both tools that
-    record a job — the one that submits it and the one that adopts it — come through
-    here, so the id file's name and the directory's shape are stated once.
-    """
-    job_dir = os.path.join(_hpc_jobs_dir(), _new_job_dir_name())
-    os.makedirs(job_dir, exist_ok=True)
-    for name, content in {_ID_FILE: job_id, **files}.items():
-        with open(os.path.join(job_dir, name), "w") as fh:
-            fh.write(content)
-    return job_dir
 
 
 def _slurm_background_job(job_id: str) -> dict:
@@ -1335,8 +1298,7 @@ def sbatch_submit(
                    hint="Pass work_dir as a directory you can write and the compute "
                         "nodes share — the run's own tree, or a scratch filesystem.")
 
-    job_dir = os.path.join(_hpc_jobs_dir(), _new_job_dir_name())
-    os.makedirs(job_dir, exist_ok=True)
+    job_dir = _new_job_dir()
     script_path = os.path.join(job_dir, "batch_script.sh")
     header = _sbatch_header(job_name, partition, cpus_per_task, gpus, mem,
                             wall_time, account, work_dir, comment)

@@ -54,6 +54,11 @@ class DetachedJob:
     exit_code: int | None         # what it recorded, when it recorded one
     command: str = ""
     started_at: float | None = None
+    # The handle of a run whose own server watches it — a proxy run is a Slurm job of
+    # this workspace and that server's state machine both. Re-arming it with the stock
+    # poll instead would put a second watcher on it under a different key, which no
+    # dedup catches and which wakes the conversation twice for one result.
+    watcher: dict | None = None
 
     @property
     def state(self) -> str:
@@ -70,6 +75,8 @@ class DetachedJob:
 
     def status_op(self) -> dict:
         """The read-only op a watcher polls this run with."""
+        if self.watcher:
+            return dict(self.watcher.get("status_op") or {})
         if self.kind == "slurm":
             # The name the HPC server actually registers, and it has to be: a watcher
             # polling a tool nothing answers to reads unreadable answers until it gives
@@ -80,6 +87,8 @@ class DetachedJob:
 
     def descriptor(self) -> dict:
         """What ``_register_bg_job`` needs to put a watcher back on this run."""
+        if self.watcher:
+            return dict(self.watcher)
         return {"server": "hpc" if self.kind == "slurm" else "bash",
                 "job_key": self.job_key,
                 "kind": "slurm-job" if self.kind == "slurm" else "shell-command",
@@ -271,6 +280,11 @@ def _scan_slurm_jobs(session_id: str) -> list[DetachedJob]:
             continue
         if not job_id:
             continue
+        # A run whose own server watches it says so beside its id; the key then is
+        # that watcher's, so a watcher still live is recognised as already holding it.
+        watcher = _read_json(os.path.join(job_dir, "watcher.json"))
+        if not isinstance(watcher, dict) or not watcher.get("job_key"):
+            watcher = None
         state = _read_slurm_state(job_dir)
         if state is None and _older_than(id_path, _slurm_stale_after()):
             logger.info("job scan: Slurm submission %s of session %s has gone "
@@ -281,10 +295,13 @@ def _scan_slurm_jobs(session_id: str) -> list[DetachedJob]:
         # exit code means to DetachedJob.state — so the mapping is total and says what
         # was observed rather than guessing an outcome nobody saw.
         found.append(DetachedJob(
-            session_id=session_id, job_key=job_id, kind="slurm",
+            session_id=session_id,
+            job_key=str(watcher["job_key"]) if watcher else job_id,
+            kind="slurm",
             live=state is None,
             exit_code={"done": 0, "crashed": 1}.get(state or ""),
             started_at=_written_at(id_path),
+            watcher=watcher,
         ))
     return found
 
@@ -328,6 +345,14 @@ def _job_dir(session_id: str, job_key: str, kind: str = "shell") -> str:
     """
     if kind == "slurm":
         return _slurm_job_dir(session_id, job_key)
+    if kind == "proxy":
+        # A proxy run is filed among the Slurm descriptors when it submitted a job, and
+        # nowhere but its own tree when it ran locally. Resolved rather than assumed, so
+        # a marker written by the live watcher and one written by a late scan of the
+        # same run land in the same directory — otherwise the run is announced twice.
+        found = _slurm_job_dir(session_id, job_key, invent=False)
+        if found:
+            return found
     return os.path.join(_sessions_root(), session_id, "jobs", job_key)
 
 
@@ -335,7 +360,7 @@ def _slurm_hpc_root(session_id: str) -> str:
     return os.path.join(_sessions_root(), session_id, "hpc_jobs")
 
 
-def _slurm_job_dir(session_id: str, job_id: str) -> str:
+def _slurm_job_dir(session_id: str, job_id: str, *, invent: bool = True) -> str:
     """Where *job_id* was recorded by this session.
 
     Twin of ``server_hpc._find_job_dir``, narrowed to one session: a marker is written
@@ -352,12 +377,20 @@ def _slurm_job_dir(session_id: str, job_id: str) -> str:
     except OSError:
         names = []
     for name in names:
+        job_dir = os.path.join(root, name)
         try:
-            with open(os.path.join(root, name, "slurm_job_id"), encoding="utf-8") as fh:
+            with open(os.path.join(job_dir, "slurm_job_id"), encoding="utf-8") as fh:
                 if fh.read().strip() == job_id:
-                    return os.path.join(root, name)
+                    return job_dir
         except OSError:
             continue
+        # A run watched by its own server is keyed by that watcher, not by the Slurm
+        # id, and its marker belongs beside the descriptor all the same.
+        watcher = _read_json(os.path.join(job_dir, "watcher.json"))
+        if isinstance(watcher, dict) and str(watcher.get("job_key") or "") == job_id:
+            return job_dir
+    if not invent:
+        return ""
     return os.path.join(root, job_id)
 
 
@@ -402,6 +435,11 @@ def was_reported(job: DetachedJob) -> bool:
     directory would announce every one of those runs a second time.
     """
     candidates = [_job_dir(job.session_id, job.job_key, job.kind)]
+    if job.watcher:
+        # What the live watcher's own completion wrote, before this scan existed to
+        # resolve the descriptor: the same run, the other spelling of its directory.
+        candidates.append(os.path.join(_sessions_root(), job.session_id, "jobs",
+                                       job.job_key))
     if job.kind == "slurm":
         candidates.append(os.path.join(_slurm_hpc_root(job.session_id), job.job_key))
     return any(os.path.exists(os.path.join(base, _REPORTED))
@@ -437,7 +475,7 @@ def mark_job_reported(session_id: str | None, job_key: str,
         return
     mark_reported(DetachedJob(
         session_id=session_id, job_key=job_key,
-        kind="slurm" if server == "hpc" else "shell",
+        kind={"hpc": "slurm", "proxy": "proxy"}.get(server or "", "shell"),
         live=False, exit_code=None))
 
 
