@@ -41,7 +41,7 @@ from module_env import module_probe_script
 from capabilities import tool_caps, CACHEABLE, ENV_DISCOVERY
 from responses import ok
 from slurm_nodes import aggregate_node_types, parse_scontrol_nodes, stable_signature, stable_types
-from slurm_site import controller as slurm_controller
+from slurm_site import hosts as slurm_hosts, name_of as _host_name
 from state_paths import state_dir
 import embed as _embed
 import vector_cache
@@ -216,21 +216,21 @@ def _collect_slurm() -> dict:
     This probe describes the machine it runs on and nothing else — it does not go
     looking for other hosts, and the absence of ``sinfo`` here is a fact about here.
     What it must not do is turn that fact into a verdict about the site: on a login
-    node whose controller lives elsewhere, "no scheduler" read as "this skill does not
-    apply", and the work went somewhere nothing could track it. So when a controller
-    has already been learned — from the user's own successful ``ssh host "squeue …"``,
-    see ``_shared/slurm_site`` — it is reported, as the recorded fact it is. Nothing is
+    node whose schedulers live elsewhere, "no scheduler" read as "this skill does not
+    apply", and the work went somewhere nothing could track it. So the ones this
+    session reaches — from the user's own successful ``ssh host "squeue …"``, see
+    ``_shared/slurm_site`` — are reported, as the recorded facts they are. Nothing is
     probed over there.
     """
     if not _cmd_exists("sinfo"):
-        elsewhere = slurm_controller()
+        elsewhere = [_host_name(host) for host in slurm_hosts() if host]
         if elsewhere:
             return {
                 "available": False,
-                "controller": elsewhere,
-                "note": (f"Not on this host. The scheduler has answered through "
-                         f"{elsewhere}, and the cluster tools use it; this profile "
-                         "describes this machine only."),
+                "schedulers": elsewhere,
+                "note": ("Not on this host. Schedulers have answered through "
+                         + ", ".join(elsewhere) + ", and the cluster tools submit to "
+                         "them by name; this profile describes this machine only."),
             }
         return {"available": False}
     out = _run(["sinfo", "--version"])

@@ -20,7 +20,7 @@ from mimir.tests._fake_pool import FakePool
 
 from mimir.client.context.capabilities import BACKGROUNDABLE, ToolCaps
 from mimir.client.query_engine.background import _maybe_register_background_job
-from mimir.tests._proxy_fixtures import _TmpStorageTest, server_proxy
+from mimir.tests._proxy_fixtures import (_TmpStorageTest, pin_local_scheduler, server_proxy)
 
 
 def _eval(*args, **kwargs):
@@ -751,6 +751,12 @@ class WatcherProbeIsNeverGuardedTests(unittest.TestCase):
 # ── 3b. proxy_slurm(op='eval', background=True) attaches the descriptor ─────────
 
 class ProxySlurmBackgroundTests(_TmpStorageTest):
+    def setUp(self) -> None:
+        super().setUp()
+        # These mock the submission itself, but the choice of scheduler happens before
+        # it: with none reachable there is nothing to submit to and the op refuses.
+        pin_local_scheduler(self)
+
     def _init_session(self) -> None:
         import sys
         exe = os.path.join(self.root, "fast.py")

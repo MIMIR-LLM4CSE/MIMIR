@@ -655,8 +655,8 @@ class AdoptingARunningProcessTests(unittest.TestCase):
         self.assertIn(target, payload.get("note", ""))
 
 
-class LearnedControllerTests(unittest.TestCase):
-    """Where the scheduler is, learned from a call the user was making anyway.
+class LearnedSchedulersTests(unittest.TestCase):
+    """Which schedulers a session reaches, learned from calls it was making anyway.
 
     On a login node whose Slurm tools live on another host, every typed cluster tool
     answers "sbatch is not available" — so the work goes out as `ssh host "sbatch …"`,
@@ -665,49 +665,68 @@ class LearnedControllerTests(unittest.TestCase):
     tools were missing is the host, and the model names it constantly while reading the
     queue. One successful call is enough, and a setting nobody knows to set before the
     first lost night is the wrong mechanism.
+
+    An inventory rather than an answer: a machine reaches its own scheduler and
+    whatever ``ssh`` gets to, so learning one *adds* a destination and redirects
+    nothing.
     """
 
     def setUp(self) -> None:
-        self._tmp = tempfile.mkdtemp(prefix="mimir-controller-")
+        self._tmp = tempfile.mkdtemp(prefix="mimir-schedulers-")
         self.addCleanup(shutil.rmtree, self._tmp, ignore_errors=True)
         patcher = patch.dict(os.environ, {"MIMIR_STATE_DIR": self._tmp}, clear=False)
         patcher.start()
         self.addCleanup(patcher.stop)
+        # A host without Slurm, which is the arrangement this learning is for. The
+        # probe is memoised in the module, so it is set rather than mocked per call,
+        # and restored — a developer's own machine may have sbatch.
+        self._local(False)
+
+    def _local(self, present: bool) -> None:
+        """Answer the local-Slurm probe with *present* for the rest of this test."""
+        orig = slurm_site._HAS_SLURM
+        slurm_site._HAS_SLURM = present
+        self.addCleanup(lambda: setattr(slurm_site, "_HAS_SLURM", orig))
 
     def _ran(self, argv: list[str], *, ok: bool = True,
              queued: list[str] | None = None) -> dict:
         """Run one parsed command past the learner, and answer with its payload."""
         result = {"status": "ok" if ok else "error", "returncode": 0 if ok else 1}
-        orig = server_bash.slurm_queued_ids
-        server_bash.slurm_queued_ids = lambda *_a, **_k: queued
+        orig = server_bash.slurm_queued_by_host
+        # Every reachable scheduler is asked, and each answers for itself; the tests
+        # here have one host in play, so one entry says it.
+        server_bash.slurm_queued_by_host = lambda *_a, **_k: {
+            host: queued for host in (slurm_site.hosts() or [""])}
         server_bash._QUEUE_ASKED_AT = 0.0
         try:
             server_bash._note_scheduler([argv], result)
         finally:
-            server_bash.slurm_queued_ids = orig
+            server_bash.slurm_queued_by_host = orig
         return result
 
     def _host_after(self, argv: list[str], *, ok: bool = True) -> str:
+        """The one remote scheduler learned, or "" — the shape most cases assert."""
         self._ran(argv, ok=ok)
-        return slurm_site.controller()
+        remote = [host for host in slurm_site.hosts() if host]
+        return remote[0] if len(remote) == 1 else ",".join(remote)
 
     def test_a_successful_remote_queue_read_records_the_host(self) -> None:
         self.assertEqual(
-            self._host_after(["ssh", "svc03", "squeue -u $USER -o '%.10i'"]),
-            "svc03")
+            self._host_after(["ssh", "host-a", "squeue -u $USER -o '%.10i'"]),
+            "host-a")
 
     def test_a_failed_call_proves_nothing(self) -> None:
         # The far side may not have had the tools, or the host may not exist. Only a
         # command that answered says where the scheduler is.
-        self.assertEqual(self._host_after(["ssh", "svc03", "squeue"], ok=False), "")
+        self.assertEqual(self._host_after(["ssh", "host-a", "squeue"], ok=False), "")
 
-    def test_a_remote_command_that_is_not_slurms_is_not_a_controller(self) -> None:
-        self.assertEqual(self._host_after(["ssh", "svc03", "tail -2 run.log"]), "")
+    def test_a_remote_command_that_is_not_slurms_records_nothing(self) -> None:
+        self.assertEqual(self._host_after(["ssh", "host-a", "tail -2 run.log"]), "")
 
     def test_the_host_is_found_past_ssh_flags(self) -> None:
         self.assertEqual(
-            self._host_after(["ssh", "-n", "-p", "2222", "me@svc03", "sacct -j 1"]),
-            "me@svc03")
+            self._host_after(["ssh", "-n", "-p", "2222", "me@host-a", "sacct -j 1"]),
+            "me@host-a")
 
     def test_a_local_command_mentioning_a_scheduler_records_nothing(self) -> None:
         # The difference between a fact and a guess over the text: this command
@@ -715,15 +734,99 @@ class LearnedControllerTests(unittest.TestCase):
         self.assertEqual(self._host_after(["grep", "-r", "sbatch", "notes/"]), "")
 
     def test_it_is_remembered_across_calls_and_written_once(self) -> None:
-        self._ran(["ssh", "svc03", "squeue"])
-        path = os.path.join(slurm_site.global_state_dir(), "slurm_controller")
+        self._ran(["ssh", "host-a", "squeue"])
+        path = os.path.join(slurm_site.session_state_dir(), "slurm_hosts")
         before = os.stat(path).st_mtime_ns
-        self._ran(["ssh", "svc03", "sinfo"])
+        self._ran(["ssh", "host-a", "sinfo"])
         self.assertEqual(os.stat(path).st_mtime_ns, before,
-                         "a site has one scheduler; re-recording it is a write on "
-                         "every queue listing")
-        self.assertEqual(slurm_site.controller(), "svc03")
+                         "a scheduler already known is re-recorded on every queue "
+                         "listing otherwise")
+        self.assertEqual(slurm_site.hosts(), ["host-a"])
 
+    def test_another_host_is_added_rather_than_substituted(self) -> None:
+        """One conversation, two clusters — a reference run on one, a sweep on the other.
+
+        The second must not evict the first: the jobs already running on it are polled
+        through this same inventory, and a scheduler dropped from it is a run whose end
+        nothing is waiting for.
+        """
+        self._ran(["ssh", "host-a", "squeue"])
+        self._ran(["ssh", "host-b", "sacct -j 1"])
+        self.assertEqual(slurm_site.hosts(), ["host-a", "host-b"])
+
+    def test_a_host_with_its_own_slurm_keeps_it_first(self) -> None:
+        """A machine with a scheduler has it whether anything was learned or not.
+
+        It is a probe, not a record — true before any call is made — and it comes
+        first because it is the one whose filesystems the work is already on. An ssh
+        elsewhere adds a second destination and takes nothing away: the submissions
+        that belong here keep a scheduler to go to.
+        """
+        self._local(True)
+        self._ran(["ssh", "host-b", "squeue -u $USER"])
+        self.assertEqual(slurm_site.hosts(), ["", "host-b"])
+
+    def test_each_session_keeps_its_own_schedulers(self) -> None:
+        """The pollution this tier exists to prevent, on one machine and one user.
+
+        Two conversations on one login node work two schedulers — the local one and
+        another behind ``ssh``. Held for the machine, the last ``ssh`` of either is
+        read by both: the other session is then offered a destination it has no
+        business submitting to, a sibling's cluster without its filesystems or its
+        jobs. Nothing in either conversation shows why; the shell, which does not go
+        through this seam, keeps working.
+        """
+        with patch.dict(os.environ, {"MIMIR_SESSION_ID": "sess-local"}, clear=False):
+            self._ran(["ssh", "host-a", "squeue"])
+            self.assertEqual(slurm_site.hosts(), ["host-a"])
+        with patch.dict(os.environ, {"MIMIR_SESSION_ID": "sess-other"}, clear=False):
+            self.assertEqual(slurm_site.hosts(), [],
+                             "a session learns its schedulers from its own calls")
+            self._ran(["ssh", "host-b", "squeue"])
+            self.assertEqual(slurm_site.hosts(), ["host-b"])
+        with patch.dict(os.environ, {"MIMIR_SESSION_ID": "sess-local"}, clear=False):
+            self.assertEqual(slurm_site.hosts(), ["host-a"])
+
+
+    def test_a_named_host_is_taken_as_given(self) -> None:
+        """The registry is a convenience, not an allowlist.
+
+        A host the user names is one they can already ``ssh`` to, and refusing it for
+        not having been learned yet would make the learning a gate rather than a
+        shortcut. It joins the inventory when a command actually succeeds there.
+        """
+        host, refusal = slurm_site.resolve_host("never-seen")
+        self.assertEqual(host, "never-seen")
+        self.assertEqual(refusal, "")
+
+    def test_naming_local_where_there_is_no_local_slurm_is_refused(self) -> None:
+        # Said rather than silently sent over ssh to nothing: "local" means this host,
+        # and this host has no scheduler.
+        self._ran(["ssh", "host-a", "squeue"])
+        host, refusal = slurm_site.resolve_host("local")
+        self.assertEqual(host, "")
+        self.assertIn("no local scheduler", refusal)
+        self.assertIn("host-a", refusal)
+
+    def test_nothing_reachable_says_how_to_reach_something(self) -> None:
+        host, refusal = slurm_site.resolve_host()
+        self.assertEqual(host, "")
+        self.assertIn("squeue -u $USER", refusal)
+        self.assertIn("slurm_schedulers", refusal)
+
+    def test_a_choice_between_schedulers_is_not_made_here(self) -> None:
+        """What the refusal has to carry, since it is the model's whole prompt to act.
+
+        The candidates, so it can choose; what the choice follows, so it chooses on
+        the work rather than on order; and that the user is who settles it otherwise.
+        """
+        self._local(True)
+        self._ran(["ssh", "host-b", "squeue"])
+        host, refusal = slurm_site.resolve_host()
+        self.assertEqual(host, "")
+        self.assertIn("local, host-b", refusal)
+        self.assertIn("GPUs", refusal)
+        self.assertIn("ask them", refusal)
 
     def test_a_command_that_reached_the_scheduler_answers_with_the_gap(self):
         """The case the whole path exists for, closed where it actually happens.
@@ -743,7 +846,7 @@ class LearnedControllerTests(unittest.TestCase):
         self.assertIn("slurm_watch", result["unwatched_hint"])
 
     def test_a_remote_queue_read_answers_with_it_too(self):
-        result = self._ran(["ssh", "svc03", "squeue -u me"], queued=["99"])
+        result = self._ran(["ssh", "host-a", "squeue -u me"], queued=["99"])
         self.assertEqual(result["unwatched"], ["99"])
 
     def test_a_command_that_never_touched_the_scheduler_asks_nothing(self):
@@ -765,12 +868,12 @@ class LearnedControllerTests(unittest.TestCase):
         first = self._ran(["squeue"], queued=["99"])
         self.assertEqual(first["unwatched"], ["99"])
         second = {"status": "ok", "returncode": 0}
-        orig = server_bash.slurm_queued_ids
-        server_bash.slurm_queued_ids = lambda *_a, **_k: ["99"]
+        orig = server_bash.slurm_queued_by_host
+        server_bash.slurm_queued_by_host = lambda *_a, **_k: {"": ["99"]}
         try:
             server_bash._note_scheduler([["squeue"]], second)
         finally:
-            server_bash.slurm_queued_ids = orig
+            server_bash.slurm_queued_by_host = orig
         self.assertNotIn("unwatched", second)
 
 

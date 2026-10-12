@@ -14,8 +14,8 @@ Safety model:
 - Both submitters take resources as *arguments* and build the command themselves —
   the model never hands over a command string — and launch it as argv. They are
   approval-gated client-side (``CLUSTER_SUBMIT``). The read-only queries do use a
-  shell, for ``$USER`` expansion; their filters are quoted. With a remote controller
-  one shell is unavoidable, since ``ssh`` takes a command line and not an argv: each
+  shell, for ``$USER`` expansion; their filters are quoted. For a scheduler behind
+  ``ssh`` one shell is unavoidable, since it takes a command line and not an argv: each
   element is quoted on the way out, so what the far side splits is exactly the argv
   built here (``_shared/slurm_site.exec_argv``).
 - ``sbatch_submit`` returns a ``background_job`` descriptor that the client watcher
@@ -38,15 +38,24 @@ from capabilities import tool_caps, PLAN_BLOCKED, CLUSTER_SUBMIT, BACKGROUNDABLE
 from responses import err, ok
 from state_paths import session_state_dir, state_dir
 from slurm_site import (
+    HOST_FILE as _HOST_FILE,
     ID_FILE as _ID_FILE,
-    UNWATCHED_HINT,
-    controller as slurm_controller,
+    LOCAL as _LOCAL_HOST,
+    LOCAL_NAME as _LOCAL_NAME,
     covered_by as _covered_by,
-    recorded_job_ids as _recorded_job_ids,
-    unwatched as slurm_unwatched,
+    hosts as slurm_hosts,
+    job_host as _job_host,
+    name_of as _host_name,
+    recorded_jobs as _recorded_jobs,
+    resolve_host as _resolve_host,
     argv_for as slurm_argv,
     exec_argv as slurm_exec_argv,
-    queued_ids as slurm_queued_ids,
+    queued_by_host as slurm_queued_by_host,
+    record_host as _record_host,
+    forget_host as _forget_host,
+    unwatched as slurm_unwatched,
+    unwatched_by_host as slurm_unwatched_by_host,
+    unwatched_hint as slurm_unwatched_hint,
 )
 from slurm_nodes import (
     aggregate_node_types as _aggregate_node_types,
@@ -104,21 +113,27 @@ def _new_job_dir_name() -> str:
             return name
 
 
-def _no_scheduler_hint() -> str:
-    """What to do when no Slurm command answers here. Self-documenting on purpose.
+def _no_scheduler_hint(host: str = _LOCAL_HOST) -> str:
+    """What to do when a Slurm command did not answer. Self-documenting on purpose.
 
-    There is no setting to point at, so the answer has to be a thing the user is about
-    to do anyway: reach the scheduler over ``ssh`` once. That call records where it is
-    and every tool here follows. Said only when nothing has been recorded yet — once it
-    has, a failure means something else and this would be a wrong turn.
+    Two different failures, and the cure is only ever offered for the one it fits. A
+    scheduler that was *named* and did not answer is a host to check — the inventory is
+    not the problem. Nothing reachable at all is the case this learning exists for, and
+    there the answer has to be a thing the user is about to do anyway: reach a
+    scheduler over ``ssh`` once, which adds it.
     """
-    if slurm_controller():
-        return (f"The scheduler is reached through {slurm_controller()}; check that "
-                "host answers.")
-    return ("No Slurm command answered on this host. If the scheduler lives on "
-            "another one, read the queue there once through the shell — "
-            "ssh <host> \"squeue -u $USER\" — and every cluster tool here will use "
-            "that host from then on.")
+    known = slurm_hosts()
+    if host:
+        return (f"That went to {host}; check the host answers — "
+                "slurm_schedulers() lists what this session reaches.")
+    if known:
+        return ("No Slurm command answered on this host. Reachable instead: "
+                + ", ".join(_host_name(h) for h in known)
+                + " — pass one as scheduler=.")
+    return ("No Slurm command answered on this host, and no other scheduler has been "
+            "reached yet. If one lives elsewhere, read its queue through the shell "
+            "once — ssh <host> \"squeue -u $USER\" — and it joins this session's "
+            "schedulers, or name it with slurm_schedulers(add=\"<host>\").")
 
 
 def _add_unwatched(payload: dict) -> None:
@@ -130,16 +145,21 @@ def _add_unwatched(payload: dict) -> None:
     watcher's poll target, called on a timer for the life of every watched run, and a
     per-user queue read on it would be paid for ever.
 
+    Asked of every scheduler this session reaches, because work nobody is watching is
+    not more acceptable for being on the other cluster — and because the model holding
+    these ids has just chosen between those schedulers and can act on either.
+
     Best effort: a scheduler that will not answer leaves the payload alone rather than
     turning a successful submission into an error.
     """
-    ids = slurm_queued_ids(_TIMEOUT_READ)
-    if ids is None:
+    by_host = slurm_unwatched_by_host(slurm_queued_by_host(_TIMEOUT_READ),
+                                      _hpc_jobs_dir())
+    if not by_host:
         return
-    missing = slurm_unwatched(ids, _hpc_jobs_dir())
-    if missing:
-        payload["unwatched"] = missing
-        payload["unwatched_hint"] = UNWATCHED_HINT
+    # Flat, and in inventory order: the client's nudge reads a list of ids, and the
+    # hint is what says which scheduler to name when there is more than one.
+    payload["unwatched"] = [job_id for ids in by_host.values() for job_id in ids]
+    payload["unwatched_hint"] = slurm_unwatched_hint(by_host)
 
 
 def _find_job_dir(job_id: str) -> tuple[str, str]:
@@ -279,22 +299,89 @@ def _record_terminal_state(job_dir: str, state: str) -> None:
         pass
 
 
-# ── Where the controller is ───────────────────────────────────────────────────
+# ── Which scheduler a call goes to ────────────────────────────────────────────
 #
-# Not a setting: ``_shared/slurm_site`` learns it from the user's own successful
-# ``ssh host "squeue …"``, which is the first thing anybody runs on a login node whose
-# scheduler lives elsewhere. See that module for why a variable nobody sets before the
-# first lost night is the wrong mechanism, and for how a command is run over there.
+# An inventory, not a setting: ``_shared/slurm_site`` holds the schedulers this session
+# reaches — this machine's own when it has one, plus every host a successful
+# ``ssh host "squeue …"`` has proved — and a caller names which. See that module for why
+# a variable nobody sets before the first lost night is the wrong mechanism, and for how
+# a command is run over there.
 #
-# One seam: every Slurm command this server runs goes through ``slurm_argv``. Nothing
-# else in this file knows whether the scheduler is local.
-def _slurm_host() -> str:
-    """The host whose Slurm tools to use, or "" when they are this machine's."""
-    return slurm_controller()
+# Two regimes here, and they are different questions. A tool that *acts* resolves a
+# host from what it was given (``_resolve_host``), and refuses rather than defaulting
+# when the inventory leaves a real choice open. A tool that acts on an *existing job*
+# does not choose at all: it finds where that job already is (``_locate_job``), because
+# a job is not something a scheduler owns — it is something one of them is running.
+#
+# One seam either way: every Slurm command this server runs goes through ``slurm_argv``
+# or ``slurm_exec_argv`` with that host. Nothing else in this file knows about ssh.
 
 
-def _run_bash(script: str, timeout: int, stdin: str | None = None) -> dict:
-    """Run *script* where Slurm is, optionally feeding it *stdin*.
+def _record_job_host(job_dir: str, host: str) -> None:
+    """Write down which scheduler a job is on, so the next poll asks only it.
+
+    A cache and not a binding: it is written when a job is submitted and whenever a
+    sweep has just found one, and :func:`_locate_job` sweeps again whenever it is
+    absent or wrong. Best effort — a directory that cannot be written costs one extra
+    ssh per poll, never the answer.
+    """
+    if not job_dir:
+        return
+    try:
+        with open(os.path.join(job_dir, _HOST_FILE), "w") as fh:
+            fh.write(host)
+    except OSError:
+        pass
+
+
+def _chosen_host(scheduler: str) -> tuple[str, dict | None]:
+    """The scheduler a call goes to, or the refusal naming the choice left to make.
+
+    The refusal is the useful half: with two schedulers reachable, "which one" is a
+    decision about the work — where the inputs are, which has the GPUs — and this says
+    so rather than picking one. See ``slurm_site.resolve_host``.
+    """
+    host, refusal = _resolve_host(scheduler)
+    return host, (err(refusal) if refusal else None)
+
+
+def _locate_job(job_id: str, requested: str = "",
+                job_dir: str = "") -> tuple[str, str, str]:
+    """Find *job_id* among the schedulers this session reaches: ``(host, state, raw)``.
+
+    The hint first — the descriptor's own record, which makes the common case one call
+    — then every other reachable scheduler until one knows the id. That fallback is
+    what keeps a job trackable without being owned: an adoption of somebody's job, a
+    descriptor from before the host was written down, a watcher re-armed from disk
+    after a window reload (which polls by id alone, having no host to pass), all land
+    here and are answered.
+
+    *requested* skips the search when a caller already knows — a sweep refused for one
+    job is not worth paying twice. *job_dir* is for the caller that has already found
+    the descriptor, so the sessions tree is walked once per call rather than twice.
+    ``("", "unknown", "")`` when nothing has heard of it.
+    """
+    if requested:
+        state, raw = _normalized_job_state(job_id, host=requested)
+        return requested, state, raw
+    if not job_dir:
+        job_dir, _ = _find_job_dir(job_id)
+    hint = _job_host(job_dir) if job_dir else None
+    order = [hint] if hint is not None else []
+    order += [host for host in slurm_hosts() if host != hint]
+    for host in order:
+        state, raw = _normalized_job_state(job_id, host=host)
+        if state != "unknown":
+            # Found, so the next poll of this job is one call rather than a sweep.
+            if job_dir and hint != host:
+                _record_job_host(job_dir, host)
+            return host, state, raw
+    return "", "unknown", ""
+
+
+def _run_bash(script: str, timeout: int, stdin: str | None = None, *,
+              host: str = _LOCAL_HOST) -> dict:
+    """Run *script* on *host*'s scheduler, optionally feeding it *stdin*.
 
     Without *stdin* the command gets none at all: the server's own is its MCP protocol
     pipe, and a command that reads it (``cat``, an ``ssh`` without ``-n``) eats the
@@ -304,7 +391,7 @@ def _run_bash(script: str, timeout: int, stdin: str | None = None) -> dict:
     """
     try:
         res = subprocess.run(
-            slurm_argv(script, piped=stdin is not None),
+            slurm_argv(script, host=host, piped=stdin is not None),
             input=stdin,
             stdin=None if stdin is not None else subprocess.DEVNULL,
             stdout=subprocess.PIPE,
@@ -378,27 +465,112 @@ def _validate_comment(value: str) -> str | None:
 
 
 @mcp.tool(**tool_caps(kind="slurm"))
-def slurm_partitions() -> dict:
-    """List Slurm partitions with key scheduling attributes."""
+def slurm_schedulers(add: str = "", forget: str = "") -> dict:
+    """The schedulers this session can submit to — read this before choosing one.
+
+    A machine reaches more than one: its own Slurm when it has it, plus any host a
+    successful ``ssh host "squeue …"`` has proved. Every cluster tool here takes a
+    ``scheduler=`` naming one of these, and a job submitted to any of them is watched
+    the same way — the wake is owed wherever the work is.
+
+    Which one a job goes to is a decision about the work, not a setting: the partitions
+    and GPUs it needs (slurm_partitions(scheduler=...), slurm_nodes(scheduler=...)),
+    and above all the filesystem holding its inputs and its work_dir, since a job can
+    only run where its files are. Ask the user when the task does not settle it.
+
+    Args:
+        add: A host to add, verified before it is recorded — ``sbatch`` must answer
+            there. Not needed for a host you have already reached over ssh.
+        forget: A host to drop: one that was a typo, or a cluster you no longer have.
+            The local scheduler cannot be dropped, being a fact rather than a record.
+    """
+    added: dict | None = None
+    if add.strip():
+        host = add.strip()
+        probe = _run_bash("command -v sbatch", _TIMEOUT_READ, host=host)
+        if probe.get("status") != "ok":
+            return err(f"No Slurm on {host}: {probe.get('stderr') or probe.get('error') or 'sbatch did not answer'}",
+                       hint="Nothing was recorded. Check the host answers "
+                            f"— ssh {host} \"squeue -u $USER\" — and that ssh needs no "
+                            "password: a scheduler that can ask for one hangs every "
+                            "poll. Keys and ports belong in ~/.ssh/config.")
+        _record_host(host)
+        added = {"scheduler": host, "note": f"sbatch answers on {host}; added."}
+
+    dropped: dict | None = None
+    if forget.strip():
+        host = forget.strip()
+        if host == _LOCAL_NAME:
+            dropped = {"scheduler": host,
+                       "note": "The local scheduler is not a record to drop: it is "
+                               "this host answering sbatch, and it would be back on "
+                               "the next call."}
+        else:
+            gone = _forget_host(host)
+            dropped = {"scheduler": host,
+                       "note": f"{host} dropped." if gone
+                               else f"{host} was not in this session's schedulers."}
+
+    known = slurm_hosts()
+    listed = [{
+        "scheduler": _host_name(host),
+        "local": not host,
+        "reached": "Slurm answers on this host" if not host
+                   else f"over ssh to {host}",
+    } for host in known]
+    payload: dict = {"schedulers": listed, "count": len(listed)}
+    if added:
+        payload["added"] = added
+    if dropped:
+        payload["dropped"] = dropped
+    if not known:
+        payload["note"] = (
+            "None. No Slurm command answers here, and no other host has been reached. "
+            "Read a queue through the shell once — ssh <host> \"squeue -u $USER\" — "
+            "and it is learned, or name it with slurm_schedulers(add=\"<host>\").")
+    elif len(known) == 1:
+        payload["note"] = (f"One, so scheduler= can be omitted: "
+                           f"{_host_name(known[0])}.")
+    else:
+        payload["note"] = ("More than one, so every submission names its scheduler. "
+                           "The choice follows the job's resources and the filesystem "
+                           "its inputs are on.")
+    return ok(payload)
+
+
+@mcp.tool(**tool_caps(kind="slurm"))
+def slurm_partitions(scheduler: str = "") -> dict:
+    """List Slurm partitions with key scheduling attributes.
+
+    Args:
+        scheduler: Which scheduler to ask — 'local' for this machine's own, or
+            a hostname. Omitted is fine when this session reaches only one;
+            slurm_schedulers() lists them.
+    """
+    host, refusal = _chosen_host(scheduler)
+    if refusal:
+        return refusal
     cmd = "sinfo -h -o '%P|%a|%l|%D|%t|%c|%m'"
-    result = _run_bash(cmd, _TIMEOUT_READ)
+    result = _run_bash(cmd, _TIMEOUT_READ, host=host)
     if result["status"] != "ok":
         return err(result.get("stderr") or result.get("error", "sinfo failed"),
-                    hint=_no_scheduler_hint())
+                    hint=_no_scheduler_hint(host))
     rows = _parse_pipe_table(
         result.get("stdout", ""),
         ["partition", "availability", "time_limit", "nodes", "state", "cpus_per_node", "mem_mb_per_node"],
     )
-    return ok({"partitions": rows, "count": len(rows)})
+    return ok({"partitions": rows, "count": len(rows),
+               "scheduler": _host_name(host)})
 
 
-def _sinfo_nodes() -> list[dict]:
+def _sinfo_nodes(host: str = _LOCAL_HOST) -> list[dict]:
     """Degraded node list for a cluster whose `scontrol show node` is restricted.
 
     sinfo is readable everywhere but does not carry the architecture, so callers are
     told the field is unknown rather than being handed a wrong default.
     """
-    result = _run_bash("sinfo -N -h -o '%N|%P|%t|%c|%m|%e|%G|%X|%Y|%Z'", _TIMEOUT_READ)
+    result = _run_bash("sinfo -N -h -o '%N|%P|%t|%c|%m|%e|%G|%X|%Y|%Z'",
+                       _TIMEOUT_READ, host=host)
     if result["status"] != "ok":
         return []
     rows = _parse_pipe_table(result.get("stdout", ""), [
@@ -430,7 +602,8 @@ def _sinfo_nodes() -> list[dict]:
 
 
 @mcp.tool(**tool_caps(kind="slurm"))
-def slurm_nodes(partition: str = "", states: str = "", node: str = "", detail: bool = False) -> dict:
+def slurm_nodes(partition: str = "", states: str = "", node: str = "",
+                detail: bool = False, scheduler: str = "") -> dict:
     """Inventory the cluster's compute nodes: hardware, GPUs, and what is free right now.
 
     Read-only and instant — it reads Slurm's own node database, which is what actually
@@ -448,17 +621,23 @@ def slurm_nodes(partition: str = "", states: str = "", node: str = "", detail: b
         states: Comma-separated state filter, e.g. 'idle,mix,alloc'.
         node: A single node name; implies detail.
         detail: List every matching node individually instead of aggregating.
+        scheduler: Which scheduler to ask — 'local' for this machine's own, or
+            a hostname. Omitted is fine when this session reaches only one;
+            slurm_schedulers() lists them.
     """
+    host, refusal = _chosen_host(scheduler)
+    if refusal:
+        return refusal
     degraded = ""
-    result = _run_argv(["scontrol", "show", "node", "-o"], _TIMEOUT_READ)
+    result = _run_argv(["scontrol", "show", "node", "-o"], _TIMEOUT_READ, host=host)
     if result["status"] == "ok":
         nodes = _parse_scontrol_nodes(result.get("stdout", ""))
     else:
-        nodes = _sinfo_nodes()
+        nodes = _sinfo_nodes(host)
         degraded = "scontrol unavailable: architecture and live CPU occupancy are unknown."
     if not nodes:
         return err(result.get("stderr") or result.get("error", "node query failed"),
-                   hint="Ensure Slurm commands are available on this host.")
+                   hint=_no_scheduler_hint(host))
 
     if node:
         wanted = {n.strip() for n in node.split(",") if n.strip()}
@@ -485,24 +664,35 @@ def slurm_nodes(partition: str = "", states: str = "", node: str = "", detail: b
         }
     if degraded:
         payload["degraded"] = degraded
+    payload["scheduler"] = _host_name(host)
     return ok(payload)
 
 
 @mcp.tool(**tool_caps(kind="slurm"))
-def slurm_queue(user_only: bool = True, states: str = "") -> dict:
+def slurm_queue(user_only: bool = True, states: str = "", scheduler: str = "") -> dict:
     """List jobs from Slurm queue.
+
+    One scheduler's queue, because that is what a queue is. What this session is running
+    elsewhere is in ``unwatched`` when nothing is tracking it, and slurm_schedulers()
+    says where else to look.
 
     Args:
         user_only: If true, show only jobs for the current user.
         states: Optional state filter (e.g. 'R,PD').
+        scheduler: Which scheduler to ask — 'local' for this machine's own, or
+            a hostname. Omitted is fine when this session reaches only one;
+            slurm_schedulers() lists them.
     """
+    host, refusal = _chosen_host(scheduler)
+    if refusal:
+        return refusal
     user_flag = " -u $USER" if user_only else ""
     state_flag = f" -t {shlex.quote(states)}" if states else ""
     cmd = f"squeue -h{user_flag}{state_flag} -o '%i|%u|%T|%M|%l|%D|%R|%j'"
-    result = _run_bash(cmd, _TIMEOUT_READ)
+    result = _run_bash(cmd, _TIMEOUT_READ, host=host)
     if result["status"] != "ok":
         return err(result.get("stderr") or result.get("error", "squeue failed"),
-                   hint=_no_scheduler_hint())
+                   hint=_no_scheduler_hint(host))
     rows = _parse_pipe_table(
         result.get("stdout", ""),
         ["job_id", "user", "state", "elapsed", "time_limit", "nodes", "reason_or_node", "name"],
@@ -518,23 +708,27 @@ def slurm_queue(user_only: bool = True, states: str = "") -> dict:
     # under any session holds it. That is also what makes it fit to be *recorded* —
     # the unwatched set is handed to the client, where a nudge reads it at the end of
     # the turn, and a nudge may only ever rest on something checkable.
-    recorded = _recorded_job_ids(_hpc_jobs_dir())
+    #
+    # Asked of *this* scheduler, which is why the descriptors are keyed by host: the
+    # same number is a watched production run here and somebody else's sweep there, and
+    # an id alone would report the second as covered by the first's descriptor.
+    recorded = _recorded_jobs(_hpc_jobs_dir())
     ids = [str(row.get("job_id") or "") for row in rows]
     for row, job_id in zip(rows, ids):
-        row["watched"] = _covered_by(job_id, recorded)
-    payload = {"jobs": rows, "count": len(rows)}
+        row["watched"] = _covered_by(job_id, recorded, host)
+    payload = {"jobs": rows, "count": len(rows), "scheduler": _host_name(host)}
     # Per row above, by array here: eight task rows name one descriptor to write, and
     # listing them one by one would ask for eight calls that all land on "already
     # recorded".
-    missing = slurm_unwatched(ids, _hpc_jobs_dir())
+    missing = slurm_unwatched(ids, _hpc_jobs_dir(), host=host)
     if missing:
         payload["unwatched"] = missing
-        payload["unwatched_hint"] = UNWATCHED_HINT
+        payload["unwatched_hint"] = slurm_unwatched_hint({host: missing})
     return ok(payload)
 
 
-def _run_argv(argv: list[str], timeout: int) -> dict:
-    """Run a command as argv — no shell, so no argument can inject a second command.
+def _run_argv(argv: list[str], timeout: int, *, host: str = _LOCAL_HOST) -> dict:
+    """Run a command as argv on *host* — no shell, so no argument can inject a second one.
 
     With a remote controller one shell is unavoidable: ``ssh`` has no argv to hand over,
     only a command line for the far side to parse. So each element is quoted on the way
@@ -543,7 +737,7 @@ def _run_argv(argv: list[str], timeout: int) -> dict:
     """
     try:
         res = subprocess.run(
-            slurm_exec_argv(argv), stdin=subprocess.DEVNULL,
+            slurm_exec_argv(argv, host=host), stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=timeout,
         )
         return {
@@ -623,6 +817,7 @@ def salloc_submit(
     confirm: bool = False,
     timeout_seconds: int = _TIMEOUT_ALLOC,
     extra_args: str = "",
+    scheduler: str = "",
 ) -> dict:
     """Request an interactive Slurm allocation (sensitive, synchronous).
 
@@ -647,6 +842,9 @@ def salloc_submit(
         confirm: Must be True to execute; False returns the command as a preview.
         timeout_seconds: Max time to wait for the allocation response.
         extra_args: Additional salloc flags; every token must start with '-'.
+        scheduler: Which scheduler to allocate on. 'local' only: an interactive
+            allocation needs a terminal on the host that has the scheduler, which
+            ssh does not give — for a remote one, use sbatch_submit.
     """
     argv, error = _salloc_argv(partition, account, qos, nodes, ntasks, cpus_per_task,
                                mem, time, gres, constraint, job_name, extra_args,
@@ -664,14 +862,18 @@ def salloc_submit(
     # shell to run in it, and give it straight back — spending the request and
     # reporting success at having done nothing. Refused rather than attempted, because
     # a silent no-op is worse than a plain no.
-    if _slurm_host():
-        return err(f"The scheduler here is reached through {_slurm_host()}, and an "
-                   "interactive allocation needs a terminal on that host.",
-                   hint="Submit the work as a batch job instead — sbatch_submit(...) "
-                        "returns a handle this session watches to completion.",
+    host, refusal = _chosen_host(scheduler)
+    if refusal:
+        return refusal
+    if host:
+        return err(f"{host} is reached over ssh, and an interactive allocation needs a "
+                   "terminal on the host that has the scheduler.",
+                   hint="Submit the work as a batch job instead — sbatch_submit(..., "
+                        f"scheduler='{host}') returns a handle this session watches to "
+                        "completion.",
                    command=preview)
 
-    result = _run_argv(argv, max(5, min(timeout_seconds, 120)))
+    result = _run_argv(argv, max(5, min(timeout_seconds, 120)), host=host)
     if result["status"] == "ok":
         return ok({
             "command": preview,
@@ -709,7 +911,7 @@ def _lines(result: dict) -> list[str]:
             for line in (result.get("stdout") or "").splitlines() if line.strip()]
 
 
-def _normalized_job_state(job_id: str) -> tuple[str, str]:
+def _normalized_job_state(job_id: str, *, host: str = _LOCAL_HOST) -> tuple[str, str]:
     """Map a Slurm job's state to the shared vocab: running|pending|done|crashed|unknown.
 
     Active jobs come from ``squeue``; finished jobs have left the queue, so their
@@ -726,7 +928,7 @@ def _normalized_job_state(job_id: str) -> tuple[str, str]:
     array that completed.
     """
     queued = _lines(_run_bash(f"squeue -j {shlex.quote(job_id)} -h -o '%T'",
-                              _TIMEOUT_READ))
+                              _TIMEOUT_READ, host=host))
     raw = ",".join(sorted(set(queued)))
     if any(state in _ACTIVE_STATES for state in queued):
         return "running", raw
@@ -734,7 +936,7 @@ def _normalized_job_state(job_id: str) -> tuple[str, str]:
         return "pending", raw
 
     accounted = _lines(_run_bash(f"sacct -j {shlex.quote(job_id)} -n -X -o State",
-                                 _TIMEOUT_READ))
+                                 _TIMEOUT_READ, host=host))
     sraw = ",".join(sorted(set(accounted)))
     # Ahead of the "anything not COMPLETED is crashed" fallback below, which is where
     # most of these land anyway. What this earns is the one case the fallback cannot
@@ -754,7 +956,7 @@ def _normalized_job_state(job_id: str) -> tuple[str, str]:
 
 
 @mcp.tool(**tool_caps(kind="slurm"))
-def slurm_job_status(job_id: str) -> dict:
+def slurm_job_status(job_id: str, scheduler: str = "") -> dict:
     """Normalized status of a single Slurm job (poll target for background jobs).
 
     Returns ``state`` in running|pending|done|crashed|unknown (squeue for active
@@ -763,18 +965,27 @@ def slurm_job_status(job_id: str) -> dict:
     A terminal answer also settles the submission's directory, so that the readers which
     cannot ask Slurm stop reading the job as live — see :func:`_record_terminal_state`.
 
+    The id is enough. Which scheduler is running the job is found — the descriptor's
+    own record first, then every other one this session reaches — so a poll works for a
+    job on any of them, including a watcher re-armed from disk after a window reload,
+    which has nothing but the id to poll with.
+
     Args:
         job_id: The Slurm job ID to poll, as returned when the job was submitted.
+        scheduler: Only to skip the search, when the caller already knows which one is
+            running it. Omitted is the normal case.
     """
     if not str(job_id).strip():
         return err("job_id is required.")
     job_id = str(job_id).strip()
-    state, raw = _normalized_job_state(job_id)
-    payload = {"job_id": job_id, "state": state, "raw_state": raw}
     # Where the submission was recorded, so the script and the log stay reachable. A
     # Slurm job outlives its conversation, so the sibling sessions are searched too and the
     # answer says when the job came from another one.
     job_dir, from_session = _find_job_dir(job_id)
+    host, state, raw = _locate_job(job_id, scheduler, job_dir)
+    payload = {"job_id": job_id, "state": state, "raw_state": raw}
+    if host or state != "unknown":
+        payload["scheduler"] = _host_name(host)
     if job_dir:
         payload["job_dir"] = job_dir
         # Read, not re-derived: the submission wrote down where it told the job to
@@ -819,7 +1030,7 @@ def slurm_job_status(job_id: str) -> dict:
 _JOB_ID_RE = re.compile(r"\d+(_\d+)?")
 
 @mcp.tool(**tool_caps(kind="slurm"))
-def slurm_watch(job_id: str, note: str = "") -> dict:
+def slurm_watch(job_id: str, note: str = "", scheduler: str = "") -> dict:
     """Watch a Slurm job that was submitted outside MIMIR, so its end reaches you.
 
     The counterpart of sbatch_submit for every job this server did not launch: one
@@ -836,6 +1047,9 @@ def slurm_watch(job_id: str, note: str = "") -> dict:
         job_id: The Slurm job id to adopt — ``15306620``, or one array task
             ``15306621_3``. An array's base id watches the whole array.
         note: What this job is, for whoever reads the directory later. Optional.
+        scheduler: Which scheduler is running it, when known. Omitted, every one this
+            session reaches is asked — so an id alone is enough, and the one that
+            answers is written down for the polls that follow.
     """
     job_id = str(job_id or "").strip()
     if not job_id:
@@ -848,8 +1062,8 @@ def slurm_watch(job_id: str, note: str = "") -> dict:
 
     # The disk first, and the scheduler only on the path that writes something. An id
     # already recorded is the common answer when a model adopts an array task by task,
-    # and polling Slurm to tell it "nothing to adopt" buys nothing — with a remote
-    # controller it is two ssh round trips for an answer the directory already has.
+    # and polling Slurm to tell it "nothing to adopt" buys nothing — over ssh it is two
+    # round trips, per scheduler swept, for an answer the directory already has.
     existing, from_session = _find_job_dir(job_id)
     if existing:
         return ok({
@@ -860,17 +1074,27 @@ def slurm_watch(job_id: str, note: str = "") -> dict:
                     "slurm_job_status(job_id) for where it is at.",
         })
 
-    # Asked before anything is written, because a descriptor for a job the scheduler
-    # has never heard of is worse than no descriptor: it holds this process open until
-    # the staleness horizon for a run that does not exist.
-    state, raw = _normalized_job_state(job_id)
+    # Asked before anything is written, because a descriptor for a job no scheduler has
+    # heard of is worse than no descriptor: it holds this process open until the
+    # staleness horizon for a run that does not exist. And asked of each of them, which
+    # is what makes an id enough — the caller holding a number from a launcher's output
+    # has no reason to know which cluster printed it.
+    host, state, raw = _locate_job(job_id, scheduler)
     if state == "unknown":
-        return err(f"Slurm knows nothing about job {job_id}.",
+        known = ", ".join(_host_name(h) for h in slurm_hosts()) or "none reachable"
+        return err(f"No scheduler this session reaches knows job {job_id} ({known}).",
                    hint="Check the id with slurm_queue(). A job that has already left "
-                        "both squeue and sacct cannot be watched.")
+                        "both squeue and sacct cannot be watched, and one on a "
+                        "scheduler not listed above needs it added — "
+                        "slurm_schedulers(add=\"<host>\").")
 
     try:
-        job_dir = _record_job_dir(job_id, **{_ADOPTED_FILE: f"{note}\n" if note else "\n"})
+        # The host beside the id, so the watcher's polls go straight to it. A cache,
+        # not a binding: a poll that finds it wrong sweeps again and rewrites it.
+        job_dir = _record_job_dir(job_id, **{
+            _ADOPTED_FILE: f"{note}\n" if note else "\n",
+            _HOST_FILE: host,
+        })
     except OSError as exc:
         return err(f"Could not record the job: {exc}")
 
@@ -879,6 +1103,7 @@ def slurm_watch(job_id: str, note: str = "") -> dict:
         "state": state,
         "raw_state": raw,
         "job_dir": job_dir,
+        "scheduler": _host_name(host),
         "note": note or None,
     }
     if state in _TERMINAL_STATES:
@@ -912,7 +1137,7 @@ def _current_user() -> str:
     risk_note="Cancels a Slurm job; whatever it had not written yet is lost.",
     label="Slurm cancel {job_id}",
 ))
-def slurm_cancel(job_id: str, confirm: bool = False) -> dict:
+def slurm_cancel(job_id: str, confirm: bool = False, scheduler: str = "") -> dict:
     """Cancel one of your own Slurm jobs, pending or running (sensitive).
 
     For a job that is wrong or no longer needed: a bad submission, a run superseded by
@@ -927,6 +1152,8 @@ def slurm_cancel(job_id: str, confirm: bool = False) -> dict:
     Args:
         job_id: The Slurm job ID, as sbatch_submit or slurm_queue gave it.
         confirm: Must be True to cancel.
+        scheduler: Only to skip the search for the one running it. Omitted is the
+            normal case — a cancellation goes where the job is.
     """
     job_id = str(job_id or "").strip()
     if not _JOB_ID_RE.fullmatch(job_id):
@@ -936,25 +1163,37 @@ def slurm_cancel(job_id: str, confirm: bool = False) -> dict:
         return err("Cancellation not confirmed.",
                    hint="Set confirm=True only after user approval.")
 
-    q = _run_argv(["squeue", "-h", "-j", job_id, "-o", "%u|%T"], _TIMEOUT_READ)
+    # Where it is, before anything is sent: a scancel aimed at the wrong scheduler
+    # either hits nothing or — the id existing on both — somebody else's job.
+    host, located, located_raw = _locate_job(job_id, scheduler)
+    if located == "unknown":
+        known = ", ".join(_host_name(h) for h in slurm_hosts()) or "none reachable"
+        return err(f"No scheduler this session reaches knows job {job_id} ({known}), "
+                   "so there is nothing to cancel.",
+                   hint="List what is running with slurm_queue(scheduler=...).")
+
+    q = _run_argv(["squeue", "-h", "-j", job_id, "-o", "%u|%T"], _TIMEOUT_READ,
+                  host=host)
     line = (q.get("stdout") or "").strip().splitlines()
     if q.get("status") != "ok" or not line:
-        state, raw = _normalized_job_state(job_id)
-        return err(f"Job {job_id} is not in the queue, so there is nothing to cancel.",
-                   hint=f"Its last known state: {raw or state}.")
+        return err(f"Job {job_id} is not in {_host_name(host)}'s queue, so there is "
+                   "nothing to cancel.",
+                   hint=f"Its last known state: {located_raw or located}.")
     owner, _, queued_state = line[0].partition("|")
     user = _current_user()
     if user and owner.strip() != user:
         return err(f"Job {job_id} belongs to '{owner.strip()}', not to you ('{user}').",
                    hint="Only your own jobs can be cancelled from here.")
 
-    res = _run_argv(["scancel", job_id], _TIMEOUT_SUBMIT)
+    res = _run_argv(["scancel", job_id], _TIMEOUT_SUBMIT, host=host)
     if res.get("status") != "ok":
         return err(res.get("stderr") or res.get("error", "scancel failed"))
     return ok({
         "job_id": job_id,
         "was": queued_state.strip(),
-        "note": f"Slurm job {job_id} cancelled (it was {queued_state.strip().lower()}).",
+        "scheduler": _host_name(host),
+        "note": f"Slurm job {job_id} cancelled on {_host_name(host)} "
+                f"(it was {queued_state.strip().lower()}).",
     })
 
 
@@ -1005,6 +1244,7 @@ def sbatch_submit(
     job_name: str = "mimir-batch",
     work_dir: str = "",
     confirm: bool = False,
+    scheduler: str = "",
 ) -> dict:
     """Submit *command* as a non-blocking Slurm batch job (sensitive, backgroundable).
 
@@ -1032,6 +1272,12 @@ def sbatch_submit(
             output is certain to be writable, since a job that could not reach it
             would not have started.
         confirm: Must be True to submit.
+        scheduler: Which scheduler to submit to — 'local' for this machine's own, or a
+            hostname. With more than one reachable this is required, and the choice is
+            about the work: the partitions and GPUs it needs, and the filesystem
+            holding its inputs and work_dir — a job is submitted to the cluster that
+            can see its files. slurm_schedulers() lists them; ask the user when the
+            task does not settle it.
     """
     if not command.strip():
         return err("command is required.")
@@ -1050,7 +1296,16 @@ def sbatch_submit(
         return err("Submission not confirmed.",
                    hint="Set confirm=True only after user approval.")
 
+    host, refusal = _chosen_host(scheduler)
+    if refusal:
+        return refusal
+
     work_dir = os.path.realpath(work_dir.strip() or os.getcwd())
+    # Checked here, which is where it can be: this host sees the directory or it does
+    # not. A submission to a remote scheduler is the case this cannot settle — the far
+    # side has its own filesystems — so the check is kept as the local evidence it is,
+    # and a path this host cannot see is still refused, since a work_dir nobody here
+    # can read is not one this session can collect output from either.
     if not os.path.isdir(work_dir):
         return err(f"{work_dir} is not a directory this host can see.",
                    hint="The job starts in it, so a path that is not there is a "
@@ -1082,15 +1337,14 @@ def sbatch_submit(
         return err(f"Could not write batch script: {exc}")
 
     # On stdin, not by path. ``sbatch`` reads its script from standard input when given
-    # no file, which means nothing of ours has to exist on the host running it — the
-    # one thing a remote controller could not promise, and the reason this used to
-    # check a directory over ssh before submitting. The command line is now one word,
-    # so there is no path to quote either.
-    res = _run_bash("sbatch", _TIMEOUT_SUBMIT, stdin=script)
+    # no file, which means nothing of ours has to exist on the host running it — the one
+    # thing a scheduler behind ``ssh`` cannot promise. The command line is one word, so
+    # there is no path to quote either.
+    res = _run_bash("sbatch", _TIMEOUT_SUBMIT, stdin=script, host=host)
     if res.get("status") != "ok":
         return err(res.get("stderr") or res.get("error", "sbatch failed"),
                    hint="Check partition, account/qos, and requested resources. "
-                        + _no_scheduler_hint())
+                        + _no_scheduler_hint(host))
     match = re.search(r"(\d+)", res.get("stdout", ""))
     if not match:
         return err("Could not parse a job id from sbatch output.",
@@ -1104,6 +1358,13 @@ def sbatch_submit(
             fh.write(log_file)
     except OSError:
         pass
+    # Beside the id, so the watcher's first poll goes straight to the right scheduler
+    # instead of sweeping. And into the session's inventory: a submission that
+    # succeeded is proof this host reaches that scheduler, which is the same evidence
+    # a queue read gives, from the call that mattered more.
+    _record_job_host(job_dir, host)
+    if host:
+        _record_host(host)
 
     payload = {
         "job_id":       job_id,
@@ -1112,8 +1373,10 @@ def sbatch_submit(
         "work_dir":     work_dir,
         "log":          log_file,
         "partition":    partition,
+        "scheduler":    _host_name(host),
         "comment":      comment or None,
-        "note":         f"Slurm job {job_id} submitted to '{partition}'.",
+        "note":         f"Slurm job {job_id} submitted to '{partition}' on "
+                        f"{_host_name(host)}.",
         "background_job": _slurm_background_job(job_id),
     }
     # The submission is the other moment the model holds job ids: what else of the

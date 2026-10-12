@@ -156,11 +156,11 @@ import build_progress
 import run_channel
 from slurm_site import (
     SLURM_COMMANDS,
-    UNWATCHED_HINT,
-    controller_from_ssh,
-    queued_ids as slurm_queued_ids,
-    record_controller,
-    unwatched as slurm_unwatched,
+    slurm_host_from_ssh,
+    queued_by_host as slurm_queued_by_host,
+    record_host,
+    unwatched_by_host as slurm_unwatched_by_host,
+    unwatched_hint as slurm_unwatched_hint,
 )
 from shell_paths import (
     CLUSTER_SUBMIT_COMMANDS,
@@ -1106,8 +1106,11 @@ def _note_scheduler(segments: list[list[str]], result: dict) -> None:
     """Learn from a command that just reached the scheduler, and answer with the gap.
 
     A command whose parse shows a Slurm head — locally, or past an ``ssh`` — and that
-    *succeeded* has proved two things this server could not otherwise know: where the
-    scheduler is, and that it answers. Both are then free to use.
+    *succeeded* has proved two things this server could not otherwise know: that there
+    is a scheduler on that host, and that it answers. Both are then free to use. The
+    host is *added* to what this session reaches rather than becoming "the" scheduler:
+    a queue read on a second cluster is a destination gained, not a redirection of the
+    jobs already running on the first.
 
     The second is what closes the case this whole path exists for. A job submitted
     through a site launcher is tracked by nothing, and neither the launcher call nor the
@@ -1127,23 +1130,22 @@ def _note_scheduler(segments: list[list[str]], result: dict) -> None:
     if not reached:
         return
     for segment in segments:
-        host = controller_from_ssh(segment)
+        host = slurm_host_from_ssh(segment)
         if host:
-            record_controller(host)
+            record_host(host)
             break
     now = time.monotonic()
     if now - _QUEUE_ASKED_AT < _QUEUE_EVERY:
         return
     _QUEUE_ASKED_AT = now
-    # Asked where the scheduler is, which on a site whose controller is elsewhere is
-    # not here — the same seam the cluster tools use, so one answer and not two.
-    ids = slurm_queued_ids()
-    if ids is None:
+    # Asked of every scheduler this session reaches, through the same seam the cluster
+    # tools use, so one answer and not two. A cluster that does not reply contributes
+    # nothing rather than having its jobs reported as unwatched.
+    by_host = slurm_unwatched_by_host(slurm_queued_by_host())
+    if not by_host:
         return
-    missing = slurm_unwatched(ids)
-    if missing:
-        result["unwatched"] = missing
-        result["unwatched_hint"] = UNWATCHED_HINT
+    result["unwatched"] = [job_id for ids in by_host.values() for job_id in ids]
+    result["unwatched_hint"] = slurm_unwatched_hint(by_host)
 
 
 def _reaches_slurm(argv: list[str]) -> bool:
@@ -1152,7 +1154,7 @@ def _reaches_slurm(argv: list[str]) -> bool:
         return False
     if os.path.basename(argv[0]) in SLURM_COMMANDS:
         return True
-    return bool(controller_from_ssh(argv))
+    return bool(slurm_host_from_ssh(argv))
 
 
 _JOB_OPS = ("status", "output", "list")

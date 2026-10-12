@@ -774,6 +774,7 @@ def proxy_slurm(
     build_wall_time: str = "",
     build_gpus: int = 0,
     background: bool = False,
+    scheduler: str = "",
     confirm: bool = False,
 ) -> dict:
     """Submit proxy work as Slurm batch jobs (sensitive, non-blocking, expensive).
@@ -839,6 +840,10 @@ def proxy_slurm(
             compiles faster for holding one).
         background: Accepted for symmetry with proxy_eval and ignored — a
             submitted job is detached either way, and is watched either way.
+        scheduler: Which scheduler to submit to — 'local' for this machine's own, or
+            a hostname. With more than one reachable this is required: the choice
+            follows the job's resources and the filesystem holding the run
+            directory. slurm_schedulers() lists them.
         confirm: Must be True to submit.
     """
     if op not in _SLURM_OPS:
@@ -876,18 +881,18 @@ def proxy_slurm(
                                     param_overrides, compare_to_reference,
                                     gpus, cpus_per_task, mem, wall_time,
                                     account, job_name, constraint, nodelist,
-                                    comment))
+                                    comment, scheduler))
     if op == "suite":
         return (_missing_args(op, suite_name=suite_name)
                 or slurm.submit_suite(suite_name, partition, gpus, cpus_per_task,
                                       mem, wall_time, account, constraint, nodelist,
-                                      comment))
+                                      comment, scheduler))
     # op == "eval"
     return slurm.submit_eval(partition, proxy_name, background, gpus, cpus_per_task,
                              mem, wall_time, account, job_name or "proxy_opt",
                              constraint, nodelist, comment,
                              build_partition, build_constraint, build_cpus_per_task,
-                             build_mem, build_wall_time, build_gpus)
+                             build_mem, build_wall_time, build_gpus, scheduler)
 
 
 if __name__ == "__main__":

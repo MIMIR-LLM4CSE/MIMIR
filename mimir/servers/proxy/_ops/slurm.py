@@ -22,9 +22,23 @@ from _lib.store import (
     _proxy_runs_dir, _suite_results_dir,
 )
 from _ops.eval_session import _prepare_run, _background_descriptor
+from slurm_site import resolve_host as _slurm_resolve_host
 from _ops.suites import _prevalidate_suite
 
 _OPT_RUNNER = os.path.join(_PROXY_DIR, "_proxy_runner.py")
+
+
+def _resolve_scheduler(scheduler: str) -> tuple[str, dict | None]:
+    """The scheduler a submission goes to, or the refusal that names the choice.
+
+    The same question the hpc server's submissions ask, through the same shared seam,
+    so the two submitters cannot disagree about where a job may go — or about which
+    hosts are even reachable. See ``_shared/slurm_site.resolve_host``: with one
+    scheduler there is nothing to choose and it is used; with several the choice
+    belongs to the work, and this refuses rather than deciding it quietly.
+    """
+    host, refusal = _slurm_resolve_host(scheduler)
+    return host, (err(refusal) if refusal else None)
 
 
 def _run_background_descriptor(run_dir: str) -> dict:
@@ -58,11 +72,15 @@ def submit_run(
     constraint: str = "",
     nodelist: str = "",
     comment: str = "",
+    scheduler: str = "",
 ) -> dict:
     """Submit a single proxy run as a Slurm batch job (non-blocking)."""
     entry, error = _entry_or_err(proxy_name)
     if error:
         return error
+    host, refusal = _resolve_scheduler(scheduler)
+    if refusal:
+        return refusal
 
     if compare_to_reference and compare_to_reference not in (
         os.listdir(refs_dir()) if os.path.isdir(refs_dir()) else []
@@ -95,6 +113,7 @@ def submit_run(
     job_id, error = _submit_sbatch(
         run_dir, script,
         local_alternative="proxy_exec(op='run', confirm=True)",
+        host=host,
     )
     if error:
         return error
@@ -124,8 +143,12 @@ def submit_suite(
     constraint: str = "",
     nodelist: str = "",
     comment: str = "",
+    scheduler: str = "",
 ) -> dict:
     """Submit one Slurm job per (case × sweep point) in a suite (non-blocking)."""
+    host, refusal = _resolve_scheduler(scheduler)
+    if refusal:
+        return refusal
     suite = _load_suite(suite_name)
     if suite is None:
         return err(f"Suite '{suite_name}' not found.",
@@ -186,7 +209,7 @@ def submit_suite(
             with open(os.path.join(ptr_dir, "run_dir"), "w") as fh:
                 fh.write(run_dir)
 
-            job_id, error = _submit_sbatch(run_dir, script)
+            job_id, error = _submit_sbatch(run_dir, script, host=host)
             if error:
                 errors.append({"case_id": case_id, "sweep": sweep_overrides,
                                "error": error.get("error", "sbatch failed")})
@@ -268,6 +291,7 @@ def submit_eval(
     build_mem: str = "",
     build_wall_time: str = "",
     build_gpus: int = 0,
+    scheduler: str = "",
 ) -> dict:
     """Submit an optimization-session run as Slurm batch job(s) (non-blocking).
 
@@ -282,6 +306,9 @@ def submit_eval(
     effect: a submission is detached by definition, so the response always carries a
     ``background_job`` handle.
     """
+    host, refusal = _resolve_scheduler(scheduler)
+    if refusal:
+        return refusal
     cfg, error, run_dir, resume_notice = _prepare_run(proxy_name)
     if error:
         return error
@@ -336,6 +363,7 @@ def submit_eval(
             run_dir, build_script,
             local_alternative="proxy_eval(op='run', confirm=True)",
             script_name="build_batch_script.sh", id_file="build_slurm_job_id",
+            host=host,
         )
         if error:
             return error
@@ -355,13 +383,14 @@ def submit_eval(
     job_id, error = _submit_sbatch(
         run_dir, script,
         local_alternative="proxy_eval(op='run', confirm=True)",
+        host=host,
     )
     if error:
         # The build is already queued and would compile for a run that will never
         # exist. Cancelling it is the only thing between this failure and a node
         # spending an hour on work nobody will read.
         if build_job_id is not None:
-            cancel_err = _scancel(build_job_id)
+            cancel_err = _scancel(build_job_id, host=host)
             error["hint"] = (
                 (error.get("hint", "") + " ") if error.get("hint") else ""
             ) + (f"The build job {build_job_id} could not be cancelled "

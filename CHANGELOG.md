@@ -23,7 +23,8 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   ended, and a server left running overnight had, as far as it could tell, nothing to do.
   This records the descriptor after the fact and returns the same handle `sbatch_submit`
   does, so the watcher arms and the wake path is unchanged. An array's base id covers every
-  task. An id Slurm has never heard of is refused rather than recorded.
+  task. An id no reachable scheduler has heard of is refused rather than recorded, naming
+  the ones that were asked.
 - **`bash_watch(pid)` — watch a process already running.** The sibling of the above for
   work that is not a scheduler job at all: something a script of yours backgrounded, a
   `nohup` started outside a tool call. Same silence, same cause — no record, so no watcher,
@@ -31,8 +32,8 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   time, so a recycled pid cannot be mistaken for it, and says plainly what it cannot give
   you: an adopted process never had the exit-code trap, so when it ends the state is
   `unknown` rather than a `done` nobody observed.
-- **A reminder, before you conclude, for work nothing is watching.** The scheduler is asked
-  which jobs are yours and the disk which ones have a record; the difference is named, with
+- **A reminder, before you conclude, for work nothing is watching.** Every reachable
+  scheduler is asked which jobs are yours and the disk which ones have a record; the difference is named, with
   both ways to hand one over. It rests on those two facts and never on the text of a
   command — a pattern matching `sbatch` fires on a `grep sbatch` and misses every wrapper
   ever written. And it reaches the reminder through the shell as well as through the cluster
@@ -43,19 +44,39 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   adoption says what is still unaccounted for.
 - **Every path to Slurm goes through the same answer.** The proxy's own submissions and
   cancellations ran `sbatch`/`squeue`/`scancel` locally and in the raw, so the ratchet's
-  runs stayed broken on a site whose controller is elsewhere; they now take the shared
+  runs stayed broken on a site whose schedulers are elsewhere; they now take the shared
   route. The platform profile still describes only the machine it runs on — it looks for no
-  other host — but "no `sinfo` here" no longer reads as "no scheduler": with one known, it
-  says where. And `salloc_submit` is refused outright when the controller is remote, rather
-  than taking an allocation it cannot give a terminal to and handing it straight back.
-- **A Slurm controller behind `ssh`, found on its own.** On a login node where `sbatch` is
-  not installed, every cluster tool answered "not available" and the work went out through
-  a hand-written `ssh host "sbatch …"` instead — which is where the untracked submissions
-  came from in the first place. MIMIR now notices the host the first time one of your own
-  `ssh host "squeue …"` calls succeeds, and sends its own cluster commands there from then
-  on. Nothing to configure: the call that teaches it is the one you were already making,
-  and it is read from the shell validator's own parse plus the exit status rather than from
-  the text of the command. ssh's own settings stay in `~/.ssh/config`, where they belong.
+  other host — but "no `sinfo` here" no longer reads as "no scheduler": with any known, it
+  says where. And `salloc_submit` is refused outright when the scheduler it names is
+  remote, rather than taking an allocation it cannot give a terminal to and handing it
+  straight back.
+- **Slurm schedulers behind `ssh`, found on their own — and more than one at a time.** On a
+  login node where `sbatch` is not installed, every cluster tool answered "not available"
+  and the work went out through a hand-written `ssh host "sbatch …"` instead — which is
+  where the untracked submissions came from in the first place. MIMIR now notices a host
+  the first time one of your own `ssh host "squeue …"` calls succeeds. Nothing to
+  configure: the call that teaches it is the one you were already making, and it is read
+  from the shell validator's own parse plus the exit status rather than from the text of
+  the command. ssh's own settings stay in `~/.ssh/config`, where they belong.
+- **`slurm_schedulers()` — every scheduler a session can submit to, and a choice made per
+  job.** A login node reaches its own scheduler and whatever `ssh` gets to, and one
+  conversation uses several: a reference run on the local scheduler while a sweep goes out
+  to another cluster. So every cluster tool now takes `scheduler=` (`'local'`, or a
+  hostname), learning a host *adds* a destination instead of replacing one, and a job
+  submitted to any of them is watched and wakes you the same way. With two reachable, a
+  submission that names none is refused with both listed rather than sent to one by
+  default: which cluster a job belongs on follows the partitions and GPUs it needs and the
+  filesystem holding its inputs, and that is a decision to make or to ask about, not to
+  make silently. `slurm_schedulers(add=…)` records a host after checking `sbatch` answers
+  there; `forget=` drops one.
+- **A job is found wherever it is running.** The scheduler a job went to is written beside
+  its id, but only as a cache: a poll that has no record — a job adopted from a launcher's
+  output, a watcher re-armed from disk after a window reload, which has nothing but the id
+  — asks every reachable scheduler and writes down whichever knew, so the next poll is one
+  call again. Descriptors are keyed by host *and* id, because two clusters number
+  independently: the same number is your production run on one and somebody else's sweep on
+  the other, and keyed by id alone the first vouched for the second — reported as watched
+  while nothing polled it.
 
 ### Fixed
 - **A run taken back is now a run that ends with the window.** Reopening a workspace on a
@@ -106,7 +127,7 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   says so, and names `work_dir` rather than a setting.
 - **A batch script is piped to `sbatch` instead of handed over by path.** Nothing of
   MIMIR's then has to exist on the host running the scheduler, which is the one thing a
-  remote controller cannot promise.
+  scheduler behind `ssh` cannot promise.
 - **An adopted job's output is no longer reported as unreadable.** It has no log of its
   own — nothing of MIMIR's opened that process's output — so reading it now says where the
   output actually goes instead of "Log unreadable", which read as output lost.

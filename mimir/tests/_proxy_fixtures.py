@@ -28,11 +28,27 @@ for _p in (SERVERS_DIR / "_shared", SERVERS_DIR / "proxy"):
         sys.path.insert(0, _ps)
 
 import server_proxy  # noqa: E402
+import slurm_site  # noqa: E402
 from _lib import build, procs, ratchet, store, tree_snapshot  # noqa: E402,F401
 from _ops import (  # noqa: E402,F401
     _eval_ratchet, _eval_validate, eval_session, references, registry, runs,
     scaffold, slurm, suites,
 )
+
+
+def pin_local_scheduler(case: unittest.TestCase) -> None:
+    """Make this machine's own Slurm the one scheduler for the rest of *case*.
+
+    A submission resolves which scheduler it goes to against the session's inventory —
+    the local probe plus whatever has been learned — and refuses when that leaves a
+    real choice. A test that does not pin it reads the developer's machine: with no
+    ``sbatch`` on it the inventory is empty and every submission is refused for having
+    nowhere to go. The probe is memoised in the module, so it is set rather than
+    mocked per call, and restored afterwards.
+    """
+    orig = slurm_site._HAS_SLURM
+    slurm_site._HAS_SLURM = True
+    case.addCleanup(lambda: setattr(slurm_site, "_HAS_SLURM", orig))
 
 
 def _eval(*args, **kwargs):
@@ -167,6 +183,10 @@ class _FakeSbatchTest(_TmpStorageTest):
                 f'> {self.scripts_dir}/$n\n'
                 'echo "Submitted batch job $n"\n')
         os.environ["PATH"] = self.bin_dir
+        # This fixture *is* a local scheduler: an sbatch on PATH is what the probe
+        # looks for, and pinning it keeps the answer from depending on whether the
+        # probe had already run — it is memoised for the life of the process.
+        pin_local_scheduler(self)
 
     def tearDown(self) -> None:
         os.environ["PATH"] = self._saved_path
