@@ -28,6 +28,7 @@ for _p in [SERVERS_DIR / "_shared", SERVERS_DIR / "workspace"]:
         sys.path.insert(0, str(_p))
 
 import run_channel  # noqa: E402
+import slurm_site  # noqa: E402
 import _bash_jobs  # noqa: E402
 import server_bash  # noqa: E402
 
@@ -279,10 +280,6 @@ class BashBackgroundTests(unittest.TestCase):
         second = server_bash.bash_run("echo two", background=True)["job_key"]
         keys = [j["job_key"] for j in server_bash.bash_job(op="list")["jobs"]]
         self.assertEqual(keys[:2], [second, first])
-
-
-if __name__ == "__main__":
-    unittest.main()
 
 
 class BlockingRunTests(unittest.TestCase):
@@ -555,3 +552,227 @@ class RewatchHandleTests(unittest.TestCase):
         key = self._launch("true")
         _wait_terminal(key)
         self.assertNotIn("background_jobs", server_bash.bash_job(op="output", job_key=key))
+
+
+class AdoptingARunningProcessTests(unittest.TestCase):
+    """``bash_watch(pid)`` — the counterpart of a launch for work already going.
+
+    A process something else started is watched by nothing: tracking is the record a
+    launch writes, and nothing wrote one. So nobody is told when it ends, and it does
+    not keep this workspace's server alive while it runs — which is how a night goes
+    to a run that finished at two in the morning with no one listening.
+
+    What it cannot give is a status. The exit-code trap is installed by the launch and
+    cannot be added to a process already running, so the end of an adopted job is
+    ``unknown`` — honestly, rather than a ``done`` nobody observed.
+    """
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.mkdtemp(prefix="mimir-adopt-state-")
+        self._orig_state = os.environ.get("MIMIR_STATE_DIR")
+        os.environ["MIMIR_STATE_DIR"] = self._tmp
+        self._procs: list[subprocess.Popen] = []
+
+    def tearDown(self) -> None:
+        for proc in self._procs:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
+        if self._orig_state is None:
+            os.environ.pop("MIMIR_STATE_DIR", None)
+        else:
+            os.environ["MIMIR_STATE_DIR"] = self._orig_state
+        shutil.rmtree(self._tmp, ignore_errors=True)
+
+    def _sleeper(self) -> subprocess.Popen:
+        proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+        self._procs.append(proc)
+        return proc
+
+    def test_a_running_process_becomes_a_watchable_job(self) -> None:
+        proc = self._sleeper()
+        res = server_bash.bash_watch(pid=proc.pid, what="the overnight solver")
+        self.assertEqual(res["status"], "ok")
+        self.assertEqual(res["state"], "running")
+        # The handle the client watcher arms on, in the shape a launch's has.
+        self.assertEqual(res["background_job"]["status_op"]["tool"], "bash_job")
+        self.assertEqual(res["background_job"]["job_key"], res["job_key"])
+        # And the state the watcher polls, through the ordinary seam.
+        self.assertEqual(_bash_jobs.state(res["job_key"])["state"], "running")
+
+    def test_what_it_is_is_kept_as_the_command(self) -> None:
+        proc = self._sleeper()
+        res = server_bash.bash_watch(pid=proc.pid, what="the overnight solver")
+        self.assertEqual(_bash_jobs.state(res["job_key"])["command"],
+                         "the overnight solver")
+
+    def test_the_end_of_an_adopted_run_is_unknown_and_says_why(self) -> None:
+        proc = self._sleeper()
+        res = server_bash.bash_watch(pid=proc.pid)
+        proc.kill()
+        proc.wait()
+        payload = _wait_terminal(res["job_key"])
+        self.assertEqual(payload["state"], "unknown")
+        # Not "it was killed from outside": an adopted process never had the trap, so
+        # the absence of a status says nothing about how it ended.
+        self.assertIn("adopted rather than started here", payload["note"])
+
+    def test_a_pid_that_is_not_running_is_refused(self) -> None:
+        proc = self._sleeper()
+        pid = proc.pid
+        proc.kill()
+        proc.wait()
+        res = server_bash.bash_watch(pid=pid)
+        self.assertEqual(res["status"], "error")
+        self.assertEqual(_jobs_on_disk(), [], "it recorded a job anyway")
+
+    def test_a_nonsense_pid_is_refused_before_anything_is_written(self) -> None:
+        for bad in (0, -1, "nope"):
+            with self.subTest(pid=bad):
+                self.assertEqual(server_bash.bash_watch(pid=bad)["status"], "error")
+        self.assertEqual(_jobs_on_disk(), [])
+
+    def test_the_scan_finds_an_adopted_job_the_way_it_finds_a_launched_one(self) -> None:
+        # The whole point: the client's scan reads descriptors off disk, and this is
+        # what makes an outside process appear in it — live, so a watcher is armed and
+        # the process stays alive for it.
+        from mimir.client.ui.ws import job_scan
+        proc = self._sleeper()
+        with patch.dict(os.environ, {"MIMIR_SESSION_ID": "s-adopt"}):
+            res = server_bash.bash_watch(pid=proc.pid, what="solver")
+        with patch.object(job_scan, "_MIMIR_DIR_WS", self._tmp):
+            jobs = job_scan.scan_session("s-adopt")
+        self.assertEqual([(j.job_key, j.kind, j.live) for j in jobs],
+                         [(res["job_key"], "shell", True)])
+
+    def test_where_its_output_goes_is_recorded_for_the_reader(self) -> None:
+        # An adopted job has no log of its own, so an empty one must not read as a run
+        # that printed nothing.
+        proc = self._sleeper()
+        target = os.path.join(self._tmp, "solver.log")
+        res = server_bash.bash_watch(pid=proc.pid, log=target)
+        payload = _bash_jobs.output(res["job_key"], 4096)
+        self.assertIn(target, payload.get("note", ""))
+
+
+class LearnedControllerTests(unittest.TestCase):
+    """Where the scheduler is, learned from a call the user was making anyway.
+
+    On a login node whose Slurm tools live on another host, every typed cluster tool
+    answers "sbatch is not available" — so the work goes out as `ssh host "sbatch …"`,
+    which writes no descriptor: nothing watches the job, no wake is owed when it ends,
+    and the server stops on its idle timer with the run still going. The fact the typed
+    tools were missing is the host, and the model names it constantly while reading the
+    queue. One successful call is enough, and a setting nobody knows to set before the
+    first lost night is the wrong mechanism.
+    """
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.mkdtemp(prefix="mimir-controller-")
+        self.addCleanup(shutil.rmtree, self._tmp, ignore_errors=True)
+        patcher = patch.dict(os.environ, {"MIMIR_STATE_DIR": self._tmp}, clear=False)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _ran(self, argv: list[str], *, ok: bool = True,
+             queued: list[str] | None = None) -> dict:
+        """Run one parsed command past the learner, and answer with its payload."""
+        result = {"status": "ok" if ok else "error", "returncode": 0 if ok else 1}
+        orig = server_bash.slurm_queued_ids
+        server_bash.slurm_queued_ids = lambda *_a, **_k: queued
+        server_bash._QUEUE_ASKED_AT = 0.0
+        try:
+            server_bash._note_scheduler([argv], result)
+        finally:
+            server_bash.slurm_queued_ids = orig
+        return result
+
+    def _host_after(self, argv: list[str], *, ok: bool = True) -> str:
+        self._ran(argv, ok=ok)
+        return slurm_site.controller()
+
+    def test_a_successful_remote_queue_read_records_the_host(self) -> None:
+        self.assertEqual(
+            self._host_after(["ssh", "svc03", "squeue -u $USER -o '%.10i'"]),
+            "svc03")
+
+    def test_a_failed_call_proves_nothing(self) -> None:
+        # The far side may not have had the tools, or the host may not exist. Only a
+        # command that answered says where the scheduler is.
+        self.assertEqual(self._host_after(["ssh", "svc03", "squeue"], ok=False), "")
+
+    def test_a_remote_command_that_is_not_slurms_is_not_a_controller(self) -> None:
+        self.assertEqual(self._host_after(["ssh", "svc03", "tail -2 run.log"]), "")
+
+    def test_the_host_is_found_past_ssh_flags(self) -> None:
+        self.assertEqual(
+            self._host_after(["ssh", "-n", "-p", "2222", "me@svc03", "sacct -j 1"]),
+            "me@svc03")
+
+    def test_a_local_command_mentioning_a_scheduler_records_nothing(self) -> None:
+        # The difference between a fact and a guess over the text: this command
+        # contains the word, and says nothing about where a scheduler is.
+        self.assertEqual(self._host_after(["grep", "-r", "sbatch", "notes/"]), "")
+
+    def test_it_is_remembered_across_calls_and_written_once(self) -> None:
+        self._ran(["ssh", "svc03", "squeue"])
+        path = os.path.join(slurm_site.global_state_dir(), "slurm_controller")
+        before = os.stat(path).st_mtime_ns
+        self._ran(["ssh", "svc03", "sinfo"])
+        self.assertEqual(os.stat(path).st_mtime_ns, before,
+                         "a site has one scheduler; re-recording it is a write on "
+                         "every queue listing")
+        self.assertEqual(slurm_site.controller(), "svc03")
+
+
+    def test_a_command_that_reached_the_scheduler_answers_with_the_gap(self):
+        """The case the whole path exists for, closed where it actually happens.
+
+        A job submitted through a site launcher is tracked by nothing, and neither the
+        launcher call nor the ``squeue`` that checks it a second later reaches a typed
+        cluster tool — so the reminder that fires when a turn concludes with unwatched
+        work never got its fact. A command that just *proved* the scheduler answers is
+        where that fact is free: the ids it is running, minus the ones a descriptor
+        covers. Carried on this payload, which is all it takes — the client's observer
+        reads the field, not the tool name.
+        """
+        result = self._ran(["squeue", "-u", "me"],
+                           queued=["15306620", "15306621_1", "15306621_2"])
+        # By array, because adoption is by array: two task rows are one descriptor.
+        self.assertEqual(result["unwatched"], ["15306620", "15306621"])
+        self.assertIn("slurm_watch", result["unwatched_hint"])
+
+    def test_a_remote_queue_read_answers_with_it_too(self):
+        result = self._ran(["ssh", "svc03", "squeue -u me"], queued=["99"])
+        self.assertEqual(result["unwatched"], ["99"])
+
+    def test_a_command_that_never_touched_the_scheduler_asks_nothing(self):
+        # The trigger is the validator's parse, not a word in the text: this one reads
+        # a log, and asking the scheduler on every shell command would be a queue read
+        # per call for the life of the session.
+        result = self._ran(["tail", "-5", "run.log"], queued=["99"])
+        self.assertNotIn("unwatched", result)
+
+    def test_a_scheduler_that_will_not_answer_asserts_nothing(self):
+        # None is "unknown", and unknown must never read as "nothing is running" —
+        # silence taken for an empty queue is the whole failure this exists for.
+        result = self._ran(["squeue"], queued=None)
+        self.assertNotIn("unwatched", result)
+
+    def test_the_queue_is_read_once_in_a_while_not_once_per_call(self):
+        # A turn reads the queue several times — after a submission, then again for
+        # progress — and the reminder needs the answer once.
+        first = self._ran(["squeue"], queued=["99"])
+        self.assertEqual(first["unwatched"], ["99"])
+        second = {"status": "ok", "returncode": 0}
+        orig = server_bash.slurm_queued_ids
+        server_bash.slurm_queued_ids = lambda *_a, **_k: ["99"]
+        try:
+            server_bash._note_scheduler([["squeue"]], second)
+        finally:
+            server_bash.slurm_queued_ids = orig
+        self.assertNotIn("unwatched", second)
+
+
+if __name__ == "__main__":
+    unittest.main()

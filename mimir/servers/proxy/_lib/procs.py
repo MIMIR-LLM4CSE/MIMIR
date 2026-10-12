@@ -18,6 +18,7 @@ from datetime import datetime, timezone
 
 import build_progress
 from responses import err
+from slurm_site import exec_argv as _slurm_exec_argv
 
 from _lib import store
 
@@ -137,14 +138,32 @@ def _is_running(pid: int, expected_starttime: int | None = None) -> bool:
     return True
 
 
+def _slurm_run(argv: list[str], timeout: int, stdin: str | None = None):
+    """Run one Slurm command where the scheduler is, and hand back the completed call.
+
+    Through the shared seam (``_shared/slurm_site``) rather than straight to
+    ``subprocess``, because the scheduler is not always on the host MIMIR runs on: on a
+    login node whose controller lives elsewhere, a bare ``sbatch`` is "not found" and
+    these submissions simply could not be made. One owner for the question, so the three
+    servers that submit cannot disagree about where the answer is — and locally the argv
+    is still exec'd as it stands, with no shell, which is what these commands are built
+    as arguments for.
+
+    *stdin* feeds the command its own input, which is how a batch script reaches
+    ``sbatch`` without any file having to exist on the host that runs it.
+    """
+    return subprocess.run(
+        _slurm_exec_argv(argv, piped=stdin is not None),
+        input=stdin,
+        stdin=None if stdin is not None else subprocess.DEVNULL,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=timeout,
+    )
+
+
 def _squeue_state(job_id: int) -> str:
     """Query squeue; return 'running'|'pending'|'done'|'crashed'|'unknown'."""
     try:
-        res = subprocess.run(
-            ["squeue", "-j", str(job_id), "-h", "-o", "%T"],
-            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            text=True, timeout=10,
-        )
+        res = _slurm_run(["squeue", "-j", str(job_id), "-h", "-o", "%T"], 10)
         state = res.stdout.strip().upper()
         if state in ("RUNNING", "COMPLETING"):
             return "running"
@@ -381,10 +400,10 @@ def _submit_sbatch(
     os.chmod(batch_path, 0o755)
 
     try:
-        res = subprocess.run(["sbatch", batch_path],
-                             stdin=subprocess.DEVNULL,
-                             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                             text=True, timeout=30)
+        # The script goes on sbatch's stdin, not as a path: it is kept on disk for a
+        # reader asking what was submitted, but nothing of ours then has to exist on
+        # the host running the scheduler.
+        res = _slurm_run(["sbatch"], 30, stdin=script)
     except FileNotFoundError:
         hint = "Slurm is not available."
         if local_alternative:
@@ -408,10 +427,7 @@ def _submit_sbatch(
 def _scancel(job_id: int) -> str | None:
     """Cancel one Slurm job; returns an error message, or None when it worked."""
     try:
-        res = subprocess.run(["scancel", str(job_id)],
-                             stdin=subprocess.DEVNULL,
-                             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                             text=True, timeout=15)
+        res = _slurm_run(["scancel", str(job_id)], 15)
     except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
         return f"scancel failed: {exc}"
     if res.returncode != 0:

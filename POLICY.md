@@ -42,15 +42,19 @@ babysit reasoning and are tuned by the dial.
 | `unfinished_plan` | verification | the checklist still has open steps | ✅ | ✅ | ✅ |
 | `blast_radius` | guidance | about to change an **existing** target, callers never searched | ✅ | ✅ | ❌ |
 | `env_cleanup` | guidance | the environment was mutated, the run is concluding | ✅ | ✅ | ❌ |
+| `unwatched_run` | guidance | a scheduler listed work of the user's that no descriptor covers, and the run is concluding | ✅ | ✅ | ❌ |
 | `env_resolution` | guidance | a run failed on a missing module, envs never listed | ✅ | ❌ | ❌ |
 | `doc` | guidance | a non-`.md` file changed, nothing pending, workflow at validate/conclude | ✅ | ❌ | ❌ |
 | `state` | guidance | editing paused after validation, not concluded | ✅ | ❌ | ❌ |
 | `creation` | guidance | a target declared that does **not** exist yet, nothing written | ✅ | ❌ | ❌ |
 | `todo` | guidance | multi-step work underway, no checklist written | ✅ | ❌ | ❌ |
 
-`light` is the default. It keeps only the two nudges guarding a mistake that is
-**costly, hard to notice, and does not self-correct**: breaking callers, and leaving a
-package install behind. Everything it drops is procedural hand-holding a capable model
+`light` is the default. It keeps only the three nudges guarding a mistake that is
+**costly, hard to notice, and does not self-correct**: breaking callers, leaving a
+package install behind, and walking away from a job nothing is watching — that last one
+costs a night, is invisible from both ends (the run is fine, the conversation looks
+finished), and cannot be corrected later, because the only moment the record could have
+been written has passed. Everything it drops is procedural hand-holding a capable model
 does unprompted, and every nudge costs tokens and interrupts the model's own plan.
 `strict` is opted into per model with `"enforcement": "strict"` in
 `vllm_model_profiles.json`, and is marked from observation — a profile that already
@@ -62,7 +66,7 @@ then applies its own mode condition on top:
 | | `agent` | `plan` | `ask` |
 |---|---|---|---|
 | `strict` | every guidance row | `env_resolution`, `env_cleanup`, `state` | none |
-| `light` | `blast_radius`, `env_cleanup` | none | none |
+| `light` | `blast_radius`, `env_cleanup`, `unwatched_run` | none | none |
 | `off` | none | none | none |
 
 `doc`, `blast_radius`, `creation` and `todo` are agent-only by their own predicate, which
@@ -1288,6 +1292,18 @@ are recommendations: `blast_radius` suggests checking call sites before a broad 
 change and explicitly allows a clearly local change to proceed; `creation` prods the model
 to start writing once it has context, and its message offers the exit for a request that
 only ever wanted an answer.
+
+### `unwatched_run`
+The only guidance row whose fact comes from outside the client. A job submitted through a
+site launcher, a submission script or a shell on another host writes no descriptor — so
+nothing polls it, no wake is owed when it ends, and the server stops on its idle TTL with
+the run still going. The queue is what knows those jobs exist and the disk is what knows
+nothing covers them, so the HPC server answers both (`slurm_queue` marks each row
+`watched`) and the observer records the set. Deliberately not a pattern over the command
+text: that fires on a `grep sbatch` and misses every wrapper. Its message names the ids and
+both ways to hand one over — `slurm_watch(job_id)` for a scheduler job, `bash_watch(pid)`
+for a process on this host — and leaves the exit for work that is genuinely somebody
+else's, so a reminder is never silenced by adopting another user's run.
 
 ### `state`, `doc`, `todo`, `env_cleanup`, `env_resolution`
 Soft, low-frequency, and all dropped at `light`. `state` is a catch-all for editing that

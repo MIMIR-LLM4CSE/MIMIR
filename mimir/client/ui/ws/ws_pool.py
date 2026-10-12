@@ -35,6 +35,7 @@ import logging
 import os
 import time
 from collections import deque
+from datetime import datetime
 from typing import Any, Callable, Iterator
 
 from . import server_registry
@@ -69,6 +70,30 @@ def _server_idle_ttl() -> float:
             os.environ.get("MIMIR_SERVER_IDLE_TTL", "") or _DEFAULT_SERVER_IDLE_TTL))
     except ValueError:
         return _DEFAULT_SERVER_IDLE_TTL
+
+
+def idle_stop_reason(ttl_secs: float, *, past: bool) -> str:
+    """What this TTL means, in whichever tense the sayer needs.
+
+    Two layers describe it to a user — the notice written into a conversation after the
+    process stops, and the panel's own line when they detach onto nothing — and they
+    were each spelling it out, with the wording and the formatting drifting apart. One
+    author with two tenses, so they cannot disagree about what the clock is.
+
+    What neither may say is a deadline. The clock is measured from when the process
+    *first* had nothing to do and is reset by any work, so "it stops in two hours" names
+    a moment that does not exist; what ends the process is having had nothing to do
+    throughout. The remedy is deliberately absent: this layer knows what it was not
+    watching, not what kind of work the user has — a scheduler is something only the
+    tools that talk to one know about.
+    """
+    clock = f"{ttl_secs / 3600:.0f}h"
+    if past:
+        return (f"MIMIR stopped: it had nothing to do for {clock} together — no turn "
+                "in flight, and no run it was watching; any work would have restarted "
+                "that clock.")
+    return (f"It stops only once it has had nothing to do for about {clock} together "
+            "— any work restarts that clock.")
 
 
 # How often the reaper looks. Nothing here is urgent — a worker that lives thirty seconds
@@ -184,7 +209,7 @@ class _AgentPool:
 
     # ── Is this process still needed ──────────────────────────────────────────
 
-    def idle_report(self) -> dict:
+    def idle_report(self, *, excluding: Any = None) -> dict:
         """Why this process is or is not still needed, in one interrogable answer.
 
         **The criterion is positive.** "Not busy" is not "has finished": a worker is
@@ -205,9 +230,17 @@ class _AgentPool:
 
         One place, deliberately: the idle shutdown reads it, and so does the question
         "has this window anything worth leaving running?".
+
+        *excluding* is a subscription to leave out of the count, which is what asks
+        that second question properly. A window asking what it would leave behind is
+        itself an attachment, so counting it answers "yes, you" every time — which is
+        how a detachment came to promise that a run keeps working when there was no run
+        and the process was about to stop on idle. Only the asker, not every client: a
+        second window of the same workspace *is* keeping this process alive, and
+        telling the first that nothing is watching would be the same mistake inverted.
         """
         reasons: list[str] = []
-        attached = self.bus.attached()
+        attached = self.bus.attached(excluding=excluding)
         if attached:
             reasons.append(f"{attached} client(s) attached")
         if self._queue:
@@ -286,10 +319,20 @@ class _AgentPool:
             return ["<unreadable>"], []
         return sorted(live), sorted(owed)
 
-    def request_stop(self) -> None:
-        """Ask the serve loop to shut down. Idempotent."""
+    def request_stop(self, headline: str = "") -> None:
+        """Ask the serve loop to shut down. Idempotent.
+
+        *headline* is why, when the answer is this process's own: it is recorded into
+        every conversation being kept before the loop is asked to go. Recorded here
+        rather than at each deciding branch so that "the process decided to stop" is
+        one fact in one place — a stop added later cannot forget to say so. The
+        user-requested stop passes nothing, and should: the user is there, and already
+        has the reasons on screen.
+        """
         event = self.stop_requested
         if event is not None and not event.is_set():
+            if headline:
+                self._record_own_stop(headline)
             event.set()
 
     def _commit_turn(self, ev: dict, extras: dict) -> None:
@@ -423,24 +466,41 @@ class _AgentPool:
         """
         if not events:
             return
+        self._tell_session(
+            owner,
+            [f"🔔 {wake_text(ev)}" for ev in events],
+            [{"type": "job_wake", "text": wake_text(ev), "job": ev.get("job_key")}
+             for ev in events],
+            about="the wake")
+
+    def _tell_session(self, owner: str, bubbles: list[str], events: list[dict], *,
+                      about: str) -> None:
+        """Put *bubbles* in a conversation the user is away from, and journal *events*.
+
+        The one way this process speaks into a conversation nobody is watching, and
+        there are two things it has to say: a run of theirs finished, and this process
+        is about to stop. Both want the same sequence and the same care — the store is
+        the half the user reads on their way back in, the journal is the half the
+        mechanism is audited from, and either can fail without the other being worth
+        abandoning. Written once because the failure handling is the fragile part.
+        """
         try:
             session = self.store.load_session(owner)
         except Exception:
-            logger.warning("the wake of session %s could not be written down: it "
-                           "could not be loaded", owner, exc_info=True)
+            logger.warning("%s of session %s could not be written down: it could not "
+                           "be loaded", about, owner, exc_info=True)
             return
-        for ev in events:
+        for text in bubbles:
             session.display_messages.append(
-                {"role": "system", "kind": "text", "text": f"🔔 {wake_text(ev)}"})
+                {"role": "system", "kind": "text", "text": text})
         try:
             self.store.save_session(session)
         except Exception:
-            logger.warning("the wake of session %s could not be written down: it "
-                           "would not save", owner, exc_info=True)
+            logger.warning("%s of session %s could not be written down: it would not "
+                           "save", about, owner, exc_info=True)
             return
-        for ev in events:
-            self.bus.record_client_event(owner, {
-                "type": "job_wake", "text": wake_text(ev), "job": ev.get("job_key")})
+        for event in events:
+            self.bus.record_client_event(owner, event)
 
     def _flush_wakes(self, owner: str, worker: _AgentWorker) -> bool:
         """Start one turn carrying every wake this conversation is still owed.
@@ -977,7 +1037,9 @@ class _AgentPool:
         if self._nobody_asked_to_keep_it():
             logger.info("pool: no window and no conversation asking to be left "
                         "running — stopping")
-            self.request_stop()
+            self.request_stop(
+                "MIMIR stopped: its last window closed and no conversation had "
+                "asked for the run to be left going.")
             return
         report = self.idle_report()
         if not report["idle"]:
@@ -993,7 +1055,39 @@ class _AgentPool:
             return
         if now - self._idle_since >= self.server_idle_ttl:
             logger.info("pool: idle for %.0fs — stopping", now - self._idle_since)
-            self.request_stop()
+            self.request_stop(idle_stop_reason(self.server_idle_ttl, past=True))
+
+    def _record_own_stop(self, headline: str) -> None:
+        """Write into every kept conversation that this process stopped itself, and why.
+
+        The counterpart of :meth:`_record_wake`, for the one thing that happens to a
+        conversation which the conversation can never see happen. Nothing reached the
+        transcript when a server stopped on its own: the decision was printed in the
+        process's own log, which the user has no reason to be reading, so a morning
+        opened on a thread whose last line was hours old with nothing between — a night
+        that reads as lost rather than as a decision taken and recorded.
+
+        Stamped with the wall-clock time, which is the half of the answer the file
+        itself cannot give: the gap in the thread is what raises the question, and
+        "stopped at 00:38" is what closes it.
+
+        Best effort throughout, and on purpose: this runs on the way out, and a
+        conversation whose file will not load is not worth holding a shutdown for.
+        """
+        stamped = f"⏹ {datetime.now().astimezone():%Y-%m-%d %H:%M} — {headline}"
+        try:
+            kept = sorted(server_registry.claims())
+        except Exception:
+            logger.warning("pool: the detach claims could not be read for the stop "
+                           "notice", exc_info=True)
+            kept = []
+        # The conversations that were being kept, or — in the unclaimed case, where by
+        # definition there are none — the ones with an agent still here. Those are the
+        # threads a user comes back to.
+        for session_id in kept or sorted(sid for sid, _w in self.items()):
+            self._tell_session(session_id, [stamped],
+                               [{"type": "server_stopped", "text": headline}],
+                               about="the stop notice")
 
     # ── Addressing a session rather than "the worker" ──────────────────────────
 

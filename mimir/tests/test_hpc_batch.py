@@ -10,6 +10,7 @@ Run:
 """
 
 import os
+import shlex
 import sys
 import tempfile
 import unittest
@@ -22,6 +23,7 @@ for _p in (_SERVERS / "_shared", _SERVERS / "hpc"):
         sys.path.insert(0, str(_p))
 
 import server_hpc  # noqa: E402
+import slurm_site  # noqa: E402
 
 
 def _canned(mapping: dict):
@@ -88,7 +90,31 @@ class SbatchSubmitTests(unittest.TestCase):
         # Job dirs land under the submitting session's state dir; point the state dir at
         # a temp tree. Through the environment, so the test exercises the real
         # resolution (state_paths.session_state_dir) rather than a patched constant.
+        # What else of the user's is running is asked through the shared seam, not
+        # through this module's _run_bash — so it is stubbed separately or every case
+        # here shells out to a real scheduler and waits out its timeout.
+        self._orig_queued = server_hpc.slurm_queued_ids
+        server_hpc.slurm_queued_ids = lambda *_a, **_k: []
+        self.addCleanup(lambda: setattr(server_hpc, "slurm_queued_ids",
+                                        self._orig_queued))
         self._orig_run = server_hpc._run_argv
+        # Everything a submission runs goes through _run_bash now — the submit itself
+        # (the script on sbatch's stdin) and the question of what else of the user's is
+        # running unaccounted for. Stubbed for the whole class: unstubbed, every case
+        # shells out to a real scheduler through a login shell and waits out its
+        # timeout. The piped scripts are kept, since what was submitted is the thing
+        # several cases are about.
+        self._orig_bash = server_hpc._run_bash
+        self.piped: list[str] = []
+
+        def _fake_bash(script, timeout, stdin=None):
+            self.piped.append(stdin or "")
+            if "sbatch" in script:
+                return {"status": "ok", "stdout": "Submitted batch job 4242",
+                        "stderr": "", "returncode": 0}
+            return {"status": "ok", "stdout": "", "stderr": "", "returncode": 0}
+
+        server_hpc._run_bash = _fake_bash
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
         self._state = os.path.join(self._tmp.name, "state")
@@ -101,11 +127,9 @@ class SbatchSubmitTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         server_hpc._run_argv = self._orig_run
+        server_hpc._run_bash = self._orig_bash
 
     def _submit(self, **kwargs) -> dict:
-        server_hpc._run_argv = lambda argv, t: {
-            "status": "ok", "stdout": "Submitted batch job 4242",
-            "stderr": "", "returncode": 0}
         return server_hpc.sbatch_submit(
             command=kwargs.pop("command", "echo hi"),
             partition=kwargs.pop("partition", "cpu"),
@@ -241,7 +265,7 @@ class SbatchSubmitTests(unittest.TestCase):
         self.assertIn("echo hi", script)
 
     def test_unparseable_sbatch_output_errors(self) -> None:
-        server_hpc._run_argv = lambda argv, t: {
+        server_hpc._run_bash = lambda script, t, stdin=None: {
             "status": "ok", "stdout": "no id here", "stderr": "", "returncode": 0}
         res = server_hpc.sbatch_submit(command="x", partition="cpu", confirm=True)
         self.assertEqual(res.get("status"), "error")
@@ -490,5 +514,429 @@ class SlurmCancelTests(unittest.TestCase):
         self.assertNotIn(CLUSTER_SUBMIT, caps)
 
 
+class WhereAJobsOutputGoesTests(unittest.TestCase):
+    """A job writes its output from the node it ran on, not from this host.
+
+    The log used to be pointed at the submission's own directory under the state dir —
+    the one directory in the arrangement that nothing guarantees the compute nodes can
+    write. On a site whose home is not mounted on them, the job ran, succeeded, and its
+    output went nowhere; an empty read then looked like a job that printed nothing.
+
+    The rule that needs no configuration and no failure to learn: the output goes where
+    the job *runs*. If the job could start at all, that directory is reachable from the
+    node Slurm started it on — otherwise there would have been nothing to chdir into.
+    """
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self._state = os.path.join(self._tmp.name, "state")
+        self._work = os.path.join(self._tmp.name, "scratch")
+        os.makedirs(self._state)
+        os.makedirs(self._work)
+        env = patch.dict(os.environ, {"MIMIR_STATE_DIR": self._state}, clear=False)
+        env.start()
+        self.addCleanup(env.stop)
+        os.environ.pop("MIMIR_SESSION_ID", None)
+        os.environ.pop("MIMIR_HPC_JOBS_DIR", None)
+        # What else of the user's is running is asked through the shared seam, not
+        # through this module's _run_bash — so it is stubbed separately or every case
+        # here shells out to a real scheduler and waits out its timeout.
+        self._orig_queued = server_hpc.slurm_queued_ids
+        server_hpc.slurm_queued_ids = lambda *_a, **_k: []
+        self.addCleanup(lambda: setattr(server_hpc, "slurm_queued_ids",
+                                        self._orig_queued))
+        self._orig = server_hpc._run_bash
+        self.piped: list[str] = []
+
+        def _fake_bash(script, timeout, stdin=None):
+            self.piped.append(stdin or "")
+            if "sbatch" in script:
+                return {"status": "ok", "stdout": "Submitted batch job 4242",
+                        "stderr": "", "returncode": 0}
+            return {"status": "ok", "stdout": "", "stderr": "", "returncode": 0}
+
+        server_hpc._run_bash = _fake_bash
+
+    def tearDown(self) -> None:
+        server_hpc._run_bash = self._orig
+
+    def _submit(self, **kwargs) -> dict:
+        return server_hpc.sbatch_submit(command="echo hi", partition="cpu",
+                                        confirm=True, **kwargs)
+
+    def _script(self) -> str:
+        return next(text for text in self.piped if "#SBATCH" in text)
+
+    def test_the_job_runs_and_writes_in_the_same_directory(self) -> None:
+        res = self._submit(work_dir=self._work)
+        script = self._script()
+        self.assertIn(f"#SBATCH --chdir={self._work}", script)
+        self.assertIn(f"#SBATCH --output={os.path.join(self._work, 'slurm-%j.log')}",
+                      script)
+        self.assertEqual(res["log"], os.path.join(self._work, "slurm-4242.log"))
+        self.assertEqual(res["work_dir"], self._work)
+
+    def test_the_log_is_not_in_the_state_dir(self) -> None:
+        # The whole failure: a path visible here and not from the compute node.
+        res = self._submit(work_dir=self._work)
+        self.assertNotIn(self._state, res["log"])
+        self.assertNotIn(self._state, self._script())
+
+    def test_it_defaults_to_where_this_server_runs(self) -> None:
+        # Which is the workspace, and is where sbatch would have put the job anyway:
+        # with no --chdir, Slurm starts a job in the directory it was submitted from.
+        res = self._submit()
+        self.assertEqual(res["work_dir"], os.path.realpath(os.getcwd()))
+
+    def test_a_work_dir_that_is_not_there_is_refused(self) -> None:
+        # The job starts in it, so a path that is not there is a submission that fails
+        # at launch — after the queue wait.
+        res = self._submit(work_dir=os.path.join(self._tmp.name, "nope"))
+        self.assertEqual(res["status"], "error")
+
+    def test_a_work_dir_it_cannot_write_is_refused_now(self) -> None:
+        """Said before the queue wait, and not worked around.
+
+        The tempting fallback is somewhere always writable, which on a cluster means
+        ``/tmp`` — and ``/tmp`` is the compute node's own disk, so the output would
+        land where this host can never read it. A shared directory that is not
+        writable fails loudly; a node-local one fails silently, with an empty run that
+        looks like a job which printed nothing.
+        """
+        locked = os.path.join(self._tmp.name, "readonly")
+        os.makedirs(locked)
+        os.chmod(locked, 0o500)
+        self.addCleanup(os.chmod, locked, 0o700)
+        res = self._submit(work_dir=locked)
+        self.assertEqual(res["status"], "error")
+        self.assertIn("not writable", res["error"])
+        self.assertNotIn("/tmp", res["hint"])
+
+    def test_the_script_is_piped_not_handed_over_by_path(self) -> None:
+        """``sbatch`` reads its script from stdin when given no file.
+
+        Which means nothing of ours has to exist on the host that runs it — the one
+        thing a remote controller cannot promise, and what the submission used to
+        check over ssh before it could submit at all.
+        """
+        res = self._submit(work_dir=self._work)
+        self.assertIn("#!/bin/bash", self._script())
+        self.assertIn("echo hi", self._script())
+        # Still written down, for a reader asking what was actually submitted.
+        with open(res["batch_script"]) as fh:
+            self.assertEqual(fh.read(), self._script())
+
+    def test_the_status_answer_names_the_log_the_submission_recorded(self) -> None:
+        res = self._submit(work_dir=self._work)
+        server_hpc._run_bash = _canned({"squeue": ("ok", "RUNNING")})
+        status = server_hpc.slurm_job_status(job_id="4242")
+        self.assertEqual(status["log"], res["log"])
+
+    def test_a_finished_job_with_no_log_says_what_that_means(self) -> None:
+        self._submit(work_dir=self._work)
+        server_hpc._run_bash = _canned({"squeue": ("ok", ""),
+                                        "sacct": ("ok", "COMPLETED")})
+        status = server_hpc.slurm_job_status(job_id="4242")
+        self.assertEqual(status["state"], "done")
+        self.assertIn("work_dir", status["log_missing"])
+        # Not a setting to go and change.
+        self.assertNotIn("MIMIR_", status["log_missing"])
+
+
+class WhereTheControllerIsTests(unittest.TestCase):
+    """Running a command where Slurm is, which is not always on this host.
+
+    A login node that holds the editor's remote session while the scheduler lives
+    behind ``ssh`` is an ordinary arrangement, and on one of those every cluster tool
+    answered "sbatch is not available" — so the work was submitted by hand through the
+    shell, where nothing writes a descriptor. Nothing was watched, no wake was ever
+    owed, and the server stopped on its idle TTL with the user's job running.
+
+    *Where* the controller is, is learned rather than configured — see
+    ``LearnedControllerTests`` in ``test_bash_background``. These pin how a command is
+    run once the answer is known. The seam is shared (``_shared/slurm_site``) because
+    both servers ask the same question.
+    """
+
+    def setUp(self) -> None:
+        self._host = ""
+        self._orig = slurm_site.controller
+        slurm_site.controller = lambda **_kw: self._host
+        self.addCleanup(lambda: setattr(slurm_site, "controller", self._orig))
+
+    def test_local_by_default_and_through_a_login_shell(self) -> None:
+        # The login shell is what puts the scheduler's own module files on PATH — the
+        # difference between squeue and "command not found" on most sites.
+        self.assertEqual(slurm_site.argv_for("squeue -h"),
+                         ["bash", "-lc", "squeue -h"])
+
+    def test_a_recorded_controller_is_reached_over_ssh(self) -> None:
+        self._host = "svc03"
+        argv = slurm_site.argv_for("squeue -u $USER")
+        self.assertEqual(argv[0], "ssh")
+        self.assertIn("svc03", argv)
+        # A poller that can be asked for a password hangs for the timeout on every
+        # tick, and an ssh that reads a server's stdin eats its MCP traffic.
+        self.assertIn("BatchMode=yes", argv)
+        self.assertIn("-n", argv)
+        # $USER has to reach the far side unexpanded: it is the remote account the
+        # query is about.
+        self.assertIn("squeue -u $USER", argv[-1])
+
+    def test_a_piped_call_keeps_its_stdin(self) -> None:
+        # ``-n`` closes stdin, which is right for every call but the one whose stdin
+        # is the point: a submission hands sbatch its script that way.
+        self._host = "svc03"
+        argv = slurm_site.argv_for("sbatch", piped=True)
+        self.assertNotIn("-n", argv)
+        self.assertIn("BatchMode=yes", argv)
+
+    def test_no_ssh_options_of_our_own(self) -> None:
+        # An identity file, a port, a jump host are ~/.ssh/config's business — a
+        # configuration mechanism the user already has, and one we have no business
+        # duplicating with a setting of our own.
+        self._host = "svc03"
+        argv = slurm_site.argv_for("squeue")
+        self.assertEqual([a for a in argv if a == "-o"], ["-o", "-o"])
+        self.assertEqual(argv.count("svc03"), 1)
+
+    def test_an_interactive_allocation_is_refused_over_ssh(self) -> None:
+        """A silent no-op is worse than a plain no.
+
+        ``salloc`` wants a terminal on the host that has the scheduler, and over ssh
+        there is none: it would take the allocation, find no shell to run in it, and
+        give it straight back — spending the request and reporting success at having
+        done nothing.
+        """
+        self._host = "svc03"
+        orig, server_hpc._slurm_host = server_hpc._slurm_host, lambda: "svc03"
+        self.addCleanup(lambda: setattr(server_hpc, "_slurm_host", orig))
+        res = server_hpc.salloc_submit(partition="cpu", confirm=True)
+        self.assertEqual(res["status"], "error")
+        self.assertIn("terminal", res["error"])
+        self.assertIn("sbatch_submit", res["hint"])
+
+    def test_an_argv_is_exec_d_as_it_stands_when_slurm_is_here(self) -> None:
+        # The property the submitters are written for: they take their resources as
+        # arguments and build the command themselves, so no shell is involved and no
+        # argument can become a second command.
+        self.assertEqual(slurm_site.exec_argv(["scancel", "1; rm -rf /"]),
+                         ["scancel", "1; rm -rf /"])
+
+    def test_an_argv_keeps_its_arguments_whole_over_ssh(self) -> None:
+        """The same property in the form that survives ssh.
+
+        ``ssh`` has no argv to hand over, only a command line for the far side to
+        parse — so each element is quoted on the way out, and what the remote shell
+        splits is exactly the argv built here.
+        """
+        self._host = "svc03"
+        argv = slurm_site.exec_argv(["scancel", "1; rm -rf /"])
+        self.assertEqual(argv[0], "ssh")
+        self.assertEqual(argv[-1], shlex.quote("scancel '1; rm -rf /'"))
+
+
+class JobArraysTests(unittest.TestCase):
+    """One id can be many jobs, and a site launcher submits exactly that.
+
+    An array submits as ``15306621`` and runs as ``15306621_1 … _8``; squeue and sacct
+    both answer with a line per element. Read as one line, an array whose first task
+    has finished while seven still run reports as finished — waking its conversation
+    on a run that has barely started.
+    """
+
+    def setUp(self) -> None:
+        self._orig = server_hpc._run_bash
+
+    def tearDown(self) -> None:
+        server_hpc._run_bash = self._orig
+
+    def _state(self, mapping: dict) -> tuple[str, str]:
+        server_hpc._run_bash = _canned(mapping)
+        return server_hpc._normalized_job_state("15306621")
+
+    def test_one_task_still_running_keeps_the_array_live(self) -> None:
+        state, _raw = self._state({"squeue": ("ok", "RUNNING\nRUNNING\nPENDING")})
+        self.assertEqual(state, "running")
+
+    def test_an_array_waiting_to_start_is_pending(self) -> None:
+        state, _raw = self._state({"squeue": ("ok", "PENDING\nPENDING")})
+        self.assertEqual(state, "pending")
+
+    def test_a_finished_task_does_not_settle_the_whole_array(self) -> None:
+        # The failure this exists for: the queue still holds live tasks, and sacct
+        # already has a terminal line for the ones that are done.
+        state, _raw = self._state({"squeue": ("ok", "RUNNING"),
+                                   "sacct": ("ok", "COMPLETED\nCOMPLETED")})
+        self.assertEqual(state, "running")
+
+    def test_an_array_is_done_only_when_every_task_completed(self) -> None:
+        state, _raw = self._state({"squeue": ("ok", ""),
+                                   "sacct": ("ok", "COMPLETED\nCOMPLETED")})
+        self.assertEqual(state, "done")
+
+    def test_one_failed_task_makes_the_array_crashed(self) -> None:
+        # An array where a task failed is not an array that completed, whichever line
+        # happens to come first.
+        state, raw = self._state({"squeue": ("ok", ""),
+                                  "sacct": ("ok", "COMPLETED\nFAILED\nCOMPLETED")})
+        self.assertEqual(state, "crashed")
+        self.assertIn("FAILED", raw)
+
+
+class TheQueueSaysWhatIsWatchedTests(unittest.TestCase):
+    """Whether this workspace is watching a job is not a thing the scheduler knows.
+
+    A job is tracked by the descriptor its submission wrote; one submitted any other
+    way wrote none. The consequence is invisible from both ends — nothing polls it, no
+    wake is owed, and the process stops on its idle TTL with the run still going — so
+    the queue says it per row, and hands the set to the client where a nudge reads it.
+    Two facts and no guessing, which is what makes it fit to be acted on.
+    """
+
+    def setUp(self) -> None:
+        self._orig = server_hpc._run_bash
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self._jobs = os.path.join(self._tmp.name, "hpc_jobs")
+        env = patch.dict(os.environ, {"MIMIR_HPC_JOBS_DIR": self._jobs,
+                                      "MIMIR_STATE_DIR": self._tmp.name}, clear=False)
+        env.start()
+        self.addCleanup(env.stop)
+
+    def tearDown(self) -> None:
+        server_hpc._run_bash = self._orig
+
+    def _recorded(self, job_id: str) -> None:
+        """A descriptor as a submission or an adoption leaves it."""
+        job_dir = os.path.join(self._jobs, f"20261010T120000Z-{job_id[-4:]}")
+        os.makedirs(job_dir, exist_ok=True)
+        with open(os.path.join(job_dir, "slurm_job_id"), "w") as fh:
+            fh.write(job_id)
+
+    def _queue(self, *rows: str) -> dict:
+        server_hpc._run_bash = _canned({"squeue": ("ok", "\n".join(rows))})
+        return server_hpc.slurm_queue()
+
+    def test_a_job_with_no_descriptor_is_reported_unwatched(self) -> None:
+        res = self._queue("15306620|me|RUNNING|0:23|1:00:00|1|node1|smoke,rom")
+        self.assertEqual(res["jobs"][0]["watched"], False)
+        self.assertEqual(res["unwatched"], ["15306620"])
+        self.assertIn("slurm_watch", res["unwatched_hint"])
+
+    def test_a_recorded_job_is_not_in_the_set(self) -> None:
+        self._recorded("15306620")
+        res = self._queue("15306620|me|RUNNING|0:23|1:00:00|1|node1|smoke,rom")
+        self.assertEqual(res["jobs"][0]["watched"], True)
+        self.assertNotIn("unwatched", res)
+
+    def test_an_array_is_covered_by_its_base_id(self) -> None:
+        # The id on disk is rarely the id in a row: an array is adopted or submitted
+        # under its base and the queue then lists its tasks. Read literally, every task
+        # of a watched array reads as unwatched and the nudge fires on all eight.
+        self._recorded("15306621")
+        res = self._queue(
+            "15306621_1|me|RUNNING|0:11|1:00:00|4|node2|smoke,rom,C",
+            "15306621_[2-8]|me|PENDING|0:00|1:00:00|4|(Dependency)|smoke,rom,C")
+        self.assertEqual([row["watched"] for row in res["jobs"]], [True, True])
+        self.assertNotIn("unwatched", res)
+
+    def test_the_watched_and_the_unwatched_are_told_apart(self) -> None:
+        self._recorded("15306620")
+        res = self._queue(
+            "15306620|me|RUNNING|0:23|1:00:00|1|node1|server",
+            "15306621_3|me|RUNNING|0:11|1:00:00|4|node2|client")
+        # Named by array, not by task: adoption is by array, so the answer says what
+        # there is to hand over rather than how many rows it occupies.
+        self.assertEqual(res["unwatched"], ["15306621"])
+
+    def test_an_unwatched_array_is_one_thing_to_hand_over(self) -> None:
+        # Eight task rows are one descriptor to write. Listed one by one, the reminder
+        # built on this asks for eight calls that all land on "already recorded".
+        res = self._queue(
+            *[f"15306621_{n}|me|RUNNING|0:11|1:00:00|4|node2|client" for n in range(1, 9)])
+        self.assertEqual(res["unwatched"], ["15306621"])
+        self.assertEqual([row["watched"] for row in res["jobs"]], [False] * 8,
+                         "the per-row flag still answers for the row")
+
+
+class SlurmWatchTests(unittest.TestCase):
+    """Adopting a job this server did not submit — the one it could never see.
+
+    Their real submissions go through a site launcher inside a shell call, which prints
+    the ids and exits. Nothing of MIMIR's is involved, so nothing is tracked: the job
+    runs all night, no wake is owed, and the process stops on its idle TTL.
+    """
+
+    def setUp(self) -> None:
+        # What else of the user's is running is asked through the shared seam, not
+        # through this module's _run_bash — so it is stubbed separately or every case
+        # here shells out to a real scheduler and waits out its timeout.
+        self._orig_queued = server_hpc.slurm_queued_ids
+        server_hpc.slurm_queued_ids = lambda *_a, **_k: []
+        self.addCleanup(lambda: setattr(server_hpc, "slurm_queued_ids",
+                                        self._orig_queued))
+        self._orig = server_hpc._run_bash
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self._jobs = os.path.join(self._tmp.name, "hpc_jobs")
+        env = patch.dict(os.environ, {"MIMIR_HPC_JOBS_DIR": self._jobs}, clear=False)
+        env.start()
+        self.addCleanup(env.stop)
+
+    def tearDown(self) -> None:
+        server_hpc._run_bash = self._orig
+
+    def _watch(self, mapping: dict, job_id: str = "15306620", **kwargs) -> dict:
+        server_hpc._run_bash = _canned(mapping)
+        return server_hpc.slurm_watch(job_id=job_id, **kwargs)
+
+    def test_a_running_job_is_recorded_and_watched(self) -> None:
+        res = self._watch({"squeue": ("ok", "RUNNING")}, note="smoke ROM")
+        self.assertEqual(res["status"], "ok")
+        self.assertEqual(res["state"], "running")
+        # The descriptor the scan reads, which is the whole point of the tool.
+        with open(os.path.join(res["job_dir"], "slurm_job_id")) as fh:
+            self.assertEqual(fh.read().strip(), "15306620")
+        # And the handle the client watcher arms on, in the shape sbatch_submit's has.
+        self.assertEqual(res["background_job"]["job_key"], "15306620")
+        self.assertEqual(res["background_job"]["status_op"]["tool"], "slurm_job_status")
+
+    def test_an_array_base_id_is_accepted(self) -> None:
+        res = self._watch({"squeue": ("ok", "RUNNING\nPENDING")}, job_id="15306621")
+        self.assertEqual(res["state"], "running")
+
+    def test_one_array_task_is_accepted(self) -> None:
+        res = self._watch({"squeue": ("ok", "RUNNING")}, job_id="15306621_3")
+        self.assertEqual(res["status"], "ok")
+
+    def test_a_job_slurm_never_heard_of_is_refused(self) -> None:
+        # A descriptor for a job that does not exist is worse than none: it holds the
+        # process open until the staleness horizon for a run nobody is waiting on.
+        res = self._watch({"squeue": ("ok", ""), "sacct": ("ok", "")})
+        self.assertEqual(res["status"], "error")
+        self.assertFalse(os.path.isdir(self._jobs), "it wrote a descriptor anyway")
+
+    def test_a_job_name_is_not_a_job_id(self) -> None:
+        res = self._watch({"squeue": ("ok", "RUNNING")}, job_id="smoke,rom,morTL")
+        self.assertEqual(res["status"], "error")
+
+    def test_a_finished_job_is_recorded_without_a_watcher(self) -> None:
+        # A watcher put on a finished job reports it at its first poll, which is a
+        # wake for news the caller is already holding.
+        res = self._watch({"squeue": ("ok", ""), "sacct": ("ok", "COMPLETED")})
+        self.assertEqual(res["state"], "done")
+        self.assertNotIn("background_job", res)
+        with open(os.path.join(res["job_dir"], "slurm_state")) as fh:
+            self.assertEqual(fh.read().strip(), "done")
+
+    def test_adopting_twice_does_not_make_a_second_descriptor(self) -> None:
+        first = self._watch({"squeue": ("ok", "RUNNING")})
+        again = self._watch({"squeue": ("ok", "RUNNING")})
+        self.assertEqual(again["job_dir"], first["job_dir"])
+        self.assertEqual(len(os.listdir(self._jobs)), 1)
+
+
 if __name__ == "__main__":
-    unittest.main()
+    unittest.main(verbosity=2)

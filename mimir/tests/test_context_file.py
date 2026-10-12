@@ -230,7 +230,13 @@ class DefaultBaseShapeTests(unittest.TestCase):
         # Raised 15000 -> 16000 for the build rules: a build goes through the tool that
         # owns it, covers only what the change and the task need, and states its
         # progress rule where the model picks the command. Base sat at 15451.
-        self.assertLess(len(cb._DEFAULT_BASE_SYSTEM_CONTENT), 16000)
+        # Raised 16000 -> 16200 for one rule, at 203 chars: long work started outside a
+        # tool call is watched by nothing and has to be handed over before concluding.
+        # It is the only carrier at light/off of a failure that costs a night and is
+        # invisible from both ends — the job runs, the chat looks finished, and the
+        # server stops on its idle timer because nothing on disk says the work exists.
+        # Base sat at 15924.
+        self.assertLess(len(cb._DEFAULT_BASE_SYSTEM_CONTENT), 16200)
 
     def test_env_resolution_cascade_lives_in_the_nudges_not_the_prompt(self) -> None:
         # The 5-step cascade is covered by env_resolution/env_cleanup nudges, which
@@ -269,6 +275,7 @@ class NudgeCoverageTests(unittest.TestCase):
         "blast_radius": "search all references and summarise the impact",
         "env_resolution": "environment problem, not a code defect",
         "env_cleanup": "reversible obligation",
+        "unwatched_run": "Long work started outside a tool call is watched by nothing",
     }
     # `creation` is deliberately exempt: it is an anti-dithering prod ("you have
     # enough context, start writing"), not an obligation. Its absence at light/off

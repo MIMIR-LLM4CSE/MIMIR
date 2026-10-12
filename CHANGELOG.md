@@ -13,7 +13,49 @@ the server of the same checkout, so the two always move together.
 How to release is in [CONTRIBUTING.md](CONTRIBUTING.md#releasing). The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [1.4.1] — 2026-10-09
+## [1.5.0] — 2026-10-12
+
+### Added
+- **`slurm_watch(job_id)` — watch a job MIMIR did not submit.** Tracking a run is the
+  descriptor its submission writes, not a job id somebody has read, so work submitted
+  through a site launcher or a script of your own — the normal way to submit anything with
+  job arrays and dependencies — was invisible: nothing polled it, no wake was owed when it
+  ended, and a server left running overnight had, as far as it could tell, nothing to do.
+  This records the descriptor after the fact and returns the same handle `sbatch_submit`
+  does, so the watcher arms and the wake path is unchanged. An array's base id covers every
+  task. An id Slurm has never heard of is refused rather than recorded.
+- **`bash_watch(pid)` — watch a process already running.** The sibling of the above for
+  work that is not a scheduler job at all: something a script of yours backgrounded, a
+  `nohup` started outside a tool call. Same silence, same cause — no record, so no watcher,
+  no wake and nothing holding the server open. It records the pid with its `/proc` start
+  time, so a recycled pid cannot be mistaken for it, and says plainly what it cannot give
+  you: an adopted process never had the exit-code trap, so when it ends the state is
+  `unknown` rather than a `done` nobody observed.
+- **A reminder, before you conclude, for work nothing is watching.** The scheduler is asked
+  which jobs are yours and the disk which ones have a record; the difference is named, with
+  both ways to hand one over. It rests on those two facts and never on the text of a
+  command — a pattern matching `sbatch` fires on a `grep sbatch` and misses every wrapper
+  ever written. And it reaches the reminder through the shell as well as through the cluster
+  tools: any command that just proved the scheduler answers — your own `squeue`, here or
+  over `ssh` — carries the gap back with it. That is the ordinary case, because a job
+  submitted by a site launcher and checked with a `squeue` a second later never touches a
+  typed tool at all. `slurm_queue` also marks each row `watched`, and a submission or an
+  adoption says what is still unaccounted for.
+- **Every path to Slurm goes through the same answer.** The proxy's own submissions and
+  cancellations ran `sbatch`/`squeue`/`scancel` locally and in the raw, so the ratchet's
+  runs stayed broken on a site whose controller is elsewhere; they now take the shared
+  route. The platform profile still describes only the machine it runs on — it looks for no
+  other host — but "no `sinfo` here" no longer reads as "no scheduler": with one known, it
+  says where. And `salloc_submit` is refused outright when the controller is remote, rather
+  than taking an allocation it cannot give a terminal to and handing it straight back.
+- **A Slurm controller behind `ssh`, found on its own.** On a login node where `sbatch` is
+  not installed, every cluster tool answered "not available" and the work went out through
+  a hand-written `ssh host "sbatch …"` instead — which is where the untracked submissions
+  came from in the first place. MIMIR now notices the host the first time one of your own
+  `ssh host "squeue …"` calls succeeds, and sends its own cluster commands there from then
+  on. Nothing to configure: the call that teaches it is the one you were already making,
+  and it is read from the shell validator's own parse plus the exit status rather than from
+  the text of the command. ssh's own settings stay in `~/.ssh/config`, where they belong.
 
 ### Fixed
 - **A run taken back is now a run that ends with the window.** Reopening a workspace on a
@@ -25,6 +67,54 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   closing the window now costs, and the window keeps the pid the registry gave it so it has
   something to signal. Leaving a run going a second time is a decision, made with the same
   button as the first time.
+- **A conversation whose agent was asleep is now claimed when you detach.** An agent is
+  built on a conversation's first query and released after ten minutes of idleness — and a
+  conversation whose work is a job MIMIR cannot see has nothing holding its agent, so it was
+  asleep at exactly the moment you left. The claim set was built from the live agents, so it
+  came out empty for it; an empty claim is recorded as "not detached", and the server then
+  stopped **thirty seconds** after the window closed, having just been asked to keep going.
+  A claim is a conversation's request, not an agent's. Naming no conversation now also
+  claims the one on screen, which a window detached before its first query claimed not at
+  all. An id that names no conversation is still skipped — a claim nothing can ever take
+  back would hold the process open for ever.
+- **A server that stops itself now says so in the conversation.** The decision was printed
+  in the process's own log, which nobody is reading, so a morning opened on a thread whose
+  last line was hours old with nothing between — a night that reads as lost rather than as a
+  decision taken. Both stops now write a stamped line into every conversation they were
+  keeping, saying which stop it was and what the idleness consisted of.
+- **Detaching no longer promises work that is not there.** "This run keeps working with this
+  window closed" was never checked against what the process would actually still owe once
+  the window had gone. With nothing owed, the line now says that instead — conditionally,
+  since the click can land while a turn is one call away from submitting the job that would
+  keep it alive — and names the trap: a job MIMIR did not submit is never watched.
+- **A job array is no longer reported finished while seven of its tasks still run.** An
+  array answers `squeue` and `sacct` with a line per task; only the first was read, so an
+  array whose first task had completed settled the whole submission and woke its
+  conversation on a run that had barely started.
+- **A job's output now goes where the job runs.** It was written into MIMIR's own
+  submission directory — the one directory in the arrangement that nothing guarantees a
+  compute node can write. On a site whose home is not mounted on them, the job ran,
+  succeeded, and its output went nowhere; an empty read looked like a job that printed
+  nothing. `--chdir` and `--output` now name the same directory, which makes the output
+  reachable by implication rather than by luck: a job that could not reach that directory
+  could not have started in it. `sbatch_submit` takes `work_dir` for a run whose work lives
+  elsewhere — a scratch filesystem, say — and the log follows it, checked for existence and
+  writability before the queue wait rather than after it. No fallback is offered on
+  purpose: the tempting one is somewhere always writable, which on a cluster means `/tmp`,
+  and `/tmp` is the compute node's own disk — a shared directory that is not writable fails
+  loudly, a node-local one fails silently. A finished job whose log is nonetheless absent
+  says so, and names `work_dir` rather than a setting.
+- **A batch script is piped to `sbatch` instead of handed over by path.** Nothing of
+  MIMIR's then has to exist on the host running the scheduler, which is the one thing a
+  remote controller cannot promise.
+- **An adopted job's output is no longer reported as unreadable.** It has no log of its
+  own — nothing of MIMIR's opened that process's output — so reading it now says where the
+  output actually goes instead of "Log unreadable", which read as output lost.
+- **The test suite no longer writes into your own workspace.** Cases that concluded a turn
+  journalled it through the real transcript writer with the state dir unpatched, inventing
+  sessions in `~/.mimir/<workspace>/sessions/` that no conversation ever had.
+
+## [1.4.1] — 2026-10-09
 
 ### Changed
 - **Start-up no longer pays for each tool server in turn.** The twenty MCP servers were

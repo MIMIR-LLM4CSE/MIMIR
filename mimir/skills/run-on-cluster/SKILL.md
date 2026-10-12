@@ -12,8 +12,12 @@ same modules loaded, and do not have the same devices.
 ## Before submitting anything
 
 1. `platform_get_profile()` — what *this* host is: cores, SIMD, memory, GPUs,
-   toolchains, whether Slurm is even present. A host with no Slurm is a host where
-   this skill does not apply; run the work locally and say so.
+   toolchains, whether Slurm is even present. No Slurm *here* is not the end of it: the
+   scheduler often lives on another host. If reading the queue over `ssh` works
+   (`ssh <host> "squeue -u $USER"`), that one call is enough — MIMIR notes where the
+   scheduler is and the cluster tools below use it from then on. Only a site where
+   neither answers is one where this skill does not apply; run the work locally and say
+   so.
 2. `slurm_partitions()` — the queues, their limits and their defaults. A wall time
    above the partition maximum is rejected at submission; a job with no account on a
    partition that requires one pends with a reason you have to go read.
@@ -62,6 +66,34 @@ one, or the login node when the architectures match. Burning a GPU allocation on
   default.
 - `comment=` what the job is for. The queue is read later, by you and by whoever else
   is on the allocation, and `mimir-batch` tells them nothing.
+- `work_dir=` the directory the work belongs to, when it is not the workspace — a
+  scratch filesystem, the run's own tree. The job starts there *and* writes its log
+  there, which is what makes the output reachable at all: a compute node writes what it
+  can see, and the directory the job started in is the one thing it certainly could.
+
+## A job you did not submit through MIMIR is not being watched
+
+Some work cannot go through `sbatch_submit`: a site launcher that submits a server plus
+a client array with its own dependencies, a submission script of the user's, a `cd` and
+a wrapper on a shared filesystem. Those are submitted from a shell and they are the
+right answer — but nothing of MIMIR's is involved, and tracking is a *descriptor* a
+submission writes, not a job id you have read. With no descriptor nothing watches the
+job, no wake is owed when it ends, and a server left running overnight has — as far as
+it can tell — nothing to do, so it stops. The job runs on; nobody is ever told.
+
+So for **every id the submission printed**, the server job and the client array alike:
+
+- `slurm_watch(job_id, note="what this is")` — adopts it. An array's base id covers all
+  of its tasks. It refuses an id Slurm has never heard of, so it is also the check that
+  the submission actually landed.
+- If what you started is a *process* on this host rather than a scheduler job — a driver
+  a script left running in the background — the same applies with `bash_watch(pid)`.
+- Then **end your turn**, exactly as after `sbatch_submit`: you are resumed when the job
+  finishes, with the window closed or not.
+
+Do this in the same turn as the submission, before you report anything. A job submitted
+and not adopted is a job whose result reaches nobody — and if the user detaches on the
+turn you were about to adopt it in, their night goes to a run nothing is watching.
 
 ## When the work belongs to a registered proxy
 

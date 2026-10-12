@@ -1329,6 +1329,42 @@ def _observe_verdict_tool(
             emit({"type": "verdict", "id": call_id, "verdict": verdict})
 
 
+def _observe_unwatched_runs(
+    payload: dict, status: Any, execution_context: dict[str, Any],
+) -> None:
+    """Record long work a scheduler says exists and no descriptor covers.
+
+    Payload-driven and tool-agnostic, deliberately — which is why it is not handed the
+    tool name: the fact is established by whoever can establish it (the HPC server runs
+    the queue *and* owns the submission directories) and arrives as two machine facts,
+    the ids the scheduler printed and the absence of a record for them. Nothing here
+    reads a command string. A nudge may rest only on something checkable, and "a
+    command whose text contained sbatch" is a guess that fires on a ``grep sbatch`` and
+    misses every wrapper ever written.
+
+    The twin half is the clearing: a call that returns a watcher's handle for an id has
+    made that id watched, so it leaves the set in the same turn. An array is adopted
+    under its base id and listed by task, so the base clears its tasks too.
+    """
+    # Shape first, and this is the hot path: every tool call of every turn comes
+    # through here, and all but a handful carry none of these keys.
+    handles = payload.get("background_jobs") or []
+    if payload.get("background_job"):
+        handles = [*handles, payload["background_job"]]
+    listed = payload.get("unwatched") or ()
+    if status != "ok" or not (listed or handles):
+        return
+    unwatched = execution_context.setdefault("unwatched_runs", set())
+    unwatched.update(job_id for job_id in listed
+                     if isinstance(job_id, str) and job_id)
+    # Adopted or freshly submitted, which are the same fact here: something now polls
+    # it. Every producer's ``job_key`` *is* the id, so the handles are the whole answer.
+    watched = {str(h.get("job_key")) for h in handles if isinstance(h, dict)}
+    unwatched.difference_update(
+        {key for key in unwatched
+         if key in watched or key.split("_", 1)[0] in watched})
+
+
 def record_tool_observation(
     agent: Any,
     tool_name: str,
@@ -1358,6 +1394,7 @@ def record_tool_observation(
     _observe_missing_module(agent, tool_name, payload, status, execution_context)
     _observe_env_probe(agent, tool_name, execution_context)
     _observe_env_mutation(agent, tool_name, payload, status, execution_context)
+    _observe_unwatched_runs(payload, status, execution_context)
     _observe_denial_clearing(agent, tool_name, arguments, status, execution_context)
     _observe_edit_loop_clear(agent, tool_name, arguments, status, execution_context)
     _observe_delete(agent, tool_name, arguments, status, execution_context)

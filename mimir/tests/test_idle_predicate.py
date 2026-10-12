@@ -17,7 +17,7 @@ import time
 import unittest
 from unittest import mock
 
-from mimir.client.ui.ws import job_scan
+from mimir.client.ui.ws import job_scan, server_registry, transcript_log, ws_pool
 from mimir.client.ui.ws.event_bus import _EventBus
 from mimir.client.ui.ws.ws_pool import _AgentPool
 
@@ -49,7 +49,12 @@ class _Worker:
 class _IdleCase(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
-        for target in (job_scan,):
+        # Every module that resolves a path under the state dir, not only the one whose
+        # answer is under test: the pump journals what a worker emits, so a case that
+        # concludes a turn writes a transcript — and unpatched it writes it into the
+        # developer's own workspace, inventing sessions there that no conversation ever
+        # had.
+        for target in (job_scan, transcript_log, server_registry):
             patcher = mock.patch.object(target, "_MIMIR_DIR_WS", self._tmp.name)
             patcher.start()
             self.addCleanup(patcher.stop)
@@ -354,6 +359,80 @@ class TheClockTests(_IdleCase):
             pool._consider_stopping()      # and now the TTL has passed
             self.assertTrue(pool.stop_requested.is_set())
         asyncio.run(run())
+
+    def test_the_stop_is_written_into_the_conversation(self):
+        # The one thing that happens to a conversation which the conversation cannot
+        # see happen. Printed only in the process's own log, it left a morning opening
+        # on a thread hours old with nothing between — a night that reads as lost
+        # rather than as a decision taken.
+        async def run():
+            pool, _w = self._idle_pool()
+            saved: list = []
+
+            class _Session:
+                def __init__(self) -> None:
+                    self.display_messages: list[dict] = []
+
+            class _Store:
+                def __init__(self) -> None:
+                    self.session = _Session()
+
+                def load_session(self, _sid):
+                    return self.session
+
+                def save_session(self, session):
+                    saved.append(session)
+
+            pool.store = _Store()
+            pool.server_idle_ttl = 0.0
+            pool._consider_stopping()
+            pool._consider_stopping()
+            self.assertTrue(pool.stop_requested.is_set())
+            self.assertTrue(saved, "the notice was never saved")
+            text = pool.store.session.display_messages[-1]["text"]
+            self.assertIn("MIMIR stopped", text)
+            # Why it stopped, not when: it had nothing to do throughout, and any work
+            # would have restarted the clock.
+            self.assertIn("nothing to do", text)
+            self.assertIn("restarted that clock", text)
+            # And nothing about a scheduler. A pool does not know whether this
+            # workspace has one; naming a cluster tool here was the incident leaking
+            # into a general mechanism, and the next incident would want its own
+            # sentence in the same string.
+            self.assertNotIn("slurm", text.lower())
+            # Journaled as well as shown: the bubble is what the user reads on the way
+            # back in, the event is what the gap in the journal is audited from.
+            journaled = [ev for ev in self._journal("s1")
+                         if ev.get("type") == "server_stopped"]
+            self.assertEqual(len(journaled), 1)
+        asyncio.run(run())
+
+    def test_an_unclaimed_stop_says_that_is_why(self):
+        # Two ways out, and they are not the same news: one is "nothing was running",
+        # the other "nobody asked me to stay".
+        async def run():
+            pool, _w = self._idle_pool()
+            pool.bus.ever_attached = True
+            pool.bus._unattended_since = 0.0
+
+            class _Store:
+                def load_session(self, _sid):
+                    raise RuntimeError("not needed here")
+
+            pool.store = _Store()
+            with mock.patch.object(ws_pool.server_registry, "claims",
+                                   return_value={}):
+                pool._consider_stopping()
+            self.assertTrue(pool.stop_requested.is_set())
+        asyncio.run(run())
+
+    def _journal(self, session_id: str) -> list[dict]:
+        """Everything written to a session's transcript, as dicts."""
+        path = os.path.join(self._tmp.name, "sessions", session_id, "transcript.jsonl")
+        if not os.path.exists(path):
+            return []
+        with open(path, encoding="utf-8") as fh:
+            return [json.loads(line) for line in fh if line.strip()]
 
     def test_activity_resets_the_clock_rather_than_shortening_it(self):
         # "Idle throughout", not "idle at some point": the difference between stopping

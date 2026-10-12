@@ -260,9 +260,16 @@ class _EventBus:
         except ValueError:
             pass
 
-    def attached(self) -> int:
-        """How many clients are listening. Zero is the detached case."""
-        return len(self._subs)
+    def attached(self, *, excluding: _Subscription | None = None) -> int:
+        """How many clients are listening. Zero is the detached case.
+
+        *excluding* leaves one subscription out, for the question a window asks about
+        its own departure: it is itself an attachment, so counting it answers "yes,
+        somebody is watching — you".
+        """
+        if excluding is None:
+            return len(self._subs)
+        return sum(1 for sub in self._subs if sub is not excluding)
 
     # ── Who takes a durable event in ──────────────────────────────────────────
 

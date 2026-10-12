@@ -15,6 +15,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import types
 import unittest
 
 from mimir.client.ui.ws import detach as detach_mod
@@ -368,6 +369,16 @@ class ComingBackToARunTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.sent, [])
 
 
+class _StoreWith:
+    """A session store that knows the ids it was given, and nothing else."""
+
+    def __init__(self, ids: list[str]) -> None:
+        self._ids = list(ids)
+
+    def list_sessions(self) -> list:
+        return [types.SimpleNamespace(id=sid) for sid in self._ids]
+
+
 class DetachHandlerTests(unittest.IsolatedAsyncioTestCase):
     """What the `detach` message does besides making the process survivable."""
 
@@ -414,6 +425,10 @@ class DetachHandlerTests(unittest.IsolatedAsyncioTestCase):
         self.sess.pool = FakePool(self.a, active="s1",
                                   workers={"s1": self.a, "s2": self.b})
         self.sess._active_session_id = "s1"
+        # The subscription this view holds. ``_handle_detach`` passes it to
+        # ``idle_report`` so the asking window is not counted as the answer, and a
+        # bare session has none until ``run()`` opens one.
+        self.sess._sub = None
         self.applied: list[tuple] = []
         self.sess._apply_setting = lambda name, *args: self.applied.append((name, args))
 
@@ -464,11 +479,45 @@ class DetachHandlerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             [m for m in self.sent if m["type"] == "detached"][0]["autonomy"], "manual")
 
-    async def test_a_conversation_with_no_agent_is_skipped_quietly(self):
+    async def test_an_id_that_names_no_conversation_is_skipped_quietly(self):
+        # Not asleep — not a conversation at all. A claim on it would hold the process
+        # open for something that can never come back to take the claim off.
         await self.sess._handle_detach(
             {"type": "detach", "autonomy": "auto", "session_ids": ["never-existed"]})
         self.assertEqual(
             [m for m in self.sent if m["type"] == "detached"][0]["sessions"], [])
+
+    async def test_a_conversation_whose_agent_is_asleep_is_still_claimed(self):
+        """The failure this exists for, and it compounded the other one.
+
+        An agent is built on a conversation's first query and released after ten
+        minutes of idleness — and a conversation whose work is a job MIMIR cannot see
+        has nothing holding its agent, so it is asleep at exactly the moment the user
+        leaves. Built from the live agents, the claim set came out empty for it; an
+        empty claim is written as "not detached", so the server stopped thirty seconds
+        after the window closed, having just been asked to keep going.
+        """
+        from mimir.client.ui.ws import server_registry
+        server_registry.publish(url="ws://127.0.0.1:9", host="127.0.0.1", port=9)
+        from mimir.tests._fake_pool import FakePool
+        self.sess.store = _StoreWith(["asleep"])
+        self.sess.pool = FakePool(self.a, active="s1", workers={})
+
+        await self.sess._handle_detach(
+            {"type": "detach", "autonomy": "auto", "session_ids": ["asleep"]})
+        self.assertEqual(server_registry.claims(), {"asleep": "auto"})
+        self.assertTrue(server_registry.read()["detached"])
+
+    async def test_naming_none_claims_the_conversation_on_screen_too(self):
+        # A window detached the moment it opened claimed nothing at all: agents are
+        # built on the first query, so the pool was empty and "all of them" was none.
+        from mimir.client.ui.ws import server_registry
+        from mimir.tests._fake_pool import FakePool
+        server_registry.publish(url="ws://127.0.0.1:9", host="127.0.0.1", port=9)
+        self.sess.pool = FakePool(self.a, active="s1", workers={})
+
+        await self.sess._handle_detach({"type": "detach", "autonomy": "auto"})
+        self.assertEqual(server_registry.claims(), {"s1": "auto"})
 
     async def test_the_registry_entry_records_the_detachment(self):
         from mimir.client.ui.ws import server_registry
@@ -544,6 +593,73 @@ class DetachHandlerTests(unittest.IsolatedAsyncioTestCase):
         await self.sess._handle_detach({"type": "detach", "autonomy": "manual"})
         note = [m for m in self.sent if m["type"] == "command_output"][-1]
         self.assertIn("parks at the first call", note["title"])
+
+    async def test_it_names_what_it_is_keeping_the_server_for(self):
+        # The claim "this run keeps working" is about what the process still owes, so
+        # the line shows it: the user walking away reads what is actually being left.
+        self.sess.pool.idle_reasons = ["background run(s) still going: s1/abc"]
+        await self.sess._handle_detach({"type": "detach", "autonomy": "auto"})
+        note = [m for m in self.sent if m["type"] == "command_output"][-1]
+        self.assertIn("keeps working", note["title"])
+        self.assertEqual([i["detail"] for i in note["items"]],
+                         ["background run(s) still going: s1/abc"])
+
+    async def test_a_detachment_with_nothing_to_watch_says_so_instead(self):
+        """The night this exists for: detaching onto work MIMIR cannot see.
+
+        A job it did not submit — a raw ``sbatch``, a site launcher, a submission over
+        ``ssh`` — leaves no descriptor, so the scan finds nothing, the process is idle
+        by every measure it has, and it stops on the idle TTL a couple of hours later.
+        The run itself is untouched and nobody is ever woken for it. Saying "this run
+        keeps working" there is the one sentence that cost a whole night, and the
+        moment to say otherwise is the click.
+        """
+        self.sess.pool.idle_reasons = []
+        await self.sess._handle_detach({"type": "detach", "autonomy": "auto_all"})
+        note = [m for m in self.sent if m["type"] == "command_output"][-1]
+        self.assertIn("nothing is being watched yet", note["title"])
+        self.assertNotIn("keeps working", note["title"])
+        self.assertIn("2h", note["note"].replace(" h", "h"))
+        # What to do about it, without naming a cluster tool: this layer does not know
+        # whether the workspace has a scheduler, and the tools that do say so
+        # themselves — in the queue's own answer and in the nudge built on it.
+        self.assertIn("ask it to watch the job or the process", note["note"])
+        self.assertNotIn("slurm", note["note"].lower())
+        # The level is still reported — the detachment did happen.
+        self.assertEqual([i["detail"] for i in note["items"]], ["auto_all"])
+
+    async def test_what_it_says_is_conditional_and_quiet(self):
+        # The click can land while a turn is one tool call away from submitting the
+        # job that would keep this process alive. Said flatly, the line is false by
+        # the time it is read — and a warning that is sometimes false is one the user
+        # learns to skip. Quiet for the same reason: nothing has gone wrong yet.
+        self.sess.pool.idle_reasons = []
+        await self.sess._handle_detach({"type": "detach", "autonomy": "auto"})
+        note = [m for m in self.sent if m["type"] == "command_output"][-1]
+        self.assertEqual(note["tone"], "quiet")
+        self.assertIn("at this moment", note["note"])
+        # Not a deadline: the clock is measured from when the process first had
+        # nothing to do and is reset by any work.
+        self.assertIn("any work restarts that clock", note["note"])
+        self.assertIn("nothing to do for about 2h together", note["note"])
+
+    async def test_the_window_itself_is_not_counted_as_work(self):
+        # The window asking what it would leave behind is the attachment, so counting
+        # it answers "yes, you" every time — which is how the promise came to be made
+        # with nothing behind it.
+        seen: list = []
+        real = self.sess.pool.idle_report
+
+        def _spy(*, excluding=None):
+            seen.append(excluding)
+            return real(excluding=excluding)
+
+        self.sess.pool.idle_report = _spy
+        await self.sess._handle_detach({"type": "detach", "autonomy": "auto"})
+        # Its own subscription, and only that one: a second window of the same
+        # workspace really is keeping the process alive, and telling this one that
+        # nothing is watching would be the same mistake inverted.
+        self.assertEqual(seen, [self.sess._sub])
 
 
 if __name__ == "__main__":

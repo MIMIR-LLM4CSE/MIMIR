@@ -41,6 +41,7 @@ from module_env import module_probe_script
 from capabilities import tool_caps, CACHEABLE, ENV_DISCOVERY
 from responses import ok
 from slurm_nodes import aggregate_node_types, parse_scontrol_nodes, stable_signature, stable_types
+from slurm_site import controller as slurm_controller
 from state_paths import state_dir
 import embed as _embed
 import vector_cache
@@ -210,7 +211,27 @@ def _collect_gpu() -> dict:
 
 @lru_cache(maxsize=1)
 def _collect_slurm() -> dict:
+    """Whether Slurm's tools are on *this* host, and where else they are known to be.
+
+    This probe describes the machine it runs on and nothing else — it does not go
+    looking for other hosts, and the absence of ``sinfo`` here is a fact about here.
+    What it must not do is turn that fact into a verdict about the site: on a login
+    node whose controller lives elsewhere, "no scheduler" read as "this skill does not
+    apply", and the work went somewhere nothing could track it. So when a controller
+    has already been learned — from the user's own successful ``ssh host "squeue …"``,
+    see ``_shared/slurm_site`` — it is reported, as the recorded fact it is. Nothing is
+    probed over there.
+    """
     if not _cmd_exists("sinfo"):
+        elsewhere = slurm_controller()
+        if elsewhere:
+            return {
+                "available": False,
+                "controller": elsewhere,
+                "note": (f"Not on this host. The scheduler has answered through "
+                         f"{elsewhere}, and the cluster tools use it; this profile "
+                         "describes this machine only."),
+            }
         return {"available": False}
     out = _run(["sinfo", "--version"])
     if not out["ok"]:

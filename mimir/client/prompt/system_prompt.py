@@ -271,7 +271,10 @@ _SECTION_RUNNING = (
     "- A check that fails on a missing module is an environment problem, not a code defect: enumerate "
     "the available environments and retry with an interpreter that resolves it before concluding.\n"
     "- A package you install or an environment you create is a reversible obligation: before "
-    "concluding, ask the user whether to undo it rather than deciding silently."
+    "concluding, ask the user whether to undo it rather than deciding silently.\n"
+    "- Long work started outside a tool call is watched by nothing: a job a launcher "
+    "submitted, a process left running. Hand each over before concluding — by job id, or by "
+    "pid — or say it is not yours to follow."
 )
 
 _SECTION_PLANNING = (

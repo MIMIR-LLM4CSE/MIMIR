@@ -52,6 +52,7 @@ class ExecutionContext(TypedDict):
     test_failure_signatures: dict[str, list[str]]   # test file -> distinct failing-node-id sets seen this query (oracle nudge)
     # ── Environment: what the run needs and what it changed ────────────────────
     unresolved_modules: set[str]                     # imports a run failed to resolve (env-resolution nudge)
+    unwatched_runs: set[str]                         # ids a scheduler listed that no descriptor covers — nothing watches them, no wake is owed (unwatched-run nudge)
     env_probed: bool                                 # True once the model enumerated the available interpreters/envs
     env_mutations: list[dict[str, Any]]              # installs / env creations recorded this query (conclude-phase cleanup nudge)
     # ── Todo / planning ────────────────────────────────────────────────────────
@@ -261,6 +262,7 @@ _FIELD_SPECS: tuple[_FieldSpec, ...] = (
     # parity test. Declaring them is what lets a backfill be derived from this table
     # instead of hand-listed per module.
     ("unresolved_modules", set, (set,), _NO_TRAITS),
+    ("unwatched_runs", set, (set,), _NO_TRAITS),
     ("env_probed", lambda: False, (bool,), _NO_TRAITS),
     ("env_mutations", list, (list,), _NO_TRAITS),
     # ── Todo / planning ────────────────────────────────────────────────────────

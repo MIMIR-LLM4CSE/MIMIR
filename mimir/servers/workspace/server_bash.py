@@ -154,6 +154,14 @@ from module_env import MODULE_ENV_PASSTHROUGH as _MODULE_ENV_PASSTHROUGH
 import _bash_jobs
 import build_progress
 import run_channel
+from slurm_site import (
+    SLURM_COMMANDS,
+    UNWATCHED_HINT,
+    controller_from_ssh,
+    queued_ids as slurm_queued_ids,
+    record_controller,
+    unwatched as slurm_unwatched,
+)
 from shell_paths import (
     CLUSTER_SUBMIT_COMMANDS,
     DESTRUCTIVE_COMMANDS,
@@ -1083,7 +1091,68 @@ def bash_run(command: str, timeout: int = _DEFAULT_TIMEOUT,
     if timeout != requested_timeout:
         result["timeout_clamped"] = True
         result["requested_timeout"] = requested_timeout
+    _note_scheduler(validation["segments"], result)
     return result
+
+
+# When this process last asked the scheduler what the user has queued. A turn reads the
+# queue several times — after a submission, then again for progress — and the reminder
+# built on the answer needs it once, not once per call.
+_QUEUE_ASKED_AT = 0.0
+_QUEUE_EVERY = 60.0
+
+
+def _note_scheduler(segments: list[list[str]], result: dict) -> None:
+    """Learn from a command that just reached the scheduler, and answer with the gap.
+
+    A command whose parse shows a Slurm head — locally, or past an ``ssh`` — and that
+    *succeeded* has proved two things this server could not otherwise know: where the
+    scheduler is, and that it answers. Both are then free to use.
+
+    The second is what closes the case this whole path exists for. A job submitted
+    through a site launcher is tracked by nothing, and neither the launcher call nor the
+    ``squeue`` that checks it reaches a typed cluster tool — so the reminder that fires
+    when a turn concludes with unwatched work never got its fact. It gets it here: the
+    ids the scheduler just confirmed it is running, minus the ones a descriptor covers.
+    Attached to this payload, which is all it takes — the client's observer reads the
+    field and not the tool name.
+
+    Deterministic throughout: the validator's own parse and an exit status, never a
+    pattern over the text of a command.
+    """
+    global _QUEUE_ASKED_AT
+    if result.get("status") != "ok" or result.get("returncode") != 0:
+        return
+    reached = any(_reaches_slurm(segment) for segment in segments)
+    if not reached:
+        return
+    for segment in segments:
+        host = controller_from_ssh(segment)
+        if host:
+            record_controller(host)
+            break
+    now = time.monotonic()
+    if now - _QUEUE_ASKED_AT < _QUEUE_EVERY:
+        return
+    _QUEUE_ASKED_AT = now
+    # Asked where the scheduler is, which on a site whose controller is elsewhere is
+    # not here — the same seam the cluster tools use, so one answer and not two.
+    ids = slurm_queued_ids()
+    if ids is None:
+        return
+    missing = slurm_unwatched(ids)
+    if missing:
+        result["unwatched"] = missing
+        result["unwatched_hint"] = UNWATCHED_HINT
+
+
+def _reaches_slurm(argv: list[str]) -> bool:
+    """Whether this one command runs a Slurm tool, here or on the far side of an ssh."""
+    if not argv:
+        return False
+    if os.path.basename(argv[0]) in SLURM_COMMANDS:
+        return True
+    return bool(controller_from_ssh(argv))
 
 
 _JOB_OPS = ("status", "output", "list")
@@ -1196,6 +1265,58 @@ def bash_job_stop(job_key: str) -> dict:
     if not _bash_jobs.valid_key(job_key):
         return err("A job_key from bash_run(background=True) is required.")
     return _job_payload(_bash_jobs.stop(job_key))
+
+
+@mcp.tool(**tool_caps(kind="job", label="Watch process {pid}"))
+def bash_watch(pid: int, what: str = "", log: str = "") -> dict:
+    """Watch a long process already running, so its end reaches you.
+
+    The counterpart of bash_run(background=True) for work that is already going: a
+    process a script of yours backgrounded, a nohup started outside this session,
+    anything long that no tool call owns. Those are watched by nothing — tracking is
+    the record a launch writes, and a process started elsewhere wrote none — so nobody
+    is told when it ends and it does not keep this workspace's server alive while it
+    runs.
+
+    For a *Slurm* job use slurm_watch(job_id) instead: a job id is not a pid, its
+    liveness lives in the scheduler, and this tool can only watch a process on this
+    host.
+
+    What it cannot give you is a status. The exit-code trap is installed by the launch,
+    and nothing can add it to a process already running, so when the pid goes the state
+    is 'unknown' — "it ended, and its own output says how". That is still the wake you
+    need; it is not a verdict.
+
+    Args:
+        pid: The process id to watch. It must be running on this host.
+        what: What this process is, for the handle and for whoever reads it later.
+        log: Where it writes its output, if you know — recorded so a later read goes
+            to the right file, since an adopted job has no log of its own.
+    """
+    try:
+        pid = int(pid)
+    except (TypeError, ValueError):
+        return err("pid must be a number.")
+    if pid <= 0:
+        return err("pid must be a positive process id.")
+    # Resolved for a reader, not confined: nothing here opens this path. It is
+    # recorded so a later answer can name where the output went, and whoever goes to
+    # read it does so through the file tools, which confine themselves. Confining it
+    # here would refuse the ordinary case — a job writing to the scratch filesystem,
+    # which is outside every workspace by design.
+    log = _normalize_path_arg(log, _WORKSPACE_ROOT) or ""
+    handle = _bash_jobs.adopt(pid, what or f"adopted pid {pid}", _WORKSPACE_ROOT, log)
+    if handle is None:
+        return err(f"No process {pid} is running here.",
+                   hint="Check the pid — a process that has already ended cannot be "
+                        "watched, and one on another host is not visible from here.")
+    return ok({
+        **handle,
+        "state": "running",
+        "headline": (f"Watching pid {pid}. End your turn — you are resumed when it "
+                     "ends, with this window closed or not."),
+        "background_job": _job_descriptor(handle["job_key"], handle["job_dir"]),
+    })
 
 
 _VERDICT_VALUES = ("pass", "fail", "unknown", "blocked", "rejected")

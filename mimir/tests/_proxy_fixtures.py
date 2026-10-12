@@ -150,13 +150,21 @@ class _FakeSbatchTest(_TmpStorageTest):
         os.makedirs(self.bin_dir, exist_ok=True)
         self._saved_path = os.environ["PATH"]
         self.counter = os.path.join(self.root, "sbatch_counter")
-        self.calls_file = os.path.join(self.root, "sbatch_calls")
+        # The script reaches sbatch on **stdin** — it reads it from there when given no
+        # file, which is what keeps any path of MIMIR's from having to exist on the host
+        # running the scheduler. So the fake keeps what it was *fed*, one file per call,
+        # numbered by the job id it answered with.
+        self.scripts_dir = os.path.join(self.root, "sbatch_scripts")
+        os.makedirs(self.scripts_dir, exist_ok=True)
         _script(os.path.join(self.bin_dir, "sbatch"),
                 "n=7000\n"
                 f"if [ -f {self.counter} ]; then read n < {self.counter}; fi\n"
                 "n=$((n+1))\n"
                 f"echo $n > {self.counter}\n"
-                f'echo "$1" >> {self.calls_file}\n'
+                # Builtins only: PATH is this bin dir alone, so that no real sbatch
+                # is ever found — which means no `cat` either.
+                'while IFS= read -r line; do echo "$line"; done '
+                f'> {self.scripts_dir}/$n\n'
                 'echo "Submitted batch job $n"\n')
         os.environ["PATH"] = self.bin_dir
 
@@ -166,8 +174,8 @@ class _FakeSbatchTest(_TmpStorageTest):
 
     def _submitted_scripts(self) -> list[str]:
         """The contents of every script handed to sbatch, in submission order."""
-        if not os.path.isfile(self.calls_file):
+        try:
+            names = sorted(os.listdir(self.scripts_dir), key=int)
+        except OSError:
             return []
-        with open(self.calls_file) as fh:
-            paths = [line.strip() for line in fh if line.strip()]
-        return [open(p).read() for p in paths]
+        return [open(os.path.join(self.scripts_dir, name)).read() for name in names]

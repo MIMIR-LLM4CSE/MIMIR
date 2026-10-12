@@ -35,7 +35,7 @@ from .job_scan import (
 from .job_wakes import DURABLE_EVENTS, checkin_text, wake_text
 from .detach import detach as detach_process
 from . import server_registry
-from .ws_pool import _AgentPool
+from .ws_pool import _AgentPool, idle_stop_reason
 from ...tool_execution import run_channel
 from ...config import (
     TEMPERATURE_MAX, TEMPERATURE_MIN, THINKING_DEPTH_LABELS, parse_temperature,
@@ -2386,6 +2386,21 @@ class _Session:
                     "; ".join(report["reasons"]) or "nothing was running")
         self.pool.request_stop()
 
+    def _safe_list_sessions(self) -> list:
+        """The stored conversations, or none when the directory cannot be read.
+
+        Guarded because its one caller is deciding what to claim: a listing that
+        raises must not turn a detachment into an error, and an unreadable store is
+        the one case where "this names no conversation" cannot be concluded — so it
+        falls back to the agents, which is the stricter answer.
+        """
+        try:
+            return self.store.list_sessions()
+        except Exception:
+            logger.warning("detach: the stored conversations could not be listed",
+                           exc_info=True)
+            return []
+
     async def _handle_detach(self, msg: dict) -> None:
         """Let the server go on without this window — "continue without me".
 
@@ -2467,22 +2482,47 @@ class _Session:
                 pass
             return
 
+        # A claim is a *conversation's* request to be left running, so the set is the
+        # conversations named — never the live agents. An agent is built on a
+        # conversation's first query and released after ten minutes of idleness, and
+        # the ones with no agent at that moment are exactly the ones this exists for: a
+        # conversation whose work is a job MIMIR cannot see has nothing holding its
+        # agent, so it is asleep when the user leaves. Built from the workers, the set
+        # came out empty for it — and an empty claim is written as "not detached", so
+        # the server stopped thirty seconds after the window closed, having just been
+        # asked to keep going.
+        #
+        # The *level* still needs an agent to be applied to, and that is a separate
+        # thing: one asleep gets it back from the claim when a window reattaches, and
+        # from the pool-wide record when something rebuilds it meanwhile.
         session_ids = msg.get("session_ids")
         targeted: list[str] = []
         if isinstance(session_ids, list) and session_ids:
+            known = {meta.id for meta in self._safe_list_sessions()}
             for sid in session_ids:
                 worker = self.pool.get(sid)
+                if worker is None and str(sid) not in known:
+                    # Not asleep — not a conversation at all. Claiming an id nothing
+                    # knows about would hold this process open for something that
+                    # cannot come back to take the claim off it.
+                    logger.info("detach: ignoring %s, which names no conversation", sid)
+                    continue
+                targeted.append(str(sid))
                 if worker is None:
                     continue
                 try:
                     worker.set_approval_mode(autonomy)
-                    targeted.append(str(sid))
                 except Exception:
                     logger.warning("detach: session %s refused the autonomy level %s",
                                    sid, autonomy, exc_info=True)
         else:
             self._apply_setting("set_approval_mode", autonomy)
+            # Naming none means all of them, and "all" includes the conversation on
+            # screen even before it has asked anything: a window detached the moment it
+            # opened claimed nothing at all, because no agent had been built yet.
             targeted = [sid for sid, _w in self.pool.items()]
+            if self._active_session_id and self._active_session_id not in targeted:
+                targeted.append(self._active_session_id)
 
         # The agent's stdout is about to become a log file, which is not a tty but is
         # also not proof that nobody is reachable. Saying so plainly keeps the
@@ -2505,7 +2545,7 @@ class _Session:
         # not: one serves the whole workspace, and the redirect that makes it
         # survivable is its own — so it lives for as long as any conversation claims
         # it, and becomes mortal again when the last claim goes.
-        server_registry.claim(targeted or [], autonomy, log=info.get("log"))
+        server_registry.claim(targeted, autonomy, log=info.get("log"))
 
         try:
             await self.ws.send(json.dumps({
@@ -2520,13 +2560,42 @@ class _Session:
             # The other half of the switch — see the take-back above. Named here as
             # what the run may do while unwatched, because that is the part of
             # detaching the user chose and the part the glyph cannot show.
-            await self._command_reply(
-                "detach",
-                (f"detached — this run keeps working with this window closed, under "
-                 f"“{autonomy}”" if autonomy != "manual" else
-                 "detached — this run keeps working with this window closed, and "
-                 "parks at the first call that needs you"),
-                tone="quiet", transient=True)
+            #
+            # And checked against what this process would actually still have to do
+            # once this window has gone, because "this run keeps working" is a claim
+            # about that and nothing was testing it. A conversation whose work is a
+            # job MIMIR never submitted — a raw ``sbatch`` in a shell, a submission
+            # over ``ssh`` — has nothing on disk for the scan to find, so the process
+            # is idle by every measure it has and stops on the idle TTL a couple of
+            # hours later. Detaching into that is a night lost to a sentence that was
+            # never true, and the moment to say so is the click.
+            idle = self.pool.idle_report(excluding=self._sub)
+            if idle["idle"]:
+                # Conditional, and that is not hedging: this is the state at the click,
+                # and the click can land while a turn is one tool call away from
+                # submitting the very job that would keep the process alive. Said
+                # flatly — "nothing is running, this will stop" — the line would be
+                # false by the time it was read, which is how a true warning becomes
+                # one the user learns to skip. So it says what is so now, and what
+                # follows only if nothing starts. The clock itself is described by the
+                # one author of that sentence, next to the TTL it is measured against.
+                title = f"detached under “{autonomy}” — nothing is being watched yet"
+                items = [{"label": "autonomy", "detail": autonomy}]
+                note = ("No turn in flight and no run MIMIR is watching at this "
+                        "moment. "
+                        + idle_stop_reason(self.pool.server_idle_ttl, past=False)
+                        + " Work it did not start itself is not watched: ask it to "
+                        "watch the job or the process before you go.")
+            else:
+                title = (f"detached — this run keeps working with this window closed, "
+                         f"under “{autonomy}”" if autonomy != "manual" else
+                         "detached — this run keeps working with this window closed, "
+                         "and parks at the first call that needs you")
+                items = [{"label": "keeping it going", "detail": reason}
+                         for reason in idle["reasons"]]
+                note = ""
+            await self._command_reply("detach", title, items=items, note=note,
+                                      tone="quiet", transient=True)
         except Exception:
             return
         logger.info("detach: this server is now survivable (autonomy %s over %d "

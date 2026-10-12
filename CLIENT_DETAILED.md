@@ -631,7 +631,7 @@ The full per-nudge table, with what each fires on and which survive at each leve
   `test_nudge_table.py` asserts this set is disjoint from `_ALL_GUIDANCE`, so a verification
   row can never be silently switched off by enforcement.
 - **Guidance layer** — skipped entirely at `off`: `env_resolution`, `env_cleanup`, `doc`,
-  `state`, `blast_radius`, `creation`, `todo`.
+  `state`, `blast_radius`, `creation`, `todo`, `unwatched_run`.
 - **Order per step**: core verification → pack verification → *(stop if `off`)* → core
   guidance → pack guidance. The first row whose predicate holds wins.
 - `_GUIDANCE_BY_LEVEL_MODE` is the declarative `(enforcement, mode)` table, consulted
@@ -646,6 +646,23 @@ The full per-nudge table, with what each fires on and which survive at each leve
 rows used to open on a keyword match over the query; that is a guess about intent dressed as
 a test. What replaced the one thing the keyword earned — telling `blast_radius` from
 `creation` — is whether the declared target already exists on disk.
+
+**A run nobody is watching.** `unwatched_run` is the row that rule shaped most. The failure
+it guards is a job submitted outside MIMIR — through a site launcher, a submission script, a
+shell on another host — which leaves no descriptor: nothing polls it, no wake is owed when it
+ends, and the server stops on its idle TTL with the run still going. Silent at both ends, and
+a night lost. The tempting predicate is a pattern over the command text, and it is a guess:
+it fires on a `grep sbatch` and misses every wrapper ever written. So the fact is established
+where it can be: a server that can ask the scheduler and read the submission directories —
+and `_observe_unwatched_runs` records it, payload-driven rather than keyed on a tool name (it
+is not even handed one), so any server reporting the same field earns the same reminder.
+Which is what makes it reach the *ordinary* case: the job goes out through a site launcher
+and is checked with a `squeue` a second later, neither of them a typed cluster tool, so the
+bash server answers with the gap on any command that just proved the scheduler answers. The twin half is the
+clearing: an answer carrying a watcher's handle for an id has made that id watched, and an
+array adopted under its base id clears the tasks the queue listed separately. It fires at the
+conclusion, which is the last moment the record can still be written, and it is one of the
+three rows kept at `light` — costly, hard to detect, and not self-correcting.
 
 `nudges/messages.py` holds the message copy for every built-in row. `nudges/plugins.py`
 holds the `NudgeRule` descriptor, the process-global `NudgeRegistry` and `register_nudge()`;
@@ -1473,6 +1490,18 @@ outlives a worker being rebuilt, since the pool records UI settings per pool rat
 session. The registry entry is updated rather than rewritten: the address was settled at bind
 time and has not changed, so only the claim and the log path are added.
 
+**A claim is a conversation's request, not an agent's.** Built from the live workers, the
+set came out empty for the one case that matters most: an agent is created on a
+conversation's first query and released after ten minutes of idleness, and a conversation
+whose work is a job the scan cannot see has nothing holding its agent — so it is asleep at
+exactly the moment the user leaves. An empty claim is written as `detached: false`, so
+`_nobody_asked_to_keep_it` stopped the process thirty seconds later, having just been asked
+to keep it going. The set is now the conversations *named* (a level still needs an agent to
+be applied to, which is a separate thing), and naming none claims the conversation on screen
+as well — a window detached before its first query had no worker to enumerate and claimed
+nothing at all. An id the store does not know is still refused: a claim nothing can come back
+to take off would hold the process open for ever.
+
 **The claim is per conversation; survival is per process, and it cannot be otherwise.** The
 entry holds `detached_sessions: {session id: autonomy}`, so each conversation is left under
 its own level and taking one back leaves the others running — one flag for the workspace both
@@ -1520,6 +1549,39 @@ exit code, so what the shutdown ends is the *watching*, and the next agent built
 conversation picks it up again. And the dialog can now say one true thing — disconnecting ends
 the server and their turns with it — where describing two outcomes meant guessing which one
 applied.
+
+**A stop the conversation can read.** `request_stop(headline=…)` writes into every
+conversation this process was keeping before the loop is asked to go: a wall-clock-stamped
+system bubble in the stored session plus a `server_stopped` entry in its journal. Recorded at
+that seam rather than at each deciding branch, so "the process decided to stop" is one fact in
+one place and a stop added later cannot forget to say it — the user-requested stop passes
+nothing, and should, since the user is there with the reasons on screen. The writing itself
+goes through `_tell_session`, shared with `_record_wake`: the store is the half the user reads
+on the way back in, the journal the half the mechanism is audited from, and the failure
+handling (a session that will not load, a save that will not write) is the fragile part, so it
+has one author.
+
+Nothing used to reach the transcript at all — the decision was printed in the process's own
+log, which the user has no reason to be reading, so a morning opened on a thread whose last
+line was hours old with nothing between. That reads as a night lost rather than a decision
+taken, and the two want opposite responses. What the notice says is only what `idle_report`
+told it, and the wording of the clock has one author (`idle_stop_reason`, beside the TTL, in
+both tenses because two layers say it). It names no remedy: a pool does not know whether this
+workspace has a scheduler at all, and naming a cluster tool there was the incident leaking
+into a general mechanism — that sentence belongs to the layer that knows one exists.
+
+**And what a detachment promises is checked against that.** "This run keeps working with
+this window closed" is a claim about what the process would still owe once the window has
+gone, so `_handle_detach` now asks — `idle_report(excluding=self._sub)`, the window asking what it
+would leave behind being itself an attachment that would otherwise answer "yes, you" — and
+only its own, because a second window of the same workspace really is keeping the process
+alive. With nothing owed, the line says so instead: nothing is being watched yet, and unless
+something starts it stops once it has had nothing to do for the whole TTL. Conditional on
+purpose, and quiet rather than a warning — the click can land while a turn is one tool call
+away from submitting the very job that would keep the process alive, and a warning that is
+sometimes false is one the user learns to skip. What it names is the trap behind the whole
+failure: a job MIMIR did not submit itself is never watched, and `slurm_watch(job_id)` adopts
+one.
 
 **A card nobody can answer is set aside, not waited out.** The wait behind an approval
 passes no timeout, deliberately: nothing may proceed because the user was slow. That is right
@@ -1722,10 +1784,10 @@ installed.
 | `test_reattach_replay.py` | that the gate cannot silence a stream — a watermark above the journal is not honoured, the stream still arrives after one, a filtered event is counted rather than vanishing, and a stream delta bypasses the gate (which is why the failure looks like a half-working chat) — and that a new conversation clears the watermark instead of inheriting it, and that one conversation's gate never silences another's live events while still holding for its own; then the watermark: everything replayed to a client that has seen nothing, only the tail to one that has seen some, nothing to one that is current; that the gate lands where the replay ended so an event is never both replayed and delivered live; that nothing produced between subscribing and reading is lost; framing, the cap keeping the end and saying so, a socket dying mid-replay leaving the gate alone; and that streamed deltas are absent while their aggregates are not |
 | `test_job_rearm.py` | the baseline — a first scan reporting nothing while recording that it looked, a job ending *after* it reported, a live run re-armed either way, and a watcher's own report marking the run so a restart does not repeat it — then the scan: a live run reported live, a recorded exit code winning over whatever the pid looks like, a dead pid with no code reading `unknown` rather than `done`, a recycled pid not mistaken for the job, an ephemeral scratch buffer skipped, a Slurm job live until Slurm says otherwise and over once a poll has written down that it is — `done`, `crashed`, and the scheduler having forgotten it, which claims no outcome — an unreadable state word settling nothing, a submission nothing can settle ageing out, the status op naming a tool the HPC server really registers, and a marker landing in the submission's own directory while one written under the bare id still counts — then the re-arm itself, the wake going to the session that launched the run, a run already watched left alone, and the report-once marker |
 | `test_server_registry.py` | one server per workspace, with real contending subprocesses because `flock` is a kernel object a mock would not exercise: a second process is refused while the first holds the claim, the lock is free again once the holder is *killed* rather than stopped, and two workspaces do not contend — then the registry: a published entry reading back with its pid and start time, an unreadable or wrong-protocol file reading as nothing, a failed write leaving no half file — and liveness over real sockets and real pids: a live pid whose listener has gone is *not* alive (while the process-only answer still says yes), a recycled pid is not mistaken for the server, `clear()` retires our own entry and leaves a stranger's |
-| `test_hot_detach.py` | detaching, exercised against the real system calls because a fake `dup2` would prove nothing about the thing that breaks: output following the descriptors into the log while the parent's pipe sees only what preceded the redirect, a child **surviving two hundred writes after its reader is gone**, a second detachment appending rather than truncating, `setsid` succeeding for a non-leader and declining for a leader without cancelling the redirect — then the handler: per-session autonomy touching only the sessions named, naming none recording it pool-wide, an unknown level refused with nothing detached, the registry entry keeping the address it was serving on, and that there is no terminal whichever conversations are named — then the claim, per conversation: each one coming back under its own level, taking one back leaving the others running, taking the last one back making the server mortal again — then coming back as the take-back: every claim dropped on arrival, the panel told the server is attached, and the level still restored when the registry refuses the write — and what coming back says: the level named, informatively rather than as a warning, with no explanation of a control already on screen, the ownership said even under `manual` where there is no level to name, and the notice not kept in the conversation |
+| `test_hot_detach.py` | detaching, exercised against the real system calls because a fake `dup2` would prove nothing about the thing that breaks: output following the descriptors into the log while the parent's pipe sees only what preceded the redirect, a child **surviving two hundred writes after its reader is gone**, a second detachment appending rather than truncating, `setsid` succeeding for a non-leader and declining for a leader without cancelling the redirect — then the handler: per-session autonomy touching only the sessions named, naming none recording it pool-wide, an unknown level refused with nothing detached, the registry entry keeping the address it was serving on, and that there is no terminal whichever conversations are named — then the claim, per conversation: each one coming back under its own level, taking one back leaving the others running, taking the last one back making the server mortal again — then coming back as the take-back: every claim dropped on arrival, the panel told the server is attached, and the level still restored when the registry refuses the write — and what coming back says: the level named, informatively rather than as a warning, with no explanation of a control already on screen, the ownership said even under `manual` where there is no level to name, and the notice not kept in the conversation — and what *leaving* says: what is being kept named row by row, a detachment with nothing owed saying that instead, conditionally and quietly, and the window never counted as the work it is asking about |
 | `test_unattended_park.py` | the parking: a card with somebody there still waiting for ever, one with nobody there deferred through the pre-built mechanism, the grace period leaving room for a window reload, a wait with its own deadline left alone — **an answer already in hand, or landing during the poll, winning over the grace** (the bug this file found) — the pump publishing attachment on ticks that move nothing and not restarting the clock each tick, and `releasable()` refusing a session that holds a deferral |
 | `test_wake_claim.py` | who is allowed to act, and that somebody always does: a wake taken in within the tick that drained it with nothing attached, an attached view given first refusal and the pool standing down, a claim granted to exactly one caller and to one this bus never offered, a view that routes nothing not costing the run its turn (with the take-over counted and logged), the run settled by whoever ends up delivering it, bulletins going the same way — then what a turn landing carries on: a steered wake the turn never read getting its own turn, one the turn did read settled instead of told twice, a burst arriving as one turn, the 🔔 of a steered wake, and a held bulletin delivered after the answer or dropped once its runs have finished — then the release invariant: an agent watching a run, owed a wake, holding an event still to be claimed or output still unread is never released while one with nothing outstanding still gives up its slot, so a wake for a closed agent cannot arise and is logged as a broken invariant if it does — and the subscription's lifetime: released on a handshake that raises, on a greeting that cannot be sent, and on an ordinary end, with a run finishing afterwards still answered for |
-| `test_idle_predicate.py` | what counts as finished: a concluded conversation with no jobs idle, one that never answered *not* idle, an error counting as an ending, a live run on disk holding the process open even for a session with no agent, an unreadable state dir counting as busy, and a Slurm submission holding it open until a poll has settled it, still holding it while its wake is owed, and letting go when nothing can ever settle it — plus each prohibition (attached client, parked card, owed answer, queued turn, agent being built, a worker that cannot be asked), and the clock: it starts rather than stopping at once, stops on the TTL, and is reset by activity rather than shortened — then the state that must not exist, a server nobody claimed and nobody is watching: a window still here keeping it whatever the claims, a reload not counting as a departure, gone past the grace with no claim ending it, one conversation's claim being enough for the whole process, a server never yet connected to having lost nothing, and claims that cannot be read not reading as nobody |
+| `test_idle_predicate.py` | what counts as finished: a concluded conversation with no jobs idle, one that never answered *not* idle, an error counting as an ending, a live run on disk holding the process open even for a session with no agent, an unreadable state dir counting as busy, and a Slurm submission holding it open until a poll has settled it, still holding it while its wake is owed, and letting go when nothing can ever settle it — plus each prohibition (attached client, parked card, owed answer, queued turn, agent being built, a worker that cannot be asked), and the clock: it starts rather than stopping at once, stops on the TTL, and is reset by activity rather than shortened — then the state that must not exist, a server nobody claimed and nobody is watching: a window still here keeping it whatever the claims, a reload not counting as a departure, gone past the grace with no claim ending it, one conversation's claim being enough for the whole process, a server never yet connected to having lost nothing, and claims that cannot be read not reading as nobody, and that both stops are written into the conversations they were keeping — stamped, journaled, and saying what the idleness consisted of |
 | `test_background_jobs.py` | the whole detached-run path: the server descriptor, the registration hook, `_watch_job`, the wake text, the detached resume and its coalescing — plus the check-in schedule and its never-interrupt rule, the three ways a finished run used to wake nobody (the wrong agent, a store that would not write, a socket dying on the send), that a reconnect throws nothing away, and re-arming a watcher from a status result — plus the fourth and quietest way, a tool call that never answers: a status op that hangs ending the run as `unknown` rather than polling for ever, a timed-out probe reported as `unreadable` rather than as still running, and a summary op that hangs not withholding the wake |
 | `test_policy_manager.py` | the gates and the state guard |
 | `test_client_helpers.py` | the nudge predicates, token counting, eviction and `ContextOverflowError` |

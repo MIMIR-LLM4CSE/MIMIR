@@ -254,6 +254,10 @@ NUDGE_MAX_EXERCISE: int = 1
 EXERCISE_BUDGET: str = "exercise"
 NUDGE_MAX_ENV_RESOLUTION: int = 1
 NUDGE_MAX_ENV_CLEANUP: int = 1
+# A run nobody is watching. One reminder, like the cleanup it resembles: the fact is
+# checkable and the remedy is one call, so a model that does not act on the first is
+# not going to act on the third.
+NUDGE_MAX_UNWATCHED_RUN: int = 1
 NUDGE_MAX_DOC: int = 1
 NUDGE_MAX_STATE: int = 1
 NUDGE_MAX_BLAST_RADIUS: int = 1

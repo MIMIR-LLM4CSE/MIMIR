@@ -296,6 +296,24 @@ def env_cleanup_nudge_message(execution_context: dict) -> str:
 	)
 
 
+def unwatched_run_nudge_message(execution_context: dict) -> str:
+	ids = sorted(execution_context.get("unwatched_runs", set()) or set())
+	named = ", ".join(ids[:6]) + (f" (+{len(ids) - 6} more)" if len(ids) > 6 else "")
+	plural = "s" if len(ids) != 1 else ""
+	return (
+		f"Before you conclude: the scheduler lists {len(ids)} job{plural} of yours that "
+		f"nothing is watching — {named}.\n\n"
+		"A job is tracked by the record its submission wrote, and these have none: they "
+		"were not submitted through this server. So nothing polls them, nobody is woken "
+		"when they end, and this process does not stay alive for them — it stops on its "
+		"idle timer with your run still going, and the result reaches no one.\n\n"
+		"Adopt each one now — slurm_watch(job_id, note=\"what it is\") for a Slurm job, "
+		"bash_watch(pid) for a process on this host — then end your turn: you are resumed "
+		"when they finish. If one of them is deliberately not yours to follow (another "
+		"user's work, a job you only looked at), say so in your answer and leave it."
+	)
+
+
 def documentation_nudge_message(execution_context: dict) -> str:
 	written = sorted(execution_context.get("dirty_written_files", set()))
 	file_hint = f" You modified: {', '.join(written[:3])}." if written else ""
