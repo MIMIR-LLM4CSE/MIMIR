@@ -15,18 +15,28 @@ same modules loaded, and do not have the same devices.
    toolchains, whether Slurm is even present. No Slurm *here* is not the end of it: the
    scheduler often lives on another host. If reading the queue over `ssh` works
    (`ssh <host> "squeue -u $USER"`), that one call is enough — MIMIR notes where the
-   scheduler is and the cluster tools below use it from then on. Only a site where
-   neither answers is one where this skill does not apply; run the work locally and say
-   so.
-2. `slurm_partitions()` — the queues, their limits and their defaults. A wall time
-   above the partition maximum is rejected at submission; a job with no account on a
-   partition that requires one pends with a reason you have to go read.
-3. `slurm_nodes(partition=...)` — the hardware you will actually get, collapsed onto
-   node types with a free count per state. This is the sizing input: `cpus_per_task`
-   that exceeds a node's cores, a `mem` above its memory, or a `gres` no node offers
-   does not fail — **it pends forever**, and a job that never starts looks exactly
-   like a job that is queued. Read the inventory, then ask for what exists.
-4. `constraint=` when the partition is heterogeneous. Without it the scheduler picks
+   scheduler is — for the whole workspace, so a cluster another conversation reached is
+   one you can submit to without reaching it again. Only a site where neither answers is
+   one where this skill does not apply; run the work locally and say so.
+2. `slurm_schedulers()` — which clusters this workspace can submit to, and what each
+   one is **made of**: how many node types, their architectures, the GPU models, how
+   many partitions. One reachable and there is nothing to choose; the calls below may
+   omit `scheduler=`. Several and every one of them takes it — they refuse rather than
+   defaulting, because which cluster a job belongs on follows the hardware it needs
+   and, above all, the filesystem its inputs and its `work_dir` are on: a job can only
+   run where its files are. Ask the user when the task does not settle it. The hardware
+   is on each entry so that choosing costs no extra call — what is free *right now* is
+   step 4's question, not this one.
+3. `slurm_partitions(scheduler=...)` — the queues, their limits and their defaults. A
+   wall time above the partition maximum is rejected at submission; a job with no
+   account on a partition that requires one pends with a reason you have to go read.
+4. `slurm_nodes(partition=..., scheduler=...)` — the hardware you will actually get,
+   collapsed onto node types with a free count per state. This is the sizing input:
+   `cpus_per_task` that exceeds a node's cores, a `mem` above its memory, or a `gres`
+   no node offers does not fail — **it pends forever**, and a job that never starts
+   looks exactly like a job that is queued. Read the inventory, then ask for what
+   exists.
+5. `constraint=` when the partition is heterogeneous. Without it the scheduler picks
    any node in the queue, and two measurements taken on two node types are not a
    comparison — they are two numbers.
 
@@ -52,8 +62,15 @@ one, or the login node when the architectures match. Burning a GPU allocation on
 
 ## Submitting
 
+- `scheduler=` on every one of these when the workspace reaches more than one — the
+  same name step 2 settled. They refuse an unnamed submission rather than sending it to
+  whichever cluster came first.
 - `salloc_submit(..., confirm=False)` returns the exact command without executing it.
-  Read it. The resources you *meant* and the resources you *typed* diverge silently.
+  Read it. The resources you *meant* and the resources you *typed* diverge silently. It
+  is also the one tool that cannot go to a cluster behind `ssh`: an interactive
+  allocation needs a terminal on that host, so it is refused there rather than taking
+  the allocation and handing it straight back. Use `sbatch_submit` on a remote
+  scheduler.
 - `sbatch_submit(command=..., partition=..., confirm=True)` for anything that is not
   interactive. It returns immediately with a `job_id` and a `background_job`
   descriptor: when the result says the run is being watched, **end your turn** — you

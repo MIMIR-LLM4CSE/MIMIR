@@ -189,7 +189,10 @@ The loop is the same; only where a run happens changes. `proxy_slurm(op='eval',
 partition=..., confirm=True)` submits it instead of running it here, and returns while
 the job is still queued — end your turn, you are resumed when it lands. Picking the
 partition and the node type, and building for the node rather than for the login host,
-is the `run-on-cluster` method; what follows is only what the ratchet adds to it.
+is the `run-on-cluster` method; what follows is only what the ratchet adds to it. Pass
+`scheduler=` with the rest when this workspace reaches more than one — every submission
+names its cluster there, and an unnamed one is refused rather than sent to whichever
+came first.
 
 Say where the **build** goes, separately from where the run goes. A node dedicated to
 GPU simulation is not a node to compile on, and compiling there burns the allocation
