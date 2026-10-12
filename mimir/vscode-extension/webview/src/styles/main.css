@@ -538,14 +538,22 @@ body {
   flex-direction: column;
   gap: 12px;
 }
-/* Centered reading column: every direct child (message wrappers, live areas,
-   scroll anchor) caps at a comfortable width on wide panels; a narrow sidebar
-   is unaffected since 100% wins below 760px. */
+/* The thread takes the width it is given: in a maximized tab or a full-screen
+   window the conversation fills the pane, flush with the composer below it.
+   Every direct child (message wrappers, live areas, scroll anchor) spans that
+   width, so a row keeps its place when the step in flight freezes into the
+   transcript. */
 .chat-thread > * {
   width: 100%;
-  max-width: 760px;
-  margin-left: auto;
-  margin-right: auto;
+  max-width: 100%;
+}
+
+/* Side air grows with the pane, so lines never run into the edges. */
+@media (min-width: 1100px) {
+  .chat-thread { padding: 16px 32px; }
+}
+@media (min-width: 1600px) {
+  .chat-thread { padding: 16px 56px; }
 }
 
 /* ── Empty state ─────────────────────────────────────────────────────────────── */
