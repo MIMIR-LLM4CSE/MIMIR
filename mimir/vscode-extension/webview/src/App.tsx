@@ -52,6 +52,9 @@ import { BatchReviewBar } from "./components/BatchReviewBar";
 import { MimirIntro } from "./components/MimirIntro";
 import { chooseRestoredMessages, pruneForStorage } from "./components/transcriptUtils";
 import { MentionAutocomplete } from "./components/MentionAutocomplete";
+import { DraftAttachments } from "./components/DraftAttachments";
+import { DraftHighlight } from "./components/DraftHighlight";
+import { removeMention } from "./components/mentionHighlight";
 import { SlashAutocomplete } from "./components/SlashAutocomplete";
 import {
   detectMentionQuery,
@@ -1095,6 +1098,23 @@ export const App: React.FC = () => {
     });
   }, [activeEditor, input]);
 
+  // Take an attachment back out of the draft, from its chip's "×". The draft is the
+  // record of what the turn attaches, so detaching is an edit of the text.
+  const detachMention = useCallback(
+    (start: number, end: number) => {
+      const { text, caret } = removeMention(input, start, end);
+      setInput(text);
+      requestAnimationFrame(() => {
+        const t = textareaRef.current;
+        if (t) {
+          t.focus();
+          t.setSelectionRange(caret, caret);
+        }
+      });
+    },
+    [input]
+  );
+
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
       // While the slash-command dropdown is open, arrows/Enter/Tab/Esc drive it.
@@ -1694,6 +1714,7 @@ export const App: React.FC = () => {
               </button>
             </div>
           )}
+          <DraftAttachments text={input} onRemove={detachMention} />
           <div className="input-row">
           {mentionOpen && (
             <MentionAutocomplete
@@ -1711,6 +1732,8 @@ export const App: React.FC = () => {
               onHover={setSlashIndex}
             />
           )}
+          <div className="chat-input-wrap">
+          <DraftHighlight text={input} inputRef={textareaRef} />
           <textarea
             ref={textareaRef}
             className="chat-input"
@@ -1740,6 +1763,7 @@ export const App: React.FC = () => {
             }}
             onKeyDown={handleKeyDown}
           />
+          </div>
           {/* Right-hand column: who answers the approval cards, directly above the
               button that sends the work off — the mode is switched mid-run, so it
               belongs where the user already is rather than behind a settings gear. */}

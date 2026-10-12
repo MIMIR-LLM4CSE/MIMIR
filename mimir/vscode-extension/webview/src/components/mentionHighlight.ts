@@ -27,6 +27,9 @@ export type MentionSegment =
       endLine?: number;
       /** Whether `target` reads as a workspace path, i.e. something to open. */
       isFile: boolean;
+      /** Where `text` sits in the message — what the composer removes to detach it. */
+      start: number;
+      end: number;
     };
 
 /**
@@ -90,10 +93,32 @@ export function splitMentionSegments(text: string): MentionSegment[] {
       line: range ? Number(range[2]) : undefined,
       endLine: range && range[3] ? Number(range[3]) : range ? Number(range[2]) : undefined,
       isFile: looksLikeFile(target),
+      start: i,
+      end: i + 1 + token.length,
     });
     prose = trailing;
     i = end;
   }
   pushProse();
   return out;
+}
+
+/**
+ * Take the mention spanning [start, end) out of `text`, with the caret to put back.
+ *
+ * Detaching is editing the message, so it goes through the text the user typed rather
+ * than through a list kept beside it: there is one source for what a turn attaches, and
+ * it is the box. One of the spaces that flanked the mention goes with it, so removing
+ * one from the middle of a sentence does not leave a double space behind.
+ */
+export function removeMention(
+  text: string,
+  start: number,
+  end: number
+): { text: string; caret: number } {
+  let from = start;
+  let to = end;
+  if (text[to] === " " || text[to] === "\t") to += 1;
+  else if (from > 0 && (text[from - 1] === " " || text[from - 1] === "\t")) from -= 1;
+  return { text: text.slice(0, from) + text.slice(to), caret: from };
 }

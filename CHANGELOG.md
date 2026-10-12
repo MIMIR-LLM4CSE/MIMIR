@@ -80,14 +80,16 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   while nothing polled it.
 
 ### Changed
-- **A sent message marks what it attached, and a file mention opens the file.** The
-  `@`-mentions in your own message were plain prose, which is where they were hardest to
-  find again — and they are the part of a turn you come back to: which file, which lines.
-  Each one is now drawn as a chip, and a file one is a button: it opens the file in an
-  editor tab, at the attached line range when the mention named one. A resource mention
-  is marked the same way but stays text — it addresses a server, not a path. The reading
-  of what counts as a mention is the server's own, so the chips are exactly the tokens
-  the agent will resolve.
+- **What a message attaches is marked, in the box and once sent, and a file mention opens
+  the file.** The `@`-mentions were plain prose, which is where they were hardest to find
+  again — and they are the part of a turn you come back to: which file, which lines. In a
+  sent message each one is now drawn as a chip, and a file one is a button that opens the
+  file in an editor tab, at the attached line range when the mention named one. While you
+  type, the mentions are tinted inside the input itself, and the files the message will
+  attach are listed as chips above it: a click opens one, "×" takes it back out of the
+  draft. A resource mention is marked the same way everywhere but is never a link — it
+  addresses a server, not a path. The reading of what counts as a mention is the server's
+  own, so what is marked is exactly what the agent will resolve.
 
 ## [1.5.0] — 2026-10-12
 

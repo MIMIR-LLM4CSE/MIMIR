@@ -187,6 +187,8 @@ webview/src/
     │                            resources, then the workspace files the host ranked
     ├── MentionText.tsx / mentionHighlight.ts       ← the `@`-attachments of a sent
     │                            message, drawn as chips; a file one opens the file
+    ├── DraftHighlight.tsx     ← the mention tints drawn behind the input's own text
+    ├── DraftAttachments.tsx   ← what the draft will attach, as chips above the input
     ├── SlashAutocomplete.tsx  / slashUtils.ts      ← the `/` command dropdown
     ├── subAgentUtils.ts       ← sub-agent row grouping
     ├── RunProgressDock.tsx    ← runs still going whose rows have scrolled away, as small
@@ -229,6 +231,24 @@ Both are wired identically in `App.tsx`: `syncMention`/`syncSlash` (on change/se
 `pickMention`/`pickSlash`, and a shared `handleKeyDown` (Arrow/Enter/Tab/Esc) that routes
 to whichever dropdown is open. Helper logic lives outside React so it is unit-tested with
 vitest (`mentionUtils.test.ts`, `slashUtils.test.ts`, `fileIndex.test.ts`).
+
+A mention is marked while it is still being typed, too. A `<textarea>` holds characters
+and not elements, so nothing inside it can be coloured — and the input has to stay a
+textarea, because the caret arithmetic behind both dropdowns, the history browse and the
+steer path is `value` + `selectionStart`, which a contenteditable does not have. So
+`DraftHighlight.tsx` draws the draft a second time in a div underneath, paints the
+mentions there, and the textarea sits on top with a transparent background. The mirror
+takes its box from the textarea's own `clientWidth`/`clientHeight` (a `ResizeObserver`
+plus the scroll event keep them in step) because those exclude the scrollbar: a width
+that disagrees by a pixel wraps a line early and slides every tint below it. Nothing is
+rendered when the draft carries no mention.
+
+A textarea's text cannot be clicked through to anything either, so `DraftAttachments.tsx`
+lists the same mentions as chips above the input: a file one opens the file, "×" removes
+the token from the draft (`mentionHighlight.removeMention`, which takes one flanking space
+with it). The chips are derived from the text on every keystroke and own no state — the
+message is the only record of what it attaches, so a hand-typed path and one picked from
+the dropdown behave alike.
 
 Once sent, the mentions are marked in the bubble rather than left in the prose: what was
 attached is the part of a message the user comes back to, and as plain text it is the

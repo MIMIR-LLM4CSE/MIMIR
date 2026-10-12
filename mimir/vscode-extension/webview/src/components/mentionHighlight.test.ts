@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { looksLikeFile, splitMentionSegments } from "./mentionHighlight";
+import { looksLikeFile, removeMention, splitMentionSegments } from "./mentionHighlight";
 
 describe("looksLikeFile", () => {
   it("accepts paths and bare file names", () => {
@@ -31,6 +31,8 @@ describe("splitMentionSegments", () => {
         line: undefined,
         endLine: undefined,
         isFile: true,
+        start: 8,
+        end: 19,
       },
       { kind: "text", text: " please" },
     ]);
@@ -56,6 +58,8 @@ describe("splitMentionSegments", () => {
         line: undefined,
         endLine: undefined,
         isFile: true,
+        start: 4,
+        end: 14,
       },
       { kind: "text", text: "." },
     ]);
@@ -79,5 +83,32 @@ describe("splitMentionSegments", () => {
   it("handles several mentions in a row", () => {
     const segs = splitMentionSegments("@a.py @b.py");
     expect(segs.filter((s) => s.kind === "mention")).toHaveLength(2);
+  });
+});
+
+describe("removeMention", () => {
+  const only = (text: string) => {
+    const seg = splitMentionSegments(text).find((s) => s.kind === "mention");
+    if (!seg || seg.kind !== "mention") throw new Error("no mention in " + text);
+    return removeMention(text, seg.start, seg.end);
+  };
+
+  it("takes the mention and one flanking space out", () => {
+    expect(only("look at @src/foo.py please")).toEqual({
+      text: "look at please",
+      caret: 8,
+    });
+  });
+
+  it("leaves no leading space when the mention opened the message", () => {
+    expect(only("@src/foo.py fix it")).toEqual({ text: "fix it", caret: 0 });
+  });
+
+  it("closes the gap when the mention ends the message", () => {
+    expect(only("fix @src/foo.py")).toEqual({ text: "fix", caret: 3 });
+  });
+
+  it("keeps the line range out with the rest of the token", () => {
+    expect(only("@src/foo.py:10-20 here")).toEqual({ text: "here", caret: 0 });
   });
 });

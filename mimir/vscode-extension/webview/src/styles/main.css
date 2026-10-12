@@ -2042,21 +2042,120 @@ button.ctx-mention:focus-visible {
   font-weight: 700;
 }
 
-.chat-input {
-  flex: 1;
-  background: var(--bg-input);
-  color: var(--fg);
+/* ── The draft's attachments ───────────────────────────────────────────────────
+   A chip per "@"-mention in the box: the file name (with its line range) opens the
+   file, "×" takes the mention back out of the text. */
+.draft-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  padding: var(--sp-2) 10px 0;
+}
+
+.draft-chip {
+  display: inline-flex;
+  align-items: stretch;
+  max-width: 100%;
   border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface-1, var(--bg-input));
+  overflow: hidden;
+  transition: border-color 0.15s;
+}
+
+.draft-chip:hover { border-color: var(--accent); }
+
+.draft-chip-open,
+.draft-chip-remove {
+  background: none;
+  border: none;
+  color: var(--fg-dim);
+  font-size: 0.85em;
+  cursor: pointer;
+  padding: 3px 4px 3px 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+}
+
+.draft-chip-open:disabled { cursor: default; }
+.draft-chip-open:not(:disabled):hover { color: var(--fg); text-decoration: underline; }
+
+.draft-chip-name {
+  font-family: var(--mono);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.draft-chip-remove {
+  padding: 3px 7px 3px 4px;
+  font-size: 1em;
+  line-height: 1;
+}
+
+.draft-chip-remove:hover { color: var(--fg); }
+
+/* ── The input box and the mention tints drawn behind its text ────────────────
+   The textarea is transparent and sits on a mirror of its own text (see
+   DraftHighlight.tsx), which paints the mentions and nothing else. Every metric
+   below the two share must stay shared: a disagreement wraps one of them a word
+   early and slides the tints off the words they belong to. */
+.chat-input-wrap {
+  position: relative;
+  flex: 1;
+  display: flex;
+  min-width: 0;
+  background: var(--bg-input);
   border-radius: 6px;
+}
+
+.chat-input-mirror {
+  position: absolute;
+  top: 1px;
+  left: 1px;
+  overflow: hidden;
+  pointer-events: none;
+  color: transparent;
+  /* The width set from the textarea's clientWidth includes its padding. */
+  box-sizing: border-box;
+}
+
+.chat-input,
+.chat-input-mirror {
   padding: 8px 10px;
   font-family: var(--font);
   font-size: var(--font-size);
-  resize: none;
   line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  word-break: normal;
+  tab-size: 4;
+}
+
+.chat-input-mark {
+  background: var(--vscode-editor-findMatchHighlightBackground, rgba(14, 99, 156, 0.35));
+  color: transparent;
+  border-radius: var(--radius-sm);
+}
+
+/* A resource mention is marked a shade lighter: it addresses a server, not a path. */
+.chat-input-mark--plain { opacity: 0.6; }
+
+.chat-input {
+  flex: 1;
+  width: 100%;
+  background: transparent;
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  resize: none;
   outline: none;
   min-height: 40px;
   max-height: 160px;
   transition: border-color 0.15s;
+  position: relative;
 }
 
 /* Mode colour only on focus — the resting textarea keeps the neutral border. */
