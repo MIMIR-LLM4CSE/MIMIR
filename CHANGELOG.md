@@ -13,7 +13,7 @@ the server of the same checkout, so the two always move together.
 How to release is in [CONTRIBUTING.md](CONTRIBUTING.md#releasing). The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased]
+## [1.6.0] — 2026-10-12
 
 ### Added
 - **The "@" menu lists the workspace's files.** Attaching a file meant typing its path
@@ -25,6 +25,33 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   directory. The list comes from the extension host, which is the only side that can see
   the workspace: one scan per window, kept until a file appears or disappears, with the
   dependency and cache trees (`node_modules`, `__pycache__`, `.venv`, …) left out.
+- **Slurm schedulers behind `ssh`, found on their own — and more than one at a time.** On a
+  login node where `sbatch` is not installed, every cluster tool answered "not available"
+  and the work went out through a hand-written `ssh host "sbatch …"` instead — which is
+  where the untracked submissions came from in the first place. MIMIR now notices a host
+  the first time one of your own `ssh host "squeue …"` calls succeeds. Nothing to
+  configure: the call that teaches it is the one you were already making, and it is read
+  from the shell validator's own parse plus the exit status rather than from the text of
+  the command. ssh's own settings stay in `~/.ssh/config`, where they belong.
+- **`slurm_schedulers()` — every scheduler a session can submit to, and a choice made per
+  job.** A login node reaches its own scheduler and whatever `ssh` gets to, and one
+  conversation uses several: a reference run on the local scheduler while a sweep goes out
+  to another cluster. So every cluster tool now takes `scheduler=` (`'local'`, or a
+  hostname), learning a host *adds* a destination instead of replacing one, and a job
+  submitted to any of them is watched and wakes you the same way. With two reachable, a
+  submission that names none is refused with both listed rather than sent to one by
+  default: which cluster a job belongs on follows the partitions and GPUs it needs and the
+  filesystem holding its inputs, and that is a decision to make or to ask about, not to
+  make silently. `slurm_schedulers(add=…)` records a host after checking `sbatch` answers
+  there; `forget=` drops one.
+- **A job is found wherever it is running.** The scheduler a job went to is written beside
+  its id, but only as a cache: a poll that has no record — a job adopted from a launcher's
+  output, a watcher re-armed from disk after a window reload, which has nothing but the id
+  — asks every reachable scheduler and writes down whichever knew, so the next poll is one
+  call again. Descriptors are keyed by host *and* id, because two clusters number
+  independently: the same number is your production run on one and somebody else's sweep on
+  the other, and keyed by id alone the first vouched for the second — reported as watched
+  while nothing polled it.
 
 ### Changed
 - **A sent message marks what it attached, and a file mention opens the file.** The
@@ -73,33 +100,14 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   says where. And `salloc_submit` is refused outright when the scheduler it names is
   remote, rather than taking an allocation it cannot give a terminal to and handing it
   straight back.
-- **Slurm schedulers behind `ssh`, found on their own — and more than one at a time.** On a
-  login node where `sbatch` is not installed, every cluster tool answered "not available"
-  and the work went out through a hand-written `ssh host "sbatch …"` instead — which is
-  where the untracked submissions came from in the first place. MIMIR now notices a host
-  the first time one of your own `ssh host "squeue …"` calls succeeds. Nothing to
-  configure: the call that teaches it is the one you were already making, and it is read
-  from the shell validator's own parse plus the exit status rather than from the text of
-  the command. ssh's own settings stay in `~/.ssh/config`, where they belong.
-- **`slurm_schedulers()` — every scheduler a session can submit to, and a choice made per
-  job.** A login node reaches its own scheduler and whatever `ssh` gets to, and one
-  conversation uses several: a reference run on the local scheduler while a sweep goes out
-  to another cluster. So every cluster tool now takes `scheduler=` (`'local'`, or a
-  hostname), learning a host *adds* a destination instead of replacing one, and a job
-  submitted to any of them is watched and wakes you the same way. With two reachable, a
-  submission that names none is refused with both listed rather than sent to one by
-  default: which cluster a job belongs on follows the partitions and GPUs it needs and the
-  filesystem holding its inputs, and that is a decision to make or to ask about, not to
-  make silently. `slurm_schedulers(add=…)` records a host after checking `sbatch` answers
-  there; `forget=` drops one.
-- **A job is found wherever it is running.** The scheduler a job went to is written beside
-  its id, but only as a cache: a poll that has no record — a job adopted from a launcher's
-  output, a watcher re-armed from disk after a window reload, which has nothing but the id
-  — asks every reachable scheduler and writes down whichever knew, so the next poll is one
-  call again. Descriptors are keyed by host *and* id, because two clusters number
-  independently: the same number is your production run on one and somebody else's sweep on
-  the other, and keyed by id alone the first vouched for the second — reported as watched
-  while nothing polled it.
+- **A Slurm controller behind `ssh`, found on its own.** On a login node where `sbatch` is
+  not installed, every cluster tool answered "not available" and the work went out through
+  a hand-written `ssh host "sbatch …"` instead — which is where the untracked submissions
+  came from in the first place. MIMIR now notices the host the first time one of your own
+  `ssh host "squeue …"` calls succeeds, and sends its own cluster commands there from then
+  on. Nothing to configure: the call that teaches it is the one you were already making,
+  and it is read from the shell validator's own parse plus the exit status rather than from
+  the text of the command. ssh's own settings stay in `~/.ssh/config`, where they belong.
 
 ### Fixed
 - **A run taken back is now a run that ends with the window.** Reopening a workspace on a
