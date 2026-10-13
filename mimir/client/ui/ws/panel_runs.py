@@ -17,7 +17,11 @@ those keys simply never claims anything.
 
 from __future__ import annotations
 
+import os
 from typing import Any
+
+# The workspace registry servers/_shared/slurm_site.py appends to, one host per line.
+_HOSTS_FILE = "slurm_hosts"
 
 # A run nothing claimed is not dropped: it goes back to the caller for the flat list the
 # panel already shows, because a run the user cannot see is worse than one shown out of
@@ -71,6 +75,31 @@ def _badge(run: dict) -> dict:
     if nodes:
         badge["nodes"] = nodes
     return badge
+
+
+def recorded_hosts_sections(state_dir: str) -> list[dict]:
+    """The Cluster section as the workspace registry has it, before any server is up.
+
+    Names only: what each host is made of is a server's probe, and the drawer asks again
+    once the agent is ready. Ids match the server's so open rows survive the swap.
+    """
+    try:
+        with open(os.path.join(state_dir, _HOSTS_FILE)) as fh:
+            names = list(dict.fromkeys(line.strip() for line in fh if line.strip()))
+    except OSError:
+        return []
+    if not names:
+        return []
+    return [{
+        "section": "Cluster",
+        "title": "Cluster",
+        "lines": [],
+        "groups": [{"id": f"host:{name}", "label": name, "host": name, "local": False,
+                    "lines": [{"label": "reached", "value": f"over ssh to {name}"}]}
+                   for name in names],
+        "detail": "Recorded for this workspace. Hardware appears once this "
+                  "conversation's agent is up.",
+    }]
 
 
 def attach_runs(sections: list[dict], runs: list[dict]) -> tuple[list[dict], list[dict]]:

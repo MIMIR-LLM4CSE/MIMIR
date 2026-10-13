@@ -413,7 +413,8 @@ def test_a_node_kind_is_named_by_its_nodes_and_lists_its_specs():
     assert values["arch"] == "x86_64"
     assert values["cpus"] == "64 (2 sockets × 32 cores × 1 threads)"
     assert values["gpu"] == "4× a100"
-    assert values["mem"] == "503 GB"
+    assert values["cpu mem"] == "503 GB"
+    assert values["gpu mem"] == "unknown until a node is profiled"
     assert values["partitions"] == "gpu"
     assert values["nodes"] == "10"
 
@@ -442,13 +443,17 @@ def test_a_profiled_kind_carries_what_only_the_node_could_say():
                                    "simd": {"avx2": True, "avx512f": True}},
                            "march": {"native": "znver3"},
                            "os": {"id": "rhel", "version": "8.10", "glibc": "2.28"},
-                           "gpu": {"devices": [{"name": "A100", "compute_cap": "8.0"}]}}}
+                           "gpu": {"devices": [{"name": "A100", "memory": "81920 MiB",
+                                                "compute_cap": "8.0"}]}}}
     kind = _tree(["hpc1"], {"hpc1": _DIGEST}, {"gpu001": profile})[0]["groups"][0]
     values = {line["label"]: line["value"] for line in kind["lines"]}
     assert values["cpu"] == "AMD EPYC 7763"
     assert values["-march=native"] == "znver3"
     assert values["os"] == "rhel 8.10 · glibc 2.28"
     assert values["compute capability"] == "8.0"
+    assert values["gpu mem"] == "80 GB per GPU"
+    labels = [line["label"] for line in kind["lines"]]
+    assert labels.index("gpu mem") == labels.index("cpu mem") + 1
     assert "Profiled on gpu001, 2026-10-02" in kind["detail"]
     assert "action" not in kind          # nothing left to ask for
     assert kind.get("state") != "warn"
@@ -474,6 +479,17 @@ def _sections_with_hosts():
                   "groups": [{"id": "host:hpc1/kind:bb", "label": "4× a100",
                               "nodes": ["gpu001", "gpu007"]}]},
              ]}]
+
+
+def test_recorded_clusters_are_shown_before_any_agent_is_up(tmp_path):
+    """The registry is the workspace's; the first query should not be what reveals it."""
+    from mimir.client.ui.ws.panel_runs import recorded_hosts_sections
+    assert recorded_hosts_sections(str(tmp_path)) == []
+    (tmp_path / "slurm_hosts").write_text("hpc1\n\nhpc2\nhpc1\n")
+    [section] = recorded_hosts_sections(str(tmp_path))
+    assert section["section"] == "Cluster"
+    assert [g["id"] for g in section["groups"]] == ["host:hpc1", "host:hpc2"]
+    assert all(g["host"] == g["label"] for g in section["groups"])
 
 
 def test_a_shell_run_lands_on_this_machine():

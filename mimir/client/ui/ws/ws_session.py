@@ -26,7 +26,7 @@ from ...query_engine.history import (
 from .ws_worker import _AgentWorker
 from .turn_commit import commit_answer, turn_messages
 from .transcript_log import read_since
-from .panel_runs import attach_runs
+from .panel_runs import attach_runs, recorded_hosts_sections
 from .job_scan import (
     establish_baseline,
     has_baseline,
@@ -3365,6 +3365,10 @@ class _Session:
             self._schedule(self._ensure_worker())
         sections = await asyncio.wrap_future(
             self.worker.panel_sections(force=bool(msg.get("refresh"))))
+        agent_ready = self.worker.agent_ready()
+        if not agent_ready:
+            from ...config import constants
+            sections = recorded_hosts_sections(constants.STATE_DIR)
         # The one place both halves exist: what a cluster is made of came from a
         # server, what is running on it is this client's own watcher state. A run that
         # no group claimed still travels, under `runs`, for the flat list — a run the
@@ -3375,7 +3379,7 @@ class _Session:
             "type": "panel_report",
             # Whether there was anything to ask. An empty section list from a
             # conversation with no agent is not "no clusters here".
-            "agent_ready": self.worker.agent_ready(),
+            "agent_ready": agent_ready,
             "subagent_level": self.worker.get_subagent_level(),
             "subagents": cards,
             "running": sum(1 for c in cards if c.get("state") == "running"),

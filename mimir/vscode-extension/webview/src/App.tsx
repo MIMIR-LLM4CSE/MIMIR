@@ -530,10 +530,11 @@ export const App: React.FC = () => {
         setSubAgentLevel(msg.subagent_level);
         setSubAgents(msg.subagents ?? []);
         setRunningSubAgents(msg.running ?? 0);
-        // A conversation whose agent is not up yet carries no sections — the servers
-        // that fill them are not running. What is on screen stays rather than being
-        // blanked: the drawer asks again the moment the agent answers for itself.
-        if (msg.agent_ready !== false) setPanelSections(msg.sections ?? []);
+        // Before the agent is up a report carries at most the recorded clusters; an
+        // empty one keeps what is on screen, and the drawer asks again on `ready`.
+        if (msg.agent_ready !== false || (msg.sections?.length ?? 0) > 0) {
+          setPanelSections(msg.sections ?? []);
+        }
         return;
 
       case "subagent":

@@ -2131,8 +2131,11 @@ def _node_names_label(kind: dict) -> str:
     return ", ".join(names) + (f" +{more}" if more > 0 else "")
 
 
-def _kind_spec_lines(kind: dict) -> list[dict]:
-    """What Slurm says a node of this kind is, one fact per line."""
+def _kind_spec_lines(kind: dict, gpu_mem: str = "") -> list[dict]:
+    """What Slurm says a node of this kind is, one fact per line.
+
+    *gpu_mem* comes from a probe: Slurm's gres names GPUs but never their memory.
+    """
     lines = [{"label": "arch", "value": kind.get("arch") or "?"}]
     if kind.get("cpus"):
         value = str(kind["cpus"])
@@ -2147,7 +2150,10 @@ def _kind_spec_lines(kind: dict) -> list[dict]:
         lines.append({"label": "gres", "value": str(kind["gres"])})
     mem_mb = kind.get("mem_mb")
     if isinstance(mem_mb, (int, float)) and mem_mb:
-        lines.append({"label": "mem", "value": f"{round(mem_mb / 1024)} GB"})
+        lines.append({"label": "cpu mem", "value": f"{round(mem_mb / 1024)} GB"})
+    if gpu:
+        lines.append({"label": "gpu mem",
+                      "value": gpu_mem or "unknown until a node is profiled"})
     if kind.get("partitions"):
         lines.append({"label": "partitions", "value": ", ".join(kind["partitions"])})
     if kind.get("features"):
@@ -2155,6 +2161,12 @@ def _kind_spec_lines(kind: dict) -> list[dict]:
     if kind.get("nodes_total"):
         lines.append({"label": "nodes", "value": str(kind["nodes_total"])})
     return lines
+
+
+def _gpu_mem_label(raw: str) -> str:
+    """nvidia-smi's ``81920 MiB`` as ``80 GB per GPU``; anything else as it came."""
+    m = re.fullmatch(r"\s*(\d+)\s*MiB\s*", raw)
+    return f"{round(int(m.group(1)) / 1024)} GB per GPU" if m else raw
 
 
 def _kind_id(host: str, kind: dict) -> str:
@@ -2201,6 +2213,9 @@ def _profiled_kind_lines(kind: dict, host: str) -> tuple[list[dict], str]:
                 value += f" · glibc {node_os['glibc']}"
             lines.append({"label": "os", "value": value})
         devices = (profile.get("gpu") or {}).get("devices") or []
+        if devices and devices[0].get("memory"):
+            lines.append({"label": "gpu mem",
+                          "value": _gpu_mem_label(str(devices[0]["memory"]))})
         if devices and devices[0].get("compute_cap"):
             lines.append({"label": "compute capability",
                           "value": str(devices[0]["compute_cap"])})
@@ -2265,10 +2280,13 @@ def _host_tree() -> list[dict]:
         kinds = []
         for kind in digest["node_types"]:
             profiled, detail = _profiled_kind_lines(kind, host)
+            # GPU memory sits with the other memory line, not among the probe's lines.
+            gpu_mem = next((l["value"] for l in profiled if l["label"] == "gpu mem"), "")
+            profiled = [l for l in profiled if l["label"] != "gpu mem"]
             entry = {
                 "id": _kind_id(host, kind),
                 "label": _node_names_label(kind),
-                "lines": _kind_spec_lines(kind) + profiled,
+                "lines": _kind_spec_lines(kind, gpu_mem) + profiled,
                 "nodes": list(kind.get("example_nodes") or []),
             }
             if detail:
