@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
@@ -43,7 +44,31 @@ TERMINAL = frozenset({"done", "crashed", "unknown"})
 # change on this side. Names only, never a tool: ``nodes``/``scheduler`` come from the
 # cluster ops, ``pid``/``command`` from the shell one, and neither knows about the other.
 STATUS_FIELDS = ("state", "phase", "percent", "scheduler", "nodes", "node", "pid",
-                 "command", "elapsed_s", "job_id")
+                 "command", "elapsed_s", "job_id", "log_tail")
+
+# Signs in a running job's last lines that it went wrong while still running. Names a
+# category, never a tool: whatever the job is, these read the same in its output.
+_LOG_ALERTS = (
+    ("non-finite value", re.compile(r"(?<![\w.])[-+]?(?:nan|inf(?:inity)?)(?!\w)", re.I)),
+    ("overflow", re.compile(r"\boverflow\b", re.I)),
+    ("traceback", re.compile(r"Traceback \(most recent call last\)")),
+    ("fatal signal", re.compile(
+        r"segmentation fault|floating point exception|bus error|core dumped", re.I)),
+    ("out of memory", re.compile(r"out of memory|oom-kill|MemoryError|std::bad_alloc",
+                                 re.I)),
+)
+
+
+def log_alerts(lines: Any) -> dict[str, str]:
+    """``{category: first matching line}`` for the alert signs in *lines*."""
+    found: dict[str, str] = {}
+    if not isinstance(lines, list):
+        return found
+    for line in lines:
+        for name, pattern in _LOG_ALERTS:
+            if name not in found and pattern.search(str(line)):
+                found[name] = str(line)
+    return found
 
 
 def first_line(value: Any) -> str:

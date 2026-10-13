@@ -98,6 +98,12 @@ def read_tail(path: str, max_bytes: int = TAIL_BYTES) -> str:
     return rest.decode("utf-8", errors="replace")
 
 
+def last_lines(path: str, count: int = 5, width: int = 200) -> list[str]:
+    """The last *count* non-blank lines of *path*, each cut to *width*. [] if unreadable."""
+    lines = [ln.rstrip() for ln in read_tail(path, 4 * 1024).splitlines() if ln.strip()]
+    return [ln if len(ln) <= width else ln[:width - 1] + "…" for ln in lines[-count:]]
+
+
 def from_file(path: str, drop_finished: bool = True) -> tuple[float, str] | None:
     """:func:`parse` applied to the end of the log at *path*."""
     return parse(read_tail(path), drop_finished)

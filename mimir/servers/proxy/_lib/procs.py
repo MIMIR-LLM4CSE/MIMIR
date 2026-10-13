@@ -389,6 +389,10 @@ def _run_state(run_dir: str) -> dict:
     }
     if build_job_id is not None:
         out["build_slurm_job_id"] = build_job_id
+    if state == "running":
+        tail = build_progress.last_lines(_log_path(run_dir))
+        if tail:
+            out["log_tail"] = tail
     return out
 
 

@@ -1824,7 +1824,63 @@ class CheckinScheduleTests(unittest.IsolatedAsyncioTestCase):
         self._watch("j1")
         slept = await self._run_cycle(ticks=4)
         self.assertEqual(slept, [30.0, 120.0, 600.0, 1800.0])
-        self.assertEqual(len(self._emitted()), 3, "one bulletin per point reached")
+        self.assertEqual(len(self._emitted()), 1, "an unchanged run is reported once")
+
+    async def test_a_bulletin_with_nothing_new_is_not_sent(self) -> None:
+        """Many jobs, each re-reported as healthy every point, is noise."""
+        watch = self._watch("j1", {"state": "running", "phase": "compile",
+                                   "elapsed_s": 10, "at": 1.0})
+        slept: list[float] = []
+
+        async def _sleep(delay: float) -> None:
+            slept.append(delay)
+            n = len(slept)
+            # The clock moves every tick; the phase only at the third.
+            watch.status = {"state": "running",
+                            "phase": "link" if n >= 3 else "compile",
+                            "elapsed_s": 10 * n, "at": float(n)}
+            if n >= 5:
+                self.worker._bg_jobs.clear()
+
+        from unittest import mock
+        with mock.patch.object(self.ws_worker.asyncio, "sleep", _sleep):
+            await self.worker._checkin_cycle("s1")
+        phases = [ev["jobs"][0]["phase"] for ev in self._emitted()]
+        self.assertEqual(phases, ["compile", "link"])
+
+    async def test_a_job_ending_is_news(self) -> None:
+        self._watch("jA")
+        b = self._watch("jB")
+        slept: list[float] = []
+
+        async def _sleep(delay: float) -> None:
+            slept.append(delay)
+            if len(slept) == 2:
+                b.task.cancel()
+            if len(slept) >= 3:
+                self.worker._bg_jobs.clear()
+
+        from unittest import mock
+        with mock.patch.object(self.ws_worker.asyncio, "sleep", _sleep):
+            await self.worker._checkin_cycle("s1")
+        keys = [{j["job_key"] for j in ev["jobs"]} for ev in self._emitted()]
+        self.assertEqual(keys, [{"jA", "jB"}, {"jA"}])
+
+    async def test_new_log_lines_alone_are_not_news(self) -> None:
+        watch = self._watch("j1", {"state": "running", "log_tail": ["it 1 res=0.5"]})
+        slept: list[float] = []
+
+        async def _sleep(delay: float) -> None:
+            slept.append(delay)
+            watch.status = {"state": "running",
+                            "log_tail": [f"it {len(slept)} res=0.{len(slept)}"]}
+            if len(slept) >= 4:
+                self.worker._bg_jobs.clear()
+
+        from unittest import mock
+        with mock.patch.object(self.ws_worker.asyncio, "sleep", _sleep):
+            await self.worker._checkin_cycle("s1")
+        self.assertEqual(len(self._emitted()), 1)
 
     async def test_then_it_reports_hourly_for_as_long_as_the_run_lasts(self) -> None:
         """A schedule with a last point goes quiet exactly where the stakes are highest."""
@@ -1845,7 +1901,7 @@ class CheckinScheduleTests(unittest.IsolatedAsyncioTestCase):
         self._watch("jC", {"state": "running"})
         await self._run_cycle(ticks=4)
         events = self._emitted()
-        self.assertEqual(len(events), 3)
+        self.assertEqual(len(events), 1)
         for ev in events:
             self.assertEqual({j["job_key"] for j in ev["jobs"]}, {"jA", "jB", "jC"})
 
@@ -1907,6 +1963,39 @@ class CheckinScheduleTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(job["phase"], "linking")
         self.assertEqual(job["percent"], 90)
         self.assertEqual(job["state"], "running")
+
+    async def test_a_non_finite_value_in_the_log_is_an_alert_reported_at_once(self) -> None:
+        """A run that blew up and keeps running must not wait for the next point."""
+        from unittest import mock
+        from mimir.client.query_engine import job_poll
+        self._watch("j1")
+        self.worker._checkin_last = None
+        ticks = [["it 10 residual = 1.2e-3"], ["it 11 residual = inf"],
+                 ["it 12 residual = inf"], ["it 13 residual = nan"]]
+
+        async def _status(tool, args, record_observations=False):
+            if not ticks:
+                return {"state": "done"}
+            return {"state": "running", "log_tail": ticks.pop(0)}
+
+        async def _nosleep(_delay: float) -> None:
+            return None
+
+        self.worker._agent = type("A", (), {"_run_tool": staticmethod(_status)})()
+        with mock.patch.object(job_poll.asyncio, "sleep", _nosleep), \
+             mock.patch.object(job_poll, "read_summary", mock.AsyncMock(return_value={})):
+            await self.worker._poll_to_completion("j1", {"status_op": {"tool": "x"}}, "s1")
+        checkins = [e for e in self._emitted() if e["type"] == "job_checkin"]
+        self.assertEqual(len(checkins), 1, "one alert, reported once")
+        alerts = checkins[0]["jobs"][0]["alerts"]
+        self.assertEqual(list(alerts), ["non-finite value"])
+        self.assertIn("inf", alerts["non-finite value"])
+
+    def test_alert_detection_ignores_ordinary_words(self) -> None:
+        from mimir.client.query_engine.job_poll import log_alerts
+        self.assertEqual(log_alerts(["INFO: step 3", "information", "infer x"]), {})
+        self.assertEqual(set(log_alerts(["loss=-inf", "x = NaN"])), {"non-finite value"})
+        self.assertIn("traceback", log_alerts(["Traceback (most recent call last):"]))
 
 
 class CheckinDeliveryTests(unittest.TestCase):

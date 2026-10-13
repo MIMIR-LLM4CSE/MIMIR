@@ -469,6 +469,9 @@ def state(job_key: str, run_dir: str = "") -> dict:
         progress = build_progress.from_file(progress_path(job_key, run_dir))
         if progress:
             payload["percent"], payload["phase"] = progress
+        tail = build_progress.last_lines(progress_path(job_key, run_dir))
+        if tail:
+            payload["log_tail"] = tail
         return payload
     if rc_raw.isdigit() or (rc_raw.startswith("-") and rc_raw[1:].isdigit()):
         rc = int(rc_raw)

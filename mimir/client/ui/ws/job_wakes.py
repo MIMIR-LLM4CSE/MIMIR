@@ -180,35 +180,40 @@ def checkin_text(ev: dict) -> str:
 
     Under the same rule as :func:`wake_text` — it names no tool of any server and
     interprets nothing, passing on whatever the status op chose to report. What it
-    adds is a ceiling on the answer. A check-in exists so a run that went wrong in
-    its third minute is not discovered in its hundred-and-twentieth; it is not an
-    occasion to restate the plan, re-answer the question the job was launched for,
-    or go and look at something. Said plainly here because the model has no other
-    way to tell this turn apart from a completion wake, which wants the opposite.
+    adds is a ceiling on the answer: a check-in exists so a run that went wrong early
+    is not discovered at its end, not to restate the plan or go and look at something.
 
     Reading the run is still open to it where the status says something is off: the
     dispatch guard refuses the *status* op of a watched job (this event already
     carries that answer) and leaves the summary op alone.
     """
-    jobs = [j for j in (ev.get("jobs") or []) if isinstance(j, dict)]
     lines = []
-    for job in jobs:
+    for job in (ev.get("jobs") or []):
+        if not isinstance(job, dict):
+            continue
         key = job.get("job_key", "?")
         kind = f" ({job['kind']})" if job.get("kind") else ""
-        state = job.get("state") or "running"
-        bits = [state]
+        bits = [job.get("state") or "running"]
         if job.get("phase"):
             bits.append(f"phase={job['phase']}")
         if isinstance(job.get("percent"), (int, float)):
             bits.append(f"{job['percent']}%")
         lines.append(f"- '{key}'{kind}: {', '.join(bits)}")
+        alerts = job.get("alerts")
+        if isinstance(alerts, dict):
+            for name, line in alerts.items():
+                lines.append(f"  ALERT ({name}): {line}")
+        tail = job.get("log_tail")
+        if isinstance(tail, list) and tail:
+            lines.append("  last log lines:")
+            lines.extend(f"    {ln}" for ln in tail)
     body = "\n".join(lines) or "- (no status recorded yet)"
     return (
         "Background check-in. Still running in this conversation:\n"
         f"{body}\n"
         "If this looks healthy, say so in ONE short line and stop — no tool call, "
         "no restating the plan, and do not re-answer the question these runs were "
-        "launched for. If it does not — no progress since the last check, a status "
-        "that stopped being readable, a phase that should have moved on by now — "
-        "say what is wrong and what you are doing about it."
+        "launched for. If it does not — an ALERT, log lines showing the run going "
+        "wrong, a status that stopped being readable, a phase that should have moved "
+        "on by now — say what is wrong and what you are doing about it."
     )

@@ -83,6 +83,7 @@ from slurm_nodes import (
     parse_sinfo_nodes as _parse_sinfo_nodes,
 )
 from slurm_script import node_python_lines, sbatch_header, validate_target
+import build_progress
 import cpu_facts
 
 mcp = FastMCP(
@@ -1047,6 +1048,10 @@ def slurm_job_status(job_id: str, scheduler: str = "") -> dict:
         log = _recorded_log(job_dir)
         if log:
             payload["log"] = log
+            if state == "running":
+                tail = build_progress.last_lines(log)
+                if tail:
+                    payload["log_tail"] = tail
         if from_session:
             payload["submitted_by_another_session"] = from_session
         # And if Slurm has let go, say so in the directory. See _record_terminal_state:

@@ -120,6 +120,18 @@ _TOOL_CALL_TIMEOUT = 60.0
 _CHECKIN_SCHEDULE = (30.0, 120.0, 600.0, 1800.0)
 _CHECKIN_INTERVAL = 3600.0
 
+# Status fields that move on every tick without saying anything about the run. The tail
+# is read for its alerts, which are compared instead.
+_CHECKIN_VOLATILE = frozenset({"at", "elapsed_s", "log_tail"})
+
+
+def _checkin_fingerprint(jobs: list[dict]) -> tuple:
+    """What a bulletin says, minus the clock: equal fingerprints mean nothing new."""
+    return tuple(sorted(
+        (str(j.get("job_key")),
+         repr(sorted((k, repr(v)) for k, v in j.items() if k not in _CHECKIN_VOLATILE)))
+        for j in jobs))
+
 
 @dataclass
 class _Watch:
@@ -139,6 +151,8 @@ class _Watch:
     task: asyncio.Task
     descriptor: dict
     status: dict = field(default_factory=dict)
+    # Alert categories ever seen in this run's log tail, kept once the line scrolls away.
+    alerts: dict = field(default_factory=dict)
 
 
 def _detach_grace() -> float:
@@ -273,6 +287,8 @@ class _AgentWorker:
         # so three jobs launched in the same step share a schedule and report together
         # instead of waking it three times a minute apart.
         self._checkin_task: asyncio.Task | None = None
+        # Fingerprint of the last bulletin sent, so one with nothing new is not.
+        self._checkin_last: tuple | None = None
         # Set by the front-end when the user leaves a conversation whose turn is parked
         # on them: every wait of that turn returns at once instead (query_engine.deferral).
         self._defer = threading.Event()
@@ -1570,6 +1586,7 @@ class _AgentWorker:
             if not wave_starts:
                 return
             self._checkin_task.cancel()
+        self._checkin_last = None
         try:
             self._checkin_task = asyncio.get_running_loop().create_task(
                 self._checkin_cycle(session_id))
@@ -1587,8 +1604,8 @@ class _AgentWorker:
         """Emit ``job_checkin`` down ``_CHECKIN_SCHEDULE``, then hourly while runs last.
 
         Reports what the watchers have already seen — ``_Watch.status``, written by the
-        poll that is running anyway — so a check-in costs no status traffic at all. The
-        turn it may start is the only cost, and the session decides whether to spend it.
+        poll that is running anyway — so a check-in costs no status traffic at all. A
+        point with nothing new since the last bulletin says nothing.
 
         Ends the moment this conversation has no live run left: past that the completion
         wakes have landed and there is nothing to be reassured about. That is the only
@@ -1599,18 +1616,8 @@ class _AgentWorker:
         try:
             for delay in chain(_CHECKIN_SCHEDULE, repeat(_CHECKIN_INTERVAL)):
                 await asyncio.sleep(delay)
-                jobs = [
-                    {"job_key": key, "kind": w.descriptor.get("kind"),
-                     "server": w.descriptor.get("server"), **w.status}
-                    for key, w in self._bg_jobs.items() if not w.task.done()
-                ]
-                if not jobs:
+                if not self._emit_checkin(session_id):
                     return
-                self.out_q.put({
-                    "type":       "job_checkin",
-                    "session_id": session_id,
-                    "jobs":       jobs,
-                })
         finally:
             # Only if the slot still holds *this* cycle. A new wave cancels the old one
             # and puts its own task in the slot, and cancellation is delivered after
@@ -1618,6 +1625,26 @@ class _AgentWorker:
             # reference and let the next launch start a second one beside it.
             if self._checkin_task is asyncio.current_task():
                 self._checkin_task = None
+
+    def _emit_checkin(self, session_id: str | None) -> bool:
+        """Send a bulletin if it says something the last one did not. False: no live run."""
+        jobs = [
+            {"job_key": key, "kind": w.descriptor.get("kind"),
+             "server": w.descriptor.get("server"), **w.status}
+            for key, w in self._bg_jobs.items() if not w.task.done()
+        ]
+        if not jobs:
+            return False
+        fingerprint = _checkin_fingerprint(jobs)
+        if fingerprint == getattr(self, "_checkin_last", None):
+            return True
+        self._checkin_last = fingerprint
+        self.out_q.put({
+            "type":       "job_checkin",
+            "session_id": session_id,
+            "jobs":       jobs,
+        })
+        return True
 
     def watched_job_keys(self) -> list[str]:
         """Keys of the runs this conversation still has in flight.
@@ -1695,10 +1722,19 @@ class _AgentWorker:
             # which one it is looking at.
             watch = self._bg_jobs.get(job_key)
             if watch is not None:
+                fresh = {k: v for k, v in
+                         job_poll.log_alerts(tick.fields.get("log_tail")).items()
+                         if k not in watch.alerts}
+                watch.alerts.update(fresh)
                 watch.status = {**tick.fields,
                                 "state": tick.state or "unreadable",
                                 "phase": tick.phase, "percent": tick.percent,
                                 "at": time.monotonic()}
+                if watch.alerts:
+                    watch.status["alerts"] = dict(watch.alerts)
+                # A run gone wrong is not left waiting for the next point of the schedule.
+                if fresh:
+                    self._emit_checkin(session_id)
             # Starts at ("", None), so a run that never reports is never sent, while one
             # whose count disappears is — a retraction is news too.
             if (tick.phase, tick.percent) != last_reported:
