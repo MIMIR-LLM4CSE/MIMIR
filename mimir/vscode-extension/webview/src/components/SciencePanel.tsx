@@ -1,6 +1,8 @@
-import React, { useEffect } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import type { PanelSection, SubAgent, SubAgentLevel, WatchedRun } from "../types";
 import { SubAgentsPanel } from "./SubAgentsPanel";
+import { PanelGroupList } from "./PanelGroups";
+import { toggle } from "./panelGroupUtils";
 
 export const SUBAGENT_LEVEL_OPTIONS: {
   value: SubAgentLevel;
@@ -32,6 +34,8 @@ interface Props {
   onRefresh: () => void;
   onOpenSubAgent: (id: string) => void;
   onCloseSubAgent: () => void;
+  /** Put a request to the model, as the user's own turn. */
+  onPrompt: (text: string) => void;
 }
 
 /**
@@ -42,6 +46,11 @@ interface Props {
  * turn. The other two — the optimisation in progress, the machine — are filled by the
  * servers that own those facts, asked by capability rather than by name, so a plugin
  * server adds its own section without a line changing here.
+ *
+ * A server's section may answer with a tree as well as with lines — the clusters this
+ * workspace reaches, the kinds of machine on each, what a probe found on one — and the
+ * runs in flight are hung on the machines they are running on. Which rows are open is
+ * held here, because it belongs to the reader rather than to any one section.
  */
 export const SciencePanel: React.FC<Props> = ({
   level,
@@ -53,7 +62,17 @@ export const SciencePanel: React.FC<Props> = ({
   onRefresh,
   onOpenSubAgent,
   onCloseSubAgent,
+  onPrompt,
 }) => {
+  // Which rows are open, keyed on the servers' own ids so the answer survives a
+  // refresh. Everything starts closed: the drawer is 220px wide, and a workspace that
+  // reaches three clusters would otherwise open onto a page of machines.
+  const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({});
+  const toggleGroup = useCallback(
+    (key: string) => setOpenGroups((open) => toggle(open, key)),
+    [],
+  );
+
   useEffect(() => {
     onRefresh();
   }, [onRefresh]);
@@ -112,12 +131,22 @@ export const SciencePanel: React.FC<Props> = ({
                 </span>
               </div>
             ))}
+            {section.groups && section.groups.length > 0 && (
+              <PanelGroupList
+                groups={section.groups}
+                open={openGroups}
+                onToggle={toggleGroup}
+                onPrompt={onPrompt}
+              />
+            )}
             {section.detail && <div className="science-detail">{section.detail}</div>}
           </div>
         ))}
 
         <div className="science-section">
           <div className="science-section-title">Runs outside this turn</div>
+          {/* The ones no machine claimed. A run on a scheduler this panel knows is a
+              badge on that machine's row instead, where it means more. */}
           {runs.length === 0 && <div className="sessions-empty">Nothing running.</div>}
           {runs.map((run) => (
             <div className="science-line" key={run.job_key}>

@@ -162,6 +162,241 @@ def test_a_server_with_nothing_to_say_gets_no_heading():
     assert [s["section"] for s in sections] == ["Optimisation"]
 
 
+def test_a_section_that_only_has_groups_is_kept():
+    """A tree is something to say, even with no lines beside it.
+
+    The drop rule exists so a facility this machine does not have grows no heading; a
+    server answering with a nested shape and nothing flat is the opposite case.
+    """
+    import asyncio
+    import json
+    from mimir.client.ui.ws.ws_worker import _AgentWorker
+
+    payload = {"title": "Cluster", "lines": [],
+               "groups": [{"id": "host:local", "label": "local"}]}
+
+    class _Session:
+        async def call_tool(self, tool, args):
+            return "tree"
+
+    agent = types.SimpleNamespace(
+        tool_caps=_caps(tree={"section": "Cluster", "order": 10}),
+        tool_owner={"tree": "hpc"},
+        sessions={"hpc": _Session()},
+        _normalize_tool_content=lambda raw: json.dumps(payload),
+    )
+    loop = asyncio.new_event_loop()
+    worker = object.__new__(_AgentWorker)
+    worker._agent = agent
+    worker._loop = loop
+    future = worker.panel_sections()
+    loop.run_until_complete(asyncio.sleep(0))
+    sections = future.result(timeout=5)
+    loop.close()
+
+    assert [s["section"] for s in sections] == ["Cluster"]
+    # Passed through unread: this end renders what the server chose to say.
+    assert sections[0]["groups"] == payload["groups"]
+
+
+_DIGEST = {
+    "scheduler": "hpc1", "built_at": "2026-10-13T00:00:00Z", "source": "scontrol",
+    "signature": "abc", "degraded": "",
+    "partitions": [{"partition": "gpu"}, {"partition": "cpu"}],
+    "node_types": [{"arch": "x86_64", "cpus": 64, "mem_mb": 515000,
+                    "gres": "gpu:a100:4", "sockets": 2, "cores_per_socket": 32,
+                    "threads_per_core": 1, "features": "avx512,ib",
+                    "partitions": ["gpu"], "example_nodes": ["gpu001", "gpu002"]}],
+}
+
+_SILENT_DIGEST = {"scheduler": "hpc2", "built_at": "", "source": "", "signature": "",
+                  "degraded": "", "partitions": [], "node_types": []}
+
+
+def _tree(hosts, digests, profiles=None):
+    """Build the host tree against canned digests and profiles — no scheduler is asked."""
+    hpc = _load("server_hpc_tree", SERVERS_DIR / "hpc" / "server_hpc.py")
+    hpc._PANEL_CACHE.clear()
+    with mock.patch.object(hpc, "slurm_hosts", return_value=hosts), \
+         mock.patch.object(hpc, "_cluster_digest", side_effect=lambda h: digests[h]), \
+         mock.patch.object(hpc, "_read_node_profile",
+                           side_effect=lambda node, host: (profiles or {}).get(node)):
+        return hpc._host_tree()
+
+
+def test_every_registered_scheduler_is_in_the_tree():
+    """Including one nothing has been probed on yet.
+
+    What you have registered is what you can submit to, so it is what the panel has to
+    show — a cluster missing from the list reads as a cluster MIMIR cannot reach.
+    """
+    tree = _tree(["", "hpc1"], {"": _SILENT_DIGEST, "hpc1": _DIGEST})
+    assert [g["label"] for g in tree] == ["local", "hpc1"]
+    assert [g["local"] for g in tree] == [True, False]
+
+
+def test_a_silent_host_is_listed_as_unknown_not_as_empty():
+    """An unreachable cluster and a cluster with no machines are not the same thing,
+    and only one of them is worth waiting for."""
+    tree = _tree(["hpc2"], {"hpc2": _SILENT_DIGEST})
+    assert tree[0]["state"] == "warn"
+    assert tree[0]["value"] == "did not answer"
+    assert "unknown, not absent" in tree[0]["lines"][-1]["value"]
+    assert "groups" not in tree[0]        # never an empty machine list
+
+
+def test_a_node_kind_is_named_the_way_it_would_be_chosen():
+    tree = _tree(["hpc1"], {"hpc1": _DIGEST})
+    kind = tree[0]["groups"][0]
+    assert kind["label"] == "4× a100 · 64 cpus · 503 GB"
+    assert kind["nodes"] == ["gpu001", "gpu002"]
+
+
+def test_an_unprofiled_kind_says_so_and_offers_the_request_that_would_fix_it():
+    """The server writes the words: it is the end that knows the scheduler and the
+    partition, which keeps tool names out of the webview entirely."""
+    kind = _tree(["hpc1"], {"hpc1": _DIGEST})[0]["groups"][0]
+    assert kind["state"] == "warn"
+    assert kind["value"] == "not profiled"
+    assert kind["action"]["kind"] == "probe"
+    assert "'hpc1'" in kind["action"]["prompt"]
+    assert "'gpu'" in kind["action"]["prompt"]
+
+
+def test_a_profiled_kind_carries_what_only_the_node_could_say():
+    """Slurm reports cores and memory but never the CPU model, the vector ISA or the
+    name -march=native resolves to. That is the whole reason a probe exists."""
+    profile = {"node": "gpu001", "probed_at": "2026-10-02", "partial": False,
+               "profile": {"cpu": {"model": "AMD EPYC 7763",
+                                   "simd": {"avx2": True, "avx512f": True}},
+                           "march": {"native": "znver3"},
+                           "os": {"id": "rhel", "version": "8.10", "glibc": "2.28"},
+                           "gpu": {"devices": [{"name": "A100", "compute_cap": "8.0"}]}}}
+    kind = _tree(["hpc1"], {"hpc1": _DIGEST}, {"gpu001": profile})[0]["groups"][0]
+    values = {line["label"]: line["value"] for line in kind["lines"]}
+    assert values["cpu"] == "AMD EPYC 7763"
+    assert values["-march=native"] == "znver3"
+    assert values["os"] == "rhel 8.10 · glibc 2.28"
+    assert values["compute capability"] == "8.0"
+    assert "Profiled on gpu001, 2026-10-02" in kind["detail"]
+    assert "action" not in kind          # nothing left to ask for
+    assert kind.get("state") != "warn"
+
+
+def test_a_kinds_id_is_the_same_on_the_next_refresh():
+    """The panel's open rows are keyed on it. A tree that re-identified its rows every
+    poll would collapse under whoever was reading it."""
+    first = _tree(["hpc1"], {"hpc1": _DIGEST})[0]["groups"][0]["id"]
+    shuffled = {**_DIGEST, "node_types": [dict(reversed(list(
+        _DIGEST["node_types"][0].items())))]}
+    second = _tree(["hpc1"], {"hpc1": shuffled})[0]["groups"][0]["id"]
+    assert first == second
+
+
+def _sections_with_hosts():
+    return [{"section": "Cluster", "title": "Cluster", "lines": [], "detail": "",
+             "groups": [
+                 {"id": "host:local", "label": "local", "host": "local", "local": True,
+                  "groups": [{"id": "host:local/kind:aa", "label": "64 cpus",
+                              "nodes": ["cpu001", "cpu002"]}]},
+                 {"id": "host:hpc1", "label": "hpc1", "host": "hpc1", "local": False,
+                  "groups": [{"id": "host:hpc1/kind:bb", "label": "4× a100",
+                              "nodes": ["gpu001", "gpu007"]}]},
+             ]}]
+
+
+def test_a_shell_run_lands_on_this_machine():
+    """It has no scheduler to name, which is exactly what says it is here."""
+    from mimir.client.ui.ws.panel_runs import attach_runs
+    run = {"job_key": "k1", "kind": "shell-command", "state": "running",
+           "pid": 4242, "command": "make -j64", "origin": {"kind": "main"}}
+    sections, unplaced = attach_runs(_sections_with_hosts(), [run])
+    hosts = {g["label"]: g for g in sections[0]["groups"]}
+    assert [b["job_key"] for b in hosts["local"]["badges"]] == ["k1"]
+    assert "badges" not in hosts["hpc1"]
+    assert hosts["local"]["badges"][0]["pid"] == 4242
+    assert unplaced == []
+
+
+def test_a_cluster_run_lands_on_its_host_and_on_its_node():
+    """Two questions, two places: which cluster is busy, and which machine is."""
+    from mimir.client.ui.ws.panel_runs import attach_runs
+    run = {"job_key": "15306620", "kind": "slurm-batch", "state": "running",
+           "scheduler": "hpc1", "nodes": ["gpu007"], "job_id": "15306620"}
+    sections, unplaced = attach_runs(_sections_with_hosts(), [run])
+    hosts = {g["label"]: g for g in sections[0]["groups"]}
+    assert [b["job_key"] for b in hosts["hpc1"]["badges"]] == ["15306620"]
+    assert [b["job_key"] for b in hosts["hpc1"]["groups"][0]["badges"]] == ["15306620"]
+    assert "badges" not in hosts["local"]
+    assert unplaced == []
+
+
+def test_a_run_on_a_node_outside_the_sample_still_lands_on_its_host():
+    """A node kind lists an example of its nodes, not all of them.
+
+    The host row is the one that must never miss a run; which kind of machine it got is
+    a detail the run itself carries.
+    """
+    from mimir.client.ui.ws.panel_runs import attach_runs
+    run = {"job_key": "j9", "state": "running", "scheduler": "hpc1",
+           "nodes": ["gpu042"]}
+    sections, _ = attach_runs(_sections_with_hosts(), [run])
+    hpc1 = sections[0]["groups"][1]
+    assert [b["job_key"] for b in hpc1["badges"]] == ["j9"]
+    assert "badges" not in hpc1["groups"][0]
+
+
+def test_a_run_on_an_unknown_scheduler_is_still_shown_somewhere():
+    """Unplaced, not dropped: a run the user cannot see is the worse failure."""
+    from mimir.client.ui.ws.panel_runs import attach_runs
+    run = {"job_key": "j7", "state": "running", "scheduler": "hpc9"}
+    sections, unplaced = attach_runs(_sections_with_hosts(), [run])
+    assert all("badges" not in g for g in sections[0]["groups"])
+    assert [r["job_key"] for r in unplaced] == ["j7"]
+
+
+def test_a_badge_says_which_agent_launched_the_run():
+    """A job on a node is worth little to read if it does not say whose."""
+    from mimir.client.ui.ws.panel_runs import attach_runs
+    origin = {"kind": "subagent", "label": "port the solver to AVX-512",
+              "session": "parent/subagents/sub-1a2b"}
+    run = {"job_key": "k1", "state": "running", "origin": origin}
+    sections, _ = attach_runs(_sections_with_hosts(), [run])
+    assert sections[0]["groups"][0]["badges"][0]["origin"] == origin
+
+
+def test_the_worker_reports_what_its_poll_learned():
+    """``watched_runs`` keeps the status the watcher already held.
+
+    Where a run is and how far it has got were read on every tick and then dropped on
+    the way out, so the panel could only ever say that something was running.
+    """
+    from mimir.client.ui.ws.ws_worker import _AgentWorker, _Watch
+
+    class _Task:
+        @staticmethod
+        def done():
+            return False
+
+    worker = object.__new__(_AgentWorker)
+    worker._bg_jobs = {"15306620": _Watch(
+        _Task(),
+        {"job_key": "15306620", "kind": "slurm-batch", "server": "hpc",
+         "origin": {"kind": "main", "label": "", "session": "s1"}},
+    )}
+    worker._bg_jobs["15306620"].status = {
+        "state": "running", "phase": "linking", "percent": 62,
+        "scheduler": "hpc1", "nodes": ["gpu007"], "at": 1234.5,
+    }
+    run = worker.watched_runs()[0]
+    assert run["nodes"] == ["gpu007"]
+    assert run["scheduler"] == "hpc1"
+    assert run["percent"] == 62
+    assert run["origin"]["session"] == "s1"
+    # A monotonic clock reading means nothing outside this process.
+    assert "at" not in run
+
+
 def test_the_sections_read_from_the_work_outwards():
     """Optimisation, then the cluster it runs on, then the host MIMIR itself sits on.
 
@@ -183,11 +418,17 @@ def test_a_host_without_a_scheduler_reports_no_cluster_at_all():
     """
     hpc = _load("server_hpc_panel", SERVERS_DIR / "hpc" / "server_hpc.py")
     hpc._PANEL_CACHE.clear()
+    # Both halves have to be silent for the section to be. The scheduler inventory is
+    # its own question — a workspace can have registered a cluster over ssh while the
+    # machine the panel runs on has no Slurm at all — so it is emptied explicitly
+    # rather than left to whatever this test host happens to have installed.
     with mock.patch.object(hpc, "_run_bash",
-                           return_value={"status": "error", "error": "no sinfo here"}):
+                           return_value={"status": "error", "error": "no sinfo here"}), \
+         mock.patch.object(hpc, "slurm_hosts", return_value=[]):
         out = hpc.hpc_panel_report()
     assert out["status"] == "ok"
     assert out["lines"] == []
+    assert not out.get("groups")
     assert not out.get("detail")
 
 
@@ -208,7 +449,7 @@ def test_the_queue_and_the_room_are_what_the_cluster_section_says():
     with mock.patch.object(hpc, "_run_bash", _bash), \
             mock.patch.object(slurm_site, "_HAS_SLURM", True), \
             mock.patch.object(hpc, "_recorded_jobs", return_value={}), \
-            mock.patch.object(hpc, "_profiled_node_lines", return_value=[]):
+            mock.patch.object(hpc, "_host_tree", return_value=[]):
         out = hpc.hpc_panel_report()
     values = {line["label"]: line["value"] for line in out["lines"]}
     assert values["your jobs"] == "1 pending, 1 running"

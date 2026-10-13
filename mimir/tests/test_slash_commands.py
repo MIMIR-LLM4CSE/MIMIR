@@ -213,9 +213,19 @@ class RoutingTests(unittest.TestCase):
         with open(app, encoding="utf-8") as fh:
             src = fh.read()
         self.assertIn("isSessionCommand(text)", src)
-        # The routing check must come BEFORE the busy/steer branch, or a command typed
-        # during a run would be queued as a steer and handed to the model.
-        self.assertLess(src.index("isSessionCommand(text)"), src.index('type: "steer"'))
+        # The routing check must come before anything that could put the text to the
+        # model, or a command typed during a run would be queued as a steer and handed
+        # over as prose. Read inside the submit handler rather than across the file:
+        # what sends a prompt is a function of its own — the panel asks the model too —
+        # and where that function is defined says nothing about when it is reached.
+        body = src[src.index("const submitQuery = useCallback"):]
+        body = body[:body.index("\n  }, [")]
+        self.assertIn("isSessionCommand(text)", body)
+        self.assertIn("sendPrompt(text)", body)
+        self.assertLess(body.index("isSessionCommand(text)"),
+                        body.index("sendPrompt(text)"))
+        # And the thing it defers to is the one place a prompt reaches the model.
+        self.assertEqual(src.count('send({ type: "steer", text });'), 1)
 
     def test_the_dropdown_offers_both_kinds(self) -> None:
         with open(_SLASH_UTILS, encoding="utf-8") as fh:

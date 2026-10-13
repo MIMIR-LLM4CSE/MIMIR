@@ -501,11 +501,12 @@ export interface PanelLine {
   state?: string;
 }
 
-export interface PanelSection {
-  section: string;
-  title: string;
-  lines: PanelLine[];
-  detail?: string;
+/** What launched a run: this conversation, or one of its sub-agents. */
+export interface RunOrigin {
+  kind?: "main" | "subagent" | string;
+  /** The child's task, first line — empty for the conversation's own run. */
+  label?: string;
+  session?: string;
 }
 
 /** A detached run the watcher is holding: a build, a Slurm job, a sub-agent. */
@@ -513,6 +514,61 @@ export interface WatchedRun {
   job_key: string;
   kind?: string;
   server?: string;
+  origin?: RunOrigin;
+  /** What the watcher's last poll learned. Whatever the status op reported. */
+  state?: string;
+  phase?: string;
+  percent?: number;
+  scheduler?: string;
+  nodes?: string[];
+  pid?: number;
+  job_id?: string;
+  command?: string;
+  elapsed_s?: number;
+}
+
+/**
+ * A request the server wrote for the panel to offer — a question to put to the model,
+ * never a tool to call. The prompt comes from the end that knows the scheduler and the
+ * partition, which is what keeps tool names out of this side entirely.
+ */
+export interface PanelGroupAction {
+  kind: string;
+  label: string;
+  prompt: string;
+}
+
+/**
+ * One node of a section's tree: a scheduler, or a kind of machine on one.
+ *
+ * Recursive and read without being interpreted, exactly as `lines` are — any server
+ * answering with `groups` gets a tree with no further change on this side. `id` is
+ * stable across refreshes because the open rows are keyed on it.
+ */
+export interface PanelGroup {
+  id: string;
+  label: string;
+  /** A one-line summary shown on the row itself. */
+  value?: string;
+  state?: string;
+  host?: string;
+  local?: boolean;
+  nodes?: string[];
+  lines?: PanelLine[];
+  detail?: string;
+  groups?: PanelGroup[];
+  action?: PanelGroupAction;
+  /** Runs the client found to be on this machine. Attached on the way out. */
+  badges?: WatchedRun[];
+}
+
+export interface PanelSection {
+  section: string;
+  title: string;
+  lines: PanelLine[];
+  /** The nested half, for a server whose answer is a tree rather than a list. */
+  groups?: PanelGroup[];
+  detail?: string;
 }
 
 export interface PanelReportMessage {

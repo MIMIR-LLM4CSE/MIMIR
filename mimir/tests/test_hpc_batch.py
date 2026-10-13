@@ -44,14 +44,21 @@ def _only_local(case: unittest.TestCase) -> None:
 
 
 def _canned(mapping: dict):
-    """Return a fake _run_bash whose output depends on the command substring."""
+    """Return a fake _run_bash whose output depends on the command substring.
+
+    Records every call as ``fake.calls`` — ``(script, stdin, host)`` — because what a
+    tool submits, how it submits it, and which scheduler it went to are three things
+    worth asserting on, and only this sees them.
+    """
     def fake(script: str, timeout: int, stdin: str | None = None, *,
              host: str = "") -> dict:
+        fake.calls.append((script, stdin, host))
         for key, (status, out) in mapping.items():
             if key in script:
                 return {"status": status, "stdout": out, "stderr": "",
                         "returncode": 0 if status == "ok" else 1}
         return {"status": "ok", "stdout": "", "stderr": "", "returncode": 0}
+    fake.calls: list = []
     return fake
 
 
@@ -69,6 +76,49 @@ class NormalizedStateTests(unittest.TestCase):
     def test_running_and_pending_from_squeue(self) -> None:
         self.assertEqual(self._state({"squeue": ("ok", "RUNNING")}), "running")
         self.assertEqual(self._state({"squeue": ("ok", "PENDING")}), "pending")
+
+    def test_a_job_the_queue_calls_finished_is_finished(self) -> None:
+        """Following it further is following something that cannot change again.
+
+        A watcher drops a run the moment its state is terminal, so recognising the
+        state *is* the cleanup: until these were read as terminal, a cancelled job was
+        polled for as long as the process lived.
+        """
+        for state, expected in (("COMPLETED", "done"),
+                                ("FAILED", "crashed"),
+                                ("CANCELLED", "crashed"),
+                                ("CANCELLED BY 1234", "crashed"),
+                                ("TIMEOUT", "crashed"),
+                                ("OUT_OF_MEMORY", "crashed"),
+                                ("NODE_FAIL", "crashed")):
+            with self.subTest(state=state):
+                self.assertEqual(self._state({"squeue": ("ok", state)}), expected)
+
+    def test_a_site_with_no_accounting_still_settles_its_jobs(self) -> None:
+        """The case this exists for.
+
+        Not every cluster runs Slurm accounting, so there is no second answer to settle
+        a job with — and a state the queue reports but this client did not classify used
+        to fall through to "in the queue, so still running".
+        """
+        state = self._state({"squeue": ("ok", "CANCELLED"), "sacct": ("error", "")})
+        self.assertEqual(state, "crashed")
+
+    def test_the_queue_is_believed_without_asking_accounting_at_all(self) -> None:
+        """One round trip rather than two, for every finished job."""
+        fake = _canned({"squeue": ("ok", "COMPLETED")})
+        server_hpc._run_bash = fake
+        server_hpc._normalized_job_state("123")
+        self.assertEqual([c[0].split()[0] for c in fake.calls], ["squeue"])
+
+    def test_an_array_with_one_task_cancelled_is_not_an_array_that_completed(self) -> None:
+        self.assertEqual(
+            self._state({"squeue": ("ok", "COMPLETED\nCANCELLED\nCOMPLETED")}),
+            "crashed")
+
+    def test_a_finished_task_beside_a_running_one_keeps_the_job_live(self) -> None:
+        self.assertEqual(
+            self._state({"squeue": ("ok", "COMPLETED\nRUNNING")}), "running")
 
     def test_done_from_sacct_when_out_of_queue(self) -> None:
         self.assertEqual(
@@ -183,7 +233,8 @@ class SbatchSubmitTests(unittest.TestCase):
             submitted = self._submit()["job_dir"]
         self.addCleanup(setattr, server_hpc, "_normalized_job_state",
                         server_hpc._normalized_job_state)
-        server_hpc._normalized_job_state = lambda jid, *, host="": ("running", "RUNNING")
+        server_hpc._normalized_job_state = \
+            lambda jid, *, host="": ("running", "RUNNING", ["gpu007"])
         with patch.dict(os.environ, {"MIMIR_SESSION_ID": "session-b"}):
             status = server_hpc.slurm_job_status(job_id="4242")
         self.assertEqual(status["job_dir"], submitted)
@@ -192,7 +243,8 @@ class SbatchSubmitTests(unittest.TestCase):
     def test_a_job_of_this_session_is_not_labelled_as_another_s(self) -> None:
         self.addCleanup(setattr, server_hpc, "_normalized_job_state",
                         server_hpc._normalized_job_state)
-        server_hpc._normalized_job_state = lambda jid, *, host="": ("running", "RUNNING")
+        server_hpc._normalized_job_state = \
+            lambda jid, *, host="": ("running", "RUNNING", ["gpu007"])
         with patch.dict(os.environ, {"MIMIR_SESSION_ID": "session-a"}):
             submitted = self._submit()["job_dir"]
             status = server_hpc.slurm_job_status(job_id="4242")
@@ -202,8 +254,9 @@ class SbatchSubmitTests(unittest.TestCase):
     def _status_as(self, state: str, job_id: str = "4242") -> dict:
         self.addCleanup(setattr, server_hpc, "_normalized_job_state",
                         server_hpc._normalized_job_state)
-        server_hpc._normalized_job_state = lambda jid, *, host="": (state,
-                                                                     state.upper())
+        server_hpc._normalized_job_state = \
+            lambda jid, *, host="": (state, state.upper(),
+                                     ["gpu007"] if state == "running" else [])
         return server_hpc.slurm_job_status(job_id=job_id)
 
     def test_a_terminal_poll_settles_the_submission_directory(self) -> None:
@@ -242,7 +295,8 @@ class SbatchSubmitTests(unittest.TestCase):
         with patch.dict(os.environ, {"MIMIR_SESSION_ID": "session-a"}):
             job_dir = self._submit()["job_dir"]
             self._status_as("crashed")
-            server_hpc._normalized_job_state = lambda jid, *, host="": ("unknown", "")
+            server_hpc._normalized_job_state = \
+                lambda jid, *, host="": ("unknown", "", [])
             server_hpc.slurm_job_status(job_id="4242")
         with open(os.path.join(job_dir, "slurm_state")) as fh:
             self.assertEqual(fh.read().strip(), "crashed")
@@ -514,13 +568,21 @@ class SbatchTargetingTests(unittest.TestCase):
 
 
 def _fake_scontrol(stdout: str):
-    def fake(argv, t):
+    """Stands in for ``_run_argv``, recording which scheduler each call went to.
+
+    The host is a keyword on the real one and the calls that matter here pass it, so a
+    fake that dropped it would let a tool asking the wrong cluster pass. Readable
+    afterwards as ``fake.hosts``.
+    """
+    def fake(argv, t, *, host=""):
+        fake.hosts.append(host)
         if argv[:2] == ["scontrol", "show"]:
             return {"status": "ok", "stdout": stdout, "stderr": "", "returncode": 0}
         if argv[:1] == ["sbatch"]:
             return {"status": "ok", "stdout": "Submitted batch job 900", "stderr": "",
                     "returncode": 0}
         return {"status": "error", "stdout": "", "stderr": "", "returncode": 1}
+    fake.hosts: list[str] = []
     return fake
 
 
@@ -545,7 +607,10 @@ class NodeProfileTests(unittest.TestCase):
         os.environ["MIMIR_HPC_JOBS_DIR"] = self._jobs_dir
         server_hpc._NODE_PROFILES_DIR = os.path.join(self._tmp.name, "profiles")
         server_hpc._run_argv = _fake_scontrol(_SCONTROL)
-        server_hpc._run_bash = _canned({"squeue": ("ok", "PENDING")})
+        server_hpc._run_bash = _canned({
+            "sbatch": ("ok", "Submitted batch job 900"),
+            "squeue": ("ok", "PENDING"),
+        })
         # The host MIMIR runs on: a login node of another generation, on a newer OS.
         server_hpc._host_identity = lambda: {
             "arch": "x86_64", "os": {"id": "rhel", "version": "9.4", "glibc": "2.34"},
@@ -647,6 +712,107 @@ class NodeProfileTests(unittest.TestCase):
         kind = server_hpc.slurm_node_profile(node="cpu-n01")["node_types"][0]
         self.assertFalse(kind["profiled"])
         self.assertIn("changed", kind["note"])
+
+    def test_a_profile_is_filed_under_the_scheduler_it_was_read_on(self) -> None:
+        """Node names are per cluster, so a profile without one is a profile of nothing.
+
+        Slurm's own node names are chosen per site: two schedulers each with a
+        ``node01`` are two unrelated machines, and one flat directory had the second
+        overwrite the first.
+        """
+        job_dir = self._submit()
+        self._finish(job_dir, "cpu001", "full", **{"profile.json": '{"cpu": {}}'})
+        server_hpc.slurm_node_profile(partition="cpu")
+        filed = os.path.join(server_hpc._NODE_PROFILES_DIR, "local", "cpu001.json")
+        self.assertTrue(os.path.exists(filed), filed)
+        with open(filed) as fh:
+            self.assertEqual(json.load(fh)["scheduler"], "local")
+
+    def test_two_schedulers_with_the_same_node_name_do_not_collide(self) -> None:
+        """The bug this layout exists to stop."""
+        record = {"node": "node01", "probed_at": "x", "profile": {"cpu": {"model": "A"}}}
+        server_hpc._write_node_profile("node01", record, "")
+        server_hpc._write_node_profile(
+            "node01", {**record, "profile": {"cpu": {"model": "B"}}}, "hpc1")
+        self.assertEqual(
+            server_hpc._read_node_profile("node01", "")["profile"]["cpu"]["model"], "A")
+        self.assertEqual(
+            server_hpc._read_node_profile("node01", "hpc1")["profile"]["cpu"]["model"],
+            "B")
+
+    def test_a_profile_at_the_root_is_read_for_no_scheduler(self) -> None:
+        """It records no host, and reading it as the local one is the guess the
+        per-scheduler layout exists to prevent. A node re-profiles on demand."""
+        os.makedirs(server_hpc._NODE_PROFILES_DIR, exist_ok=True)
+        with open(os.path.join(server_hpc._NODE_PROFILES_DIR, "node01.json"), "w") as fh:
+            json.dump({"node": "node01", "profile": {"cpu": {"model": "old"}}}, fh)
+        self.assertIsNone(server_hpc._read_node_profile("node01", ""))
+        self.assertIsNone(server_hpc._read_node_profile("node01", "hpc1"))
+
+    def test_a_remote_probe_is_submitted_on_stdin_and_writes_on_the_far_side(self) -> None:
+        """A remote scheduler cannot read a path on this machine.
+
+        Neither the script nor the directory it writes into can be local: the first
+        goes over on stdin, the second is a path the script makes on the node, under
+        the state home the rest of the toolkit already uses there.
+        """
+        server_hpc._run_bash.calls.clear()
+        res = server_hpc.slurm_probe_node(partition="cpu", scheduler="hpc1",
+                                          confirm=True)
+        self.assertEqual(res.get("status"), "ok")
+        script, stdin, host = next(c for c in server_hpc._run_bash.calls
+                                   if "sbatch" in c[0])
+        self.assertEqual(script, "sbatch")
+        self.assertEqual(host, "hpc1")
+        self.assertIn("#SBATCH", stdin or "")
+        self.assertIn("mkdir -p", stdin)
+        self.assertIn("MIMIR_STATE_HOME", stdin)
+        # And the marker says where to go looking for the result.
+        with open(os.path.join(res["job_dir"], "probe.json")) as fh:
+            marker = json.load(fh)
+        self.assertEqual(marker["host"], "hpc1")
+        self.assertIn("node_probes", marker["work_dir"])
+
+    def test_a_local_probe_still_writes_in_its_own_submission_directory(self) -> None:
+        res = server_hpc.slurm_probe_node(partition="cpu", confirm=True)
+        with open(os.path.join(res["job_dir"], "probe.json")) as fh:
+            marker = json.load(fh)
+        self.assertEqual(marker["host"], "")
+        self.assertEqual(marker["work_dir"], res["job_dir"])
+
+    def test_a_remote_result_is_read_back_over_one_round_trip(self) -> None:
+        """Four files, one connection: a call per file would be four ssh handshakes
+        per probe, per panel refresh."""
+        res = server_hpc.slurm_probe_node(partition="cpu", scheduler="hpc1",
+                                          confirm=True)
+        far_side = {"mode": "partial", "node": "cpu001",
+                    "fallback.txt": "==uname\nx86_64\n==nproc\n64\n"}
+
+        def fake(script, timeout, stdin=None, *, host=""):
+            if "sbatch" in script:
+                return {"status": "ok", "stdout": "Submitted batch job 900",
+                        "stderr": "", "returncode": 0}
+            if "==mode" in script:
+                fake.reads.append(host)
+                body = "".join(f"=={n}\n{far_side.get(n, '')}\n"
+                               for n in server_hpc._PROBE_FILES)
+                return {"status": "ok", "stdout": body, "stderr": "", "returncode": 0}
+            return {"status": "ok", "stdout": "", "stderr": "", "returncode": 0}
+        fake.reads = []
+        server_hpc._run_bash = fake
+
+        server_hpc.slurm_node_profile(partition="cpu", scheduler="hpc1")
+        self.assertEqual(fake.reads, ["hpc1"], "one read, on the right scheduler")
+        filed = os.path.join(server_hpc._NODE_PROFILES_DIR, "hpc1", "cpu001.json")
+        self.assertTrue(os.path.exists(filed), filed)
+        with open(filed) as fh:
+            record = json.load(fh)
+        self.assertEqual(record["scheduler"], "hpc1")
+        self.assertTrue(record["partial"])
+        self.assertIn("over ssh", record["partial_reason"])
+        self.assertEqual(record["profile"]["cpu"]["logical_cpus"], 64)
+        self.assertEqual(os.path.exists(
+            os.path.join(server_hpc._NODE_PROFILES_DIR, "local", "cpu001.json")), False)
 
     def test_inside_an_allocation_the_host_is_the_node(self) -> None:
         """No job to submit: MIMIR already runs on the node, so its own profile is it."""
@@ -1000,7 +1166,8 @@ class JobArraysTests(unittest.TestCase):
 
     def _state(self, mapping: dict) -> tuple[str, str]:
         server_hpc._run_bash = _canned(mapping)
-        return server_hpc._normalized_job_state("15306621")
+        state, raw, _nodes = server_hpc._normalized_job_state("15306621")
+        return state, raw
 
     def test_one_task_still_running_keeps_the_array_live(self) -> None:
         state, _raw = self._state({"squeue": ("ok", "RUNNING\nRUNNING\nPENDING")})

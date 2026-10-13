@@ -13,6 +13,77 @@ the server of the same checkout, so the two always move together.
 How to release is in [CONTRIBUTING.md](CONTRIBUTING.md#releasing). The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.7.0] — 2026-10-13
+
+### Added
+- **A sub-agent watches its own detached runs, and answers for them.** In `parallel` mode
+  a child can start a build; nothing was watching it. The hook a watcher is registered
+  through is installed on the agent the editor's own session owns, and a child's agent is
+  built inside the delegation server, so every detached launch inside a child fell back to
+  waiting the run out in-turn — on the child's own clock, inside its time budget. For the
+  rung whose whole point is working in parallel that meant sitting on a step until a build
+  finished instead of preparing the next one, and a run that outlived the budget outlived
+  the only thing watching it. A child now registers its runs with a watcher of its own,
+  ends its step, and is told the result at its next one, through the same channel a
+  message you type mid-turn reaches the agent by. Whatever is still in flight when the
+  child ends — out of time, or simply finished first — is handed to the conversation that
+  delegated it, and the client adopts it before handing the answer back, so "nothing is
+  left unwatched" is a guarantee rather than an instruction a model may skip. A child
+  killed outright hands nothing over, and is picked up instead by the scan that reads runs
+  off the disk, which now looks inside sub-agent sessions. Their wakes land in the
+  conversation you are watching: nothing can open a sub-session as a conversation, so
+  whose run it is and who hears about it are two different answers.
+- **The scientific-computing panel shows the clusters you have registered, as a tree you
+  open.** Every scheduler the workspace reaches, the kinds of machine on each, and what a
+  probe read on one of them — CPU model, vector ISA, the name `-march=native` resolves to
+  there, OS and glibc, GPU compute capability. A scheduler that did not answer is listed
+  as unknown rather than as a cluster with no machines; the two are not the same thing,
+  and only one is worth waiting for. Everything starts collapsed. A kind of node nothing
+  has been profiled on offers the request that would fix it, written by the server that
+  knows the scheduler and the partition — the click confirms and then asks, as a turn of
+  yours, so the probe goes through the approval an irreversible call already requires.
+  Panel sections can now carry a nested shape as well as a flat one, so this needed no new
+  message and a plugin server can answer with a tree of its own.
+- **The runs in flight appear on the machines running them.** A badge on a cluster's row
+  and on its node's, which opens in place onto the job id or pid, the command, its state
+  and phase, how long it has been going — and **which agent launched it**, named with its
+  task when it was a sub-agent's. A detached shell command has no scheduler to name, which
+  is what places it on this machine. A run no machine claimed is still listed, under the
+  flat list it always was: a run you cannot see is worse than one shown out of place.
+
+### Changed
+- **Node profiles are filed under the scheduler they were read on.** Slurm's node names
+  are chosen per site, so two clusters each with a `node01` are two unrelated machines —
+  and one flat directory had the second overwrite the first. `slurm_probe_node` and
+  `slurm_node_profile` now take `scheduler=` like the eight cluster tools around them, so
+  the nodes of a cluster behind `ssh` can be profiled at all: the probe script goes over
+  on stdin and writes on the far side, and its result comes back in one round trip. A
+  profile filed before this is read for no scheduler, since it records none and guessing
+  would be the mistake the keying prevents; nothing breaks, and the node re-profiles when
+  it is next asked about.
+- **`bash_job` reads a run by its directory as well as by its handle.** A job directory is
+  derived from the session, and a sub-agent's session is stored under its parent's, so a
+  run handed over did not resolve from the handle alone — and resolved against the wrong
+  session it read as "no such job", which is a *terminal* state, so the conversation would
+  have been told a healthy build was lost seconds after taking it on. Admitted by
+  containment: a directory inside the reading session's own state directory, which is
+  exactly its own runs and its children's.
+
+### Fixed
+- **A job the queue reports as COMPLETED, FAILED or CANCELLED stops being followed.** Only
+  `RUNNING` and `COMPLETING` counted as going, and `PENDING`, `CONFIGURING` and `REQUEUED`
+  as waiting; anything else in the queue fell through to "a state I do not recognise, so
+  presumably still running". On a site that runs Slurm accounting the next read caught it a
+  moment later. On a site that does not there was nothing to catch it, and a cancelled job
+  was polled for as long as the process lived. A terminal answer from the queue now settles
+  the job there, which also saves a second read for every job that finishes. An array is
+  unchanged: the worst outcome among its tasks wins, and one task still going keeps the job
+  live.
+- **A watcher's entry always leaves the table.** It was removed at each of three exits,
+  which left one uncovered: a watch whose task raised stayed listed as holding a run. Every
+  reader already ignored a finished task, so nothing misbehaved — but the table said
+  something that was not true.
+
 ## [1.6.0] — 2026-10-12
 
 ### Added

@@ -15,6 +15,7 @@ from typing import Any
 from ..event_sink import emit
 from ..context.capabilities import BACKGROUNDABLE, has_cap
 from ..tool_execution.formatter import parse_tool_payload
+from . import job_poll
 
 logger = logging.getLogger(__name__)
 
@@ -217,33 +218,34 @@ async def _await_background_job(descriptor: dict, agent: Any, result_text: str) 
     summary, and fold it into the tool result. The launch tool already returned, so
     this runs outside the per-tool timeout. Best-effort: failures return what we have.
 
+    The loop is :func:`job_poll.poll_until_terminal`, shared with the WebSocket
+    worker's watcher; what differs is the schedule — a turn waiting on a run asks more
+    often than a watcher holding one across turns — and that there is no deadline on
+    each probe, since here the caller *is* the turn.
+
     The polls carry ``record_observations=False``: a watcher tick is the client asking
     a question on its own account, not a step the model took.
     """
-    status_op   = descriptor.get("status_op") or {}
-    summary_op  = descriptor.get("summary_op") or {}
-    status_tool = status_op.get("tool")
-    if not status_tool:
+    status_op  = descriptor.get("status_op") or {}
+    summary_op = descriptor.get("summary_op") or {}
+    if not status_op.get("tool"):
         return result_text
-    interval, max_interval = 3.0, 20.0
-    terminal = {"done", "crashed", "unknown"}
-    state = "running"
-    for _ in range(100_000):  # generous safety bound; runs reach a terminal state
-        await asyncio.sleep(interval)
-        interval = min(interval * 1.5, max_interval)
-        try:
-            raw = await agent._run_tool(status_tool, dict(status_op.get("args") or {}),
-                                        record_observations=False)
-            # parse_tool_payload, not json.loads: a status result is an envelope plus
-            # whatever was appended to it, and a poll that cannot read its own answer
-            # is a run that never reaches a terminal state.
-            payload = parse_tool_payload(raw) if isinstance(raw, str) else (raw or {})
-            state = str((payload or {}).get("state") or "")
-        except Exception:
-            continue  # transient poll failure — retry next tick
-        emit({"type": "status", "text": f"background run: {state}"})
-        if state in terminal:
-            break
+
+    def _tick(tick: job_poll.Tick) -> None:
+        # Only what the op actually answered: a probe that raised is a tick nobody
+        # asked about, and "background run: " with nothing after it is noise in the
+        # one place the caller is watching this run from.
+        if tick.answered:
+            emit({"type": "status", "text": f"background run: {tick.state}"})
+
+    state, _reason = await job_poll.poll_until_terminal(
+        agent._run_tool, status_op,
+        interval=3.0, max_interval=20.0,
+        # A safety bound because nothing cancels an in-turn wait: the watcher's task can
+        # be cancelled at shutdown, and this cannot — it is the turn.
+        max_polls=100_000,
+        on_tick=_tick)
+
     summary_text = ""
     summary_tool = summary_op.get("tool")
     if summary_tool:

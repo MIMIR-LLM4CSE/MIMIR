@@ -74,12 +74,21 @@ _ABANDONED: list[subprocess.Popen] = []
 _swept = False
 
 
-def _job_dir(job_key: str) -> str:
-    return os.path.join(jobs_root(), job_key)
+def _job_dir(job_key: str, run_dir: str = "") -> str:
+    """Where this job's files are.
+
+    *run_dir* is an explicit directory, used in place of deriving one from the session.
+    A job's directory is derived from ``MIMIR_SESSION_ID`` for every job this session
+    launched, which is all of them — and not for a job a *sub-agent* of this session
+    launched, which lives under the child's own session. Reading one of those is what
+    the argument is for, and the containment rule that decides whether a caller may is
+    enforced at the tool boundary, where the request arrives.
+    """
+    return run_dir or os.path.join(jobs_root(), job_key)
 
 
-def _path(job_key: str, name: str) -> str:
-    return os.path.join(_job_dir(job_key), name)
+def _path(job_key: str, name: str, run_dir: str = "") -> str:
+    return os.path.join(_job_dir(job_key, run_dir), name)
 
 
 def job_dir(job_key: str) -> str:
@@ -87,38 +96,38 @@ def job_dir(job_key: str) -> str:
     return _job_dir(job_key)
 
 
-def log_path(job_key: str) -> str:
-    return _path(job_key, "run.log")
+def log_path(job_key: str, run_dir: str = "") -> str:
+    return _path(job_key, "run.log", run_dir)
 
 
-def err_path(job_key: str) -> str:
+def err_path(job_key: str, run_dir: str = "") -> str:
     """Where a split-stream job's stderr goes; absent for a merged one."""
-    return _path(job_key, "run.err")
+    return _path(job_key, "run.err", run_dir)
 
 
-def tee_path(job_key: str) -> str:
+def tee_path(job_key: str, run_dir: str = "") -> str:
     """Where a piped build's output is copied, so its count stays readable.
 
     Written only when :func:`launch` spliced a ``tee`` in; see
     ``build_progress.tee_command``. Never what the caller is shown — that stays the
     pipeline's own output in ``run.log``, which is what it asked for.
     """
-    return _path(job_key, "progress.log")
+    return _path(job_key, "progress.log", run_dir)
 
 
-def progress_path(job_key: str) -> str:
+def progress_path(job_key: str, run_dir: str = "") -> str:
     """The log a progress read should look at: the tee's copy when there is one.
 
     A job whose output was not piped has no copy, and its run.log already holds
     everything the build printed.
     """
-    teed = tee_path(job_key)
-    return teed if os.path.exists(teed) else log_path(job_key)
+    teed = tee_path(job_key, run_dir)
+    return teed if os.path.exists(teed) else log_path(job_key, run_dir)
 
 
-def _read(job_key: str, name: str, default: str = "") -> str:
+def _read(job_key: str, name: str, default: str = "", run_dir: str = "") -> str:
     try:
-        with open(_path(job_key, name)) as fh:
+        with open(_path(job_key, name, run_dir)) as fh:
             return fh.read().strip()
     except OSError:
         return default
@@ -420,15 +429,15 @@ def _sweep_once() -> None:
         discard(key)
 
 
-def _meta(job_key: str) -> dict:
+def _meta(job_key: str, run_dir: str = "") -> dict:
     try:
-        with open(_path(job_key, "meta.json")) as fh:
+        with open(_path(job_key, "meta.json", run_dir)) as fh:
             return json.load(fh)
     except (OSError, ValueError):
         return {}
 
 
-def state(job_key: str) -> dict:
+def state(job_key: str, run_dir: str = "") -> dict:
     """The job's state in the vocabulary the client watcher polls for.
 
     running — the process is alive. done — it exited 0. crashed — it exited non-zero.
@@ -439,25 +448,25 @@ def state(job_key: str) -> dict:
     own to act on — and reporting a stopped build as 'done' would be a lie the caller
     cannot detect.
     """
-    meta = _meta(job_key)
+    meta = _meta(job_key, run_dir)
     if not meta:
         return {"state": "unknown", "job_key": job_key, "error": "No such job."}
 
-    rc_raw = _read(job_key, "exit_code")
+    rc_raw = _read(job_key, "exit_code", run_dir=run_dir)
     alive = _is_running(int(meta.get("pid") or 0), meta.get("pid_starttime"))
 
     payload = {
         "job_key": job_key,
         "command": meta.get("command", ""),
         "pid": meta.get("pid"),
-        "log": log_path(job_key),
+        "log": log_path(job_key, run_dir),
         "elapsed_s": round(time.time() - float(meta.get("started_at") or 0), 1),
     }
     if alive and not rc_raw:
         payload["state"] = "running"
         # The build's own count, when its output carries one — the client watcher
         # passes phase/percent on without knowing what produced them.
-        progress = build_progress.from_file(progress_path(job_key))
+        progress = build_progress.from_file(progress_path(job_key, run_dir))
         if progress:
             payload["percent"], payload["phase"] = progress
         return payload
@@ -487,7 +496,8 @@ def state(job_key: str) -> dict:
     return payload
 
 
-def output(job_key: str, max_bytes: int, running_max_bytes: int | None = None) -> dict:
+def output(job_key: str, max_bytes: int, running_max_bytes: int | None = None,
+           run_dir: str = "") -> dict:
     """The tail of the job's log, with its state.
 
     The tail rather than the head: a long build's interesting part — the error, the
@@ -509,13 +519,13 @@ def output(job_key: str, max_bytes: int, running_max_bytes: int | None = None) -
     Under ``note``: ``hint`` is reserved to error payloads and ok() drops it from this
     one, so a message put there never reaches the caller.
     """
-    payload = state(job_key)
+    payload = state(job_key, run_dir)
     if payload.get("error"):
         return payload
     if running_max_bytes is not None and payload.get("state") == "running":
         max_bytes = min(max_bytes, running_max_bytes)
-    meta = _meta(job_key)
-    log = log_path(job_key)
+    meta = _meta(job_key, run_dir)
+    log = log_path(job_key, run_dir)
     if not os.path.exists(log):
         # An adopted job has no log of its own: nothing of ours opened the process's
         # output, so there is no file here to read. Said plainly, because the generic
@@ -541,7 +551,7 @@ def output(job_key: str, max_bytes: int, running_max_bytes: int | None = None) -
             # A diverted run keeps its streams apart, so the log alone is half the
             # story. Appended under a marker rather than merged blind: the reader
             # must be able to tell which stream said what.
-            errs, _ = _clip(err_path(job_key), max_bytes, "tail")
+            errs, _ = _clip(err_path(job_key, run_dir), max_bytes, "tail")
             if errs:
                 payload["output"] = f"{payload['output']}\n--- stderr ---\n{errs}"
         targets = meta.get("output_targets") or []

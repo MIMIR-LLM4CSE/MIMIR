@@ -180,6 +180,16 @@ webview/src/
     │                            model-generated one-sentence description, and a hand-picked
     │                            rename wins over it
     ├── TogglesPanel.tsx       ← server / skill / nudge toggles
+    ├── SubAgentsPanel.tsx     ← the sub-agents this session started, one open at a time;
+    │                            opening a card is also what fetches its detail
+    ├── subAgentPanelUtils.ts  ← what a sub-agent card says, by its state (unit-tested)
+    ├── SciencePanel.tsx       ← the scientific-computing drawer: the sub-agent rung and
+    │                            its cards, each server's own section, and the runs still
+    │                            going outside the turn
+    ├── PanelGroups.tsx        ← a section's nested half, rendered without being read:
+    │                            scheduler → kind of machine → what a probe found, with
+    │                            the runs in flight as badges on the machine each is on
+    ├── panelGroupUtils.ts     ← opening a row, and what a badge says (unit-tested)
     ├── AgentSettings.tsx      ← the settings popover
     ├── ConnectForm.tsx        ← connection form (backend · address · model)
     ├── ContextBar.tsx         ← context-window usage
@@ -377,6 +387,40 @@ reloaded from disk splits again on the stored answer text. The CLI applies the s
 (`chat_session.format_ledger_summary`, `/ledger` to expand).
 
 ---
+
+## The scientific-computing panel
+
+A drawer beside the session list, opened with the `⚗` button. Two of its sections are the
+client's own — how far sub-agents may go, and the runs still going outside the current
+turn — and the rest are filled by whichever servers declared `PANEL_REPORT`, asked by
+capability rather than by name. The panel renders what a server chose to say and
+interprets none of it, which is what lets a plugin server add a section with no change
+here.
+
+A section may answer with a tree as well as with lines. `groups` is recursive
+(`{id, label, value?, lines?, nodes?, detail?, groups?, action?, badges?}`) and
+`PanelGroupList` renders any depth of it, so the shape is the server's decision: the HPC
+server fills it with the schedulers this workspace reaches, the kinds of node on each,
+and what a probe read on one of them. Everything starts collapsed — the drawer is 220px
+wide, and a workspace reaching three clusters would otherwise open onto a page of
+machines. Which rows are open lives in `SciencePanel`, keyed on the servers' own ids so
+the answer survives a refresh; native `<details>` would lose it, since the drawer
+re-renders on every `panel_report`.
+
+**Badges are the runs, on the machines they are running on.** The client joins them in
+`panel_runs.attach_runs` before the message goes out, because that is the one place both
+halves exist. A badge names the node, and opens as a row *inside* the tree showing the
+job id or pid, the command, its state and phase, how long it has been going, and which
+agent launched it — a tooltip would be unreachable by keyboard and too small for a
+command line.
+
+**An action asks; it does not act.** A node kind nothing has been probed on carries the
+request that would fix it, in words the *server* wrote — it is the end that knows the
+scheduler and the partition, which keeps tool names out of the webview entirely. The
+click confirms, then puts that sentence into the conversation as the user's own turn
+(`sendPrompt`, the same path the input box uses), so whatever tool the model reaches for
+goes through the approval that tool already requires. A panel button must not become a
+second way to start an irreversible call.
 
 ## The terminal panel of a running command
 

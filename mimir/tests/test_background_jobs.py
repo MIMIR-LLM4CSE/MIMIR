@@ -19,6 +19,7 @@ from unittest import mock
 from mimir.tests._fake_pool import FakePool
 
 from mimir.client.context.capabilities import BACKGROUNDABLE, ToolCaps
+from mimir.client.query_engine import job_poll
 from mimir.client.query_engine.background import (
     _maybe_register_background_job,
     _maybe_rewatch_background_jobs,
@@ -482,8 +483,9 @@ class WatchJobTests(unittest.TestCase):
 
     def _run(self, worker, descriptor, session_id=None):
         async def _drive():
-            # Zero the poll interval so the test doesn't wait 5s per tick.
-            # _watch_job lives in ws_worker, so patch asyncio.sleep there.
+            # Zero the poll interval so the test doesn't wait 5s per tick. `ws.asyncio`
+            # is the asyncio module itself, so this reaches the shared poll loop too —
+            # which is where the waiting actually happens.
             import mimir.client.ui.ws.ws_worker as ws
             orig_sleep = asyncio.sleep
 
@@ -628,6 +630,230 @@ class WatchJobTests(unittest.TestCase):
         self._run(worker, self._descriptor())
         ev = worker.out_q.get_nowait()
         self.assertEqual(ev["state"], "crashed")
+
+    def test_a_run_that_is_over_leaves_the_table(self) -> None:
+        """There is nothing left to ask it, so nothing should still be asking.
+
+        Every reader already filters a finished task out, so what this protects is the
+        table itself: an entry that outlives its task is the table saying a run is in
+        flight when it is over.
+        """
+        for states in (["done"], ["crashed"], ["running", "done"]):
+            with self.subTest(states=states):
+                worker = self._make_worker(_ScriptedAgent(states=states, summary={}))
+                self._run(worker, self._descriptor())
+                self.assertEqual(worker._bg_jobs, {})
+
+    def test_a_run_nothing_can_poll_leaves_the_table(self) -> None:
+        worker = self._make_worker(_ScriptedAgent(states=["done"], summary={}))
+        worker._bg_jobs["fast"] = object()
+        self._run(worker, {"job_key": "fast", "status_op": {}})
+        self.assertEqual(worker._bg_jobs, {})
+
+    def test_a_watch_that_raises_leaves_the_table_too(self) -> None:
+        """The one exit that used to leave an entry behind."""
+        class _Exploding:
+            async def _run_tool(self, *a, **kw):
+                raise KeyboardInterrupt("not an Exception the loop catches")
+
+        worker = self._make_worker(_Exploding())
+        with self.assertRaises(KeyboardInterrupt):
+            self._run(worker, self._descriptor())
+        self.assertEqual(worker._bg_jobs, {})
+
+
+class SharedPollLoopTests(unittest.TestCase):
+    """The loop both watchers and the in-turn wait are built on.
+
+    Its callers differ in what they can afford — a watcher holding a run across turns
+    asks rarely and puts a deadline on each probe; a turn waiting on one asks often and
+    has no deadline to give, because it *is* the deadline — so the schedule is an
+    argument. What is not an argument is what a poll means, and that is what these pin.
+    """
+
+    @staticmethod
+    def _poll(agent, **kw):
+        defaults = dict(interval=0.0, max_interval=0.0, unreadable_limit=3)
+        return asyncio.run(job_poll.poll_until_terminal(
+            agent._run_tool, {"tool": "bash_job", "args": {"job_key": "k"}},
+            **{**defaults, **kw}))
+
+    def test_a_descriptor_naming_no_status_op_is_not_polled(self) -> None:
+        """Nothing to ask, so nothing is asked and the caller is told why.
+
+        A loop that spun here would be a promise nobody can keep, which is the one
+        failure mode a watcher must not have.
+        """
+        agent = _ScriptedAgent(states=["done"], summary={})
+        state, reason = asyncio.run(job_poll.poll_until_terminal(
+            agent._run_tool, {"args": {}}, interval=0.0, max_interval=0.0))
+        self.assertEqual(state, "")
+        self.assertIn("no status op", reason)
+        self.assertEqual(agent.status_calls, 0)
+
+    def test_the_four_words_end_a_run_and_nothing_else_does(self) -> None:
+        for word in sorted(job_poll.TERMINAL):
+            with self.subTest(word=word):
+                agent = _ScriptedAgent(states=["running", "queued", word], summary={})
+                state, _ = self._poll(agent)
+                self.assertEqual(state, word)
+                # 'queued' is a word this loop does not know, so it is "still going"
+                # rather than an answer to act on: a server's own vocabulary stays its
+                # own business.
+                self.assertEqual(agent.status_calls, 3)
+
+    def test_an_answer_with_no_state_is_given_up_as_unknown(self) -> None:
+        agent = _MuteAgent()
+        state, reason = self._poll(agent, unreadable_limit=3)
+        self.assertEqual(state, "unknown")
+        self.assertEqual(agent.status_calls, 3)
+        self.assertIn("policy: refused", reason)
+
+    def test_without_a_limit_an_unreadable_answer_is_polled_again(self) -> None:
+        """What the in-turn wait needs: no limit, because the run cannot outlive it.
+
+        Bounded here by ``max_polls``, which is that caller's only escape — nothing
+        cancels a turn's own wait the way a watcher's task can be cancelled.
+        """
+        agent = _MuteAgent()
+        state, _ = self._poll(agent, unreadable_limit=None, max_polls=7)
+        self.assertEqual(state, "")
+        self.assertEqual(agent.status_calls, 7)
+
+    def test_a_raise_is_not_an_answer_and_says_so(self) -> None:
+        """The distinction the in-turn wait reports progress on.
+
+        "The op said nothing useful" and "the op said nothing at all" are different
+        news, and only the poll knows which it saw.
+        """
+        ticks: list = []
+        agent = _MuteAgent(raises=True)
+        self._poll(agent, unreadable_limit=2, on_tick=ticks.append)
+        self.assertTrue(ticks)
+        self.assertFalse(any(t.answered for t in ticks))
+
+        ticks.clear()
+        self._poll(_MuteAgent(), unreadable_limit=2, on_tick=ticks.append)
+        self.assertTrue(all(t.answered for t in ticks))
+
+    def test_a_tick_carries_the_fields_a_run_is_reported_by(self) -> None:
+        """Shape-driven: a field list, not a parser per tool.
+
+        A badge says which node a job landed on and which pid a build is; both arrive
+        through this copy, and a status op that starts reporting one needs no change
+        here.
+        """
+        class _Agent:
+            async def _run_tool(self, tool, args, execution_context=None,
+                                record_observations=True):
+                return json.dumps({"state": "running", "nodes": ["gpu007"],
+                                   "scheduler": "hpc1", "pid": 4242,
+                                   "command": "make -j64", "blether": "ignored"})
+
+        ticks: list = []
+        self._poll(_Agent(), max_polls=1, on_tick=ticks.append)
+        self.assertEqual(ticks[0].fields, {"state": "running", "nodes": ["gpu007"],
+                                           "scheduler": "hpc1", "pid": 4242,
+                                           "command": "make -j64"})
+
+    def test_a_terminal_poll_reports_nothing_as_progress(self) -> None:
+        """A run that is over is news of its own, not a progress tick."""
+        ticks: list = []
+        self._poll(_ScriptedAgent(states=["done"], summary={}), on_tick=ticks.append)
+        self.assertEqual(ticks, [])
+
+    def test_the_probes_are_never_credited_to_the_agent(self) -> None:
+        agent = _ScriptedAgent(states=["running", "done"], summary={})
+        self._poll(agent)
+        self.assertEqual(agent.observed, [False, False])
+
+
+class TheDispatchAdoptsHandedOverRunsTests(unittest.TestCase):
+    """A result reporting runs still going has them adopted, whatever else it says.
+
+    Two gates used to stand between a handed-over run and a watcher. The adoption only
+    ran when no run had been launched in the same result, so a payload doing both lost
+    the handover; and it only ran on a result that succeeded, which is the opposite of
+    where it is needed — a sub-agent abandoned mid-flight reports where it got to
+    through an error, and its live runs are named on exactly that payload.
+
+    Adopting trusts no state: a descriptor must name a job and an op to poll it with,
+    and a run that is not there is retired as unknown a few ticks later.
+    """
+
+    def _agent(self, result_text: str):
+        async def run_tool(name, args, execution_context=None,
+                           run_auto_validation=True, call_id=""):
+            return result_text
+
+        approvals = types.SimpleNamespace(record_snapshot=lambda p: None,
+                                          _file_snapshots={})
+        return types.SimpleNamespace(
+            _normalize_arguments=lambda a: (json.loads(a) if isinstance(a, str)
+                                            else dict(a)),
+            _is_write_tool=lambda n: False,
+            tool_caps={"spawn_agent": ToolCaps(name="spawn_agent",
+                                               capabilities={BACKGROUNDABLE})},
+            get_tool_file_targets=lambda n, a: [],
+            approvals=approvals,
+            _run_tool=run_tool,
+            _rewrite_tool_for_context=lambda n, a: (n, a),
+            registered=[],
+        )
+
+    @staticmethod
+    def _descriptor(key: str) -> dict:
+        return {"server": "bash", "job_key": key, "kind": "shell-command",
+                "run_dir": f"/state/sessions/p/subagents/sub-1/jobs/{key}",
+                "status_op": {"tool": "bash_job",
+                              "args": {"job_key": key,
+                                       "run_dir": f"/state/sessions/p/subagents/"
+                                                  f"sub-1/jobs/{key}"}}}
+
+    def _dispatch(self, result_text: str) -> list[dict]:
+        from mimir.client.context.execution_context import build_execution_context
+        from mimir.client.query_engine import dispatch as dispatch_module
+
+        agent = self._agent(result_text)
+        agent._register_background_job = \
+            lambda d, owner=None: (agent.registered.append(d), True)[1]
+        agent._watched_background_jobs = lambda: []
+        asyncio.run(dispatch_module._dispatch_tool_calls(
+            [{"id": "1", "function": {"name": "spawn_agent", "arguments": "{}"}}],
+            agent, [], build_execution_context()))
+        return agent.registered
+
+    def test_a_failed_handoff_still_has_its_live_runs_adopted(self) -> None:
+        """The payload that most needs adopting is the one that failed."""
+        registered = self._dispatch(json.dumps({
+            "status": "error",
+            "error": "This sub-agent was stopped after about 30 minutes",
+            "background_jobs": [self._descriptor("j1")]}))
+        self.assertEqual([d["job_key"] for d in registered], ["j1"])
+
+    def test_a_launch_and_a_handover_in_one_result_both_land(self) -> None:
+        """A detached child is itself a run, and may leave others behind.
+
+        Its own handle is the singular key; what it left going is the plural one, and
+        reading only the first is how the rest went unwatched.
+        """
+        registered = self._dispatch(json.dumps({
+            "status": "ok",
+            "background_job": {"server": "agent", "kind": "sub-agent",
+                               "job_key": "child-1",
+                               "status_op": {"tool": "subagent_job",
+                                             "args": {"job_key": "child-1"}}},
+            "background_jobs": [self._descriptor("j1")]}))
+        self.assertEqual(sorted(d["job_key"] for d in registered), ["child-1", "j1"])
+
+    def test_the_adopted_handle_keeps_the_directory_it_arrived_with(self) -> None:
+        """Without it the parent resolves the handle against its own session, finds
+        nothing, and reads that as a run that ended."""
+        registered = self._dispatch(json.dumps({
+            "status": "error", "error": "out of time",
+            "background_jobs": [self._descriptor("j1")]}))
+        self.assertEqual(registered[0]["status_op"]["args"]["run_dir"],
+                         "/state/sessions/p/subagents/sub-1/jobs/j1")
 
 
 class RegisterBgJobTests(unittest.TestCase):
@@ -813,18 +1039,22 @@ class WatcherProbeIsNeverGuardedTests(unittest.TestCase):
 
     def test_dispatch_is_the_only_caller_that_consults_the_guards(self) -> None:
         import inspect
-        from mimir.client.query_engine import background
+        from mimir.client.query_engine import background, job_poll
         from mimir.client.ui.ws import ws_worker
+        from mimir.servers.agent_state import _child_jobs
 
         guard_names = ("_asks_whether_a_watched_run_is_done",
                        "_waits_by_blocking_the_turn")
-        # The watcher (WS) and the in-turn await (CLI) must not reference either guard.
-        for module in (background, ws_worker):
+        # Every module that polls on its own account: the watcher (WS), the in-turn
+        # await (CLI), a sub-agent's own watcher, and the loop all three share.
+        for module in (background, job_poll, ws_worker, _child_jobs):
             src = inspect.getsource(module)
             for guard in guard_names:
                 self.assertNotIn(guard, src, f"{module.__name__} must not gate its own probes")
-        # And both probe paths go through _run_tool, not the dispatcher.
-        for probe in (background._await_background_job, ws_worker._AgentWorker._watch_job):
+        # And every probe path reaches the tool through _run_tool, not the dispatcher.
+        for probe in (background._await_background_job,
+                      ws_worker._AgentWorker._poll_to_completion,
+                      _child_jobs.ChildWatcher._watch):
             src = inspect.getsource(probe)
             self.assertIn("_run_tool", src)
             self.assertNotIn("_dispatch_tool_calls", src)

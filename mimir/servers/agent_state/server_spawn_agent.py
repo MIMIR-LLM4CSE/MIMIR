@@ -50,6 +50,7 @@ if os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..")) no
     sys.path.insert(
         0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..")))
 
+import _child_jobs
 from approved_roots import approved_roots
 from capabilities import BACKGROUNDABLE, DELEGATE, MAIN_ONLY, PLAN_READONLY, REVERSIBLE, tool_caps
 from mcp.server.fastmcp import Context, FastMCP
@@ -301,11 +302,28 @@ def _partial_handoff(child: dict) -> dict:
     if files_read:
         lines.append(f"It had read {len(files_read)} file(s).")
     lines.append("Its todo list and scratchpad are under its session, as it left them.")
-    return {
+    # Runs it launched and is no longer there to answer for. Read defensively, as the
+    # agent above is: this is called from the caller's thread, and a child that never
+    # got as far as a watcher has none to read. The plural key is what tells the client
+    # these are runs to adopt rather than a run this call launched, and each descriptor
+    # already names the directory the parent must read it through.
+    watcher = child.get("watcher")
+    handed_over = []
+    try:
+        handed_over = watcher.handover() if watcher is not None else []
+    except Exception as exc:  # a child mid-teardown must not fail its caller
+        print(f"spawn_agent: could not read a sub-agent's runs: {exc}", file=sys.stderr)
+    if handed_over:
+        keys = ", ".join(str(d.get("job_key") or "?") for d in handed_over)
+        lines.append(f"Runs it left going, now watched here: {keys}.")
+    out = {
         "answer": " ".join(lines),
         "files_read": files_read,
         "files_written": files_written,
     }
+    if handed_over:
+        out["background_jobs"] = handed_over
+    return out
 
 # Ceiling on what one step of a child may generate. The backend otherwise grants the
 # model's whole answer reserve, and a run that spends it is a single silent step.
@@ -681,6 +699,19 @@ def _sub_session_id() -> str:
 #     cannot weigh.
 _ASK_LOCK = asyncio.Lock()
 
+def _child_origin(agent, task: str) -> dict:
+    """Which child this is, as data — for a card it raises and a run it leaves behind.
+
+    Every approval card carries it, because "allow this command?" from an unnamed
+    process is a question the user cannot weigh, and because several children can be
+    working at once. A badge on a run carries the same dict for the same reason: a job
+    on a node is worth nothing to read if it does not say whose.
+    """
+    label = task.strip().splitlines()[0][:60] if task.strip() else "a sub-agent"
+    return {"kind": "subagent", "label": label,
+            "session": getattr(agent, "session_id", "") or ""}
+
+
 _APPROVAL_OPTIONS = [
     {"label": "Allow once", "description": "Run it this time."},
     {"label": "Allow for the session",
@@ -770,12 +801,7 @@ def _install_user_channel(agent, session, loop, task: str) -> None:
     onto the server's loop and blocks its own thread until the user answers. Blocking
     is correct here: the child has nothing to do until it has its answer.
     """
-    label = task.strip().splitlines()[0][:60] if task.strip() else "a sub-agent"
-    # Who is asking, as data. Every card carries it, because "allow this command?" from
-    # an unnamed process is a question the user cannot weigh — and because several
-    # children can be working at once.
-    origin = {"kind": "subagent", "label": label,
-              "session": getattr(agent, "session_id", "") or ""}
+    origin = _child_origin(agent, task)
 
     def _ask(header: str, question: str, options: list[dict]) -> str:
         future = asyncio.run_coroutine_threadsafe(
@@ -1757,6 +1783,12 @@ async def spawn_agent(
         "tools": requested,
         "session": session,
         "workspace": result.get("workspace", {}),
+        # Runs it launched and left going. Plural, as every answer about work this call
+        # did not start is: the client adopts these for the caller instead of reading
+        # them as a run this call launched. Absent when there are none, so a child that
+        # finished its work cleanly says nothing about runs at all.
+        **({"background_jobs": result["background_jobs"]}
+           if result.get("background_jobs") else {}),
     })
 
 
@@ -1904,8 +1936,20 @@ async def _run_sub_agent(
             # optimisation sessions (keyed by proxy name) are separate.
             "MIMIR_PROXY_BENCH_DIR": os.path.join(worktree["repo"], "proxy_bench"),
         })
+    # Its own watcher, so a detached run it launches is held by something: without one
+    # every backgroundable launch waits the run out in-turn, inside the child's budget,
+    # and a run that outlives the budget outlives the only thing watching it. The child
+    # hears about it through its steer channel, at its next step boundary.
+    watcher = _child_jobs.ChildWatcher(
+        agent=agent, origin=_child_origin(agent, task), on_activity=on_event)
+    agent._register_background_job = watcher.register
+    agent._watched_background_jobs = watcher.live_descriptors
+    agent._poll_steer = watcher.drain_steers
     if child is not None:
         child["agent"] = agent
+        # Published for the same reason the agent is: a caller out of patience reads the
+        # runs still in flight off this, from its own thread, and hands them over.
+        child["watcher"] = watcher
         # Also the copy it works in: a run that overruns its budget is read through
         # _partial_handoff, and that is where the paths it reports get their names.
         child["worktree"] = worktree
@@ -1925,6 +1969,13 @@ async def _run_sub_agent(
             agent, task, context, requested, grantable, max_steps, on_event,
             approval_mode=approval_mode, budget=budget, level=level, worktree=worktree,
             ask_session=ask_session, ask_loop=ask_loop)
+        # A run it launched can outlive the answer it gives. Named on the result the
+        # caller reads, because a run named nowhere in it is a run nobody is left
+        # holding — and the plural key is what has the client adopt it for the parent
+        # rather than read it as something this call started.
+        handed_over = watcher.handover()
+        if handed_over:
+            result["background_jobs"] = handed_over
         return result
     finally:
         if worktree is not None:
@@ -1959,6 +2010,13 @@ async def _run_sub_agent(
         # them. Left to asyncio.run's shutdown_asyncgens, each stdio_client would be
         # closed from another task and blow up on anyio's cancel-scope check (and
         # leak one server subprocess per connected server).
+        # Before cleanup, and on this loop: a watch still polling when asyncio.run
+        # returns is the one way this thread can be left hanging, and its probes go
+        # through servers the next line closes.
+        try:
+            await watcher.close()
+        except Exception as exc:  # a dropped watch must not mask the child's answer
+            print(f"spawn_agent: sub-agent watcher warning: {exc}", file=sys.stderr)
         try:
             await agent.cleanup()
         except Exception as exc:  # teardown races must not mask the child's answer

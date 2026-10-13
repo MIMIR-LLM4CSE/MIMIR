@@ -1165,6 +1165,7 @@ def bash_job(
     op: Annotated[str, Field(
         description="status (default) | output | list")] = "status",
     job_key: str = "",
+    run_dir: str = "",
 ) -> dict:
     """Read a detached bash_run job: its state, its output, or the list of them.
 
@@ -1187,6 +1188,10 @@ def bash_job(
 
     Args:
         job_key: The handle bash_run returned. Required for 'status' and 'output'.
+        run_dir: Where the job's files are, when they are not where a bare handle
+            resolves to — a run a sub-agent of this session launched, handed over when
+            it ran out of time. Comes from the descriptor; never worth composing by
+            hand. Leave it out for a run of this session's own.
     """
     if op not in _JOB_OPS:
         return err(f"Unknown op '{op}'.", valid_ops=list(_JOB_OPS))
@@ -1196,14 +1201,57 @@ def bash_job(
     if not _bash_jobs.valid_key(job_key):
         return err("A job_key from bash_run(background=True) is required.",
                    hint="Use op='list' to see the jobs this host knows about.")
+    resolved = ""
+    if run_dir:
+        resolved, refusal = _resolve_run_dir(run_dir, job_key)
+        if refusal is not None:
+            return refusal
     if op == "status":
-        payload = _bash_jobs.state(job_key)
-        return _job_payload(_with_live_descriptors(payload, [payload]))
-    payload = _bash_jobs.output(job_key, _MAX_OUTPUT, running_max_bytes=_RUNNING_OUTPUT)
-    return _job_payload(_with_live_descriptors(payload, [payload]))
+        payload = _bash_jobs.state(job_key, resolved)
+        return _job_payload(_with_live_descriptors(payload, [payload], resolved))
+    payload = _bash_jobs.output(job_key, _MAX_OUTPUT,
+                                running_max_bytes=_RUNNING_OUTPUT, run_dir=resolved)
+    return _job_payload(_with_live_descriptors(payload, [payload], resolved))
 
 
-def _with_live_descriptors(payload: dict, jobs: list[dict]) -> dict:
+def _resolve_run_dir(run_dir: str, job_key: str) -> tuple[str, dict | None]:
+    """Settle an explicit job directory, or say why it is refused.
+
+    A job directory is derived from this session for every job this session launched.
+    The exception is a job a *sub-agent* of this session launched: a child's session is
+    stored under its parent's (``<parent>/subagents/<child>``), so its runs are real
+    runs of this conversation's work that simply do not resolve from a bare key — and a
+    bare key resolved against the wrong session reads as "No such job", which the
+    watcher vocabulary spells ``unknown``, which is terminal. A parent told that would
+    announce a healthy build as lost.
+
+    So the rule is containment, and it needs no new concept: a directory inside this
+    session's own state directory, named like a job, under a ``jobs/`` parent. That
+    grants exactly this session's runs and its children's, and nothing else — another
+    conversation's job directory is not under this session's, however well formed.
+    """
+    from state_paths import session_state_dir
+    resolved = os.path.realpath(os.path.expanduser(run_dir))
+    root = os.path.realpath(session_state_dir())
+    if os.path.commonpath([resolved, root]) != root:
+        return "", err("That run_dir is outside this session.",
+                       hint="A run_dir names a job of this session or of one of its "
+                            "sub-agents; leave it out to read this session's own job.")
+    if os.path.basename(os.path.dirname(resolved)) != "jobs":
+        return "", err("That run_dir is not a job directory.",
+                       hint="A job directory sits under a 'jobs/' directory and is "
+                            "named like the handle bash_run returned.")
+    if not _bash_jobs.valid_key(os.path.basename(resolved)):
+        return "", err("That run_dir is not named like a job.",
+                       hint="Its last segment is the handle bash_run returned.")
+    if job_key and os.path.basename(resolved) != job_key:
+        return "", err("That run_dir names a different job than job_key does.",
+                       hint="Pass the pair as the descriptor handed them over, or "
+                            "leave run_dir out.")
+    return resolved, None
+
+
+def _with_live_descriptors(payload: dict, jobs: list[dict], run_dir: str = "") -> dict:
     """Attach a watcher handle for every job in *jobs* that is still running.
 
     A watcher lives on the agent that launched the run and dies with it, which an
@@ -1221,7 +1269,8 @@ def _with_live_descriptors(payload: dict, jobs: list[dict]) -> dict:
     makes the row a run and, on a client with no watcher, something to wait out in-turn.
     A status read is neither.
     """
-    live = [_job_descriptor(j["job_key"], _bash_jobs.job_dir(j["job_key"]))
+    live = [_job_descriptor(j["job_key"],
+                            run_dir or _bash_jobs.job_dir(j["job_key"]))
             for j in jobs
             if isinstance(j, dict) and j.get("state") == "running" and j.get("job_key")]
     if live:

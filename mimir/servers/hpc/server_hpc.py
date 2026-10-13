@@ -25,6 +25,7 @@ Safety model:
   allocation, so the local-validation hold has nothing to protect there.
 """
 
+import hashlib
 import json
 import os
 import re
@@ -339,8 +340,8 @@ def _chosen_host(scheduler: str) -> tuple[str, dict | None]:
 
 
 def _locate_job(job_id: str, requested: str = "",
-                job_dir: str = "") -> tuple[str, str, str]:
-    """Find *job_id* among the schedulers this workspace reaches: ``(host, state, raw)``.
+                job_dir: str = "") -> tuple[str, str, str, list[str]]:
+    """Find *job_id*: ``(host, state, raw, nodes)``, among the schedulers reached.
 
     The hint first — the descriptor's own record, which makes the common case one call
     — then every other reachable scheduler until one knows the id. That fallback is
@@ -352,24 +353,24 @@ def _locate_job(job_id: str, requested: str = "",
     *requested* skips the search when a caller already knows — a sweep refused for one
     job is not worth paying twice. *job_dir* is for the caller that has already found
     the descriptor, so the sessions tree is walked once per call rather than twice.
-    ``("", "unknown", "")`` when nothing has heard of it.
+    ``("", "unknown", "", [])`` when nothing has heard of it.
     """
     if requested:
-        state, raw = _normalized_job_state(job_id, host=requested)
-        return requested, state, raw
+        state, raw, nodes = _normalized_job_state(job_id, host=requested)
+        return requested, state, raw, nodes
     if not job_dir:
         job_dir, _ = _find_job_dir(job_id)
     hint = _job_host(job_dir) if job_dir else None
     order = [hint] if hint is not None else []
     order += [host for host in slurm_hosts() if host != hint]
     for host in order:
-        state, raw = _normalized_job_state(job_id, host=host)
+        state, raw, nodes = _normalized_job_state(job_id, host=host)
         if state != "unknown":
             # Found, so the next poll of this job is one call rather than a sweep.
             if job_dir and hint != host:
                 _record_job_host(job_dir, host)
-            return host, state, raw
-    return "", "unknown", ""
+            return host, state, raw, nodes
+    return "", "unknown", "", []
 
 
 def _run_bash(script: str, timeout: int, stdin: str | None = None, *,
@@ -902,6 +903,20 @@ _SACCT_CRASH_PREFIXES = (
 _ACTIVE_STATES = ("RUNNING", "COMPLETING")
 _WAITING_STATES = ("PENDING", "CONFIGURING", "REQUEUED")
 
+# A job is over when it says so, wherever it says it. squeue reports the same words
+# sacct does and keeps a finished job for a while — a cancelled one can sit there
+# saying CANCELLED — so these are read from either answer. Prefixes because Slurm
+# qualifies some of them ("CANCELLED by 1234").
+_DONE_PREFIXES = ("COMPLETED",)
+
+
+def _is_crash_state(state: str) -> bool:
+    return any(state.startswith(prefix) for prefix in _SACCT_CRASH_PREFIXES)
+
+
+def _is_done_state(state: str) -> bool:
+    return any(state.startswith(prefix) for prefix in _DONE_PREFIXES)
+
 
 def _lines(result: dict) -> list[str]:
     """The non-empty lines of a command's output, upper-cased. [] when it failed."""
@@ -911,12 +926,24 @@ def _lines(result: dict) -> list[str]:
             for line in (result.get("stdout") or "").splitlines() if line.strip()]
 
 
-def _normalized_job_state(job_id: str, *, host: str = _LOCAL_HOST) -> tuple[str, str]:
+def _normalized_job_state(job_id: str, *,
+                          host: str = _LOCAL_HOST) -> tuple[str, str, list[str]]:
     """Map a Slurm job's state to the shared vocab: running|pending|done|crashed|unknown.
 
     Active jobs come from ``squeue``; finished jobs have left the queue, so their
-    terminal state is read from ``sacct``. Returns ``(state, raw)``. Missing tools
-    or an unknown job yield ``("unknown", "")`` — a terminal signal for the watcher.
+    terminal state is read from ``sacct``. Returns ``(state, raw, nodes)``. Missing
+    tools or an unknown job yield ``("unknown", "", [])`` — a terminal signal for the
+    watcher.
+
+    A job the queue already reports as finished — COMPLETED, FAILED, CANCELLED — is
+    settled from that answer alone. Nothing is gained by following it further, and a
+    site without accounting has no second answer to settle it with.
+
+    *nodes* is where the job is actually running, read from the same ``squeue`` call
+    rather than a second one. Slurm's ``%R`` column is the nodelist for a running job
+    and the *reason it is waiting* for a pending one, so it is only read as nodes when
+    the job is running — a pending job has no node yet, which is the honest answer and
+    not an empty one to be filled in later.
 
     **One id can be many jobs.** An array submits as ``15306621`` and runs as
     ``15306621_1 … _8``, and both commands answer for every element: ``squeue`` prints
@@ -927,13 +954,34 @@ def _normalized_job_state(job_id: str, *, host: str = _LOCAL_HOST) -> tuple[str,
     worst outcome among the elements, since an array where one task failed is not an
     array that completed.
     """
-    queued = _lines(_run_bash(f"squeue -j {shlex.quote(job_id)} -h -o '%T'",
-                              _TIMEOUT_READ, host=host))
+    rows = _lines(_run_bash(f"squeue -j {shlex.quote(job_id)} -h -o '%T|%R'",
+                            _TIMEOUT_READ, host=host))
+    queued, where = [], []
+    for row in rows:
+        state, _, reason_or_node = row.partition("|")
+        queued.append(state.strip())
+        where.append(reason_or_node.strip())
     raw = ",".join(sorted(set(queued)))
     if any(state in _ACTIVE_STATES for state in queued):
-        return "running", raw
+        nodes = sorted({node
+                        for state, expr in zip(queued, where)
+                        if state in _ACTIVE_STATES
+                        for node in cpu_facts.expand_hostlist(expr) if node})
+        return "running", raw, nodes
     if queued and all(state in _WAITING_STATES for state in queued):
-        return "pending", raw
+        return "pending", raw, []
+    # Over, by the queue's own answer. Read before sacct is asked, for two reasons: it
+    # saves a round trip in the ordinary case, and it is the only thing that settles a
+    # job on a site with no accounting at all — where ``sacct`` answers nothing and the
+    # fallthrough below reads "in the queue with a state I do not recognise" as still
+    # running. For a CANCELLED job that is a watcher polling, for as long as the process
+    # lives, something that will never change again.
+    if queued and all(_is_done_state(s) or _is_crash_state(s) for s in queued):
+        # The worst outcome among the elements, as below: an array where one task was
+        # cancelled is not an array that completed.
+        if any(_is_crash_state(s) for s in queued):
+            return "crashed", raw, []
+        return "done", raw, []
 
     accounted = _lines(_run_bash(f"sacct -j {shlex.quote(job_id)} -n -X -o State",
                                  _TIMEOUT_READ, host=host))
@@ -942,17 +990,16 @@ def _normalized_job_state(job_id: str, *, host: str = _LOCAL_HOST) -> tuple[str,
     # most of these land anyway. What this earns is the one case the fallback cannot
     # reach: a terminal crash line present *while* squeue still reports a state that is
     # neither active nor waiting, which the clause below would read as running.
-    crashed = [state for state in accounted
-               if any(state.startswith(prefix) for prefix in _SACCT_CRASH_PREFIXES)]
+    crashed = [state for state in accounted if _is_crash_state(state)]
     if crashed:
-        return "crashed", sraw
-    if accounted and all(state.startswith("COMPLETED") for state in accounted):
-        return "done", sraw
+        return "crashed", sraw, []
+    if accounted and all(_is_done_state(state) for state in accounted):
+        return "done", sraw, []
     if queued:                    # in the queue with a non-standard active state
-        return "running", raw
+        return "running", raw, []
     if accounted:                 # some other terminal state we don't classify
-        return "crashed", sraw
-    return "unknown", ""
+        return "crashed", sraw, []
+    return "unknown", "", []
 
 
 @mcp.tool(**tool_caps(kind="slurm"))
@@ -982,10 +1029,14 @@ def slurm_job_status(job_id: str, scheduler: str = "") -> dict:
     # Slurm job outlives its conversation, so the sibling sessions are searched too and the
     # answer says when the job came from another one.
     job_dir, from_session = _find_job_dir(job_id)
-    host, state, raw = _locate_job(job_id, scheduler, job_dir)
+    host, state, raw, nodes = _locate_job(job_id, scheduler, job_dir)
     payload = {"job_id": job_id, "state": state, "raw_state": raw}
     if host or state != "unknown":
         payload["scheduler"] = _host_name(host)
+    # Which machines it got. Only ever present for a running job: a pending one has no
+    # node yet, and Slurm's own column there is the reason it is waiting.
+    if nodes:
+        payload["nodes"] = nodes
     if job_dir:
         payload["job_dir"] = job_dir
         # Read, not re-derived: the submission wrote down where it told the job to
@@ -1096,7 +1147,7 @@ def slurm_watch(job_id: str, note: str = "", scheduler: str = "") -> dict:
     # staleness horizon for a run that does not exist. And asked of each of them, which
     # is what makes an id enough — the caller holding a number from a launcher's output
     # has no reason to know which cluster printed it.
-    host, state, raw = _locate_job(job_id, scheduler)
+    host, state, raw, nodes = _locate_job(job_id, scheduler)
     if state == "unknown":
         known = ", ".join(_host_name(h) for h in slurm_hosts()) or "none reachable"
         return err(f"No scheduler this workspace reaches knows job {job_id} ({known}).",
@@ -1123,6 +1174,10 @@ def slurm_watch(job_id: str, note: str = "", scheduler: str = "") -> dict:
         "scheduler": _host_name(host),
         "note": note or None,
     }
+    # Where it is running, for the same reason the status read carries it: a watcher
+    # keeps what its poll learned, and "on which node" is what a badge says.
+    if nodes:
+        payload["nodes"] = nodes
     if state in _TERMINAL_STATES:
         # Already over. Settled rather than watched: a watcher put on a finished job
         # reports it at its first poll, which is a wake for news the caller is holding.
@@ -1190,7 +1245,7 @@ def slurm_cancel(job_id: str, confirm: bool = False, scheduler: str = "") -> dic
 
     # Where it is, before anything is sent: a scancel aimed at the wrong scheduler
     # either hits nothing or — the id existing on both — somebody else's job.
-    host, located, located_raw = _locate_job(job_id, scheduler)
+    host, located, located_raw, _nodes = _locate_job(job_id, scheduler)
     if located == "unknown":
         known = ", ".join(_host_name(h) for h in slurm_hosts()) or "none reachable"
         return err(f"No scheduler this workspace reaches knows job {job_id} ({known}), "
@@ -1419,6 +1474,31 @@ _NODE_PROFILES_DIR = os.environ.get(
     "MIMIR_NODE_PROFILES_DIR", os.path.join(state_dir(), "hpc", "node_profiles"))
 _PROBE_MARKER = "probe.json"
 
+
+def _profile_host_dir(host: str) -> str:
+    """Where this scheduler's node profiles are filed.
+
+    Per host, because Slurm's own node names are per cluster: two schedulers each with
+    a ``node01`` are two different machines, and a single flat directory had the second
+    one overwrite the first. The segment is the scheduler's own name — ``local``, or the
+    hostname — reduced to what a directory name can hold.
+
+    Profiles already sitting at the root of the profiles directory are not read for any
+    host. A root file records no scheduler, and reading it as the local one would be a
+    guess of exactly the kind the per-host keying exists to stop; there is no TTL and a
+    probe is a five-minute job, so a node re-profiles on demand instead.
+    """
+    name = _host_name(host) or _LOCAL_NAME
+    return os.path.join(_NODE_PROFILES_DIR, re.sub(r"[^A-Za-z0-9._-]", "_", name))
+
+
+def _node_profile_path(node: str, host: str) -> str:
+    return os.path.join(_profile_host_dir(host), f"{node}.json")
+
+
+def _read_node_profile(node: str, host: str) -> dict | None:
+    return _read_json(_node_profile_path(node, host))
+
 # Fallback when no MIMIR Python runs on the node: raw sections, parsed server-side
 # by the same cpu_facts parsers. Everything that needs no Python is still read.
 _FALLBACK_SECTIONS = (
@@ -1432,12 +1512,20 @@ _FALLBACK_SECTIONS = (
 )
 
 
-def _probe_script(job_dir: str, header: list[str]) -> str:
+def _probe_script(work_dir: str, header: list[str], *, make_dir: bool = False) -> str:
+    """The probe, as a script. *work_dir* is where it writes, on the node that runs it.
+
+    For a local scheduler that is the submission's own directory, which already exists.
+    For one reached over ssh it is a path on the far side that nothing here can create,
+    so the script makes it itself — the first thing on the node, before anything it
+    would write there.
+    """
     q = shlex.quote
     fallback = [f'  echo "=={name}"; {cmd}' for name, cmd in _FALLBACK_SECTIONS]
     return "\n".join(header + [
         "",
-        f"cd {q(job_dir)} || exit 1",
+        *([f"mkdir -p {q(work_dir)} || exit 1"] if make_dir else []),
+        f"cd {q(work_dir)} || exit 1",
         'echo "${SLURMD_NODENAME:-$(hostname -s)}" > node',
         *node_python_lines(),
         f'if [ -n "$_MIMIR_PY" ] && "$_MIMIR_PY" {q(_PLATFORM_SCRIPT)} --profile-json'
@@ -1454,16 +1542,59 @@ def _probe_script(job_dir: str, header: list[str]) -> str:
     ])
 
 
-def _fallback_profile(text: str) -> dict:
-    """A profile from the raw sections — what the node could say without Python."""
-    sections, current = {}, None
+def _split_sections(text: str, names) -> dict[str, str]:
+    """Split output that labels its parts with ``==<name>`` lines.
+
+    The probe script writes its fallback sections this way, and a remote harvest reads
+    a probe's whole directory the same way — one round trip instead of one per file.
+    Lines before the first marker, and markers nobody asked for, are dropped.
+    """
+    wanted = set(names)
+    sections: dict[str, list[str]] = {}
+    current = None
     for line in text.splitlines():
-        if line.startswith("==") and line[2:].strip() in dict(_FALLBACK_SECTIONS):
+        if line.startswith("==") and line[2:].strip() in wanted:
             current = line[2:].strip()
             sections[current] = []
-        elif current:
+        elif current is not None:
             sections[current].append(line)
-    sec = {k: "\n".join(v) for k, v in sections.items()}
+    return {k: "\n".join(v) for k, v in sections.items()}
+
+
+# What a probe leaves behind, read whether its directory is on this filesystem or on
+# the far side of an ssh. ``mode`` is written last by the script, so its presence is
+# what says the probe finished — no scheduler has to have caught up.
+_PROBE_FILES = ("mode", "node", "profile.json", "fallback.txt")
+
+
+def _probe_results(work_dir: str, host: str) -> dict[str, str]:
+    """The probe's own files, by name. Absent files are simply missing keys."""
+    if not host:
+        out = {}
+        for name in _PROBE_FILES:
+            try:
+                with open(os.path.join(work_dir, name)) as fh:
+                    out[name] = fh.read()
+            except OSError:
+                continue
+        return out
+    # One round trip for all of them: a file per call would be four ssh connections
+    # per probe, per panel refresh. Missing files contribute an empty section rather
+    # than an error, which is the same answer the local branch gives.
+    q = shlex.quote
+    script = "; ".join(
+        [f"cd {q(work_dir)} || exit 0"] +
+        [f'echo "=={name}"; cat {q(name)} 2>/dev/null' for name in _PROBE_FILES])
+    res = _run_bash(script, _TIMEOUT_READ, host=host)
+    if res.get("status") != "ok":
+        return {}
+    found = _split_sections(res.get("stdout", ""), _PROBE_FILES)
+    return {k: v for k, v in found.items() if v.strip()}
+
+
+def _fallback_profile(text: str) -> dict:
+    """A profile from the raw sections — what the node could say without Python."""
+    sec = _split_sections(text, dict(_FALLBACK_SECTIONS))
     arch = sec.get("uname", "").strip()
     gpus = cpu_facts.parse_nvidia_csv(sec.get("gpu", ""))
     os_facts = cpu_facts.parse_os_release(sec.get("os", ""))
@@ -1493,20 +1624,27 @@ def _read_json(path: str) -> dict | None:
         return None
 
 
-def _write_node_profile(node: str, record: dict) -> None:
-    os.makedirs(_NODE_PROFILES_DIR, exist_ok=True)
-    tmp = os.path.join(_NODE_PROFILES_DIR, f".{node}.json.tmp")
+def _write_node_profile(node: str, record: dict, host: str = _LOCAL_HOST) -> None:
+    host_dir = _profile_host_dir(host)
+    os.makedirs(host_dir, exist_ok=True)
+    tmp = os.path.join(host_dir, f".{node}.json.tmp")
     with open(tmp, "w") as fh:
         json.dump(record, fh, indent=2, ensure_ascii=False)
-    os.replace(tmp, os.path.join(_NODE_PROFILES_DIR, f"{node}.json"))
+    os.replace(tmp, os.path.join(host_dir, f"{node}.json"))
 
 
-def _harvest_probes(nodes_by_name: dict[str, dict]) -> list[dict]:
+def _harvest_probes(nodes_by_name: dict[str, dict],
+                    host: str = _LOCAL_HOST) -> list[dict]:
     """Turn finished probe jobs into node profiles; report the ones not finished.
 
     A probe is finished when its script wrote ``mode`` — its own last act, so the
     answer never depends on squeue/sacct having caught up. Only a probe without it
     asks the scheduler where it stands.
+
+    *host* is the scheduler whose nodes are being harvested, and it decides where each
+    profile is filed. A probe's own directory records the host it was submitted to, so
+    one left by an earlier call is harvested for that scheduler rather than for
+    whichever one this call is asking about.
     """
     pending = []
     try:
@@ -1518,32 +1656,42 @@ def _harvest_probes(nodes_by_name: dict[str, dict]) -> list[dict]:
         meta = _read_json(os.path.join(job_dir, _PROBE_MARKER))
         if not meta or meta.get("harvested"):
             continue
-        mode_path = os.path.join(job_dir, "mode")
-        if not os.path.exists(mode_path):
-            state, raw = _normalized_job_state(str(meta.get("job_id", "")))
+        # The scheduler this probe was submitted to, which is not necessarily the one
+        # being asked about now, and the directory its result is in — on this
+        # filesystem for a local scheduler, on the far side for one reached over ssh.
+        probe_host = meta.get("host", host)
+        work_dir = meta.get("work_dir") or job_dir
+        files = _probe_results(work_dir, probe_host)
+        if "mode" not in files:
+            state, raw, _nodes = _normalized_job_state(str(meta.get("job_id", "")),
+                                                       host=probe_host)
             if state in ("running", "pending"):
                 pending.append({"job_id": meta.get("job_id"), "state": state,
-                                "partition": meta.get("partition", "")})
+                                "partition": meta.get("partition", ""),
+                                "scheduler": _host_name(probe_host)})
                 continue
             meta.update(harvested=True, outcome=f"no result ({raw or state})")
         else:
-            with open(mode_path) as fh:
-                mode = fh.read().strip()
-            with open(os.path.join(job_dir, "node")) as fh:
-                node = fh.read().strip()
+            mode = files["mode"].strip()
+            node = files.get("node", "").strip()
+            if not node:
+                meta.update(harvested=True, outcome="no node name recorded")
+                with open(os.path.join(job_dir, _PROBE_MARKER), "w") as fh:
+                    json.dump(meta, fh)
+                continue
             if mode == "full":
-                profile = _read_json(os.path.join(job_dir, "profile.json")) or {}
+                try:
+                    profile = json.loads(files.get("profile.json") or "")
+                except ValueError:
+                    profile = {}
                 partial = not profile
             else:
-                try:
-                    with open(os.path.join(job_dir, "fallback.txt")) as fh:
-                        profile = _fallback_profile(fh.read())
-                except OSError:
-                    profile = {}
+                profile = _fallback_profile(files.get("fallback.txt") or "")
                 partial = True
             record = {
                 "node": node, "probed_at": meta.get("submitted_at", ""),
                 "job_id": meta.get("job_id"), "source": "probe job",
+                "scheduler": _host_name(probe_host),
                 "slurm": _slurm_facts(nodes_by_name.get(node, {})),
                 "partial": partial, "profile": profile,
             }
@@ -1551,8 +1699,11 @@ def _harvest_probes(nodes_by_name: dict[str, dict]) -> list[dict]:
                 record["partial_reason"] = (
                     "No MIMIR Python runs on this node (no .venv-<os>-<arch> for it), so "
                     "only what the shell can read was collected: CPU, -march, GPU, OS. "
-                    "Toolchains, modules and Python environments are missing.")
-            _write_node_profile(node, record)
+                    "Toolchains, modules and Python environments are missing."
+                    + (" This scheduler is reached over ssh, where MIMIR's own "
+                       "collectors are not installed unless the checkout is shared."
+                       if probe_host else ""))
+            _write_node_profile(node, record, probe_host)
             meta.update(harvested=True, outcome=f"profiled {node}")
         with open(os.path.join(job_dir, _PROBE_MARKER), "w") as fh:
             json.dump(meta, fh)
@@ -1602,7 +1753,8 @@ def _compare_with_host(profile: dict, host: dict) -> dict:
     label="Slurm node probe",
 ))
 def slurm_probe_node(partition: str, constraint: str = "", nodelist: str = "",
-                     account: str = "", confirm: bool = False) -> dict:
+                     account: str = "", scheduler: str = "",
+                     confirm: bool = False) -> dict:
     """Read a compute node's full profile ON the node, with a short batch job.
 
     Slurm cannot say what a node's CPU model, vector ISA, native -march, caches, GPU
@@ -1624,6 +1776,9 @@ def slurm_probe_node(partition: str, constraint: str = "", nodelist: str = "",
         constraint: Slurm feature expression selecting the kind of node.
         nodelist: A specific node, when one kind of node in a mixed partition matters.
         account: Slurm account to charge (optional).
+        scheduler: Which scheduler to submit to; name it when the workspace reaches
+            more than one. The profile is filed under that scheduler, because a node
+            name means nothing without the cluster it is on.
         confirm: Must be True to submit.
     """
     if not partition.strip():
@@ -1631,6 +1786,9 @@ def slurm_probe_node(partition: str, constraint: str = "", nodelist: str = "",
     target_err = validate_target(constraint, nodelist)
     if target_err:
         return err(target_err)
+    host, refusal = _chosen_host(scheduler)
+    if refusal:
+        return refusal
     if not confirm:
         return err("Submission not confirmed.",
                    hint="Set confirm=True only after user approval.")
@@ -1643,20 +1801,35 @@ def slurm_probe_node(partition: str, constraint: str = "", nodelist: str = "",
         suffix += 1
         job_dir = os.path.join(_hpc_jobs_dir(), f"{stamp}-probe{suffix}")
     os.makedirs(job_dir)
-    log_file = os.path.join(job_dir, "slurm.log")
+    # Where the job writes, on the node that runs it. A scheduler on this machine
+    # writes into the submission's own directory; one reached over ssh has no access
+    # to this filesystem, so it writes beside its own state and the harvest reads it
+    # back over the same connection. The expansion is the script's, not ours — only
+    # the far side knows what $HOME is there.
+    if host:
+        work_dir = ('"${MIMIR_STATE_HOME:-$HOME/.mimir}"/node_probes/'
+                    + os.path.basename(job_dir))
+    else:
+        work_dir = job_dir
+    log_file = os.path.join(work_dir, "slurm.log")
     header = sbatch_header(
         job_name="mimir-probe", partition=partition, cpus_per_task=1,
         wall_time="00:05:00", log_file=log_file, account=account, nodes=1, ntasks=1,
         constraint=constraint, nodelist=nodelist,
     )
+    script = _probe_script(work_dir, header, make_dir=bool(host))
+    # Written locally whatever the scheduler, for a reader: the submission's directory
+    # is where someone goes to see what was actually asked for.
     script_path = os.path.join(job_dir, "probe.sh")
     try:
         with open(script_path, "w") as fh:
-            fh.write(_probe_script(job_dir, header))
+            fh.write(script)
     except OSError as exc:
         return err(f"Could not write the probe script: {exc}")
 
-    res = _run_argv(["sbatch", script_path], _TIMEOUT_SUBMIT)
+    # On stdin, not by path: a remote scheduler cannot read a file on this machine,
+    # and the local one does not need to.
+    res = _run_bash("sbatch", _TIMEOUT_SUBMIT, stdin=script, host=host)
     if res.get("status") != "ok":
         return err(res.get("stderr") or res.get("error", "sbatch failed"),
                    hint="Check partition, account and constraint.")
@@ -1665,9 +1838,14 @@ def slurm_probe_node(partition: str, constraint: str = "", nodelist: str = "",
         return err("Could not parse a job id from sbatch output.",
                    hint=f"sbatch said: {res.get('stdout', '').strip()[:200]}")
     job_id = match.group(1)
+    # The host is recorded twice on purpose: in the marker the harvest reads, and in
+    # the descriptor's own host file, which is what every other cluster tool resolves a
+    # job's scheduler from.
+    _record_job_host(job_dir, host)
     with open(os.path.join(job_dir, _PROBE_MARKER), "w") as fh:
         json.dump({"job_id": job_id, "partition": partition, "constraint": constraint,
-                   "nodelist": nodelist, "submitted_at": stamp}, fh)
+                   "nodelist": nodelist, "submitted_at": stamp,
+                   "host": host, "work_dir": work_dir}, fh)
     return ok({
         "job_id": job_id,
         "job_dir": job_dir,
@@ -1702,7 +1880,8 @@ def _summary(profile: dict) -> dict:
 
 
 @mcp.tool()
-def slurm_node_profile(partition: str = "", node: str = "") -> dict:
+def slurm_node_profile(partition: str = "", node: str = "",
+                       scheduler: str = "") -> dict:
     """What the compute nodes are, as the machines code will be built for and run on.
 
     Read-only and instant. For each kind of node (Slurm's hardware signature) in
@@ -1721,30 +1900,41 @@ def slurm_node_profile(partition: str = "", node: str = "") -> dict:
     - measure performance on the node, not here: a speedup measured on this host
       describes this host.
 
+    Which scheduler: name it when the workspace reaches more than one. Node names are
+    per cluster — two schedulers each with a `node01` are two different machines — so a
+    profile belongs to the scheduler it was read on and is never read for another.
+
     Which partition: the one the user named; otherwise the one the code and the job
     call for; when that is not clear, ask the user.
 
     Args:
         partition: Only node kinds in this partition.
         node: A single node name.
+        scheduler: Which scheduler's nodes to describe; name it when the workspace
+            reaches more than one. A profile belongs to the scheduler it was read on
+            and is never read for another.
     """
-    result = _run_argv(["scontrol", "show", "node", "-o"], _TIMEOUT_READ)
+    sched_host, refusal = _chosen_host(scheduler)
+    if refusal:
+        return refusal
+    result = _run_argv(["scontrol", "show", "node", "-o"], _TIMEOUT_READ,
+                       host=sched_host)
     if result.get("status") != "ok":
         return err(result.get("stderr") or result.get("error", "scontrol failed"),
-                   hint="Needs Slurm's scontrol on this host.")
+                   hint=f"Needs Slurm's scontrol on {_host_name(sched_host)}.")
     all_nodes = _parse_scontrol_nodes(result.get("stdout", ""))
     by_name = {n["node"]: n for n in all_nodes}
-    pending = _harvest_probes(by_name)
+    pending = _harvest_probes(by_name, sched_host)
 
     ctx = cpu_facts.execution_context(has_slurm=True)
     if ctx["context"] == "in_allocation":
         here = by_name.get(socket.gethostname().split(".")[0])
         if here:
-            cached = _read_json(os.path.join(_NODE_PROFILES_DIR, f"{here['node']}.json"))
+            cached = _read_node_profile(here["node"], sched_host)
             if not cached or cached.get("slurm") != _slurm_facts(here):
                 record = _local_profile_record(here)
                 if record:
-                    _write_node_profile(here["node"], record)
+                    _write_node_profile(here["node"], record, sched_host)
 
     nodes = all_nodes
     if node:
@@ -1765,7 +1955,7 @@ def slurm_node_profile(partition: str = "", node: str = "") -> dict:
         group = members.get(_hardware_key(t), [])
         fresh, stale = [], []
         for n in group:
-            rec = _read_json(os.path.join(_NODE_PROFILES_DIR, f"{n['node']}.json"))
+            rec = _read_node_profile(n["node"], sched_host)
             if not rec:
                 continue
             (fresh if rec.get("slurm") == _slurm_facts(n) else stale).append(rec)
@@ -1895,40 +2085,163 @@ def _partition_lines(limit: int = 4) -> list[dict]:
             for name, (total, idle) in ranked[:limit]]
 
 
-def _profiled_node_lines() -> list[dict]:
-    """The hardware of a node that was actually profiled, or how to get one.
+def _node_kind_label(kind: dict) -> str:
+    """A node kind as a person would name it: what you would say to pick one.
 
-    Read straight off the profile cache rather than through ``slurm_node_profile``: the
-    panel wants one line, and that tool re-reads every node Slurm knows and harvests
-    pending probes on the way. Nothing here runs a command.
+    The GPUs first when there are any, because that is what a kind is chosen for; then
+    the core count and the memory, which is what a job is sized against. Slurm's own
+    hardware signature is what grouped them, and it is unreadable.
     """
-    try:
-        names = sorted(os.listdir(_NODE_PROFILES_DIR))
-    except OSError:
-        names = []
-    records = []
-    for name in names:
-        record = _read_json(os.path.join(_NODE_PROFILES_DIR, name))
-        if record and record.get("profile"):
-            records.append(record)
-    if not records:
-        return [{"label": "compute node", "value": "none profiled — probe one",
-                 "state": "warn"}]
-    record = max(records, key=lambda r: str(r.get("probed_at") or ""))
-    profile = record.get("profile") or {}
-    cpu = profile.get("cpu") or {}
-    devices = (profile.get("gpu") or {}).get("devices") or []
-    lines = [{"label": "compute node",
-              "value": f"{record.get('node', '?')}: "
-                       f"{cpu.get('model') or cpu.get('arch') or '?'}"}]
-    simd = sorted(k for k, v in (cpu.get("simd") or {}).items() if v)
-    if simd:
-        lines.append({"label": "vector isa", "value": ", ".join(simd[-3:])})
-    if devices:
-        first = devices[0].get("name", "?")
-        lines.append({"label": "node gpu",
-                      "value": f"{len(devices)} × {first}" if len(devices) > 1 else first})
-    return lines
+    parts = []
+    gres = str(kind.get("gres") or "")
+    if gres.startswith("gpu:"):
+        bits = gres.split(":")
+        model = bits[1] if len(bits) > 2 else ""
+        count = bits[-1] if bits[-1].isdigit() else ""
+        parts.append(" ".join(x for x in (f"{count}×" if count else "", model) if x)
+                     .strip() or gres)
+    if kind.get("cpus"):
+        parts.append(f"{kind['cpus']} cpus")
+    mem_mb = kind.get("mem_mb")
+    if isinstance(mem_mb, (int, float)) and mem_mb:
+        parts.append(f"{round(mem_mb / 1024)} GB")
+    return " · ".join(parts) or str(kind.get("arch") or "node")
+
+
+def _kind_id(host: str, kind: dict) -> str:
+    """A stable id for one node kind of one scheduler.
+
+    Stable across refreshes because the panel's open/closed state is keyed on it: a
+    tree that re-identified its rows every poll would collapse under the reader. From
+    the hardware fields themselves, so the same machines get the same id whatever
+    order the scheduler listed them in.
+    """
+    payload = json.dumps([kind.get(f) for f in _HARDWARE_FIELDS], sort_keys=True,
+                         default=str)
+    digest = hashlib.sha1(payload.encode()).hexdigest()[:8]
+    return f"host:{_host_name(host)}/kind:{digest}"
+
+
+def _profiled_kind_lines(kind: dict, host: str) -> tuple[list[dict], str]:
+    """What a profiled node of this kind actually is, and where that was read.
+
+    Slurm reports a node's core count and memory but never its CPU model, vector ISA
+    or the name ``-march=native`` resolves to — only the node can say those, which is
+    what a probe is for. Read off the profile cache: nothing here runs a command, the
+    same discipline the rest of this panel keeps.
+    """
+    for node in kind.get("example_nodes") or []:
+        record = _read_node_profile(node, host)
+        if not record or not record.get("profile"):
+            continue
+        profile = record["profile"]
+        cpu = profile.get("cpu") or {}
+        lines = []
+        if cpu.get("model"):
+            lines.append({"label": "cpu", "value": cpu["model"]})
+        simd = sorted(k for k, v in (cpu.get("simd") or {}).items() if v)
+        if simd:
+            lines.append({"label": "vector isa", "value": ", ".join(simd[-3:])})
+        march = (profile.get("march") or {}).get("native")
+        if march:
+            lines.append({"label": "-march=native", "value": march})
+        node_os = profile.get("os") or {}
+        if node_os.get("id"):
+            value = f"{node_os['id']} {node_os.get('version', '')}".strip()
+            if node_os.get("glibc"):
+                value += f" · glibc {node_os['glibc']}"
+            lines.append({"label": "os", "value": value})
+        devices = (profile.get("gpu") or {}).get("devices") or []
+        if devices and devices[0].get("compute_cap"):
+            lines.append({"label": "compute capability",
+                          "value": str(devices[0]["compute_cap"])})
+        detail = f"Profiled on {record.get('node', node)}"
+        if record.get("probed_at"):
+            detail += f", {record['probed_at']}"
+        if record.get("partial"):
+            detail += ". " + str(record.get("partial_reason") or "")
+        return lines, detail.strip()
+    return [], ""
+
+
+def _host_tree() -> list[dict]:
+    """Every scheduler this workspace reaches, and what each is made of.
+
+    One group per host, one subgroup per kind of node. Built from the per-host digest,
+    which is occupancy-free and memoised for the life of the server — so opening the
+    drawer does not reach across ``ssh`` to every cluster on every refresh, and what
+    is *free right now* stays ``slurm_nodes``'s answer rather than a number that was
+    true once.
+
+    A host that did not answer is listed with that said, never as a host with no
+    machines: an unreachable cluster and an empty one are not the same thing, and only
+    one of them is worth waiting for.
+    """
+    groups = []
+    for host in slurm_hosts():
+        name = _host_name(host)
+        digest = _cluster_digest(host)
+        group = {"id": f"host:{name}", "label": name, "host": name,
+                 "local": not host,
+                 "lines": [{"label": "reached",
+                            "value": "Slurm answers on this host" if not host
+                                     else f"over ssh to {host}"}]}
+        if not digest["source"]:
+            group["state"] = "warn"
+            group["value"] = "did not answer"
+            group["lines"].append(
+                {"label": "hardware",
+                 "value": "unknown, not absent", "state": "warn"})
+            groups.append(group)
+            continue
+        hardware = _hardware_of(host)
+        group["value"] = hardware.get("hardware", "")
+        partitions = [str(p.get("partition") or "") for p in digest["partitions"]]
+        if partitions:
+            group["lines"].append({"label": "partitions",
+                                   "value": ", ".join(partitions[:6])})
+        if digest["degraded"]:
+            group["lines"].append({"label": "reading", "value": digest["degraded"],
+                                   "state": "warn"})
+        kinds = []
+        for kind in digest["node_types"]:
+            lines = [{"label": "arch", "value": kind.get("arch") or "?"}]
+            if kind.get("features"):
+                lines.append({"label": "features", "value": kind["features"]})
+            profiled, detail = _profiled_kind_lines(kind, host)
+            entry = {
+                "id": _kind_id(host, kind),
+                "label": _node_kind_label(kind),
+                "lines": lines + profiled,
+                "nodes": list(kind.get("example_nodes") or []),
+            }
+            if detail:
+                entry["detail"] = detail
+            if not profiled:
+                entry["state"] = "warn"
+                entry["value"] = "not profiled"
+                # What the panel can offer instead of the answer: the request that
+                # would get it. The server writes the words because it is the end that
+                # knows the scheduler and the partition.
+                part = partitions[0] if partitions else ""
+                for candidate in partitions:
+                    if candidate in (kind.get("partitions") or []):
+                        part = candidate
+                        break
+                entry["action"] = {
+                    "kind": "probe",
+                    "label": "Profile a node",
+                    "prompt": (
+                        f"Probe one node of the '{_node_kind_label(kind)}' kind on "
+                        f"scheduler '{name}', partition '{part}', so its CPU model, "
+                        f"vector ISA and -march are known before anything is built "
+                        f"for it."),
+                }
+            kinds.append(entry)
+        if kinds:
+            group["groups"] = kinds
+        groups.append(group)
+    return groups
 
 
 @mcp.tool(**tool_caps(kind="slurm",
@@ -1940,23 +2253,30 @@ def _profiled_node_lines() -> list[dict]:
 def hpc_panel_report() -> dict:
     """Where the work goes, in a form a panel can show: the queue, the room, the nodes.
 
+    Two halves with two shapes. The lines are this moment — what is queued, where there
+    is room — and the groups are the standing thing: every scheduler the workspace
+    reaches, each with the kinds of node it is made of and what a probe found on one.
+    A nested shape because the question is nested: which cluster, then which kind of
+    machine on it, then what that machine actually is.
+
     Everything is served from the caches above, so a panel refreshing on a timer costs
-    one ``squeue`` every few seconds at most and one ``sinfo`` every few minutes. A host
-    with no Slurm returns no lines at all, and the client then shows no section — a
-    laptop should not grow an empty cluster panel.
+    one ``squeue`` every few seconds at most, one ``sinfo`` every few minutes, and one
+    digest per scheduler for the life of the server. A host with nothing to say returns
+    neither lines nor groups, and the client then shows no section — a laptop should not
+    grow an empty cluster panel.
     """
     lines: list[dict] = []
     queue = _queue_line()
     if queue:
         lines.append(queue)
     lines.extend(_partition_lines())
-    if not lines:
-        # No queue and no partitions: there is no scheduler here to report on. Said with
-        # no lines rather than with a row saying "unavailable", which is a section the
-        # user has to read to learn there is nothing to read.
+    groups = _panel_cached("hosts", _PANEL_CLUSTER_TTL_SECS, _host_tree) or []
+    if not lines and not groups:
+        # No queue, no partitions and no registered scheduler: there is nothing here to
+        # report on. Said with nothing rather than with a row saying "unavailable",
+        # which is a section the user has to read to learn there is nothing to read.
         return ok({"title": "Cluster", "lines": []})
-    lines.extend(_profiled_node_lines())
-    return ok({"title": "Cluster", "lines": lines,
+    return ok({"title": "Cluster", "lines": lines, "groups": groups,
                "detail": "Where submitted work runs — not the host MIMIR runs on."})
 
 

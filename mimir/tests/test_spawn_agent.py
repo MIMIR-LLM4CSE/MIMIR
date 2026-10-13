@@ -36,6 +36,7 @@ def _load(name: str, path: Path):
 
 
 spawn = _load("server_spawn_agent", SERVERS_DIR / "agent_state" / "server_spawn_agent.py")
+_child_jobs = _load("_child_jobs", SERVERS_DIR / "agent_state" / "_child_jobs.py")
 
 
 # What each fake server advertises when the child connects it: the tools, and the one
@@ -905,6 +906,236 @@ class ForgottenJobTests(unittest.TestCase):
             out = spawn.subagent_job(op="status", job_key="sub-abcd1234")
         self.assertEqual(out["state"], "running")
         self.assertEqual(out["phase"], "reading")
+
+
+class _PollingAgent(_FakeAgent):
+    """A child agent whose status op answers a scripted sequence of states."""
+
+    def __init__(self, states: list[str], summary: dict | None = None) -> None:
+        super().__init__(session_id="parent/subagents/sub-1a2b3c4d")
+        self._states = list(states)
+        self._summary = summary or {}
+        self.polls = 0
+        self.observed: list[bool] = []
+
+    async def _run_tool(self, tool: str, args: dict, execution_context=None,
+                        record_observations: bool = True) -> str:
+        self.observed.append(record_observations)
+        if args.get("op") == "output":
+            return json.dumps(self._summary)
+        self.polls += 1
+        return json.dumps({"state": self._states.pop(0) if self._states else "done"})
+
+
+def _bash_descriptor(job_key: str = "k1") -> dict:
+    return {"server": "bash", "kind": "shell-command", "job_key": job_key,
+            "run_dir": f"/state/sessions/parent/subagents/sub-1a2b3c4d/jobs/{job_key}",
+            "status_op": {"tool": "bash_job", "args": {"job_key": job_key}},
+            "summary_op": {"tool": "bash_job",
+                           "args": {"op": "output", "job_key": job_key}}}
+
+
+class AChildWatchesItsOwnRunsTests(unittest.TestCase):
+    """A sub-agent holding its own detached runs.
+
+    Without this a child had no watcher at all: the hook pair is installed on the agent
+    the WebSocket worker owns, and a child's is built in the spawn server, so every
+    backgroundable launch inside one waited the run out in-turn — on the child's loop,
+    inside its budget. For the rung whose whole point is working in parallel, that meant
+    sitting on a step until a build finished instead of preparing the next one.
+    """
+
+    def setUp(self) -> None:
+        self._intervals = (_child_jobs._FIRST_INTERVAL, _child_jobs._MAX_INTERVAL)
+        # Long enough that a watch registered here is still in flight when the
+        # assertion runs. The tests about a run *finishing* shorten it themselves.
+        self._schedule(5.0)
+
+    def tearDown(self) -> None:
+        _child_jobs._FIRST_INTERVAL, _child_jobs._MAX_INTERVAL = self._intervals
+
+    @staticmethod
+    def _schedule(seconds: float) -> None:
+        _child_jobs._FIRST_INTERVAL = _child_jobs._MAX_INTERVAL = seconds
+
+    @staticmethod
+    def _watcher(agent, **kw):
+        return _child_jobs.ChildWatcher(
+            agent=agent, origin=spawn._child_origin(agent, "port the solver to AVX-512"),
+            **kw)
+
+    def _run(self, body) -> None:
+        asyncio.run(body())
+
+    def test_the_hooks_the_client_installs_are_installed_on_a_child_too(self) -> None:
+        """What makes the difference: with the hook present the launch is registered.
+
+        ``background._maybe_register_background_job`` branches on the hook, so this is
+        the whole of why a child now ends its step instead of waiting.
+        """
+        async def _drive(*a, **kw):
+            return {"answer": "", "completed": True, "files_read": [],
+                    "files_written": [], "blocked_by_mode": [], "error": None}
+
+        with _patched_agent(_FakeAgent()) as agent, \
+             mock.patch.object(spawn, "_drive_sub_agent", _drive):
+            asyncio.run(spawn._run_sub_agent(
+                "a task", "", [], {}, 4, lambda ev: None, session="parent/subagents/s1"))
+        for hook in ("_register_background_job", "_watched_background_jobs",
+                     "_poll_steer"):
+            self.assertTrue(callable(getattr(agent, hook, None)), hook)
+
+    def test_a_finished_run_reaches_the_child_as_a_steer(self) -> None:
+        """And in the words every wake in the system is written in.
+
+        ``job_wakes.wake_text`` relays what the server recorded rather than inventing a
+        next step, which is exactly as true for a child as for the conversation.
+        """
+        self._schedule(0.0)
+        agent = _PollingAgent(["running", "done"],
+                              summary={"next_step": "Read the log, then re-measure."})
+        watcher = self._watcher(agent)
+
+        async def body():
+            self.assertTrue(watcher.register(_bash_descriptor()))
+            await asyncio.sleep(0.05)
+            steers = watcher.drain_steers()
+            self.assertEqual(len(steers), 1)
+            self.assertIn("Read the log, then re-measure.", steers[0])
+            self.assertEqual(watcher.drain_steers(), [])   # popped, not re-read
+            await watcher.close()
+
+        self._run(body)
+
+    def test_a_watched_run_is_what_the_dispatch_guards_consult(self) -> None:
+        """They used to abstain inside a child for want of anything to ask.
+
+        So a child could be told to end its turn and then poll the run anyway, which is
+        the one thing the note it is given says not to do.
+        """
+        agent = _PollingAgent(["running"] * 10)
+        watcher = self._watcher(agent)
+
+        async def body():
+            watcher.register(_bash_descriptor())
+            await asyncio.sleep(0.02)
+            self.assertEqual([d["job_key"] for d in watcher.live_descriptors()], ["k1"])
+            await watcher.close()
+            self.assertEqual(watcher.live_descriptors(), [])
+
+        self._run(body)
+
+    def test_a_descriptor_naming_no_status_op_is_refused(self) -> None:
+        """Nothing to poll is nothing to promise, and the refusal is the message.
+
+        ``False`` is what sends the caller back to waiting in-turn; a silent accept is
+        how a run finishes into nothing with no line anywhere to explain it.
+        """
+        watcher = self._watcher(_FakeAgent())
+        self.assertFalse(watcher.register({"job_key": "k1"}))
+        self.assertFalse(watcher.register({"status_op": {"tool": "bash_job"}}))
+        self.assertFalse(watcher.register("not a descriptor"))
+        self.assertEqual(watcher.live_descriptors(), [])
+
+    def test_the_probes_are_never_credited_to_the_child(self) -> None:
+        self._schedule(0.0)
+        agent = _PollingAgent(["running", "done"])
+        watcher = self._watcher(agent)
+
+        async def body():
+            watcher.register(_bash_descriptor())
+            await asyncio.sleep(0.05)
+            self.assertTrue(agent.observed)
+            self.assertNotIn(True, agent.observed)
+            await watcher.close()
+
+        self._run(body)
+
+    def test_a_handover_names_the_directory_the_parent_must_read(self) -> None:
+        """A child's job lives under the child's session.
+
+        A status op resolving a bare key against the *parent's* session finds nothing,
+        and reports that as ``unknown`` — a terminal state. Handing the parent an
+        unqualified key would have it announce a healthy run as lost seconds after
+        adopting it.
+        """
+        agent = _PollingAgent(["running"] * 10)
+        watcher = self._watcher(agent)
+
+        async def body():
+            watcher.register(_bash_descriptor())
+            # A Slurm job needs no qualifying: its state lives in a controller that
+            # answers any session, which is why this keys on run_dir and not on a name.
+            watcher.register({"server": "hpc", "kind": "slurm-batch",
+                              "job_key": "15306620",
+                              "status_op": {"tool": "slurm_job_status",
+                                            "args": {"job_id": "15306620"}}})
+            await asyncio.sleep(0.02)
+            handed = {d["job_key"]: d for d in watcher.handover()}
+            self.assertEqual(
+                handed["k1"]["status_op"]["args"]["run_dir"],
+                "/state/sessions/parent/subagents/sub-1a2b3c4d/jobs/k1")
+            self.assertEqual(handed["k1"]["summary_op"]["args"]["run_dir"],
+                             handed["k1"]["run_dir"])
+            self.assertEqual(handed["15306620"]["status_op"]["args"],
+                             {"job_id": "15306620"})
+            await watcher.close()
+
+        self._run(body)
+
+    def test_a_handed_over_run_names_the_child_that_launched_it(self) -> None:
+        agent = _PollingAgent(["running"] * 10)
+        watcher = self._watcher(agent)
+
+        async def body():
+            watcher.register(_bash_descriptor())
+            await asyncio.sleep(0.02)
+            origin = watcher.handover()[0]["origin"]
+            self.assertEqual(origin["kind"], "subagent")
+            self.assertEqual(origin["label"], "port the solver to AVX-512")
+            self.assertEqual(origin["session"], "parent/subagents/sub-1a2b3c4d")
+            await watcher.close()
+
+        self._run(body)
+
+    def test_once_handed_over_a_run_is_the_parents_and_only_the_parents(self) -> None:
+        """One voice answers for one run.
+
+        The child's answer has already been read by the time it hands over, so steering
+        it about the same run would have two agents reporting it — and the one still
+        working on it is the parent.
+        """
+        self._schedule(0.0)
+        agent = _PollingAgent(["running", "done"])
+        watcher = self._watcher(agent)
+
+        async def body():
+            watcher.register(_bash_descriptor())
+            watcher.handover()
+            await asyncio.sleep(0.05)
+            self.assertEqual(watcher.drain_steers(), [])
+            # And nothing new is taken on afterwards.
+            self.assertFalse(watcher.register(_bash_descriptor("k2")))
+            await watcher.close()
+
+        self._run(body)
+
+    def test_a_completion_is_also_an_activity_line(self) -> None:
+        """A detached child is read through its activity file, and a run landing in one
+        is precisely what was invisible there."""
+        self._schedule(0.0)
+        seen: list = []
+        agent = _PollingAgent(["done"])
+        watcher = self._watcher(agent, on_activity=seen.append)
+
+        async def body():
+            watcher.register(_bash_descriptor())
+            await asyncio.sleep(0.05)
+            self.assertEqual([e["type"] for e in seen], ["status"])
+            self.assertIn("k1", seen[0]["text"])
+            await watcher.close()
+
+        self._run(body)
 
 
 class SubSessionTests(unittest.TestCase):

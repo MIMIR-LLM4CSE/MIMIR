@@ -26,6 +26,7 @@ from ...query_engine.history import (
 from .ws_worker import _AgentWorker
 from .turn_commit import commit_answer, turn_messages
 from .transcript_log import read_since
+from .panel_runs import attach_runs
 from .job_scan import (
     establish_baseline,
     has_baseline,
@@ -1713,7 +1714,9 @@ class _Session:
         holds every build it ever ran, and an unmarked one there is as likely to have
         been reported by its own watcher as to be owed a wake. Reading that history as
         wakes owed wakes a conversation for a two-month-old build — worse than missing a
-        recent one, and unlike a missed wake unbounded.
+        recent one, and unlike a missed wake unbounded. Per session, and a sub-agent's
+        counts as its own: a child seen here for the first time brings no backlog
+        either.
         """
         try:
             found = scan_all_sessions()
@@ -1734,7 +1737,12 @@ class _Session:
                     "server": descriptor.get("server"),
                     "kind": descriptor.get("kind"),
                     "state": job.state,
-                    "session_id": session_id,
+                    # Who gets woken, which for a sub-agent's run is not the session
+                    # holding the files: a sub-session is a directory and no front end
+                    # can load one, so a child's run is announced in the conversation
+                    # that delegated it. Its markers stay under the child, where the
+                    # scan that found it will look again.
+                    "session_id": job.owner_session,
                     "summary": {"command": job.command, "exit_code": job.exit_code},
                     "status_op": job.status_op(),
                 })
@@ -3363,13 +3371,18 @@ class _Session:
         holding. The rest is whatever the connected servers declared they could fill.
         """
         sections = await asyncio.wrap_future(self.worker.panel_sections())
+        # The one place both halves exist: what a cluster is made of came from a
+        # server, what is running on it is this client's own watcher state. A run that
+        # no group claimed still travels, under `runs`, for the flat list — a run the
+        # user cannot see is worse than one shown out of place.
+        sections, unplaced = attach_runs(sections, self.worker.watched_runs())
         cards = _list_subagents(self._active_session_id or "")
         await self.ws.send(json.dumps({
             "type": "panel_report",
             "subagent_level": self.worker.get_subagent_level(),
             "subagents": cards,
             "running": sum(1 for c in cards if c.get("state") == "running"),
-            "runs": self.worker.watched_runs(),
+            "runs": unplaced,
             "sections": sections,
         }))
 

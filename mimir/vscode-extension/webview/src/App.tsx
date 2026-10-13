@@ -914,6 +914,31 @@ export const App: React.FC = () => {
 
   // ── User actions ──────────────────────────────────────────────────────────
 
+  /**
+   * Put one message to the model, as the user's own turn.
+   *
+   * Its own function because the input box is not the only thing that asks: the
+   * science panel offers a request a server wrote — "probe one node of this kind" —
+   * and that must arrive the way a typed one does, so whatever tool the model reaches
+   * for goes through the approval that tool already requires. A panel button is not a
+   * second way to start an irreversible call.
+   */
+  const sendPrompt = useCallback((text: string) => {
+    // Chat-while-busy: a message sent during a run is a "steer" — queued and
+    // injected into the agent's current turn at its next step, not a new query.
+    if (busy) {
+      dispatch({ type: "steer_query", text });
+      send({ type: "steer", text });
+      return;
+    }
+    lastQueryRef.current = text;
+    dispatch({ type: "submit_query", text });
+    followBottomRef.current = true; // a new query resumes following the bottom
+    pendingScrollToTopRef.current = true; // let scrollQueryToTop win this commit
+    send({ type: "query", text });
+    scrollQueryToTop();
+  }, [busy, send, scrollQueryToTop, followBottomRef]);
+
   const submitQuery = useCallback(() => {
     const text = input.trim();
     if (!text) return;
@@ -931,20 +956,8 @@ export const App: React.FC = () => {
       send({ type: "command", text });
       return;
     }
-    // Chat-while-busy: a message sent during a run is a "steer" — queued and
-    // injected into the agent's current turn at its next step, not a new query.
-    if (busy) {
-      dispatch({ type: "steer_query", text });
-      send({ type: "steer", text });
-      return;
-    }
-    lastQueryRef.current = text;
-    dispatch({ type: "submit_query", text });
-    followBottomRef.current = true; // a new query resumes following the bottom
-    pendingScrollToTopRef.current = true; // let scrollQueryToTop win this commit
-    send({ type: "query", text });
-    scrollQueryToTop();
-  }, [input, busy, send, scrollQueryToTop, followBottomRef]);
+    sendPrompt(text);
+  }, [input, send, sendPrompt]);
 
   // Re-run the most recent query — surfaced as Retry on the latest error card.
   const retryLastQuery = useCallback(() => {
@@ -1435,6 +1448,7 @@ export const App: React.FC = () => {
             (send as any)({ type: "read_subagent", id });
           }}
           onCloseSubAgent={() => setOpenedSubAgent(null)}
+          onPrompt={sendPrompt}
         />
       )}
 

@@ -22,6 +22,7 @@ from .job_scan import (
     establish_baseline,
     has_baseline,
     scan_session,
+    subagent_sessions,
 )
 
 import asyncio
@@ -40,7 +41,7 @@ from typing import Any
 
 from ... import human_pause
 from ...config.constants import DEFAULT_SUBAGENT_LEVEL
-from ...tool_execution.formatter import parse_tool_payload
+from ...query_engine import job_poll
 
 logger = logging.getLogger(__name__)
 
@@ -138,12 +139,6 @@ class _Watch:
     task: asyncio.Task
     descriptor: dict
     status: dict = field(default_factory=dict)
-
-
-def _first_line(value: Any) -> str:
-    """The first line of an error payload, for a one-line reason. "" when there is none."""
-    text = str(value or "").strip()
-    return text.splitlines()[0][:200] if text else ""
 
 
 def _detach_grace() -> float:
@@ -1446,6 +1441,12 @@ class _AgentWorker:
         if existing is not None and not existing.task.done():
             return True  # already watched
         session_id = owner or self._query_session_id or self._own_session()
+        # Whose run this is, which is not the same question as who gets woken: a run a
+        # sub-agent launched and handed over is watched for the parent and still named
+        # after the child. setdefault, never an assignment: a descriptor that arrived
+        # with an origin arrived with the only end that knew it.
+        descriptor.setdefault("origin", {"kind": "main", "label": "",
+                                         "session": session_id})
         try:
             # get_running_loop, not get_event_loop: the latter can hand back a loop
             # that is not running, and a task created on one of those never polls
@@ -1485,14 +1486,22 @@ class _AgentWorker:
         session_id = self._own_session()
         if not session_id:
             return {"rearmed": [], "reported": []}
-        jobs = scan_session(session_id)
-        if not has_baseline(session_id):
-            # First time this session has been looked at: everything already finished
-            # was reported by whatever was watching it, long before markers existed.
-            # Claiming that history as a backlog of wakes would wake a conversation for
-            # every build it ever ran.
-            establish_baseline(session_id, jobs)
-            jobs = [job for job in jobs if job.live]
+        # This session's own runs and its sub-agents'. A child's watcher goes with the
+        # child, and a child killed outright hands nothing over, so its runs are the
+        # parent's to pick back up — the person is watching the parent, and nothing can
+        # load a sub-session as a conversation.
+        jobs: list = []
+        for sid in (session_id, *subagent_sessions(session_id)):
+            found = scan_session(sid)
+            if not has_baseline(sid):
+                # First time this session has been looked at: everything already
+                # finished was reported by whatever was watching it, long before
+                # markers existed. Claiming that history as a backlog of wakes would
+                # wake a conversation for every build it ever ran. Per session, so a
+                # child seen for the first time brings no backlog of its own either.
+                establish_baseline(sid, found)
+                found = [job for job in found if job.live]
+            jobs.extend(found)
         rearmed: list[str] = []
         reported: list[str] = []
         for job in jobs:
@@ -1648,134 +1657,70 @@ class _AgentWorker:
         single-threaded loop). The WS session handles the UI notification and the
         auto-resume, because it owns the conversation history (see ``_drain_loop``).
 
-        The probes run with observations off: a watcher tick is this worker asking a
-        question, not a step the model took, and recording it as one would credit the
-        agent with work it did not do.
+        The poll itself is :func:`job_poll.poll_until_terminal`, shared with the in-turn
+        fallback and with a sub-agent's own watcher; what belongs here is the schedule it
+        is given, the check-in and progress it writes per tick, and the event below.
 
         The event carries the descriptor's own ops. The session that reads it knows
         nothing about what kind of job this was, so what it can say to the model comes
         from the descriptor and the summary rather than from anything it names itself.
         """
+        try:
+            await self._poll_to_completion(job_key, descriptor, session_id)
+        finally:
+            # One exit for every way this ends — a terminal state, a cancellation at
+            # shutdown, a status op that was never there, or an exception nothing
+            # catches. A run is in this table because something is still asking about
+            # it, so an entry that outlives its task is the table saying what is not
+            # true. Every reader already filters a finished task out; this is what
+            # keeps the table itself honest.
+            self._bg_jobs.pop(job_key, None)
+
+    async def _poll_to_completion(self, job_key: str, descriptor: dict,
+                                  session_id: str | None) -> None:
+        """Poll one run to its end and announce it. See :meth:`_watch_job`."""
         status_op  = descriptor.get("status_op") or {}
         summary_op = descriptor.get("summary_op") or {}
-        status_tool = status_op.get("tool")
-        if not status_tool:
-            self._bg_jobs.pop(job_key, None)
+        if not status_op.get("tool"):
             return
 
-        interval, max_interval = 5.0, 30.0
-        terminal = {"done", "crashed", "unknown"}
-        state = "running"
-        reason = ""
-        unreadable = 0
         # Last (phase, percent) announced, so a poll that learned nothing says nothing.
         last_reported: tuple = ("", None)
-        try:
-            while True:
-                await asyncio.sleep(interval)
-                interval = min(interval * 1.5, max_interval)
-                try:
-                    raw = await asyncio.wait_for(
-                        self._agent._run_tool(
-                            status_tool, dict(status_op.get("args") or {}),
-                            record_observations=False),
-                        timeout=_TOOL_CALL_TIMEOUT)
-                    # parse_tool_payload, not json.loads: the result is an envelope
-                    # followed by its text blocks and any appended annotation, and a
-                    # bare load reads that as one broken document. Five of those in a
-                    # row and the watcher gives the run up as unreadable.
-                    payload = parse_tool_payload(raw) if isinstance(raw, str) else (raw or {})
-                    state = str((payload or {}).get("state") or "")
-                    if not state:
-                        reason = (_first_line(payload.get("error"))
-                                  or f"'{status_tool}' returned no state")
-                except asyncio.CancelledError:
-                    raise
-                except asyncio.TimeoutError:
-                    # Named rather than lumped in with the failures below: "it never
-                    # answered" and "it answered with an error" are the two things a
-                    # reader most needs to tell apart, and only this knows which it saw.
-                    payload = {}
-                    state, reason = "", (f"'{status_tool}' did not answer within "
-                                         f"{_TOOL_CALL_TIMEOUT:.0f}s")
-                    logger.warning("background job %r: its status op %r did not answer "
-                                   "within %.0fs", job_key, status_tool,
-                                   _TOOL_CALL_TIMEOUT)
-                except Exception as exc:
-                    payload = {}
-                    state, reason = "", f"'{status_tool}' raised {type(exc).__name__}"
-                if state in terminal:
-                    break
-                # What the run is doing, for as long as it is doing it. The blocking
-                # wait had its own channel into the run; once detached, this poll is
-                # the only thing still asking, so it is the only thing that can say.
-                # Shape-driven like everything else here: whatever the status op
-                # chose to report, passed on without being understood.
-                phase = str((payload or {}).get("phase") or "")
-                percent = (payload or {}).get("percent")
-                if not isinstance(percent, (int, float)):
-                    percent = None
-                # What a check-in reports, written by the poll that is running anyway.
-                # The state goes with it: "running" and "its status stopped being
-                # readable" are the two things a bulletin most needs to tell apart, and
-                # only this loop knows which one it is looking at.
-                watch = self._bg_jobs.get(job_key)
-                if watch is not None:
-                    watch.status = {"state": state or "unreadable", "phase": phase,
-                                    "percent": percent, "at": time.monotonic()}
-                # Starts at ("", None), so a run that never reports is never sent,
-                # while one whose count disappears is — a retraction is news too.
-                if (phase, percent) != last_reported:
-                    last_reported = (phase, percent)
-                    self.out_q.put({
-                        "type":       "job_progress",
-                        "job_key":    job_key,
-                        "phase":      phase,
-                        "percent":    percent,
-                        "session_id": session_id,
-                    })
-                if state:
-                    unreadable = 0   # 'running', or any state the descriptor's op owns
-                    continue
-                # Not a state we can act on. Retried a few times in case it is
-                # transient, then reported as unknown — an honest "I lost track of it"
-                # reaches the user, where another silent tick never would.
-                unreadable += 1
-                if unreadable >= _UNREADABLE_POLL_LIMIT:
-                    state = "unknown"
-                    break
-        except asyncio.CancelledError:
-            self._bg_jobs.pop(job_key, None)
-            return
 
-        summary: dict = {}
-        summary_tool = summary_op.get("tool")
-        if summary_tool:
-            try:
-                # Under the same deadline as the status poll, and here it matters more:
-                # the run is already over, so a summary op that never answers holds back
-                # the wake itself. Better a wake with nothing in it than no wake.
-                raw = await asyncio.wait_for(
-                    self._agent._run_tool(
-                        summary_tool, dict(summary_op.get("args") or {}),
-                        record_observations=False),
-                    timeout=_TOOL_CALL_TIMEOUT)
-                # parse_tool_payload for the same reason the status tick uses it: a
-                # tool result is an envelope, its text blocks and any annotation
-                # appended after them, and a bare load reads that as one broken
-                # document. A summary lost here reaches the model as "it recorded no
-                # result of its own" — the wake still lands, emptied of the thing it
-                # was carrying.
-                summary = parse_tool_payload(raw) if isinstance(raw, str) else (raw or {})
-            except asyncio.CancelledError:
-                raise
-            except asyncio.TimeoutError:
-                summary = {}
-                logger.warning("background job %r finished, but its summary op %r did "
-                               "not answer within %.0fs; waking it without one",
-                               job_key, summary_tool, _TOOL_CALL_TIMEOUT)
-            except Exception:
-                summary = {}
+        def _tick(tick: job_poll.Tick) -> None:
+            nonlocal last_reported
+            # What a check-in reports, written by the poll that is running anyway. The
+            # state goes with it: "running" and "its status stopped being readable" are
+            # the two things a bulletin most needs to tell apart, and only the poll knows
+            # which one it is looking at.
+            watch = self._bg_jobs.get(job_key)
+            if watch is not None:
+                watch.status = {**tick.fields,
+                                "state": tick.state or "unreadable",
+                                "phase": tick.phase, "percent": tick.percent,
+                                "at": time.monotonic()}
+            # Starts at ("", None), so a run that never reports is never sent, while one
+            # whose count disappears is — a retraction is news too.
+            if (tick.phase, tick.percent) != last_reported:
+                last_reported = (tick.phase, tick.percent)
+                self.out_q.put({
+                    "type":       "job_progress",
+                    "job_key":    job_key,
+                    "phase":      tick.phase,
+                    "percent":    tick.percent,
+                    "session_id": session_id,
+                })
+
+        state, reason = await job_poll.poll_until_terminal(
+            self._agent._run_tool, status_op,
+            interval=5.0, max_interval=30.0,
+            call_timeout=_TOOL_CALL_TIMEOUT,
+            unreadable_limit=_UNREADABLE_POLL_LIMIT,
+            on_tick=_tick, label=job_key)
+
+        summary = await job_poll.read_summary(
+            self._agent._run_tool, summary_op,
+            call_timeout=_TOOL_CALL_TIMEOUT, label=job_key)
 
         logger.info("background job %r of session %s finished (%s); waking it",
                     job_key, session_id, state)
@@ -1796,7 +1741,6 @@ class _AgentWorker:
         # run settled at the moment its event is queued is one every later scan takes
         # for already delivered — so a wake nobody has read is a wake nobody ever will.
         # The consumer writes the marker — see ``job_scan.mark_wakes_reported``.
-        self._bg_jobs.pop(job_key, None)
 
     def resolve_approval(self, choice: str, approved_files: list | None = None,
                          req_id: str = "") -> None:
@@ -2120,7 +2064,12 @@ class _AgentWorker:
                     continue
                 lines = payload.get("lines") or []
                 detail = payload.get("detail") or ""
-                if not lines and not detail:
+                # A nested half, for a server whose answer is a tree rather than a
+                # list: a scheduler, the kinds of node on it, what one of them is.
+                # Passed through unread, exactly as the lines are — this end renders
+                # what a server chose to say and never decides what a field means.
+                groups = payload.get("groups") or []
+                if not lines and not detail and not groups:
                     # A server with nothing to say gets no heading. A section that has
                     # something to report about having nothing — "no optimisation
                     # session here" — says it in `detail` and still appears; one that
@@ -2132,6 +2081,7 @@ class _AgentWorker:
                     "section": spec.get("section", tool),
                     "title": payload.get("title") or spec.get("section", tool),
                     "lines": lines,
+                    "groups": groups,
                     "detail": detail,
                 })
             return out
@@ -2141,14 +2091,28 @@ class _AgentWorker:
     def watched_runs(self) -> list[dict]:
         """What is running outside the current turn: detached jobs the watcher holds.
 
-        Read off the descriptors the servers put there, so this says what kind of run
-        it is without knowing what any of them do.
+        The descriptor says what kind of run it is and whose it is; the rest is what
+        the poll learned and was already keeping — where it is running, how far it has
+        got, which pid or job id it wears. Both halves read without being understood,
+        so a status op that starts reporting something new needs no change here.
+
+        ``at`` is deliberately dropped: it is a ``time.monotonic()`` reading, which
+        means nothing outside this process.
         """
-        return [
-            {"job_key": d.get("job_key", "?"), "kind": d.get("kind", ""),
-             "server": d.get("server", "")}
-            for d in self._watched_bg_jobs()
-        ]
+        out = []
+        for watch in self._bg_jobs.values():
+            descriptor = watch.descriptor
+            if not isinstance(descriptor, dict) or watch.task.done():
+                continue
+            status = {k: v for k, v in (watch.status or {}).items() if k != "at"}
+            out.append({
+                "job_key": descriptor.get("job_key", "?"),
+                "kind": descriptor.get("kind", ""),
+                "server": descriptor.get("server", ""),
+                "origin": descriptor.get("origin") or {},
+                **status,
+            })
+        return out
 
     def compact_middle(self, middle: list) -> Any:
         """Summarize *middle* into one message, off the WS event loop.

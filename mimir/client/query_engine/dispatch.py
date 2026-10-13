@@ -604,12 +604,19 @@ async def _dispatch_tool_calls(
                     # No watcher (CLI, or a registration that declined): wait it out
                     # efficiently in-turn. Costs zero model calls either way.
                     result = await _await_background_job(descriptor, agent, result)
-            elif ok and isinstance(result, str):
-                # A result reporting runs that are still going — what a status op
-                # answers about work an earlier call started. Re-arms whatever is no
-                # longer watched, which after an agent restart is all of it, and is a
-                # no-op the rest of the time. Only where the call succeeded: a failed
-                # read says nothing trustworthy about what is in flight.
+            if isinstance(result, str):
+                # A result reporting runs that are still going: what a status op answers
+                # about work an earlier call started, and what a sub-agent out of time
+                # hands back. Re-arms whatever is no longer watched, which after an
+                # agent restart is all of it, and is a no-op the rest of the time.
+                #
+                # Neither an `elif` nor conditional on the call having succeeded. One
+                # payload may both launch a run and report others still going; and the
+                # payload that most needs its live runs adopted is the one that failed,
+                # because a child abandoned mid-flight reports where it got to through
+                # an error. Adopting a watch trusts no state either way — a descriptor
+                # must name a job and an op to poll it with (`_is_rewatchable`), and a
+                # run that is not there is retired as unknown a few ticks later.
                 result = _maybe_rewatch_background_jobs(name, result, agent)
             return result
 

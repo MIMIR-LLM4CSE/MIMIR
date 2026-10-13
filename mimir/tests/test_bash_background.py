@@ -662,6 +662,112 @@ class AdoptingARunningProcessTests(unittest.TestCase):
         self.assertIn(target, payload.get("note", ""))
 
 
+class AParentPollsItsChildsJobTests(unittest.TestCase):
+    """A run a sub-agent launched, read by the conversation that delegated to it.
+
+    A child's session is stored under its parent's, so its jobs are real runs of this
+    conversation's work that do not resolve from a bare handle. They must resolve some
+    way, and not for convenience: a handle resolved against the wrong session reads as
+    "No such job", the job layer spells that ``unknown``, and ``unknown`` is terminal.
+    A parent that adopted a run on a bare handle would announce a healthy build as lost
+    on its first poll.
+    """
+
+    _KEY = "20261013T101500Z-ab12"
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.mkdtemp(prefix="mimir-bash-child-")
+        self._orig_state = os.environ.get("MIMIR_STATE_DIR")
+        self._orig_session = os.environ.get("MIMIR_SESSION_ID")
+        os.environ["MIMIR_STATE_DIR"] = self._tmp
+        os.environ["MIMIR_SESSION_ID"] = "parent-abc"
+        self._child_dir = os.path.join(
+            self._tmp, "sessions", "parent-abc", "subagents", "sub-1a2b3c4d",
+            "jobs", self._KEY)
+        os.makedirs(self._child_dir)
+        import json
+        json.dump({"job_key": self._KEY, "command": "make -j64", "pid": os.getpid(),
+                   "pid_starttime": None, "started_at": time.time()},
+                  open(os.path.join(self._child_dir, "meta.json"), "w"))
+        with open(os.path.join(self._child_dir, "run.log"), "w") as fh:
+            fh.write("linking...\n")
+
+    def tearDown(self) -> None:
+        for name, value in (("MIMIR_STATE_DIR", self._orig_state),
+                            ("MIMIR_SESSION_ID", self._orig_session)):
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+        shutil.rmtree(self._tmp, ignore_errors=True)
+
+    def test_a_bare_handle_reads_a_healthy_run_as_terminal(self) -> None:
+        """Why the directory has to travel: the wrong answer here is not an error.
+
+        It is ``unknown``, which the watcher treats as the end of the run — so the
+        failure mode is a wake saying a build can no longer be tracked while it is
+        still linking.
+        """
+        answer = server_bash.bash_job(op="status", job_key=self._KEY)
+        self.assertEqual(answer["state"], "unknown")
+
+    def test_the_directory_from_the_descriptor_resolves_it(self) -> None:
+        answer = server_bash.bash_job(op="status", job_key=self._KEY,
+                                      run_dir=self._child_dir)
+        self.assertEqual(answer["status"], "ok")
+        self.assertEqual(answer["state"], "running")
+        self.assertEqual(answer["command"], "make -j64")
+
+    def test_the_handle_it_hands_back_names_the_childs_own_directory(self) -> None:
+        """Not one derived from the reading session.
+
+        The answer to a status read is also how tracking is picked back up, so a handle
+        pointing at the parent's own jobs directory would resolve to nothing on the
+        very next poll.
+        """
+        answer = server_bash.bash_job(op="status", job_key=self._KEY,
+                                      run_dir=self._child_dir)
+        handle = answer["background_jobs"][0]
+        self.assertEqual(handle["run_dir"], self._child_dir)
+
+    def test_its_log_is_readable_through_the_same_directory(self) -> None:
+        answer = server_bash.bash_job(op="output", job_key=self._KEY,
+                                      run_dir=self._child_dir)
+        self.assertEqual(answer["status"], "ok")
+        self.assertIn("linking...", answer["output"])
+
+    def test_another_conversations_job_is_not_this_ones_to_read(self) -> None:
+        """Containment is the whole rule, and it needs no new concept.
+
+        A directory under this session grants this session's runs and its children's;
+        a sibling conversation's is not under it, however well formed.
+        """
+        other = os.path.join(self._tmp, "sessions", "other-xyz", "jobs", self._KEY)
+        os.makedirs(other)
+        answer = server_bash.bash_job(op="status", job_key=self._KEY, run_dir=other)
+        self.assertEqual(answer["status"], "error")
+        self.assertIn("outside this session", answer["error"])
+
+    def test_a_directory_that_is_not_a_job_is_refused(self) -> None:
+        for path in (os.path.join(self._tmp, "sessions", "parent-abc"),
+                     os.path.join(self._tmp, "sessions", "parent-abc", "jobs", "nope")):
+            with self.subTest(path=path):
+                answer = server_bash.bash_job(op="status", job_key=self._KEY,
+                                              run_dir=path)
+                self.assertEqual(answer["status"], "error")
+
+    def test_a_directory_naming_another_job_than_the_handle_is_refused(self) -> None:
+        """The pair travels together on the descriptor, so a mismatch is a composed
+        argument rather than a handover — and composing one is how a reader ends up
+        reading a run it did not mean to."""
+        sibling = os.path.join(os.path.dirname(self._child_dir),
+                               "20261013T101500Z-cd34")
+        os.makedirs(sibling)
+        answer = server_bash.bash_job(op="status", job_key=self._KEY, run_dir=sibling)
+        self.assertEqual(answer["status"], "error")
+        self.assertIn("different job", answer["error"])
+
+
 class LearnedSchedulersTests(unittest.TestCase):
     """Which schedulers a workspace reaches, learned from calls it was making anyway.
 

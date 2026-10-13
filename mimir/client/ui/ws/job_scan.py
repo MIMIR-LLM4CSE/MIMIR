@@ -54,11 +54,28 @@ class DetachedJob:
     exit_code: int | None         # what it recorded, when it recorded one
     command: str = ""
     started_at: float | None = None
+    # Where the run's files are. Carried because a job key alone resolves against the
+    # *reading* session, and a sub-agent's run lives under the child's session — which
+    # a bare key reads as "no such job", i.e. ``unknown``, i.e. terminal. A run read
+    # through the wrong session would be announced as lost while it is still going.
+    run_dir: str = ""
     # The handle of a run whose own server watches it — a proxy run is a Slurm job of
     # this workspace and that server's state machine both. Re-arming it with the stock
     # poll instead would put a second watcher on it under a different key, which no
     # dedup catches and which wakes the conversation twice for one result.
     watcher: dict | None = None
+
+    @property
+    def owner_session(self) -> str:
+        """The conversation to wake for this run.
+
+        A sub-agent's session is stored under its parent's and is deliberately not a
+        conversation any front end can load — ``_sub_session_id`` writes directories
+        and no ``<id>.json``. So a child's run is the parent's to hear about: the
+        person is watching the parent, and the parent's agent is the one that can act
+        on it. Whose run it is and who gets woken are two different answers.
+        """
+        return self.session_id.split("/subagents/", 1)[0]
 
     @property
     def state(self) -> str:
@@ -83,7 +100,10 @@ class DetachedJob:
             # the run up as untrackable, settling nothing — so the next scan re-arms it,
             # and the one after that, for as long as the process lives.
             return {"tool": "slurm_job_status", "args": {"job_id": self.job_key}}
-        return {"tool": "bash_job", "args": {"job_key": self.job_key}}
+        args = {"job_key": self.job_key}
+        if self.run_dir:
+            args["run_dir"] = self.run_dir
+        return {"tool": "bash_job", "args": args}
 
     def descriptor(self) -> dict:
         """What ``_register_bg_job`` needs to put a watcher back on this run."""
@@ -92,6 +112,7 @@ class DetachedJob:
         return {"server": "hpc" if self.kind == "slurm" else "bash",
                 "job_key": self.job_key,
                 "kind": "slurm-job" if self.kind == "slurm" else "shell-command",
+                **({"run_dir": self.run_dir} if self.run_dir else {}),
                 "status_op": self.status_op()}
 
 
@@ -244,6 +265,7 @@ def _scan_shell_jobs(session_id: str) -> list[DetachedJob]:
             exit_code=code,
             command=str(meta.get("command") or ""),
             started_at=meta.get("started_at"),
+            run_dir=job_dir,
         ))
     return found
 
@@ -516,8 +538,34 @@ def scan_session(session_id: str, *, include_reported: bool = False
     return [j for j in found if j.live or not was_reported(j)]
 
 
+def subagent_sessions(session_id: str) -> list[str]:
+    """The sub-sessions of *session_id*: ``<id>/subagents/<child>``, and no deeper.
+
+    One named level, because ``subagents/`` is the whole contract
+    ``server_spawn_agent._sub_session_id`` writes — a child cannot delegate, so there
+    is never a third level to walk, and walking arbitrary depth would make the scan's
+    cost a property of someone's directory tree.
+    """
+    root = os.path.join(_sessions_root(), session_id, "subagents")
+    if not os.path.isdir(root):
+        return []
+    try:
+        names = sorted(os.listdir(root))
+    except Exception:
+        return []
+    return [f"{session_id}/subagents/{name}" for name in names
+            if os.path.isdir(os.path.join(root, name))]
+
+
 def scan_all_sessions() -> dict[str, list[DetachedJob]]:
-    """Every session's detached runs, keyed by session."""
+    """Every session's detached runs, keyed by session — sub-agents' included.
+
+    A sub-agent's runs are two levels down, under its parent. They are in here because
+    a child killed outright hands nothing over: its own watcher goes with it, and this
+    is the only thing left that can find what it left going. Keyed by the session that
+    holds the files, which for a child is not the session that gets woken — see
+    :attr:`DetachedJob.owner_session`.
+    """
     root = _sessions_root()
     if not os.path.isdir(root):
         return {}
@@ -529,7 +577,8 @@ def scan_all_sessions() -> dict[str, list[DetachedJob]]:
     for name in names:
         if not os.path.isdir(os.path.join(root, name)):
             continue
-        jobs = scan_session(name)
-        if jobs:
-            out[name] = jobs
+        for session_id in (name, *subagent_sessions(name)):
+            jobs = scan_session(session_id)
+            if jobs:
+                out[session_id] = jobs
     return out

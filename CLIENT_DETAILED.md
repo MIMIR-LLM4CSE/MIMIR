@@ -42,7 +42,8 @@ One orchestrator plus focused siblings, all under `query_engine/`:
 | `history.py` | context budgeting: trim → compact → force-fit → repair, plus the compaction marker |
 | `streaming.py` | `_stream_chat` (retry/backoff), `_process_response`, the single `get_backend` handle |
 | `toollist.py` | per-query tool-list construction |
-| `background.py` | detached jobs: detect, register, await, `open_editor` |
+| `background.py` | detached jobs: detect, register, await, adopt a handover, `open_editor` |
+| `job_poll.py` | `poll_until_terminal` / `read_summary` — the one poll loop every watcher uses |
 | `finalize.py` | `_finalize_answer` / `_persist_answer` / `_annotate_answer_with_changes` |
 | `verification.py` | the verification ledger: `build_ledger` / `render_ledger` / `split_answer_ledger` |
 
@@ -674,9 +675,23 @@ not in another project.
 `context.capabilities.panel_sections()` lists the tools that declared `PANEL_REPORT` with
 a `panel` spec (`{section, order, args}`), and `ws_worker.panel_sections()` calls each one
 straight on its owning session — read-only, no observations, like the background watcher's
-probes. Each server answers with render-ready content (`{title, lines, detail}`): the
-panel renders what it is given and interprets nothing, which is what lets a plugin server
-add a section with no client edit.
+probes. Each server answers with render-ready content (`{title, lines, groups?, detail}`):
+the panel renders what it is given and interprets nothing, which is what lets a plugin
+server add a section with no client edit.
+
+`groups` is the nested half, for a server whose answer is a tree rather than a list — the
+schedulers this workspace reaches, the kinds of machine on each, what a probe found on
+one. Recursive, and passed through unread exactly as `lines` are. A section is dropped
+when it has none of the three, so a facility this machine does not have grows no heading;
+one that answers with a tree and nothing flat is kept.
+
+`panel_runs.attach_runs()` then hangs the runs the watcher is holding on the machines they
+are running on, which is the one place both halves exist: what a cluster is made of came
+from a server, and what is running on it is this client's own watcher state that no MCP
+server can see. A run lands on its host's row and on the row of the node kind whose nodes
+include one of its own; a run with no scheduler is on this machine, which is what `local`
+on a group means. A run no group claimed still travels, under `runs`, for the flat list —
+a run the user cannot see is worse than one shown out of place.
 
 ### `nudges/`
 
@@ -1047,9 +1062,9 @@ block stays in history for the model. `chat_commands.py` is the slash-command ta
 ### `ui/ws/`
 
 The WebSocket / VS Code bridge: `ws_server.py`, `ws_worker.py`, `ws_pool.py`,
-`ws_session.py`, `event_bus.py`, `turn_commit.py`, `job_scan.py`, `server_registry.py`,
-`detach.py`, `_ws_runtime.py`, `session_store.py`, `session_summary.py`,
-`transcript_log.py`, `file_preview.py`. The message protocol and the React frontend are documented in
+`ws_session.py`, `event_bus.py`, `turn_commit.py`, `job_scan.py`, `panel_runs.py`,
+`server_registry.py`, `detach.py`, `_ws_runtime.py`, `session_store.py`,
+`session_summary.py`, `transcript_log.py`, `file_preview.py`. The message protocol and the React frontend are documented in
 [`EXTENSION_DETAILED.md`](EXTENSION_DETAILED.md). What belongs here are the invariants that
 are not obvious from the protocol:
 
@@ -1446,6 +1461,22 @@ Two places look for the ended pile — a connection arriving (`_report_ended_job
 worker being built (`rearm_detached_jobs`) — so a marker file in the run's own directory
 records what has been settled, outliving whichever process settled it: a run delivered twice
 is a conversation woken twice for one build.
+
+**A sub-agent's runs are in here too.** A child's session is stored under its parent's
+(`<parent>/subagents/<child>`), so the scan walks that one named level as well — never
+deeper, because a child cannot delegate and arbitrary depth would make the scan's cost a
+property of someone's directory tree. The child is a session of its own for everything the
+scan records: its own baseline, its own markers, in its own directory. What it is *not* is
+the conversation to wake, since nothing can load a sub-session as one — `DetachedJob.
+owner_session` is the parent, and that is what the wake is routed to. Whose run it is and
+who gets woken are two different answers.
+
+The descriptor carries the run's directory for the same reason: a job key alone resolves
+against the *reading* session, and a child's run does not live there. Resolved against the
+wrong session it reads as "no such job", which the job layer spells `unknown` — a terminal
+state — so a parent would announce a healthy build as lost on its first poll. `bash_job`
+takes that directory and admits it when it is inside the reading session's own state
+directory, which grants exactly this session's runs and its children's.
 
 **Some runs name their own watcher.** A proxy run that submits to Slurm is a job of this
 workspace and that server's state machine both, so it is filed among the Slurm descriptors

@@ -266,13 +266,17 @@ class ScanTests(_ScanCase):
 
     def test_the_descriptor_names_an_op_to_poll(self):
         # The whole trust boundary for re-registration: a tool to call and a job to
-        # call it for.
+        # call it for. The directory travels with them because a key alone resolves
+        # against the reading session, and a sub-agent's run is not under it.
         self._job("s1", "j1", pid=os.getpid(),
                   starttime=job_scan._proc_starttime(os.getpid()))
-        d = scan_session("s1")[0].descriptor()
-        self.assertEqual(d["status_op"], {"tool": "bash_job",
-                                          "args": {"job_key": "j1"}})
+        job = scan_session("s1")[0]
+        d = job.descriptor()
+        self.assertEqual(d["status_op"],
+                         {"tool": "bash_job",
+                          "args": {"job_key": "j1", "run_dir": job.run_dir}})
         self.assertEqual(d["job_key"], "j1")
+        self.assertTrue(d["run_dir"].endswith("/s1/jobs/j1"))
 
 
 class _RearmWorker(_AgentWorker):
@@ -289,6 +293,91 @@ class _RearmWorker(_AgentWorker):
     def _register_bg_job(self, descriptor, owner=None) -> bool:
         self.registered.append((descriptor, owner))
         return True
+
+
+class ASubAgentsRunsAreFoundTests(_ScanCase):
+    """A child's runs, found under its parent.
+
+    A child's own watcher goes with the child, and one killed outright hands nothing
+    over — so this scan is the only thing left that can find what it left going. Its
+    jobs are two levels down (``<parent>/subagents/<child>/jobs/<key>``), which a
+    single-level listing never reached: the reader could read the nested path all along,
+    the enumeration simply never offered it one.
+    """
+
+    def test_a_childs_jobs_are_found_under_its_parent(self):
+        self._job("s1", "j1", exit_code=0)
+        self._job("s1/subagents/sub-1a2b", "j2", exit_code=1)
+        found = scan_all_sessions()
+        self.assertEqual(sorted(found), ["s1", "s1/subagents/sub-1a2b"])
+        self.assertEqual(found["s1/subagents/sub-1a2b"][0].state, "crashed")
+
+    def test_nothing_deeper_than_subagents_is_walked(self):
+        """One named level, because that is the whole contract a child writes.
+
+        A child cannot delegate, so there is never a third level — and walking
+        arbitrary depth would make the scan's cost a property of someone's directory
+        tree rather than of the work.
+        """
+        self._job("s1/subagents/sub-1a2b/subagents/sub-deep", "j3", exit_code=0)
+        self.assertEqual(sorted(scan_all_sessions()), [])
+
+    def test_a_childs_run_is_the_parents_to_hear_about(self):
+        """Whose run it is and who gets woken are two different answers.
+
+        Nothing can load a sub-session as a conversation: ``_sub_session_id`` writes
+        directories and no ``<id>.json``. The person is watching the parent, and the
+        parent's agent is the one that can act on what came back.
+        """
+        self._job("s1/subagents/sub-1a2b", "j2", exit_code=0)
+        job = scan_session("s1/subagents/sub-1a2b")[0]
+        self.assertEqual(job.session_id, "s1/subagents/sub-1a2b")
+        self.assertEqual(job.owner_session, "s1")
+
+    def test_a_run_of_its_own_is_owned_by_the_session_that_holds_it(self):
+        self._job("s1", "j1", exit_code=0)
+        self.assertEqual(scan_session("s1")[0].owner_session, "s1")
+
+    def test_the_descriptor_names_the_childs_directory(self):
+        """So the parent polls the run where it actually is.
+
+        A bare handle resolves against the reading session and comes back "no such
+        job", which the job layer spells ``unknown`` — terminal. The parent would
+        announce a healthy build as lost on its first poll.
+        """
+        self._job("s1/subagents/sub-1a2b", "j2", pid=os.getpid(),
+                  starttime=job_scan._proc_starttime(os.getpid()))
+        d = scan_session("s1/subagents/sub-1a2b")[0].descriptor()
+        self.assertTrue(
+            d["status_op"]["args"]["run_dir"].endswith("/subagents/sub-1a2b/jobs/j2"))
+
+
+class AChildsBaselineIsItsOwnTests(_ScanCase):
+    """A child seen for the first time brings no backlog of its own."""
+
+    def _job_unbaselined(self, session_id: str, job_key: str, **kw) -> str:
+        job_dir = self._job(session_id, job_key, **kw)
+        os.remove(job_scan._baseline_path(session_id))
+        return job_dir
+
+    def test_the_first_scan_of_a_child_wakes_nobody_for_its_history(self):
+        self._job_unbaselined("s1/subagents/sub-1a2b", "j2", exit_code=0)
+        sid = "s1/subagents/sub-1a2b"
+        self.assertFalse(job_scan.has_baseline(sid))
+        jobs = scan_session(sid)
+        job_scan.establish_baseline(sid, jobs)
+        # Marked where the scan will look again — under the child, not the parent.
+        self.assertTrue(job_scan.has_baseline(sid))
+        self.assertFalse(job_scan.has_baseline("s1"))
+        self.assertEqual(scan_session(sid), [])
+
+    def test_a_child_job_ending_after_its_baseline_is_reported(self):
+        sid = "s1/subagents/sub-1a2b"
+        self._job_unbaselined(sid, "j2", pid=os.getpid(),
+                              starttime=job_scan._proc_starttime(os.getpid()))
+        job_scan.establish_baseline(sid, scan_session(sid))
+        self._job(sid, "j3", exit_code=0)
+        self.assertEqual([j.job_key for j in scan_session(sid)], ["j2", "j3"])
 
 
 class RearmTests(_ScanCase):
@@ -316,6 +405,32 @@ class RearmTests(_ScanCase):
         self.assertEqual(ev["state"], "done")
         self.assertEqual(ev["session_id"], "s1")
         self.assertEqual(ev["summary"]["command"], "make -j8")
+
+    def test_a_childs_live_run_is_re_armed_for_the_parent(self):
+        """The parent picks up what its sub-agent left going.
+
+        Indistinguishable from one of its own to whatever consumes the wake, which is
+        this method's standing rule — except for the directory, which has to name the
+        child's own, or the first poll resolves to nothing.
+        """
+        self._job("s1/subagents/sub-1a2b", "j2", pid=os.getpid(),
+                  starttime=job_scan._proc_starttime(os.getpid()))
+        w = self._worker()
+        result = w.rearm_detached_jobs()
+        self.assertEqual(result["rearmed"], ["j2"])
+        descriptor, owner = w.registered[0]
+        self.assertEqual(owner, "s1", "the parent is the conversation to wake")
+        self.assertTrue(descriptor["status_op"]["args"]["run_dir"]
+                        .endswith("/subagents/sub-1a2b/jobs/j2"))
+
+    def test_a_childs_ended_run_wakes_the_parent(self):
+        self._job("s1/subagents/sub-1a2b", "j2", exit_code=0, command="make -j64")
+        w = self._worker()
+        self.assertEqual(w.rearm_detached_jobs()["reported"], ["j2"])
+        ev = self._events(w)[0]
+        self.assertEqual(ev["session_id"], "s1")
+        self.assertEqual(ev["state"], "done")
+        self.assertEqual(ev["summary"]["command"], "make -j64")
 
     def test_a_crash_is_reported_as_a_crash(self):
         self._job("s1", "j1", exit_code=3)

@@ -4101,6 +4101,117 @@ body.vscode-light .hljs-deletion, body.vscode-high-contrast-light .hljs-deletion
 
 .science-detail { font-size: 10px; color: var(--fg-dim); margin-top: 4px; }
 
+/* ── The tree inside a panel section ──────────────────────────────────────────
+   A scheduler, the kinds of machine on it, what a probe found on one — and the
+   runs in flight, as badges on the machine each is running on. The glyph is
+   swapped rather than rotated (the row's state lives in React, not in a
+   `[open]` attribute), so the chevron needs no transition of its own. */
+.science-group {
+  /* Set per level by the component; the indent is the only thing depth changes. */
+  padding-left: calc(var(--sp-2, 6px) * var(--depth, 0));
+}
+
+.science-group-row {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+  width: 100%;
+  padding: 2px 0;
+  border: none;
+  background: none;
+  color: var(--fg);
+  font: inherit;
+  font-size: 11px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.science-group-row:hover { background: var(--bg-hover); }
+
+.science-group-chevron {
+  font-size: 0.9em;
+  opacity: 0.6;
+  flex-shrink: 0;
+}
+
+.science-group-label {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.science-group-value {
+  margin-left: auto;
+  color: var(--fg-dim);
+  font-size: 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The one yellow the panel has: something a server wants read before the next run. */
+.science-group-value.is-warn { color: var(--vscode-charts-yellow, #d7a441); }
+
+.science-group-body { padding-left: 12px; }
+
+.science-group-nodes {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--fg-dim);
+  text-align: right;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.science-group-action {
+  margin-top: 4px;
+  font-size: 10px;
+  padding: 2px 6px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: none;
+  color: var(--fg-dim);
+  cursor: pointer;
+}
+
+.science-group-action:hover { color: var(--fg); }
+
+.science-group-confirm { margin-top: 4px; }
+.science-group-confirm-row { display: flex; gap: 4px; margin-top: 4px; }
+
+/* A run, on the machine it is running on. A pill rather than a line: several can sit
+   on one row, and what the reader scans for is how many and where. */
+.science-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+  padding: 1px 0 2px 16px;
+}
+
+.science-badge {
+  font-family: var(--mono);
+  font-size: 9px;
+  padding: 0 4px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: none;
+  color: var(--fg-dim);
+  cursor: pointer;
+}
+
+.science-badge.is-running {
+  color: var(--vscode-charts-blue, #4aa3ff);
+  border-color: color-mix(in srgb, var(--vscode-charts-blue, #4aa3ff) 50%, transparent);
+}
+
+.science-badge-detail {
+  width: 100%;
+  padding-left: 4px;
+  border-left: 1px solid var(--border);
+}
+
 .subagent-badge {
   font-size: 9px;
   margin-left: 2px;
