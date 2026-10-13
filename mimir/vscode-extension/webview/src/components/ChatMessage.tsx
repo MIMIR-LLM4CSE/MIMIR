@@ -11,6 +11,7 @@ import { VerificationLedger } from "./VerificationLedger";
 import { splitAnswerCompletion } from "./completionUtils";
 import { splitAnswerLedger } from "./ledgerUtils";
 import { vscodePostMessage } from "../hooks/useWebSocket";
+import { MentionText } from "./MentionText";
 
 interface Props {
   message: IChatMessage;
@@ -167,7 +168,7 @@ const ChatMessageInner: React.FC<Props> = ({ message, onApprovalResponse, onRetr
           </>
         ) : (
           <div className="user-text">
-            {message.text}
+            <MentionText text={message.text ?? ""} />
             {message.queued && (
               <span className="steer-badge" title="Queued — will reach MIMIR at its next step">
                 ↯ queued

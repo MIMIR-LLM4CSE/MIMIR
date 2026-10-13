@@ -4,6 +4,7 @@ import katex from "katex";
 import type { ExecResult, FileTarget, MathResult, ToolActivity } from "../types";
 import { vscodePostMessage } from "../hooks/useWebSocket";
 import { subAgentTail } from "./subAgentUtils";
+import { iconForKind, labelForKind } from "./toolIcons";
 import { useElapsed, formatDuration } from "../hooks/useElapsed";
 
 /** Terminal-style in/out panel for an exec-shaped tool result (shell, code
@@ -209,19 +210,35 @@ function withFileLink(text: string, target?: FileTarget): React.ReactNode {
   );
 }
 
-/** Tool label with its leading verb emphasized: "**Reading** file: x.py".
- *  The verb carries the meaning at a glance; the rest stays dim. The file name,
- *  when the call succeeded on one, opens it. */
-const ToolLabel: React.FC<{ label: string; target?: FileTarget }> = ({ label, target }) => {
-  const space = label.indexOf(" ");
-  if (space <= 0) return <span className="tool-label">{withFileLink(label, target)}</span>;
-  return (
-    <span className="tool-label">
-      <span className="tool-label-verb">{label.slice(0, space)}</span>
-      {withFileLink(label.slice(space), target)}
-    </span>
-  );
-};
+/** What the row says: the tool's family of work, then what this call is doing.
+ *
+ *  The family is one declared word — "edit", "bash", "proxy eval" — in full colour,
+ *  and it is the same word the icon was picked from. Shown with a capital — see
+ *  `labelForKind`, which also keeps the one brand whose capital is not its first letter.
+ *  Beside it, dim, the model's own
+ *  sentence about this particular call, which is the only part of the row that knows
+ *  *why* it is happening. A derived label ("Running shell command") said neither: ten
+ *  identical calls read as ten identical rows. It survives as the row's tooltip.
+ *
+ *  No sentence — the model did not write one, or the row comes from a session recorded
+ *  before this existed — and the derived label stands in for it. The family alone was
+ *  tried first and is too coarse to read: eight tools answer to "Plan", so a bare
+ *  `Plan` row left no way to tell a checklist being written from one being read. The
+ *  label is the one thing that always says which call this was, and it is already on
+ *  the wire for the tooltip and the approval card. */
+const ToolHead: React.FC<{
+  kind: string;
+  doing?: string;
+  target?: FileTarget;
+  label: string;
+}> = ({ kind, doing, label, target }) => (
+  <>
+    <span className="tool-kind">{labelForKind(kind)}</span>
+    {(doing || label) && (
+      <span className="tool-doing">{withFileLink(doing || label, target)}</span>
+    )}
+  </>
+);
 
 interface RowProps {
   tool: ToolActivity;
@@ -278,20 +295,47 @@ const ToolRow: React.FC<RowProps> = ({ tool, childRows = [], onDivert }) => {
       return typeof next === "function" ? next(current) : next;
     });
 
-  // The row's arg preview IS the command line for an exec-shaped row, so while the
-  // IN pane below is open it says it twice — cropped up here, in full down there.
-  // Dropped only while the panel is open: collapsed, the one-liner is the only
-  // trace of what ran.
-  // The same holds for a calculation: the equation below restates the expression.
-  const showsCommandBelow =
-    expanded && ((hasExec && !!tool.exec?.command) || hasMath);
+  // A row whose panel below carries the same thing in full does not say it on the line
+  // too: the command of an exec row, the expression under its typeset equation. The
+  // panel exists from the moment the call is made — the IN half is sent with the
+  // `tool_call` event — so this holds whether it is open or closed. A failed exec row
+  // is collapsed and still has its command one click away, which is where it belongs:
+  // cropped at 38% of a line, it was a fragment of a command pretending to be one.
+  const panelRestatesIt = (hasExec && !!tool.exec?.command) || hasMath;
 
   // The file name opens the file only once the call has succeeded on it: a failed
   // read or edit says nothing reliable about the file, and a running write may not
-  // have created it yet. The label carries the link; the detail only when the label
-  // does not show the name.
+  // have created it yet. The description carries the link when the model happened to
+  // name the file; otherwise the detail does, so it is never shown twice.
   const fileTarget = tool.status === "ok" ? tool.target : undefined;
-  const linkInLabel = !!fileTarget && tool.label.includes(fileTarget.name);
+  // Whichever of the two the row is showing is the one that may already carry the file
+  // name — the label templates name it as often as a description does.
+  const said = tool.doing || tool.label;
+  const linkInDoing = !!fileTarget && said.includes(fileTarget.name);
+
+  // The family of work: the word the row shows, and what its icon is drawn from. Both
+  // derived here rather than carried on the row, because the icon is a *function* of the
+  // family — and because one of them is an element (the GitHub mark), which would not
+  // survive the trip through the stored transcript's JSON and would come back as a dead
+  // object React refuses to render.
+  //
+  // Defaulted here and not only server-side: a row restored from a session recorded
+  // before the field existed has no family, and the generic glyph is the honest answer.
+  const kind = tool.kind || "tool";
+
+  // Beside the description, the salient argument of the call: the url it is reaching,
+  // the job id it is cancelling, the verdict it is recording, the file it is reading.
+  // The description says what the call is for and this says what it is for *on*, so
+  // they are two facts and not two renderings of one — the server has already dropped
+  // this when the description happens to name it (`dedup_row_detail`).
+  //
+  // Dropped only where the panel below restates it in full: a command under an open IN
+  // pane, an expression under its typeset equation. A *failed* exec row is collapsed,
+  // so its command stays on the line — that row would otherwise read "Bash" alone.
+  //
+  // The file name stands in when there is no preview, since it is a link rather than a
+  // sentence and the row is where the file is opened from.
+  const detail = tool.detail || (!linkInDoing && fileTarget ? fileTarget.name : "");
 
   const running = tool.status === "running";
   // Latched locally rather than waiting for the row to change status: the request
@@ -337,7 +381,7 @@ const ToolRow: React.FC<RowProps> = ({ tool, childRows = [], onDivert }) => {
         aria-valuenow={hasProgress ? pct : undefined}
         aria-valuemin={hasProgress ? 0 : undefined}
         aria-valuemax={hasProgress ? 100 : undefined}
-        aria-label={hasProgress ? tool.phase || tool.label : undefined}
+        aria-label={hasProgress ? tool.phase || tool.doing || tool.label : undefined}
       >
       <button
         className="tool-row-head"
@@ -346,7 +390,7 @@ const ToolRow: React.FC<RowProps> = ({ tool, childRows = [], onDivert }) => {
         // and the file name inside it must still open the file.
         aria-disabled={!canExpand || undefined}
         tabIndex={canExpand ? undefined : -1}
-        title={tool.error || tool.detail || tool.label}
+        title={tool.error || tool.label || tool.detail}
       >
         {/* Success is the norm and needs no mark; only failure gets a glyph, and it
             leads the row so the status is read before the label. */}
@@ -360,7 +404,7 @@ const ToolRow: React.FC<RowProps> = ({ tool, childRows = [], onDivert }) => {
         {running && !hasProgress ? (
           <span className="tb-spinner" aria-hidden="true" />
         ) : (
-          <span className="tool-icon" aria-hidden="true">{tool.icon}</span>
+          <span className="tool-icon" aria-hidden="true">{iconForKind(kind)}</span>
         )}
         {/* Whose work this is. Several sub-agents run at once, and their rows sit in
             the same list as the agent's own — without the badge a reader cannot tell
@@ -370,10 +414,19 @@ const ToolRow: React.FC<RowProps> = ({ tool, childRows = [], onDivert }) => {
             {tool.origin}
           </span>
         )}
-        <ToolLabel label={tool.label} target={linkInLabel ? fileTarget : undefined} />
-        {tool.detail && !showsCommandBelow && (
-          <span className="tool-detail">
-            {withFileLink(tool.detail, linkInLabel ? undefined : fileTarget)}
+        <ToolHead
+          kind={kind}
+          doing={tool.doing}
+          label={tool.label}
+          target={linkInDoing ? fileTarget : undefined}
+        />
+        {detail && !panelRestatesIt && (
+          // Its own tooltip, because this is the slot that gets cut: it is capped at a
+          // share of the line and ellipsised there, and a url or a repository path is
+          // exactly the kind of value whose *end* was the point. The head's tooltip
+          // says what was called; this one says what it was called on.
+          <span className="tool-detail" title={detail}>
+            {withFileLink(detail, linkInDoing ? undefined : fileTarget)}
           </span>
         )}
         <span className="tool-row-tail">

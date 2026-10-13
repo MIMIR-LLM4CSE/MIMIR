@@ -78,35 +78,6 @@ export type ChatAction =
   | { type: "toggle_thinking"; id: string }
   | { type: "approval_response"; id: string; choice: "y" | "n" | "a" };
 
-// Tool name → icon. Keyed on the structured tool name (robust to wording),
-// with prefix fallbacks so unknown/new tools still get a sensible glyph.
-const TOOL_ICONS: Record<string, string> = {
-  read_file: "📖", read_file_lines: "📖",
-  grep: "🔍", search_code_patterns: "🔍", find_similar_files: "🔍", find_files: "🔍",
-  list_directory: "📂", list_files: "📂", file_exists: "📂", get_file_info: "📂",
-  tree_summary: "🌳",
-  write_file: "✏️", append_file: "✏️", replace_all_in_file: "✏️",
-  insert_text: "✏️", replace_lines: "✏️",
-  delete_file: "🗑️",
-  web_fetch: "🌐",
-};
-
-/** Returns an icon for a structured tool by name (exact, then prefix, then default). */
-export function iconForTool(name: string): string {
-  if (name in TOOL_ICONS) return TOOL_ICONS[name];
-  if (name.includes("bash") || name.includes("shell") || name.includes("terminal")) return "💻";
-  if (name.startsWith("code_")) return "⚡";
-  if (name.startsWith("db_")) return "🗄️";
-  if (name.startsWith("proxy_") || name.startsWith("platform_")) return "🖥️";
-  if (name.startsWith("salloc") || name.startsWith("slurm") || name.startsWith("hpc_")) return "🏗️";
-  if (name.includes("task") || name.includes("todo")) return "📋";
-  if (name.includes("memory")) return "🧠";
-  if (name.includes("search") || name.includes("find") || name.includes("grep")) return "🔍";
-  if (name.includes("read") || name.includes("get")) return "📖";
-  if (name.includes("write") || name.includes("edit") || name.includes("replace")) return "✏️";
-  return "🔧";
-}
-
 /**
  * Apply *transform* to whichever list currently holds the row *id*.
  *
@@ -170,6 +141,28 @@ function appendStamped(messages: ChatMessage[], msg: ChatMessage): ChatMessage[]
     if (prev === undefined || prev <= seq) break;
     at--;
   }
+  return [...messages.slice(0, at), msg, ...messages.slice(at)];
+}
+
+/**
+ * Append *msg* above the messages the turn in flight has not claimed.
+ *
+ * A steer bubble carries its "queued" tag until the server says the run read it, so a
+ * tagged bubble still at the tail when the turn ends is one no step of it took in: it
+ * is answered by a turn of its own, and the message was typed *during* the step that
+ * is ending here. What closes that step therefore belongs above it — appended after
+ * it, the answer of the turn before reads as a reply to a message not yet sent.
+ *
+ * This is the other half of {@link appendStamped}, which puts a bubble under the cards
+ * and prose that were already on screen: there the step's own output comes back above
+ * the bubble, and the authoritative text that supersedes it has to land in the same
+ * place.
+ */
+function appendAboveUnclaimed(
+  messages: ChatMessage[], msg: ChatMessage,
+): ChatMessage[] {
+  let at = messages.length;
+  while (at > 0 && messages[at - 1].queued) at--;
   return [...messages.slice(0, at), msg, ...messages.slice(at)];
 }
 
@@ -349,14 +342,20 @@ export function createChatReducer(makeId: () => string) {
     switch (action.type) {
       // ── Local actions ──────────────────────────────────────────────────────
       case "submit_query": {
+        // Committed, not dropped. Anything still live when a new question is asked
+        // happened, and the live buffers are a staging area rather than a record: a
+        // replayed turn whose cards and prose are sitting there — the ordinary state
+        // after reattaching to a run that has not answered yet — would otherwise be
+        // erased by the next thing typed, leaving the question where the work was.
+        const flushed = flushLive(state, makeId);
         const userMsg: ChatMessage = { id: makeId(), role: "user", kind: "text", text: action.text };
         return {
-          ...state,
+          ...flushed,
           // Whatever a previous turn left provisional is settled by a new question
           // being asked: it is the transcript now, and the `answer` this turn ends on
           // must supersede its own prose only — never reach back and delete an older
           // turn's, which is all that would be left of a run that was interrupted.
-          messages: [...clearProvisional(state.messages), userMsg],
+          messages: [...clearProvisional(flushed.messages), userMsg],
           liveThinkingBlocks: [],
           liveToolCalls: [],
           busy: true,
@@ -383,13 +382,24 @@ export function createChatReducer(makeId: () => string) {
         };
       }
 
-      // Server confirmed a queued steer reached the running agent. Clear the
-      // "queued" tag on the oldest still-queued bubble (FIFO injection order).
+      // Server confirmed a queued steer reached the agent. Clear the "queued" tag on
+      // the oldest still-queued bubble (FIFO injection order).
+      //
+      // `starts_turn` means it reached the agent as a turn of its own: the run it was
+      // typed into ended before any step boundary read it, so the server submitted it.
+      // Nobody pressed send for that turn, so `busy` is set here — it is what offers
+      // the stop button and makes the end of the turn observable at all.
+      //
+      // Where the bubble sits is settled by the tag, not here: while it is set, the
+      // turn in flight has not claimed the message, and whatever ends that turn is
+      // placed above it.
       case "steer_injected": {
+        const busy = action.starts_turn ? true : state.busy;
         const idx = state.messages.findIndex((m) => m.queued);
-        if (idx < 0) return state;
+        if (idx < 0) return busy === state.busy ? state : { ...state, busy };
         return {
           ...state,
+          busy,
           messages: state.messages.map((m, i) =>
             i === idx ? { ...m, queued: false } : m
           ),
@@ -653,6 +663,7 @@ export function createChatReducer(makeId: () => string) {
                 items: (action.items ?? []).filter((i) => (i?.label ?? "").trim()),
                 note: (action.note ?? "").trim(),
                 tone: action.tone ?? "ok",
+                transient: action.transient ?? false,
               },
           }),
         };
@@ -818,9 +829,10 @@ export function createChatReducer(makeId: () => string) {
         const activity: ToolActivity = {
           id: action.id,
           name: action.name,
-          icon: iconForTool(action.name),
           label: action.label,
           detail: action.detail,
+          kind: action.kind,
+          doing: action.doing,
           status: "running",
           divertible: action.divertible,
           // Present for an exec-shaped call: the command, with no output yet. It
@@ -958,9 +970,10 @@ export function createChatReducer(makeId: () => string) {
               const child: ToolActivity = {
                 id: action.id ?? `${parentId}:?`,
                 name: action.name ?? "",
-                icon: iconForTool(action.name ?? ""),
                 label: action.label ?? "",
                 detail: action.detail ?? "",
+                kind: action.tool_kind,
+                doing: action.doing,
                 status: "running",
                 startedAt: Date.now(),
                 parentId,
@@ -1080,17 +1093,14 @@ export function createChatReducer(makeId: () => string) {
         );
         const hasEditCard = finalized.some((m) => m.kind === "editing");
         const attachDiffs = !hasEditCard && diffs.length > 0 ? diffs : undefined;
-        const messages: ChatMessage[] = [
-          ...finalized,
-          {
-            id: makeId(),
-            role: "agent",
-            kind: "text",
-            text: action.text,
-            diffs: attachDiffs,
-            thinking: thinkingText || undefined,
-          },
-        ];
+        const messages = appendAboveUnclaimed(finalized, {
+          id: makeId(),
+          role: "agent",
+          kind: "text",
+          text: action.text,
+          diffs: attachDiffs,
+          thinking: thinkingText || undefined,
+        });
         return { ...s, messages };
       }
 
@@ -1110,12 +1120,12 @@ export function createChatReducer(makeId: () => string) {
 
       case "error": {
         const s = flushLive({ ...state, toolCallAfterToken: false }, makeId);
-        const messages: ChatMessage[] = [
-          ...s.messages.map((m) =>
+        const messages: ChatMessage[] = appendAboveUnclaimed(
+          s.messages.map((m) =>
             m.kind === "editing" && m.live ? { ...m, live: false } : m
           ),
           { id: makeId(), role: "agent", kind: "error", text: action.text },
-        ];
+        );
         return { ...s, busy: false, messages };
       }
 

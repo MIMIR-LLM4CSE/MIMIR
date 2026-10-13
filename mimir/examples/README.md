@@ -4,9 +4,11 @@ Canonical, copy-to-customize examples for every MIMIR extension type. This folde
 **mirrors the `.mimir/` layout** (`skills/`, `servers/`, `plugins/`, plus the base-prompt
 file at the root) and is the **single source of truth** for every example.
 
-> **Nothing is auto-created in your workspace.** MIMIR never writes into `.mimir/` — that
-> directory is yours alone. To add an extension, create the file yourself under `.mimir/`
-> (or point the matching `MIMIR_*_DIR` env var elsewhere), using these files as a template.
+> **Nothing is auto-created in your workspace.** MIMIR never writes into `.mimir/` on its
+> own — that directory is yours alone. To add an extension, create the file yourself under
+> `.mimir/` (or point the matching `MIMIR_*_DIR` env var elsewhere), using these files as a
+> template — or ask MIMIR to write it with you, which the bundled `mimir-api` skill does
+> from these very templates through the `mimir_api` tool.
 
 | Example | Extension type | Where it goes in your workspace |
 |---------|----------------|---------------------------------|

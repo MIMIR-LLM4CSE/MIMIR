@@ -23,6 +23,7 @@ import type {
   ApprovalMessage,
   UserQuestionMessage,
   ToggleItem,
+  RunningServer,
   ResourceItem,
   AgentMode,
   ApprovalMode,
@@ -38,6 +39,9 @@ import { ForeignPromptStrip } from "./components/ForeignPromptStrip";
 import { PlanBar } from "./components/PlanBar";
 import { AgentSettings } from "./components/AgentSettings";
 import { ApprovalSwitcher } from "./components/ApprovalSwitcher";
+import { DetachButton } from "./components/DetachButton";
+import { DisconnectPrompt } from "./components/DisconnectPrompt";
+import { workingSessions } from "./components/disconnectUtils";
 import { ModeSwitcher } from "./components/ModeSwitcher";
 import { TogglesPanel } from "./components/TogglesPanel";
 import { ConnectForm } from "./components/ConnectForm";
@@ -55,13 +59,17 @@ import { BatchReviewBar } from "./components/BatchReviewBar";
 import { MimirIntro } from "./components/MimirIntro";
 import { chooseRestoredMessages, pruneForStorage } from "./components/transcriptUtils";
 import { MentionAutocomplete } from "./components/MentionAutocomplete";
+import { DraftAttachments } from "./components/DraftAttachments";
+import { DraftHighlight } from "./components/DraftHighlight";
+import { removeMention } from "./components/mentionHighlight";
 import { SlashAutocomplete } from "./components/SlashAutocomplete";
 import {
   detectMentionQuery,
-  filterResources,
+  buildMentionItems,
   applyMention,
   wrapIndex,
   type MentionQuery,
+  type MentionItem,
 } from "./components/mentionUtils";
 import {
   detectSlashQuery,
@@ -161,13 +169,28 @@ export const App: React.FC = () => {
   // Whether the endpoint has answered the model-list question at all.
   const [modelsProbed, setModelsProbed] = useState(false);
   const [input, setInput] = useState("");
-  // ── @-mention autocomplete (attach MCP resources) ─────────────────────────
+  // ── @-mention autocomplete (attach MCP resources and workspace files) ─────
   const [resources, setResources] = useState<ResourceItem[]>([]);
+  // Workspace files matching the mention being typed, ranked by the extension host —
+  // the webview has no filesystem of its own to search. `query` is the ask they answer,
+  // so a reply overtaken by further typing can be ignored rather than shown.
+  const [fileMatches, setFileMatches] = useState<{ query: string; files: string[] }>(
+    { query: "", files: [] }
+  );
   const [mention, setMention] = useState<MentionQuery | null>(null);
   const [mentionIndex, setMentionIndex] = useState(0);
   const mentionItems = useMemo(
-    () => (mention ? filterResources(resources, mention.query) : []),
-    [mention, resources]
+    () =>
+      mention
+        ? buildMentionItems(
+            resources,
+            // Only the answer to this very query: showing the previous one's files
+            // under a narrower query puts rows in the list that do not match it.
+            fileMatches.query === mention.query ? fileMatches.files : [],
+            mention.query
+          )
+        : [],
+    [mention, resources, fileMatches]
   );
   const mentionOpen = mention !== null && mentionItems.length > 0;
   // ── "/"-command autocomplete (run a skill) ─────────────────────────────────
@@ -186,10 +209,21 @@ export const App: React.FC = () => {
   const [streaming, setStreaming] = useState(true);
 
   const [contextMode, setContextMode] = useState<"compact" | "full">("full");
-  const [enforcement, setEnforcement] = useState<"strict" | "light" | "off">("strict");
+  const [enforcement, setEnforcement] = useState<"strict" | "light" | "off">("light");
   // Held by the server, per model and on disk: never replayed from here on connect.
   const [temperature, setTemperature] = useState<TemperatureState>({ supported: false, value: null });
   const [approvalMode, setApprovalMode] = useState<ApprovalMode>("manual");
+  // Set once the server says it has detached. One-way: a detached server has no
+  // pipe to go back to.
+  const [detached, setDetached] = useState(false);
+  // True while the disconnect is waiting on an answer about the running work. Not a
+  // boolean "show the dialog" but the disconnect itself, held: cancelling means the
+  // disconnect never happened.
+  const [disconnectPending, setDisconnectPending] = useState(false);
+  // The server this workspace already has, when it has one. Its presence is what turns
+  // a connect form into a rejoin: the address and backend a form collects describe how
+  // a *new* server would start, and none of them apply to one already serving.
+  const [runningServer, setRunningServer] = useState<RunningServer | null>(null);
   const [contextUsage, setContextUsage] = useState<ContextUsage | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [togglesOpen, setTogglesOpen] = useState(false);
@@ -279,6 +313,8 @@ export const App: React.FC = () => {
 
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  /** The mention query the host was last asked about, so one ask per keystroke. */
+  const mentionFileQueryRef = useRef<string | null>(null);
   // Messages sent from this input, oldest first, recalled with the arrow keys.
   const sentHistoryRef = useRef<string[]>([]);
   const historyStateRef = useRef<HistoryState>(HISTORY_IDLE);
@@ -365,7 +401,26 @@ export const App: React.FC = () => {
   // ── WebSocket message handler ─────────────────────────────────────────────
   // Scalar/config message types update local React state directly; the
   // streaming/thinking/approval/diff state machine is delegated to the reducer.
+  // How far into each session's journal this window has rendered, keyed by session.
+  // Per session rather than one number: switching conversations would otherwise carry
+  // one session's high-water mark onto another and tell the server we had already seen
+  // events we never got.
+  const renderedSeqRef = useRef<Record<string, number>>({});
+
+  // A `replay` frame is a bundle of ordinary events, so it goes through this very
+  // handler — one reducer for what happened live and what happened while we were away.
+  const handlerRef = useRef<(m: ServerMessage) => void>(() => {});
+
   const handleServerMessage = useCallback((msg: ServerMessage) => {
+    // Every journaled event carries the point it was written at. Remembering the
+    // highest is what lets a later attach replay only what this window missed.
+    const seq = (msg as { seq?: unknown }).seq;
+    const owner = (msg as { session_id?: unknown }).session_id;
+    if (typeof seq === "number" && typeof owner === "string") {
+      const seen = renderedSeqRef.current[owner] ?? 0;
+      if (seq > seen) renderedSeqRef.current[owner] = seq;
+    }
+
     switch (msg.type) {
       case "ready":
         setModel(msg.model);
@@ -400,6 +455,7 @@ export const App: React.FC = () => {
         // the user last connected to and asked us to keep.
         const saved = msg.remembered ?? null;
         setRemembered(saved);
+        setRunningServer(msg.running ?? null);
         if (saved) seedAddress(saved.backend, saved.baseUrl);
         return;
       }
@@ -491,6 +547,10 @@ export const App: React.FC = () => {
         setResources(msg.resources ?? []);
         return;
 
+      case "file_results":
+        setFileMatches({ query: msg.query ?? "", files: msg.files ?? [] });
+        return;
+
       case "active_editor":
         setActiveEditor({ file: msg.file, selection: msg.selection });
         return;
@@ -579,6 +639,35 @@ export const App: React.FC = () => {
         });
         return;
 
+      // What this conversation produced while nobody was attached. Each event is fed
+      // to this same handler, which is what rebuilds the rich transcript — tool rows,
+      // diff cards, reasoning panels — for a stretch this window was not there for.
+      // Streamed deltas are not in it by design: a resumed turn arrives as the
+      // aggregates that closed its blocks, not as its keystrokes.
+      case "replay": {
+        for (const ev of msg.events ?? []) handlerRef.current(ev as ServerMessage);
+        const seen = renderedSeqRef.current[msg.session_id] ?? 0;
+        if (msg.through_seq > seen) renderedSeqRef.current[msg.session_id] = msg.through_seq;
+        if (!msg.more) scrollToBottom();
+        return;
+      }
+
+      // A recorded prose block, which only a replay carries. Dispatched as a token so
+      // the existing draft-and-boundary logic places it relative to the tool cards that
+      // followed it — the same path the live stream takes, so a turn read back after an
+      // absence is laid out the way it would have been watched.
+      case "assistant_text":
+        dispatch({ type: "token", text: msg.text });
+        return;
+
+      // The server has made itself survivable. Shown rather than announced: what
+      // changes is a standing fact about this run, not an event in the conversation.
+      case "detached":
+        // Absent means detached: an older server sends no flag, and the message
+        // existed only to announce one.
+        setDetached(msg.detached !== false);
+        return;
+
       case "session_loaded": {
         // Capture BEFORE updating so we can compare old vs new session id.
         const prevSessionId = activeSessionIdRef.current;
@@ -659,6 +748,12 @@ export const App: React.FC = () => {
       scrollToBottom();
     }
   }, [scrollToBottom, scrollToApproval]);
+
+  // Kept in a ref so the `replay` case can run each bundled event through the handler
+  // it is defined in.
+  useEffect(() => {
+    handlerRef.current = handleServerMessage;
+  }, [handleServerMessage]);
 
   const resetSession = () => {
     dispatch({ type: "reset" });
@@ -749,7 +844,14 @@ export const App: React.FC = () => {
     if (!sessionId || messages.length === 0) return;
     if (!force && messages === lastSentMessagesRef.current) return;
     lastSentMessagesRef.current = messages;
-    send({ type: "transcript", session_id: sessionId, messages: pruneForStorage(messages) });
+    send({
+      type: "transcript",
+      session_id: sessionId,
+      messages: pruneForStorage(messages),
+      // How far these messages reach. The server stores it and replays from it, so a
+      // window that has rendered everything is sent nothing on its next attach.
+      through_seq: renderedSeqRef.current[sessionId] ?? 0,
+    });
   }, [send]);
 
   // At the end of the turn. The delay lets the last few events (a trailing verdict,
@@ -887,6 +989,32 @@ export const App: React.FC = () => {
     },
     [fetchModels],
   );
+  /**
+   * Rejoin the server this workspace already has.
+   *
+   * Sent as an ordinary connect: the host checks the registry before starting
+   * anything, so this attaches rather than spawning. The arguments are placeholders —
+   * a server already serving does not take a backend or an address — and passing the
+   * last ones used keeps the host's own validation on a path it knows.
+   */
+  const handleReattach = useCallback(() => {
+    setConnection("connecting");
+    setAgentReady(false);
+    const args = lastConnectArgsRef.current;
+    if (args) {
+      connect(...args);
+      return;
+    }
+    // Nothing was connected from this window, so there are no last arguments. The
+    // address is a placeholder either way: the host sees a server already serving this
+    // workspace and attaches to it without reading any of this.
+    const baseUrl =
+      backend === "ray" ? rayBaseUrl
+      : backend === "ollama" ? ollamaBaseUrl
+      : vllmBaseUrl;
+    connect(runningServer?.model ?? "", backend, baseUrl, "", false);
+  }, [connect, runningServer, backend, vllmBaseUrl, rayBaseUrl, ollamaBaseUrl]);
+
   const handleReconnect = useCallback(() => {
     const args = lastConnectArgsRef.current;
     if (!args) return;
@@ -903,12 +1031,75 @@ export const App: React.FC = () => {
     setAgentReady(false);
   }, [disconnect]);
 
+  // The conversations still working.
+  //
+  // Two sources, because neither is enough alone. `running` in the session list is the
+  // server's answer for conversations this window is not reading — several turns run at
+  // once, and those are invisible without it — but the list is pushed when a turn
+  // *ends*, not when one starts, so it says nothing about the turn happening right here.
+  // For that one the client's own `busy` is authoritative and immediate.
+  const runningSessions = useMemo(
+    () => workingSessions(sessions, activeSessionId, busy),
+    [sessions, activeSessionId, busy],
+  );
+
+  /**
+   * Disconnect, asking first when it would end work that is still running.
+   *
+   * Nothing is torn down here when there is something to ask about: the disconnect is
+   * held until answered, and dismissing the question cancels it. A dialog that acted on
+   * being dismissed would make Escape a decision, and the decision can end a two-hour
+   * build.
+   */
+  const requestDisconnect = useCallback(() => {
+    if (runningSessions.length > 0 && !detached) {
+      setDisconnectPending(true);
+      return;
+    }
+    disconnect();
+    resetSession();
+  }, [runningSessions.length, detached, disconnect, resetSession]);
+
+  const confirmDetachThenDisconnect = useCallback(() => {
+    // Only the conversations that are working. Naming them rather than detaching
+    // everything keeps an idle conversation from silently gaining an autonomy level
+    // nobody chose for it.
+    send({
+      type: "detach",
+      autonomy: approvalMode,
+      session_ids: runningSessions.map((s) => s.id),
+    });
+    setDisconnectPending(false);
+    setDetached(true);
+    // After the message, so it leaves before the socket does.
+    setTimeout(() => {
+      disconnect();
+      resetSession();
+    }, 150);
+  }, [send, approvalMode, runningSessions, disconnect, resetSession]);
+
+  const confirmDisconnectAnyway = useCallback(() => {
+    setDisconnectPending(false);
+    disconnect();
+    resetSession();
+  }, [disconnect, resetSession]);
+
   // Recompute the @-mention query from the textarea's current value + caret.
   const syncMention = useCallback((el: HTMLTextAreaElement | null) => {
     if (!el) return;
     const caret = el.selectionStart ?? el.value.length;
-    setMention(detectMentionQuery(el.value, caret));
+    const next = detectMentionQuery(el.value, caret);
+    setMention(next);
     setMentionIndex(0);
+    // Each keystroke inside a mention asks the host to rank the workspace against it.
+    // Cheap on its side (one cached scan, then a sort), and asking per keystroke is
+    // what keeps the list honest: it is the only place the file names exist.
+    if (next && next.query !== mentionFileQueryRef.current) {
+      mentionFileQueryRef.current = next.query;
+      vscodePostMessage({ type: "file_search", query: next.query });
+    } else if (!next) {
+      mentionFileQueryRef.current = null;
+    }
   }, []);
 
   // Recompute the "/"-command query from the textarea's current value + caret.
@@ -921,7 +1112,7 @@ export const App: React.FC = () => {
 
   // Insert the chosen resource's token at the caret and refocus the input.
   const pickMention = useCallback(
-    (item: ResourceItem) => {
+    (item: MentionItem) => {
       const el = textareaRef.current;
       if (!el || !mention) return;
       const caret = el.selectionStart ?? el.value.length;
@@ -929,10 +1120,13 @@ export const App: React.FC = () => {
         el.value,
         mention.start,
         caret,
-        item.name || item.uri
+        item.insert
       );
       setInput(text);
       setMention(null);
+      // The next mention asks again, even for the same letters: the workspace may
+      // have gained or lost a file since.
+      mentionFileQueryRef.current = null;
       requestAnimationFrame(() => {
         const t = textareaRef.current;
         if (t) {
@@ -988,6 +1182,23 @@ export const App: React.FC = () => {
       }
     });
   }, [activeEditor, input]);
+
+  // Take an attachment back out of the draft, from its chip's "×". The draft is the
+  // record of what the turn attaches, so detaching is an edit of the text.
+  const detachMention = useCallback(
+    (start: number, end: number) => {
+      const { text, caret } = removeMention(input, start, end);
+      setInput(text);
+      requestAnimationFrame(() => {
+        const t = textareaRef.current;
+        if (t) {
+          t.focus();
+          t.setSelectionRange(caret, caret);
+        }
+      });
+    },
+    [input]
+  );
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -1341,12 +1552,23 @@ export const App: React.FC = () => {
               aria-label={connection === "connecting" ? "Cancel connection" : "Disconnect agent"}
               onClick={connection === "connecting"
                 ? handleCancelConnect
-                : () => { disconnect(); resetSession(); }}
+                : requestDisconnect}
             >
               ⏏
             </button>
           )}
         </div>
+
+        {/* Asked only when disconnecting would end work in flight. Held, not fired:
+            dismissing it cancels the disconnect. */}
+        {disconnectPending && (
+          <DisconnectPrompt
+            running={runningSessions}
+            onDetach={confirmDetachThenDisconnect}
+            onDiscard={confirmDisconnectAnyway}
+            onCancel={() => setDisconnectPending(false)}
+          />
+        )}
 
         {/* Conversations other than this one that are waiting on the user. Above the
             thread rather than in it: the card belongs to another transcript, and each
@@ -1437,11 +1659,32 @@ export const App: React.FC = () => {
         {/* Reconnect panel — shown when disconnected with existing history */}
         {connection === "disconnected" && messages.length > 0 && (
           <div className="reconnect-panel">
-            <div className="reconnect-hint">Agent disconnected — reconnect to continue</div>
-            {lastConnectArgsRef.current && (
-              <button className="reconnect-btn" onClick={handleReconnect}>
-                Reconnect
-              </button>
+            {runningServer ? (
+              <>
+                {/* A run is going without this panel. Rejoining it is the only thing
+                    worth offering here: the form below would collect an endpoint that
+                    a server already serving this workspace does not use. */}
+                <div className="reconnect-hint">
+                  {runningServer.detached
+                    ? "MIMIR is still working without this window"
+                    : "This workspace already has a MIMIR server"}
+                  {runningServer.autonomy && runningServer.autonomy !== "manual"
+                    ? ` — running under “${runningServer.autonomy}”`
+                    : ""}
+                </div>
+                <button className="reconnect-btn" onClick={handleReattach}>
+                  Rejoin the run
+                </button>
+              </>
+            ) : (
+              <>
+                <div className="reconnect-hint">Agent disconnected — reconnect to continue</div>
+                {lastConnectArgsRef.current && (
+                  <button className="reconnect-btn" onClick={handleReconnect}>
+                    Reconnect
+                  </button>
+                )}
+              </>
             )}
             <ConnectForm
               key={connectFormKey}
@@ -1585,6 +1828,21 @@ export const App: React.FC = () => {
                 />
               )}
             </div>
+
+            {/* Hard right, away from the controls that change what the next turn does:
+                this one changes who owns the process, and it is pressed once a session
+                rather than adjusted. The autonomy it runs under is the approval mode
+                already set above the send button — it carries no picker of its own, so
+                the two cannot disagree. */}
+            <div className="toolbar-end">
+              <DetachButton
+                mode={approvalMode}
+                detached={detached}
+                onDetach={() => send({ type: "detach", autonomy: approvalMode })}
+                onReattach={() =>
+                  send({ type: "detach", autonomy: approvalMode, enabled: false })}
+              />
+            </div>
           </div>
           {activeEditor && connection === "connected" && (
             <div className="active-file-bar">
@@ -1602,6 +1860,7 @@ export const App: React.FC = () => {
               </button>
             </div>
           )}
+          <DraftAttachments text={input} onRemove={detachMention} />
           <div className="input-row">
           {mentionOpen && (
             <MentionAutocomplete
@@ -1619,6 +1878,8 @@ export const App: React.FC = () => {
               onHover={setSlashIndex}
             />
           )}
+          <div className="chat-input-wrap">
+          <DraftHighlight text={input} inputRef={textareaRef} />
           <textarea
             ref={textareaRef}
             className="chat-input"
@@ -1643,10 +1904,12 @@ export const App: React.FC = () => {
             }}
             onBlur={() => {
               setMention(null);
+              mentionFileQueryRef.current = null;
               setSlash(null);
             }}
             onKeyDown={handleKeyDown}
           />
+          </div>
           {/* Right-hand column: who answers the approval cards, directly above the
               button that sends the work off — the mode is switched mid-run, so it
               belongs where the user already is rather than behind a settings gear. */}

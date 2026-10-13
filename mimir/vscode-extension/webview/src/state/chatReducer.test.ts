@@ -152,16 +152,17 @@ describe("chatReducer", () => {
 
     // The bubble arrived after the prose and after the tool row, and stays under
     // both — including once the step is frozen, which is what used to lift the
-    // prose back above it.
+    // prose back above it. The error ends that step and nothing read the message,
+    // so it closes above it too, and the bubble is left waiting at the end.
     expect(state.messages.map((m) => [m.role, m.kind])).toEqual([
       ["user", "text"],    // the query
       ["agent", "text"],   // "Looking into it."
       ["agent", "tools"],  // t1
-      ["user", "text"],    // the steer
       ["agent", "error"],
+      ["user", "text"],    // the steer
     ]);
-    expect(state.messages[3].text).toBe("also check the tests");
-    expect(state.messages[3].queued).toBe(true);
+    expect(state.messages[4].text).toBe("also check the tests");
+    expect(state.messages[4].queued).toBe(true);
   });
 
   it("keeps a steer bubble above the prose that started after it", () => {
@@ -175,6 +176,67 @@ describe("chatReducer", () => {
     expect(state.messages.map((m) => m.text)).toEqual([
       "go", "one more thing", "Right, both then.", "boom",
     ]);
+  });
+
+  it("clears the queued tag when the steer is injected into the running turn", () => {
+    const state = run([
+      { type: "submit_query", text: "go" },
+      { type: "steer_query", text: "also check the tests" },
+      { type: "steer_injected", text: "also check the tests" },
+    ]);
+
+    expect(state.messages[1].queued).toBeFalsy();
+    expect(state.busy).toBe(true);
+  });
+
+  it("leaves a steer the run never read below the answer that run ended on", () => {
+    // Typed while the final answer was streaming. The bubble is stamped under the
+    // cards already on screen, and the answer that supersedes that prose has to come
+    // back above it: appended last, as it used to be, the reply to "go" sat under a
+    // message the user had not sent when it was written.
+    const state = run([
+      { type: "submit_query", text: "go" },
+      { type: "token", text: "All d" },
+      { type: "steer_query", text: "also check the tests" },
+      { type: "answer", text: "All done!" },
+    ]);
+
+    expect(state.messages.map((m) => m.text)).toEqual([
+      "go", "All done!", "also check the tests",
+    ]);
+  });
+
+  it("keeps the answer under a steer bubble the run did read", () => {
+    // Confirmed mid-run, so it was taken in by a step of this turn: the message was
+    // said before the answer, and belongs above it.
+    const state = run([
+      { type: "submit_query", text: "go" },
+      { type: "steer_query", text: "also check the tests" },
+      { type: "steer_injected", text: "also check the tests" },
+      { type: "token", text: "Both done." },
+      { type: "answer", text: "Both done." },
+    ]);
+
+    expect(state.messages.map((m) => m.text)).toEqual([
+      "go", "also check the tests", "Both done.",
+    ]);
+  });
+
+  it("goes busy again for the turn started for a steer the run never read", () => {
+    // Typed into the last step, so no boundary followed to take it in: the server
+    // answers it with a turn of its own. Nobody pressed send for that turn, and
+    // without `busy` the chat offers no stop button and never sees it end — the
+    // message sat tagged "queued" for a run that was over.
+    const state = run([
+      { type: "submit_query", text: "go" },
+      { type: "steer_query", text: "also check the tests" },
+      { type: "answer", text: "All done!" },
+      { type: "steer_injected", text: "also check the tests", starts_turn: true },
+    ]);
+
+    const steer = state.messages.find((m) => m.text === "also check the tests")!;
+    expect(steer.queued).toBeFalsy();
+    expect(state.busy).toBe(true);
   });
 
   it("drops the draft when a guardrail nudge sends the model back to work", () => {
@@ -236,15 +298,32 @@ describe("chatReducer", () => {
 
   it("creates a running tool activity in liveToolCalls on tool_call", () => {
     const state = run([
-      { type: "tool_call", id: "c1", name: "grep", label: "Searching", detail: "def foo" },
+      {
+        type: "tool_call", id: "c1", name: "find_references", label: "Searching",
+        detail: "def foo", kind: "search", doing: "finding the callers of dispatch",
+      },
     ]);
     // Tools live in their own stream — decorrelated from thinking.
     expect(state.liveThinkingBlocks).toHaveLength(0);
     expect(state.liveToolCalls).toHaveLength(1);
+    // The row carries the declared family; the icon is derived from it at render
+    // time (see ToolActivityList) and is deliberately not state.
     expect(state.liveToolCalls[0]).toMatchObject({
-      id: "c1", name: "grep", icon: "🔍", label: "Searching", detail: "def foo", status: "running",
+      id: "c1", name: "find_references", label: "Searching",
+      detail: "def foo", kind: "search", doing: "finding the callers of dispatch",
+      status: "running",
     });
     expect(state.toolCallAfterToken).toBe(true);
+  });
+
+  it("leaves a row that declares no family without one", () => {
+    // A session recorded before the row carried a kind, or a third-party server whose
+    // tool declares nothing and whose capabilities derive no family. The row still
+    // renders — ToolActivityList defaults it to "tool" and its generic glyph.
+    const state = run([
+      { type: "tool_call", id: "c1", name: "whatever", label: "Doing", detail: "" },
+    ]);
+    expect(state.liveToolCalls[0]).toMatchObject({ kind: undefined });
   });
 
   it("marks the matching activity done with duration on tool_result", () => {
@@ -497,7 +576,7 @@ describe("chatReducer", () => {
             kind: "tools",
             tools: [
               {
-                id: "c1", name: "proxy_eval", icon: "x", label: "Proxy eval: run",
+                id: "c1", name: "proxy_eval", label: "Proxy eval: run",
                 detail: "", status: "background", startedAt: 0,
                 jobKey: "J1", phase: "building", percent: 40,
               },
@@ -514,11 +593,11 @@ describe("chatReducer", () => {
     expect(restored.jobKey).toBe("J1");
   });
 
-  it("renders an activity for an unknown tool (icon fallback)", () => {
+  it("renders an activity for a tool it has never heard of", () => {
     const state = run([
       { type: "tool_call", id: "c1", name: "some_new_tool", label: "Performing", detail: "" },
     ]);
-    expect(state.liveToolCalls[0].icon).toBe("🔧");
+    expect(state.liveToolCalls[0].status).toBe("running");
   });
 
   it("freezes tool activity into a tools message on the next LLM step", () => {

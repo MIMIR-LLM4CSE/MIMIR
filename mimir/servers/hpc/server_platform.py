@@ -2,18 +2,21 @@
 MCP Platform Server
 ===================
 Reports what this host actually is — CPU/SIMD, memory, GPU, Slurm, modules,
-toolchains, Python environments. Facts only: the architecture-aware *advice* that
-used to live here was a frozen lookup table the model already knows better, paid for
-with a full hardware probe per call.
+toolchains, Python environments. Facts only: architecture-aware *advice* belongs
+nowhere near here, being a frozen lookup table the model already knows better and one
+that costs a full hardware probe per call to serve.
 
 Every *live* fact is probed on demand and never cached to disk, so it cannot go
 stale; the collectors whose answer cannot change mid-process are memoized. The one
 persisted artefact is the **module catalogue**. A site's module tree runs to hundreds
 or thousands of entries — far more than fits in a context window — so it is indexed
 once under ``<STATE_DIR>/platform/modules/`` and queried with ``platform_search``
-instead of being dumped in truncated slices. Alongside it rides a small **digest** of
+instead of being dumped in truncated slices. Beside it, and independent of it, is a small **digest** of
 the stable, high-impact facts that *do* fit: host architecture, the kinds of compute
-node the cluster has, its partitions, and the toolchains present.
+node the cluster has, its partitions, and the toolchains present. Its cluster half is
+``_shared/slurm_digest``, the same builder every scheduler the workspace reaches is
+described by — so this host is described the way the others are, and a site that
+restricts ``scontrol`` degrades here exactly as it does there.
 
 The catalogue is rebuilt when — and only when — a deterministic fingerprint of the
 tree changes (hostname, effective MODULEPATH, a stat-hash of the modulefile trees and
@@ -43,7 +46,8 @@ from cpu_facts import (GPU_FIELDS, GPU_FIELDS_BASE, GPU_PROBES, GPU_QUERY, GPU_Q
                        MARCH_QUERY, cpu_facts, execution_context, local_os, machine_signature,
                        parse_march, parse_nvidia_csv)
 from responses import ok
-from slurm_nodes import aggregate_node_types, parse_scontrol_nodes, stable_signature, stable_types
+from slurm_digest import cached_cluster_digest
+from slurm_site import hosts as slurm_hosts, name_of as _host_name
 from state_paths import state_dir
 import embed as _embed
 import vector_cache
@@ -170,7 +174,27 @@ def _collect_gpu() -> dict:
 
 @lru_cache(maxsize=1)
 def _collect_slurm() -> dict:
+    """Whether Slurm's tools are on *this* host, and where else they are known to be.
+
+    This probe describes the machine it runs on and nothing else — it does not go
+    looking for other hosts, and the absence of ``sinfo`` here is a fact about here.
+    What it must not do is turn that fact into a verdict about the site: on a login
+    node whose schedulers live elsewhere, "no scheduler" read as "this skill does not
+    apply", and the work went somewhere nothing could track it. So the ones this
+    workspace reaches — from the user's own successful ``ssh host "squeue …"``, see
+    ``_shared/slurm_site`` — are reported, as the recorded facts they are. Nothing is
+    probed over there.
+    """
     if not _cmd_exists("sinfo"):
+        elsewhere = [_host_name(host) for host in slurm_hosts() if host]
+        if elsewhere:
+            return {
+                "available": False,
+                "schedulers": elsewhere,
+                "note": ("Not on this host. Schedulers have answered through "
+                         + ", ".join(elsewhere) + ", and the cluster tools submit to "
+                         "them by name; this profile describes this machine only."),
+            }
         return {"available": False}
     out = _run(["sinfo", "--version"])
     if not out["ok"]:
@@ -235,7 +259,6 @@ def _collect_modules() -> dict:
         "module_system": flavour,
         "loaded": [e["load"] for e in _parse_avail_terse(loaded["stdout"] or "")],
         "catalogue": summary,
-        "digest": (catalogue or {}).get("digest", {}),
         "note": "The module catalogue is not listed here — it is searchable with "
                 "platform_search(query), by name ('cuda') or by capability "
                 "('parallel hdf5'). Modules shown above are the ones loaded right now.",
@@ -665,49 +688,26 @@ def _collect_tier_b(flavour: str, names: list[str], timeout: int) -> dict:
 
 # ── the digest ────────────────────────────────────────────────────────────────
 
-def _collect_partitions() -> list[dict]:
-    if not _cmd_exists("sinfo"):
-        return []
-    out = _run(["sinfo", "-h", "-o", "%P|%a|%l|%D|%c|%m"], timeout=10)
-    if not out["ok"]:
-        return []
-    rows = []
-    for line in (out["stdout"] or "").splitlines():
-        cells = [c.strip() for c in line.split("|")]
-        if len(cells) >= 6:
-            rows.append({
-                "partition": cells[0].rstrip("*"),
-                "availability": cells[1],
-                "time_limit": cells[2],
-                "nodes": cells[3],
-                "cpus_per_node": cells[4],
-                "mem_mb_per_node": cells[5],
-            })
-    return rows
-
-
-def _scontrol_nodes() -> list[dict]:
-    if not _cmd_exists("scontrol"):
-        return []
-    out = _run(["scontrol", "show", "node", "-o"], timeout=15)
-    if not out["ok"]:
-        return []
-    return parse_scontrol_nodes(out["stdout"] or "")
-
-
 def _build_digest() -> dict:
     """The stable, high-impact facts that *fit* in a context window.
 
     Not searched — returned whole by the catalogue status and the host profile, so one
-    call shows that the compute nodes are a different architecture from the login
-    node it is running on, which is the difference between a binary that runs and one
-    that dies on an illegal instruction. Nothing puts it in the system prompt: the
-    model reads it through those tools. Occupancy is deliberately absent: it is
-    volatile, slurm_nodes owns it, and including it would make the signal below
-    change every few seconds.
+    call shows that the compute nodes are a different architecture from the login node
+    the agent runs on, which is the difference between a binary that runs and one that
+    dies on an illegal instruction. Nothing puts it in the system prompt: the model
+    reads it through those tools. Occupancy is deliberately absent: it is volatile,
+    ``slurm_nodes`` owns it, and carrying it would make the signature change every few
+    seconds.
+
+    Two halves with two scopes. The host block is this machine and nothing else, since
+    a remote scheduler's login node is not where anything here is compiled. The cluster
+    block comes from ``_shared/slurm_digest``, which describes every scheduler the
+    workspace reaches: one builder means this host's degraded path is the same one the
+    others take, and that a Slurm arriving from a modulefile is found here too, since
+    that builder asks through a login shell.
     """
-    nodes = _scontrol_nodes()
     cpu = _collect_cpu()
+    cluster = cached_cluster_digest()
     return {
         "built_at": now_iso(),
         "host": {
@@ -718,10 +718,11 @@ def _build_digest() -> dict:
             "simd": cpu.get("simd", {}),
             "memory": _collect_memory(),
         },
-        "node_types": stable_types(aggregate_node_types(nodes)) if nodes else [],
-        "partitions": _collect_partitions(),
+        "node_types": cluster["node_types"],
+        "partitions": cluster["partitions"],
         "toolchains": _collect_toolchains(),
-        "signature": stable_signature(nodes) if nodes else "",
+        "signature": cluster["signature"],
+        "degraded": cluster["degraded"],
     }
 
 
@@ -758,7 +759,7 @@ def _empty_catalogue(flavour: str) -> dict:
         "schema": _CATALOGUE_SCHEMA, "built_at": now_iso(),
         "hostname": socket.gethostname(), "flavour": flavour,
         "tier": "none", "partial": False, "enrich_done": True,
-        "signal": {}, "count": 0, "modules": [], "digest": {},
+        "signal": {}, "count": 0, "modules": [],
     }
 
 
@@ -805,8 +806,6 @@ def _enrich(base: dict) -> None:
                     if tier == "name":
                         tier = "whatis"
 
-        digest = _build_digest()
-
         if _catalogue_signal(flavour) != base.get("signal"):
             return  # the tree moved under us; the next call rebuilds
 
@@ -818,7 +817,6 @@ def _enrich(base: dict) -> None:
             "enrich_done": True,
             "modules": entries,
             "count": len(entries),
-            "digest": digest,
         }
         with _BUILD_LOCK:
             _CATALOGUE_CACHE = enriched
@@ -844,7 +842,6 @@ def _build_tier_c(flavour: str, signal: dict) -> dict:
         "signal": signal,
         "count": len(entries),
         "modules": entries,
-        "digest": {},
     }
 
 
@@ -1087,6 +1084,7 @@ def _build_profile() -> dict:
         "os": local_os(),
         "cpu": cpu,
         "march": _collect_march(),
+        "digest": _build_digest(),
         "memory": _collect_memory(),
         "gpu": gpu,
         "slurm": _collect_slurm(),
@@ -1098,7 +1096,7 @@ def _build_profile() -> dict:
 
 
 
-@mcp.tool(**tool_caps(caps=[ENV_DISCOVERY]))
+@mcp.tool(**tool_caps(kind="modules", caps=[ENV_DISCOVERY]))
 def platform_probe() -> dict:
     """Collect and return a fresh profile of THIS host — the machine MIMIR runs on.
 
@@ -1119,7 +1117,7 @@ def platform_probe() -> dict:
     return ok({"profile": profile, "elapsed_s": round(elapsed, 3)})
 
 
-@mcp.tool(**tool_caps(caps=[ENV_DISCOVERY]))
+@mcp.tool(**tool_caps(kind="modules", caps=[ENV_DISCOVERY]))
 def platform_get_profile() -> dict:
     """Return a fresh profile of THIS host, with live sinfo data.
 
@@ -1133,7 +1131,7 @@ def platform_get_profile() -> dict:
     return ok({"profile": _build_profile(), "sinfo": _collect_sinfo()})
 
 
-@mcp.tool(**tool_caps(
+@mcp.tool(**tool_caps(kind="modules",
     caps=[ENV_DISCOVERY, CACHEABLE],
     label="Searching modules: {query}",
 ))
@@ -1197,7 +1195,7 @@ def platform_search(query: str, limit: int = 10, refresh: bool = False) -> dict:
     return ok(payload)
 
 
-@mcp.tool(**tool_caps(caps=[ENV_DISCOVERY, CACHEABLE]))
+@mcp.tool(**tool_caps(kind="modules", caps=[ENV_DISCOVERY, CACHEABLE]))
 def platform_catalogue_status() -> dict:
     """Report the module catalogue's state without building or refreshing it.
 
@@ -1210,6 +1208,7 @@ def platform_catalogue_status() -> dict:
         return ok({
             "module_system": flavour, "indexed": False,
             "path": _CATALOGUE_FILE,
+            "digest": _build_digest(),
             "note": ("No module system on this host." if flavour == "none"
                      else "Not indexed yet; the first platform_search builds it."),
         })
@@ -1225,7 +1224,7 @@ def platform_catalogue_status() -> dict:
         "enriching": _ENRICHING,
         "built_at": catalogue.get("built_at", ""),
         "signal_fresh": fresh,
-        "digest": catalogue.get("digest", {}),
+        "digest": _build_digest(),
     })
 
 
@@ -1246,7 +1245,7 @@ def _panel_profile() -> dict:
     return dict(_PANEL_PROFILE["profile"])
 
 
-@mcp.tool(**tool_caps(
+@mcp.tool(**tool_caps(kind="modules",
     caps=[PANEL_REPORT, ENV_DISCOVERY],
     read_only=True,
     panel={"section": "Machine", "order": 40},

@@ -43,6 +43,7 @@ def sbatch_header(
     cpus_per_task: int,
     wall_time: str,
     log_file: str,
+    work_dir: str = "",
     mem: str = "",
     gpus: int = 0,
     account: str = "",
@@ -65,6 +66,13 @@ def sbatch_header(
     back — it is how a submission says, to whoever looks at the queue later, what it
     was for.
 
+    ``work_dir`` is where the job runs, and that pairing is the whole of why its output
+    is reachable: if the job can start at all, that directory is mounted on the node
+    Slurm started it on — otherwise there would have been nothing to chdir into. A log
+    pointed anywhere else depends on a second filesystem being shared, which on a site
+    whose home is not mounted on the compute nodes it is not: the job runs, succeeds,
+    and its output goes nowhere.
+
     ``dependency`` chains this job behind another, and ``kill_on_invalid_dep`` is what
     keeps that chain from hanging: without it a job whose dependency can never be
     satisfied sits PENDING indefinitely and whatever is watching it waits exactly as
@@ -86,6 +94,8 @@ def sbatch_header(
     ]
     if mem:
         lines.append(f"#SBATCH --mem={mem}")
+    if work_dir:
+        lines.append(f"#SBATCH --chdir={shlex.quote(work_dir)}")
     lines += [
         f"#SBATCH --output={shlex.quote(log_file)}",
         f"#SBATCH --error={shlex.quote(log_file)}",

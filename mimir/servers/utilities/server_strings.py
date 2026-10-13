@@ -24,7 +24,7 @@ _STRING_OPS = (
 )
 
 
-@mcp.tool(**tool_caps(label="String {op}"))
+@mcp.tool(**tool_caps(kind="string", label="String {op}"))
 def string_op(
     op: Annotated[str, Field(
         description="Which operation to perform. Required — it selects everything else, and the parameters each one needs.",

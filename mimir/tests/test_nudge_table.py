@@ -98,3 +98,62 @@ class CoreNudgeTableTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class UnwatchedRunNudgeTest(unittest.TestCase):
+    """The row that closes the gap between "the tool exists" and "it gets called".
+
+    A job submitted outside MIMIR is watched by nothing: no poll, no wake, and no
+    reason for the process to stay alive — so a detached run spends the night doing
+    nothing and the result reaches nobody. The remedy is one call, and the only moment
+    it can still be made is before the turn ends.
+    """
+
+    def _context(self, **over):
+        ctx = {
+            "unwatched_runs": {"15306620"},
+            "workflow_state": "conclude",
+            "nudge_counts": {},
+        }
+        ctx.update(over)
+        return ctx
+
+    def _fires(self, ctx, *, level="strict", mode="agent") -> bool:
+        from mimir.client.guardrails.nudges.engine import _should_nudge_unwatched_run
+        return _should_nudge_unwatched_run(ctx, level=level, active_mode=mode)
+
+    def test_it_fires_on_a_recorded_unwatched_job_at_the_conclusion(self):
+        self.assertTrue(self._fires(self._context()))
+
+    def test_it_waits_for_the_conclusion(self):
+        # Mid-run the job may be about to be adopted by the very next call.
+        self.assertFalse(self._fires(self._context(workflow_state="execute")))
+
+    def test_nothing_unwatched_is_nothing_to_say(self):
+        self.assertFalse(self._fires(self._context(unwatched_runs=set())))
+
+    def test_it_survives_the_light_carve_out(self):
+        # The carve-out keeps only what guards a costly, hard-to-detect,
+        # non-self-correcting mistake. A lost night is all three.
+        self.assertTrue(self._fires(self._context(), level="light"))
+
+    def test_it_is_budgeted_once(self):
+        from mimir.client.config.constants import NUDGE_MAX_UNWATCHED_RUN
+        ctx = self._context(nudge_counts={"unwatched_run": NUDGE_MAX_UNWATCHED_RUN})
+        self.assertFalse(self._fires(ctx))
+
+    def test_ask_mode_has_no_runs_to_hand_over(self):
+        self.assertFalse(self._fires(self._context(), mode="ask"))
+
+    def test_the_message_names_the_ids_and_both_handles(self):
+        from mimir.client.guardrails.nudges.messages import unwatched_run_nudge_message
+        text = unwatched_run_nudge_message(
+            {"unwatched_runs": {"15306620", "15306621"}})
+        self.assertIn("15306620", text)
+        self.assertIn("15306621", text)
+        # Both kinds, because the set is kind-agnostic by construction.
+        self.assertIn("slurm_watch", text)
+        self.assertIn("bash_watch", text)
+        # And the way out, so a job that is deliberately somebody else's is not adopted
+        # to silence a reminder.
+        self.assertIn("not yours to follow", text)

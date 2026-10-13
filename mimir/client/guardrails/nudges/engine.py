@@ -28,6 +28,7 @@ from .messages import (
     state_nudge_message,
     unfinished_plan_nudge_message,
     todo_nudge_message,
+    unwatched_run_nudge_message,
     validation_nudge_message,
 )
 from ...context.execution_context import (
@@ -57,6 +58,7 @@ from ...config.constants import (
     NUDGE_MAX_STATE,
     NUDGE_MAX_TODO,
     NUDGE_MAX_UNFINISHED_PLAN,
+    NUDGE_MAX_UNWATCHED_RUN,
     NUDGE_MAX_VALIDATION,
     NUDGE_STATE_IDLE_STEPS,
     STUCK_REPAIR_ADVISE_AFTER,
@@ -177,7 +179,7 @@ def drop_transient_reminders(
 # nudge's category is "doc", not "documentation").
 _ALL_GUIDANCE = frozenset({
     "env_resolution", "doc", "state",
-    "blast_radius", "creation", "todo", "env_cleanup",
+    "blast_radius", "creation", "todo", "env_cleanup", "unwatched_run",
 })
 _GUIDANCE_BY_LEVEL_MODE: dict[tuple[str, str], frozenset[str]] = {
     # strict babysits everything (the branches still gate mode themselves, so this does
@@ -190,7 +192,12 @@ _GUIDANCE_BY_LEVEL_MODE: dict[tuple[str, str], frozenset[str]] = {
     # hand-holding a capable model does unprompted. Absent at "off" (guidance layer
     # short-circuited). Validation is no longer here: checking a file one modified is
     # not a reasoning shim to dial down, it is the one thing the loop requires.
-    ("light", "agent"): frozenset({"blast_radius", "env_cleanup"}),
+    # unwatched_run is here on the same ground as the other two, and it is the
+    # clearest case of it: an overnight job nobody is watching costs a night, is
+    # invisible from both ends — the run looks fine, the chat looks finished — and
+    # nothing later corrects it, because the only moment the record could have been
+    # written has passed.
+    ("light", "agent"): frozenset({"blast_radius", "env_cleanup", "unwatched_run"}),
     ("light", "plan"): frozenset(),
     # ask is answer-only: nothing is planned and nothing is edited, so no guidance
     # category has anything to guard. Listed explicitly rather than relying on the
@@ -960,6 +967,25 @@ def _should_nudge_env_cleanup(
     )
 
 
+def _should_nudge_unwatched_run(
+    execution_context: dict[str, Any], *, level: str, active_mode: str
+) -> bool:
+    """A scheduler listed work of the user's that no record covers, and we are done.
+
+    Every condition is a fact somebody checked: the ids came from the queue, the
+    absence of a descriptor from the disk, and the clearing from a watcher's handle
+    actually returned. Fires at the conclusion because that is the last moment the
+    record can still be written — after it, the turn ends, and the run goes unwatched
+    for as long as it lasts.
+    """
+    return (
+        _guidance_enabled("unwatched_run", enforcement=level, active_mode=active_mode)
+        and bool(execution_context.get("unwatched_runs"))
+        and execution_context.get("workflow_state") == "conclude"
+        and nudge_count(execution_context, "unwatched_run") < NUDGE_MAX_UNWATCHED_RUN
+    )
+
+
 def _should_nudge_doc(
     execution_context: dict[str, Any], *, level: str, active_mode: str
 ) -> bool:
@@ -1169,6 +1195,11 @@ _CORE_NUDGES: tuple[_CoreNudge, ...] = (
         "env_cleanup", "guidance",
         lambda agent, query, mode, ec, level: _should_nudge_env_cleanup(ec, level=level, active_mode=mode),
         lambda agent, ec: env_cleanup_nudge_message(ec),
+    ),
+    _CoreNudge(
+        "unwatched_run", "guidance",
+        lambda agent, query, mode, ec, level: _should_nudge_unwatched_run(ec, level=level, active_mode=mode),
+        lambda agent, ec: unwatched_run_nudge_message(ec),
     ),
     _CoreNudge(
         "doc", "guidance",

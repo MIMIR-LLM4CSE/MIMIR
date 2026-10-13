@@ -1,11 +1,10 @@
 """Minimal synchronous LSP (Language Server Protocol) client over stdio.
 
-Just enough of the protocol to drive a language server for code navigation and
-diagnostics:
+Just enough of the protocol to drive a language server for code navigation:
 
     initialize -> initialized -> didOpen -> {workspace/symbol,
     textDocument/documentSymbol, textDocument/definition,
-    textDocument/references, textDocument/hover} + publishDiagnostics
+    textDocument/references, textDocument/hover}
 
 Deliberately dependency-free (stdlib only) and **best-effort**: every public
 method returns ``None`` / ``[]`` on any failure, so the caller
@@ -92,7 +91,6 @@ class LSPClient:
         self._id = 0
         self._lock = threading.Lock()
         self._opened: set[str] = set()
-        self._diagnostics: dict[str, list] = {}
         self._ready = False
         self._dead = False
 
@@ -175,11 +173,13 @@ class LSPClient:
         self._write({"jsonrpc": "2.0", "method": method, "params": params})
 
     def _drain_notification(self, msg: dict) -> None:
-        if msg.get("method") == "textDocument/publishDiagnostics":
-            p = msg.get("params", {}) or {}
-            self._diagnostics[p.get("uri", "")] = p.get("diagnostics", []) or []
-        elif "id" in msg and "method" in msg:
-            # server -> client request (e.g. client/registerCapability): ack empty
+        """Dispose of whatever arrives while a response is outstanding.
+
+        Notifications are discarded. A server -> client request (such as
+        client/registerCapability) is acked empty, since a server that blocks on
+        it would never answer the request we are waiting for.
+        """
+        if "id" in msg and "method" in msg:
             try:
                 self._write({"jsonrpc": "2.0", "id": msg["id"], "result": None})
             except Exception:
@@ -268,31 +268,6 @@ class LSPClient:
         except Exception:
             return None
         return res if isinstance(res, dict) else None
-
-    def diagnostics(self, path: str, *, settle: float = 2.5) -> list[dict] | None:
-        """Open *path* and collect publishDiagnostics until things settle.
-
-        Returns the diagnostics list for the document, or ``None`` if the server
-        never reports any within the settle window (caller treats None as "no LSP
-        signal" and falls back to the compiler/linter path).
-        """
-        if not self.start() or not self.open(path):
-            return None
-        uri = uri_for(path)
-        deadline = time.monotonic() + settle
-        seen = uri in self._diagnostics
-        while time.monotonic() < deadline:
-            msg = self._read_message(time.monotonic() + 0.4)
-            if msg is None:
-                if seen:
-                    break
-                continue
-            if msg.get("id") is not None and "result" in msg:
-                continue
-            self._drain_notification(msg)
-            if uri in self._diagnostics:
-                seen = True
-        return self._diagnostics.get(uri)
 
 
 class LSPPool:

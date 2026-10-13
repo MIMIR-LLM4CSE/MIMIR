@@ -14,12 +14,13 @@ import json
 import os
 import types
 import unittest
+from unittest import mock
 
 from mimir.tests._fake_pool import FakePool
 
 from mimir.client.context.capabilities import BACKGROUNDABLE, ToolCaps
 from mimir.client.query_engine.background import _maybe_register_background_job
-from mimir.tests._proxy_fixtures import _TmpStorageTest, server_proxy
+from mimir.tests._proxy_fixtures import (_TmpStorageTest, pin_local_scheduler, server_proxy)
 
 
 def _eval(*args, **kwargs):
@@ -340,6 +341,45 @@ class _MuteAgent:
         return json.dumps(self._payload)
 
 
+class _HangingAgent:
+    """An agent whose tool call never answers at all.
+
+    The shape of a wedged MCP server, a scheduler that stops responding, a queue
+    command that never returns. Distinct from :class:`_MuteAgent` in the one way that
+    matters: that one answers uselessly and the loop can count the useless answers,
+    while this one never comes back — and nothing beneath the watcher has a deadline,
+    so without one of its own the watcher waits for ever.
+
+    *hang_on* says which op hangs, so the status poll and the summary call can be
+    tested apart: the second is the dangerous one, the run being already over.
+    """
+
+    def __init__(self, hang_on: str = "status", states: list[str] | None = None,
+                 summary: dict | None = None) -> None:
+        self._hang_on = hang_on
+        self._states = list(states or ["done"])
+        self._summary = summary if summary is not None else {"verdict": "accept"}
+        self.status_calls = 0
+        self.summary_calls = 0
+
+    async def _run_tool(self, tool: str, args: dict, execution_context=None,
+                        record_observations: bool = True) -> str:
+        summary_call = args.get("op") == "results"
+        if summary_call:
+            self.summary_calls += 1
+        else:
+            self.status_calls += 1
+        if self._hang_on == ("summary" if summary_call else "status"):
+            # Never fires. Deliberately not asyncio.sleep: the harness replaces that
+            # with a no-op to keep the poll interval out of the test's runtime, and a
+            # hang built on it would not hang.
+            await asyncio.Event().wait()
+        if summary_call:
+            return json.dumps(self._summary)
+        state = self._states.pop(0) if self._states else "done"
+        return json.dumps({"state": state})
+
+
 class WatchJobTests(unittest.TestCase):
     def _make_worker(self, agent) -> object:
         import queue as _queue
@@ -418,6 +458,59 @@ class WatchJobTests(unittest.TestCase):
         self.assertEqual(ev["state"], "unknown")
         self.assertIn("refused", ev["reason"])
         self.assertLessEqual(agent.status_calls, 6)        # bounded, not forever
+
+    def test_a_status_op_that_never_answers_ends_as_unknown_too(self) -> None:
+        # The one failure that genuinely loses a run. There is no deadline under the
+        # watcher — ``session.call_tool`` takes none and the MCP sessions carry no read
+        # timeout — so a status op that stops answering holds the job in ``_bg_jobs``
+        # for ever: the agent is never released and never woken, and the bulletins keep
+        # repeating a status frozen at the moment it stopped. A watcher that dies at
+        # least says so; this one says nothing.
+        import mimir.client.ui.ws.ws_worker as ws
+
+        agent = _HangingAgent(hang_on="status")
+        worker = self._make_worker(agent)
+        with mock.patch.object(ws, "_TOOL_CALL_TIMEOUT", 0.01):
+            self._run(worker, self._descriptor())
+
+        ev = worker.out_q.get_nowait()
+        self.assertEqual(ev["type"], "job_complete")
+        self.assertEqual(ev["state"], "unknown")
+        self.assertIn("did not answer", ev["reason"])
+        self.assertNotIn("fast", worker._bg_jobs)
+        self.assertLessEqual(agent.status_calls, 6)        # bounded, not forever
+
+    def test_a_timed_out_probe_is_reported_as_unreadable_not_as_running(self) -> None:
+        # What a check-in reads. A bulletin that keeps saying "running" from a status
+        # frozen hours ago is worse than one that admits it cannot tell.
+        import mimir.client.ui.ws.ws_worker as ws
+
+        agent = _HangingAgent(hang_on="status")
+        worker = self._make_worker(agent)
+        seen: list[dict] = []
+        watch = ws._Watch(task=mock.Mock(), descriptor=self._descriptor())
+        worker._bg_jobs["fast"] = watch
+        with mock.patch.object(ws, "_TOOL_CALL_TIMEOUT", 0.01):
+            self._run(worker, self._descriptor())
+            seen.append(dict(watch.status))
+
+        self.assertEqual(seen[0].get("state"), "unreadable")
+
+    def test_a_summary_that_never_answers_does_not_hold_back_the_wake(self) -> None:
+        # The run is already over here, so a summary op that hangs withholds the wake
+        # itself. Better a wake with nothing in it than no wake.
+        import mimir.client.ui.ws.ws_worker as ws
+
+        agent = _HangingAgent(hang_on="summary", states=["done"])
+        worker = self._make_worker(agent)
+        with mock.patch.object(ws, "_TOOL_CALL_TIMEOUT", 0.01):
+            self._run(worker, self._descriptor())
+
+        ev = worker.out_q.get_nowait()
+        self.assertEqual(ev["type"], "job_complete")
+        self.assertEqual(ev["state"], "done")
+        self.assertEqual(ev["summary"], {})
+        self.assertEqual(agent.summary_calls, 1)
         self.assertNotIn("fast", worker._bg_jobs)
 
     def test_a_probe_that_raises_also_ends_as_unknown(self) -> None:
@@ -658,6 +751,12 @@ class WatcherProbeIsNeverGuardedTests(unittest.TestCase):
 # ── 3b. proxy_slurm(op='eval', background=True) attaches the descriptor ─────────
 
 class ProxySlurmBackgroundTests(_TmpStorageTest):
+    def setUp(self) -> None:
+        super().setUp()
+        # These mock the submission itself, but the choice of scheduler happens before
+        # it: with none reachable there is nothing to submit to and the op refuses.
+        pin_local_scheduler(self)
+
     def _init_session(self) -> None:
         import sys
         exe = os.path.join(self.root, "fast.py")
@@ -957,6 +1056,22 @@ class _FakeWorker:
     def watched_job_keys(self) -> list[str]:
         return list(self.watching)
 
+    def drain(self) -> list[dict]:
+        """The real worker's single choke point, stamping each event with its session.
+
+        What the pump calls. Tests that only need "a worker" leave ``out_q`` unset and
+        never get here.
+        """
+        out = []
+        q = getattr(self, "out_q", None)
+        while q is not None and not q.empty():
+            ev = q.get_nowait()
+            if isinstance(ev, dict):
+                ev.setdefault("session_id",
+                              self._query_session_id or getattr(self, "session_id", None))
+            out.append(ev)
+        return out
+
 
 class DetachedSessionResumeTests(unittest.TestCase):
     """A two-hour build outlives the conversation on screen.
@@ -970,12 +1085,14 @@ class DetachedSessionResumeTests(unittest.TestCase):
         import shutil
         import tempfile
         from unittest import mock
-        from mimir.client.ui.ws import session_store, transcript_log
+        from mimir.client.ui.ws import job_scan, session_store, transcript_log
         from mimir.client.ui.ws.ws_session import _Session
 
         self._tmp = tempfile.mkdtemp(prefix="mimir-detached-")
         self.addCleanup(shutil.rmtree, self._tmp, ignore_errors=True)
-        for target, attr in ((session_store, "STATE_DIR"), (transcript_log, "_MIMIR_DIR_WS")):
+        for target, attr in ((session_store, "STATE_DIR"),
+                             (transcript_log, "_MIMIR_DIR_WS"),
+                             (job_scan, "_MIMIR_DIR_WS")):
             patcher = mock.patch.object(target, attr, self._tmp)
             patcher.start()
             self.addCleanup(patcher.stop)
@@ -1109,12 +1226,14 @@ class WakeCoalescingTests(unittest.TestCase):
         import shutil
         import tempfile
         from unittest import mock
-        from mimir.client.ui.ws import session_store, transcript_log
+        from mimir.client.ui.ws import job_scan, session_store, transcript_log
         from mimir.client.ui.ws.ws_session import _Session
 
         self._tmp = tempfile.mkdtemp(prefix="mimir-coalesce-")
         self.addCleanup(shutil.rmtree, self._tmp, ignore_errors=True)
-        for target, attr in ((session_store, "STATE_DIR"), (transcript_log, "_MIMIR_DIR_WS")):
+        for target, attr in ((session_store, "STATE_DIR"),
+                             (transcript_log, "_MIMIR_DIR_WS"),
+                             (job_scan, "_MIMIR_DIR_WS")):
             patcher = mock.patch.object(target, attr, self._tmp)
             patcher.start()
             self.addCleanup(patcher.stop)
@@ -1176,18 +1295,56 @@ class WakeCoalescingTests(unittest.TestCase):
             self.assertIn(key, text)
 
     def _drained_frame(self, ev: dict) -> dict:
-        """The frame the drain loop sends the client for *ev*."""
+        """The frame the drain loop sends the client *for ev*.
+
+        Picked by type rather than by position: handling a finished run also refreshes
+        the session rows — one run fewer — and which of the two leaves first is not what
+        these tests are about.
+        """
         events = [ev]
         self.worker.drain = lambda: [events.pop()] if events else []
 
         async def run() -> None:
+            # The pump owns the draining now, so turn its crank once to move the event
+            # off the worker and into this connection's subscription; the drain loop
+            # then forwards what arrived.
+            self.session._sub = self.session.pool.bus.subscribe()
+            self.session.pool.bus.pump_once()
             task = asyncio.create_task(self.session._drain_loop())
-            while not self.ws.sent:
+            # Waited for by type: handling a finished run also refreshes the session
+            # rows, so "a frame arrived" is not "the frame arrived".
+            while not any(f.get("type") == ev.get("type") for f in self.ws.sent):
                 await asyncio.sleep(0.01)
             task.cancel()
 
         asyncio.run(asyncio.wait_for(run(), 5))
+        for frame in self.ws.sent:
+            if frame.get("type") == ev.get("type"):
+                return frame
         return self.ws.sent[0]
+
+    def test_one_run_announced_twice_wakes_the_conversation_once(self) -> None:
+        # Two places announce a finished run — the watcher that held it, and a disk
+        # scan that found it unspoken-for — and the marker that settles it is written
+        # only once the wake reaches a turn. So between the two, the same run can
+        # arrive twice; it must not be told twice.
+        self._running(self.here.id)
+        self._wake(self._event("j1"))
+        self._wake(self._event("j1"))
+        self._answer()
+        submitted = self.worker.submitted[-1][0]
+        self.assertEqual(submitted.count("'j1'"), 1)
+
+    def test_a_duplicate_arriving_after_the_turn_began_starts_no_second_one(self) -> None:
+        # The first announcement started a turn, so the run is settled and no scan will
+        # offer it again. A duplicate already in flight joins that turn as a steer
+        # rather than opening a second one — the ordinary busy route, reached here
+        # because submitting the turn is what made the conversation busy.
+        self._wake(self._event("j1"))
+        self.assertEqual(len(self.worker.submitted), 1)
+        self._wake(self._event("j1"))
+        self.assertEqual(len(self.worker.submitted), 1)
+        self.assertEqual(len(self.worker.steered), 1)
 
     def test_a_steered_wake_does_not_tell_the_client_a_turn_began(self) -> None:
         # Seen on 2026-09-18: the client took this flag as a new turn and cleared the
@@ -1452,12 +1609,14 @@ class CheckinDeliveryTests(unittest.TestCase):
         import shutil
         import tempfile
         from unittest import mock
-        from mimir.client.ui.ws import session_store, transcript_log
+        from mimir.client.ui.ws import job_scan, session_store, transcript_log
         from mimir.client.ui.ws.ws_session import _Session
 
         self._tmp = tempfile.mkdtemp(prefix="mimir-checkin-")
         self.addCleanup(shutil.rmtree, self._tmp, ignore_errors=True)
-        for target, attr in ((session_store, "STATE_DIR"), (transcript_log, "_MIMIR_DIR_WS")):
+        for target, attr in ((session_store, "STATE_DIR"),
+                             (transcript_log, "_MIMIR_DIR_WS"),
+                             (job_scan, "_MIMIR_DIR_WS")):
             patcher = mock.patch.object(target, attr, self._tmp)
             patcher.start()
             self.addCleanup(patcher.stop)
@@ -1543,13 +1702,38 @@ class CheckinDeliveryTests(unittest.TestCase):
         asyncio.run(self.session._flush_held_checkin(self.here.id))
         self.assertEqual(self.worker.submitted, [])
 
+    def test_a_bulletin_leaves_no_bubble_to_come_back_on_every_reload(self) -> None:
+        """The stored chat is the conversation, not the plumbing that kept it awake.
+
+        The client is sent the ``job_checkin`` event and renders the news itself; the
+        instruction asking the model for its one line is addressed to the model. Stored
+        as a bubble it was replayed on every reload, once per wake the session ever had.
+        """
+        asyncio.run(self.session._handle_job_checkin(self._event()))
+        self.assertEqual(self.session._display_messages, [])
+        stored = self.session.store.load_session(self.here.id)
+        self.assertEqual(
+            [m for m in stored.display_messages if "🔔" in str(m.get("text", ""))], [],
+            "a bulletin was persisted and will come back on the next reload",
+        )
+        # ...and the model was still told, which is the whole point of the wake.
+        self.assertIn("j1", self.worker.submitted[0][0])
+
+    def test_a_bulletin_in_another_conversation_leaves_no_bubble_either(self) -> None:
+        other = self.session.store.new_session()
+        self.session.store.save_session(other)
+        ev = {**self._event(), "session_id": other.id}
+        asyncio.run(self.session._handle_job_checkin(ev))
+        stored = self.session.store.load_session(other.id)
+        self.assertEqual(
+            [m for m in stored.display_messages if "🔔" in str(m.get("text", ""))], [])
+
     def test_the_transcript_tells_a_bulletin_from_a_wake(self) -> None:
         """``job_wake`` is counted against the jobs that recorded an exit code."""
-        from unittest import mock
-        self.session.transcript = mock.Mock()
+        from mimir.client.ui.ws import transcript_log
         asyncio.run(self.session._handle_job_checkin(self._event()))
-        kinds = [c.args[0]["type"] for c in self.session.transcript.append.call_args_list
-                 if isinstance(c.args[0], dict) and "type" in c.args[0]]
+        lines, _truncated = transcript_log.read_since(self.session._active_session_id, 0)
+        kinds = [e["type"] for e in lines if "type" in e]
         self.assertIn("job_checkin", kinds)
         self.assertNotIn("job_wake", kinds)
 
@@ -1568,12 +1752,14 @@ class WakeDeliveryLossTests(unittest.TestCase):
         import shutil
         import tempfile
         from unittest import mock
-        from mimir.client.ui.ws import session_store, transcript_log
+        from mimir.client.ui.ws import job_scan, session_store, transcript_log
         from mimir.client.ui.ws.ws_session import _Session
 
         self._tmp = tempfile.mkdtemp(prefix="mimir-wakeloss-")
         self.addCleanup(shutil.rmtree, self._tmp, ignore_errors=True)
-        for target, attr in ((session_store, "STATE_DIR"), (transcript_log, "_MIMIR_DIR_WS")):
+        for target, attr in ((session_store, "STATE_DIR"),
+                             (transcript_log, "_MIMIR_DIR_WS"),
+                             (job_scan, "_MIMIR_DIR_WS")):
             patcher = mock.patch.object(target, attr, self._tmp)
             patcher.start()
             self.addCleanup(patcher.stop)
@@ -1666,57 +1852,81 @@ class WakeDeliveryLossTests(unittest.TestCase):
         self.assertEqual(len(self.launcher.steered), 1)
 
 
-class StaleEventPurgeTests(unittest.TestCase):
-    """What a reconnect may throw away, and what it may not.
+class ReconnectLosesNothingTests(unittest.TestCase):
+    """What a reconnect may throw away: nothing.
 
-    A turn's output is debris once the socket drawing it is gone. A finished job is
-    not: it answers to no turn, its watcher is already finished, and the conversation
-    it belongs to is idle precisely because it is waiting for it.
+    The pump drains every worker whether or not a socket exists, and the journal holds
+    what it drained, so a reconnect replays from its watermark rather than deciding what
+    to keep. These tests pin that every case a sweep would have had to reason about is
+    simply recorded — including the one that makes the question unanswerable: a finished
+    job's wake answers to no turn, its watcher is already finished, and its conversation
+    is idle precisely because it is waiting for it.
     """
 
     def setUp(self) -> None:
         import queue as _q
-        from mimir.client.ui.ws.ws_session import _Session
+        import tempfile
+        from unittest import mock
+        from mimir.client.ui.ws import transcript_log
+
+        self._tmp = tempfile.TemporaryDirectory()
+        patcher = mock.patch.object(transcript_log, "_MIMIR_DIR_WS", self._tmp.name)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.addCleanup(self._tmp.cleanup)
+        self.transcript_log = transcript_log
 
         self.worker = _FakeWorker()
         self.worker.out_q = _q.Queue()
-        self.session = object.__new__(_Session)
-        self.session.pool = FakePool(self.worker, active="s1")
+        self.worker.session_id = "s1"
+        self.worker._query_session_id = None
+        self.pool = FakePool(self.worker, active="s1")
 
-    def _purge(self, *events: dict) -> list[dict]:
+    def _recorded(self, *events: dict) -> list[dict]:
+        """What the journal holds after the pump sees *events*, with nobody attached."""
         for ev in events:
             self.worker.out_q.put(ev)
-        self.session._drop_stale_events()
-        left = []
-        while not self.worker.out_q.empty():
-            left.append(self.worker.out_q.get_nowait())
-        return left
+        self.assertEqual(self.pool.bus.attached(), 0)
+        self.pool.bus.pump_once()
+        self.assertTrue(self.worker.out_q.empty())
+        lines, _truncated = self.transcript_log.read_since("s1", 0)
+        return lines
 
     def test_a_finished_job_survives_the_reconnect(self) -> None:
-        left = self._purge({"type": "job_complete", "job_key": "j1"})
-        self.assertEqual(len(left), 1)
-        self.assertEqual(left[0]["job_key"], "j1")
+        kept = self._recorded({"type": "job_complete", "job_key": "j1"})
+        self.assertEqual([e["job_key"] for e in kept], ["j1"])
 
     def test_a_held_bulletin_survives_the_reconnect(self) -> None:
-        left = self._purge({"type": "job_checkin", "jobs": []})
-        self.assertEqual(len(left), 1)
+        kept = self._recorded({"type": "job_checkin", "jobs": []})
+        self.assertEqual([e["type"] for e in kept], ["job_checkin"])
 
-    def test_a_dead_turns_debris_still_goes(self) -> None:
-        left = self._purge({"type": "token", "text": "hi"},
-                           {"type": "tool_call", "id": "c1"})
-        self.assertEqual(left, [])
+    def test_a_dead_turns_output_survives_too(self) -> None:
+        # What the sweep called debris. The turn happened; switching to it has to show
+        # the whole thing and not only the answer that ended it.
+        kept = self._recorded({"type": "tool_call", "id": "c1"},
+                              {"type": "answer", "text": "what I did"})
+        self.assertEqual([e["type"] for e in kept], ["tool_call", "answer"])
 
-    def test_order_is_kept_when_some_of_it_is_dropped(self) -> None:
-        left = self._purge({"type": "job_complete", "job_key": "jA"},
-                           {"type": "token", "text": "debris"},
-                           {"type": "job_complete", "job_key": "jB"})
-        self.assertEqual([e["job_key"] for e in left], ["jA", "jB"])
+    def test_a_streamed_delta_is_the_one_thing_not_recorded(self) -> None:
+        # Live-only by design: hundreds per turn, and the aggregate that closes the
+        # block covers their content. A reconnect sees that aggregate instead.
+        kept = self._recorded({"type": "token", "text": "hi"},
+                              {"type": "tool_call", "id": "c1"})
+        self.assertEqual([e["type"] for e in kept], ["tool_call"])
 
-    def test_a_busy_conversations_queue_is_not_touched_at_all(self) -> None:
-        """Its turn is still running; what is queued is that turn's own output."""
+    def test_order_is_kept_and_numbered_without_gaps(self) -> None:
+        kept = self._recorded({"type": "job_complete", "job_key": "jA"},
+                              {"type": "tool_call", "id": "c1"},
+                              {"type": "job_complete", "job_key": "jB"})
+        self.assertEqual([e["type"] for e in kept],
+                         ["job_complete", "tool_call", "job_complete"])
+        self.assertEqual([e["seq"] for e in kept], [1, 2, 3])
+
+    def test_a_busy_conversations_output_is_recorded_like_any_other(self) -> None:
+        """Its turn is still running; what it emits is that turn's own output."""
         self.worker._query_session_id = "s1"
-        left = self._purge({"type": "token", "text": "mid-answer"})
-        self.assertEqual(len(left), 1)
+        kept = self._recorded({"type": "status", "text": "mid-answer"})
+        self.assertEqual([e["text"] for e in kept], ["mid-answer"])
 
 
 # ── 12. Re-arming tracking a restart took away ────────────────────────────────

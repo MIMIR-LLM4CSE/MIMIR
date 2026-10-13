@@ -71,7 +71,7 @@ the same. After a bump it installs the new `.vsix`, and VS Code retires the old 
 
 - `mimir/client/` — the agent client (loop, policy, context, UI, backends).
 - `mimir/servers/` — MCP tool servers, launched as stdio subprocesses.
-- `mimir/skills/` — methodology prompts auto-detected from the query.
+- `mimir/skills/` — methodology playbooks, loaded on demand by name.
 - `mimir/tests/` — pytest suite.
 - `mimir/vscode-extension/` — the VS Code chat frontend (TypeScript + React).
 

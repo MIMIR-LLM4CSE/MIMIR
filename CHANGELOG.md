@@ -13,7 +13,598 @@ the server of the same checkout, so the two always move together.
 How to release is in [CONTRIBUTING.md](CONTRIBUTING.md#releasing). The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased]
+## [1.6.0] — 2026-10-12
+
+### Added
+- **The "@" menu lists the workspace's files.** Attaching a file meant typing its path
+  from memory: the dropdown offered the MCP resources a server exposes and nothing else,
+  so `@src/solver.py:40-80` worked only if you already knew the path, and a typo attached
+  nothing at all (an unresolved `@token` is left as prose, by design). The files now sit
+  under the resources, matched the way Quick Open matches — the typed letters in order,
+  so `apcx` finds `webview/src/App.tsx`, and a hit in the file name outranks one in the
+  directory. The list comes from the extension host, which is the only side that can see
+  the workspace: one scan per window, kept until a file appears or disappears, with the
+  dependency and cache trees (`node_modules`, `__pycache__`, `.venv`, …) left out.
+- **Slurm schedulers behind `ssh`, found on their own — and more than one at a time.** On a
+  login node where `sbatch` is not installed, every cluster tool answered "not available"
+  and the work went out through a hand-written `ssh host "sbatch …"` instead — which is
+  where the untracked submissions came from in the first place. MIMIR now notices a host
+  the first time one of your own `ssh host "squeue …"` calls succeeds. Nothing to
+  configure: the call that teaches it is the one you were already making, and it is read
+  from the shell validator's own parse plus the exit status rather than from the text of
+  the command. ssh's own settings stay in `~/.ssh/config`, where they belong.
+- **`slurm_schedulers()` — every scheduler the workspace can submit to, and a choice made
+  per job.** A login node reaches its own scheduler and whatever `ssh` gets to, and one
+  conversation uses several: a reference run on the local scheduler while a sweep goes out
+  to another cluster. The inventory belongs to the workspace rather than to the
+  conversation: a cluster one session proved reachable is one the next can submit to
+  without proving it again, which matches how a job's own record already works — any
+  session can find a job another submitted, and it needs that job's scheduler to poll it
+  on. So every cluster tool now takes `scheduler=` (`'local'`, or a
+  hostname), learning a host *adds* a destination instead of replacing one, and a job
+  submitted to any of them is watched and wakes you the same way. With two reachable, a
+  submission that names none is refused with both listed rather than sent to one by
+  default: which cluster a job belongs on follows the partitions and GPUs it needs and the
+  filesystem holding its inputs, and that is a decision to make or to ask about, not to
+  make silently. `slurm_schedulers(add=…)` records a host after checking `sbatch` answers
+  there; `forget=` drops one.
+- **Each scheduler says what its machines are.** Picking a cluster is half a question
+  about hardware — the architectures, the GPUs, the partitions — and asking it of a
+  scheduler behind `ssh` cost a round trip per candidate, so it tended not to be asked:
+  the usual result is a binary built on the login node and submitted to nodes of another
+  architecture, which dies on an illegal instruction after the queue wait. Every entry in
+  `slurm_schedulers()` now carries that summary, built once per host for the life of the
+  server. What is *free right now* is deliberately not there — it changes between two
+  reads, and `slurm_nodes(scheduler=…)` stays the live answer. A cluster that does not
+  reply is listed without hardware rather than as a cluster with none, and the listing
+  never becomes an error because one of them is down. The same builder describes this
+  machine, so a site that restricts `scontrol` degrades to `sinfo` here as well, and a
+  Slurm that arrives from a modulefile is now found locally too.
+- **A proxy run on Slurm is a job of the workspace too.** It is the proxy's own state
+  machine and a row in a queue at the same time, and it was filed only as the first. So
+  everything that asks "is anything watching this id" — the `watched` column of
+  `slurm_queue`, the reminder that fires when a turn ends with work still running — read
+  it as unwatched, and the fix they offer is to adopt the id, which puts a second watcher
+  on a run already being polled: one result, two wakes. Its Slurm jobs are now recorded
+  where those readers look, both halves of a split build/run submission. And a window
+  that closes and comes back re-arms the proxy's *own* watcher, from the handle the run
+  recorded beside its id — so a run that finishes while nothing is listening still wakes
+  its conversation, which until now only happened for `sbatch_submit`.
+- **A job is found wherever it is running.** The scheduler a job went to is written beside
+  its id, but only as a cache: a poll that has no record — a job adopted from a launcher's
+  output, a watcher re-armed from disk after a window reload, which has nothing but the id
+  — asks every reachable scheduler and writes down whichever knew, so the next poll is one
+  call again. Descriptors are keyed by host *and* id, because two clusters number
+  independently: the same number is your production run on one and somebody else's sweep on
+  the other, and keyed by id alone the first vouched for the second — reported as watched
+  while nothing polled it.
+
+### Changed
+- **What a message attaches is marked, in the box and once sent, and a file mention opens
+  the file.** The `@`-mentions were plain prose, which is where they were hardest to find
+  again — and they are the part of a turn you come back to: which file, which lines. In a
+  sent message each one is now drawn as a chip, and a file one is a button that opens the
+  file in an editor tab, at the attached line range when the mention named one. While you
+  type, the mentions are tinted inside the input itself, and the files the message will
+  attach are listed as chips above it: a click opens one, "×" takes it back out of the
+  draft. A resource mention is marked the same way everywhere but is never a link — it
+  addresses a server, not a path. The reading of what counts as a mention is the server's
+  own, so what is marked is exactly what the agent will resolve.
+
+## [1.5.0] — 2026-10-12
+
+### Added
+- **`slurm_watch(job_id)` — watch a job MIMIR did not submit.** Tracking a run is the
+  descriptor its submission writes, not a job id somebody has read, so work submitted
+  through a site launcher or a script of your own — the normal way to submit anything with
+  job arrays and dependencies — was invisible: nothing polled it, no wake was owed when it
+  ended, and a server left running overnight had, as far as it could tell, nothing to do.
+  This records the descriptor after the fact and returns the same handle `sbatch_submit`
+  does, so the watcher arms and the wake path is unchanged. An array's base id covers every
+  task. An id no reachable scheduler has heard of is refused rather than recorded, naming
+  the ones that were asked.
+- **`bash_watch(pid)` — watch a process already running.** The sibling of the above for
+  work that is not a scheduler job at all: something a script of yours backgrounded, a
+  `nohup` started outside a tool call. Same silence, same cause — no record, so no watcher,
+  no wake and nothing holding the server open. It records the pid with its `/proc` start
+  time, so a recycled pid cannot be mistaken for it, and says plainly what it cannot give
+  you: an adopted process never had the exit-code trap, so when it ends the state is
+  `unknown` rather than a `done` nobody observed.
+- **A reminder, before you conclude, for work nothing is watching.** Every reachable
+  scheduler is asked which jobs are yours and the disk which ones have a record; the difference is named, with
+  both ways to hand one over. It rests on those two facts and never on the text of a
+  command — a pattern matching `sbatch` fires on a `grep sbatch` and misses every wrapper
+  ever written. And it reaches the reminder through the shell as well as through the cluster
+  tools: any command that just proved the scheduler answers — your own `squeue`, here or
+  over `ssh` — carries the gap back with it. That is the ordinary case, because a job
+  submitted by a site launcher and checked with a `squeue` a second later never touches a
+  typed tool at all. `slurm_queue` also marks each row `watched`, and a submission or an
+  adoption says what is still unaccounted for.
+- **Every path to Slurm goes through the same answer.** The proxy's own submissions and
+  cancellations ran `sbatch`/`squeue`/`scancel` locally and in the raw, so the ratchet's
+  runs stayed broken on a site whose schedulers are elsewhere; they now take the shared
+  route. The platform profile still describes only the machine it runs on — it looks for no
+  other host — but "no `sinfo` here" no longer reads as "no scheduler": with any known, it
+  says where. And `salloc_submit` is refused outright when the scheduler it names is
+  remote, rather than taking an allocation it cannot give a terminal to and handing it
+  straight back.
+- **A Slurm controller behind `ssh`, found on its own.** On a login node where `sbatch` is
+  not installed, every cluster tool answered "not available" and the work went out through
+  a hand-written `ssh host "sbatch …"` instead — which is where the untracked submissions
+  came from in the first place. MIMIR now notices the host the first time one of your own
+  `ssh host "squeue …"` calls succeeds, and sends its own cluster commands there from then
+  on. Nothing to configure: the call that teaches it is the one you were already making,
+  and it is read from the shell validator's own parse plus the exit status rather than from
+  the text of the command. ssh's own settings stay in `~/.ssh/config`, where they belong.
+
+### Fixed
+- **A run taken back is now a run that ends with the window.** Reopening a workspace on a
+  server that had been left running picked the conversation back up but kept the claim that
+  made the process immortal — and a window that attaches to a server holds no child process
+  to kill, so quitting MIMIR deliberately ended nothing: the server was simply found again
+  on the next connect, after the panel had said closing the window would stop it. Attaching
+  is now the take-back. The claim is dropped on arrival, the thread says so and says what
+  closing the window now costs, and the window keeps the pid the registry gave it so it has
+  something to signal. Leaving a run going a second time is a decision, made with the same
+  button as the first time.
+- **A conversation whose agent was asleep is now claimed when you detach.** An agent is
+  built on a conversation's first query and released after ten minutes of idleness — and a
+  conversation whose work is a job MIMIR cannot see has nothing holding its agent, so it was
+  asleep at exactly the moment you left. The claim set was built from the live agents, so it
+  came out empty for it; an empty claim is recorded as "not detached", and the server then
+  stopped **thirty seconds** after the window closed, having just been asked to keep going.
+  A claim is a conversation's request, not an agent's. Naming no conversation now also
+  claims the one on screen, which a window detached before its first query claimed not at
+  all. An id that names no conversation is still skipped — a claim nothing can ever take
+  back would hold the process open for ever.
+- **A server that stops itself now says so in the conversation.** The decision was printed
+  in the process's own log, which nobody is reading, so a morning opened on a thread whose
+  last line was hours old with nothing between — a night that reads as lost rather than as a
+  decision taken. Both stops now write a stamped line into every conversation they were
+  keeping, saying which stop it was and what the idleness consisted of.
+- **Detaching no longer promises work that is not there.** "This run keeps working with this
+  window closed" was never checked against what the process would actually still owe once
+  the window had gone. With nothing owed, the line now says that instead — conditionally,
+  since the click can land while a turn is one call away from submitting the job that would
+  keep it alive — and names the trap: a job MIMIR did not submit is never watched.
+- **A job array is no longer reported finished while seven of its tasks still run.** An
+  array answers `squeue` and `sacct` with a line per task; only the first was read, so an
+  array whose first task had completed settled the whole submission and woke its
+  conversation on a run that had barely started.
+- **A job's output now goes where the job runs.** It was written into MIMIR's own
+  submission directory — the one directory in the arrangement that nothing guarantees a
+  compute node can write. On a site whose home is not mounted on them, the job ran,
+  succeeded, and its output went nowhere; an empty read looked like a job that printed
+  nothing. `--chdir` and `--output` now name the same directory, which makes the output
+  reachable by implication rather than by luck: a job that could not reach that directory
+  could not have started in it. `sbatch_submit` takes `work_dir` for a run whose work lives
+  elsewhere — a scratch filesystem, say — and the log follows it, checked for existence and
+  writability before the queue wait rather than after it. No fallback is offered on
+  purpose: the tempting one is somewhere always writable, which on a cluster means `/tmp`,
+  and `/tmp` is the compute node's own disk — a shared directory that is not writable fails
+  loudly, a node-local one fails silently. A finished job whose log is nonetheless absent
+  says so, and names `work_dir` rather than a setting.
+- **A batch script is piped to `sbatch` instead of handed over by path.** Nothing of
+  MIMIR's then has to exist on the host running the scheduler, which is the one thing a
+  scheduler behind `ssh` cannot promise.
+- **An adopted job's output is no longer reported as unreadable.** It has no log of its
+  own — nothing of MIMIR's opened that process's output — so reading it now says where the
+  output actually goes instead of "Log unreadable", which read as output lost.
+- **The test suite no longer writes into your own workspace.** Cases that concluded a turn
+  journalled it through the real transcript writer with the state dir unpatched, inventing
+  sessions in `~/.mimir/<workspace>/sessions/` that no conversation ever had.
+
+## [1.4.1] — 2026-10-09
+
+### Changed
+- **Start-up no longer pays for each tool server in turn.** The twenty MCP servers were
+  spawned and handshaken one after the next, and what a handshake waits for is the child
+  interpreter importing the MCP SDK — about two thirds of a second, the same two thirds
+  in every one of them. That was fourteen seconds between launching MIMIR and being able
+  to ask it anything, which is where the wait before a first query came from. The
+  processes are now started together and the handshakes awaited at once: the same
+  registry connects in a little over a second. Nothing about the result changes — the
+  tools are registered in registry order, as before, because that order is the prompt
+  prefix the backend caches.
+
+## [1.4.0] — 2026-10-09
+
+### Added
+- A **global memory**, beside the per-workspace one, for what belongs to the user rather
+  than to one repository: their preferences, and their corrections about how to work.
+  Stored under `~/.mimir/global/memory/` (override `MIMIR_GLOBAL_STATE_DIR`), in the same
+  human-editable format, and shared by every workspace on the machine — so a correction
+  is given once instead of once per project. Both indexes are injected into the prompt,
+  the global one first. Every memory tool takes a `scope`, and `memory_add` requires one:
+  the model files each fact where it belongs and asks when it could honestly be either,
+  rather than a default quietly deciding. The global store refuses at its cap instead of
+  aging out its oldest entry — a preference you asked to be kept must not disappear on
+  its own — and a fact already stored globally blocks a workspace copy of itself, while
+  one project's note never blocks a user preference. `/memory list` shows each entry's
+  scope; `/memory clear` still wipes only this workspace, and says so.
+- Four skills for the pipeline the acronym names, each grounded in tools that exist
+  rather than in a kind of task in the abstract. `derive-model` does the algebra with
+  the `symbolic` tool instead of recalling it — truncation error and order from a
+  series expansion, a stability limit from a characteristic polynomial, a closed form
+  verified in the direction the tool did not go. `debug-numerics` is for the run that
+  produces numbers and the numbers are wrong: shrink it until one step is readable, read
+  the mode of failure for the suspect it names, bisect by feeding in a solution you know
+  exactly, and keep the check that failed before the fix as the evidence it is fixed.
+  `parallelize-kernel` guards the two failures that stay quiet — an answer changed by a
+  race that still passes a tolerance, and a speedup that was a warm cache — with a
+  measured baseline, one axis at a time, a scaling sweep instead of a spot check, and
+  Amdahl's ceiling as the test of the measurement rather than of the code.
+  `run-on-cluster` starts from the fact that the host answering your probes is not the
+  host that will run the job: size the request from the node inventory, because a
+  request no node satisfies pends forever instead of failing; carry the build's modules
+  into the job, because a batch shell is a fresh one; and submit a proxy's work through
+  `proxy_slurm`, never by hand.
+
+### Changed
+- A tool-activity row now says **what the call is for** instead of which function ran.
+  Its label was derived from the tool's name, so ten reads of ten files read as ten
+  copies of "Reading file:" and none of them said why; its icon came from a table keyed
+  on tool names that had decayed unnoticed — ten of its twelve keys named tools that no
+  longer exist, and `evaluate` and `symbolic` both came out as a wrench. A row is built
+  from two facts instead. The server declares its tool's **family of work** — one word,
+  `edit`, `bash`, `proxy eval` — and the row shows that word, capitalised, and draws its
+  glyph from the same word, so the two cannot disagree; a tool that declares none still
+  gets a family derived from its capabilities, so a third-party server renders correctly
+  having said nothing. Beside it, the model writes **one sentence about this call**,
+  under fifteen words ("fixing the off-by-one bound", "submitting the job on genoa"):
+  every tool now takes a `doing` argument the client adds to its schema and the
+  dispatcher strips before the call runs, so no server declares it and none receives it.
+  Last on the line, the call's **salient argument** — the url it is reaching, the job id
+  it is cancelling, the verdict it is recording, the file it is reading. Every one of
+  those used to arrive through the server's label template ("Slurm cancel {job_id}",
+  "Verdict: {verdict}") and would have left the screen with it; they are read off the
+  call's own arguments by name instead, so a new tool needs no entry anywhere, and shown
+  unless the description already says it or the panel below carries it in full — an exec
+  row's command lives in its IN pane, open or closed, and never on the line as a
+  fragment. Too long for the pane, a value is cut with an ellipsis and keeps its whole
+  text in its tooltip. A remote path keeps its leading segments — reduced to a basename,
+  the GitHub row said
+  `ci.yml` for a call on `.github/workflows/ci.yml` — while a workspace path is still
+  shortened to its file name. A url shows its host and path without its query, and a
+  `user:password@` in one no longer reaches the screen at all: not the row, not the
+  tooltip, not the approval card, and not the stored transcript, which carried it
+  through the label before this. When the model writes no description, the derived
+  label takes that slot rather than leaving the family alone there — four tools answer
+  to `Todo`, and a bare `Todo` row gave no way to tell a checklist being written from
+  one being read. `plan` and `todo` are two families for that reason as well: a saved
+  titled plan and the ordered checklist of steps are different objects, even though one
+  server holds both. The label is still the row's tooltip, and the approval card for a
+  call now carries the family too, so it shows the same icon as the row — as does the
+  dock card for a run that has scrolled out of the thread, which described the same call
+  a second way. GitHub gets its own mark, the one drawn icon in
+  a set that is otherwise emoji.
+- The surviving skills read as one set. `write-tests` and `explore-repo` were written in
+  a register of their own — "You are writing tests.", then a flat list of rules — which
+  said nothing about when the method applies and buried the part that matters:
+  for `write-tests`, that a test which has only ever been green has established nothing.
+  Every skill now opens on the failure it exists to prevent, is sectioned, and closes on
+  what does not count as done. Their one-line descriptions were titles, and the index is
+  the only thing the model sees before deciding to load one, so each now states the
+  trigger instead of the subject.
+
+### Fixed
+- The enforcement dial read `strict` before anything had told it otherwise, in every
+  place that had to show a level without having one: the panel's own initial state, the
+  CLI's `/status` header, and the worker asked for a level before an agent exists. The
+  resolved default is `light` and has been since the first release, so each of those
+  announced a tier the model was not being held to — and the panel's radio sat on
+  `strict` until the server's first message corrected it, which is a visible flip on
+  every connect. They all fall back to `light` now, which is what `enforcement_level`
+  returns when a profile declares nothing.
+- A workspace that had ever submitted a Slurm job had a server that could never stop. A
+  submission records a job id, an id never stops existing, and the scan that decides
+  whether this workspace still has work running had no other evidence to read — so every
+  past job counted as a run in flight, the idle TTL was never reached, and the process
+  outlived the window, the conversation and the work by days. A poll that finds Slurm has
+  let the job go now records that state in the submission's own directory, which is the
+  counterpart of a detached shell job's exit-code trap; the scan reads it, and a
+  submission nothing can ever settle ages out (`MIMIR_SLURM_STALE_AFTER`, a week by
+  default) rather than holding the workspace open for ever. Deleting a conversation
+  reports its live work from the same record, where it had been asking about every Slurm
+  job that conversation ever ran.
+- A watcher put back on a Slurm job polled `slurm_status`, which no server registers —
+  the tool is `slurm_job_status`. It read five unreadable answers, gave the run up as
+  untrackable, and left nothing behind, so the next scan re-armed it and the job's real
+  ending was never reported. A test asserted the wrong name, which is why it held.
+
+### Removed
+- `fix-bug`, `refactor-code`, `analyze-only` and `prepare-pr`. Each restated what the
+  system prompt already requires — make the minimum change, read before editing,
+  validate what you modified, leave unrelated files alone — so each cost a line of
+  every query's context to say nothing new, and loading one spent one of the three
+  slots a task has on a method the model was already following. A skill earns its line
+  by carrying a method the base instructions do not. Restore one as a workspace skill
+  under `.mimir/skills/<name>/SKILL.md` if your own practice wants it.
+- No bundled skill now sets `disable-model-invocation: true` — `prepare-pr` was the
+  only one. The field is still honoured for workspace skills, and its test now declares
+  one rather than leaning on a shipped skill to carry the flag.
+
+## [1.3.1] — 2026-10-08
+
+### Changed
+- Detaching is now asked for and taken back one conversation at a time. The claim was
+  a single flag for the workspace, so detaching a second conversation at `auto`
+  brought the first one back under the `auto_all` of the other, and taking the claim
+  back for one made every other conversation's run mortal without anyone asking for
+  that. Each conversation now records its own level, and taking one back leaves the
+  others running. What stays indivisible is the process: one server serves a workspace
+  by construction, and the redirect that makes it survivable belongs to the process
+  rather than to a conversation — so it lives for as long as any conversation claims
+  it, and becomes mortal again when the last claim goes.
+- A server nobody asked to keep no longer outlives the window by accident. A server
+  existed in one of three states, and the third was nobody's intention: one a window
+  had merely attached to, not its to kill, still writing to a pipe whose reader had
+  gone — working on, unobserved, with nothing claiming it. It now stops once its last
+  client has been gone for `MIMIR_DETACH_GRACE`, whoever started it, whatever it is in
+  the middle of: the panel asks before the window goes, and "keep them going" is what
+  claims it. The decision is the server's own, because an extension host that is dying
+  has no time to end a process it does not own. A background run is not killed with
+  it — it has its own process session and an exit code trap, so what ends is the
+  watching, and the next agent built for its conversation picks it up again.
+- The disconnect dialog is back to one sentence. It briefly described two outcomes
+  depending on whether the window had started the server; with an unclaimed server
+  stopping either way that distinction answers nothing, and the sentence it was
+  guarding against is now simply true.
+- Revising the task checklist mid-work no longer costs the progress already on it.
+  Only one shape of change existed for the list's contents — resend the whole thing —
+  and it opened every step unticked, so a plan corrected at step six came back with
+  six finished steps to tick again, one call each, in a run that had just discovered
+  it needed a seventh. A step whose wording is carried over word for word now keeps
+  its tick, and the one-item update tool, which until now could only tick, takes new
+  wording for the step it names: the step that changed is the only one that has to be
+  sent. Inserting, dropping and reordering steps follow from the same rule, since
+  rewriting the list is no longer destructive. Two identical texts are matched one for
+  one, so a duplicate that was still pending stays pending; a reworded step is a
+  different step and starts pending, which is the state the model should have to state
+  rather than inherit.
+- The notice about a run you have rejoined is no longer kept in the conversation. It
+  went into the stored transcript like any other card, so it came back on every load:
+  a conversation reconnected to twenty times reopened on twenty copies of it, each
+  above whatever answer it happened to follow and every one of them describing a past
+  attachment as if it were now. It describes the moment, so it is now rendered and not
+  stored — and the copies a transcript is already carrying leave with the next one it
+  sends.
+- Rejoining a run that kept going is announced quietly. The panel has to say what
+  level the run is under — a worker rebuilt during the absence would otherwise come up
+  on the pool-wide record, and a run silently dropped from `auto_all` to `manual` parks
+  at its next sensitive call with nothing said — but saying it as a warning, with a
+  badge and a coloured border, read as a problem to deal with at the one moment the
+  user is looking for what happened rather than for what to do. It is now a rule across
+  the thread, grey and unremarkable, and it names the position the toggle is in rather
+  than only what the run has been doing:
+  `──── detached — this conversation kept working with no window open, under "auto_all" ────`.
+  The line explaining that the switcher above the send button changes it is gone; the
+  switcher is on screen.
+- Flipping the detach toggle now says which way it went. The button is one glyph in
+  both positions, and nothing but a tooltip distinguished "this run survives the window
+  closing" from "closing the window ends it" — the toggle's whole point, read off a
+  chain emoji. Each press now writes the same quiet rule to the thread, naming the
+  consequence rather than the word: the autonomy a detached run may act under (or, at
+  `manual`, that it parks at the first call needing an answer), and on taking it back,
+  that closing the window stops the run. Transient like the rejoining notice, so no
+  reload replays it.
+
+### Fixed
+- Unfolding a long plan no longer hides the conversation behind it. The step list
+  expanded to whatever height its steps needed, in a bar that does not shrink, so a
+  twenty-step plan took the panel and left the transcript nothing — the one thing the
+  user opened the plan to read alongside. It now has a ceiling of 40% of the panel, no
+  more than 320px, and scrolls within it; the step being worked on is brought into view
+  when the list opens and each time it moves on, so the cap never buries it.
+- Leaving while a background run is going now asks, instead of walking away in
+  silence. The question — keep them going, or disconnect — was put only when a *turn*
+  was in flight, and a conversation that launched a two-hour build and answered has no
+  turn at all. That is the case detaching exists for, and it was the one case nothing
+  asked about: the job was abandoned with no dialog, which from the outside is
+  indistinguishable from MIMIR having detached itself without being asked. Each
+  conversation's row now carries how many runs it still has going, and the panel reads
+  that beside the live turn. The activity rows are also refreshed when a run starts and
+  when one ends, so the dot beside a conversation chewing through a job no longer looks
+  inert — and no longer claims a run that finished hours ago.
+- Detaching now behaves like being there. A run finishing with the window shut got
+  its turn, and the chain stopped at that one link: a connection does more when an
+  answer lands than write it down — it puts the steering the turn never read to a new
+  turn, starts a turn for every run that finished while it was busy, and delivers the
+  bulletin it was holding. None of that happened with nobody attached, so "when the
+  training finishes, carry on with the next step" answered the training and stopped.
+  The server now carries on the same way, so a chain of steps runs through the night.
+  What still differs is a choice, not a gap: under `manual` or `auto` a sensitive tool
+  parks its card and waits for your return, which is what the autonomy level asked at
+  detach time is for.
+- A window that closes at the wrong moment no longer leaves the server deaf for the
+  rest of its life. Whether to act on a finished run was decided by asking if any
+  socket was subscribed — which says a socket exists, not that it will do anything
+  with what it is sent. A view that ended without unsubscribing (a window shut during
+  the replay of a long detached run raised mid-handshake, which skipped the cleanup)
+  therefore stood in for a reader that was gone, and with it went every wake, every
+  check-in and every turn written back, silently, until the server was restarted. The
+  cleanup now runs on every way out, and the decision no longer guesses: each such
+  event is offered, an attached panel has a moment's first refusal, and the server
+  acts on whatever nobody claimed.
+- An agent is no longer released at the one moment it is needed. A watcher stops
+  holding its job the instant it reports it finished, which left the agent eligible
+  for the ten-minute idle sweep in the gap before the wake reached it — and a
+  conversation waiting on an overnight run has looked idle for hours by then, since
+  idleness is counted from the last time the agent was asked for, not from anything
+  the run is doing. Being owed a wake, holding unread output, or holding an event
+  still to be claimed now count as work in progress like the rest. An agent rebuilt
+  for any reason also resumes the context the last one had carried, which previously
+  only happened when a panel reopened the conversation.
+- A message typed into the last step of a run is answered instead of being left
+  tagged "queued". Steering is taken in at a step boundary, and the step that writes
+  the final answer has none after it, so a message typed while that answer streamed
+  reached the queue once the loop had stopped draining: the run ended, nothing read
+  it, and the bubble kept the tag of a turn that was over — in full-context mode the
+  history lost the message too. What the loop never read now leaves with the answer
+  and is answered by a turn of its own, ahead of any background-job wake, because the
+  user is waiting on their own message. The bubble is placed by the same fact: while
+  it is still tagged, the turn in flight has not claimed it, so the answer that ends
+  that turn comes back **above** it — appended after it, the reply to the previous
+  message read as a reply to one the user had not sent yet.
+- A watcher whose status op stops answering now gives up instead of waiting for ever.
+  Nothing beneath it had a deadline, so a wedged tool server or a scheduler that hung
+  froze the watcher in place: the job was never reported, the agent was never released
+  and never woken, and the check-ins kept repeating a status frozen at the moment it
+  stopped — the quietest way to lose a run, since a watcher that crashes at least says
+  so. A probe now has 60 seconds, a slow one counts as unreadable like any other
+  unusable answer, and a run whose status cannot be read ends as `unknown` with the
+  reason after a few of those. The summary call has the same deadline, where it matters
+  more: the run is already over, and better a wake carrying nothing than no wake.
+- Tool calls, diffs and answers appear in the chat as they happen again, instead of
+  only on the next reconnect. A client's replay watermark — how far it has already
+  rendered — was one number per connection, while `seq` is counted per conversation:
+  one journal and one writer each. A socket that opened on a long conversation
+  therefore raised the gate above every event a *shorter* one would ever produce, so a
+  new chat had its tool rows, diff cards and final answers dropped on the way to the
+  screen while its streamed text (never journaled, so never stamped) arrived normally.
+  The journal still held everything, which is why reconnecting showed the whole run at
+  once — and why nothing about the connection looked wrong. The watermark is now kept
+  per conversation, like the number it compares.
+- "Disconnect anyway" no longer promises something it cannot do. A workspace has one
+  server, and a window either started it or attached to the one already running; only
+  the first is stopped by closing the window, which the host says plainly in its log.
+  The dialog described both cases as the first, so disconnecting from a server this
+  window had only attached to left every run going after a choice whose stated outcome
+  was ending them — indistinguishable, from the outside, from MIMIR detaching itself
+  without being asked. The prompt now says which case it is in, and where
+  disconnecting leaves the runs going it offers stopping the server as its own
+  choice — including what that costs, since another window of the same workspace may
+  be reading it.
+
+## [1.3.0] — 2026-10-07
+
+### Added
+- MIMIR can explain and write its own extensions. Asking how to add a skill, a tool
+  server, a policy, a post-tool hook, a nudge or a base prompt used to be answered from
+  whatever the model remembered of MIMIR — a capability flag that no longer exists, a
+  path from an older layout, a plugin signature that was never ours. All of it plausible,
+  none of it checkable, and the file written from it fails silently: an extension that
+  does not load says nothing at the moment it is written. The new `/mimir-api` skill
+  answers from the build that is running instead. Its `mimir_api` tool reads the
+  installed package at call time: the capability vocabulary with what each flag drives,
+  the drop-in path *this* workspace resolves (env overrides included, reported with the
+  value they are set to), the shipped template for the type, and what the workspace
+  already has — which skills and packs are present, which server namespaces are taken.
+  Nothing it answers is a prose copy, which is the point: the flag table in the docs had
+  already drifted three flags behind the vocabulary it claimed to list.
+- A skill can now be loaded in the middle of the work, by the model, when what it has
+  read tells it which method the task needs. Before, a skill could only enter the prompt
+  once — before the first step, chosen either by `/<name>` or by a classifier model call
+  that read the query and the last few turns. That decision is made at the one moment
+  nothing is known yet: at step 14, having just found that the slow request is a proxy
+  problem, the agent could not go and get `proxy-optimize`. Now the system prompt carries
+  the *index* — each skill's name and the one line saying when it applies — and
+  `load_skill(<name>)` reads the body on demand. The split is what makes it affordable:
+  the eight shipped skills are 22 KB together and the largest is 13 KB, so carrying every
+  body would have spent thousands of tokens per query to apply, at most, one of them.
+  At most three per task, never the same one twice.
+- `disable-model-invocation` in a `SKILL.md`'s front-matter now does what it says. Eight
+  shipped skills declared it and the parser dropped it, so `prepare-pr` — which declares
+  `true` — was reachable by the classifier against its own file. It now keeps a skill for
+  the user's `/<name>` and refuses the model's own pull.
+
+### Changed
+- A skill the model loads stays where it lands, as the tool result, pinned against
+  eviction — not folded into the system message. Rewriting the system message mid-query
+  voids the prompt prefix for every remaining step, and a pull happens at step 14 as
+  readily as at step 1. An explicit `/<name>` is still folded in: the user decided before
+  the first step, so the prefix is paid for once and binds the whole query.
+- Switching a skill off in the toggle panel now hides it from `/<name>` **and** from what
+  the model can load. A skill its own file reserves for the user reads as `(/name only)`
+  on its row.
+
+### Removed
+- The implicit skill classifier, and with it one full model round-trip per query. The
+  model is given the index and chooses for itself, at the step where the choice can
+  actually be made. `/<name>` is unchanged.
+
+### Fixed
+- A background run that ends while no window is open now gets its turn there and
+  then, instead of waiting for someone to come back and ask. Recording what the
+  run reported already worked; starting the turn it asks for needed a panel,
+  because the routing lived in the socket. So a job that finished three minutes
+  after the last answer, with the window shut, was written down and never handed
+  to the conversation waiting on it — and the run sat untouched until morning.
+  The server now takes the wake in itself: it appends it to the conversation,
+  queues the turn on that conversation's own agent, and writes the answer back,
+  with no connection involved at any point. A run detached under `auto` or
+  `auto_all` can therefore carry its work through the night, which is what
+  detaching it was for. The hourly check-ins behave the same way.
+- A wake is no longer lost when nothing is there to read it. A finished run was
+  marked as reported the moment its event was queued, so a wake that reached an
+  empty process was filed as delivered: every later scan skipped it, and
+  reconnecting said nothing about a job that had finished hours earlier. The
+  marker now records delivery — it is written where the wake enters a turn — so
+  a run nothing took in is announced again on the next scan, and reopening the
+  panel catches up on what happened while it was shut.
+- A detached server no longer stops itself while it owes a conversation a turn.
+  A finished run whose wake nothing has taken in counts as work in progress, the
+  same as one still going.
+## [1.2.0] — 2026-10-06
+
+### Added
+- A run keeps working when the window closes. The control is at the right-hand
+  end of the toolbar that carries the mode and the settings; pressing it leaves
+  the server running without this window, and reopening the workspace comes
+  back to it. The autonomy it runs under while unattended is whatever the
+  approval switcher above the send button already says, so there is one place
+  to answer that question rather than two that can disagree — and the button's
+  tooltip spells out the consequence, because at `manual` a detached run parks
+  at its first sensitive call and does almost nothing overnight. Detaching does
+  not disconnect: the socket stays open, the turn goes on in front of you, and
+  pressing the control again gives the server back to the window.
+- Coming back brings the conversation with it. The history is replayed from the
+  session's journal — tool rows, diffs, and what the agent said between its
+  tools — the cards a turn is parked on are put back, the level it was left
+  running under is restored, and a turn still in flight carries on with a stop
+  button that stops something. Reasoning is the one thing a replay does not
+  keep: the deltas are hundreds per turn and are deliberately not recorded.
+- Background runs that finish while nobody is attached wake their conversation
+  without being asked. A run survives anything — its own process session, a
+  trap that records the exit code — but the watcher that promised to report it
+  does not, and re-making that promise previously needed a turn in which
+  somebody asked where the job had got to.
+- Disconnecting while conversations are still working asks first, naming them:
+  keep them going, disconnect anyway, or neither. Dismissing the question is
+  "neither", so pressing Escape cannot end a two-hour build.
+- `MIMIR: Stop Detached Server` ends a server this window no longer owns. It
+  signals rather than asks over the socket, because the window that wants it
+  stopped may not be connected to it, and it sends `SIGTERM` — the path that
+  closes each agent's MCP servers, where a `SIGKILL` would leave them behind.
+- A detached server stops itself once nothing needs it: no client attached,
+  every conversation having delivered a final answer, and no background run
+  still going. "Not busy" is not "has finished", so the criterion is the
+  answer rather than the silence. `MIMIR_SERVER_IDLE_TTL` sets the wait.
+- `/diag` reports what the event chain has done — whether the pump is running
+  and how much it has moved, the journal's position, each subscription's
+  watermark and what it filtered, and every worker's queue. A chat that has
+  gone quiet has several causes that look identical from a chat window, and
+  this is what separates them.
+- One server per workspace, enforced with a lock taken before anything binds. A
+  second would share the sessions directory, so both would write the same
+  journal and derive their sequence numbers from it — and a client attached to
+  one would see nothing of the turn running in the other. A window that would
+  have started one attaches to the server that already serves the workspace.
+- A card nobody can answer is set aside instead of waited on for ever. The
+  criterion is whether a client is *attached*, not how long the wait has been,
+  so a card with somebody there still waits indefinitely — and
+  `MIMIR_DETACH_GRACE` keeps a window reload from parking a question the user
+  is about to answer. Answering it later resumes the turn rather than
+  restarting it.
+
+### Fixed
+- Deleting a conversation that has nothing running takes one click. The
+  deletion asked about work in progress based on a reading of the session's job
+  directory that counted any file in it as a run still going.
+- A refused deletion says so. The warning went out on the transcript's
+  transient channel, which the panel drops as tool chatter, so the first click
+  did nothing visible and the second deleted — the warning the refusal exists
+  to give, not given.
 
 ## [1.1.2] — 2026-10-02
 

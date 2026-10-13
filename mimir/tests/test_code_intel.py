@@ -49,7 +49,7 @@ class LSPClientWireTest(unittest.TestCase):
         out = client._request("workspace/symbol", {"query": "x"})
         self.assertEqual(out, {"ok": True})
 
-    def test_request_drains_diagnostics_notification_before_response(self):
+    def test_a_notification_before_the_response_is_skipped_not_returned(self):
         client = self._client_with_stdout([
             {"jsonrpc": "2.0", "method": "textDocument/publishDiagnostics",
              "params": {"uri": "file:///a.py", "diagnostics": [{"message": "boom"}]}},
@@ -57,7 +57,16 @@ class LSPClientWireTest(unittest.TestCase):
         ])
         out = client._request("workspace/symbol", {"query": "x"})
         self.assertEqual(out, [])
-        self.assertEqual(client._diagnostics["file:///a.py"], [{"message": "boom"}])
+
+    def test_a_server_request_mid_wait_is_acked_and_the_response_still_arrives(self):
+        client = self._client_with_stdout([
+            {"jsonrpc": "2.0", "id": 99, "method": "client/registerCapability",
+             "params": {"registrations": []}},
+            {"jsonrpc": "2.0", "id": 1, "result": [{"name": "x"}]},
+        ])
+        out = client._request("workspace/symbol", {"query": "x"})
+        self.assertEqual(out, [{"name": "x"}])
+        self.assertIn(b'"id": 99', client._proc.stdin.getvalue())
 
     def test_missing_binary_start_is_false(self):
         client = lsp_client.LSPClient(["definitely-not-a-real-langserver-xyz"], ".")

@@ -52,6 +52,13 @@ function pruneTool(tool: ToolActivity): ToolActivity {
 export function pruneForStorage(messages: ChatMessage[]): ChatMessage[] {
   return messages
     .filter((m) => !(m.kind === "approval" && m.approval))
+    // Cards about the moment rather than about the conversation. Stored, they are
+    // replayed on every load: a conversation reconnected to twenty times reopens on
+    // twenty of them, each describing a past attachment as if it were now. The detach
+    // notice is one by nature, however it reached the transcript — naming it is what
+    // takes the copies already there back out.
+    .filter((m) => !(m.kind === "command"
+                     && (m.command?.transient || m.command?.command === "detach")))
     .map((m) => {
       const { approval, streaming, live, queued, ...rest } = m;
       const tools = rest.tools?.map(pruneTool);

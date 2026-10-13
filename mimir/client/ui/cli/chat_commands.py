@@ -31,7 +31,7 @@ async def handle_chat_command(
     streaming: bool,
     batch_mode: bool,
     context_mode: str = "compact",
-    enforcement: str = "strict",
+    enforcement: str = "light",
     approval_mode: str = "manual",
     set_mode: Callable[[str], None],
     set_thinking: Callable[[bool], None],
@@ -98,7 +98,8 @@ async def handle_chat_command(
             "                           manual: you do; auto: sensitive tools pass, leaving the\n"
             "                           workspace still asks; all: nothing asks (guardrails still apply)\n"
             "  /servers [on|off <name>] -> list/toggle MCP servers (hide their tools from the LLM)\n"
-            "  /skills [on|off <name>]  -> list/toggle skills (eligible for auto-detection)\n"
+            "  /skills [on|off <name>]  -> list/toggle skills (a switched-off skill is hidden\n"
+            "                           from /<name> and from what the model can load)\n"
             "  /nudges [on|off <name>]  -> list/toggle application nudges (extension packs)\n"
             "  /trust <tool> -> auto-approve a sensitive tool for this session\n"
             "  /untrust <tool> -> remove session auto-approval for a tool\n"
@@ -397,7 +398,7 @@ async def _memory_command(agent: Any, sub: str, args: list[str]) -> str:
     the effect is visible rather than silent.
     """
     if sub == "list":
-        payload = await _call_platform_tool(agent, "memory_list_all", {})
+        payload = await _call_platform_tool(agent, "memory_list_all", {"scope": "all"})
         if payload is None:
             return "\n❌ The memory server is not connected.\n"
         entries = payload.get("memory") or []
@@ -406,7 +407,10 @@ async def _memory_command(agent: Any, sub: str, args: list[str]) -> str:
         lines = [f"\n{len(entries)} memory item(s):"]
         for e in entries:
             desc = (e.get("description") or "").strip()
-            lines.append(f"  {e.get('name', '?')}" + (f" — {desc}" if desc else ""))
+            # The scope is on every line: a fact reaching every workspace and one
+            # reaching only this project look identical without it.
+            scope = f"[{e.get('scope', '?')}] "
+            lines.append(f"  {scope}{e.get('name', '?')}" + (f" — {desc}" if desc else ""))
         return "\n".join(lines) + "\n"
 
     if sub == "delete":
@@ -417,14 +421,18 @@ async def _memory_command(agent: Any, sub: str, args: list[str]) -> str:
             return "\n❌ The memory server is not connected.\n"
         if payload.get("status") != "ok":
             return f"\n❌ {payload.get('error', 'delete failed')}\n"
-        return f"\n✓ Deleted memory '{args[0]}'.\n"
+        return f"\n✓ Deleted {payload.get('scope', '')} memory '{args[0]}'.\n"
 
-    payload = await _call_platform_tool(agent, "memory_clear", {})
+    # Workspace only, and named as such. The global memory is every other workspace's
+    # too, so wiping it is not something this command does on a bare word — the model
+    # can, on an explicit request (memory_clear scope="global").
+    payload = await _call_platform_tool(agent, "memory_clear", {"scope": "workspace"})
     if payload is None:
         return "\n❌ The memory server is not connected.\n"
     if payload.get("status") != "ok":
         return f"\n❌ {payload.get('error', 'clear failed')}\n"
-    return f"\n✓ Cleared {payload.get('cleared', 0)} memory item(s). This cannot be undone.\n"
+    return (f"\n✓ Cleared {payload.get('cleared', 0)} workspace memory item(s). "
+            "This cannot be undone. Global memory is untouched.\n")
 
 
 async def _proxy_list_command(agent: Any) -> str:

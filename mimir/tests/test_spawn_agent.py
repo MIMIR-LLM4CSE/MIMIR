@@ -98,13 +98,14 @@ class _FakeAgent:
     def set_thinking_depth(self, depth): self.thinking_depth = depth
     def seed_classification_from_caps(self): pass
 
-    async def connect_server(self, name, script):
+    async def connect_servers(self, registry, on_error=None):
         from mimir.client.context.capabilities import ToolCaps
-        self.connected.append(name)
-        for tool, caps in _SERVER_TOOLS.get(name, []):
-            self.tools.append({"type": "function", "function": {"name": tool}})
-            self.tool_owner[tool] = name
-            self.tool_caps[tool] = ToolCaps(name=tool, capabilities=frozenset(caps))
+        self.connected.extend(registry)
+        for name in registry:
+            for tool, caps in _SERVER_TOOLS.get(name, []):
+                self.tools.append({"type": "function", "function": {"name": tool}})
+                self.tool_owner[tool] = name
+                self.tool_caps[tool] = ToolCaps(name=tool, capabilities=frozenset(caps))
 
     async def cleanup(self):
         pass

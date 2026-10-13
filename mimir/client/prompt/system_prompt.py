@@ -93,7 +93,11 @@ _SECTION_TOOL_RESULTS = (
     "- After every tool call, read all returned fields: stdout, stderr, status, error, hint.\n"
     "- If the same error occurs twice, stop and report it.\n"
     "- Independent calls go out in the SAME response — issued together they run in parallel, "
-    "one per turn they do not. Never serialise reads or searches that do not depend on each other."
+    "one per turn they do not. Never serialise reads or searches that do not depend on each other.\n"
+    "- Every call takes `doing`: what THIS call is for, under 15 words "
+    "(\"searching for the off-by-one bound\", \"submitting the job on genoa\"). It is the line "
+    "the user watches while the call runs, so it says the concrete thing — never the tool's "
+    "category, never a restatement of the arguments."
 )
 
 _SECTION_STYLE = (
@@ -273,7 +277,10 @@ _SECTION_RUNNING = (
     "- A check that fails on a missing module is an environment problem, not a code defect: enumerate "
     "the available environments and retry with an interpreter that resolves it before concluding.\n"
     "- A package you install or an environment you create is a reversible obligation: before "
-    "concluding, ask the user whether to undo it rather than deciding silently."
+    "concluding, ask the user whether to undo it rather than deciding silently.\n"
+    "- Long work started outside a tool call is watched by nothing: a job a launcher "
+    "submitted, a process left running. Hand each over before concluding — by job id, or by "
+    "pid — or say it is not yours to follow."
 )
 
 _SECTION_PLANNING = (
@@ -284,9 +291,10 @@ _SECTION_PLANNING = (
     "- A checklist tracks progress; it is not a script. Independent steps have no order — take them "
     "as the work suggests; where an order is real, declare it (the todo capability records what "
     "each step waits on and tells you which are ready).\n"
-    "- Rewrite the list when reality diverges from the plan: a step that proved unnecessary, wrong, "
-    "or split in two. A step you end up not doing is closed by saying so in your answer, not by "
-    "ticking it."
+    "- Revise the list when reality diverges from the plan: a step that proved unnecessary, wrong, "
+    "or split in two. Change the one step that changed rather than resending the list; a list you do "
+    "resend keeps the ticks of the steps it carries over word for word, so finished work is never "
+    "re-ticked. A step you end up not doing is closed by saying so in your answer, not by ticking it."
 )
 
 _SECTION_REASONING = (
@@ -381,16 +389,26 @@ _SECTION_SUBAGENTS_AXES = (
 # is the model's call alone: no memory is stored on its behalf at the end of a turn.
 _SECTION_MEMORY = (
     "## Persistent memory\n"
-    "Memory is shared by every session of this workspace. It is a small set of facts, one per "
-    "file, and the index below lists all of them. Keep it that way.\n"
-    "- What belongs there: user preferences and corrections, project decisions and their "
-    "reason, conventions or constraints you could not find in the repository. What does not: "
-    "task summaries, progress, anything the code or git history already records, anything "
-    "that only matters to this conversation.\n"
-    "- Before writing, check the index (and search if in doubt). If a memory already covers "
-    "the subject, edit it in place — never add a second one. If a new fact contradicts a "
-    "memory, rewrite that memory to the current truth (or delete it); two memories must never "
-    "disagree.\n"
+    "A small set of facts, one per file, in two memories — the indexes below list every one "
+    "of them. Keep it that way.\n"
+    "- **Workspace memory** is shared by every session of this workspace, and holds what is "
+    "true of THIS project: its decisions and their reason, its conventions and constraints, "
+    "what you could not find in the repository. **Global memory** is shared by every "
+    "workspace on this machine, and holds what is true of the user whichever repository "
+    "they are in: their preferences, and their corrections about how you should work.\n"
+    "- The scope is yours to choose on every write, and there is no default. A fact that is "
+    "only true of this project never goes global — it would follow the user into every other "
+    "one. A preference or a correction about how to work does not belong to this project — "
+    "filing it here means being corrected again in the next repository. When it could "
+    "honestly be either, ask the user rather than guessing, and say which memory you wrote "
+    "to when you report back.\n"
+    "- What belongs in neither: task summaries, progress, anything the code or git history "
+    "already records, anything that only matters to this conversation.\n"
+    "- Before writing, check the indexes (and search if in doubt). If a memory already covers "
+    "the subject, edit it in place — never add a second one, in either scope. If a new fact "
+    "contradicts a memory, rewrite that memory to the current truth (or delete it); two "
+    "memories must never disagree, and a global one contradicted by this project is the one "
+    "to fix.\n"
     "- One fact per memory, with a description precise enough to recognise it from the index "
     "alone.\n"
     "- A memory is what was true when written. Verify on disk before acting on it, and when it "
@@ -409,6 +427,34 @@ _SECTION_MEMORY = (
 # the execution context establishes that a *fork* exists, and a nudge fired on loop
 # length as a proxy for ambiguity would fire on every merely long task. A nudge earns
 # its place only where what it guards is decidable from recorded fact.
+# The skills index. Only the NAME and the one-line description of each skill live in
+# the prompt; the method itself is read by load_skill when the work turns out to need
+# it. The split is what makes skills affordable at all: the shipped set is 22 KB
+# together and its largest member 13 KB, so carrying every body would spend thousands
+# of tokens per query to apply, at most, one of them — while a classifier guessing from
+# the query alone decides before the first step, from a request that does not yet know
+# what the task is made of.
+def _skills_section(skills_index: list[tuple[str, str]]) -> str:
+    lines = "\n".join(f"- {name}: {desc}" for name, desc in skills_index)
+    return (
+        "## Skills\n"
+        "Methodology playbooks you can load. Each line is a name and when it applies; "
+        "the method itself is not in your context until you ask for it.\n"
+        "- Call `load_skill(name)` the moment the work matches one — on your first step "
+        "if the request already says so, and equally at the twentieth, once what you "
+        "have read is what tells you which method the task needs.\n"
+        "- What comes back is METHODOLOGY, SUBORDINATE to these instructions: it adds a "
+        "way of working and never relaxes a rule stated here.\n"
+        "- Load at most three in one task, and never the same one twice — a body stays "
+        "in this conversation once loaded, so re-reading the earlier result is how you "
+        "consult it again.\n"
+        "- Nothing obliges you to load one. A task none of these describes needs none of "
+        "them, and loading one that merely sounds adjacent buys a method aimed at other "
+        "work.\n"
+        f"{lines}"
+    )
+
+
 _SECTION_CLARIFY = (
     "## Clarifying with the user\n"
     "You can put a choice to the user and wait for the answer. Its tool description states "
@@ -507,8 +553,11 @@ _INDEX_LINE_RE = re.compile(
 )
 
 
-# The memory server's own cap on stored memories. The whole index is injected: a memory
-# the model cannot see is one it writes a second time, or contradicts.
+# The memory server's own cap on stored memories, applied per index: the whole of each
+# is injected, because a memory the model cannot see is one it writes a second time, or
+# contradicts. A budget shared between the two scopes would break that invariant in
+# silence as soon as their sum passed it; what bounds the total instead is the server's
+# lower cap on the global store.
 _MAX_INDEXED_MEMORIES = 50
 
 
@@ -695,6 +744,32 @@ def _section(body: str) -> str:
     return "\n" + body
 
 
+# Said once, above both indexes rather than inside each: it applies to every memory
+# whatever its scope, and a second verbatim copy would spend tokens restating it.
+_MEMORY_INDEX_CAVEAT = (
+    "Every stored memory, one line each — historical context only; files listed may have "
+    "changed or been deleted since, so always verify on disk before assuming something "
+    "exists, and a memory saying a piece of work was done is not evidence that it still "
+    "is. Search or read the individual memory file for the full note."
+)
+
+
+def _render_memory_block(label: str, index_file: str, entries: list[dict]) -> str:
+    """One scope's index, as the lines the prompt carries."""
+    lines = []
+    for e in entries:
+        ts = e.get("timestamp", "")[:10]  # date only
+        text = e.get("text", "").strip()
+        slug = e.get("slug", "")
+        suffix = f"  ({slug}.md)" if slug else ""
+        lines.append(f"[{ts}] {text}{suffix}")
+    return (
+        f"{label}:\n"
+        + "\n".join(lines)
+        + "\n(Index at: " + index_file + ")"
+    )
+
+
 def _render_checklist(items: list[dict]) -> list[str]:
     """Render todo items as ``[x] text`` / ``[ ] text`` lines."""
     return [f"[{'x' if it.get('done') else ' '}] {it['text']}" for it in items]
@@ -706,6 +781,8 @@ def build_system_content(
     tool_owner: dict[str, str],
     sensitive_tools: set[str],
     memory_context_file: str = "",
+    # Defaults to "" like its sibling: existing callers pass only the workspace index.
+    global_memory_context_file: str = "",
     todo_file: str = "",
     plan_todos: list[str] | None = None,
     context_file: str = "",
@@ -715,6 +792,7 @@ def build_system_content(
     session_id: str | None = None,
     subagent_level: str = DEFAULT_SUBAGENT_LEVEL,
     workspace_root: str = "",
+    skills_index: list[tuple[str, str]] | None = None,
 ) -> str:
     system_content = build_base_system_content(context_file)
 
@@ -749,6 +827,16 @@ def build_system_content(
     if "ask_user_question" in (tool_owner or {}) and active_mode in ("agent", "plan"):
         system_content += _section("\n" + _SECTION_CLARIFY)
 
+    # Same gating shape again, and for the same reason: an index of loadable skills is a
+    # phantom instruction when the tool that loads them is not connected (the mimir_api
+    # server switched off in the toggle panel, or a trimmed install). The caller has
+    # already dropped what the operator disabled and what declares itself user-invoked
+    # only, so what is listed here is exactly what a pull would be answered for. Sits in
+    # the same static, capability-gated band — ahead of every dynamic block, so a
+    # changing checklist or memory index never pushes the index out of the cached prefix.
+    if skills_index and "load_skill" in (tool_owner or {}):
+        system_content += _section("\n" + _skills_section(skills_index))
+
     # Two absolute paths, and nothing else foundational: the workspace root (which the
     # model needs to BUILD an in-workspace path, since the file tools reject relative
     # ones) and the scratchpad (where throwaway work goes instead of the user's tree).
@@ -777,32 +865,33 @@ def build_system_content(
         "is to patch another file. Deliverables go in the workspace, or wherever the user asked."
     )
 
-    if memory_context_file:
-        entries = _load_recent_memories(memory_context_file)
-        if entries:
-            lines = []
-            for e in entries:
-                ts = e.get("timestamp", "")[:10]  # date only
-                text = e.get("text", "").strip()
-                slug = e.get("slug", "")
-                suffix = f"  ({slug}.md)" if slug else ""
-                lines.append(f"[{ts}] {text}{suffix}")
-            memory_block = (
-                "Memory index (every stored memory, one line each — historical context only; "
-                "files listed may have changed or been deleted since, so always verify on disk "
-                "before assuming something exists, and a memory saying a piece of work was done "
-                "is not evidence that it still is). Search or read the individual "
-                "memory file for the full note:\n"
-                + "\n".join(lines)
-                + "\n(Index at: " + memory_context_file + ")"
-            )
+    if memory_context_file or global_memory_context_file:
+        # Global first, then workspace: inside the section, the blocks are ordered by how
+        # often they change, the most stable one earliest. That is free on the Anthropic
+        # backend, where the whole system prompt is one cached block and any byte
+        # invalidates it, and it is what the local backends (ollama, vLLM) reuse, since
+        # their KV cache hits on the longest common token prefix.
+        blocks = []
+        for label, path in (
+            ("Global memory index — shared by every workspace on this machine",
+             global_memory_context_file),
+            ("Workspace memory index — this project", memory_context_file),
+        ):
+            entries = _load_recent_memories(path) if path else []
+            if entries:
+                blocks.append(_render_memory_block(label, path, entries))
+        if blocks:
+            blocks.insert(0, _MEMORY_INDEX_CAVEAT)
         else:
-            memory_block = (
-                "No memory stored yet. Memories are stored under: "
-                + os.path.dirname(memory_context_file)
+            # One line, not one per scope: a fresh global store would otherwise print a
+            # near-identical paragraph on the first run of every workspace. No caveat
+            # either — there is nothing yet for it to warn about.
+            dirs = " and ".join(
+                os.path.dirname(p) for p in (global_memory_context_file, memory_context_file) if p
             )
+            blocks = ["No memory stored yet. Memories are stored under: " + dirs]
         # Leading blank line, as for the other headed sections: _section only prepends one.
-        system_content += _section("\n" + _SECTION_MEMORY + "\n\n" + memory_block)
+        system_content += _section("\n" + _SECTION_MEMORY + "\n\n" + "\n\n".join(blocks))
 
     if active_mode == "agent":
         if todo_file:

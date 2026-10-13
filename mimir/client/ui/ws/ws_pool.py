@@ -35,9 +35,16 @@ import logging
 import os
 import time
 from collections import deque
+from datetime import datetime
 from typing import Any, Callable, Iterator
 
-from .ws_worker import _AgentWorker
+from . import server_registry
+from .event_bus import _EventBus
+from .job_scan import has_baseline, mark_wakes_reported, scan_all_sessions
+from .job_wakes import DURABLE_EVENTS, checkin_text, wake_text
+from .session_store import SessionStore
+from .turn_commit import commit_answer
+from .ws_worker import _AgentWorker, _detach_grace
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +57,44 @@ _DEFAULT_CAP = 3
 # and forth does not pay for a rebuild, short enough that a forgotten conversation stops
 # holding twenty subprocesses.
 _DEFAULT_IDLE_TTL = 600.0
+
+# How long everything must stay quiet before a detached server stops on its own. Long
+# enough that closing a laptop lid for a meeting does not end a run, short enough that a
+# forgotten workspace does not hold sixty interpreters overnight.
+_DEFAULT_SERVER_IDLE_TTL = 7200.0
+
+
+def _server_idle_ttl() -> float:
+    try:
+        return max(60.0, float(
+            os.environ.get("MIMIR_SERVER_IDLE_TTL", "") or _DEFAULT_SERVER_IDLE_TTL))
+    except ValueError:
+        return _DEFAULT_SERVER_IDLE_TTL
+
+
+def idle_stop_reason(ttl_secs: float, *, past: bool) -> str:
+    """What this TTL means, in whichever tense the sayer needs.
+
+    Two layers describe it to a user — the notice written into a conversation after the
+    process stops, and the panel's own line when they detach onto nothing — and they
+    were each spelling it out, with the wording and the formatting drifting apart. One
+    author with two tenses, so they cannot disagree about what the clock is.
+
+    What neither may say is a deadline. The clock is measured from when the process
+    *first* had nothing to do and is reset by any work, so "it stops in two hours" names
+    a moment that does not exist; what ends the process is having had nothing to do
+    throughout. The remedy is deliberately absent: this layer knows what it was not
+    watching, not what kind of work the user has — a scheduler is something only the
+    tools that talk to one know about.
+    """
+    clock = f"{ttl_secs / 3600:.0f}h"
+    if past:
+        return (f"MIMIR stopped: it had nothing to do for {clock} together — no turn "
+                "in flight, and no run it was watching; any work would have restarted "
+                "that clock.")
+    return (f"It stops only once it has had nothing to do for about {clock} together "
+            "— any work restarts that clock.")
+
 
 # How often the reaper looks. Nothing here is urgent — a worker that lives thirty seconds
 # past its welcome costs nothing — and a tight tick would walk the pool for no reason.
@@ -136,6 +181,444 @@ class _AgentPool:
         self._queue: deque[tuple[str, Callable[[_AgentWorker], None]]] = deque()
         self._lock = asyncio.Lock()
         self._reaper: asyncio.Task | None = None
+
+        # The one pump for this process. It drains every worker, journals what they
+        # emit and fans it out to whatever sockets are attached — zero included, which
+        # is the point: the pool outlives every connection, so what records its output
+        # has to as well.
+        self.store = SessionStore()
+        self.bus = _EventBus(self, commit=self._commit_turn,
+                             durable=self.consume_durable_event)
+
+        # Resolved when this process decides it is no longer needed. Awaited beside the
+        # signal handlers, so an idle stop and a SIGTERM take the same path out — the
+        # one that closes the MCP servers.
+        self.stop_requested: asyncio.Event | None = None
+        self.server_idle_ttl = _server_idle_ttl()
+        # When the whole process first looked idle, or None while it does not. The TTL
+        # is measured from here, so a moment of activity restarts it rather than
+        # shortening it.
+        self._idle_since: float | None = None
+        # Finished runs whose wake no turn has taken in yet, by session, each entry
+        # remembering whether the user has already been shown it. The pool's own copy
+        # of what a connection keeps, so a wake steered into a running turn is still
+        # owed a turn of its own if that turn never read it.
+        self._wakes_pending: dict[str, list[dict]] = {}
+        # The last bulletin a busy conversation was not interrupted with, by session.
+        self._held_checkin: dict[str, dict] = {}
+
+    # ── Is this process still needed ──────────────────────────────────────────
+
+    def idle_report(self, *, excluding: Any = None) -> dict:
+        """Why this process is or is not still needed, in one interrogable answer.
+
+        **The criterion is positive.** "Not busy" is not "has finished": a worker is
+        also not busy between queries, after a turn that broke, and while it waits
+        behind a card. An idle test built on the absence of noise would stop a server
+        whose turn merely paused, so a conversation counts as finished only when it has
+        actually *concluded* — delivered a final answer (or ended in an error, which is
+        also an ending) — which the bus records as it hands that event to the committer.
+
+        And a run launched but not collected is work in progress even with no turn
+        running: that is precisely the "I submitted a two-hour build and left" case
+        this whole path exists for, so a live job on disk holds the process open — and
+        so does one that has *ended* without its wake reaching a turn, which is the same
+        debt one step later.
+
+        The rest are not activity but prohibitions: somebody is attached, a card is
+        parked, a deferral is owed, a turn is queued for a slot.
+
+        One place, deliberately: the idle shutdown reads it, and so does the question
+        "has this window anything worth leaving running?".
+
+        *excluding* is a subscription to leave out of the count, which is what asks
+        that second question properly. A window asking what it would leave behind is
+        itself an attachment, so counting it answers "yes, you" every time — which is
+        how a detachment came to promise that a run keeps working when there was no run
+        and the process was about to stop on idle. Only the asker, not every client: a
+        second window of the same workspace *is* keeping this process alive, and
+        telling the first that nothing is watching would be the same mistake inverted.
+        """
+        reasons: list[str] = []
+        attached = self.bus.attached(excluding=excluding)
+        if attached:
+            reasons.append(f"{attached} client(s) attached")
+        if self._queue:
+            reasons.append(f"{len(self._queue)} turn(s) waiting for a slot")
+        if self._building:
+            reasons.append(f"{len(self._building)} agent(s) being built")
+
+        unfinished: list[str] = []
+        for session_id, worker in list(self._workers.items()):
+            try:
+                if worker.has_work_pending():
+                    reasons.append(f"session {session_id} has a turn in flight")
+                    continue
+            except Exception:
+                reasons.append(f"session {session_id} could not be asked")
+                continue
+            if getattr(worker, "_pending_prompt", None) is not None:
+                reasons.append(f"session {session_id} is parked on a card")
+                continue
+            if getattr(worker, "has_deferral", False):
+                reasons.append(f"session {session_id} is owed an answer")
+                continue
+            if self.bus.concluded_at(session_id) is None:
+                # Never answered, and not running: a turn that ended without saying so.
+                # Counted as working, because nothing observed it finishing.
+                unfinished.append(session_id)
+        if unfinished:
+            reasons.append("session(s) that never delivered an answer: "
+                           + ", ".join(sorted(unfinished)))
+
+        live_jobs, owed_wakes = self._job_keys()
+        if live_jobs:
+            reasons.append("background run(s) still going: " + ", ".join(live_jobs))
+        if owed_wakes:
+            reasons.append("run(s) whose wake nobody has taken in yet: "
+                           + ", ".join(owed_wakes))
+
+        return {"idle": not reasons, "reasons": reasons}
+
+    @staticmethod
+    def _job_keys() -> tuple[list[str], list[str]]:
+        """The runs still going, and the finished ones still owed a wake.
+
+        Read from disk rather than from the live workers: a run outlives the agent that
+        launched it, and the session it belongs to may have no worker at all right now.
+        One scan answers both, since ``scan_all_sessions`` already drops the runs whose
+        wake has been delivered — what it returns is exactly "still going" plus "ended
+        and unspoken for".
+
+        **Why an owed wake holds the process open.** A finished run that nothing has
+        taken in is a turn this process still has to start, which is work in progress
+        as surely as the run itself was. Stopping here is how a conversation loses the
+        night: the job ends, its wake is journaled, and the server that owes the turn
+        shuts down two hours later without ever having started it.
+
+        Only sessions that have been scanned before are counted. A job directory is
+        never swept, however old, so an unbaselined session holds every run it ever
+        finished with no marker on any of them — reading that history as debt would
+        leave a workspace permanently un-stoppable, which is worse than stopping one
+        with a wake outstanding and exactly the trade the baseline exists to make.
+        """
+        live: list[str] = []
+        owed: list[str] = []
+        try:
+            for session_id, jobs in scan_all_sessions().items():
+                baselined = has_baseline(session_id)
+                for job in jobs:
+                    if job.live:
+                        live.append(f"{session_id}/{job.job_key}")
+                    elif baselined:
+                        owed.append(f"{session_id}/{job.job_key}")
+        except Exception:
+            # Unreadable means unknown, and unknown must not read as "nothing is
+            # running": erring the other way stops a server mid-build.
+            logger.warning("pool: the detached runs could not be read", exc_info=True)
+            return ["<unreadable>"], []
+        return sorted(live), sorted(owed)
+
+    def request_stop(self, headline: str = "") -> None:
+        """Ask the serve loop to shut down. Idempotent.
+
+        *headline* is why, when the answer is this process's own: it is recorded into
+        every conversation being kept before the loop is asked to go. Recorded here
+        rather than at each deciding branch so that "the process decided to stop" is
+        one fact in one place — a stop added later cannot forget to say so. The
+        user-requested stop passes nothing, and should: the user is there, and already
+        has the reasons on screen.
+        """
+        event = self.stop_requested
+        if event is not None and not event.is_set():
+            if headline:
+                self._record_own_stop(headline)
+            event.set()
+
+    def _commit_turn(self, ev: dict, extras: dict) -> None:
+        """Write a finished turn into its session file, and carry on from there.
+
+        Reached only for an answer no attached view claimed. A connected ``_Session``
+        claims and writes its own — to ``self.history`` for the conversation on screen,
+        through ``_persist_detached_answer`` for any other — and two live writers of one
+        file lose history silently, so the claim is what elects exactly one of us. This
+        covers the case a connection cannot: nobody looking, and a turn that would
+        otherwise run, cost its tokens and vanish.
+
+        Writing it down is half of what a connection does when an answer lands. The
+        other half is carrying on — see :meth:`_carry_on_after_turn` — and a detached
+        process that did only the first half answers the step that finished and stops
+        there.
+        """
+        if ev.get("type") != "answer":
+            return
+        session_id = ev.get("session_id")
+        if not session_id:
+            return
+        if not ev.get("cancelled"):
+            result = commit_answer(
+                self.store, session_id, ev, extras,
+                submitted_len=extras.get("_submitted_len"),
+                context_mode=extras.get("_context_mode") or "full",
+            )
+            if result is not None:
+                logger.info("commit: session %s wrote its answer with nobody attached",
+                            session_id)
+        # After the write, so a turn started here is handed the history this answer
+        # just produced rather than the one it inherited.
+        try:
+            self._carry_on_after_turn(session_id, extras)
+        except Exception:
+            logger.warning("session %s could not be carried on after its turn",
+                           session_id, exc_info=True)
+
+    def consume_durable_event(self, ev: dict) -> None:
+        """Turn a finished run's wake into a turn when no socket will.
+
+        Every way this can fail is a logged return rather than a raise, and the pump
+        guards the call besides: one unreadable session must not stop the tick that is
+        draining every other conversation's output.
+
+        The counterpart of :meth:`_commit_turn`. A watcher outlives every connection —
+        it is a task on a worker's loop, and the pool refuses to release a worker that
+        holds one — so a two-hour run reports in whether or not a window is open, and
+        the pump journals what it says. Acting on that report is this method's job, and
+        it must not need a socket either: a wake only a connection can route is a
+        conversation that waits out the night for a job that finished in three minutes,
+        and resumes when somebody opens the panel and asks.
+
+        Called by the pump, which has already checked that nobody is attached: a
+        ``_Session`` present routes this itself, against the history it holds on screen.
+
+        Everything here is synchronous on purpose. Loading a session, appending to it,
+        saving it and queueing a turn are all plain calls — ``submit_query`` is a queue
+        put — so this needs no loop of its own and runs inside the pump tick that
+        drained the event.
+
+        The turn's answer is written back by :meth:`_commit_turn`, off the same pump,
+        against the ``_submitted_len`` the worker records as it takes the turn in. So a
+        wake taken in here is a complete turn: asked, answered and persisted, with no
+        connection involved at any point.
+        """
+        etype = ev.get("type")
+        owner = ev.get("session_id")
+        if not owner or etype not in DURABLE_EVENTS:
+            return
+        checkin = etype == "job_checkin"
+        worker = self.get(owner)
+        if worker is None:
+            # Not reachable by any emitter that goes through the bus, and said out loud
+            # rather than handled: every one of them runs on a worker's own loop — a
+            # watcher, the check-in cycle, the scan a build does as it comes up — and
+            # ``releasable`` refuses to close a worker while a job of its is watched, a
+            # wake of its is owed, its output is undrained or an event of its is still
+            # to be claimed. So this is a broken invariant, not a case.
+            #
+            # The run is left unsettled on disk, which is the honest state: nothing has
+            # taken its wake in, and the next agent built for this conversation
+            # announces it as it comes up.
+            logger.warning("%s for job %r arrived for session %s, whose agent is "
+                           "closed — the run stays owed", etype, ev.get("job_key"),
+                           owner)
+            return
+        if checkin:
+            if self.is_busy(owner) or self.is_parked(owner):
+                # A bulletin interrupts nothing, by design: steering "nothing to
+                # report" into a turn makes the agent answer about the job instead of
+                # the work. Held, not dropped, and delivered when that turn lands — the
+                # twin of what a connection does with one.
+                self._held_checkin[owner] = ev
+                return
+            self._submit_checkin(owner, worker, ev)
+            return
+        pending = self._wakes_pending.setdefault(owner, [])
+        # One wake per run, however many times it is announced. Two emitters can speak
+        # before either delivers — the watcher that was holding the run, and a disk
+        # scan that found it unspoken-for — and the marker that settles it is written
+        # at delivery, so the dedup has to live here.
+        if any(item["ev"].get("job_key") == ev.get("job_key") for item in pending):
+            logger.info("wake for job %r of session %s already pending; dropping the "
+                        "duplicate announcement", ev.get("job_key"), owner)
+            return
+        item = {"ev": ev, "told": False}
+        pending.append(item)
+        if self.is_busy(owner) or self.is_parked(owner):
+            # Handed to the turn already running, which learns at its next step
+            # boundary that the run finished and carries on — no extra turn, no second
+            # final answer. Left pending deliberately: a steer is only known to have
+            # been read when the loop says so, and the answer that ends that turn says
+            # which ones it never read.
+            self._record_wake(owner, [ev])
+            item["told"] = True
+            worker.submit_steer(wake_text(ev))
+            return
+        self._flush_wakes(owner, worker)
+
+    # ── The twin of what a connection does with a wake ────────────────────────
+
+    def _record_wake(self, owner: str, events: list[dict]) -> None:
+        """Write the bubbles the user finds on their return, and journal the wakes.
+
+        Deliberately not the history: which message a turn is *given* is the flush's
+        business, and a wake steered into a running turn arrives in that turn's own
+        messages instead. The journal entry is what a window opening later replays, and
+        what the mechanism is audited from.
+        """
+        if not events:
+            return
+        self._tell_session(
+            owner,
+            [f"🔔 {wake_text(ev)}" for ev in events],
+            [{"type": "job_wake", "text": wake_text(ev), "job": ev.get("job_key")}
+             for ev in events],
+            about="the wake")
+
+    def _tell_session(self, owner: str, bubbles: list[str], events: list[dict], *,
+                      about: str) -> None:
+        """Put *bubbles* in a conversation the user is away from, and journal *events*.
+
+        The one way this process speaks into a conversation nobody is watching, and
+        there are two things it has to say: a run of theirs finished, and this process
+        is about to stop. Both want the same sequence and the same care — the store is
+        the half the user reads on their way back in, the journal is the half the
+        mechanism is audited from, and either can fail without the other being worth
+        abandoning. Written once because the failure handling is the fragile part.
+        """
+        try:
+            session = self.store.load_session(owner)
+        except Exception:
+            logger.warning("%s of session %s could not be written down: it could not "
+                           "be loaded", about, owner, exc_info=True)
+            return
+        for text in bubbles:
+            session.display_messages.append(
+                {"role": "system", "kind": "text", "text": text})
+        try:
+            self.store.save_session(session)
+        except Exception:
+            logger.warning("%s of session %s could not be written down: it would not "
+                           "save", about, owner, exc_info=True)
+            return
+        for event in events:
+            self.bus.record_client_event(owner, event)
+
+    def _flush_wakes(self, owner: str, worker: _AgentWorker) -> bool:
+        """Start one turn carrying every wake this conversation is still owed.
+
+        One turn for all of them, not one apiece: a burst that finished together is one
+        piece of news, and three turns would answer the first and then re-answer it
+        twice. Every pending wake goes in, including ones already steered — a steer is
+        only known to have been read when the loop says so, and re-telling a run is
+        recoverable where losing one is not.
+        """
+        items = self._wakes_pending.pop(owner, [])
+        if not items:
+            return False
+        events = [item["ev"] for item in items]
+        fresh = [item["ev"] for item in items if not item["told"]]
+        text = "\n\n".join(wake_text(ev) for ev in events)
+        self._record_wake(owner, fresh)
+        if not self._submit_turn(owner, worker, text):
+            # Nothing was started, so nothing may be settled: put them back and let
+            # the next announcement or the next scan try again.
+            self._wakes_pending[owner] = items + self._wakes_pending.get(owner, [])
+            return False
+        mark_wakes_reported(events)
+        logger.info("session %s woken by %s with nobody attached",
+                    owner, ", ".join(str(ev.get("job_key")) for ev in events))
+        return True
+
+    def _submit_checkin(self, owner: str, worker: _AgentWorker, ev: dict) -> None:
+        """Ask this conversation for one line about the runs it is still waiting on.
+
+        No bubble: the instruction is addressed to the model, and a conversation checked
+        on twenty times would reopen on twenty blocks of it, every one above the answer
+        it had produced. The journal still records it, which is what it is audited from.
+        """
+        self._held_checkin.pop(owner, None)
+        text = checkin_text(ev)
+        if self._submit_turn(owner, worker, text):
+            self.bus.record_client_event(
+                owner, {"type": "job_checkin", "text": text,
+                        "job": ev.get("job_key")})
+
+    def _submit_turn(self, owner: str, worker: _AgentWorker, text: str) -> bool:
+        """Append *text* to the stored conversation and queue a turn on its own agent.
+
+        The turn's answer is written back by :meth:`_commit_turn`, off the same pump,
+        against the ``_submitted_len`` the worker records as it takes the turn in. So a
+        turn started here is a complete one: asked, answered and persisted, with no
+        connection involved at any point.
+        """
+        try:
+            session = self.store.load_session(owner)
+        except Exception:
+            logger.warning("no turn started for session %s: it could not be loaded",
+                           owner, exc_info=True)
+            return False
+        message = {"role": "user", "content": text}
+        session.llm_history.append(message)
+        session.llm_history_full.append(dict(message))
+        try:
+            self.store.save_session(session)
+        except Exception:
+            logger.warning("no turn started for session %s: it would not save", owner,
+                           exc_info=True)
+            return False
+        worker.submit_query(text, list(session.llm_history), session_id=owner)
+        return True
+
+    def _carry_on_after_turn(self, owner: str, extras: dict) -> None:
+        """Do what a connection does the moment a turn lands, with none attached.
+
+        A turn ending is not the end of the work, and this is the difference between a
+        chain of steps that runs overnight and one that stops at its first link. A
+        socket, on every answer, puts the steering the loop never read to a new turn,
+        starts a turn for every run that finished while it was busy, and delivers the
+        bulletin it was holding. None of that is in the committer — a commit that
+        insisted on a connection could not run without one — so it is here.
+
+        Which steers the loop *did* read is on the answer itself: ``_unconsumed_steer``
+        is what it ended without taking in. A wake named there was never read and is
+        still owed a turn; one not named there was read inside the turn that just
+        answered, and is settled here, which is the only moment that is knowable.
+        """
+        items = self._wakes_pending.pop(owner, [])
+        unread = {text for text in (extras.get("_unconsumed_steer") or []) if text}
+        kept, read = [], []
+        for item in items:
+            if item["told"] and wake_text(item["ev"]) not in unread:
+                read.append(item["ev"])
+            else:
+                kept.append(item)
+        if read:
+            # The turn that just answered took these in and answered for them. Settling
+            # them here is what keeps the next scan from re-announcing a run the model
+            # has already dealt with.
+            mark_wakes_reported(read)
+        worker = self.get(owner)
+        if kept:
+            self._wakes_pending[owner] = kept + self._wakes_pending.get(owner, [])
+            # An owed wake is one of the things that keeps this agent from being
+            # released, so there is one here; the guard is for the broken invariant,
+            # not for a case.
+            if worker is not None and not (self.is_busy(owner) or self.is_parked(owner)):
+                self._flush_wakes(owner, worker)
+            return
+        held = self._held_checkin.get(owner)
+        if held is None or worker is None:
+            return
+        # Dropped rather than delivered when the runs it described have since finished:
+        # their completion wakes say everything it would, and better.
+        try:
+            still_running = bool(worker.watched_job_keys())
+        except Exception:
+            still_running = False
+        if not still_running:
+            self._held_checkin.pop(owner, None)
+            return
+        if not (self.is_busy(owner) or self.is_parked(owner)):
+            self._submit_checkin(owner, worker, held)
 
     # ── Looking up ────────────────────────────────────────────────────────────
 
@@ -234,6 +717,7 @@ class _AgentPool:
         if not pending.done():
             pending.set_result(worker)
         self.ensure_reaper()
+        self.ensure_pump()
         return worker
 
     async def _build(self, session_id: str) -> _AgentWorker:
@@ -248,6 +732,35 @@ class _AgentPool:
             None, lambda: _AgentWorker(self.model, session_id=session_id))
         worker.active_session_id = self.active_session_id
         self.settings.replay(worker)
+        # What the last agent of this conversation had learned and set aside. A panel
+        # reopening a conversation restores this; a rebuild driven by anything else —
+        # a finished run that needs an agent to be answered for, a queued turn admitted
+        # after a release — is the same agent coming back and must start from the same
+        # place. Here rather than at the call sites, because this is the one place a
+        # worker is constructed for a session.
+        try:
+            stored = self.store.load_session(session_id)
+        except Exception:
+            stored = None
+        if stored is not None and getattr(stored, "carry_context", None):
+            try:
+                worker.load_agent_state({"carry_context": stored.carry_context})
+            except Exception:
+                logger.warning("pool: session %s could not resume its carried context",
+                               session_id, exc_info=True)
+        # On the loop, not in the executor: putting a watcher back creates a task, and
+        # a task created off a running loop never polls anything. Here rather than in
+        # the worker's constructor for the same reason — the constructor runs in the
+        # executor, where there is no loop to host a watcher.
+        #
+        # A run this session left behind is un-watched by construction here: the worker
+        # is new, so nothing of its is holding anything. That makes this the one place
+        # where "the promise to report a run" can be re-made without being asked.
+        try:
+            worker.rearm_detached_jobs()
+        except Exception:
+            logger.warning("pool: could not re-arm the detached runs of session %s",
+                           session_id, exc_info=True)
         return worker
 
     # ── Queueing past the cap ─────────────────────────────────────────────────
@@ -256,6 +769,7 @@ class _AgentPool:
         """Hold *submit* until a slot frees. Returns its 1-based place in the line."""
         self._queue.append((session_id, submit))
         self.ensure_reaper()
+        self.ensure_pump()
         return len(self._queue)
 
     def drop_queued(self, session_id: str) -> None:
@@ -293,7 +807,30 @@ class _AgentPool:
           the build finishes and nothing ever says so.
         * **parked on a card** — the turn is waiting on a person, with no timeout, by
           design. Closing it discards a question the user may be about to answer.
+        * **holding a deferral** — the same debt, set aside. A deferred turn has
+          cleared its pending card, so the clause above no longer sees it, and the
+          user still owes it an answer; releasing the agent here throws away the ~19
+          servers that answer will be resumed against.
+        * **owed a wake** — a run of its finished and no turn has taken that news in
+          yet. The debt one step later than "watching a job", and the clause that
+          closes the gap between them: a watcher drops the job the instant it reports
+          it, so without this the agent is releasable for the one moment at which it
+          is needed most — and the conversation it belongs to has by definition been
+          idle for hours, because it was waiting on a long run.
+        * **holding undrained output, or an event still to be claimed** — its last
+          word has not been acted on. The pump empties ``out_q`` every 50 ms and, with
+          nothing attached, does the whole handover inside that same synchronous tick;
+          an attached socket is given a moment's first refusal first. Across either,
+          closing the worker discards what it had just said — the completion event
+          included — or closes the very agent that event is addressed to.
         * **on screen** — the conversation the user is reading must stay instant.
+
+    Together these are what make "ten minutes idle" safe to act on. Idleness is counted
+    from the last time the pool was asked for the worker, which for a conversation
+    waiting on an overnight run is hours ago throughout — so the clock never protects
+    it and these clauses are the whole of what does. Their sum is one invariant: an
+    agent is released only when nothing of its is unresolved, which is why a wake can
+    never arrive for a conversation whose agent has been closed.
         """
         worker = self._workers.get(session_id)
         if worker is None:
@@ -309,6 +846,24 @@ class _AgentPool:
             return False
         if getattr(worker, "_pending_prompt", None) is not None:
             return False
+        if getattr(worker, "has_deferral", False):
+            return False
+        if self._wakes_pending.get(session_id):
+            return False
+        bus = getattr(self, "bus", None)
+        if bus is not None:
+            try:
+                if bus.unclaimed_for(session_id):
+                    return False
+            except Exception:
+                return False
+        out_q = getattr(worker, "out_q", None)
+        if out_q is not None:
+            try:
+                if not out_q.empty():
+                    return False
+            except Exception:
+                return False
         return True
 
     def idle_for(self, session_id: str) -> float:
@@ -372,6 +927,13 @@ class _AgentPool:
         if self._reaper is not None:
             self._reaper.cancel()
             self._reaper = None
+        # Flush before stopping: whatever a turn emitted in its last moments is still
+        # on ``out_q``, and the journal is the only thing that will remember it.
+        try:
+            self.bus.pump_once()
+        except Exception:
+            logger.warning("pool: final pump flush failed", exc_info=True)
+        await self.bus.aclose()
         async with self._lock:
             workers = list(self._workers.items())
             self._workers.clear()
@@ -389,6 +951,18 @@ class _AgentPool:
 
     # ── The reaper ────────────────────────────────────────────────────────────
 
+    def ensure_pump(self) -> None:
+        """Start the event pump, if it is not already running.
+
+        Idempotent and loop-dependent in the same way as :meth:`ensure_reaper`, and
+        called from the same places, so a worker built on a bare pool in a test does
+        not need a running loop.
+        """
+        try:
+            self.bus.start()
+        except RuntimeError:
+            pass   # no loop (tests driving the pool synchronously call pump_once)
+
     def ensure_reaper(self) -> None:
         """Start the idle sweep, if it is not already running."""
         if self._reaper is not None and not self._reaper.done():
@@ -404,10 +978,116 @@ class _AgentPool:
             try:
                 await self.release_idle()
                 await self.pump()
+                self._consider_stopping()
             except asyncio.CancelledError:
                 raise
             except Exception:
                 logger.warning("pool: idle sweep failed", exc_info=True)
+
+    def _nobody_asked_to_keep_it(self) -> bool:
+        """Whether this process has lost its last window with no claim on it.
+
+        A server exists in one of two states and there is no third: claimed by at least
+        one conversation — detached, which redirected its output to a log and asked not
+        to be killed — or owned by the window that started it, dying with it. What used
+        to be possible was a server in neither: one a window had merely attached to,
+        nobody's to kill, still writing to a pipe whose reader is gone. It kept working,
+        indifferently and unobserved, and nobody had asked it to.
+
+        So a server nobody claimed stops when its last client has been gone for the
+        grace. Server-side, because the only place that can decide this reliably is the
+        process itself: an extension host that is dying has no time to end a process it
+        does not own, and may be killed before it tries. The grace is the one a parked
+        card already uses — a window reload closes and reopens the socket, and that is
+        not a departure.
+
+        This is deliberately not conditioned on what is in flight. A run still going
+        does not earn a server the right to survive unasked: the panel asks before the
+        window goes, and "keep them going" is what claims it. The run itself is not
+        killed either way — it has its own process session and an exit code trap, and
+        the next agent built for its conversation picks it up again.
+        """
+        if self.bus is None or not self.bus.ever_attached:
+            return False
+        unattended = self.bus.unattended_for()
+        if unattended is None or unattended < _detach_grace():
+            return False
+        try:
+            return not server_registry.claims()
+        except Exception:
+            # Unreadable means unknown, and unknown must not read as "nobody asked":
+            # erring that way stops a detached run because a file could not be read.
+            logger.warning("pool: the detach claims could not be read", exc_info=True)
+            return False
+
+    def _consider_stopping(self) -> None:
+        """Stop once nothing has needed this process for the whole TTL.
+
+        Measured from when it *first* looked idle, and reset by any activity, so the
+        answer is "idle throughout" rather than "idle at some point" — which is the
+        difference between stopping a forgotten server and stopping one between two
+        turns of a conversation the user is coming back to.
+
+        Ahead of all of that: a server nobody claimed and nobody is watching has no
+        reason to live at all, whatever it is in the middle of. See
+        :meth:`_nobody_asked_to_keep_it`.
+        """
+        if self.stop_requested is None:
+            return
+        if self._nobody_asked_to_keep_it():
+            logger.info("pool: no window and no conversation asking to be left "
+                        "running — stopping")
+            self.request_stop(
+                "MIMIR stopped: its last window closed and no conversation had "
+                "asked for the run to be left going.")
+            return
+        report = self.idle_report()
+        if not report["idle"]:
+            if self._idle_since is not None:
+                logger.info("pool: no longer idle (%s)", "; ".join(report["reasons"]))
+            self._idle_since = None
+            return
+        now = time.monotonic()
+        if self._idle_since is None:
+            self._idle_since = now
+            logger.info("pool: nothing needs this process; stopping in %.0fs unless "
+                        "something does", self.server_idle_ttl)
+            return
+        if now - self._idle_since >= self.server_idle_ttl:
+            logger.info("pool: idle for %.0fs — stopping", now - self._idle_since)
+            self.request_stop(idle_stop_reason(self.server_idle_ttl, past=True))
+
+    def _record_own_stop(self, headline: str) -> None:
+        """Write into every kept conversation that this process stopped itself, and why.
+
+        The counterpart of :meth:`_record_wake`, for the one thing that happens to a
+        conversation which the conversation can never see happen. Nothing reached the
+        transcript when a server stopped on its own: the decision was printed in the
+        process's own log, which the user has no reason to be reading, so a morning
+        opened on a thread whose last line was hours old with nothing between — a night
+        that reads as lost rather than as a decision taken and recorded.
+
+        Stamped with the wall-clock time, which is the half of the answer the file
+        itself cannot give: the gap in the thread is what raises the question, and
+        "stopped at 00:38" is what closes it.
+
+        Best effort throughout, and on purpose: this runs on the way out, and a
+        conversation whose file will not load is not worth holding a shutdown for.
+        """
+        stamped = f"⏹ {datetime.now().astimezone():%Y-%m-%d %H:%M} — {headline}"
+        try:
+            kept = sorted(server_registry.claims())
+        except Exception:
+            logger.warning("pool: the detach claims could not be read for the stop "
+                           "notice", exc_info=True)
+            kept = []
+        # The conversations that were being kept, or — in the unclaimed case, where by
+        # definition there are none — the ones with an agent still here. Those are the
+        # threads a user comes back to.
+        for session_id in kept or sorted(sid for sid, _w in self.items()):
+            self._tell_session(session_id, [stamped],
+                               [{"type": "server_stopped", "text": headline}],
+                               about="the stop notice")
 
     # ── Addressing a session rather than "the worker" ──────────────────────────
 

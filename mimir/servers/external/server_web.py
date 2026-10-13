@@ -688,7 +688,7 @@ def _http_request(method: str, url: str, headers: dict = None, data: bytes = Non
 
 # ── tools ─────────────────────────────────────────────────────────────────────
 
-@mcp.tool(**tool_caps(
+@mcp.tool(**tool_caps(kind="web",
     # Not unconditionally sensitive: a GET is read-only, but the client treats it as
     # sensitive when the URL targets an authenticated/mutating endpoint. The `host`
     # scope (which arg carries the URL) is what drives that conditional gate and
@@ -742,7 +742,7 @@ def http_get(url: str, headers: dict = None, raw: bool = False,
         return err(str(e), url=url)
 
 
-@mcp.tool(**tool_caps(
+@mcp.tool(**tool_caps(kind="web",
     caps=[EXTERNAL_FETCH, PLAN_BLOCKED], reversibility=IRREVERSIBLE, non_batch=True,
     scope={"args": ["url"], "kind": "host"},
     risk_note="sends data to an external service",
@@ -777,7 +777,7 @@ def http_post(url: str, payload: dict, headers: dict = None) -> dict:
         return err(str(e), url=url)
 
 
-@mcp.tool()
+@mcp.tool(**tool_caps(kind="string"))
 def parse_json(text: str) -> dict:
     """Parse a JSON string and return a pretty-printed version.
 
@@ -791,7 +791,7 @@ def parse_json(text: str) -> dict:
         return err(str(e), hint="Ensure the input text is valid JSON.")
 
 
-@mcp.tool()
+@mcp.tool(**tool_caps(kind="string"))
 def json_extract(text: str, key_path: str) -> dict:
     """Extract a value from a JSON string by dotted key path.
 

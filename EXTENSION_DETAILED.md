@@ -54,7 +54,7 @@ webview handleServerMessage() → React state update → render
 
 Every Python→frontend message is a JSON object with a `type` field. The full set is defined in `webview/src/types.ts` as the `ServerMessage` discriminated union.
 
-Six message types never reach Python — the extension host answers them itself, before
+These message types never reach Python — the extension host answers them itself, before
 any server exists:
 
 | Message | Direction | Meaning |
@@ -65,6 +65,8 @@ any server exists:
 | `models` | host → webview | `{backend, models, error?}` — the result, or why it failed |
 | `connect` | webview → host | `{model, backend, baseUrl, anthropicApiKey?, remember?}` — start the WS server and attach |
 | `auto_connect` | host → webview | `{backend, baseUrl, model}` — the host reconnected on its own; show "connecting" |
+| `file_search` | webview → host | `{query}` — the workspace files matching what has been typed after an "@" |
+| `file_results` | host → webview | `{query, files}` — the ranked workspace-relative paths, with the query they answer |
 
 ### Remembering an address
 
@@ -181,7 +183,12 @@ webview/src/
     ├── AgentSettings.tsx      ← the settings popover
     ├── ConnectForm.tsx        ← connection form (backend · address · model)
     ├── ContextBar.tsx         ← context-window usage
-    ├── MentionAutocomplete.tsx / mentionUtils.ts   ← the `@` attach dropdown
+    ├── MentionAutocomplete.tsx / mentionUtils.ts   ← the `@` attach dropdown: the MCP
+    │                            resources, then the workspace files the host ranked
+    ├── MentionText.tsx / mentionHighlight.ts       ← the `@`-attachments of a sent
+    │                            message, drawn as chips; a file one opens the file
+    ├── DraftHighlight.tsx     ← the mention tints drawn behind the input's own text
+    ├── DraftAttachments.tsx   ← what the draft will attach, as chips above the input
     ├── SlashAutocomplete.tsx  / slashUtils.ts      ← the `/` command dropdown
     ├── subAgentUtils.ts       ← sub-agent row grouping
     ├── RunProgressDock.tsx    ← runs still going whose rows have scrolled away, as small
@@ -205,7 +212,16 @@ component + keyboard nav with `wrapIndex`):
 - **"@" mentions** — attach MCP resources or workspace files/line-ranges as context.
   `mentionUtils.detectMentionQuery` fires whenever "@" starts a token (start of input or
   after whitespace), anywhere in the message. Picks insert `@name ` at the caret.
-- **"/" slash commands** — invoke a skill explicitly (e.g. `/fix-bug …`).
+  The rows are the matching MCP resources first, then the matching workspace files
+  (`mentionUtils.buildMentionItems`): a handful of resources against a repository's
+  thousands of files, and a name shorthand like `@memory` is otherwise indistinguishable
+  from a half-typed path. The file names come from the extension host — the webview has
+  no filesystem and its CSP reaches nothing else: each keystroke inside a mention posts
+  `file_search`, and the host answers `file_results` with the ranked paths
+  (`src/fileIndex.ts`; one cached `findFiles` scan per window, dropped when a file
+  appears or disappears). The reply echoes the query it answers, so one overtaken by
+  further typing is dropped rather than listed under a narrower query.
+- **"/" slash commands** — invoke a skill explicitly (e.g. `/debug-numerics …`).
   `slashUtils.detectSlashQuery` fires **only** when "/" is the first non-whitespace
   character of the input, mirroring the backend rule (`agent_loop.py`:
   `query.strip().startswith("/")`). The dropdown lists skills from `skillToggles`; picks
@@ -214,7 +230,35 @@ component + keyboard nav with `wrapIndex`):
 Both are wired identically in `App.tsx`: `syncMention`/`syncSlash` (on change/select),
 `pickMention`/`pickSlash`, and a shared `handleKeyDown` (Arrow/Enter/Tab/Esc) that routes
 to whichever dropdown is open. Helper logic lives outside React so it is unit-tested with
-vitest (`mentionUtils.test.ts`, `slashUtils.test.ts`).
+vitest (`mentionUtils.test.ts`, `slashUtils.test.ts`, `fileIndex.test.ts`).
+
+A mention is marked while it is still being typed, too. A `<textarea>` holds characters
+and not elements, so nothing inside it can be coloured — and the input has to stay a
+textarea, because the caret arithmetic behind both dropdowns, the history browse and the
+steer path is `value` + `selectionStart`, which a contenteditable does not have. So
+`DraftHighlight.tsx` draws the draft a second time in a div underneath, paints the
+mentions there, and the textarea sits on top with a transparent background. The mirror
+takes its box from the textarea's own `clientWidth`/`clientHeight` (a `ResizeObserver`
+plus the scroll event keep them in step) because those exclude the scrollbar: a width
+that disagrees by a pixel wraps a line early and slides every tint below it. Nothing is
+rendered when the draft carries no mention.
+
+A textarea's text cannot be clicked through to anything either, so `DraftAttachments.tsx`
+lists the same mentions as chips above the input: a file one opens the file, "×" removes
+the token from the draft (`mentionHighlight.removeMention`, which takes one flanking space
+with it). The chips are derived from the text on every keystroke and own no state — the
+message is the only record of what it attaches, so a hand-typed path and one picked from
+the dropdown behave alike.
+
+Once sent, the mentions are marked in the bubble rather than left in the prose: what was
+attached is the part of a message the user comes back to, and as plain text it is the
+hardest part to find again. `mentionHighlight.splitMentionSegments` re-reads the message
+with the backend's own rule (`(?<!\S)@(\S+)`, trailing sentence punctuation peeled off)
+and `MentionText.tsx` renders each mention as a chip. A file mention is a button: it
+posts `open_file` with the attached line range, the same host handler the edit cards use,
+so clicking it opens the file in an editor tab at those lines. A resource mention
+(`@memory://all`) is marked the same way but is not a link — it addresses a server, not
+a path.
 
 
 ---
@@ -360,6 +404,85 @@ failure, say) keeps the command already on the row rather than erasing it.
 
 ---
 
+## What a tool row says
+
+| Slot | Comes from | How it reads |
+| --- | --- | --- |
+| icon | `kind`, via `KIND_ICONS` (`components/toolIcons.tsx`) | one glyph per family of work |
+| family | `kind`, capitalised (`labelForKind`) | `--fg`, semibold, never truncated |
+| description | `doing`, written by the model per call | `--fg-dim`, the elastic slot |
+| detail | the call's salient argument (`tool_arg_preview`) | `--fg-dim`, mono, yields first |
+
+Both of the first two come from **one** declared fact. A server names its tool's family
+of work in its own declaration — `tool_caps(kind="edit")`, vocabulary in
+`servers/_shared/capabilities.py` — and the row shows that word and draws its icon from
+it, so the glyph and the label cannot disagree. What this replaced was a table in the
+reducer keyed on *tool names*, of which ten of twelve named tools that no longer
+existed: `evaluate` and `symbolic` both came out as a wrench. A tool that declares no
+family gets one derived from its capabilities (`kind_for`), so a third-party server
+still lands on a sensible glyph without the client knowing anything about it.
+
+The declared value is lower case — that is what the servers write, the wire carries and
+the icon table is keyed on — and the row writes it with a capital: `Bash`, `Proxy eval`.
+The first letter only, since a family is a phrase in sentence case and not a title, with
+`KIND_LABELS` holding the one brand whose capital is not its first letter (`GitHub`).
+
+The icon is **derived at render time** and never stored on the row. It is a function of
+the family, so a second copy could only go stale — and one of them is an element rather
+than a character (the GitHub mark), which would not survive the stored transcript's JSON
+and would come back as a dead object React refuses to render.
+
+The description is the model's own sentence about **this** call, under 15 words, and it
+is the only part of the row that knows *why* the call is happening. It arrives as a
+`doing` argument the client adds to every tool's schema (`_schema_for_model`) and the
+dispatcher strips before the call runs — so no server declares it and none receives it.
+Stripped *before the dedup key*, too: two identical calls with reworded descriptions are
+one call, and left in the arguments they would walk past the repeat guards.
+
+Beside it sits the call's **salient argument** — the url it is reaching, the job id it
+is cancelling, the verdict it is recording, the file it is reading. The description says
+what the call is for and this says what it is for *on*, so they are two facts rather than
+two renderings of one. It is computed server-side by `tool_arg_preview` from argument
+*names* in priority order: a command or code body, a search pattern, a url, an
+`owner`+`repo` pair (which takes the path with it — `ci.yml` alone does not say which
+repository the call reached into), a path, then the object keys (`verdict`, `query`,
+`expression`, `name`, `job_id`, `packages`, …) and `op` last, since an op selects an
+action and the description already carries that half. Of the 71 tools, 13 show nothing:
+seven take no arguments at all, and the rest carry only a payload — a plan's text, a
+json body — which the description describes better than an excerpt would. Every one of these used to reach the row
+through the server's label template — "Slurm cancel {job_id}", "Verdict: {verdict}" — and
+went off screen with the label until this replaced it.
+
+It is dropped in two cases: when the model's own description already names it
+(`dedup_row_detail`, server-side), and when the panel below carries it in full — the
+command of an exec row, the expression under its typeset equation. The second holds
+whether that panel is open or closed, because it exists from the moment the call is made:
+the IN half travels on the `tool_call` event itself, so a failed exec row is collapsed
+rather than empty and its command is one click away. Cropped into a share of a line, a
+command was a fragment pretending to be one.
+
+Visually the slot is subordinate on every axis: dimmer, monospaced, capped at 38% of the
+line, and `flex-shrink: 3` against the description's `1`, so it is the first thing to
+give way when the pane narrows. Nothing on the row can wrap to a second line — the head
+sets no `flex-wrap` and every text span is `white-space: nowrap` — so an over-long value
+is cut with an ellipsis, and it carries its untruncated text in its own `title`. The
+head's tooltip says what was called; this one says what it was called on.
+
+The model will sometimes omit the description, a third-party tool's row has none, and a
+transcript recorded before any of this existed has neither field. Then the **derived
+label takes the slot**. Leaving the family alone there was tried first and is too coarse
+to read: four tools answer to `Todo`, so a bare `Todo` row gave no way to tell a
+checklist being written from one being read. The label is the one thing that always says
+which call it was, and it is already on the wire. It is matched for duplication the same
+way a description is, so a row does not say "Recording the plan: refonte des lignes" and
+then "refonte des lignes" again.
+
+The derived label (`"Reading file: x.py"`, from the `label` template) is still on the
+wire and still used: it is the row's tooltip and `aria-label`, and approval cards and
+policy messages are written from it. It is simply no longer what the row says.
+
+---
+
 ## Clickable file names in the tool rows
 
 | Event | What it carries | What the row shows |
@@ -502,14 +625,25 @@ const [expanded, setExpanded] = useState(false);
 const [expanded, setExpanded] = useState(true);
 ```
 
-### Example 2 — Add an emoji icon for a new tool category in "Working…" blocks
+### Example 2 — Add an icon for a new tool category in "Working…" blocks
 
-`state/chatReducer.ts`, inside `iconForTool()` — the reducer assigns each tool row its
-icon, so the glyph is chosen once where the row is built rather than at render time:
-```typescript
-// Add before the fallback return:
-if (t.startsWith("benchmarking")) return "⏱️";
+A tool row's glyph is picked from the *work family* its server declares, never from the
+tool's name — so a new category is one entry in `components/toolIcons.tsx`:
+```tsx
+export const KIND_ICONS: Record<string, ReactNode> = {
+  // ...
+  benchmark: "⏱️",   // ← add this
+};
 ```
+Then declare the family on the tools that belong to it, server-side, and add it to
+`TOOL_KINDS` in `servers/_shared/capabilities.py` (mirrored in
+`client/context/capabilities.py`):
+```python
+@mcp.tool(**tool_caps(kind="benchmark", caps=[CODE_EXEC], label="Benchmarking {target}"))
+```
+The declared word is both what the row shows and what the icon is drawn from, so the
+two cannot disagree. A family with no icon still renders — its word, with the default
+glyph — and `mimir/tests/test_phase_b_servers.py` fails if a tool declares none at all.
 
 ### Example 3 — Filter out a noisy status message from the thinking block
 

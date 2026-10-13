@@ -538,14 +538,22 @@ body {
   flex-direction: column;
   gap: 12px;
 }
-/* Centered reading column: every direct child (message wrappers, live areas,
-   scroll anchor) caps at a comfortable width on wide panels; a narrow sidebar
-   is unaffected since 100% wins below 760px. */
+/* The thread takes the width it is given: in a maximized tab or a full-screen
+   window the conversation fills the pane, flush with the composer below it.
+   Every direct child (message wrappers, live areas, scroll anchor) spans that
+   width, so a row keeps its place when the step in flight freezes into the
+   transcript. */
 .chat-thread > * {
   width: 100%;
-  max-width: 760px;
-  margin-left: auto;
-  margin-right: auto;
+  max-width: 100%;
+}
+
+/* Side air grows with the pane, so lines never run into the edges. */
+@media (min-width: 1100px) {
+  .chat-thread { padding: 16px 32px; }
+}
+@media (min-width: 1600px) {
+  .chat-thread { padding: 16px 56px; }
 }
 
 /* ── Empty state ─────────────────────────────────────────────────────────────── */
@@ -745,6 +753,44 @@ body {
 
 .user-text { white-space: pre-wrap; word-break: break-word; }
 
+/* ── Attached context inside a sent message ───────────────────────────────────
+   An "@"-mention is the part of a message the user comes back to, so it is drawn
+   as a chip rather than left in the prose. A file one is a button that opens the
+   file; both read the same, because what matters first is spotting them. */
+.ctx-mention {
+  display: inline;
+  font-family: var(--mono);
+  font-size: 0.95em;
+  padding: 1px 4px;
+  margin: 0 1px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: var(--vscode-editor-findMatchHighlightBackground, rgba(14, 99, 156, 0.35));
+  color: var(--fg);
+  white-space: normal;
+  word-break: break-all;
+}
+
+button.ctx-mention {
+  cursor: pointer;
+  text-align: left;
+}
+
+button.ctx-mention:hover {
+  border-color: var(--accent);
+  text-decoration: underline;
+}
+
+button.ctx-mention:focus-visible {
+  outline: 1px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+
+/* A resource mention addresses a server, not a path: marked, but not a link. */
+.ctx-mention--plain {
+  opacity: 0.9;
+}
+
 /* Mid-run steer message awaiting injection into the running turn. */
 .steer-badge {
   display: inline-block;
@@ -832,6 +878,32 @@ body {
   background: var(--accent);
   border-radius: var(--radius-sm);
   padding: 1px 6px;
+}
+
+/* A rule across the thread: ──── detached — this run keeps working … ────
+   Informative and nothing else. No badge, no border, no colour of its own — it marks
+   a boundary in the conversation the way a date separator does, and the eye passes
+   over it unless it is looking for it. */
+.cmd-rule {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+  padding: var(--sp-3) var(--sp-4);
+  color: var(--fg-dim);
+  font-size: 12.5px;
+}
+.cmd-rule::before,
+.cmd-rule::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: color-mix(in srgb, var(--border) 60%, transparent);
+}
+.cmd-rule__title {
+  flex-shrink: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* Card: a listing, or a result carrying a note. */
@@ -1119,6 +1191,12 @@ body {
   flex-shrink: 0;
   font-size: 12px;
   line-height: 1;
+}
+/* Same mark as the activity row's — see .tool-icon svg. */
+.ap-icon svg {
+  width: 1em;
+  height: 1em;
+  vertical-align: -0.1em;
 }
 .ap-title {
   flex: 1 1 auto;
@@ -1454,21 +1532,36 @@ body {
   opacity: 0.7;
 }
 
-/* Dim by default; the leading verb carries the weight (see .tool-label-verb). */
-.tool-label {
+/* The GitHub mark is the one icon in the set drawn rather than typed. Sized in `em`
+   off the box above so it lands at the size of the emoji beside it, and nudged onto
+   their baseline — an svg sits on the text baseline, where an emoji sits slightly
+   below it. It paints in currentColor, so it follows the theme. */
+.tool-icon svg {
+  width: 1em;
+  height: 1em;
+  vertical-align: -0.1em;
+}
+
+/* The tool's family of work — one declared word, and the only thing in the row head
+   at full strength. Never truncated: it is two syllables, and it is what the reader
+   scans the column for. */
+.tool-kind {
+  color: var(--fg);
+  font-weight: 600;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+/* What this call is doing, in the model's own words. Dim, and the elastic part of the
+   row: it is the one slot whose length is not bounded by anything but the window, so
+   it is what gives way when the pane is narrow — never the family, never the tail. */
+.tool-doing {
   color: var(--fg-dim);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  /* Shrinkable so a long label truncates with an ellipsis instead of pushing
-     the row wider than the (often narrow) chat pane and spilling off the right. */
   flex-shrink: 1;
   min-width: 0;
-  max-width: 260px;
-}
-.tool-label-verb {
-  color: var(--fg);
-  font-weight: 600;
 }
 
 /* A file name the row can open: in the chat's normal text colour, underlined on
@@ -1484,6 +1577,10 @@ body {
   outline: none;
 }
 
+/* The salient argument of the call, beside the description. Subordinate to it on every
+   axis: dimmer, monospaced, and the first thing to give way — `flex-shrink: 3` against
+   the description's 1, with a cap so a long url cannot take the line even when there is
+   room. The description is what the reader is following; this is what they check. */
 .tool-detail {
   font-family: var(--mono);
   font-size: 0.85em;
@@ -1492,8 +1589,9 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  flex: 1;
+  flex: 0 3 auto;
   min-width: 0;
+  max-width: 38%;
 }
 
 .tool-row-tail {
@@ -1803,6 +1901,16 @@ body {
   color: var(--fg-dim);
 }
 
+/* Pushes what follows to the far edge. The detach control sits there because it is not
+   of a kind with the others: mode, settings and toggles change what the next turn does,
+   this one changes who owns the process. Mixed in among them it would be adjusted; at
+   the end it is reached for. */
+.toolbar-end {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+}
+
 /* ── Textarea + send/stop row ───────────────────────────────────────────────── */
 /* Send/stop plus the approval switcher, stacked at the right of the message box. */
 .input-actions {
@@ -1846,12 +1954,17 @@ body {
 
 .mention-item {
   display: grid;
-  grid-template-columns: auto 1fr;
+  grid-template-columns: auto auto 1fr;
   align-items: baseline;
   gap: 8px;
   padding: 5px 8px;
   border-radius: 4px;
   cursor: pointer;
+}
+
+.mention-icon {
+  font-size: 0.9em;
+  opacity: 0.8;
 }
 
 .mention-item.active,
@@ -1876,7 +1989,7 @@ body {
 }
 
 .mention-desc {
-  grid-column: 1 / -1;
+  grid-column: 2 / -1;
   color: var(--fg-dim);
   font-size: 0.85em;
 }
@@ -1929,21 +2042,120 @@ body {
   font-weight: 700;
 }
 
-.chat-input {
-  flex: 1;
-  background: var(--bg-input);
-  color: var(--fg);
+/* ── The draft's attachments ───────────────────────────────────────────────────
+   A chip per "@"-mention in the box: the file name (with its line range) opens the
+   file, "×" takes the mention back out of the text. */
+.draft-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  padding: var(--sp-2) 10px 0;
+}
+
+.draft-chip {
+  display: inline-flex;
+  align-items: stretch;
+  max-width: 100%;
   border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface-1, var(--bg-input));
+  overflow: hidden;
+  transition: border-color 0.15s;
+}
+
+.draft-chip:hover { border-color: var(--accent); }
+
+.draft-chip-open,
+.draft-chip-remove {
+  background: none;
+  border: none;
+  color: var(--fg-dim);
+  font-size: 0.85em;
+  cursor: pointer;
+  padding: 3px 4px 3px 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+}
+
+.draft-chip-open:disabled { cursor: default; }
+.draft-chip-open:not(:disabled):hover { color: var(--fg); text-decoration: underline; }
+
+.draft-chip-name {
+  font-family: var(--mono);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.draft-chip-remove {
+  padding: 3px 7px 3px 4px;
+  font-size: 1em;
+  line-height: 1;
+}
+
+.draft-chip-remove:hover { color: var(--fg); }
+
+/* ── The input box and the mention tints drawn behind its text ────────────────
+   The textarea is transparent and sits on a mirror of its own text (see
+   DraftHighlight.tsx), which paints the mentions and nothing else. Every metric
+   below the two share must stay shared: a disagreement wraps one of them a word
+   early and slides the tints off the words they belong to. */
+.chat-input-wrap {
+  position: relative;
+  flex: 1;
+  display: flex;
+  min-width: 0;
+  background: var(--bg-input);
   border-radius: 6px;
+}
+
+.chat-input-mirror {
+  position: absolute;
+  top: 1px;
+  left: 1px;
+  overflow: hidden;
+  pointer-events: none;
+  color: transparent;
+  /* The width set from the textarea's clientWidth includes its padding. */
+  box-sizing: border-box;
+}
+
+.chat-input,
+.chat-input-mirror {
   padding: 8px 10px;
   font-family: var(--font);
   font-size: var(--font-size);
-  resize: none;
   line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  word-break: normal;
+  tab-size: 4;
+}
+
+.chat-input-mark {
+  background: var(--vscode-editor-findMatchHighlightBackground, rgba(14, 99, 156, 0.35));
+  color: transparent;
+  border-radius: var(--radius-sm);
+}
+
+/* A resource mention is marked a shade lighter: it addresses a server, not a path. */
+.chat-input-mark--plain { opacity: 0.6; }
+
+.chat-input {
+  flex: 1;
+  width: 100%;
+  background: transparent;
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  resize: none;
   outline: none;
   min-height: 40px;
   max-height: 160px;
   transition: border-color 0.15s;
+  position: relative;
 }
 
 /* Mode colour only on focus — the resting textarea keeps the neutral border. */
@@ -1988,6 +2200,154 @@ body {
 }
 .stop-btn:hover { opacity: 0.85; }
 .stop-btn:disabled { opacity: 0.25; cursor: not-allowed; }
+
+/* ── Detach ─────────────────────────────────────────────────────────────────── */
+
+/* Quiet by default: leaving a run going is a deliberate, occasional act, and a
+   control that competes with Send would be pressed by accident. */
+.detach-btn {
+  background: transparent;
+  color: var(--vscode-descriptionForeground, #9d9d9d);
+  border: 1px solid var(--vscode-widget-border, #3c3c3c);
+  border-radius: 4px;
+  width: 24px;
+  height: 20px;
+  font-size: 11px;
+  cursor: pointer;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.1s, color 0.1s;
+}
+
+.detach-btn:hover {
+  background: var(--vscode-toolbar-hoverBackground, #2a2d2e);
+  color: var(--vscode-foreground, #ccc);
+}
+
+/* Held on, so the standing state is visible without reading a tooltip — and still a
+   button, because the decision is revocable until the window actually closes. */
+.detach-btn.detached {
+  color: var(--vscode-editorWarning-foreground, #cca700);
+  border-color: var(--vscode-editorWarning-foreground, #cca700);
+  background: var(--vscode-inputValidation-warningBackground, #352a05);
+}
+
+/* Once detached it is a standing fact about the run, not an action: no hover, no
+   pointer, and it stays visible so the state is never a thing the user has to
+   remember. */
+.detach-state {
+  color: var(--vscode-editorWarning-foreground, #cca700);
+  font-size: 10px;
+  line-height: 1.2;
+  white-space: nowrap;
+  flex-shrink: 0;
+  cursor: default;
+}
+
+/* ── Disconnecting on work in flight ───────────────────────────────────────── */
+
+/* Modal on purpose. The question is whether to end a turn that may have been running
+   for hours, and a banner that can be scrolled past is not a question. */
+.disconnect-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 300;
+  background: rgba(0, 0, 0, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+}
+
+.disconnect-dialog {
+  position: relative;
+  max-width: 420px;
+  width: 100%;
+  background: var(--vscode-editorWidget-background, #252526);
+  border: 1px solid var(--vscode-widget-border, #3c3c3c);
+  border-radius: 6px;
+  padding: 14px 16px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+  font-size: 12px;
+  color: var(--vscode-foreground, #ccc);
+}
+
+.disconnect-title {
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 8px;
+  padding-right: 18px;   /* clear of the close button */
+}
+
+.disconnect-list {
+  margin: 0 0 10px;
+  padding-left: 18px;
+  max-height: 120px;
+  overflow-y: auto;
+}
+
+.disconnect-list li {
+  margin: 2px 0;
+  overflow-wrap: anywhere;
+}
+
+.disconnect-note {
+  margin: 0 0 12px;
+  color: var(--vscode-descriptionForeground, #9d9d9d);
+  line-height: 1.45;
+}
+
+.disconnect-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+}
+
+.disconnect-primary,
+.disconnect-secondary {
+  border-radius: 4px;
+  padding: 5px 12px;
+  font-size: 12px;
+  cursor: pointer;
+  border: 1px solid transparent;
+}
+
+.disconnect-primary {
+  background: var(--vscode-button-background, #0e639c);
+  color: var(--vscode-button-foreground, #fff);
+}
+
+.disconnect-primary:hover { opacity: 0.9; }
+
+/* The destructive answer reads as one, and is not the default: it is not where focus
+   lands and not what Enter presses. */
+.disconnect-secondary {
+  background: transparent;
+  color: var(--vscode-editorWarning-foreground, #cca700);
+  border-color: var(--vscode-editorWarning-foreground, #cca700);
+}
+
+.disconnect-secondary:hover {
+  background: var(--vscode-inputValidation-warningBackground, #352a05);
+}
+
+.disconnect-close {
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  background: transparent;
+  border: none;
+  color: var(--vscode-descriptionForeground, #9d9d9d);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 2px 4px;
+}
+
+.disconnect-close:hover { color: var(--vscode-foreground, #ccc); }
 
 /* ── Plan bar ────────────────────────────────────────────────────────────────── */
 
@@ -2266,6 +2626,13 @@ body {
   flex-direction: column;
   gap: 2px;
   border-top: 1px solid var(--border);
+  /* Capped and scrollable: a long plan unfolds into its own scroll area instead
+     of pushing the transcript off the panel (.plan-bar does not shrink). The vh
+     half keeps the cap proportional in a short side panel, the px half keeps it
+     from eating a tall one. */
+  max-height: min(40vh, 320px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .plan-bar-item {

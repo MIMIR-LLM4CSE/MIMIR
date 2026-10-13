@@ -37,8 +37,7 @@ async def main(model: str | None = None) -> None:
 
     agent._request_user_question = _cli_request_question
 
-    for server_name, script_path in all_servers().items():
-        await agent.connect_server(server_name, script_path)
+    await agent.connect_servers(all_servers())
     agent.seed_classification_from_caps()
 
     await run_chat_session(agent)

@@ -17,17 +17,31 @@ from __future__ import annotations
 
 from typing import Any, Iterator
 
+from mimir.client.ui.ws.event_bus import _EventBus
+
 
 class FakePool:
     def __init__(self, worker: Any = None, *, active: str | None = None,
-                 workers: dict[str, Any] | None = None) -> None:
+                 workers: dict[str, Any] | None = None,
+                 idle_reasons: list[str] | None = None) -> None:
         self.worker = worker
         self.workers = dict(workers or {})
         self.active_session_id = active
         self.model = getattr(worker, "model", "test-model")
         self.cap = 3
+        # What this process would still owe once the asker has gone. Non-empty by
+        # default: the ordinary case under test is a conversation with work in it, and
+        # a stand-in that reported "nothing to do" would have every detachment take the
+        # warning path. Pass ``idle_reasons=[]`` for the case where there is nothing.
+        self.idle_reasons = (["session s1 has a turn in flight"]
+                             if idle_reasons is None else list(idle_reasons))
+        self.server_idle_ttl = 7200.0
         self.queued: list[tuple[str, Any]] = []
         self.closed: list[str] = []
+        # The real bus over this stand-in: what carries a worker's output to a session
+        # is the seam under test in most of these cases, so faking it would test the
+        # call and not the seam. Tests drive it with ``bus.pump_once()``.
+        self.bus = _EventBus(self)
 
     def _for(self, session_id: str | None) -> Any:
         """The agent of *session_id*: the per-session table when there is one."""
@@ -78,6 +92,15 @@ class FakePool:
         running = getattr(worker, "_query_session_id", None)
         return running is None or session_id is None or running == session_id
 
+    def idle_report(self, *, excluding: Any = None) -> dict:
+        """Why this process is still needed, from the list the test set up.
+
+        The real one asks the workers, the queue and the job directories on disk; what
+        callers do with it is decide whether there is anything worth leaving running,
+        and that is what this stands in for.
+        """
+        return {"idle": not self.idle_reasons, "reasons": list(self.idle_reasons)}
+
     def is_parked(self, session_id: str | None) -> bool:
         return getattr(self._for(session_id), "_pending_prompt", None) is not None
 
@@ -113,6 +136,9 @@ class FakePool:
     def ensure_reaper(self) -> None:
         pass
 
+    def ensure_pump(self) -> None:
+        pass
+
     # ── settings ──────────────────────────────────────────────────────────────
 
     def ui_state(self, session_id: str | None) -> dict:
@@ -123,7 +149,7 @@ class FakePool:
             "temperature": w.get_temperature_state() if hasattr(w, "get_temperature_state") else {},
             "agent_ready": w.agent_ready() if hasattr(w, "agent_ready") else False,
             "context_mode": w.get_context_mode() if hasattr(w, "get_context_mode") else "compact",
-            "enforcement": w.get_enforcement() if hasattr(w, "get_enforcement") else "strict",
+            "enforcement": w.get_enforcement() if hasattr(w, "get_enforcement") else "light",
             "approval_mode": w.get_approval_mode() if hasattr(w, "get_approval_mode") else "manual",
         }
 

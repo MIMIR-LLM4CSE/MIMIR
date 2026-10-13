@@ -20,11 +20,12 @@ from ..config.constants import (
     AUTO_VALIDATION_TIMEOUT_SECS as _AUTO_VALIDATION_TIMEOUT_SECS,
     IDENTICAL_REPEAT_THRESHOLD,
     NUDGE_MAX_TODO_TICK,
+    SKILL_LOAD_TOOL,
 )
 from ..event_sink import emit
 from .. import human_pause
 from ..context.capabilities import (
-    CODE_EXEC, DIVERTIBLE, EDIT, has_cap, label_for, scope_spec, timeout_for,
+    CODE_EXEC, DIVERTIBLE, EDIT, has_cap, kind_for, label_for, scope_spec, timeout_for,
 )
 from ..context.execution_context import loop_control, nudge_count
 from ..tool_execution.normalizer import _make_hashable
@@ -33,6 +34,8 @@ from ..tool_execution.exec_preview import exec_input_preview, extract_exec_previ
 from ..tool_execution.math_preview import extract_math_preview
 from ..tool_execution.file_target import file_target
 from ..tool_execution.tool_status_messages import (
+    DOING_ARG,
+    clip_doing,
     tool_status_message,
     tool_arg_preview,
     dedup_row_detail,
@@ -285,6 +288,10 @@ async def _dispatch_tool_calls(
     original order so the conversation history stays deterministic.
     """
     normalized: list[tuple[str, dict, str]] = []
+    # call_id -> the model's own sentence about that call. Beside the calls rather than
+    # inside them: it is display, and everything downstream of here — dedup, policy,
+    # execution — must see the arguments the tool will actually be given.
+    row_doing: dict[str, str] = {}
     seen_calls: set[tuple] = set()
     # Per-query loop-control state (dedup + spin guards), kept in a dedicated object
     # outside the ExecutionContext schema. Created lazily on first dispatch.
@@ -304,7 +311,25 @@ async def _dispatch_tool_calls(
         fn = _to_dict(tc.get("function", {}))
         name = fn.get("name", "")
         args = agent._normalize_arguments(fn.get("arguments") or {})
+        # The universal per-call description (server_manager.DOING_ARG) is taken out of
+        # the arguments here, before anything else reads them. Before the dedup key,
+        # because two otherwise identical calls that differ only in their description
+        # are the same call — left in, they would walk straight past the dedup and the
+        # repeat guard, which is the exact spin those exist to stop. And before
+        # execution, because no server declares the parameter: it would arrive as an
+        # unexpected keyword argument.
+        #
+        # Into a COPY, never popped in place. `normalize_arguments` hands back the very
+        # dict the assistant message holds, and that message is the record of what the
+        # model issued — `take_deferred_calls` reads the calls back out of it to resume
+        # a deferred step. Popped in place, the description was erased from the record,
+        # and a call resumed after an approval came back with nothing to say.
+        doing = ""
+        if isinstance(args, dict) and DOING_ARG in args:
+            doing = clip_doing(args[DOING_ARG])
+            args = {k: v for k, v in args.items() if k != DOING_ARG}
         call_id = tc.get("id") if isinstance(tc.get("id"), str) and tc.get("id") else f"call_{idx}"
+        row_doing[call_id] = doing
         # Deduplicate: skip exact (name, args) duplicates within one step.
         key = (name, _make_hashable(args))
         if key in seen_calls:
@@ -358,16 +383,28 @@ async def _dispatch_tool_calls(
         row_args = shorten_display_args(display_name, display_args, agent.tool_caps)
         row_label = (label_for(display_name, row_args, agent.tool_caps)
                      or tool_status_message(display_name, row_args))
-        # Drop a detail that just repeats the label (e.g. the basename when the
-        # label already shows the full path) — see dedup_row_detail.
+        # The salient argument of the call — the url, the file, the job id, the verdict.
+        # Deduplicated against whichever text the row will actually put beside it: the
+        # model's description when it wrote one, the label when it did not. Against the
+        # label alone it dropped previews the row needed (the basename under "Reading
+        # file: x.py", with nothing else left to name the file); against the description
+        # alone it kept ones the row then said twice — "Recording the plan: refonte des
+        # lignes" followed by "refonte des lignes".
         row_detail = dedup_row_detail(
-            row_label, tool_arg_preview(display_name, row_args))
+            row_doing.get(call_id, "") or row_label,
+            tool_arg_preview(display_name, row_args))
         call_event = {
             "type": "tool_call",
             "id": call_id,
             "name": display_name,
             "label": row_label,
             "detail": row_detail,
+            # What the row shows: the tool's work family in place of the derived label,
+            # and the model's sentence about this call beside it. The label stays on the
+            # wire — approval cards, policy messages and the row's own tooltip read it —
+            # but it is no longer what the row says.
+            "kind": kind_for(display_name, agent.tool_caps),
+            "doing": row_doing.get(call_id, ""),
             # Whether the front-end may offer to detach this row while it runs. Read
             # off the registry, like every other row property: the UI must not learn
             # which tool happens to be a shell. DIVERTIBLE, not BACKGROUNDABLE: the
@@ -703,7 +740,44 @@ async def _dispatch_tool_calls(
             tool_msg_files[call_id] = agent.get_tool_file_targets(name, args)
         except Exception:
             tool_msg_files[call_id] = []
+        _pin_loaded_skill(agent, name, args, call_id, result, execution_context)
         messages.append({"role": "tool", "tool_call_id": call_id, "content": result})
+
+
+def _pin_loaded_skill(
+    agent: Any,
+    name: str,
+    args: dict,
+    call_id: str,
+    result: str,
+    execution_context: dict,
+) -> None:
+    """Promote a successful skill pull from reservation to pinned tail message.
+
+    The body stays where it landed — a tool result in the tail — and is protected
+    there instead of being folded into ``messages[0]``: the system prompt is the one
+    thing a query may not rewrite mid-run without costing the prefix cache for every
+    remaining step. What makes the tail safe is the pin, honoured by the three history
+    passes (see ``pinned_call_ids`` in history.py).
+
+    A refused pull releases the slot the gate reserved. Otherwise a mistyped name, or
+    a skill the file itself declares user-invoked only, would spend one of the three
+    the model is allowed — a refusal charging the budget of the thing it refused.
+    """
+    if name != SKILL_LOAD_TOOL:
+        return
+    skill = str((args or {}).get("name") or "").strip()
+    if not skill:
+        return
+    loaded: dict = execution_context.setdefault("skills_loaded", {})
+    succeeded, _summary = summarize_tool_result(name, result, agent.tool_caps)
+    if not succeeded:
+        if loaded.get(skill) == "pending":
+            del loaded[skill]
+        return
+    loaded[skill] = call_id
+    execution_context.setdefault("pinned_call_ids", set()).add(call_id)
+    emit({"type": "status", "text": f"  \u2295 Skill loaded: {skill}"})
 
 
 def _bound_results(results: list[str], agent: Any) -> list[str]:

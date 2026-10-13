@@ -26,6 +26,12 @@ if str(_SHARED) not in sys.path:
 
 from mimir.servers._shared import embed, slurm_nodes
 
+# Flat, the way the server under test imports them: reached through the package these
+# would be different module objects, and a stub on one would leave the other probing a
+# real scheduler.
+import slurm_digest  # noqa: E402
+import slurm_site  # noqa: E402
+
 
 def _load_server_platform():
     spec = importlib.util.spec_from_file_location(
@@ -551,22 +557,41 @@ class DurabilityTests(CatalogueTestCase):
 
 
 class DigestTests(CatalogueTestCase):
+    """The host half is this machine's; the cluster half comes from the shared builder.
+
+    Stubbed at ``slurm_digest._capture`` rather than at this server's ``_run``: the
+    cluster half deliberately no longer runs its own commands, so a stub on the local
+    seam would let a real scheduler answer these.
+    """
+
     def setUp(self):
         super().setUp()
         self.scontrol = SCONTROL_TWO_TYPES
-        self.mod._cmd_exists = lambda name: name in ("scontrol", "sinfo")
         self.mod._collect_toolchains = lambda: {"gcc": "gcc (GCC) 11.3.0"}
         self.mod._collect_cpu = lambda: {"arch": "x86_64", "logical_cpus": 8}
         self.mod._collect_memory = lambda: {"total_gb": 32.0}
-        self.mod._run = self._run
+        self._real_capture = slurm_digest._capture
+        slurm_digest._capture = self._capture
+        self.addCleanup(setattr, slurm_digest, "_capture", self._real_capture)
+        self._had_slurm = slurm_site._HAS_SLURM
+        slurm_site._HAS_SLURM = True
+        self.addCleanup(setattr, slurm_site, "_HAS_SLURM", self._had_slurm)
+        slurm_digest.forget_cluster_digest()
+        self.addCleanup(slurm_digest.forget_cluster_digest)
 
-    def _run(self, cmd, timeout=8):
-        if cmd[:3] == ["scontrol", "show", "node"]:
-            return {"ok": True, "returncode": 0, "stdout": self.scontrol, "stderr": ""}
-        if cmd[0] == "sinfo":
-            return {"ok": True, "returncode": 0,
-                    "stdout": "compute|up|1-00:00:00|64|64|256000\n", "stderr": ""}
-        return {"ok": False, "returncode": 1, "stdout": "", "stderr": "no"}
+    def _capture(self, script, host, timeout):
+        if script.startswith("scontrol"):
+            return self.scontrol
+        if script.startswith("sinfo -N"):
+            return None
+        if script.startswith("sinfo "):
+            return "compute|up|1-00:00:00|64|64|256000\n"
+        return None
+
+    def _rebuilt(self):
+        """A digest built again from scratch — the memo is the subject of its own tests."""
+        slurm_digest.forget_cluster_digest()
+        return self.mod._build_digest()
 
     def test_digest_records_node_types_and_partitions(self):
         digest = self.mod._build_digest()
@@ -580,34 +605,63 @@ class DigestTests(CatalogueTestCase):
     def test_occupancy_alone_does_not_move_the_signature(self):
         """The whole point of the stable projection: a busy cluster must not look
         like a changed cluster, or the fingerprint would churn every few seconds."""
-        before = self.mod._build_digest()["signature"]
+        before = self._rebuilt()["signature"]
         self.scontrol = self.scontrol.replace("CPUAlloc=0", "CPUAlloc=48").replace(
             "State=IDLE", "State=MIXED")
-        after = self.mod._build_digest()["signature"]
+        after = self._rebuilt()["signature"]
         self.assertEqual(before, after)
 
     def test_new_hardware_does_move_the_signature(self):
-        before = self.mod._build_digest()["signature"]
+        before = self._rebuilt()["signature"]
         self.scontrol += (
             "NodeName=cn002 Arch=x86_64 CPUTot=192 CPUAlloc=0 RealMemory=768000 "
             "Sockets=2 CoresPerSocket=48 ThreadsPerCore=2 Gres=(null) "
             "AvailableFeatures=(null) State=IDLE Partitions=bigmem\n"
         )
-        self.assertNotEqual(before, self.mod._build_digest()["signature"])
+        self.assertNotEqual(before, self._rebuilt()["signature"])
 
-    def test_digest_is_empty_without_slurm(self):
-        self.mod._cmd_exists = lambda name: False
+    def test_a_machine_without_slurm_runs_nothing_to_find_that_out(self):
+        """A workstation is the common case and must not pay a login shell to be told.
+
+        ``slurm_is_local`` is already memoised and already paid for by the inventory,
+        so the local branch is settled before any probe. The assertion that matters is
+        not the empty digest but the empty list of commands.
+        """
+        asked = []
+        slurm_digest._capture = lambda script, host, timeout: asked.append(script)
+        slurm_site._HAS_SLURM = False
+        slurm_digest.forget_cluster_digest()
         digest = self.mod._build_digest()
         self.assertEqual(digest["node_types"], [])
         self.assertEqual(digest["partitions"], [])
         self.assertEqual(digest["signature"], "")
+        self.assertEqual(asked, [])
 
-    def test_digest_reaches_the_catalogue_and_the_status(self):
-        self.mod.platform_search("cuda")
-        self.run_pending()
+    def test_a_restricted_scontrol_degrades_rather_than_emptying(self):
+        """The gap this closes: a site that locks scontrol down had no digest at all."""
+        self.scontrol = None
+        slurm_digest.forget_cluster_digest()
+        slurm_digest._capture = lambda script, host, timeout: (
+            "cn001|compute*|idle|64|256000|200000|(null)|2|32|1\n"
+            if script.startswith("sinfo -N") else None)
+        digest = self.mod._build_digest()
+        self.assertEqual(len(digest["node_types"]), 1)
+        self.assertIn("architecture", digest["degraded"])
+
+    def test_the_status_carries_the_digest(self):
         status = self.mod.platform_catalogue_status()
         self.assertEqual(len(status["digest"]["node_types"]), 2)
-        self.assertTrue(status["signal_fresh"])
+
+    def test_the_digest_stands_without_an_indexed_catalogue(self):
+        """It is a cluster fact, so it does not wait on a module tree to be walked.
+
+        Built inside the catalogue's enrichment, it reached nobody on a host with no
+        module system and nobody until the first search anywhere else.
+        """
+        self.mod._load_catalogue = lambda: None
+        status = self.mod.platform_catalogue_status()
+        self.assertFalse(status["indexed"])
+        self.assertEqual(len(status["digest"]["node_types"]), 2)
 
 
 class SharedSlurmNodesTests(unittest.TestCase):

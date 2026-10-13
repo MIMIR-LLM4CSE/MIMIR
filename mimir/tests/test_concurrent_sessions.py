@@ -21,8 +21,20 @@ import threading
 import unittest
 from collections import OrderedDict
 
+from mimir.client.ui.ws.event_bus import _EventBus
 from mimir.client.ui.ws.ws_session import _Session
 from mimir.client.ui.ws.ws_worker import _AgentWorker
+
+
+def _watch(*, done: bool = False):
+    """A watcher as ``watched_job_keys`` reads one: a task it can ask if it is finished."""
+    class _Task:
+        @staticmethod
+        def done() -> bool:
+            return done
+    class _Watch:
+        task = _Task()
+    return _Watch()
 
 
 class _FakeWS:
@@ -65,6 +77,9 @@ class _ManyPool:
         self.active_session_id = None
         self.model = "test-model"
         self.cap = 3
+        # The real bus over this stand-in: what carries a worker's output to a session
+        # is the seam under test, so faking it would test the call and not the seam.
+        self.bus = _EventBus(self)
 
     def get(self, session_id):
         return self._workers.get(session_id or "")
@@ -102,7 +117,6 @@ def _session(pool: _ManyPool, active: str) -> _Session:
     sess._submitted_len = 0
     sess._live_rows = {}
     sess._sent_progress = {}
-    sess._foreign_logs = {}
     pool.set_active(active)
     return sess
 
@@ -185,18 +199,46 @@ class WhatIsRunningTests(unittest.IsolatedAsyncioTestCase):
         self.a._query_session_id = "s1"
         self.b._pending_prompt = {"id": "card-b"}
         self.assertEqual(self.sess._session_activity("s1"),
-                         {"running": True, "parked": False, "queued": False})
+                         {"running": True, "parked": False, "queued": False,
+                          "runs": 0})
         self.assertEqual(self.sess._session_activity("s2"),
-                         {"running": False, "parked": True, "queued": False})
+                         {"running": False, "parked": True, "queued": False,
+                          "runs": 0})
 
-    def test_an_idle_conversations_queue_is_cleared_and_a_busy_ones_is_not(self) -> None:
-        """A turn whose socket dropped mid-run is still working, and what is queued for
-        it is its own output waiting for someone to read it."""
+    def test_a_sleeping_conversation_with_a_run_going_is_not_reported_idle(self) -> None:
+        """The row the disconnect question is decided from.
+
+        A run in the background and the agent asleep: no turn in flight anywhere, which
+        is the ordinary state of the thing detaching exists for. Reported as idle, the
+        panel let the window close on a two-hour job without asking — the same from the
+        outside as MIMIR having decided to detach on its own.
+        """
+        self.a._query_session_id = None                  # nothing is answering
+        self.a._bg_jobs = {"j1": _watch(), "j2": _watch()}
+        activity = self.sess._session_activity("s1")
+        self.assertFalse(activity["running"], "no turn is in flight")
+        self.assertEqual(activity["runs"], 2)
+
+    def test_a_run_that_has_ended_stops_being_counted(self) -> None:
+        # Otherwise the row goes on claiming it and every later disconnect asks about
+        # work that finished hours ago.
+        self.a._query_session_id = None
+        self.a._bg_jobs = {"j1": _watch(done=True)}
+        self.assertEqual(self.sess._session_activity("s1")["runs"], 0)
+
+    def test_every_conversations_output_is_drained_busy_or_not(self) -> None:
+        """The pump drains them all, and the journal keeps what it drained.
+
+        Both are drained, busy or not: neither needs its queue to be its record, and a
+        sweep that spared one and emptied the other was guarding output that the journal
+        already holds.
+        """
         self.a._query_session_id = "s1"          # busy
         self.a.out_q.put({"type": "output", "text": "mid-run"})
-        self.b.out_q.put({"type": "output", "text": "debris"})
-        self.sess._drop_stale_events()
-        self.assertFalse(self.a.out_q.empty(), "threw away a running turn's output")
+        self.b.out_q.put({"type": "output", "text": "idle"})
+        moved = self.sess.pool.bus.pump_once()
+        self.assertEqual(moved, 2)
+        self.assertTrue(self.a.out_q.empty())
         self.assertTrue(self.b.out_q.empty())
 
 
@@ -226,13 +268,44 @@ class DeletingAConversationTests(unittest.IsolatedAsyncioTestCase):
         sess = self._session()
         self.assertEqual(sess._live_work_of("s1"), [])
 
+    def test_a_sidecar_among_the_job_dirs_is_not_a_live_run(self) -> None:
+        """``jobs/`` is read as a list of job handles, and a job is a directory.
+
+        Anything else in there is a run with no exit code to whoever enumerates it,
+        which is to say a live one — and then deleting the conversation asks about work
+        that does not exist, one extra click for nothing.
+        """
+        import os
+        import tempfile
+        from unittest import mock
+        from mimir.client.ui.ws import ws_session as ws
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(ws, "_MIMIR_DIR_WS", tmp):
+                jobs = os.path.join(tmp, "sessions", "s1", "jobs")
+                os.makedirs(jobs)
+                with open(os.path.join(jobs, ".some-marker"), "w") as fh:
+                    fh.write("x")
+                sess = self._session()
+                self.assertEqual(sess._live_jobs_of("s1"), [])
+
+                # And a real job directory with no exit code still counts.
+                os.makedirs(os.path.join(jobs, "j1"))
+                self.assertEqual(sess._live_jobs_of("s1"), ["j1"])
+
     async def test_the_first_delete_of_a_working_conversation_is_refused(self) -> None:
         sess = self._session()
         self.a._query_session_id = "s1"
         sess.store = type("S", (), {"delete_session": lambda self, sid: 1 / 0})()
         sess._send_sessions_list = lambda: _noop()
         await sess._handle_delete_session({"session_id": "s1"})
-        self.assertIn("still has work running", sess.ws.sent[0]["text"])
+        # On the rendered channel: the transcript drops status text as transient tool
+        # chatter, so a refusal sent there is a click that does nothing visible.
+        reply = sess.ws.sent[0]
+        self.assertEqual(reply["type"], "command_output")
+        self.assertIn("still has work running", reply["title"])
+        self.assertEqual(reply["tone"], "warn")
+        self.assertIn("delete again", reply["note"])
         # And asking again goes through: the warning is to be read, not to make the
         # conversation undeletable.
         self.assertIn("s1", sess._delete_refused)

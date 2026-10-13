@@ -51,7 +51,7 @@ if os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..")) no
         0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..")))
 
 from approved_roots import approved_roots
-from capabilities import BACKGROUNDABLE, DELEGATE, MAIN_ONLY, REVERSIBLE, tool_caps
+from capabilities import BACKGROUNDABLE, DELEGATE, MAIN_ONLY, PLAN_READONLY, REVERSIBLE, tool_caps
 from mcp.server.fastmcp import Context, FastMCP
 from pydantic import Field
 from responses import err, ok
@@ -433,6 +433,11 @@ def _compact_event(ev: dict) -> dict | None:
             "n": str(ev.get("name") or ""),
             "l": _clip(ev.get("label"), 120),
             "d": _clip(ev.get("detail"), 160),
+            # The row's work family and the child model's own sentence about the call —
+            # what a child row shows, exactly as a top-level one does. `w` for the
+            # second: `d` is already the argument preview.
+            "k": _clip(ev.get("kind"), 16),
+            "w": _clip(ev.get("doing"), 120),
         }
     if kind == "tool_result":
         out = {
@@ -1416,8 +1421,8 @@ def _job_state(entry: dict) -> str:
 
 # ── Tool ──────────────────────────────────────────────────────────────────────
 
-@mcp.tool(**tool_caps(
-    caps=[DELEGATE, BACKGROUNDABLE],
+@mcp.tool(**tool_caps(kind="agent",
+    caps=[DELEGATE, PLAN_READONLY, BACKGROUNDABLE],
     # Reversible, hence not approval-gated: a card in front of every exploration is a
     # card in front of the behaviour this tool exists to make cheap. A writing child
     # is gated by its own approval layer — and in a read-only mode there is nothing
@@ -1755,7 +1760,7 @@ async def spawn_agent(
     })
 
 
-@mcp.tool(**tool_caps(
+@mcp.tool(**tool_caps(kind="agent",
     # MAIN_ONLY: these are the caller's own handles. A sub-agent has no business
     # reading its siblings, and cannot start one of its own anyway.
     caps=[MAIN_ONLY],
@@ -2015,11 +2020,10 @@ async def _drive_sub_agent(
         # this child read-only is the mode it runs in.
         servers_to_connect = {k: v for k, v in _servers.items() if k in explorer_servers()}
 
-    for name, script in servers_to_connect.items():
-        try:
-            await agent.connect_server(name, script)
-        except Exception as exc:
-            print(f"spawn_agent: could not connect server '{name}': {exc}", file=sys.stderr)
+    def _unconnected(name: str, exc: BaseException) -> None:
+        print(f"spawn_agent: could not connect server '{name}': {exc}", file=sys.stderr)
+
+    await agent.connect_servers(servers_to_connect, on_error=_unconnected)
 
     if requested:
         _prune_tools(agent, requested)

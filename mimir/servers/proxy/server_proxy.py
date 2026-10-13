@@ -144,7 +144,7 @@ def _missing_args(op: str, **required) -> dict | None:
 _GET_OPS = ("proxies", "proxy", "references", "suites", "suite", "report")
 
 
-@mcp.tool(**tool_caps(label="Proxy info: {op}"))
+@mcp.tool(**tool_caps(kind="proxy", label="Proxy info: {op}"))
 def proxy_get(
     op: Annotated[str, Field(
         description="Which operation to perform. Required — it selects everything else, and the parameters each one needs.",
@@ -185,7 +185,7 @@ def proxy_get(
 _RUNS_OPS = ("list", "status", "logs", "diff", "compare", "aggregate")
 
 
-@mcp.tool(**tool_caps(label="Proxy runs: {op}"))
+@mcp.tool(**tool_caps(kind="proxy", label="Proxy runs: {op}"))
 def proxy_runs(
     op: Annotated[str, Field(
         description="Which operation to perform (default 'list'). It selects everything else, and the parameters each one needs.",
@@ -258,7 +258,7 @@ _RUN_OUTCOME = {
 _EVAL_STATUS_OPS = ("status", "results", "log", "runs", "diff", "config", "graph")
 
 
-@mcp.tool(**tool_caps(label="Proxy eval status: {op}", run_outcome=_RUN_OUTCOME))
+@mcp.tool(**tool_caps(kind="proxy eval", label="Proxy eval status: {op}", run_outcome=_RUN_OUTCOME))
 def proxy_eval_status(
     op: Annotated[str, Field(
         description="Which operation to perform (default 'status'). It selects everything else, and the parameters each one needs.",
@@ -320,7 +320,7 @@ _MANAGE_OPS = ("register", "update", "unregister",
                "suite_define", "suite_update", "suite_delete", "scaffold", "clean")
 
 
-@mcp.tool(**tool_caps(caps=[PLAN_BLOCKED], reversibility=RECOVERABLE, non_batch=True,
+@mcp.tool(**tool_caps(kind="proxy", caps=[PLAN_BLOCKED], reversibility=RECOVERABLE, non_batch=True,
                       label="Proxy manage: {op}"))
 def proxy_manage(
     op: Annotated[str, Field(
@@ -464,7 +464,7 @@ def proxy_manage(
 _EXEC_OPS = ("run", "reference", "suite", "benchmark_create", "cancel")
 
 
-@mcp.tool(**tool_caps(caps=[PLAN_BLOCKED, CODE_EXEC], reversibility=RECOVERABLE, non_batch=True,
+@mcp.tool(**tool_caps(kind="proxy", caps=[PLAN_BLOCKED, CODE_EXEC], reversibility=RECOVERABLE, non_batch=True,
                       label="Proxy exec: {op}",
                       run_outcome={**_RUN_OUTCOME,
                                    "rows": {"field": "rows", "id": "run_dir",
@@ -571,7 +571,7 @@ _EVAL_OPS = ("init", "configure", "run", "stop", "reset", "reset_to_best",
 _EVAL_RUN_TIMEOUT = 1800
 
 
-@mcp.tool(**tool_caps(caps=[PLAN_BLOCKED, CODE_EXEC, BACKGROUNDABLE, DIVERTIBLE],
+@mcp.tool(**tool_caps(kind="proxy eval", caps=[PLAN_BLOCKED, CODE_EXEC, BACKGROUNDABLE, DIVERTIBLE],
                       reversibility=RECOVERABLE, non_batch=True,
                       label="Proxy eval: {op}", run_outcome=_RUN_OUTCOME,
                       timeout_secs=_EVAL_RUN_TIMEOUT))
@@ -764,7 +764,7 @@ def _build_op_owners() -> dict[str, list[str]]:
 _OP_OWNERS: dict[str, list[str]] = _build_op_owners()
 
 
-@mcp.tool(**tool_caps(caps=[PLAN_BLOCKED, CLUSTER_SUBMIT, BACKGROUNDABLE], reversibility=IRREVERSIBLE, non_batch=True,
+@mcp.tool(**tool_caps(kind="proxy", caps=[PLAN_BLOCKED, CLUSTER_SUBMIT, BACKGROUNDABLE], reversibility=IRREVERSIBLE, non_batch=True,
                       label="Proxy Slurm: {op}",
                       risk_note="Submits Slurm batch jobs that consume cluster allocation hours."))
 def proxy_slurm(
@@ -796,6 +796,7 @@ def proxy_slurm(
     background: bool = False,
     ntasks: int = 1,
     exclusive: bool | None = None,
+    scheduler: str = "",
     confirm: bool = False,
 ) -> dict:
     """Submit proxy work as Slurm batch jobs (sensitive, non-blocking, expensive).
@@ -874,6 +875,10 @@ def proxy_slurm(
         ntasks: Tasks in the job (default 1; more for an MPI proxy).
         exclusive: Reserve the whole node. Defaults to True for 'eval' and
             'suite', whose timings a neighbour's job would distort, and False for 'run'.
+        scheduler: Which scheduler to submit to — 'local' for this machine's own, or
+            a hostname. With more than one reachable this is required: the choice
+            follows the job's resources and the filesystem holding the run
+            directory. slurm_schedulers() lists them.
         confirm: Must be True to submit.
     """
     if op not in _SLURM_OPS:
@@ -916,12 +921,12 @@ def proxy_slurm(
                                     param_overrides, compare_to_reference,
                                     gpus, cpus_per_task, mem, wall_time,
                                     account, job_name, target=target,
-                                    comment=comment))
+                                    comment=comment, scheduler=scheduler))
     if op == "suite":
         return (_missing_args(op, suite_name=suite_name)
                 or slurm.submit_suite(suite_name, partition, gpus, cpus_per_task,
                                       mem, wall_time, account, target=target,
-                                      comment=comment))
+                                      comment=comment, scheduler=scheduler))
     # op == "eval"
     return slurm.submit_eval(partition, proxy_name, background, gpus, cpus_per_task,
                              mem, wall_time, account, job_name or "proxy_opt",
@@ -930,7 +935,7 @@ def proxy_slurm(
                              build_constraint=build_constraint,
                              build_cpus_per_task=build_cpus_per_task,
                              build_mem=build_mem, build_wall_time=build_wall_time,
-                             build_gpus=build_gpus)
+                             build_gpus=build_gpus, scheduler=scheduler)
 
 
 # A session is pinned to the machine its baseline ran on: a timing describes the
@@ -1023,7 +1028,7 @@ def _comparability_lines(cfg: dict, metric: str) -> list[dict]:
     ]
 
 
-@mcp.tool(**tool_caps(
+@mcp.tool(**tool_caps(kind="proxy",
     caps=[PANEL_REPORT],
     read_only=True,
     panel={"section": "Optimisation", "order": 20},

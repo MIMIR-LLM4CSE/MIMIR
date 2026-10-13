@@ -164,7 +164,7 @@ def _number_lines(text: str, first_line: int) -> str:
 
 # ── tools ─────────────────────────────────────────────────────────────────────
 
-@mcp.tool(**tool_caps(
+@mcp.tool(**tool_caps(kind="read",
     caps=[CACHEABLE, READ],
     path_args=['path'],
     label="Reading file: {path}",
@@ -231,7 +231,7 @@ def read_file_lines(path: str, start_line: int = 1, end_line: int = 200) -> dict
         return err(str(e))
 
 
-@mcp.tool(**tool_caps(caps=[CACHEABLE, INSPECT_DIR], path_args=['path'],
+@mcp.tool(**tool_caps(kind="list", caps=[CACHEABLE, INSPECT_DIR], path_args=['path'],
                       label="Listing directory: {path}"))
 def list_directory(path: str = ".") -> dict:
     """List the contents of a directory inside the sandbox.
@@ -257,7 +257,7 @@ def list_directory(path: str = ".") -> dict:
     return ok({"entries": entries, "count": len(entries), "path": full})
 
 
-@mcp.tool(**tool_caps(caps=[CACHEABLE, INSPECT_DIR], path_args=['path'],
+@mcp.tool(**tool_caps(kind="list", caps=[CACHEABLE, INSPECT_DIR], path_args=['path'],
                       label="Summarizing tree: {path}"))
 def tree_summary(path: str = ".", max_depth: int = 2, max_entries: int = 120, use_cache: bool = True) -> dict:
     """Return a compact tree summary of a directory.

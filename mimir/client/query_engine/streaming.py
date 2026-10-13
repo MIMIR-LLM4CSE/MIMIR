@@ -163,9 +163,8 @@ def _calibrate_overhead(backend: Any, model: str, messages: list[dict], msg: Any
     """Hand the server's reported prompt size to the context bar's calibration.
 
     Only the agent and plan loops come through here, and that is the point: the
-    skill classifier, the session summary and compaction share the backend and the
-    model but send a prompt of their own, a few hundred tokens of instruction and no
-    tools. Calibrated from those, the overhead dropped to almost nothing after every
+    session summary and history compaction share the backend and the model but send a
+    prompt of their own, a few hundred tokens of instruction and no tools. Calibrated from those, the overhead dropped to almost nothing after every
     side call and climbed back on the next step, and the bar swung by the size of
     the system prompt each time. The key is popped so it never reaches history.
 

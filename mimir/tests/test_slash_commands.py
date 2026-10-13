@@ -37,6 +37,14 @@ def _ws_handled() -> str:
         return fh.read()
 
 
+def _handler_body() -> str:
+    """Just the command handler, so a match elsewhere in the file cannot stand in."""
+    src = _ws_handled()
+    start = src.index("async def _handle_command(self")
+    end = src.index("async def _send_toggles", start)
+    return src[start:end]
+
+
 class AdvertisedCommandsExistTests(unittest.TestCase):
     def test_the_list_is_not_empty(self) -> None:
         # A parser that silently matched nothing would make every assertion below vacuous.
@@ -53,6 +61,31 @@ class AdvertisedCommandsExistTests(unittest.TestCase):
             "the webview offers these but ws_session._handle_command does not handle "
             f"them — they would autocomplete and do nothing: {missing}")
 
+    def test_every_handled_command_is_advertised(self) -> None:
+        """The converse of the check above, and the sharper of the two.
+
+        A name advertised but unhandled autocompletes and does nothing. A command the
+        session handles but the webview does not know is worse: it is not routed as a
+        command at all. It leaves as a plain query, the *model* answers it, and that
+        reads as the command working badly rather than never arriving — a `/diag` that
+        reports the machine's CPU instead of the event chain's counters.
+        """
+        # Every ``"/name"`` literal in the handler, rather than the syntactic forms a
+        # branch can take. The first version of this test enumerated `==` and
+        # `.startswith(`, and missed `text in ("/diag", "/diagnose")` — so it passed
+        # while the very command that prompted it was still unrouted.
+        handler = _handler_body()
+        handled = {name.rstrip() for name in re.findall(r'"/([a-z][a-z-]*)\s?"', handler)}
+        # Answered from the model's own surface rather than the panel's: the webview has
+        # no business knowing these.
+        model_facing = {"backend"}
+        advertised = set(_advertised())
+        unrouted = sorted(handled - advertised - model_facing)
+        self.assertEqual(
+            unrouted, [],
+            "ws_session handles these but the webview does not route them as commands, "
+            f"so they reach the model as plain queries instead: {unrouted}")
+
     def test_the_two_commands_this_work_added_are_both_there(self) -> None:
         advertised = _advertised()
         self.assertIn("memory", advertised)
@@ -65,6 +98,111 @@ class AdvertisedCommandsExistTests(unittest.TestCase):
             cli = fh.read()
         for name in ("memory", "proxy"):
             self.assertIn(f'cmd == "/{name}"', cli, f"/{name} is missing from the CLI")
+
+
+class DetachOwnershipTests(unittest.TestCase):
+    """Who ends the server, and how the host knows it is not its to end.
+
+    Asking to detach is what stops the kill, not hearing back about it: there is a round
+    trip between the click and the server having detached, and a host that waits for the
+    reply leaves a window in which the user has asked to keep the run going, the badge
+    has not changed yet, and closing the editor still ends it. The two outcomes are not
+    symmetric — a server left running that failed to detach is findable through the
+    registry and endable with the stop command, while one killed after the user asked to
+    keep it is work gone.
+
+    The other half is having a handle at all. A window that attached to a server holds no
+    child process, so the pid from the registry entry stands in for one; without it the
+    departures that are supposed to end a server ended nothing.
+    """
+
+    def _extension(self) -> str:
+        path = os.path.join(_ROOT, "vscode-extension", "src", "extension.ts")
+        with open(path, encoding="utf-8") as fh:
+            return fh.read()
+
+    def test_the_outbound_request_sets_the_flag(self) -> None:
+        src = self._extension()
+        send = src[src.index('if (m.type === "ws_send")'):]
+        send = send[:send.index("this._pendingMessages.push(payload)")]
+        self.assertIn("serverDetached = true", send,
+                      "the kill is only called off once the server answers")
+
+    def _helper_lines(self, lines: list[str]) -> range:
+        """The line range of the one function that ends the server."""
+        start = next(i for i, line in enumerate(lines)
+                     if line.startswith("function endServerUnlessKeptRunning("))
+        end = next(i for i, line in enumerate(lines[start:], start=start)
+                   if line == "}")
+        return range(start, end + 1)
+
+    def test_only_one_place_ends_the_server_and_it_consults_the_flag(self) -> None:
+        """Found by enumerating the calls rather than the ones I knew.
+
+        A guard on some of the paths out is a detachment that holds until the user
+        leaves through another one. So there is a single function that signals a
+        server — a spawned child and an attached pid alike — and the enumeration is
+        the test: a kill written anywhere else fails here rather than in somebody's
+        overnight run.
+        """
+        lines = self._extension().splitlines()
+        inside = self._helper_lines(lines)
+        # Real calls only: the spawn comment mentions the same expression to explain
+        # why `exec` is used, and a test that counted prose would be satisfied by it.
+        sites = [
+            i for i, line in enumerate(lines)
+            if ("serverProcess.kill()" in line or "serverProcess?.kill()" in line
+                or "process.kill(attachedPid" in line)
+            and not line.lstrip().startswith(("//", "*", "/*"))
+        ]
+        self.assertEqual(len(sites), 2,
+                         "a child and an attached pid; the kill sites moved")
+        for i in sites:
+            self.assertIn(i, inside,
+                          f"the kill on line {i + 1} is outside the one path out:\n"
+                          f"{lines[i]}")
+        self.assertIn("serverDetached", "\n".join(lines[i] for i in inside),
+                      "the one path out does not consult the flag")
+
+    def test_every_way_out_of_a_window_goes_through_it(self) -> None:
+        # The window closing, a connect releasing the previous server, and the panel's
+        # own disconnect. Each one is a departure, and a departure that skipped the
+        # helper would leave a server nobody is watching and nobody asked to keep.
+        src = self._extension()
+        for site, opens in (("export function deactivate(): void {", "}"),
+                            ("private _teardownServer(): void {", "}"),
+                            ('if (m.type === "disconnect") {', "}")):
+            body = src[src.index(site):]
+            body = body[:body.index("\n  " + opens)]
+            self.assertIn("endServerUnlessKeptRunning()", body,
+                          f"{site.strip()} does not end the server it is leaving")
+
+    def test_an_attached_server_is_endable_at_all(self) -> None:
+        # The pid is the whole handle: a window that spawned nothing has no child to
+        # kill, and without this the deliberate departures ended nothing — the run
+        # outlived every one of them and was found again on the next connect.
+        src = self._extension()
+        attach = src[src.index("private async _attachToRunningServer("):]
+        attach = attach[:attach.index("\n  /**")]
+        self.assertIn("attachedPid = entry.pid", attach,
+                      "attaching to a server leaves nothing able to end it")
+
+    def test_the_server_is_spawned_in_its_own_session(self) -> None:
+        # Arranging it afterwards depends on the process not already being a group
+        # leader, and a detachment that quietly does not hold is worse than none.
+        src = self._extension()
+        spawn = src[src.index('cp.spawn("bash", ["-c", spawnCmd]'):]
+        spawn = spawn[:spawn.index("});")]
+        self.assertIn("detached: true", spawn)
+        self.assertIn('stdio: "ignore"', spawn)
+
+    def test_its_output_goes_to_a_file_not_a_pipe(self) -> None:
+        # A pipe held by this extension host is a tether: when the host goes, the next
+        # write takes a SIGPIPE and a server meant to outlive the window dies the first
+        # time it logs anything.
+        src = self._extension()
+        self.assertIn("logPath(", src)
+        self.assertIn(">> ${quotedLog} 2>&1", src)
 
 
 class RoutingTests(unittest.TestCase):
@@ -96,10 +234,7 @@ class CommandAnswersAreRenderedTests(unittest.TestCase):
     """
 
     def _handler_body(self) -> str:
-        src = _ws_handled()
-        start = src.index("async def _handle_command(self")
-        end = src.index("async def _send_toggles", start)
-        return src[start:end]
+        return _handler_body()
 
     def test_the_handler_body_is_found(self) -> None:
         # A slice that silently matched nothing would make the assertions below vacuous.
@@ -152,6 +287,10 @@ class CommandAnswersAreRenderedTests(unittest.TestCase):
                 "/backend",
                 # Not a setting — an action whose result has nowhere else to appear.
                 "/cancel",
+                # A listing, and the one place the event chain's own counters are
+                # readable. It owns no control, and the question it answers — which
+                # link went quiet — has no other surface.
+                "/diag",
                 "/memory clear", "/memory delete", "/memory list",
                 "/proxy clean", "/proxy list",
             ],

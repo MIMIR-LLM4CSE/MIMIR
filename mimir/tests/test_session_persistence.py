@@ -102,7 +102,9 @@ def _session(active="s1"):
     sess.history = []
     sess.history_full = []
     sess._resumed_context_mode = "full"
-    sess.transcript = mock.Mock()
+    sess._rendered_seq = 0
+    # The journal has one writer, the bus; this is where a session's own records go.
+    sess.pool.bus.record_client_event = mock.Mock()
     return sess
 
 
@@ -126,7 +128,6 @@ class PreQueryCompactionTests(unittest.IsolatedAsyncioTestCase):
     def _sess_with_history(n_middle):
         sess = _session()
         sess.ws = _FakeWS()
-        sess.transcript = []
         sess.history = [{"role": "user", "content": "opening question"}]
         sess.history += [{"role": "assistant", "content": f"step {i}"} for i in range(n_middle)]
         sess.history += [{"role": "user", "content": "last"},
@@ -145,7 +146,12 @@ class PreQueryCompactionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(sess.history[1], summary[0])
         self.assertEqual([m["content"] for m in sess.history[-4:]],
                          ["last", "answer", "follow-up", "ok"])
-        self.assertEqual(sess.transcript[-1]["type"], "context_compact")
+        # The compaction is recorded through the bus, which owns the journal: it is
+        # what makes the log the one complete account of a session, including the turns
+        # the context window dropped.
+        recorded = [c.args[1]["type"] for c in
+                    sess.pool.bus.record_client_event.call_args_list]
+        self.assertEqual(recorded[-1], "context_compact")
 
     async def test_a_failed_summarization_leaves_the_history_untouched(self):
         # compact_messages returns its input unchanged when the backend call fails —
@@ -316,6 +322,28 @@ class TranscriptHandlerTests(unittest.IsolatedAsyncioTestCase):
         incoming = [
             {"role": "user", "kind": "text", "text": "a"},
             {"role": "agent", "kind": "text", "text": "done"},
+        ]
+        await sess._handle_transcript({"session_id": "s1", "messages": incoming})
+        self.assertEqual(sess._display_messages, incoming)
+
+
+    async def test_a_notice_this_layer_wrote_does_not_freeze_the_transcript(self):
+        """A 🔔 the webview never received must not make its transcript look short.
+
+        It did: the guard then refused every transcript the client sent after the
+        first notice, and the stored chat froze there — coming back on reload without
+        a tool row, a diff card or a reasoning panel from that point on.
+        """
+        sess = _session()
+        sess._display_messages = [
+            {"role": "user", "kind": "text", "text": "build it"},
+            {"role": "system", "kind": "text", "text": "🔔 'j1' finished"},
+            {"role": "agent", "kind": "text", "text": "it is done"},
+        ]
+        incoming = [
+            {"role": "user", "kind": "text", "text": "build it"},
+            {"role": "agent", "kind": "tools", "tools": []},
+            {"role": "agent", "kind": "text", "text": "it is done"},
         ]
         await sess._handle_transcript({"session_id": "s1", "messages": incoming})
         self.assertEqual(sess._display_messages, incoming)

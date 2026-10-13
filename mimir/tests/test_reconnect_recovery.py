@@ -8,9 +8,13 @@ the client nothing was running. The turn then waited on an answer that could not
 arrive — the query loop is serial, so every later query queued behind that wait — and
 the session read as hung with nothing on screen to say why.
 """
+import asyncio
 import json
+import tempfile
 import unittest
+from unittest import mock
 
+from mimir.client.ui.ws import job_scan, transcript_log
 from mimir.client.ui.ws.ws_worker import _AgentWorker
 from mimir.tests.test_session_isolation import _FakeWS, _bare_worker, SessionFencingTests
 
@@ -107,6 +111,17 @@ class PendingPromptTests(unittest.TestCase):
 
 
 class ReconnectTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        # The pump journals what it drains and a delivered wake settles its run on
+        # disk, so these tests write both a transcript and job markers: give them their
+        # own state dir rather than the real one.
+        self._tmp = tempfile.TemporaryDirectory()
+        for target in (transcript_log, job_scan):
+            patcher = mock.patch.object(target, "_MIMIR_DIR_WS", self._tmp.name)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        self.addCleanup(self._tmp.cleanup)
+
     def _session(self, worker):
         return SessionFencingTests._session(self, worker)
 
@@ -130,20 +145,26 @@ class ReconnectTests(unittest.IsolatedAsyncioTestCase):
         sess.ws.send = _boom
         await sess._resend_parked_prompt()  # must not raise
 
-    def test_a_busy_worker_keeps_the_events_of_its_running_turn(self):
-        w = _parked_worker()
-        w.is_busy = lambda: True
-        w.out_q.put({"type": "tool_call", "id": "t1"})
-        w.out_q.put({"type": "answer", "text": "what I did"})
-        self._session(w)._drop_stale_events()
-        self.assertEqual(w.out_q.qsize(), 2)
-
-    def test_an_idle_worker_leaves_only_debris_behind(self):
-        w = _parked_worker()
-        w.is_busy = lambda: False
-        w.out_q.put({"type": "status", "text": "left over"})
-        self._session(w)._drop_stale_events()
-        self.assertTrue(w.out_q.empty())
+    def test_a_reconnect_throws_nothing_away(self):
+        # Nothing is swept on connect. The pump drains every worker whether or not a
+        # socket exists and the journal holds what it drained, so a reconnect replays
+        # from its watermark rather than hoping the right things were kept — and a
+        # sweep that had to carve out a finished job's wake was deciding a question
+        # that does not need deciding.
+        for busy in (True, False):
+            with self.subTest(busy=busy):
+                sid = f"busy-{busy}"   # its own journal, so the runs do not add up
+                w = _parked_worker()
+                w.session_id = sid
+                w.is_busy = lambda: busy
+                w.out_q.put({"type": "tool_call", "id": "t1"})
+                w.out_q.put({"type": "answer", "text": "what I did"})
+                sess = self._session(w)
+                self.assertEqual(sess.pool.bus.attached(), 0)
+                sess.pool.bus.pump_once()
+                self.assertTrue(w.out_q.empty())
+                lines, _truncated = transcript_log.read_since(sid, 0)
+                self.assertEqual([e["type"] for e in lines], ["tool_call", "answer"])
 
 
 class AgentReadinessTests(unittest.TestCase):
@@ -219,6 +240,77 @@ class _ClosedWS(_FakeWS):
         return _empty()
 
 
+class HandshakeIsNotBlockedTests(unittest.IsolatedAsyncioTestCase):
+    """Nothing may come between a client connecting and its first message being read.
+
+    The job scan walks every session's job directories, and a job directory is never
+    swept however old — so on a long-lived workspace it is unbounded file work. Awaited
+    inside the handshake it sat between the connection and the message loop: the chat
+    came up, said it was ready, and the query was never read — which reads from a chat
+    window as "MIMIR is frozen and makes no tool call".
+    """
+
+    async def test_a_scan_that_never_finishes_does_not_stop_the_first_message(self):
+        w = _bare_worker()
+        w.model = "m"
+        w.is_busy = lambda: False
+        w.get_context_mode = lambda: "full"
+        w.get_enforcement = lambda: "light"
+        w.get_approval_mode = lambda: "manual"
+        w.get_thinking_profile = lambda: {}
+        w.get_temperature_state = lambda: {"supported": True, "value": None}
+        w._agent = object()
+        sess = SessionFencingTests._session(self, w)
+        sess._purge_empty_sessions = lambda: None
+        sess._send_toggles = _noop_async
+        sess._send_sessions_list = _noop_async
+        sess._create_new_session = _noop_async
+        sess._resend_parked_prompt = _noop_async
+        sess._send_served_models = _noop_async
+        sess._send_replay = _noop_async
+        sess._drain_loop = _noop_async
+        sess._summary_task = None
+        sess.store = _NoSessions()
+
+        started = asyncio.Event()
+
+        async def _never_finishes():
+            started.set()
+            await asyncio.Event().wait()
+
+        sess._report_ended_jobs = _never_finishes
+
+        handled: list[str] = []
+
+        async def _handle(raw):
+            handled.append(raw)
+
+        sess._handle = _handle
+        sess.ws = _OneMessageWS('{"type": "query", "text": "hello"}')
+
+        await asyncio.wait_for(sess.run(), 5)
+        self.assertTrue(started.is_set(), "the scan never ran at all")
+        self.assertEqual(handled, ['{"type": "query", "text": "hello"}'],
+                         "the first message was never read")
+
+
+class _OneMessageWS(_FakeWS):
+    """A socket that yields one message and then ends, like a client that sent one."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__()
+        self._message = message
+
+    def __aiter__(self):
+        async def _gen():
+            yield self._message
+        return _gen()
+
+
+async def _noop_async(*_args, **_kwargs):
+    return None
+
+
 class ReadinessAnnouncementTests(unittest.IsolatedAsyncioTestCase):
     """The agent came up while the socket was being set up, and nobody was told.
 
@@ -265,16 +357,18 @@ class ReadinessAnnouncementTests(unittest.IsolatedAsyncioTestCase):
     async def test_an_agent_that_comes_up_during_setup_is_announced(self):
         w = self._worker(None)
         sess = self._session(w)
-        # The gap itself: the worker finishes starting, queues its one announcement,
-        # and the stale-event purge throws it away.
-        original = sess._drop_stale_events
+        # The gap this guards: the worker finishes starting and queues its one
+        # announcement, but it may have done so before this socket subscribed — and
+        # nothing re-emits it, so the chat would sit on "starting the agent" for the
+        # life of the connection with a working agent behind it. Asking the worker
+        # directly, after the handshake, is what closes it.
+        original = sess._purge_empty_sessions
 
-        def _ready_then_purge():
+        def _ready_then_setup():
             w._agent = object()
-            w.out_q.put({"type": "ready", "model": "m", "agent_ready": True})
             original()
 
-        sess._drop_stale_events = _ready_then_purge
+        sess._purge_empty_sessions = _ready_then_setup
 
         await sess.run()
 

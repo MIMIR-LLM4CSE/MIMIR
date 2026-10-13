@@ -18,6 +18,15 @@ from datetime import datetime, timezone
 
 import build_progress
 from responses import err
+from slurm_site import (
+    WATCHER_FILE as _WATCHER_FILE,
+    record_job_dir as _record_job_dir,
+    HOST_FILE as _SLURM_HOST_FILE,
+    LOCAL as _SLURM_LOCAL,
+    exec_argv as _slurm_exec_argv,
+    hosts as _slurm_hosts,
+    record_host as _record_slurm_host,
+)
 
 from _lib import store
 
@@ -69,6 +78,88 @@ def _read_pid(run_dir: str) -> int | None:
 
 def _read_slurm_id(run_dir: str) -> int | None:
     return _read_int_file(_slurm_id_path(run_dir))
+
+
+def _slurm_host_path(run_dir: str) -> str:
+    return os.path.join(run_dir, _SLURM_HOST_FILE)
+
+
+def _read_slurm_host(run_dir: str) -> str | None:
+    """Which scheduler this run was submitted to, or None when it did not say.
+
+    None is not "local": a run directory from before the host was written beside the
+    id cannot answer, and reading the silence as this machine would poll the wrong
+    scheduler and call a running job finished. :func:`_locate_slurm_job` asks every
+    reachable one instead.
+    """
+    try:
+        with open(_slurm_host_path(run_dir)) as fh:
+            return fh.read().strip()
+    except OSError:
+        return None
+
+
+def _write_slurm_host(run_dir: str, host: str) -> None:
+    """Record the scheduler beside the job id. Best effort — a cache, not a binding."""
+    try:
+        with open(_slurm_host_path(run_dir), "w") as fh:
+            fh.write(host)
+    except OSError:
+        pass
+
+
+# Where this run's Slurm job is filed as a job *of the workspace*. A run is both: its
+# own state machine here, and a job in a queue that every reader of ``slurm_site`` has
+# to be able to account for. Kept as a pointer rather than re-derived, because the
+# descriptor's directory is named by the moment it was made and nothing else knows it.
+_WORKSPACE_JOB_DIR = "workspace_job_dir"
+
+
+def _record_workspace_job(run_dir: str, job_id: int, host: str) -> None:
+    """File this run's Slurm job where the workspace accounts for its jobs.
+
+    Without it the run is a job nothing is watching to every reader of ``slurm_site``:
+    the queue listing calls it unwatched, the conclude-phase reminder names its id, and
+    the remedy offered — adopt it — puts a second watcher on a run this server is
+    already polling, so one run ends and wakes its conversation twice. Best effort: a
+    run that could not be filed is still a run, and the submission has already happened.
+    """
+    try:
+        job_dir = _record_job_dir(str(job_id), **{_SLURM_HOST_FILE: host})
+        with open(os.path.join(run_dir, _WORKSPACE_JOB_DIR), "w") as fh:
+            fh.write(job_dir)
+    except OSError:
+        pass
+
+
+def _workspace_job_dir(run_dir: str) -> str:
+    try:
+        with open(os.path.join(run_dir, _WORKSPACE_JOB_DIR)) as fh:
+            return fh.read().strip()
+    except OSError:
+        return ""
+
+
+def _locate_slurm_job(run_dir: str, job_id: int) -> tuple[str, str]:
+    """``(host, state)`` for *job_id*: what the run dir says, else whoever knows it.
+
+    The sweep is what keeps a run trackable without being owned by a scheduler, and
+    the host it finds is written down so the next poll — and these are polls, on a
+    timer, for the life of the run — is one call again.
+    """
+    hint = _read_slurm_host(run_dir)
+    if hint is not None:
+        state = _squeue_state(job_id, host=hint)
+        if state != "unknown":
+            return hint, state
+    for host in _slurm_hosts():
+        if host == hint:
+            continue
+        state = _squeue_state(job_id, host=host)
+        if state != "unknown":
+            _write_slurm_host(run_dir, host)
+            return host, state
+    return hint or _SLURM_LOCAL, "unknown"
 
 
 def _read_build_slurm_id(run_dir: str) -> int | None:
@@ -137,14 +228,34 @@ def _is_running(pid: int, expected_starttime: int | None = None) -> bool:
     return True
 
 
-def _squeue_state(job_id: int) -> str:
-    """Query squeue; return 'running'|'pending'|'done'|'crashed'|'unknown'."""
+def _slurm_run(argv: list[str], timeout: int, stdin: str | None = None, *,
+               host: str = _SLURM_LOCAL):
+    """Run one Slurm command on *host*'s scheduler, and hand back the completed call.
+
+    Through the shared seam (``_shared/slurm_site``) rather than straight to
+    ``subprocess``, because the scheduler is not always on the host MIMIR runs on: on a
+    login node whose schedulers live elsewhere, a bare ``sbatch`` is "not found" and
+    these submissions simply could not be made. One owner for the question, so the three
+    servers that submit cannot disagree about which hosts are reachable — and locally
+    the argv is still exec'd as it stands, with no shell, which is what these commands
+    are built as arguments for.
+
+    *stdin* feeds the command its own input, which is how a batch script reaches
+    ``sbatch`` without any file having to exist on the host that runs it.
+    """
+    return subprocess.run(
+        _slurm_exec_argv(argv, host=host, piped=stdin is not None),
+        input=stdin,
+        stdin=None if stdin is not None else subprocess.DEVNULL,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=timeout,
+    )
+
+
+def _squeue_state(job_id: int, *, host: str = _SLURM_LOCAL) -> str:
+    """Query squeue on *host*; return 'running'|'pending'|'done'|'crashed'|'unknown'."""
     try:
-        res = subprocess.run(
-            ["squeue", "-j", str(job_id), "-h", "-o", "%T"],
-            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            text=True, timeout=10,
-        )
+        res = _slurm_run(["squeue", "-j", str(job_id), "-h", "-o", "%T"], 10,
+                         host=host)
         state = res.stdout.strip().upper()
         if state in ("RUNNING", "COMPLETING"):
             return "running"
@@ -229,7 +340,10 @@ def _run_state(run_dir: str) -> dict:
     job_id = _read_slurm_id(run_dir)
     build_job_id = _read_build_slurm_id(run_dir)
     if job_id is not None:
-        slurm_state = _squeue_state(job_id)
+        # Wherever it is: a run's scheduler is read from its own directory, so the
+        # ~15 callers of this keep asking the same question and get the right answer
+        # for a job on any of them.
+        _, slurm_state = _locate_slurm_job(run_dir, job_id)
         if slurm_state == "done" and not os.path.isfile(metrics_path):
             slurm_state = "crashed"
         # A split submission holds the run job PENDING behind the build. When the
@@ -287,7 +401,7 @@ def background_descriptor(run_dir: str, *, kind: str,
     watching — the model is told to monitor it by hand, ends its turn because there is
     nothing left to do, and is never woken when the job lands.
     """
-    return {
+    descriptor = {
         "server":     "proxy",
         "run_dir":    run_dir,
         "job_key":    os.path.basename(run_dir),
@@ -295,6 +409,17 @@ def background_descriptor(run_dir: str, *, kind: str,
         "status_op":  status_op,
         "summary_op": summary_op,
     }
+    # Recorded beside the job id when this run is a Slurm job, so a window that closes
+    # and comes back re-arms *this* watcher rather than a stock poll beside it: two
+    # watchers on one run are two wakes for one result.
+    job_dir = _workspace_job_dir(run_dir)
+    if job_dir:
+        try:
+            with open(os.path.join(job_dir, _WATCHER_FILE), "w") as fh:
+                json.dump(descriptor, fh)
+        except OSError:
+            pass
+    return descriptor
 
 
 # ── run lifecycle ─────────────────────────────────────────────────────────────
@@ -364,6 +489,7 @@ def _launch_detached(argv: list[str], run_dir: str, log_file: str | None = None)
 def _submit_sbatch(
     run_dir: str, script: str, *, local_alternative: str = "",
     script_name: str = "batch_script.sh", id_file: str = "slurm_job_id",
+    host: str = _SLURM_LOCAL,
 ) -> tuple[int | None, dict | None]:
     """Write the batch script, submit it, record the job id.
 
@@ -374,6 +500,9 @@ def _submit_sbatch(
     *script_name* and *id_file* exist because a split build/run submission puts two
     jobs in one run directory and neither may overwrite the other's script or id.
     Their defaults are the single-job names, so every existing caller is unchanged.
+
+    *host* is the scheduler to submit to, written beside the id so every later poll of
+    this run goes straight to it.
     """
     batch_path = os.path.join(run_dir, script_name)
     with open(batch_path, "w") as fh:
@@ -381,10 +510,10 @@ def _submit_sbatch(
     os.chmod(batch_path, 0o755)
 
     try:
-        res = subprocess.run(["sbatch", batch_path],
-                             stdin=subprocess.DEVNULL,
-                             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                             text=True, timeout=30)
+        # The script goes on sbatch's stdin, not as a path: it is kept on disk for a
+        # reader asking what was submitted, but nothing of ours then has to exist on
+        # the host running the scheduler.
+        res = _slurm_run(["sbatch"], 30, stdin=script, host=host)
     except FileNotFoundError:
         hint = "Slurm is not available."
         if local_alternative:
@@ -402,16 +531,27 @@ def _submit_sbatch(
     job_id = int(m.group(1))
     with open(os.path.join(run_dir, id_file), "w") as fh:
         fh.write(str(job_id))
+    _write_slurm_host(run_dir, host)
+    if host:
+        # A submission that succeeded is proof this host reaches that scheduler.
+        _record_slurm_host(host)
+    # Only the run job carries the pointer: a split build/run submission files both, so
+    # neither is reported as unaccounted for, but the run is the one whose end is the
+    # run's end and therefore the one a watcher is re-armed on.
+    if id_file == "slurm_job_id":
+        _record_workspace_job(run_dir, job_id, host)
+    else:
+        try:
+            _record_job_dir(str(job_id), **{_SLURM_HOST_FILE: host})
+        except OSError:
+            pass
     return job_id, None
 
 
-def _scancel(job_id: int) -> str | None:
-    """Cancel one Slurm job; returns an error message, or None when it worked."""
+def _scancel(job_id: int, *, host: str = _SLURM_LOCAL) -> str | None:
+    """Cancel one Slurm job on *host*; returns an error message, or None when it worked."""
     try:
-        res = subprocess.run(["scancel", str(job_id)],
-                             stdin=subprocess.DEVNULL,
-                             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                             text=True, timeout=15)
+        res = _slurm_run(["scancel", str(job_id)], 15, host=host)
     except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
         return f"scancel failed: {exc}"
     if res.returncode != 0:
@@ -435,8 +575,10 @@ def _cancel_run(run_dir: str) -> dict:
         # would leave the build compiling for a run that no longer exists, on
         # allocation hours nobody is going to look at.
         build_job_id = _read_build_slurm_id(run_dir)
+        # Both halves are one submission, so they are on one scheduler: the run's.
+        host, _ = _locate_slurm_job(run_dir, job_id)
         for jid in ([build_job_id] if build_job_id is not None else []) + [job_id]:
-            error = _scancel(jid)
+            error = _scancel(jid, host=host)
             if error:
                 return {"error": error}
         payload = {"cancelled": "slurm", "job_id": job_id}

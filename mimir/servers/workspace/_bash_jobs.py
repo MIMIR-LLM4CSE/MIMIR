@@ -1,6 +1,6 @@
 """Detached shell jobs behind ``bash_run(background=True)``.
 
-``bash_run`` blocks its turn and is capped at 300s, which is the right shape for a
+``bash_run`` blocks its turn and is capped at two minutes, which is the right shape for a
 search, a test suite or a short build. It is the wrong shape for the work that
 actually motivated this: a dependency tree that takes two hours to compile. The tool's
 own docstring already told the model to "submit the run as a background job" past the
@@ -205,6 +205,19 @@ def _wrap(script: str, rc_path: str) -> str:
     )
 
 
+def _write_meta(job_key: str, **fields) -> None:
+    """Write one job's ``meta.json`` — the descriptor every reader here depends on.
+
+    One writer, because there are three recorders: a launch, an adoption, and the
+    promotion of a blocking run to a handle. The schema was spelled out in two of them,
+    and ``launch``'s own ``effective_command`` is the precedent for a field being added
+    to one copy and not the other.
+    """
+    meta = {"job_key": job_key, "started_at": time.time(), **fields}
+    with open(_path(job_key, "meta.json"), "w") as fh:
+        json.dump(meta, fh, indent=2)
+
+
 def launch(command: str, cwd: str, env: dict, preamble: str = "",
            output_targets: list[str] | None = None, *,
            split_stderr: bool = False, ephemeral: bool = False) -> dict:
@@ -259,25 +272,53 @@ def launch(command: str, cwd: str, env: dict, preamble: str = "",
         if err_fh is not None:
             err_fh.close()
 
-    meta = {
-        "job_key": job_key,
-        "command": command,
-        "cwd": cwd,
-        "pid": proc.pid,
-        "pid_starttime": _proc_starttime(proc.pid),
-        "started_at": time.time(),
-        "output_targets": list(output_targets or ()),
-        "split_stderr": bool(split_stderr),
-        "ephemeral": bool(ephemeral),
-    }
+    extra = {"split_stderr": bool(split_stderr), "ephemeral": bool(ephemeral)}
     if effective != command:
         # What bash was actually handed, kept next to what was asked for: a later
         # reader must be able to see that the two differ and how.
-        meta["effective_command"] = effective
-    with open(_path(job_key, "meta.json"), "w") as fh:
-        json.dump(meta, fh, indent=2)
+        extra["effective_command"] = effective
+    _write_meta(job_key, command=command, cwd=cwd, pid=proc.pid,
+                pid_starttime=_proc_starttime(proc.pid),
+                output_targets=list(output_targets or ()), **extra)
     return {"job_key": job_key, "pid": proc.pid, "log": log,
             "job_dir": _job_dir(job_key), "proc": proc}
+
+
+def adopt(pid: int, command: str, cwd: str, log: str = "") -> dict | None:
+    """Record a process this server did not start, so the scan finds it.
+
+    The counterpart of :func:`launch` for work that is already running: something a
+    script backgrounded, a ``nohup`` of the user's, anything long that was started
+    outside a tool call. Tracking is the descriptor, not the pid — so a process with
+    no descriptor is watched by nothing, owes no wake when it ends, and does not keep
+    this workspace's server alive. Writing the descriptor after the fact is all the
+    watcher ever needed.
+
+    Returns None when the pid is not running, which is also the check: a descriptor for
+    a process that has already gone would be read as live until the next scan looked.
+
+    **What an adopted job cannot have.** :func:`launch` wraps its command in traps that
+    write ``exit_code`` as the shell leaves, and nothing can install those into a
+    process that is already running. So an adopted job reaches a terminal state the
+    moment its pid goes, with no status of its own — ``unknown``, honestly, rather than
+    a ``done`` nobody observed. *log* is recorded as an output target so a reader knows
+    where its output actually went, since this job dir has none of its own.
+    """
+    starttime = _proc_starttime(pid)
+    if starttime is None or not _is_running(pid, starttime):
+        return None
+    _sweep_once()
+    job_key = _new_job_key()
+    os.makedirs(_job_dir(job_key), exist_ok=True)
+    # ``adopted`` says why there will be no exit code, for every reader of this
+    # directory and for the note ``state`` gives once the process is gone. The flags a
+    # launch sets — ``split_stderr``, ``ephemeral`` — are absent rather than false:
+    # every reader asks with ``get``, and an adoption knows neither.
+    _write_meta(job_key, command=command, cwd=cwd, pid=int(pid),
+                pid_starttime=starttime, output_targets=[log] if log else [],
+                adopted=True)
+    return {"job_key": job_key, "pid": int(pid), "log": log,
+            "job_dir": _job_dir(job_key)}
 
 
 # Share of a finished run's budget given to its beginning; the end gets the rest.
@@ -340,8 +381,9 @@ def promote(job_key: str, reason: str) -> None:
     meta.update({"ephemeral": False, "diverted": True, "divert_reason": reason,
                  "diverted_at": time.time()})
     try:
-        with open(_path(job_key, "meta.json"), "w") as fh:
-            json.dump(meta, fh, indent=2)
+        # Its own ``started_at`` and ``job_key`` survive: they are already in *meta*,
+        # and a later keyword wins over the writer's default.
+        _write_meta(job_key, **{k: v for k, v in meta.items() if k != "job_key"})
     except OSError:
         pass
 
@@ -432,9 +474,16 @@ def state(job_key: str) -> dict:
         payload["state"] = "done" if rc == 0 else "crashed"
         return payload
     payload["state"] = "unknown"
-    payload["note"] = ("The process is gone and wrote no exit code — it was killed "
-                       "from outside (SIGKILL, OOM, host restart) rather than "
-                       "returning.")
+    payload["note"] = (
+        # An adopted process never had the traps that write a status, so "it was
+        # killed" would be a reading of the absence that the absence does not
+        # support — it is just as likely to have finished cleanly.
+        "The process has ended. Nothing recorded a status for it: it was adopted "
+        "rather than started here, so it never had the exit-code trap. Its own "
+        "output is what says how it went."
+        if meta.get("adopted") else
+        "The process is gone and wrote no exit code — it was killed from outside "
+        "(SIGKILL, OOM, host restart) rather than returning.")
     return payload
 
 
@@ -467,6 +516,19 @@ def output(job_key: str, max_bytes: int, running_max_bytes: int | None = None) -
         max_bytes = min(max_bytes, running_max_bytes)
     meta = _meta(job_key)
     log = log_path(job_key)
+    if not os.path.exists(log):
+        # An adopted job has no log of its own: nothing of ours opened the process's
+        # output, so there is no file here to read. Said plainly, because the generic
+        # answer below — "Log unreadable" — reads as a job whose output was lost, and
+        # the output is not lost: it is wherever the process is writing it.
+        targets = meta.get("output_targets") or []
+        payload["output"] = ""
+        where = (f"its output goes to {', '.join(targets)}" if targets else
+                 "where its output goes is known only to the process itself")
+        note = ("This job has no log of its own — it was adopted rather than started "
+                f"here, and {where}.")
+        payload["note"] = f"{payload['note']} {note}" if payload.get("note") else note
+        return payload
     try:
         size = os.path.getsize(log)
         with open(log, errors="replace") as fh:

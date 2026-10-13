@@ -4,7 +4,7 @@ import type { ToolActivity } from "../types";
 
 function tool(id: string, seq: number, parentId?: string): ToolActivity {
   return {
-    id, name: "bash_run", icon: "›", label: id, detail: "",
+    id, name: "bash_run", label: id, detail: "",
     status: "running", startedAt: 0, seq, parentId,
   };
 }

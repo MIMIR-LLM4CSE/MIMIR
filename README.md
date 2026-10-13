@@ -48,7 +48,8 @@ On top of that loop sits a policy and context layer:
   the repository or the machine is injected up front: both are discovered on demand, by
   the model's own tool calls.
 - **Throughput & UX** — real-time token streaming and parallel dispatch of independent calls.
-- **Skills** — automatic detection of a methodology prompt from the query and recent turns.
+- **Skills** — methodology playbooks the model loads by name, at the step its own
+  reading says one applies.
 
 ### Companion docs
 
@@ -143,6 +144,8 @@ Optional extras: `sudo apt-get install gfortran` for Fortran compilation;
 | `MIMIR_RAY_MAX_MODEL_LEN` | *(unset)* | Pin the context window when the Ray router does not report `max_model_len` |
 | `MIMIR_EMBED_MODEL` | *(empty; `nomic-embed-text` on Ollama)* | Embedding model for semantic memory search & tool ranking (required for vLLM and Ray; else lexical fallback) |
 | `MIMIR_MODULE_INDEX_BUDGET` | `600` | Seconds the background module-catalogue enrichment may spend (the name-level pass the user waits on is not affected) |
+| `MIMIR_SERVER_IDLE_TTL` | `7200` | Seconds a server a conversation asked to keep stays up with nothing needing it — no client, every conversation concluded, no background run, no wake owed — before stopping itself. One nobody asked to keep stops after `MIMIR_DETACH_GRACE` instead |
+| `MIMIR_DETACH_GRACE` | `30` | Seconds with no client attached before the window counts as gone: past it an unanswered card is set aside instead of waited on, and a server no conversation asked to be left running stops itself. Long enough that reloading the window does neither |
 | `MCP_FILES_ROOT` | current working dir | Workspace root (guardrail on paths tools name — [not a sandbox](SERVERS_DETAILED.md#scope-of-the-sandbox-read-this-before-trusting-confined)) |
 | `GITHUB_TOKEN` | *(none)* | Raises GitHub API rate limits |
 | `MIMIR_OLLAMA_NUM_CTX` | *(model's context length)* | Overrides the Ollama context window (`num_ctx`) |
@@ -217,7 +220,7 @@ and feeds the results back — until the task is done. Every path ends with the 
 %%{init: {'theme':'base','themeVariables':{'fontSize':'14px','lineColor':'#8b95a5','primaryBorderColor':'#5b6270'}}}%%
 flowchart TD
     Q(["🧑 You ask a question"]) --> CTX["🗂️ Get oriented<br/><small>scan the project · recall earlier work</small>"]
-    CTX --> SYS["📝 Prepare the instructions<br/><small>+ load a matching skill, if any</small>"]
+    CTX --> SYS["📝 Prepare the instructions<br/><small>+ the skills that can be loaded</small>"]
     SYS --> MODE{"Just plan,<br/>or take action?"}
     MODE -->|plan| PLAN["🧭 Plan only<br/><small>gather evidence → write the answer</small>"]
     MODE -->|act| STEER
@@ -256,7 +259,7 @@ flowchart TD
 
 ## Registered Servers
 
-The client registers 21 servers by default; the authoritative registry lives in
+The client registers 20 servers by default; the authoritative registry lives in
 [`constants.py`](mimir/client/config/constants.py). Per-server tool details are in
 [`SERVERS_DETAILED.md`](SERVERS_DETAILED.md).
 
@@ -266,7 +269,7 @@ The client registers 21 servers by default; the authoritative registry lives in
 | `strings` | reverse/case/strip/replace/split/contains/count/prefix/suffix/title |
 | `datetime` | Current time, day-of-week, date arithmetic, formatting, timestamp conversion |
 | `symbolic_math` | SymPy: simplify/expand/factor/differentiate/integrate/solve/limit/series/matrix |
-| `memory` | Persistent memory with tags, search, list, delete, clear |
+| `memory` | Persistent memory with tags, search, list, delete, clear — in two scopes: per-workspace and global (every workspace on the machine) |
 | `files` | Root-scoped file CRUD, surgical edits (`replace_in_file`, `replace_lines`), batch edits |
 | `search` | File/pattern search, file reads, cached tree summaries, directory listing, ranking |
 | `web` | Safe HTTP GET/POST, JSON parsing and field extraction (SSRF-hardened) |
@@ -278,6 +281,7 @@ The client registers 21 servers by default; the authoritative registry lives in
 | `code_intel` | Symbol navigation (ctags + LSP): definition, references, outline, hover |
 | `bash` | Workspace shell: search, compile, run, validate, test, `git`, file management — any command but a short denylist, approval-gated and path-confined |
 | `todo` | Agent task checklist: create, read, update an ordered per-session todo list |
+| `mimir_api` | MIMIR's own extension API: the capability vocabulary, the drop-in paths this workspace resolves, and the shipped template per extension type — read from the running build, not remembered |
 | `interaction` | `ask_user_question` — pause mid-run to ask a structured clarifying question (five minutes to answer, then it closes and the agent goes with the option it recommended) |
 | `agent` | `spawn_agent` — fan work out to a fresh agent: `role="explore"` (read-only recon, answers with a cited conclusion) or `role="task"` (full toolkit) |
 | `proxy` | Proxy registration, references, runs, benchmark suites, and the iterative eval loop (7 op-dispatched tools) |
@@ -360,34 +364,50 @@ The authoritative definition of policy, completion gating, and workflow-state ru
   compaction of intermediate tool results when the window fills, and a summary of the older
   turns before any of them are dropped. When even that cannot fit the prompt, the turn ends
   on an explicit context-overflow message instead of a provider error.
-- **Skills** — methodology prompts auto-detected from the query and recent turns.
+- **Skills** — methodology playbooks the model loads when the work turns out to need
+  one. Only the names and one-line descriptions are in the prompt; a body is read on
+  demand, at the step where what has been read says which method applies.
 
 See [`POLICY.md`](POLICY.md) and [`CLIENT_DETAILED.md`](CLIENT_DETAILED.md) for the full
 behaviour and rationale.
 
 ## Skills
 
-Skills are reusable methodology prompts injected into the agent context when a relevant task is
-detected. They guide *how* the agent works without replacing the base system instructions.
+Skills are reusable methodology prompts. They guide *how* the agent works without replacing
+the base system instructions, which stay authoritative. Their names and one-line descriptions
+are in the agent's instructions; a body enters the context only when it is loaded.
+
+The bundled set covers the pipeline the acronym names — math, modelling, implementation,
+runtime — and deliberately stops there. A skill restating what the system prompt already
+requires (make the minimum change, read before editing, validate what you modified) costs a
+line of every query's context and, loaded, spends one of the three slots a task has on a
+method the agent was already following.
 
 Each lives at `mimir/skills/<skill-name>/SKILL.md` with YAML front-matter (`name` must match
 the directory) followed by the methodology body. Built-in skills:
 
 | Skill | Description |
 |-------|-------------|
-| `fix-bug` | Fix a bug with minimal, safe changes and validate the result |
-| `refactor-code` | Improve code structure without changing external behavior |
-| `write-tests` | Write tests for existing code |
-| `explore-repo` | Systematically explore and summarize a repository |
-| `analyze-only` | Analyse code and report findings without making edits |
-| `prepare-pr` | Prepare a pull-request description from recent changes |
-| `proxy-optimize` | Optimize a registered proxy through the iterative eval loop |
+| `derive-model` | Derive or verify the mathematics symbolically before implementing it |
+| `write-tests` | Write tests that discriminate, against something independent of the code |
+| `debug-numerics` | Diagnose a computation that runs and is wrong |
+| `parallelize-kernel` | Thread, vectorise or distribute a kernel, and prove the speedup is real |
+| `run-on-cluster` | Build for the target node, size and submit a Slurm job, read what came back |
+| `proxy-optimize` | Optimize a registered proxy through the eval loop's accept/reject ratchet |
+| `explore-repo` | Map unfamiliar code, and stop once the files and symbols are named |
+| `mimir-api` | Author a `.mimir` extension — skill, tool server, policy, hook, nudge — from MIMIR's own API |
 
-Trigger a skill explicitly with a slash command (`/fix-bug the import error in …`) or let the
-classifier detect it implicitly — it reads the current query plus the last few turns, so a
-short "yes" can activate a skill whose intent was set earlier. In the VS Code chat, typing
-`/` at the start of the input opens an autocomplete dropdown of available skills (mirroring
-the `@` resource-attach menu).
+Trigger a skill explicitly with a slash command (`/debug-numerics the solver blows up at step 40 …`), which
+folds its method into the system prompt for the whole query. Otherwise the model loads one
+itself: the index of available skills is in its instructions, and `load_skill(<name>)` reads
+the body — on the first step when the request already says so, and equally at the twentieth,
+once what it has read is what settles which method the task needs. At most three per task,
+never the same one twice. A skill whose front-matter sets `disable-model-invocation: true`
+stays available to the slash command and refuses the model's own pull.
+
+In the VS Code chat, typing `/` at the start of the input opens an autocomplete dropdown of
+available skills (mirroring the `@` attach menu, which lists the workspace's files and the
+MCP resources — `@src/solver.py:40-80` attaches those lines).
 
 ## Extending MIMIR
 
@@ -402,8 +422,17 @@ core edit, no registration call:
 | Policies, post-tool hooks + nudges | `.mimir/plugins/*.py` | `MIMIR_PLUGINS_DIR` | additive |
 | Base prompt | `.mimir/system_prompt.md` | `MIMIR_SYSTEM_PROMPT_FILE` | user **replaces the doctrine half** of the built-in default |
 
+**Or ask MIMIR.** `/mimir-api` authors any of these with you, working from the `mimir_api`
+tool rather than from what a model remembers of MIMIR: the live capability vocabulary, the
+drop-in path *your* workspace resolves, and the shipped template for the type. Asking it
+"what can I extend, and where does the file go?" is the one-call version.
+
 Agent **state** lives elsewhere, in a central per-workspace dir (`~/.mimir/<workspace-id>/`,
-override `MIMIR_STATE_DIR`): memory, sessions, plans, todos, and the module catalogue. The agent's **scratchpad** sits
+override `MIMIR_STATE_DIR`): memory, sessions, plans, todos, and the module catalogue. One
+tier above it, `~/.mimir/global/` (override `MIMIR_GLOBAL_STATE_DIR`) holds what belongs to
+*you* rather than to one repository — today the **global memory**, shared by every workspace
+on the machine, so a preference or a correction is stored once instead of once per project.
+The agent's **scratchpad** sits
 under the temp dir instead — `<TMPDIR or /tmp>/mimir-<uid>-<workspace-id>/<session-id>/`,
 override `MIMIR_SCRATCH_DIR`. It is writable without approval and is where throwaway scripts,
 probes, intermediate data and diagnostic plots belong; nothing written there is reported as

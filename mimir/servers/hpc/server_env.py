@@ -153,7 +153,7 @@ def _looks_like_venv(path: str) -> bool:
     )
 
 
-@mcp.tool(**tool_caps(
+@mcp.tool(**tool_caps(kind="env",
     caps=[PLAN_BLOCKED, ENV_MUTATE], reversibility=RECOVERABLE, non_batch=True,
     scope={"args": ["packages"], "kind": "packages"},
     risk_note="installs packages into a Python environment",
@@ -197,7 +197,7 @@ def env_pip_install(packages, python_executable: str = "python3") -> dict:
     })
 
 
-@mcp.tool(**tool_caps(
+@mcp.tool(**tool_caps(kind="env",
     caps=[PLAN_BLOCKED], reversibility=RECOVERABLE, non_batch=True,
     scope={"args": ["packages"], "kind": "packages"},
     risk_note="uninstalls packages from a Python environment",
@@ -225,7 +225,7 @@ def env_pip_uninstall(packages, python_executable: str = "python3") -> dict:
     return ok({"uninstalled": pkgs, "python": py, "stdout": result["stdout"][-2000:]})
 
 
-@mcp.tool(**tool_caps(
+@mcp.tool(**tool_caps(kind="env",
     caps=[PLAN_BLOCKED, ENV_MUTATE], reversibility=RECOVERABLE, non_batch=True,
     scope={"args": ["name", "target"], "kind": "basename", "noun": "this environment"},
     risk_note="creates a new Python environment",
@@ -322,7 +322,7 @@ def env_create(name: str, kind: str = "venv", packages=None, python_executable: 
     return err(f"Unsupported env kind: {kind!r}", hint="Use 'venv' or 'conda'.")
 
 
-@mcp.tool(**tool_caps(
+@mcp.tool(**tool_caps(kind="env",
     caps=[PLAN_BLOCKED, REMOVE], reversibility=RECOVERABLE, non_batch=True,
     scope={"args": ["name", "target"], "kind": "basename", "noun": "this environment"},
     risk_note="deletes a Python environment",

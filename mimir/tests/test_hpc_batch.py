@@ -11,6 +11,7 @@ Run:
 
 import json
 import os
+import shlex
 import sys
 import tempfile
 import unittest
@@ -24,11 +25,28 @@ for _p in (_SERVERS / "_shared", _SERVERS / "hpc"):
         sys.path.insert(0, str(_p))
 
 import server_hpc  # noqa: E402
+import slurm_digest  # noqa: E402
+import slurm_site  # noqa: E402
+
+
+def _only_local(case: unittest.TestCase) -> None:
+    """Make this machine's own Slurm the one scheduler for the rest of *case*.
+
+    The inventory is the local probe plus whatever a session has learned, so a test
+    that does not pin it reads the developer's machine: with ``sbatch`` on the box the
+    answer is one scheduler, without it none, and a submission would be refused for
+    having nowhere to go. Pinned here so what the tests exercise is the resolution and
+    not the host they happen to run on.
+    """
+    orig = slurm_site._HAS_SLURM
+    slurm_site._HAS_SLURM = True
+    case.addCleanup(lambda: setattr(slurm_site, "_HAS_SLURM", orig))
 
 
 def _canned(mapping: dict):
     """Return a fake _run_bash whose output depends on the command substring."""
-    def fake(script: str, timeout: int) -> dict:
+    def fake(script: str, timeout: int, stdin: str | None = None, *,
+             host: str = "") -> dict:
         for key, (status, out) in mapping.items():
             if key in script:
                 return {"status": status, "stdout": out, "stderr": "",
@@ -90,7 +108,35 @@ class SbatchSubmitTests(unittest.TestCase):
         # Job dirs land under the submitting session's state dir; point the state dir at
         # a temp tree. Through the environment, so the test exercises the real
         # resolution (state_paths.session_state_dir) rather than a patched constant.
+        # What else of the user's is running is asked through the shared seam, not
+        # through this module's _run_bash — so it is stubbed separately or every case
+        # here shells out to a real scheduler and waits out its timeout.
+        self._orig_queued = server_hpc.slurm_queued_by_host
+        server_hpc.slurm_queued_by_host = lambda *_a, **_k: {"": []}
+        self.addCleanup(lambda: setattr(server_hpc, "slurm_queued_by_host",
+                                        self._orig_queued))
+        # One scheduler, this machine's own, so resolution has nothing to refuse and
+        # the real slurm_site.resolve_host is what runs. Forced rather than mocked: the
+        # probe is a fact about the developer's machine, which a test may not inherit.
+        _only_local(self)
         self._orig_run = server_hpc._run_argv
+        # Everything a submission runs goes through _run_bash now — the submit itself
+        # (the script on sbatch's stdin) and the question of what else of the user's is
+        # running unaccounted for. Stubbed for the whole class: unstubbed, every case
+        # shells out to a real scheduler through a login shell and waits out its
+        # timeout. The piped scripts are kept, since what was submitted is the thing
+        # several cases are about.
+        self._orig_bash = server_hpc._run_bash
+        self.piped: list[str] = []
+
+        def _fake_bash(script, timeout, stdin=None, *, host=""):
+            self.piped.append(stdin or "")
+            if "sbatch" in script:
+                return {"status": "ok", "stdout": "Submitted batch job 4242",
+                        "stderr": "", "returncode": 0}
+            return {"status": "ok", "stdout": "", "stderr": "", "returncode": 0}
+
+        server_hpc._run_bash = _fake_bash
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
         self._state = os.path.join(self._tmp.name, "state")
@@ -103,11 +149,9 @@ class SbatchSubmitTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         server_hpc._run_argv = self._orig_run
+        server_hpc._run_bash = self._orig_bash
 
     def _submit(self, **kwargs) -> dict:
-        server_hpc._run_argv = lambda argv, t: {
-            "status": "ok", "stdout": "Submitted batch job 4242",
-            "stderr": "", "returncode": 0}
         return server_hpc.sbatch_submit(
             command=kwargs.pop("command", "echo hi"),
             partition=kwargs.pop("partition", "cpu"),
@@ -139,7 +183,7 @@ class SbatchSubmitTests(unittest.TestCase):
             submitted = self._submit()["job_dir"]
         self.addCleanup(setattr, server_hpc, "_normalized_job_state",
                         server_hpc._normalized_job_state)
-        server_hpc._normalized_job_state = lambda jid: ("running", "RUNNING")
+        server_hpc._normalized_job_state = lambda jid, *, host="": ("running", "RUNNING")
         with patch.dict(os.environ, {"MIMIR_SESSION_ID": "session-b"}):
             status = server_hpc.slurm_job_status(job_id="4242")
         self.assertEqual(status["job_dir"], submitted)
@@ -148,12 +192,77 @@ class SbatchSubmitTests(unittest.TestCase):
     def test_a_job_of_this_session_is_not_labelled_as_another_s(self) -> None:
         self.addCleanup(setattr, server_hpc, "_normalized_job_state",
                         server_hpc._normalized_job_state)
-        server_hpc._normalized_job_state = lambda jid: ("running", "RUNNING")
+        server_hpc._normalized_job_state = lambda jid, *, host="": ("running", "RUNNING")
         with patch.dict(os.environ, {"MIMIR_SESSION_ID": "session-a"}):
             submitted = self._submit()["job_dir"]
             status = server_hpc.slurm_job_status(job_id="4242")
         self.assertEqual(status["job_dir"], submitted)
         self.assertNotIn("submitted_by_another_session", status)
+
+    def _status_as(self, state: str, job_id: str = "4242") -> dict:
+        self.addCleanup(setattr, server_hpc, "_normalized_job_state",
+                        server_hpc._normalized_job_state)
+        server_hpc._normalized_job_state = lambda jid, *, host="": (state,
+                                                                     state.upper())
+        return server_hpc.slurm_job_status(job_id=job_id)
+
+    def test_a_terminal_poll_settles_the_submission_directory(self) -> None:
+        """The counterpart of a shell job's exit-code trap.
+
+        A submission records an id, and an id never stops existing — so whoever asks
+        later whether this workspace still has work running reads the directory as live
+        for ever. This poll is the only thing that will ever know otherwise.
+        """
+        with patch.dict(os.environ, {"MIMIR_SESSION_ID": "session-a"}):
+            job_dir = self._submit()["job_dir"]
+            self._status_as("done")
+        with open(os.path.join(job_dir, "slurm_state")) as fh:
+            self.assertEqual(fh.read().strip(), "done")
+
+    def test_a_job_still_in_the_queue_is_not_settled(self) -> None:
+        for state in ("running", "pending"):
+            with self.subTest(state=state), \
+                 patch.dict(os.environ, {"MIMIR_SESSION_ID": "session-a"}):
+                job_dir = self._submit()["job_dir"]
+                self._status_as(state)
+                self.assertFalse(os.path.exists(os.path.join(job_dir, "slurm_state")))
+
+    def test_a_job_slurm_has_forgotten_is_settled_as_unknown(self) -> None:
+        # Terminal and claiming nothing. Leaving it blank would read as "still running"
+        # for ever, which is the failure this whole record exists to end.
+        with patch.dict(os.environ, {"MIMIR_SESSION_ID": "session-a"}):
+            job_dir = self._submit()["job_dir"]
+            self._status_as("unknown")
+        with open(os.path.join(job_dir, "slurm_state")) as fh:
+            self.assertEqual(fh.read().strip(), "unknown")
+
+    def test_the_first_observation_stands(self) -> None:
+        # sacct's retention window expires and the same job then reads 'unknown'.
+        # Overwriting would turn every recorded outcome into "forgotten" given time.
+        with patch.dict(os.environ, {"MIMIR_SESSION_ID": "session-a"}):
+            job_dir = self._submit()["job_dir"]
+            self._status_as("crashed")
+            server_hpc._normalized_job_state = lambda jid, *, host="": ("unknown", "")
+            server_hpc.slurm_job_status(job_id="4242")
+        with open(os.path.join(job_dir, "slurm_state")) as fh:
+            self.assertEqual(fh.read().strip(), "crashed")
+
+    def test_another_session_s_poll_settles_it_too(self) -> None:
+        # The record belongs to the job, not to whoever looked — and the reader that
+        # needs it most is scanning sessions that may have no agent at all.
+        with patch.dict(os.environ, {"MIMIR_SESSION_ID": "session-a"}):
+            job_dir = self._submit()["job_dir"]
+        with patch.dict(os.environ, {"MIMIR_SESSION_ID": "session-b"}):
+            self._status_as("done")
+        self.assertTrue(os.path.exists(os.path.join(job_dir, "slurm_state")))
+
+    def test_an_unwritable_directory_does_not_cost_the_answer(self) -> None:
+        with patch.dict(os.environ, {"MIMIR_SESSION_ID": "session-a"}):
+            job_dir = self._submit()["job_dir"]
+            os.chmod(job_dir, 0o500)
+            self.addCleanup(os.chmod, job_dir, 0o700)
+            status = self._status_as("done")
+        self.assertEqual(status["state"], "done")
 
     def test_requires_confirm(self) -> None:
         res = server_hpc.sbatch_submit(command="echo hi", partition="cpu")
@@ -161,7 +270,7 @@ class SbatchSubmitTests(unittest.TestCase):
         self.assertIn("confirm", res.get("hint", ""))
 
     def test_submits_and_returns_descriptor(self) -> None:
-        server_hpc._run_argv = lambda argv, t: {
+        server_hpc._run_argv = lambda argv, t, host='': {
             "status": "ok", "stdout": "Submitted batch job 4242",
             "stderr": "", "returncode": 0}
         res = server_hpc.sbatch_submit(command="echo hi", partition="cpu", confirm=True)
@@ -179,7 +288,7 @@ class SbatchSubmitTests(unittest.TestCase):
         self.assertIn("echo hi", script)
 
     def test_unparseable_sbatch_output_errors(self) -> None:
-        server_hpc._run_argv = lambda argv, t: {
+        server_hpc._run_bash = lambda script, t, stdin=None, host='': {
             "status": "ok", "stdout": "no id here", "stderr": "", "returncode": 0}
         res = server_hpc.sbatch_submit(command="x", partition="cpu", confirm=True)
         self.assertEqual(res.get("status"), "error")
@@ -192,7 +301,7 @@ class SbatchSubmitTests(unittest.TestCase):
 
     def test_comment_lands_in_the_script_quoted(self) -> None:
         """Free text with spaces still has to be one --comment value to Slurm."""
-        server_hpc._run_argv = lambda argv, t: {
+        server_hpc._run_argv = lambda argv, t, host='': {
             "status": "ok", "stdout": "Submitted batch job 7", "stderr": "",
             "returncode": 0}
         res = server_hpc.sbatch_submit(command="echo hi", partition="cpu",
@@ -203,7 +312,7 @@ class SbatchSubmitTests(unittest.TestCase):
             self.assertIn("#SBATCH --comment='mimir ratchet iter 12'", fh.read())
 
     def test_without_a_comment_the_directive_is_absent(self) -> None:
-        server_hpc._run_argv = lambda argv, t: {
+        server_hpc._run_argv = lambda argv, t, host='': {
             "status": "ok", "stdout": "Submitted batch job 8", "stderr": "",
             "returncode": 0}
         res = server_hpc.sbatch_submit(command="echo hi", partition="cpu", confirm=True)
@@ -213,7 +322,7 @@ class SbatchSubmitTests(unittest.TestCase):
     def test_a_newline_in_the_comment_is_refused_before_slurm(self) -> None:
         """It would otherwise forge a #SBATCH directive line of its own."""
         called: list = []
-        server_hpc._run_argv = lambda argv, t: called.append(argv) or {
+        server_hpc._run_argv = lambda argv, t, host='': called.append(argv) or {
             "status": "ok", "stdout": "Submitted batch job 9", "stderr": "",
             "returncode": 0}
         res = server_hpc.sbatch_submit(
@@ -234,7 +343,7 @@ class SallocSubmitTests(unittest.TestCase):
 
     def setUp(self) -> None:
         self._orig = server_hpc._run_argv
-        server_hpc._run_argv = lambda argv, t: {
+        server_hpc._run_argv = lambda argv, t, host='': {
             "status": "ok", "stdout": "salloc: Granted job allocation 77",
             "stderr": "", "returncode": 0}
 
@@ -300,7 +409,7 @@ class SlurmNodesTests(unittest.TestCase):
 
     def setUp(self) -> None:
         self._orig = server_hpc._run_argv
-        server_hpc._run_argv = lambda argv, t: {
+        server_hpc._run_argv = lambda argv, t, host='': {
             "status": "ok", "stdout": _SCONTROL, "stderr": "", "returncode": 0}
 
     def tearDown(self) -> None:
@@ -340,10 +449,10 @@ class SlurmNodesTests(unittest.TestCase):
     def test_falls_back_to_sinfo_without_scontrol(self) -> None:
         """A cluster that restricts scontrol still gets an answer — minus what only
         scontrol knows, and told so rather than defaulted."""
-        server_hpc._run_argv = lambda argv, t: {"status": "error", "stderr": "denied"}
+        server_hpc._run_argv = lambda argv, t, host='': {"status": "error", "stderr": "denied"}
         rows = "cpu-n01|cpu|idle|64|773500|760000|(null)|2|32|1\ncpu-n01|cpu_night|idle|64|773500|760000|(null)|2|32|1\n"
         orig_bash = server_hpc._run_bash
-        server_hpc._run_bash = lambda s, t: {"status": "ok", "stdout": rows, "stderr": "", "returncode": 0}
+        server_hpc._run_bash = lambda s, t, host='': {"status": "ok", "stdout": rows, "stderr": "", "returncode": 0}
         try:
             res = server_hpc.slurm_nodes()
             self.assertEqual(res["nodes_total"], 1)   # one node in two partitions, not two nodes
@@ -355,30 +464,48 @@ class SlurmNodesTests(unittest.TestCase):
 
 class SbatchTargetingTests(unittest.TestCase):
     def setUp(self) -> None:
-        self._orig_run = server_hpc._run_argv
-        self._orig_dir = os.environ.get("MIMIR_HPC_JOBS_DIR")
+        # A submission runs everything through _run_bash — the script goes to sbatch's
+        # stdin — so that is the seam to stub: left alone, each case shells out to a
+        # real scheduler. The piped script is what these cases are about.
+        self._orig_queued = server_hpc.slurm_queued_by_host
+        server_hpc.slurm_queued_by_host = lambda *_a, **_k: {"": []}
+        self.addCleanup(lambda: setattr(server_hpc, "slurm_queued_by_host",
+                                        self._orig_queued))
+        _only_local(self)
+        self._orig_bash = server_hpc._run_bash
+        self.piped: list[str] = []
+
+        def _fake_bash(script, timeout, stdin=None, *, host=""):
+            self.piped.append(stdin or "")
+            if "sbatch" in script:
+                return {"status": "ok", "stdout": "Submitted batch job 7",
+                        "stderr": "", "returncode": 0}
+            return {"status": "ok", "stdout": "", "stderr": "", "returncode": 0}
+
+        server_hpc._run_bash = _fake_bash
+        self.addCleanup(lambda: setattr(server_hpc, "_run_bash", self._orig_bash))
+        self._orig_dir = os.environ.get("MIMIR_STATE_DIR")
         self._tmp = tempfile.TemporaryDirectory()
-        os.environ["MIMIR_HPC_JOBS_DIR"] = os.path.join(self._tmp.name, "jobs")
-        server_hpc._run_argv = lambda argv, t: {
-            "status": "ok", "stdout": "Submitted batch job 7", "stderr": "", "returncode": 0}
+        os.environ["MIMIR_STATE_DIR"] = self._tmp.name
 
     def tearDown(self) -> None:
-        server_hpc._run_argv = self._orig_run
         if self._orig_dir is None:
-            os.environ.pop("MIMIR_HPC_JOBS_DIR", None)
+            os.environ.pop("MIMIR_STATE_DIR", None)
         else:
-            os.environ["MIMIR_HPC_JOBS_DIR"] = self._orig_dir
+            os.environ["MIMIR_STATE_DIR"] = self._orig_dir
         self._tmp.cleanup()
 
     def test_constraint_nodelist_exclusive_reach_the_script(self) -> None:
         res = server_hpc.sbatch_submit(command="./bench", partition="cpu", constraint="icelake",
                                        nodelist="n[01-02]", exclusive=True, ntasks=4,
                                        confirm=True)
-        with open(res["batch_script"]) as fh:
-            script = fh.read()
+        self.assertEqual(res.get("status"), "ok", res.get("error"))
+        script = self.piped[0]
         for want in ("--constraint=icelake", "--nodelist=n[01-02]", "--exclusive", "--ntasks=4"):
             self.assertIn(want, script)
         self.assertNotIn("--nodes=", script)   # 0 = scheduler default
+        # The log goes where the job runs, so the two directives name one directory.
+        self.assertIn("--chdir=", script)
 
     def test_bad_constraint_rejected(self) -> None:
         res = server_hpc.sbatch_submit(command="x", partition="cpu", constraint="a b",
@@ -410,7 +537,10 @@ class NodeProfileTests(unittest.TestCase):
             "_run_argv", "_run_bash", "_NODE_PROFILES_DIR",
             "_host_identity", "_local_profile_record")}
         self._tmp = tempfile.TemporaryDirectory()
-        # tearDown restores the whole environment, which is what puts this back.
+        # Taken before anything here is set, which is what lets tearDown put the
+        # environment back: captured after, it would restore this test's own job dir
+        # and every later test would file its submissions into one shared directory.
+        self._env = dict(os.environ)
         self._jobs_dir = os.path.join(self._tmp.name, "jobs")
         os.environ["MIMIR_HPC_JOBS_DIR"] = self._jobs_dir
         server_hpc._NODE_PROFILES_DIR = os.path.join(self._tmp.name, "profiles")
@@ -421,7 +551,6 @@ class NodeProfileTests(unittest.TestCase):
             "arch": "x86_64", "os": {"id": "rhel", "version": "9.4", "glibc": "2.34"},
             "cpu": {"model": "Intel(R) Xeon(R) 6747P", "simd": {"avx2": True, "amx_tile": True}},
         }
-        self._env = dict(os.environ)
         os.environ.pop("SLURM_JOB_ID", None)
 
     def tearDown(self) -> None:
@@ -542,12 +671,19 @@ class SlurmCancelTests(unittest.TestCase):
     """One job of the user's, approved as such: never a sweep, never someone else's."""
 
     def setUp(self) -> None:
-        self._orig = (server_hpc._run_argv, server_hpc._current_user)
+        self._orig = (server_hpc._run_argv, server_hpc._current_user,
+                      server_hpc._run_bash)
         self.argvs: list[list[str]] = []
         self.queue = "alice|RUNNING"
         server_hpc._current_user = lambda: "alice"
+        # A cancellation finds the job before it sends anything, so this class needs
+        # the scheduler to answer "running" as well: a scancel aimed at a scheduler
+        # that never heard of the id either hits nothing or, the number existing on
+        # two clusters, somebody else's job.
+        _only_local(self)
+        server_hpc._run_bash = _canned({"squeue": ("ok", "RUNNING")})
 
-        def fake_argv(argv, timeout):
+        def fake_argv(argv, timeout, *, host=""):
             self.argvs.append(argv)
             if argv[0] == "squeue":
                 return {"status": "ok", "stdout": self.queue, "stderr": "", "returncode": 0}
@@ -555,7 +691,8 @@ class SlurmCancelTests(unittest.TestCase):
         server_hpc._run_argv = fake_argv
 
     def tearDown(self) -> None:
-        server_hpc._run_argv, server_hpc._current_user = self._orig
+        (server_hpc._run_argv, server_hpc._current_user,
+         server_hpc._run_bash) = self._orig
 
     def _cancels(self) -> list[list[str]]:
         return [a for a in self.argvs if a[0] == "scancel"]
@@ -613,5 +750,679 @@ class SlurmCancelTests(unittest.TestCase):
         self.assertNotIn(CLUSTER_SUBMIT, caps)
 
 
+class WhereAJobsOutputGoesTests(unittest.TestCase):
+    """A job writes its output from the node it ran on, not from this host.
+
+    The log used to be pointed at the submission's own directory under the state dir —
+    the one directory in the arrangement that nothing guarantees the compute nodes can
+    write. On a site whose home is not mounted on them, the job ran, succeeded, and its
+    output went nowhere; an empty read then looked like a job that printed nothing.
+
+    The rule that needs no configuration and no failure to learn: the output goes where
+    the job *runs*. If the job could start at all, that directory is reachable from the
+    node Slurm started it on — otherwise there would have been nothing to chdir into.
+    """
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self._state = os.path.join(self._tmp.name, "state")
+        self._work = os.path.join(self._tmp.name, "scratch")
+        os.makedirs(self._state)
+        os.makedirs(self._work)
+        env = patch.dict(os.environ, {"MIMIR_STATE_DIR": self._state}, clear=False)
+        env.start()
+        self.addCleanup(env.stop)
+        os.environ.pop("MIMIR_SESSION_ID", None)
+        os.environ.pop("MIMIR_HPC_JOBS_DIR", None)
+        # What else of the user's is running is asked through the shared seam, not
+        # through this module's _run_bash — so it is stubbed separately or every case
+        # here shells out to a real scheduler and waits out its timeout.
+        self._orig_queued = server_hpc.slurm_queued_by_host
+        server_hpc.slurm_queued_by_host = lambda *_a, **_k: {"": []}
+        self.addCleanup(lambda: setattr(server_hpc, "slurm_queued_by_host",
+                                        self._orig_queued))
+        # One scheduler, this machine's own, so resolution has nothing to refuse and
+        # the real slurm_site.resolve_host is what runs. Forced rather than mocked: the
+        # probe is a fact about the developer's machine, which a test may not inherit.
+        _only_local(self)
+        self._orig = server_hpc._run_bash
+        self.piped: list[str] = []
+
+        def _fake_bash(script, timeout, stdin=None, *, host=""):
+            self.piped.append(stdin or "")
+            if "sbatch" in script:
+                return {"status": "ok", "stdout": "Submitted batch job 4242",
+                        "stderr": "", "returncode": 0}
+            return {"status": "ok", "stdout": "", "stderr": "", "returncode": 0}
+
+        server_hpc._run_bash = _fake_bash
+
+    def tearDown(self) -> None:
+        server_hpc._run_bash = self._orig
+
+    def _submit(self, **kwargs) -> dict:
+        return server_hpc.sbatch_submit(command="echo hi", partition="cpu",
+                                        confirm=True, **kwargs)
+
+    def _script(self) -> str:
+        return next(text for text in self.piped if "#SBATCH" in text)
+
+    def test_the_job_runs_and_writes_in_the_same_directory(self) -> None:
+        res = self._submit(work_dir=self._work)
+        script = self._script()
+        self.assertIn(f"#SBATCH --chdir={self._work}", script)
+        self.assertIn(f"#SBATCH --output={os.path.join(self._work, 'slurm-%j.log')}",
+                      script)
+        self.assertEqual(res["log"], os.path.join(self._work, "slurm-4242.log"))
+        self.assertEqual(res["work_dir"], self._work)
+
+    def test_the_log_is_not_in_the_state_dir(self) -> None:
+        # The whole failure: a path visible here and not from the compute node.
+        res = self._submit(work_dir=self._work)
+        self.assertNotIn(self._state, res["log"])
+        self.assertNotIn(self._state, self._script())
+
+    def test_it_defaults_to_where_this_server_runs(self) -> None:
+        # Which is the workspace, and is where sbatch would have put the job anyway:
+        # with no --chdir, Slurm starts a job in the directory it was submitted from.
+        res = self._submit()
+        self.assertEqual(res["work_dir"], os.path.realpath(os.getcwd()))
+
+    def test_a_work_dir_that_is_not_there_is_refused(self) -> None:
+        # The job starts in it, so a path that is not there is a submission that fails
+        # at launch — after the queue wait.
+        res = self._submit(work_dir=os.path.join(self._tmp.name, "nope"))
+        self.assertEqual(res["status"], "error")
+
+    def test_a_work_dir_it_cannot_write_is_refused_now(self) -> None:
+        """Said before the queue wait, and not worked around.
+
+        The tempting fallback is somewhere always writable, which on a cluster means
+        ``/tmp`` — and ``/tmp`` is the compute node's own disk, so the output would
+        land where this host can never read it. A shared directory that is not
+        writable fails loudly; a node-local one fails silently, with an empty run that
+        looks like a job which printed nothing.
+        """
+        locked = os.path.join(self._tmp.name, "readonly")
+        os.makedirs(locked)
+        os.chmod(locked, 0o500)
+        self.addCleanup(os.chmod, locked, 0o700)
+        res = self._submit(work_dir=locked)
+        self.assertEqual(res["status"], "error")
+        self.assertIn("not writable", res["error"])
+        self.assertNotIn("/tmp", res["hint"])
+
+    def test_the_script_is_piped_not_handed_over_by_path(self) -> None:
+        """``sbatch`` reads its script from stdin when given no file.
+
+        Which means nothing of ours has to exist on the host that runs it — the one
+        thing a scheduler behind ``ssh`` cannot promise, and what otherwise has to be
+        checked over ssh before a submission can be made at all.
+        """
+        res = self._submit(work_dir=self._work)
+        self.assertIn("#!/bin/bash", self._script())
+        self.assertIn("echo hi", self._script())
+        # Still written down, for a reader asking what was actually submitted.
+        with open(res["batch_script"]) as fh:
+            self.assertEqual(fh.read(), self._script())
+
+    def test_the_status_answer_names_the_log_the_submission_recorded(self) -> None:
+        res = self._submit(work_dir=self._work)
+        server_hpc._run_bash = _canned({"squeue": ("ok", "RUNNING")})
+        status = server_hpc.slurm_job_status(job_id="4242")
+        self.assertEqual(status["log"], res["log"])
+
+    def test_a_finished_job_with_no_log_says_what_that_means(self) -> None:
+        self._submit(work_dir=self._work)
+        server_hpc._run_bash = _canned({"squeue": ("ok", ""),
+                                        "sacct": ("ok", "COMPLETED")})
+        status = server_hpc.slurm_job_status(job_id="4242")
+        self.assertEqual(status["state"], "done")
+        self.assertIn("work_dir", status["log_missing"])
+        # Not a setting to go and change.
+        self.assertNotIn("MIMIR_", status["log_missing"])
+
+
+class HowACommandReachesItsSchedulerTests(unittest.TestCase):
+    """Running a command where Slurm is, which is not always on this host.
+
+    A login node that holds the editor's remote session while the scheduler lives
+    behind ``ssh`` is an ordinary arrangement, and on one of those every cluster tool
+    answered "sbatch is not available" — so the work was submitted by hand through the
+    shell, where nothing writes a descriptor. Nothing was watched, no wake was ever
+    owed, and the server stopped on its idle TTL with the user's job running.
+
+    *Which* scheduler a call goes to is the caller's, resolved from what a tool was
+    given against the session's inventory — see ``LearnedSchedulersTests`` in
+    ``test_bash_background`` for how that inventory is built. These pin how a command
+    is run once the host is known. The seam is shared (``_shared/slurm_site``) because
+    all three servers ask the same question.
+    """
+
+    def test_local_is_run_through_a_login_shell(self) -> None:
+        # The login shell is what puts the scheduler's own module files on PATH — the
+        # difference between squeue and "command not found" on most sites.
+        self.assertEqual(slurm_site.argv_for("squeue -h"),
+                         ["bash", "-lc", "squeue -h"])
+
+    def test_a_named_host_is_reached_over_ssh(self) -> None:
+        argv = slurm_site.argv_for("squeue -u $USER", host="host-a")
+        self.assertEqual(argv[0], "ssh")
+        self.assertIn("host-a", argv)
+        # A poller that can be asked for a password hangs for the timeout on every
+        # tick, and an ssh that reads a server's stdin eats its MCP traffic.
+        self.assertIn("BatchMode=yes", argv)
+        self.assertIn("-n", argv)
+        # $USER has to reach the far side unexpanded: it is the remote account the
+        # query is about.
+        self.assertIn("squeue -u $USER", argv[-1])
+
+    def test_a_piped_call_keeps_its_stdin(self) -> None:
+        # ``-n`` closes stdin, which is right for every call but the one whose stdin
+        # is the point: a submission hands sbatch its script that way.
+        argv = slurm_site.argv_for("sbatch", host="host-a", piped=True)
+        self.assertNotIn("-n", argv)
+        self.assertIn("BatchMode=yes", argv)
+
+    def test_no_ssh_options_of_our_own(self) -> None:
+        # An identity file, a port, a jump host are ~/.ssh/config's business — a
+        # configuration mechanism the user already has, and one we have no business
+        # duplicating with a setting of our own.
+        argv = slurm_site.argv_for("squeue", host="host-a")
+        self.assertEqual([a for a in argv if a == "-o"], ["-o", "-o"])
+        self.assertEqual(argv.count("host-a"), 1)
+
+    def test_an_interactive_allocation_is_refused_over_ssh(self) -> None:
+        """A silent no-op is worse than a plain no.
+
+        ``salloc`` wants a terminal on the host that has the scheduler, and over ssh
+        there is none: it would take the allocation, find no shell to run in it, and
+        give it straight back — spending the request and reporting success at having
+        done nothing.
+
+        Asked of the scheduler the call *names*: the refusal is about where this one
+        allocation would land, not about anything the session recorded earlier.
+        """
+        res = server_hpc.salloc_submit(partition="cpu", confirm=True,
+                                       scheduler="host-a")
+        self.assertEqual(res["status"], "error")
+        self.assertIn("terminal", res["error"])
+        self.assertIn("sbatch_submit", res["hint"])
+
+    def test_an_interactive_allocation_is_allowed_where_slurm_is(self) -> None:
+        # The other half: naming the local scheduler is not an ssh, so nothing is
+        # refused — this one gets as far as actually running salloc.
+        _only_local(self)
+        ran: list[list[str]] = []
+        orig = server_hpc._run_argv
+        server_hpc._run_argv = lambda argv, t, host='': ran.append(argv) or {
+            "status": "ok", "stdout": "granted", "stderr": "", "returncode": 0}
+        self.addCleanup(lambda: setattr(server_hpc, "_run_argv", orig))
+        res = server_hpc.salloc_submit(partition="cpu", confirm=True,
+                                       scheduler="local")
+        self.assertEqual(res["status"], "ok")
+        self.assertEqual(ran[0][0], "salloc")
+
+    def test_an_argv_is_exec_d_as_it_stands_when_slurm_is_here(self) -> None:
+        # The property the submitters are written for: they take their resources as
+        # arguments and build the command themselves, so no shell is involved and no
+        # argument can become a second command.
+        self.assertEqual(slurm_site.exec_argv(["scancel", "1; rm -rf /"]),
+                         ["scancel", "1; rm -rf /"])
+
+    def test_an_argv_keeps_its_arguments_whole_over_ssh(self) -> None:
+        """The same property in the form that survives ssh.
+
+        ``ssh`` has no argv to hand over, only a command line for the far side to
+        parse — so each element is quoted on the way out, and what the remote shell
+        splits is exactly the argv built here.
+        """
+        argv = slurm_site.exec_argv(["scancel", "1; rm -rf /"], host="host-a")
+        self.assertEqual(argv[0], "ssh")
+        self.assertEqual(argv[-1], shlex.quote("scancel '1; rm -rf /'"))
+
+
+class JobArraysTests(unittest.TestCase):
+    """One id can be many jobs, and a site launcher submits exactly that.
+
+    An array submits as ``15306621`` and runs as ``15306621_1 … _8``; squeue and sacct
+    both answer with a line per element. Read as one line, an array whose first task
+    has finished while seven still run reports as finished — waking its conversation
+    on a run that has barely started.
+    """
+
+    def setUp(self) -> None:
+        self._orig = server_hpc._run_bash
+
+    def tearDown(self) -> None:
+        server_hpc._run_bash = self._orig
+
+    def _state(self, mapping: dict) -> tuple[str, str]:
+        server_hpc._run_bash = _canned(mapping)
+        return server_hpc._normalized_job_state("15306621")
+
+    def test_one_task_still_running_keeps_the_array_live(self) -> None:
+        state, _raw = self._state({"squeue": ("ok", "RUNNING\nRUNNING\nPENDING")})
+        self.assertEqual(state, "running")
+
+    def test_an_array_waiting_to_start_is_pending(self) -> None:
+        state, _raw = self._state({"squeue": ("ok", "PENDING\nPENDING")})
+        self.assertEqual(state, "pending")
+
+    def test_a_finished_task_does_not_settle_the_whole_array(self) -> None:
+        # The failure this exists for: the queue still holds live tasks, and sacct
+        # already has a terminal line for the ones that are done.
+        state, _raw = self._state({"squeue": ("ok", "RUNNING"),
+                                   "sacct": ("ok", "COMPLETED\nCOMPLETED")})
+        self.assertEqual(state, "running")
+
+    def test_an_array_is_done_only_when_every_task_completed(self) -> None:
+        state, _raw = self._state({"squeue": ("ok", ""),
+                                   "sacct": ("ok", "COMPLETED\nCOMPLETED")})
+        self.assertEqual(state, "done")
+
+    def test_one_failed_task_makes_the_array_crashed(self) -> None:
+        # An array where a task failed is not an array that completed, whichever line
+        # happens to come first.
+        state, raw = self._state({"squeue": ("ok", ""),
+                                  "sacct": ("ok", "COMPLETED\nFAILED\nCOMPLETED")})
+        self.assertEqual(state, "crashed")
+        self.assertIn("FAILED", raw)
+
+
+class ManySchedulersOneSessionTests(unittest.TestCase):
+    """A job is not something a scheduler owns — it is something one of them is running.
+
+    A machine reaches its own scheduler and whatever ``ssh`` gets to, and one
+    conversation uses several: a reference run local, a sweep on another cluster. So
+    the choice of where to submit is per call and refused rather than defaulted when
+    it is a real choice; and finding a job again never depends on having been told
+    where it is, because the watcher that polls it is re-armed from disk with nothing
+    but an id.
+    """
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self._jobs = os.path.join(self._tmp.name, "hpc_jobs")
+        env = patch.dict(os.environ, {"MIMIR_HPC_JOBS_DIR": self._jobs,
+                                      "MIMIR_STATE_DIR": self._tmp.name}, clear=False)
+        env.start()
+        self.addCleanup(env.stop)
+        self._orig_bash = server_hpc._run_bash
+        self.addCleanup(lambda: setattr(server_hpc, "_run_bash", self._orig_bash))
+        self._orig_queued = server_hpc.slurm_queued_by_host
+        server_hpc.slurm_queued_by_host = lambda *_a, **_k: {}
+        self.addCleanup(lambda: setattr(server_hpc, "slurm_queued_by_host",
+                                        self._orig_queued))
+        # The inventory describes each host's hardware, so no real scheduler is asked.
+        self._hardware: dict[str, str | None] = {}
+        orig_capture = slurm_digest._capture
+        slurm_digest._capture = self._capture
+        self.addCleanup(setattr, slurm_digest, "_capture", orig_capture)
+        slurm_digest.forget_cluster_digest()
+        self.addCleanup(slurm_digest.forget_cluster_digest)
+
+    def _capture(self, script, host, timeout):
+        answer = self._hardware.get(host, _SCONTROL)
+        if answer is None or not script.startswith("scontrol"):
+            return None
+        return answer
+
+    def _reaching(self, *hosts: str) -> None:
+        """Make the session reach exactly *hosts* ("" being this machine's own)."""
+        orig = slurm_site._HAS_SLURM
+        slurm_site._HAS_SLURM = "" in hosts
+        self.addCleanup(lambda: setattr(slurm_site, "_HAS_SLURM", orig))
+        for host in hosts:
+            if host:
+                slurm_site.record_host(host)
+
+    def _answers(self, knows: dict[str, str]) -> list[tuple[str, str]]:
+        """Let only the named hosts know a job, and record who was asked.
+
+        The asking order is the assertion that matters: the hint first, then the rest
+        — a poll runs on a timer for the life of a run, so a sweep on every tick is
+        not a detail.
+        """
+        asked: list[tuple[str, str]] = []
+
+        def fake(script, timeout, stdin=None, *, host=""):
+            asked.append((host, script.split()[0]))
+            state = knows.get(host, "")
+            if "squeue" in script:
+                return {"status": "ok", "stdout": state, "stderr": "",
+                        "returncode": 0}
+            return {"status": "ok", "stdout": "", "stderr": "", "returncode": 0}
+
+        server_hpc._run_bash = fake
+        return asked
+
+    def test_a_submission_is_refused_rather_than_sent_somewhere_by_default(self) -> None:
+        """The failure this whole shape exists for, caught at the one call that spends.
+
+        With two schedulers reachable, "which one" is a decision about the work — the
+        GPUs it needs, the filesystem its inputs are on. Picking the first silently is
+        how a production run's submissions went to a cluster that had never heard of
+        it, reported as an infrastructure problem for hours.
+        """
+        self._reaching("", "host-b")
+        res = server_hpc.sbatch_submit(command="echo hi", partition="cpu",
+                                       confirm=True)
+        self.assertEqual(res["status"], "error")
+        self.assertIn("local", res["error"])
+        self.assertIn("host-b", res["error"])
+        self.assertIn("scheduler=", res["error"])
+
+    def test_one_scheduler_needs_no_naming(self) -> None:
+        # The ordinary site: nothing to choose between, so nothing to say.
+        self._reaching("")
+        self._answers({})
+        res = server_hpc.sbatch_submit(command="echo hi", partition="cpu",
+                                       confirm=True, work_dir=self._tmp.name)
+        self.assertEqual(res["status"], "error")  # the fake sbatch prints no id
+        self.assertNotIn("scheduler=", res.get("error", ""))
+
+    def test_a_job_is_found_on_the_scheduler_that_knows_it(self) -> None:
+        """An id alone is enough, which is what the wake needs.
+
+        A watcher re-armed after a window reload polls slurm_job_status(job_id) with
+        no host — it has none to pass. So the answer has to be found: the descriptor's
+        record first, and failing that every reachable scheduler.
+        """
+        self._reaching("", "host-b")
+        asked = self._answers({"host-b": "RUNNING"})
+        res = server_hpc.slurm_job_status(job_id="7001")
+        self.assertEqual(res["state"], "running")
+        self.assertEqual(res["scheduler"], "host-b")
+        # In inventory order, and each host asked out before the next is tried: a
+        # scheduler that does not know the id answers squeue and then sacct.
+        self.assertEqual(list(dict.fromkeys(host for host, _ in asked)),
+                         ["", "host-b"])
+
+    def test_what_the_sweep_found_is_written_down_for_the_next_poll(self) -> None:
+        # Polls run on a timer for the life of a run, so the sweep must be paid once.
+        self._reaching("", "host-b")
+        adopt = self._answers({"host-b": "RUNNING"})
+        watched = server_hpc.slurm_watch(job_id="7001")
+        self.assertEqual(watched["scheduler"], "host-b")
+        with open(os.path.join(watched["job_dir"], "slurm_host")) as fh:
+            self.assertEqual(fh.read().strip(), "host-b")
+        asked = self._answers({"host-b": "RUNNING"})
+        server_hpc.slurm_job_status(job_id="7001")
+        self.assertEqual({host for host, _ in asked}, {"host-b"},
+                         "the recorded host is a cache, and a poll that has one does "
+                         "not sweep")
+        self.assertTrue(adopt)
+
+    def test_the_watcher_handle_stays_poll_able_by_id_alone(self) -> None:
+        """The contract the client depends on, and the reason it needs no change.
+
+        The watcher treats the descriptor as opaque and re-arms from disk with
+        ``{"job_id": id}``. A handle carrying a host would be a handle the re-arm
+        cannot rebuild.
+        """
+        self._reaching("", "host-b")
+        self._answers({"host-b": "RUNNING"})
+        res = server_hpc.slurm_watch(job_id="7001")
+        self.assertEqual(res["background_job"]["status_op"],
+                         {"tool": "slurm_job_status", "args": {"job_id": "7001"}})
+
+    def test_a_job_no_scheduler_knows_is_refused_naming_the_ones_asked(self) -> None:
+        self._reaching("", "host-b")
+        self._answers({})
+        res = server_hpc.slurm_watch(job_id="7001")
+        self.assertEqual(res["status"], "error")
+        self.assertIn("host-b", res["error"])
+        self.assertIn("local", res["error"])
+
+    def test_the_inventory_lists_what_can_be_submitted_to(self) -> None:
+        self._reaching("", "host-b")
+        res = server_hpc.slurm_schedulers()
+        self.assertEqual([entry["scheduler"] for entry in res["schedulers"]],
+                         ["local", "host-b"])
+        self.assertEqual([entry["local"] for entry in res["schedulers"]],
+                         [True, False])
+        self.assertIn("names its scheduler", res["note"])
+
+    def test_each_entry_says_what_its_machines_are(self) -> None:
+        """Half the choice is hardware, and it has to be here to be made here.
+
+        A model that must spend a slurm_nodes call per candidate before it can pick
+        one picks without looking.
+        """
+        self._reaching("", "host-b")
+        entries = server_hpc.slurm_schedulers()["schedulers"]
+        self.assertIn("node type", entries[0]["hardware"])
+        self.assertIn("x86_64", entries[0]["hardware"])
+        self.assertEqual(len(entries[1]["node_types"]), 2)
+
+    def test_a_silent_host_is_listed_without_being_called_empty(self) -> None:
+        """Unknown hardware is not absent hardware, and neither is an error."""
+        self._hardware["host-b"] = None
+        self._reaching("", "host-b")
+        entries = server_hpc.slurm_schedulers()["schedulers"]
+        self.assertIn("node type", entries[0]["hardware"])
+        self.assertEqual(entries[1]["hardware"], "")
+        self.assertIn("unknown, not absent", entries[1]["hardware_note"])
+
+    def test_a_host_is_verified_before_it_is_added(self) -> None:
+        # Nothing is recorded on a guess: an unreachable host in the inventory is a
+        # destination that swallows submissions.
+        self._reaching("")
+        server_hpc._run_bash = lambda script, t, stdin=None, host="": {
+            "status": "error", "stderr": "ssh: Could not resolve hostname",
+            "returncode": 255}
+        res = server_hpc.slurm_schedulers(add="unreachable-host")
+        self.assertEqual(res["status"], "error")
+        self.assertNotIn("unreachable-host", slurm_site.hosts())
+
+    def test_a_host_that_answers_is_added_and_can_be_dropped(self) -> None:
+        self._reaching("")
+        self._answers({})
+        added = server_hpc.slurm_schedulers(add="host-b")
+        self.assertIn("host-b", slurm_site.hosts())
+        self.assertIn("added", added["added"]["note"])
+        dropped = server_hpc.slurm_schedulers(forget="host-b")
+        self.assertNotIn("host-b", slurm_site.hosts())
+        self.assertIn("dropped", dropped["dropped"]["note"])
+
+    def test_the_local_scheduler_is_not_a_record_to_drop(self) -> None:
+        self._reaching("")
+        res = server_hpc.slurm_schedulers(forget="local")
+        self.assertIn("not a record", res["dropped"]["note"])
+        self.assertEqual(slurm_site.hosts(), [""])
+
+
+class TheQueueSaysWhatIsWatchedTests(unittest.TestCase):
+    """Whether this workspace is watching a job is not a thing the scheduler knows.
+
+    A job is tracked by the descriptor its submission wrote; one submitted any other
+    way wrote none. The consequence is invisible from both ends — nothing polls it, no
+    wake is owed, and the process stops on its idle TTL with the run still going — so
+    the queue says it per row, and hands the set to the client where a nudge reads it.
+    Two facts and no guessing, which is what makes it fit to be acted on.
+    """
+
+    def setUp(self) -> None:
+        self._orig = server_hpc._run_bash
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self._jobs = os.path.join(self._tmp.name, "hpc_jobs")
+        env = patch.dict(os.environ, {"MIMIR_HPC_JOBS_DIR": self._jobs,
+                                      "MIMIR_STATE_DIR": self._tmp.name}, clear=False)
+        env.start()
+        self.addCleanup(env.stop)
+
+    def tearDown(self) -> None:
+        server_hpc._run_bash = self._orig
+
+    def _recorded(self, job_id: str, host: str | None = "") -> None:
+        """A descriptor as a submission or an adoption leaves it.
+
+        *host* None is the one written before the scheduler was recorded beside the
+        id, which still has to vouch for its job: an old submission reported as
+        unwatched work is a reminder that cannot be acted on.
+        """
+        job_dir = os.path.join(self._jobs, f"20261010T120000Z-{job_id[-4:]}")
+        os.makedirs(job_dir, exist_ok=True)
+        with open(os.path.join(job_dir, "slurm_job_id"), "w") as fh:
+            fh.write(job_id)
+        if host is not None:
+            with open(os.path.join(job_dir, "slurm_host"), "w") as fh:
+                fh.write(host)
+
+    def _queue(self, *rows: str, scheduler: str = "") -> dict:
+        server_hpc._run_bash = _canned({"squeue": ("ok", "\n".join(rows))})
+        return server_hpc.slurm_queue(scheduler=scheduler)
+
+    def test_a_job_with_no_descriptor_is_reported_unwatched(self) -> None:
+        res = self._queue("15306620|me|RUNNING|0:23|1:00:00|1|node1|smoke,rom")
+        self.assertEqual(res["jobs"][0]["watched"], False)
+        self.assertEqual(res["unwatched"], ["15306620"])
+        self.assertIn("slurm_watch", res["unwatched_hint"])
+
+    def test_a_recorded_job_is_not_in_the_set(self) -> None:
+        self._recorded("15306620")
+        res = self._queue("15306620|me|RUNNING|0:23|1:00:00|1|node1|smoke,rom")
+        self.assertEqual(res["jobs"][0]["watched"], True)
+        self.assertNotIn("unwatched", res)
+
+    def test_the_same_id_on_another_scheduler_is_a_different_job(self) -> None:
+        """Two clusters number independently, so an id alone is not an identity.
+
+        15306620 is a watched production run on one and somebody else's sweep on the
+        other. Keyed by id alone, the descriptor here would vouch for the job there:
+        the queue would report it watched, the nudge would stay silent, and nothing
+        would be polling it or owe a wake when it ended.
+        """
+        self._recorded("15306620", host="")        # on this machine's own scheduler
+        res = self._queue("15306620|me|RUNNING|0:23|1:00:00|1|node1|someone-elses-sweep",
+                          scheduler="host-b")
+        self.assertEqual(res["jobs"][0]["watched"], False)
+        self.assertEqual(res["unwatched"], ["15306620"])
+        self.assertEqual(res["scheduler"], "host-b")
+
+    def test_a_descriptor_that_did_not_record_a_host_still_covers_its_job(self) -> None:
+        # Written before the host was kept beside the id. It cannot say where its job
+        # is, and must not therefore be read as watching nothing.
+        self._recorded("15306620", host=None)
+        res = self._queue("15306620|me|RUNNING|0:23|1:00:00|1|node1|rom",
+                          scheduler="host-b")
+        self.assertEqual(res["jobs"][0]["watched"], True)
+        self.assertNotIn("unwatched", res)
+
+    def test_an_array_is_covered_by_its_base_id(self) -> None:
+        # The id on disk is rarely the id in a row: an array is adopted or submitted
+        # under its base and the queue then lists its tasks. Read literally, every task
+        # of a watched array reads as unwatched and the nudge fires on all eight.
+        self._recorded("15306621")
+        res = self._queue(
+            "15306621_1|me|RUNNING|0:11|1:00:00|4|node2|smoke,rom,C",
+            "15306621_[2-8]|me|PENDING|0:00|1:00:00|4|(Dependency)|smoke,rom,C")
+        self.assertEqual([row["watched"] for row in res["jobs"]], [True, True])
+        self.assertNotIn("unwatched", res)
+
+    def test_the_watched_and_the_unwatched_are_told_apart(self) -> None:
+        self._recorded("15306620")
+        res = self._queue(
+            "15306620|me|RUNNING|0:23|1:00:00|1|node1|server",
+            "15306621_3|me|RUNNING|0:11|1:00:00|4|node2|client")
+        # Named by array, not by task: adoption is by array, so the answer says what
+        # there is to hand over rather than how many rows it occupies.
+        self.assertEqual(res["unwatched"], ["15306621"])
+
+    def test_an_unwatched_array_is_one_thing_to_hand_over(self) -> None:
+        # Eight task rows are one descriptor to write. Listed one by one, the reminder
+        # built on this asks for eight calls that all land on "already recorded".
+        res = self._queue(
+            *[f"15306621_{n}|me|RUNNING|0:11|1:00:00|4|node2|client" for n in range(1, 9)])
+        self.assertEqual(res["unwatched"], ["15306621"])
+        self.assertEqual([row["watched"] for row in res["jobs"]], [False] * 8,
+                         "the per-row flag still answers for the row")
+
+
+class SlurmWatchTests(unittest.TestCase):
+    """Adopting a job this server did not submit — the one it could never see.
+
+    Their real submissions go through a site launcher inside a shell call, which prints
+    the ids and exits. Nothing of MIMIR's is involved, so nothing is tracked: the job
+    runs all night, no wake is owed, and the process stops on its idle TTL.
+    """
+
+    def setUp(self) -> None:
+        # What else of the user's is running is asked through the shared seam, not
+        # through this module's _run_bash — so it is stubbed separately or every case
+        # here shells out to a real scheduler and waits out its timeout.
+        self._orig_queued = server_hpc.slurm_queued_by_host
+        server_hpc.slurm_queued_by_host = lambda *_a, **_k: {"": []}
+        self.addCleanup(lambda: setattr(server_hpc, "slurm_queued_by_host",
+                                        self._orig_queued))
+        # One scheduler, this machine's own, so resolution has nothing to refuse and
+        # the real slurm_site.resolve_host is what runs. Forced rather than mocked: the
+        # probe is a fact about the developer's machine, which a test may not inherit.
+        _only_local(self)
+        self._orig = server_hpc._run_bash
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self._jobs = os.path.join(self._tmp.name, "hpc_jobs")
+        env = patch.dict(os.environ, {"MIMIR_HPC_JOBS_DIR": self._jobs}, clear=False)
+        env.start()
+        self.addCleanup(env.stop)
+
+    def tearDown(self) -> None:
+        server_hpc._run_bash = self._orig
+
+    def _watch(self, mapping: dict, job_id: str = "15306620", **kwargs) -> dict:
+        server_hpc._run_bash = _canned(mapping)
+        return server_hpc.slurm_watch(job_id=job_id, **kwargs)
+
+    def test_a_running_job_is_recorded_and_watched(self) -> None:
+        res = self._watch({"squeue": ("ok", "RUNNING")}, note="smoke ROM")
+        self.assertEqual(res["status"], "ok")
+        self.assertEqual(res["state"], "running")
+        # The descriptor the scan reads, which is the whole point of the tool.
+        with open(os.path.join(res["job_dir"], "slurm_job_id")) as fh:
+            self.assertEqual(fh.read().strip(), "15306620")
+        # And the handle the client watcher arms on, in the shape sbatch_submit's has.
+        self.assertEqual(res["background_job"]["job_key"], "15306620")
+        self.assertEqual(res["background_job"]["status_op"]["tool"], "slurm_job_status")
+
+    def test_an_array_base_id_is_accepted(self) -> None:
+        res = self._watch({"squeue": ("ok", "RUNNING\nPENDING")}, job_id="15306621")
+        self.assertEqual(res["state"], "running")
+
+    def test_one_array_task_is_accepted(self) -> None:
+        res = self._watch({"squeue": ("ok", "RUNNING")}, job_id="15306621_3")
+        self.assertEqual(res["status"], "ok")
+
+    def test_a_job_slurm_never_heard_of_is_refused(self) -> None:
+        # A descriptor for a job that does not exist is worse than none: it holds the
+        # process open until the staleness horizon for a run nobody is waiting on.
+        res = self._watch({"squeue": ("ok", ""), "sacct": ("ok", "")})
+        self.assertEqual(res["status"], "error")
+        self.assertFalse(os.path.isdir(self._jobs), "it wrote a descriptor anyway")
+
+    def test_a_job_name_is_not_a_job_id(self) -> None:
+        res = self._watch({"squeue": ("ok", "RUNNING")}, job_id="smoke,rom,morTL")
+        self.assertEqual(res["status"], "error")
+
+    def test_a_finished_job_is_recorded_without_a_watcher(self) -> None:
+        # A watcher put on a finished job reports it at its first poll, which is a
+        # wake for news the caller is already holding.
+        res = self._watch({"squeue": ("ok", ""), "sacct": ("ok", "COMPLETED")})
+        self.assertEqual(res["state"], "done")
+        self.assertNotIn("background_job", res)
+        with open(os.path.join(res["job_dir"], "slurm_state")) as fh:
+            self.assertEqual(fh.read().strip(), "done")
+
+    def test_adopting_twice_does_not_make_a_second_descriptor(self) -> None:
+        first = self._watch({"squeue": ("ok", "RUNNING")})
+        again = self._watch({"squeue": ("ok", "RUNNING")})
+        self.assertEqual(again["job_dir"], first["job_dir"])
+        self.assertEqual(len(os.listdir(self._jobs)), 1)
+
+
 if __name__ == "__main__":
-    unittest.main()
+    unittest.main(verbosity=2)

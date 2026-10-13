@@ -6,7 +6,7 @@ import type { ToolActivity } from "../types";
 
 function row(id: string, extra: Partial<ToolActivity> = {}): ToolActivity {
   return {
-    id, name: "grep", icon: "🔍", label: "", detail: "",
+    id, name: "grep", label: "", detail: "",
     status: "running", startedAt: 1_000, ...extra,
   };
 }

@@ -28,11 +28,27 @@ for _p in (SERVERS_DIR / "_shared", SERVERS_DIR / "proxy"):
         sys.path.insert(0, _ps)
 
 import server_proxy  # noqa: E402
+import slurm_site  # noqa: E402
 from _lib import build, procs, ratchet, store, tree_snapshot  # noqa: E402,F401
 from _ops import (  # noqa: E402,F401
     _eval_ratchet, _eval_validate, eval_session, references, registry, runs,
     scaffold, slurm, suites,
 )
+
+
+def pin_local_scheduler(case: unittest.TestCase) -> None:
+    """Make this machine's own Slurm the one scheduler for the rest of *case*.
+
+    A submission resolves which scheduler it goes to against the session's inventory —
+    the local probe plus whatever has been learned — and refuses when that leaves a
+    real choice. A test that does not pin it reads the developer's machine: with no
+    ``sbatch`` on it the inventory is empty and every submission is refused for having
+    nowhere to go. The probe is memoised in the module, so it is set rather than
+    mocked per call, and restored afterwards.
+    """
+    orig = slurm_site._HAS_SLURM
+    slurm_site._HAS_SLURM = True
+    case.addCleanup(lambda: setattr(slurm_site, "_HAS_SLURM", orig))
 
 
 def _eval(*args, **kwargs):
@@ -70,6 +86,12 @@ class _TmpStorageTest(unittest.TestCase):
     The temp dir doubles as the WORKSPACE (``MCP_FILES_ROOT``): ``optimize_paths``
     are refused outside it, so a fixture with no workspace of its own would be
     measuring the repository it runs from.
+
+    ``MIMIR_STATE_DIR`` is pinned under it as well, because it is what
+    ``state_paths.state_dir`` reads first and the workspace root only its fallback.
+    Left to the ambient environment, a shell launched by MIMIR hands these tests the
+    real workspace's state: ``slurm_site.jobs_dir()`` then lists the session's actual
+    submissions, and a test counting what it filed counts those too.
     """
 
     def setUp(self) -> None:
@@ -79,6 +101,8 @@ class _TmpStorageTest(unittest.TestCase):
         self.root = self._tmp.name
         self._saved_ws = os.environ.get("MCP_FILES_ROOT")
         os.environ["MCP_FILES_ROOT"] = self._tmp.name
+        self._saved_state = os.environ.get("MIMIR_STATE_DIR")
+        os.environ["MIMIR_STATE_DIR"] = os.path.join(self._tmp.name, ".mimir")
 
     def tearDown(self) -> None:
         store._CACHE_DIR = self._saved_root
@@ -86,6 +110,10 @@ class _TmpStorageTest(unittest.TestCase):
             os.environ.pop("MCP_FILES_ROOT", None)
         else:
             os.environ["MCP_FILES_ROOT"] = self._saved_ws
+        if self._saved_state is None:
+            os.environ.pop("MIMIR_STATE_DIR", None)
+        else:
+            os.environ["MIMIR_STATE_DIR"] = self._saved_state
         self._tmp.cleanup()
 
     # -- fixtures ------------------------------------------------------------
@@ -150,15 +178,27 @@ class _FakeSbatchTest(_TmpStorageTest):
         os.makedirs(self.bin_dir, exist_ok=True)
         self._saved_path = os.environ["PATH"]
         self.counter = os.path.join(self.root, "sbatch_counter")
-        self.calls_file = os.path.join(self.root, "sbatch_calls")
+        # The script reaches sbatch on **stdin** — it reads it from there when given no
+        # file, which is what keeps any path of MIMIR's from having to exist on the host
+        # running the scheduler. So the fake keeps what it was *fed*, one file per call,
+        # numbered by the job id it answered with.
+        self.scripts_dir = os.path.join(self.root, "sbatch_scripts")
+        os.makedirs(self.scripts_dir, exist_ok=True)
         _script(os.path.join(self.bin_dir, "sbatch"),
                 "n=7000\n"
                 f"if [ -f {self.counter} ]; then read n < {self.counter}; fi\n"
                 "n=$((n+1))\n"
                 f"echo $n > {self.counter}\n"
-                f'echo "$1" >> {self.calls_file}\n'
+                # Builtins only: PATH is this bin dir alone, so that no real sbatch
+                # is ever found — which means no `cat` either.
+                'while IFS= read -r line; do echo "$line"; done '
+                f'> {self.scripts_dir}/$n\n'
                 'echo "Submitted batch job $n"\n')
         os.environ["PATH"] = self.bin_dir
+        # This fixture *is* a local scheduler: an sbatch on PATH is what the probe
+        # looks for, and pinning it keeps the answer from depending on whether the
+        # probe had already run — it is memoised for the life of the process.
+        pin_local_scheduler(self)
 
     def tearDown(self) -> None:
         os.environ["PATH"] = self._saved_path
@@ -166,8 +206,8 @@ class _FakeSbatchTest(_TmpStorageTest):
 
     def _submitted_scripts(self) -> list[str]:
         """The contents of every script handed to sbatch, in submission order."""
-        if not os.path.isfile(self.calls_file):
+        try:
+            names = sorted(os.listdir(self.scripts_dir), key=int)
+        except OSError:
             return []
-        with open(self.calls_file) as fh:
-            paths = [line.strip() for line in fh if line.strip()]
-        return [open(p).read() for p in paths]
+        return [open(os.path.join(self.scripts_dir, name)).read() for name in names]

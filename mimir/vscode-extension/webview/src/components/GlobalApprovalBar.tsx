@@ -1,6 +1,6 @@
 import React from "react";
 import type { ApprovalMessage } from "../types";
-import { iconForTool } from "../state/chatReducer";
+import { iconForKind } from "./toolIcons";
 
 interface Props {
   approval: ApprovalMessage;
@@ -76,7 +76,8 @@ export const GlobalApprovalBar: React.FC<Props> = ({ approval, onRespond }) => {
   const subject = getSubject(approval);
   // Don't repeat the subject when the header already ends with it.
   const showSubject = subject && !header.endsWith(subject);
-  const icon = iconForTool(approval.tool);
+  // Same family, same glyph as the row for this call — the server sends the kind.
+  const icon = iconForKind(approval.kind);
   // `oow_paths` is the list; `oow_path` is the single-path payload of an older server.
   const oowPaths = approval.oow_paths ?? (approval.oow_path ? [approval.oow_path] : []);
 

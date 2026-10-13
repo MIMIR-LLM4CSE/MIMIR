@@ -44,7 +44,7 @@ _DATE_OPS = (
 )
 
 
-@mcp.tool(**tool_caps(label="Date {op}"))
+@mcp.tool(**tool_caps(kind="date", label="Date {op}"))
 def date_op(
     op: str,
     tz: str = "UTC",

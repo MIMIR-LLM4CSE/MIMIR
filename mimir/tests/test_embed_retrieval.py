@@ -3,7 +3,6 @@ graceful-degradation contract: with no embedding backend everything must fall ba
 to the pre-existing lexical / substring behaviour (keeps the suite hermetic).
 """
 
-import importlib.util
 import os
 import sys
 import tempfile
@@ -18,15 +17,7 @@ for _p in (str(_SHARED),):
 
 from mimir.servers._shared import embed
 
-
-def _load_server_memory():
-    spec = importlib.util.spec_from_file_location(
-        "server_memory",
-        _ROOT / "mimir" / "servers" / "agent_state" / "server_memory.py",
-    )
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+from _memory_fixtures import load_memory_server, point_stores
 
 
 def _tool(name: str, description: str) -> dict:
@@ -128,18 +119,15 @@ class SemanticPathTests(unittest.TestCase):
     def test_memory_search_semantic_ranks_and_scores(self):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
-        mem = _load_server_memory()
-        d = Path(tmp.name)
-        mem.MEMORY_DIR = str(d)
-        mem.INDEX_FILE = str(d / "MEMORY.md")
-        mem.EMBEDDINGS_FILE = str(d / "embeddings.json")
+        mem = load_memory_server()
+        point_stores(mem, tmp.name)
         mem._embed.is_available = lambda: True
         mem._embed.embed_texts = self._fake_embed_texts
         mem._embed.embed_one = lambda t: _fake_vec(t, self.VOCAB)
         mem._embed.embed_model_id = lambda: "fake-model"
 
-        mem.memory_add("cluster job slurm submission notes", description="cluster jobs")
-        mem.memory_add("date and time conversion", description="dates")
+        mem.memory_add("cluster job slurm submission notes", scope="workspace", description="cluster jobs")
+        mem.memory_add("date and time conversion", scope="workspace", description="dates")
         # Vectors persisted on add.
         self.assertTrue(os.path.exists(mem.EMBEDDINGS_FILE))
 
@@ -155,11 +143,8 @@ class MemorySearchFallbackTests(unittest.TestCase):
 
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
-        self.mem = _load_server_memory()
-        d = Path(self._tmp.name)
-        self.mem.MEMORY_DIR = str(d)
-        self.mem.INDEX_FILE = str(d / "MEMORY.md")
-        self.mem.EMBEDDINGS_FILE = str(d / "embeddings.json")
+        self.mem = load_memory_server()
+        point_stores(self.mem, self._tmp.name)
         # Force the lexical fallback path.
         self.mem._embed.is_available = lambda: False
 
@@ -167,7 +152,7 @@ class MemorySearchFallbackTests(unittest.TestCase):
         self._tmp.cleanup()
 
     def test_add_then_substring_search(self):
-        self.mem.memory_add("The vLLM backend is the most used in practice",
+        self.mem.memory_add("The vLLM backend is the most used in practice", scope="workspace",
                             description="vllm backend usage")
         res = self.mem.memory_search("vLLM backend")
         self.assertEqual(res["status"], "ok")
@@ -175,17 +160,17 @@ class MemorySearchFallbackTests(unittest.TestCase):
         self.assertTrue(any("vLLM" in r["text"] for r in res["results"]))
 
     def test_no_embeddings_file_written_when_backend_down(self):
-        self.mem.memory_add("some fact about tool limits", description="tool limits")
+        self.mem.memory_add("some fact about tool limits", scope="workspace", description="tool limits")
         self.assertFalse(os.path.exists(self.mem.EMBEDDINGS_FILE))
 
     def test_substring_miss_returns_empty(self):
-        self.mem.memory_add("alpha beta gamma", description="greek letters")
+        self.mem.memory_add("alpha beta gamma", scope="workspace", description="greek letters")
         res = self.mem.memory_search("delta epsilon")
         self.assertEqual(res["count"], 0)
 
     def test_tag_filter_respected(self):
-        self.mem.memory_add("fact one", description="one", tags=["keep"])
-        self.mem.memory_add("fact two", description="two", tags=["other"])
+        self.mem.memory_add("fact one", scope="workspace", description="one", tags=["keep"])
+        self.mem.memory_add("fact two", scope="workspace", description="two", tags=["other"])
         res = self.mem.memory_search("fact", tag="keep")
         self.assertEqual(res["count"], 1)
         self.assertEqual(res["results"][0]["tags"], ["keep"])

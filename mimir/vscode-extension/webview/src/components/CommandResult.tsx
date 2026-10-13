@@ -26,6 +26,17 @@ export const CommandResult: React.FC<{ result: CommandOutputMessage }> = ({
   const note = (result.note ?? "").trim();
   const icon = TONE_ICON[tone] ?? TONE_ICON.ok;
 
+  // A rule across the thread, not a result in it. For something the user did not do
+  // and cannot act on — the state of the run they have just rejoined — where a badge
+  // and a left border would claim both.
+  if (tone === "quiet") {
+    return (
+      <div className="cmd-rule">
+        <span className="cmd-rule__title">{result.title}</span>
+      </div>
+    );
+  }
+
   const compact =
     !note && items.length <= 1 && items.every((i) => !(i.detail ?? "").trim());
 

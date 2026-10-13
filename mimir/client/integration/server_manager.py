@@ -8,14 +8,17 @@ import json
 import os
 import re
 import sys
+from collections.abc import Callable
 from typing import Any
 
 import mcp.types as types
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
+from .. import human_pause
 from ..context.capabilities import infer_tool_caps
-from ..config.constants import STATE_DIR, USER_QUESTION_TIMEOUT_SECS
+from ..tool_execution.tool_status_messages import DOING_ARG
+from ..config.constants import GLOBAL_STATE_DIR, STATE_DIR, USER_QUESTION_TIMEOUT_SECS
 from ...servers._shared.state_paths import scratch_home
 
 
@@ -94,7 +97,7 @@ def _args_block_descriptions(doc: str) -> dict[str, str]:
 def _description_without_args_block(doc: str, parameters: dict) -> str:
     """*doc* minus the ``Args:`` entries the schema already carries word for word.
 
-    The block is lifted into the parameters (:func:`_schema_with_arg_descriptions`),
+    The block is lifted into the parameters (:func:`_schema_for_model`),
     and it was also left in the description: every parameter was sent twice, on every
     call. On one deployment that was a fifth of a ~31k-token tools schema.
 
@@ -133,10 +136,35 @@ def _description_without_args_block(doc: str, parameters: dict) -> str:
         return doc
 
 
-def _schema_with_arg_descriptions(tool: Any) -> dict:
-    """The tool's input schema with every missing parameter ``description`` filled in.
+# The one argument every tool takes, added to each schema below rather than declared by
+# 60-odd servers. It is the model's own sentence about *this* call — what the user reads
+# beside the tool's family while it runs — and the only part of a row that knows why the
+# call is happening. The dispatcher strips it before the call is executed (see
+# ``query_engine.dispatch``): no server ever receives it.
+#
+# Deliberately never added to ``required``: a backend that validates the schema would
+# refuse a call that omits it, and a row without a description is a case the UI already
+# renders (its family and its target still say what it touched).
+_DOING_PROPERTY = {
+    "type": "string",
+    "description": (
+        "What this particular call does, in under 15 words, as a phrase: \"searching "
+        "for the off-by-one bound\", \"running the row-display tests\", \"submitting "
+        "the job on genoa\". Shown to the user beside the tool while the call runs, so "
+        "it names the concrete thing this call is for — not the tool's category, and "
+        "not a restatement of the arguments."
+    ),
+}
 
-    The constraint a tool documents only in prose does not change what the model does.
+
+def _schema_for_model(tool: Any) -> dict:
+    """The tool's input schema as the model sees it: ``doing`` added, ``Args:`` lifted.
+
+    Both changes are here for the same reason — the schema is the part that gets read.
+    ``doing`` is the universal per-call description (see :data:`DOING_ARG`), added to
+    every tool rather than declared sixty times.
+
+    As for the rest: the constraint a tool documents only in prose does not change what the model does.
     Observed on a real run: the model dropped `report_verdict`'s required `verdict`
     twice, called `proxy_get` with `op="help"` (not one of the six the docstring lists)
     and with `op="report"` while the same docstring says "requires: name", and hit
@@ -156,11 +184,13 @@ def _schema_with_arg_descriptions(tool: Any) -> dict:
     """
     schema = getattr(tool, "inputSchema", None)
     if not isinstance(schema, dict):
-        return {"type": "object", "properties": {}}
+        schema = {"type": "object", "properties": {}}
     schema = copy.deepcopy(schema)
     props = schema.get("properties")
     if not isinstance(props, dict):
-        return schema
+        props = schema["properties"] = {}
+    # A server that declares its own `doing` keeps it, like a hand-written description.
+    props.setdefault(DOING_ARG, dict(_DOING_PROPERTY))
     try:
         described = _args_block_descriptions(getattr(tool, "description", "") or "")
     except Exception:  # pragma: no cover - a docstring must never break registration
@@ -211,7 +241,12 @@ def _make_elicitation_callback(agent: Any):
     questions sequentially and returns the user's answers.
 
     The frontend handlers are blocking/queue-based, so we run them off the event
-    loop via ``run_in_executor`` to keep the agent loop responsive.
+    loop via ``run_in_executor`` to keep the agent loop responsive. The wait is
+    marked as human time *here*, on the loop thread, and not only inside the
+    handler: ``human_pause`` accounting is thread-local, so a pause recorded on a
+    pool thread is invisible to the ``_await_tool`` that is watching this tool call
+    from the loop thread, and ``ask_user_question`` died on the ordinary tool budget
+    after two minutes while the card on screen said five.
 
     The handler is given ``USER_QUESTION_TIMEOUT_SECS`` as the wall to answer within.
     The wall belongs to this path and not to the handler itself: plan approval calls
@@ -242,20 +277,21 @@ def _make_elicitation_callback(agent: Any):
         try:
             # With the caller's context: the handler reads which tool call is asking
             # (query_engine.deferral), and a bare executor thread starts from none.
-            result = await loop.run_in_executor(
-                None,
-                contextvars.copy_context().run,
-                _bind_question_handler(agent._request_user_question),
-                questions,
-                # Who is asking, when the asker is not the turn the user is watching:
-                # a sub-agent names itself here so the card can say so. Absent for the
-                # ordinary case, where the asker IS the turn on screen.
-                spec.get("origin") if isinstance(spec.get("origin"), dict) else None,
-                # How long the asker is willing to wait. Declared per question rather
-                # than set here, because the same channel carries approvals and plan
-                # decisions, and neither may ever expire.
-                timeout_secs,
-            )
+            with human_pause.human_pause():
+                result = await loop.run_in_executor(
+                    None,
+                    contextvars.copy_context().run,
+                    _bind_question_handler(agent._request_user_question),
+                    questions,
+                    # Who is asking, when the asker is not the turn the user is watching:
+                    # a sub-agent names itself here so the card can say so. Absent for
+                    # the ordinary case, where the asker IS the turn on screen.
+                    spec.get("origin") if isinstance(spec.get("origin"), dict) else None,
+                    # How long the asker is willing to wait. Declared per question rather
+                    # than set here, because the same channel carries approvals and plan
+                    # decisions, and neither may ever expire.
+                    timeout_secs,
+                )
         except Exception:
             return types.ElicitResult(action="cancel")
 
@@ -295,8 +331,17 @@ def _make_elicitation_callback(agent: Any):
     return _callback
 
 
-async def connect_server(*, agent: Any, name: str, script: str) -> None:
-    """Spawn an MCP server process and register its tools on the agent."""
+async def _spawn_session(*, agent: Any, name: str, script: str) -> Any:
+    """Start a server process and open its session, stopping short of ``initialize``.
+
+    Split from the registration half so a whole registry can be started at once:
+    launching the process is immediate, while the handshake waits on the child's
+    interpreter importing the MCP SDK — two thirds of a second, the same two thirds
+    in every one of them. Serialized that is the startup; overlapped it is paid once.
+    Every session is entered on the agent's own exit stack from the caller's task,
+    so the stack stays single-task and ``stdio_client``'s cancel scope is unwound
+    where it was opened.
+    """
     if not (script.endswith(".py") or script.endswith(".js")):
         raise ValueError("Server script must be a .py or .js file")
 
@@ -331,6 +376,7 @@ async def connect_server(*, agent: Any, name: str, script: str) -> None:
         "MCP_FILES_ROOT": root,
         "SEARCH_ROOT": root,
         "MIMIR_STATE_DIR": STATE_DIR,
+        "MIMIR_GLOBAL_STATE_DIR": GLOBAL_STATE_DIR,
         "MIMIR_SCRATCH_DIR": scratch_home(),
         "MIMIR_SESSION_ID": getattr(agent, "session_id", "") or "",
         "MIMIR_DEFAULT_MODEL": getattr(agent, "model", "") or "",
@@ -341,14 +387,20 @@ async def connect_server(*, agent: Any, name: str, script: str) -> None:
 
     transport = await agent.exit_stack.enter_async_context(stdio_client(params))
     stdio, write = transport
-    session = await agent.exit_stack.enter_async_context(
+    return await agent.exit_stack.enter_async_context(
         ClientSession(stdio, write, elicitation_callback=_make_elicitation_callback(agent))
     )
-    await session.initialize()
 
+
+async def _register_session(*, agent: Any, name: str, session: Any, listing: Any) -> None:
+    """Record an initialized session's tools and resources on the agent.
+
+    Callers register one server at a time, in registry order: the tool schema is sent
+    in ``agent.tools`` order on every request, so an order that varies between runs
+    moves the prompt prefix and costs the backend's cache.
+    """
     agent.sessions[name] = session
 
-    listing = await session.list_tools()
     for tool in listing.tools:
         agent.tool_owner[tool.name] = name
         # Derive the tool's semantics (capabilities, arg roles, fallbacks, label)
@@ -360,7 +412,7 @@ async def connect_server(*, agent: Any, name: str, script: str) -> None:
         # Parameter descriptions lifted out of the docstring's `Args:` block: a
         # constraint only stated in prose does not get followed. Lifted, the block
         # leaves the description, or every parameter is paid for twice.
-        parameters = _schema_with_arg_descriptions(tool)
+        parameters = _schema_for_model(tool)
         agent.tools.append({
             "type": "function",
             "function": {
@@ -378,6 +430,62 @@ async def connect_server(*, agent: Any, name: str, script: str) -> None:
 
     suffix = f", {n_resources} resources" if n_resources else ""
     print(f"✅ [{name}]  {len(tool_names)} tools{suffix}: {tool_names}")
+
+
+async def _handshake(session: Any) -> Any:
+    """Complete the MCP handshake on *session* and return its tool listing."""
+    await session.initialize()
+    return await session.list_tools()
+
+
+async def connect_server(*, agent: Any, name: str, script: str) -> None:
+    """Spawn one MCP server process and register its tools on the agent."""
+    session = await _spawn_session(agent=agent, name=name, script=script)
+    listing = await _handshake(session)
+    await _register_session(agent=agent, name=name, session=session, listing=listing)
+
+
+async def connect_servers(
+    *,
+    agent: Any,
+    registry: dict[str, str],
+    on_error: Callable[[str, BaseException], None] | None = None,
+) -> None:
+    """Connect every server in *registry*, overlapping the handshakes.
+
+    Start to answering a first query, the registry is the wait: a score of child
+    interpreters each importing the same SDK, one after the next. The processes are
+    started together instead and the handshakes awaited at once, which puts the whole
+    registry at the cost of its slowest member rather than the sum of all of them.
+
+    Registration stays sequential and in *registry* order, so the tool schema the
+    model is sent does not depend on which child answered first.
+
+    *on_error* receives the name and the failure of a server that could not be
+    connected, and the rest still connect — that is how a sub-agent tolerates a
+    server it does not need. With no handler the first failure is raised, leaving
+    the caller to close the agent.
+    """
+    spawned: list[tuple[str, Any]] = []
+    for name, script in registry.items():
+        try:
+            spawned.append((name, await _spawn_session(agent=agent, name=name, script=script)))
+        except Exception as exc:
+            if on_error is None:
+                raise
+            on_error(name, exc)
+
+    listings = await asyncio.gather(
+        *(_handshake(session) for _, session in spawned), return_exceptions=True
+    )
+
+    for (name, session), listing in zip(spawned, listings):
+        if isinstance(listing, BaseException):
+            if on_error is None:
+                raise listing
+            on_error(name, listing)
+            continue
+        await _register_session(agent=agent, name=name, session=session, listing=listing)
 
 
 async def register_resources(*, agent: Any, name: str, session: Any) -> int:

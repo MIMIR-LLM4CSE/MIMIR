@@ -26,6 +26,8 @@ def _load(name: str, path: Path):
     spec.loader.exec_module(module)
     return module
 
+import slurm_site  # noqa: E402
+
 from mimir.client.context.capabilities import PANEL_REPORT, ToolCaps, panel_sections
 
 
@@ -193,7 +195,10 @@ def test_the_queue_and_the_room_are_what_the_cluster_section_says():
     hpc = _load("server_hpc_panel2", SERVERS_DIR / "hpc" / "server_hpc.py")
     hpc._PANEL_CACHE.clear()
 
-    def _bash(cmd, timeout):
+    # Every read names the scheduler it went to, so the stub takes the host and one
+    # scheduler is forced: the probe is a fact about the developer's machine, and the
+    # panel asks the real resolution, which with nothing reachable refuses.
+    def _bash(cmd, timeout, stdin=None, *, host=""):
         if cmd.startswith("squeue"):
             return {"status": "ok", "stdout": "1|me|RUNNING|1:00|2:00|1|n1|a\n"
                                               "2|me|PENDING|0:00|2:00|1|(Prio)|b\n"}
@@ -201,6 +206,8 @@ def test_the_queue_and_the_room_are_what_the_cluster_section_says():
                                           "gpu|up|1-00|6|alloc|32|64000\n"}
 
     with mock.patch.object(hpc, "_run_bash", _bash), \
+            mock.patch.object(slurm_site, "_HAS_SLURM", True), \
+            mock.patch.object(hpc, "_recorded_jobs", return_value={}), \
             mock.patch.object(hpc, "_profiled_node_lines", return_value=[]):
         out = hpc.hpc_panel_report()
     values = {line["label"]: line["value"] for line in out["lines"]}

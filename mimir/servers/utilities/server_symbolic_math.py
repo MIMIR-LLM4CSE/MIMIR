@@ -69,7 +69,7 @@ def _parse_matrix(sp, matrix_str: str):
     return sp.Matrix(rows), n_rows, n_cols
 
 
-@mcp.tool(**tool_caps(label="Symbolic {op}"))
+@mcp.tool(**tool_caps(kind="symbolic", label="Symbolic {op}"))
 def symbolic(
     op: str,
     expression: str = "",

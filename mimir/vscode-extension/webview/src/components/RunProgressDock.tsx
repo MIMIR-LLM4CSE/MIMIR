@@ -2,6 +2,7 @@ import React from "react";
 import type { ToolActivity } from "../types";
 import { useElapsed, formatDuration } from "../hooks/useElapsed";
 import { progressStyle } from "./ToolActivityList";
+import { labelForKind } from "./toolIcons";
 
 interface Props {
   /** Runs still in flight whose row has scrolled out of the thread. */
@@ -16,6 +17,14 @@ const MAX_CARDS = 2;
 
 function RunCard({ run, onFocus }: { run: ToolActivity; onFocus: (id: string) => void }) {
   const elapsed = useElapsed(run.startedAt, true);
+  // The card names the same run its row does, so it says what the row says: the family
+  // and the model's sentence about the call. Left on the derived label, the dock for a
+  // running shell call read "Running shell command" while its own row three lines up
+  // read "Bash · running the row-display tests". The label stays in the tooltip, where
+  // it is the precise name of what was called.
+  const name = run.doing
+    ? `${labelForKind(run.kind || "tool")} · ${run.doing}`
+    : run.label;
   const hasPercent = typeof run.percent === "number";
   const pct = hasPercent ? Math.max(0, Math.min(100, run.percent as number)) : 0;
 
@@ -32,7 +41,7 @@ function RunCard({ run, onFocus }: { run: ToolActivity; onFocus: (id: string) =>
     >
       {!hasPercent && <span className="tb-spinner" aria-hidden="true" />}
       <span className="run-dock-body">
-        <span className="run-dock-label">{run.label}</span>
+        <span className="run-dock-label">{name}</span>
         {run.phase && (
           <span className="run-dock-phase">
             {run.phase}

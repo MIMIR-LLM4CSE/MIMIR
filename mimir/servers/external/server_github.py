@@ -80,7 +80,7 @@ def _request(path: str, params: dict | None = None) -> dict:
         return err(str(e))
 
 
-@mcp.tool(**tool_caps(caps=[EXTERNAL_FETCH]))
+@mcp.tool(**tool_caps(kind="github", caps=[EXTERNAL_FETCH]))
 def github_repo_info(owner: str, repo: str) -> dict:
     """Return metadata for a GitHub repository.
 
@@ -109,7 +109,7 @@ def github_repo_info(owner: str, repo: str) -> dict:
     })
 
 
-@mcp.tool(**tool_caps(caps=[EXTERNAL_FETCH]))
+@mcp.tool(**tool_caps(kind="github", caps=[EXTERNAL_FETCH]))
 def github_list_branches(owner: str, repo: str, limit: int = 20) -> dict:
     """List branches for a repository.
 
@@ -129,7 +129,7 @@ def github_list_branches(owner: str, repo: str, limit: int = 20) -> dict:
     return ok({"branches": branches, "count": len(branches)})
 
 
-@mcp.tool(**tool_caps(caps=[EXTERNAL_FETCH]))
+@mcp.tool(**tool_caps(kind="github", caps=[EXTERNAL_FETCH]))
 def github_list_issues(owner: str, repo: str, state: str = "open", limit: int = 20) -> dict:
     """List repository issues.
 
@@ -246,7 +246,7 @@ def _line_window(text: str, start_line: int, end_line: int) -> dict:
     return out
 
 
-@mcp.tool(**tool_caps(caps=[EXTERNAL_FETCH], label="Fetching from GitHub: {path}"))
+@mcp.tool(**tool_caps(kind="github", caps=[EXTERNAL_FETCH], label="Fetching from GitHub: {path}"))
 def github_get_file(owner: str, repo: str, path: str, ref: str = "",
                     start_line: int = 1, end_line: int = 0) -> dict:
     """Fetch a text file from a GitHub repository and decode its content.
@@ -306,7 +306,7 @@ def github_get_file(owner: str, repo: str, path: str, ref: str = "",
     })
 
 
-@mcp.tool(**tool_caps(caps=[EXTERNAL_FETCH]))
+@mcp.tool(**tool_caps(kind="github", caps=[EXTERNAL_FETCH]))
 def github_search_repositories(query: str, limit: int = 10) -> dict:
     """Search public GitHub repositories.
 

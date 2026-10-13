@@ -46,6 +46,7 @@ EXPECTED_ORDER = [
     "_observe_missing_module",
     "_observe_env_probe",
     "_observe_env_mutation",
+    "_observe_unwatched_runs",
     "_observe_denial_clearing",
     "_observe_edit_loop_clear",
     "_observe_delete",
@@ -1452,6 +1453,77 @@ class DeclaredEditSetTests(unittest.TestCase):
         ec["declared_edit_set"] = {"tests/solver.py"}
         ec["dirty_written_files"] = {os.path.abspath(os.path.join(root, "src/solver.py"))}
         self.assertEqual(unwritten_declared_files(ec), ["tests/solver.py"])
+
+
+class UnwatchedRunObservationTests(unittest.TestCase):
+    """Long work a scheduler says exists and no record covers.
+
+    Payload-driven and tool-agnostic on purpose: the fact is established by whoever
+    can establish it — the server that runs the queue and owns the submission
+    directories — and arrives as two machine facts. Nothing here reads a command
+    string, because a nudge built on "the text contained sbatch" fires on a `grep
+    sbatch` and misses every wrapper ever written.
+    """
+
+    def _agent(self):
+        return types.SimpleNamespace(
+            _parse_tool_payload=lambda result: json.loads(result),
+            _normalize_workspace_path=lambda p: p or "",
+            _is_code_filepath=lambda p: False,
+            tool_caps={},
+        )
+
+    def _run(self, payload: dict, *, tool="slurm_queue", ec=None, args=None):
+        ec = ec if ec is not None else build_execution_context()
+        runtime.record_tool_observation(
+            self._agent(), tool, args or {}, json.dumps(payload), ec)
+        return ec
+
+    def test_ids_the_scheduler_listed_are_recorded(self):
+        ec = self._run({"status": "ok", "unwatched": ["15306620", "15306621"]})
+        self.assertEqual(ec["unwatched_runs"], {"15306620", "15306621"})
+
+    def test_a_failed_call_establishes_nothing(self):
+        ec = self._run({"status": "error", "unwatched": ["1"]})
+        self.assertEqual(ec["unwatched_runs"], set())
+
+    def test_adopting_one_clears_it_in_the_same_turn(self):
+        ec = self._run({"status": "ok", "unwatched": ["15306620", "15306621"]})
+        self._run({"status": "ok", "job_id": "15306620",
+                   "background_job": {"server": "hpc", "job_key": "15306620"}},
+                  tool="slurm_watch", ec=ec)
+        self.assertEqual(ec["unwatched_runs"], {"15306621"})
+
+    def test_adopting_an_array_clears_its_tasks(self):
+        # The queue lists tasks, the descriptor holds the base: a watcher on the base
+        # polls the whole array, so its tasks are watched too.
+        ec = self._run({"status": "ok",
+                        "unwatched": ["15306621_1", "15306621_2", "15306999"]})
+        self._run({"status": "ok", "job_id": "15306621",
+                   "background_job": {"server": "hpc", "job_key": "15306621"}},
+                  tool="slurm_watch", ec=ec)
+        self.assertEqual(ec["unwatched_runs"], {"15306999"})
+
+    def test_a_re_arming_answer_also_clears(self):
+        # `background_jobs` is the plural a status answer carries when it puts a
+        # watcher back on its own job.
+        ec = self._run({"status": "ok", "unwatched": ["42"]})
+        self._run({"status": "ok",
+                   "background_jobs": [{"server": "bash", "job_key": "42"}]},
+                  tool="bash_job", ec=ec)
+        self.assertEqual(ec["unwatched_runs"], set())
+
+    def test_an_ordinary_answer_leaves_the_set_alone(self):
+        ec = self._run({"status": "ok", "unwatched": ["42"]})
+        self._run({"status": "ok", "stdout": "hello"}, tool="bash_run", ec=ec)
+        self.assertEqual(ec["unwatched_runs"], {"42"})
+
+    def test_it_is_not_keyed_on_the_tool_name(self):
+        # Payload-driven on purpose: a scheduler this toolkit does not have yet reports
+        # the same fact in the same field and earns the same reminder, with no table to
+        # keep in step.
+        ec = self._run({"status": "ok", "unwatched": ["42"]}, tool="lsf_queue")
+        self.assertEqual(ec["unwatched_runs"], {"42"})
 
 
 if __name__ == "__main__":

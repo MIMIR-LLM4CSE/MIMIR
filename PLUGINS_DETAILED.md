@@ -6,9 +6,19 @@ The authoritative guide to **extending MIMIR without editing core code**. Every 
 type is a drop-in file, auto-detected by directory scan under `.mimir/` in your workspace.
 
 A copy-to-customize example of each type ships in [`mimir/examples/`](mimir/examples/).
-MIMIR **never writes into your workspace `.mimir/`** — that directory is yours alone. To
-add an extension, create the file yourself under `.mimir/` (or point the matching
-`MIMIR_*_DIR` env var elsewhere), using the examples as a template.
+MIMIR **never writes into your workspace `.mimir/` on its own** — that directory is
+yours alone, and nothing is ever created there as a side effect. To add an extension,
+create the file yourself under `.mimir/` (or point the matching `MIMIR_*_DIR` env var
+elsewhere), using the examples as a template.
+
+**Or ask MIMIR for it.** The bundled [`mimir-api`](mimir/skills/mimir-api/SKILL.md)
+skill authors an extension with you, and reads this API out of the running build through
+the `mimir_api` tool — the capability vocabulary, the drop-in path *this* workspace
+resolves, the shipped template — rather than from what a model remembers of MIMIR. That
+write is an ordinary approval-gated one you asked for, which is a different thing from
+MIMIR writing there by itself. `mimir_api(topic="index")` is also the quickest answer to
+"what can I extend, and where does the file go?"; see
+[SERVERS_DETAILED.md](SERVERS_DETAILED.md#agent_stateserver_mimir_apipy).
 
 | Type | Drop-in location | Env override | On name collision with a bundled one |
 |------|------------------|--------------|--------------------------------------|
@@ -26,16 +36,19 @@ add an extension, create the file yourself under `.mimir/` (or point the matchin
 
 ## Skills
 
-A skill is a reusable methodology prompt injected as a subordinate system message when the
-task is detected — it guides *how* the agent works without replacing the base instructions.
+A skill is a reusable methodology prompt, loaded by name — it guides *how* the agent works
+without replacing the base instructions, which stay authoritative. Its name and one line are
+in the system prompt; the body arrives only when it is loaded.
 
 `.mimir/skills/<name>/SKILL.md` — a YAML front-matter block (the `name` must equal the
 directory name) followed by the methodology body:
 
 ```markdown
 ---
-name: fix-bug
-description: One-line description shown to the skill classifier.
+name: check-units
+description: One line — when this skill applies. The model reads it to decide
+  whether to load the body, so write the trigger, not a title.
+disable-model-invocation: false   # true = /name only, never the model's own pull
 ---
 
 Objective: describe the methodology the agent should follow for this kind of task.
@@ -45,8 +58,14 @@ Steps:
 2. ...
 ```
 
-Triggered explicitly (`/fix-bug …`) or implicitly by the classifier (current query + the last
-few turns). A user skill whose name matches a bundled one **overrides** it. Example:
+A skill earns its line in the system prompt by teaching a method the base instructions do
+not already carry. One that restates them — make the minimum change, validate what you
+modified — costs context on every query and buys nothing when it is loaded.
+
+Triggered explicitly (`/check-units …`), which folds the body into the system prompt for the
+whole query, or loaded by the model itself with `load_skill(<name>)` when its own reading
+says the method applies — the index of names and descriptions is in the system prompt, the
+bodies are not. A user skill whose name matches a bundled one **overrides** it. Example:
 [`mimir/examples/skills/example-skill/SKILL.md`](mimir/examples/skills/example-skill/SKILL.md).
 
 ---
@@ -120,6 +139,7 @@ def read_note(path: str) -> str:
 | **Verdict** | `JUDGE` | Records the model's reading of what a run's output showed, settling a run that owed one. The tool executes nothing — the client reads its `verdict` / `verdict_reason` / `verdict_scope` arg-roles and applies the result to the blackboard. Declare it once: with several such tools connected, the name the model is pointed at is the first in sort order. |
 | **Execution** | `CODE_EXEC` | Runs a program / shell command / code payload. Two consequences: the run is recorded as owing a **verdict** on its output (exit 0 alone never validates an execution), and it is a scoping signal for guards. Note the shell-reading guards (proxy direct-execution, out-of-workspace shell paths) key on the `command_prefix` **scope** instead — a tool that executes through structured arguments has no command line for them to parse. |
 | | `BACKGROUNDABLE` | Launches a long detached run whose result may carry a `background_job` descriptor (status + summary ops), so a front-end with a worker watches it off the critical path and auto-resumes the agent on completion instead of having the model poll. |
+| | `DIVERTIBLE` | Publishes a run channel under its own name while it blocks, so the user can move the run it is waiting on to the background mid-flight (see `_shared/run_channel.py`). A strict subset of `BACKGROUNDABLE`: a tool that returns as soon as it has submitted has no wait to divert. |
 | **Delegation** | `DELEGATE` | Runs a read-only sub-agent and reports back what it read. What the sub-agent opened is credited to `delegated_read_files`, which counts toward the plan-mode explore phase's evidence floor — otherwise the phase would punish the fan-out its own prompt asks for. It stays out of `read_files`, which answers the stricter question of whether *this* agent holds the lines it is about to edit. |
 | **Approval & mode** | `SENSITIVE` | Requires user approval before running. **Derived — do not declare it**: see *Reversibility* below. |
 | | `NON_BATCH` | Must prompt immediately; never batched. |
@@ -129,12 +149,42 @@ def read_note(path: str) -> str:
 | | `CLUSTER_SUBMIT` | Expensive cluster launch (Slurm submit / batch run); held until local validation. |
 | | `ENV_MUTATE` | Mutates a Python environment (pip install / create / delete). |
 
-This table is the **authoritative list** — 25 flags, mirrored between
-`mimir/servers/_shared/capabilities.py` and `mimir/client/context/capabilities.py`
-(parity guarded by `test_capabilities.test_vocab_in_sync`). The other docs point here
-rather than re-listing it. Note that `is_write` (= `EDIT`∪`CONTENT_WRITE`∪`REMOVE`) and
+The vocabulary is mirrored between `mimir/servers/_shared/capabilities.py` and
+`mimir/client/context/capabilities.py` (parity guarded by
+`test_capabilities.test_vocab_in_sync`), and the other docs point here rather than
+re-listing it. This table is the **prose reference**; the **live list** is
+`mimir_api(topic="capabilities")`, which parses it out of the installed build with the
+note attached to each flag. Ask the tool when it matters that the answer is current — a
+hand-maintained table drifts, and this one did: it carried a count of 25 while the
+vocabulary had grown past it. Note that `is_write` (= `EDIT`∪`CONTENT_WRITE`∪`REMOVE`) and
 `clears_edit_loop` (= `READ`∪`VALIDATE`) are **derived helpers, not declarable flags**:
 declaring `EDIT` is enough, there is no umbrella to forget.
+
+### The work family (`kind`) — what your tool's row says
+
+Alongside the flags, declare the **family of work** your tool belongs to. It is the word
+its activity row shows, and the icon the UI draws beside it comes from the same word — so
+the two cannot disagree:
+
+```python
+@mcp.tool(**tool_caps(kind="shell", caps=[CODE_EXEC], label="Running the benchmark"))
+def benchmark(target: str) -> dict:
+    ...
+```
+
+A family, never a tool's identity: several tools share one. The vocabulary is `TOOL_KINDS`
+in `_shared/capabilities.py`, mirrored client-side and served live by
+`mimir_api(topic="capabilities")` under `kinds` — ask the tool rather than trusting a
+table here. Name a family of your own and your word still shows, with the generic glyph.
+
+Declaring it is optional: omitted, a family is derived from your capabilities (`EDIT` →
+`edit`, `CODE_EXEC` → `shell`, `READ` → `read`, …), so your tool renders sensibly either
+way. Declare one when that derivation would be wrong or merely vague — which is why the
+first-party `symbolic` tool declares it and nothing in its flags could have.
+
+Beside the family, each row carries a one-line description **the model writes per call**.
+That needs nothing from you: the client adds a `doing` parameter to every tool's schema
+and strips it before your tool is called, so you neither declare it nor receive it.
 
 ### Reversibility (and why you never declare `SENSITIVE`)
 

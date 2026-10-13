@@ -65,7 +65,7 @@ separate handler.
 | `/ledger` | expand the last answer's verification ledger |
 | `/undo` | revert the last write |
 | `/memory` | the memory store |
-| `/servers`, `/skills`, `/nudges` | list or toggle, persisted in `preferences.json` |
+| `/servers`, `/skills`, `/nudges` | list or toggle, persisted in `preferences.json`. A switched-off skill is hidden from both `/<name>` and the index the model loads from |
 | `/resources` | what `@`-mention can attach |
 | `/modules` | module-catalogue status, `refresh`, or a search term. Status never builds |
 | `/proxy clean <name>` | delete a proxy's runs, state and snapshots, and say what it removed |
@@ -196,7 +196,7 @@ primitives (`MIMIR_DIR`, `resolve_extension_dir`, the `*_DIRNAME` / `*_DIR_ENV` 
 | Module | Provides |
 |---|---|
 | `servers.py` | `all_servers()` — bundled `SERVERS` merged with `discover_user_servers()` (scans `.mimir/servers/server_<name>.py\|.js`, env `MIMIR_SERVERS_DIR`). A name colliding with a bundled server is skipped, so the core is protected. `all_server_descriptions()` does the same for the toggle panel |
-| `skills.py` | `resolve_skills_dir()` — `.mimir/skills/`, env `MIMIR_SKILLS_DIR`. Loading itself is `MimirAgent.load_skills(..., merge=True)`, where a same-named user skill overrides the bundled one |
+| `skills.py` | `resolve_skills_dir()` — `.mimir/skills/`, env `MIMIR_SKILLS_DIR`. Loading itself is `MimirAgent.load_skills(..., merge=True)`, where a same-named user skill overrides the bundled one. Only names and one-line descriptions reach the prompt (`model_invocable_skills()`); a body is read on demand by the `load_skill` tool |
 | `plugins.py` | `load_plugins()` / `resolve_plugins_dir()` — scans `.mimir/plugins/`, env `MIMIR_PLUGINS_DIR`, and imports each pack. A pack self-registers through `register_policy_check` / `register_nudge` as an import side effect |
 
 Nothing is auto-created in `.mimir/` — it is the user's alone. Copy-to-customize examples
@@ -302,7 +302,8 @@ vocabulary; `SENSITIVE` is derived from them rather than declared beside them.
   the coarse path for a foreign server), then a conservative default of empty caps plus
   path-arg inference from the input schema.
 - Query helpers — `names_with_cap`, `has_cap`, `path_args`, `arg_role`, `fallbacks`,
-  `label_for`, `timeout_for`, `scope_spec`, `name_for_cap`, `unannotated_live_tools` — all
+  `label_for`, `kind_for`, `timeout_for`, `scope_spec`, `name_for_cap`,
+  `unannotated_live_tools` — all
   take the per-agent registry, and **with no registry they resolve to empty**. There is no
   static fallback, deliberately.
 
@@ -426,6 +427,33 @@ Five sites rebuild it — mode switch, thinking-rung change, plan→agent handof
 refresh, initial build — and before this existed the skill block was silently dropped by
 every one of them but the last.
 
+Only a skill the **user** invoked is in that block. One the **model** loads mid-run with
+`load_skill` deliberately does **not** go into `messages[0]`: rewriting the system message
+mid-query voids the prompt prefix for every remaining step, and a pull happens at step 14 as
+readily as at step 1. So the body stays where it landed — the tool result in the tail — and
+is protected there instead.
+
+### The pin
+
+One set of ids, `execution_context["pinned_call_ids"]`, and three passes that honour it. It
+exists because the tail is where the context budget does its work: `_trim_tool_history`
+evicts whole tool results, `_maybe_compact_intra_query` summarises the middle of the list,
+and `_force_fit_to_window` truncates largest-first. All three would carry off a skill body,
+and the model has been told the method is in its context.
+
+- `_trim_tool_history` skips pinned ids outright, by `tool_call_id` — the same structural key
+  as `tool_msg_files`, never a substring scan.
+- `_maybe_compact_intra_query` carves each pinned result out of the slice it is about to
+  summarise, **together with the assistant turn that declared it**. The pairing is not
+  optional: `reconcile_tool_pairs` drops any tool message not immediately preceded by that
+  turn, so a body saved alone would be deleted by the very next repair pass — protection that
+  looks like it works and does nothing.
+- `_force_fit_to_window` sorts pinned messages to the **end** of the reduction order rather
+  than protecting them. Protecting them there could only turn an over-window prompt into a
+  hard `ContextOverflowError`; ordering them last means a body is cut only once everything
+  else has been, and usually not at all. Doing nothing was not an option either — the order
+  is largest-first, and a skill body is the largest single message in the list.
+
 ---
 
 ## integration
@@ -436,6 +464,21 @@ every one of them but the last.
 discovers its tools, registers them in `agent.tool_owner` / `agent.tools`, and builds
 `agent.tool_caps[name] = infer_tool_caps(tool)` — the per-session registry every other layer
 queries.
+
+`connect_servers()` is the startup path, and connects a whole registry in two phases:
+every server process is started first (immediate — the spawn does not wait on the child),
+then the handshakes are awaited together. What a handshake waits for is the child
+interpreter importing the MCP SDK, about two thirds of a second and the same two thirds
+in each of the twenty, so done one after the next it *was* the startup — fourteen seconds
+before a first query could be answered, against a little over one for the same registry
+overlapped. The two phases also keep the asynchronous contract intact: each session is
+entered on `agent.exit_stack` from the caller's own task, so the stack stays single-task
+and `stdio_client`'s cancel scope is unwound where it was opened. Registration stays
+sequential and in registry order — `agent.tools` is sent to the backend on every request,
+so an order that depended on which child answered first would move the prompt prefix and
+cost the backend's cache. A caller that can do without a given server passes `on_error`
+and gets the rest (`spawn_agent`); with no handler the first failure is raised and the
+caller closes the half-built agent (the CLI and the WS worker).
 
 ---
 
@@ -650,7 +693,7 @@ The full per-nudge table, with what each fires on and which survive at each leve
   `test_nudge_table.py` asserts this set is disjoint from `_ALL_GUIDANCE`, so a verification
   row can never be silently switched off by enforcement.
 - **Guidance layer** — skipped entirely at `off`: `env_resolution`, `env_cleanup`, `doc`,
-  `state`, `blast_radius`, `creation`, `todo`.
+  `state`, `blast_radius`, `creation`, `todo`, `unwatched_run`.
 - **Order per step**: core verification → pack verification → *(stop if `off`)* → core
   guidance → pack guidance. The first row whose predicate holds wins.
 - `_GUIDANCE_BY_LEVEL_MODE` is the declarative `(enforcement, mode)` table, consulted
@@ -665,6 +708,23 @@ The full per-nudge table, with what each fires on and which survive at each leve
 rows used to open on a keyword match over the query; that is a guess about intent dressed as
 a test. What replaced the one thing the keyword earned — telling `blast_radius` from
 `creation` — is whether the declared target already exists on disk.
+
+**A run nobody is watching.** `unwatched_run` is the row that rule shaped most. The failure
+it guards is a job submitted outside MIMIR — through a site launcher, a submission script, a
+shell on another host — which leaves no descriptor: nothing polls it, no wake is owed when it
+ends, and the server stops on its idle TTL with the run still going. Silent at both ends, and
+a night lost. The tempting predicate is a pattern over the command text, and it is a guess:
+it fires on a `grep sbatch` and misses every wrapper ever written. So the fact is established
+where it can be: a server that can ask the scheduler and read the submission directories —
+and `_observe_unwatched_runs` records it, payload-driven rather than keyed on a tool name (it
+is not even handed one), so any server reporting the same field earns the same reminder.
+Which is what makes it reach the *ordinary* case: the job goes out through a site launcher
+and is checked with a `squeue` a second later, neither of them a typed cluster tool, so the
+bash server answers with the gap on any command that just proved the scheduler answers. The twin half is the
+clearing: an answer carrying a watcher's handle for an id has made that id watched, and an
+array adopted under its base id clears the tasks the queue listed separately. It fires at the
+conclusion, which is the last moment the record can still be written, and it is one of the
+three rows kept at `light` — costly, hard to detect, and not self-correcting.
 
 `nudges/messages.py` holds the message copy for every built-in row. `nudges/plugins.py`
 holds the `NudgeRule` descriptor, the process-global `NudgeRegistry` and `register_nudge()`;
@@ -694,8 +754,11 @@ format in [POLICY.md](POLICY.md#verification-ledger).
 - **`_stream_chat()`** — iterative streaming backend calls, retrying transient failures with exponential backoff and jitter, cancel-aware. Thinking
   blocks stream for live display but are **excluded from history**: reasoning is never
   re-fed. UI events go through `emit()`.
-- **`_dispatch_tool_calls()`** — dedups `(name, args)` within a step, and across steps for
-  writes. Reads run concurrently through `asyncio.gather`; **writes are serialized**, so two
+- **`_dispatch_tool_calls()`** — takes the model's per-call `doing` description out of the
+  arguments first (the client adds that parameter to every tool's schema; no server declares
+  or receives it), *before* the dedup key, so two identical calls with reworded descriptions
+  stay one call instead of walking past the repeat guards. Then dedups `(name, args)` within
+  a step, and across steps for writes. Reads run concurrently through `asyncio.gather`; **writes are serialized**, so two
   edits to one file, or a read racing a write, cannot interleave. Each call is wrapped in
   `asyncio.wait_for` with the wall `capabilities.timeout_for` resolves — the tool's own
   `timeout_secs` if it declared one, else `TOOL_CALL_TIMEOUT_SECS`, clamped by
@@ -892,13 +955,47 @@ never a parse of the command, which is the guess the module exists to avoid. See
   the tool *name*, with no per-tool table: a verb is located in a reusable lexicon, rendered
   as a gerund, and the remaining tokens appended. `shorten_display_args()` reduces declared
   path arguments to their **file name** for display, capability-driven off the `path`
-  arg-role. A row reading `Reading file: /home/user/projects/solver/.../observations.py` buries
-  the one token the user is scanning for; it becomes `Reading file: observations.py`.
+  arg-role, with a generic argument-name fallback for the write, edit and delete tools that
+  declare no role. A row reading `Editing file: /home/user/projects/solver/.../observations.py`
+  buries the one token the user is scanning for; it becomes `Editing file: observations.py`.
+  Only **absolute** values are shortened, since a tool that names a workspace file is given
+  an absolute path, while a repository path on a remote-fetch tool is already short and its
+  leading segments are what identify it: basenamed, the GitHub row said `ci.yml` for a call
+  on `.github/workflows/ci.yml`.
+
+  It also strips a url's `user:password@` from the display copy. The label interpolates
+  the url verbatim ("Fetching {url}"), and that label is the row's tooltip, the approval
+  card's header and a line of the stored transcript — so the credential reached all four.
+  The scheme and the query stay: a consent prompt asks about a precise call, and only the
+  credential is never part of one. It does not make the credential *confidential* — the
+  model wrote it into the call and the call is in the history either way — it removes the
+  incidental copy, on screen and in the transcript the user shares.
 
   **Never applied where the path is the decision.** An out-of-workspace approval asks the
   user to authorise *locations*, so the card carries the paths verbatim and the CLI prints
   each absolute path on its own line. Readability wins in the activity log; precision wins
   in a consent prompt.
+
+  `tool_arg_preview()` finds the call's **salient argument** — the url, the file, the
+  verdict, the job id, the queried name — from argument *names* in priority order, with
+  `op` last, since an op selects an action and the model's own description already
+  carries that half. Every one of these used to reach the row through the server's label
+  template, and went off screen with it. A url keeps its host and path and sheds its
+  userinfo and query on both branches, parsed or not: a row is read over a shoulder and
+  then stored. `dedup_row_detail()` drops the preview when the description already says
+  it, matched on **word boundaries** — as a substring, a verdict of `pass` was eaten by
+  "recording the passing run" and an op of `now` by "knowing the time".
+
+  `clip_doing()` is the row's other half: the model's own description of the call, cut to
+  its first line and bounded. The 15-word limit is asked of the model and not enforced —
+  a sentence cut mid-word reads worse than a long one — and this only stops a model that
+  ignores it entirely from pushing the rest of the row off screen.
+
+  The name-derived label is no longer what a row shows. The row shows the tool's declared
+  work family (`kind_for`), that description and that preview; the label remains its
+  tooltip, and is
+  what approval cards and policy messages are written from. So all of the above is still
+  live — just not in the activity row.
 
 ---
 
@@ -916,13 +1013,15 @@ frontends pilot, not a frontend.
 - `_apply_carry_context()` / `_update_carry_context()` — merge prior-session discovery sets
   into each new context, evicting stale reads by mtime, and save fields back after each
   query. Both iterate the trait-derived carry list.
-- `compact_history()` / `compact_messages()` / `detect_skill_implicit()` — the model calls
-  MIMIR makes on **its own behalf**. All three go through `get_backend()`; two used to call
-  Ollama directly, which broke them under every other backend. Each passes a discarding
-  token callback, because `chat` streams to stdout when given none — that default belongs to
-  the CLI answer path, and without a sink a compaction summary is printed into the middle of
-  the session. Each degrades quietly when the endpoint is down, so an unreachable backend
-  costs a summary, not the turn.
+- `compact_history()` / `compact_messages()` — the model calls MIMIR makes on **its own
+  behalf**. Both go through `get_backend()`; they used to call Ollama directly, which broke
+  them under every other backend. A third used to live here — a classifier picking a skill
+  from the query before the first step. It is gone: the model is given the index and loads a
+  skill itself, so no round-trip is spent guessing from a request that does not yet know what
+  the task is made of. Both pass a discarding token callback, because `chat` streams to
+  stdout when given none — that default belongs to the CLI answer path, and without a sink a
+  compaction summary is printed into the middle of the session. Both degrade quietly when the
+  endpoint is down, so an unreachable backend costs a summary, not the turn.
 
 ### `human_pause.py`
 
@@ -947,9 +1046,10 @@ block stays in history for the model. `chat_commands.py` is the slash-command ta
 
 ### `ui/ws/`
 
-The WebSocket / VS Code bridge: `ws_server.py`, `ws_worker.py`, `ws_session.py`,
-`_ws_runtime.py`, `session_store.py`, `session_summary.py`, `transcript_log.py`,
-`file_preview.py`. The message protocol and the React frontend are documented in
+The WebSocket / VS Code bridge: `ws_server.py`, `ws_worker.py`, `ws_pool.py`,
+`ws_session.py`, `event_bus.py`, `turn_commit.py`, `job_scan.py`, `server_registry.py`,
+`detach.py`, `_ws_runtime.py`, `session_store.py`, `session_summary.py`,
+`transcript_log.py`, `file_preview.py`. The message protocol and the React frontend are documented in
 [`EXTENSION_DETAILED.md`](EXTENSION_DETAILED.md). What belongs here are the invariants that
 are not obvious from the protocol:
 
@@ -1057,6 +1157,18 @@ conversation so the next one replaces it, and goes out after the answer lands. I
 rather than delivered if the runs have since finished — their wakes say more — or if a wake
 of that conversation is itself pending.
 
+**And a check-in leaves no bubble.** A wake's notice is transcript — a run ended, and the
+reader wants that where it happened. A bulletin is plumbing: the client is sent the
+`job_checkin` event and renders the news that runs are still there, while the text the
+session layer builds is the instruction asking the model for its one line. Stored as a
+display message it was replayed on every reload, one full block per wake the conversation
+had ever had, each above the answer it had produced. So only a wake writes one, and
+`_text_count` — the guard that keeps a freshly opened webview from blanking a stored
+history — ignores the notices this layer wrote itself. It counted them, and since the
+webview never received one, every transcript the client sent afterwards looked short by one
+and was refused: the stored chat froze at the first notice and came back without a tool row,
+a diff card or a reasoning panel from that point on.
+
 **Asking where a run is at is what puts a watcher back on it.** A watcher lives on the agent
 that made it and dies with it, which a window reload is enough to cause; the run carries on
 in its own session directory, indifferent. Nothing re-arms at load — that would poll jobs
@@ -1071,28 +1183,593 @@ op to poll and a job to poll it for — the whole trust boundary, and enough of 
 registration buys is a read-only poll of a named tool. Loading a conversation whose jobs
 nothing is watching says so in one line, and leaves the asking to the person.
 
-**A connection that drops does not end the turn.** An agent outlives the connections that
-read it, so a socket that dies mid-run leaves a turn working with nobody watching. The next
-connection therefore drains an event queue only where that conversation's agent is **idle**:
-what is queued under a busy one is that turn's own output, not debris. With one exception,
-and it is why that drain is not a plain one: `job_complete` and `job_checkin` answer to no
-turn. A job finishes while its conversation sits idle, puts its wake on that idle queue, and
-the watcher holding it is gone the same instant — the socket went away, the agent never did.
-Those two are set aside and put back; the rest is counted on the way out, this being the one
-place in the client where work disappears on purpose. For the same reason the drain loop
-*handles* such an event before it sends it: it has already left `out_q`, nothing re-emits it,
-and a socket dying on the send must not be able to take the handler with it. Every parked card
-comes back, in every conversation — each wait has no timeout by design and no card left to
-end it, so a card left out is a conversation stopped for ever with nothing on screen to say
-why.
+**A watcher's own tool calls have a deadline, because nothing beneath them does.**
+`session.call_tool` takes no timeout and the MCP sessions are built without a read timeout, so
+a status op that stops answering — a wedged server, a scheduler that hangs, a queue command
+that never returns — blocks the watcher for ever. That is the one failure that genuinely loses
+a run, and the quietest: the job stays in `_bg_jobs`, so the agent is never released and never
+woken, and the bulletins keep repeating a status frozen at the moment it stopped. A watcher
+that *dies* at least says so. `_TOOL_CALL_TIMEOUT` (60s) is the line between "slow" and
+"never", not a budget to work inside; a tick that crosses it counts as unreadable, which is a
+case the loop already had, so `_UNREADABLE_POLL_LIMIT` of them in a row end the run as
+`unknown` with the reason — an honest "I lost track of it" in minutes instead of silence. The
+summary call is under the same deadline, and there it matters more: the run is already over, so
+a summary op that never answers withholds the wake itself, and better a wake with nothing in
+it than no wake.
+
+**A connection that drops does not end the turn, and no longer costs its record either.**
+An agent outlives the connections that read it, so a socket that dies mid-run leaves a turn
+working with nobody watching. What used to be true as well is that nothing *recorded* that
+work: the draining, the journal tee and the writing-back of a finished turn's answer all
+lived in `_Session._drain_loop`, which is created per connection and cancelled when the
+socket goes. A disconnected run wrote nothing, grew `out_q` for the length of the
+disconnection, and lost its answer if it finished while away.
+
+So the WebSocket is no longer the bus. `_EventBus` (`event_bus.py`), owned by the pool and
+started by `serve()`, is the one pump for the process: it drains every worker through
+`drain()` — already the single choke point for everything the engine emits — writes each
+event to that session's `transcript.jsonl` under a monotonic `seq`, hands `answer` and
+`error` to whatever commits a turn, and only then fans the event out to however many
+subscriptions are attached, zero included.
+
+```
+worker.out_q ──(pump)──► seq ──► transcript.jsonl      (durable, authoritative)
+                           │
+                           ├──► turn committer         (the session file)
+                           └──► 0..N subscriber queues ──► sockets
+```
+
+Three things follow. `out_q` is bounded by a pump tick rather than by how long the user was
+away. The journal being authoritative means a subscription may *drop*: its queue is bounded,
+overflow is reported as a gap, and the client closes that gap by replaying from its
+watermark — the same path as a fresh attach, not a special case. And `seq` is assigned by
+the pump and by nobody else, which is what makes it a watermark a reconnect can resume from;
+anything else appending to a session's journal goes through `record_client_event` (a query,
+a steer, a compaction record, a job wake).
+
+There used to be a sweep on connect — `_drop_stale_events` — that emptied an idle
+conversation's queue and spared a busy one's, with a carve-out for `job_complete` and
+`job_checkin` because those answer to no turn. The carve-out was the tell: deciding what to
+discard was the wrong question. Nothing is discarded now. The one thing not *recorded* is a
+streamed delta (`token`, `thinking`, and the rest of `_SKIPPED_TYPES`): hundreds per turn, so
+a replayed turn shows aggregates rather than keystrokes — which is what makes replay
+affordable.
+
+**That left a real hole, reported from a real absence**: the tool calls came back and the
+prose did not. Correct for the deltas, but the consequence was that everything the agent said
+*between* its tools was gone, and that is most of what makes a turn legible — only the rows
+and the final answer survived. So each streamed prose block is aggregated into one
+`assistant_text` event as it closes, flushed at every boundary so the record interleaves what
+was said with what was called, in order. It is **replay-only**: a connected client has already
+had every delta, and sending the aggregate as well would print the paragraph twice, so the
+pump journals it and does not fan it out. A replay feeds it to the webview's reducer as a
+`token`, which is what makes a turn read back after an absence lay out the way it would have
+been watched — the same draft-and-boundary logic decides where the block sits relative to the
+cards that followed. Reasoning is still not kept: it is the one thing a replay deliberately
+sacrifices, and the one the aggregate is not worth paying for.
+
+**Who writes a finished turn down.** The answer carries the turn's own transcript, and
+unpacking it into the session file used to be `_Session._persist_detached_answer` — on the
+drain loop, so a turn that finished unattended was never written. `turn_commit.py` holds that
+logic now with no socket and no session object: it takes the store, the session id, the
+answer, the private extras the pump took off it, where the turn began and the context mode.
+The announcing stayed behind, because notifying the user, refreshing the session list and
+flushing the wakes that piled up are things a *connection* does; a commit that insisted on
+them would be back where it started.
+
+Two of the arguments used to be read off the wrong place. The boundary — how long the history
+was when the turn was submitted — lived on the session, per socket, which for a turn that
+outlives its socket is a boundary nobody has; the worker records it when it takes the turn off
+its queue and carries it on the answer. And `context_mode` was read off whichever worker was
+on screen, which is the wrong agent whenever the turn belongs to another conversation; it
+rides on the answer too.
+
+The pump **offers** the answer and the committer takes it if nobody else does. A connected
+`_Session` writes this itself — into `self.history` for the conversation on screen, through
+`_persist_detached_answer` for any other — and two live writers of one file lose history
+silently, so exactly one of them may write. What elects it is a claim rather than a count of
+subscribers: see *Who is allowed to act* below, which is the same mechanism and the same
+reason. A view that loses the claim re-reads the conversation the committer wrote instead of
+appending its own copy of the turn. The belt to that braces is a
+revision on the session file: `save_session` bumps `rev` and refuses a save whose base is
+behind what is on disk, raising `StaleSessionWrite` rather than overwriting newer history with
+older. A successful save carries the new revision back onto the object, so an owner that holds
+one session and writes it as a turn progresses is never refused — only a second writer that
+loaded earlier is, and the committer says so in the log instead of dropping the turn quietly.
+
+**Who starts the turn a wake asks for.** The committer's twin, and the other half of
+"nobody is looking". A watcher outlives every connection — it is a task on a worker's loop,
+and `releasable` refuses to free a worker that holds one — so a detached run reports in
+whether or not a panel is open, and the pump journals what it says. Acting on that report is
+`_AgentPool.consume_durable_event`, reached for `job_complete` and `job_checkin` through the
+claim below.
+
+A wake only a connection can route is a conversation that waits out the night for a job that
+finished in three minutes. So the pool does what the session does, minus the socket: loads the
+conversation that launched the run, appends the wake to its stored history, writes the 🔔 the
+user finds on their return, journals a `job_wake` where the turn begins, and queues the turn on
+that conversation's own agent — then settles the run. All of it synchronous, inside the pump
+tick that drained the event, because loading, saving and `submit_query` are plain calls. The
+answer is written back by the committer off the same pump, against the boundary the worker
+carried on it: a wake taken in this way is a complete turn, asked, answered and persisted,
+with no connection anywhere in the path. A busy conversation gets the wake steered into its
+running turn instead, and keeps it pending until that turn says it read it; a bulletin is
+held rather than steered, because "nothing to report" must not make the agent answer about
+the job instead of the work.
+
+**Writing the answer down is only half of what a connection does when a turn lands.** The
+other half is carrying on, and a detached process that did only the first half answers the
+step that finished and stops there — which is the difference between a chain of steps that
+runs overnight and one that stops at its first link. On every answer a socket puts the
+steering the loop never read to a new turn, starts a turn for every run that finished while
+it was busy, and delivers the bulletin it was holding. `_AgentPool._carry_on_after_turn` is
+that, with no socket: it reads `_unconsumed_steer` off the answer — what the loop ended
+without taking in, and the only place that is knowable — settles the wakes the turn did read,
+and gives the rest one turn between them. A burst that finished together is one piece of news,
+not three turns that answer the first and then re-answer it twice.
+
+**Who is allowed to act.** Two consumers can now act on a finished run or a finished turn,
+and only one of them may. The first rule was a test on the subscriber list — act only when
+`bus.attached()` is zero — which answers a different question than the one that matters: a
+subscription says a socket *exists*, not that it will route anything. A view whose drain loop
+returned on a failed send, or that ended without closing its subscription, is a promise nobody
+is keeping, and because nothing re-emits a wake the run it was holding then waits for someone
+to open the panel and ask. One leaked subscription silenced the committer, every wake and
+every check-in for the life of the process. (The leak itself is closed too: everything in
+`_Session.run` from the subscription onward is under one `finally`, because every step of that
+handshake sends on a socket that can close under it — a window shut mid-replay raises there —
+which makes an unguarded exit the ordinary case rather than the exotic one.)
+
+So the bus *offers* each such event and the pool acts on what nobody claimed. An attached
+socket gets first refusal for `_CLAIM_GRACE`; the drain loop claims an event before doing
+anything with it, and `_sweep_unclaimed` at the end of each tick claims whatever is past its
+deadline and runs the pool's handler for it. With no subscription the deadline is now, so the
+detached case keeps the latency it had. `claim()` is true for exactly one caller, and grants an
+event this bus never offered — something that reached a consumer by another route reached only
+that one. The grace is a latency bound on the handover, not a correctness condition: whichever
+consumer claims first is the only one that acts, whatever the timing.
+
+**And an agent is never released while anything of its is unresolved**, which is what makes a
+wake for a closed agent impossible rather than merely handled. Idleness is counted from the
+last time the pool was asked for the worker, so a conversation waiting on an overnight run has
+been "idle" for hours throughout — the clock never protects it, and `releasable()` is the whole
+of what does. Its clauses are the list of what *unresolved* means: on screen, a turn running or
+queued, a job watched, a card up, a deferral owed, a wake owed, output undrained, an event still
+to be claimed. The last three close the window a watcher opens by dropping its job the instant
+it reports it finished — the one moment at which the agent is needed most. Every emitter of a
+durable event runs on a worker's own loop, so with those clauses a wake cannot arrive for a
+conversation whose agent is closed; `consume_durable_event` logs that invariant as broken rather
+than rebuilding anything, and leaves the run unsettled so the next agent built announces it.
+
+An owed wake also holds the process open. `idle_report` counts a finished run whose wake
+nothing has taken in alongside one still going — the same debt one step later — so the server
+cannot shut down owing a turn it never started. Only for sessions past their baseline: an
+unbaselined one holds every run it ever finished with no marker on any of them, and reading
+that as debt would leave a workspace permanently un-stoppable.
+
+**Coming back is a window opening onto a run that never stopped**, and three things follow
+from reading it that way. **Attaching is the take-back.** The claim was asked for by a user who
+was leaving, and they are back, so `_restore_detached_autonomy` drops every claim on arrival
+and tells the panel the server is attached — which is what makes closing the window end the run
+again, through the sweep that stops a server no conversation asks to keep. A claim nothing
+dropped on arrival made the process immortal: the window that attached held no child to kill,
+so the deliberate departures ended nothing and the server was found again on the next connect,
+having been promised dead. Leaving it running a second time is a decision, made with the same
+button that made it the first time.
+
+The conversation returns under the level it was left running on — the registry entry carries it,
+read before the claim goes, and it is both applied and recorded pool-wide, because a worker
+rebuilt during the absence would otherwise come up on the default and park at its next
+sensitive call, silently dropping a run from `auto` to `manual` with nothing said. And a turn
+still in flight keeps going: `session_loaded.turn_running` is what brings the chat back busy,
+with a stop button that stops something, and — not cosmetically — knowing a turn is open so
+the answer that ends it hands the finished transcript back.
+
+Scoped to the run and not past it: the level is read from the registry entry, which a clean
+stop clears and whose liveness is checked. That is what keeps this from becoming the thing the
+approval mode is deliberately never persisted for — a mode that suppresses prompts inherited
+by a later session that never asked for it.
+
+**Coming back: replay, then live, by watermark.** The journal's `seq` is the watermark —
+monotonic per session, resumed from disk, gap-free by construction — so nothing else needed
+inventing. What a client has rendered is the client's own statement, because the rich
+transcript is assembled in the webview and exists nowhere else: `transcript` carries
+`through_seq` beside the messages, and it is stored on the session as `rendered_seq` rather
+than kept per connection, so a fresh window or another machine can resume too. It only ever
+moves forward, for the same reason the transcript itself is only ever taken when it is not
+shorter than what we hold.
+
+The no-duplicate / no-gap argument is an **ordering**, and `run()` is where it lives:
+
+1. subscribe — *before* the handshake. From that instant nothing the agents produce can be
+   missed; it accumulates behind the subscription while the rest of the setup runs.
+2. greet, list the sessions, load the newest.
+3. read the journal from the watermark and send it as `replay` frames, a few hundred events
+   each: the frame cap is 32 MiB, which a long detached run's transcript can exceed whole,
+   and chunking also lets the webview draw the first frame while the rest arrive. A cap on
+   the total keeps the *end* of the run and says `truncated`.
+4. **only then** raise the subscription's gate to where the replay ended. Events produced
+   while step 3 was running are in both the file tail and the queue; the gate discards the
+   copies at or below it, so the overlap collapses to exactly one. A gate raised before the
+   frames were sent would have discarded those same events instead — which is why the order
+   is not an implementation detail. A socket that dies mid-replay leaves the gate alone, so
+   what it did not receive is still live.
+5. resend the parked cards, last, so they land under a chat already on screen. A card is
+   state, not a journal line — which is why `_resend_parked_prompt` exists beside the replay
+   rather than being replaced by it.
+
+A `replay` frame is a bundle of ordinary events and goes through the webview's ordinary
+handler, which is what rebuilds the tool rows, diff cards and reasoning panels for a stretch
+the window was not there for — one reducer for what happened live and what happened while
+nobody was looking.
+
+**One gate per conversation, because `seq` is counted per conversation.** Each chat has its
+own journal and its own writer, so a number from one says nothing about another: a single
+gate on the subscription, raised to the position of whichever chat the connection opened on,
+discards every event of every chat whose journal is shorter — which on a socket that opens on
+a long conversation is every new one, since its own `seq` starts again at 1. The symptom is
+specific and worth recognising: the tool rows never appear **live** and all of them appear on
+the next reconnect. A replay frame is written straight to the socket and passes no gate, while
+the live copies were stamped and dropped — so the journal is complete, the chat is not, and
+nothing about the connection looks wrong. The subscription therefore keeps a watermark per
+session id, and `wants()` compares an event against its own conversation's.
+
+**The gate is clamped to what the journal actually holds, and that is not a nicety.** The
+watermark arrives from the client and is stored, so it can outlive the journal it counted — a
+session whose log was removed, or a number inherited from another conversation. A claim to
+have rendered more than exists cannot be true, and honouring it sets the gate above every
+event that session will ever produce. The clamp is read against that conversation's own
+journal, which is what makes it sufficient. What that looks like is worth knowing, because it is
+not a dead connection: `token` and `thinking` are never journaled, so they carry no seq and
+bypass the gate entirely, while everything stamped is filtered. The chat streams the answer's
+opening text, reasons for ever, and shows no tool call, no diff and no answer. A filtered
+event is counted and logged for the same reason — the failure is otherwise invisible from
+outside.
+
+**Re-making the promise to report a run, without being asked.** A background run survives
+anything: its own process session, a trap that writes the exit code, a descriptor in its own
+directory. The *watcher* does not — it is an `asyncio.Task` on a worker's loop, which
+`shutdown()` cancels. The run carries on indifferent; only the promise is lost. That was
+already recoverable through a status tool returning `background_jobs`, but it needed a turn
+in which somebody asked where the job had got to.
+
+`job_scan.py` removes the asking. It reads the descriptors directly — `meta.json`, the
+`exit_code` the trap wrote, and the pid liveness contract — and sorts what it finds into two
+piles. A run still going needs a watcher, which is put back when that session's worker is
+built (on the loop, not in the constructor's executor: a task created off a running loop
+polls nothing). A run that *ended* while nothing was listening needs its wake, and that is
+handed to `_handle_job_complete` — deliberately the same routing, wake text and coalescing a
+watcher's report goes through, so a run reported late is indistinguishable from one reported
+on time. A conversation with no agent yet keeps the wake pending rather than losing it.
+
+Two places look for the ended pile — a connection arriving (`_report_ended_jobs`) and a
+worker being built (`rearm_detached_jobs`) — so a marker file in the run's own directory
+records what has been settled, outliving whichever process settled it: a run delivered twice
+is a conversation woken twice for one build.
+
+**Some runs name their own watcher.** A proxy run that submits to Slurm is a job of this
+workspace and that server's state machine both, so it is filed among the Slurm descriptors
+— otherwise every reader asking "is anything watching this id" says no, and the remedy they
+offer puts a second watcher on it. But the watcher put back here has to be *its* watcher:
+re-armed with the stock `slurm_job_status` poll instead, the run would be held twice under
+two different keys, which no dedup catches, and one result would wake the conversation
+twice. So a descriptor may carry `watcher.json`, the owning server's own `background_job`,
+and the scan re-arms that under that key. Liveness still comes from the Slurm record beside
+it: the owner says *who* polls, never *whether it is over*. The marker follows the same
+resolution, so the live watcher settling its own completion and a late scan finding the same
+run write to one directory — spelled apart, a run reported while the window was open is
+announced again when it comes back.
+
+**A Slurm submission has to be told it is over.** Its state lives in the controller, not in
+a pid here, so inspection cannot conclude anything: what the directory holds is a job id, and
+an id never stops existing. Read on its own that is "there is a job, ask Slurm" for ever —
+which is how a workspace that had submitted one job ended up with a server that could never be
+idle, since the same scan answers "does this workspace still have work running". So
+`slurm_job_status` writes the state into the submission's own directory the first time Slurm
+has let the job go, and that record is this path's equivalent of the exit-code trap: the first
+observation stands, because sacct's retention window expires and a later poll of the same job
+reads `unknown`. `unknown` is recorded too — the scheduler forgetting a job is an ending, and
+the one thing that must not be written is nothing at all. A submission nothing will ever
+settle — no conversation left to poll it, or a machine whose Slurm tools have gone — ages out
+of the live pile after `MIMIR_SLURM_STALE_AFTER` (a week), deliberately far longer than any
+wall-time: while a server is up its watcher settles a finished job within one poll, so the
+horizon only ever bites a job nothing is watching, and erring short would stop a server that
+still owes a conversation its wake.
+
+**The marker records delivery, not emission.** It is written where the wake enters a turn —
+`mark_wakes_reported`, called by whichever consumer submitted it — and never where the event
+is queued. A `job_complete` put on the bus with nothing ready to read it is a wake still
+owed; settling it at that moment makes the only record of the debt say it was already paid,
+and the run is then filtered out of every later scan. That is a conversation waiting for ever
+on a job that finished hours ago, which is precisely the failure this path exists to fix. So
+an announcement repeats until a consumer has taken the wake in, and the consumers dedup
+instead: a job already pending for a conversation is not added twice. A steered wake is
+deliberately left unsettled — a steer is only known to have been read when the loop says so,
+and the flush that eventually gives it a turn writes the marker. The marker is best-effort,
+because a duplicate wake is a nuisance and a missing one is the bug.
+
+**The first look at a session establishes a baseline rather than claiming a backlog.** A
+detached job's directory is never swept, however old, so an existing workspace has every
+build it ever ran sitting there unmarked. Read as wakes owed, that is a conversation woken for
+a two-month-old build on the first attach, and unlike a missed wake it is unbounded. So a session with no
+`.wake_baseline` has its finished history marked and nothing emitted; from then on a run that
+ends is genuinely one nothing has spoken for. A run still *going* is re-armed either way: the
+baseline is about what has ended. Slurm
+jobs are never declared finished by inspection: their state is in the controller, not in a pid
+here, so they come back as live and the watcher's first poll settles it.
+
+The liveness check is a deliberate twin of `_bash_jobs._is_running` rather than a call into
+it — the MCP servers resolve imports against their own directory, so nothing in
+`mimir.client` can import that tree, the same reason `tool_execution/run_channel.py` twins
+`servers/_shared/run_channel.py`. What must change in both together: a pid is alive only if
+it exists, its start time matches the one recorded, and it is not a zombie.
+
+**Being findable at all.** A spawned server's port is learned by regexing its stdout, which
+works exactly as long as the extension host is the parent holding that pipe. One meant to
+outlive that window has to leave its address on disk, so `server_registry.py` writes
+`<STATE_DIR>/server.json` once the socket is actually bound — with `--port 0` the argument
+was a placeholder and only the bound socket knows the answer. The choice of directory *is*
+"one server per workspace": `STATE_DIR` is already `<state home>/<basename>-<sha1(realpath)[:8]>`,
+so two checkouts sharing a basename do not collide and two windows on one workspace resolve
+to the same file.
+
+**One server per workspace is enforced, not assumed**, and this is the piece that matters
+most. Two servers sharing a workspace share its sessions directory: both append to the same
+`transcript.jsonl` and both derive `seq` from it, so the numbering collides, the watermark
+built on it stops meaning anything, and a client attached to one sees nothing of the turn
+running in the other. What that looks like from a chat window is a conversation whose tools
+run and never appear — until a reconnect happens to land on the other server and replays
+them. It was diagnosed from `/diag` reporting a running pump that had moved zero events, no
+worker in the pool, and a journal already at seq 55.
+
+So `serve()` takes an exclusive `flock` on `<STATE_DIR>/server.lock` **before binding**, and a
+loser does not serve. `flock` rather than a file the process writes, because the kernel
+releases it however the process dies — a crashed server must not keep a workspace locked, and
+nothing the process writes can promise that. A loser that finds a live entry prints
+`Listening on <the winner's url>` on the line the extension parses, so a caller that meant to
+spawn connects to the server that already serves this workspace instead of adding a second;
+a loser that finds no address refuses outright rather than serving unlocked, which is the
+state that corrupts the journal. The extension asks the same question before spawning —
+auto-connect already did, and the Connect button did not, which is how the second server came
+to exist.
+
+Liveness is three questions, and the third is the one the other two cannot answer: the pid
+exists; its start time matches what was recorded, because a recycled pid wears the same
+number; and the port actually accepts a connection, because a process can be alive with its
+listener already gone. The first two come from `job_scan`, which holds that contract for
+detached runs. The entry is advisory throughout — a stale one costs a connection attempt that
+fails and is then replaced, whereas trusting it is how a window ends up waiting on an address
+nothing is listening at. It is removed on a clean shutdown and deliberately left behind by a
+crash, since a reader checks liveness rather than the file's existence; `clear()` refuses to
+delete a stranger's entry, because that would make a perfectly good server undiscoverable.
+
+The extension reads the same file through `src/serverRegistry.ts`, and `workspaceId` there
+must stay byte-identical to `state_paths.workspace_id` — disagree and each end looks in a
+different file while both conclude there is no server. `serverRegistry.test.ts` pins it
+against captured fixtures rather than recomputing the formula, which would pass even if both
+ends changed together in the same wrong way. With a live entry the extension takes the attach
+path `mimir.wsUrl` has always taken: nothing is started, `serverProcess` stays undefined, and
+the server is never torn down — it is not this window's to kill, which is the right
+relationship with one that was deliberately left running.
+
+**Going on without the window.** Detaching is something the server does to *itself*, on a
+`detach` message, and the spawn is never touched — which is what lets the decision be made
+when the user is leaving rather than when they connected. At connect time there is nothing to
+decide about; the question is whether anything is worth leaving running, and that is only
+answerable once something is.
+
+Two halves, and they are not equal. **The pipe is the real killer**: when the extension host
+dies its end closes, and the next write here takes a SIGPIPE — a server that survives the
+window only to die the first time it logs something has not survived. So `detach.py` re-points
+fds 1 and 2 at `<STATE_DIR>/logs/server-<pid>.log` with `os.dup2`, and Python's `sys.stdout`
+follows, because the file object writes through the descriptor rather than around it. That is
+also what makes a detached server's output readable afterwards instead of lost. **Leaving the
+process group is insurance**: `os.setsid()` succeeds only for a process that is not already a
+group leader, and a child of `cp.spawn()` without `detached: true` inherits its parent's
+group, so it is not one — but the extension host has no controlling terminal, so no group-wide
+SIGHUP is coming either way. A declined `setsid` is logged and stepped over; it must never
+cancel a detachment whose essential half already succeeded. Nothing here can be undone: a
+detached server has no pipe to go back to.
+
+**Detaching does not disconnect**, and that is the point of the shape: the socket stays
+open, the turn goes on in front of the user, and what changed is who owns the process.
+Which makes it revocable — `enabled: false` clears the claim of the conversations it
+names, or of all of them, and a server nothing claims any more is mortal again. The process-level work is not undone and does not need to be: fds pointing
+at a log file are harmless either way, and what makes a server survive a window closing
+is that nobody kills it. The claim travels in the reply as an explicit flag rather than
+being implied by the message's arrival, so the two directions cannot be confused.
+
+The autonomy level rides on the message and is applied through the same seam `/approvals`
+uses, so a turn already in flight picks it up at its next gate. Naming conversations sets only
+those; naming none means all of them and also records the level pool-wide — the only form that
+outlives a worker being rebuilt, since the pool records UI settings per pool rather than per
+session. The registry entry is updated rather than rewritten: the address was settled at bind
+time and has not changed, so only the claim and the log path are added.
+
+**A claim is a conversation's request, not an agent's.** Built from the live workers, the
+set came out empty for the one case that matters most: an agent is created on a
+conversation's first query and released after ten minutes of idleness, and a conversation
+whose work is a job the scan cannot see has nothing holding its agent — so it is asleep at
+exactly the moment the user leaves. An empty claim is written as `detached: false`, so
+`_nobody_asked_to_keep_it` stopped the process thirty seconds later, having just been asked
+to keep it going. The set is now the conversations *named* (a level still needs an agent to
+be applied to, which is a separate thing), and naming none claims the conversation on screen
+as well — a window detached before its first query had no worker to enumerate and claimed
+nothing at all. An id the store does not know is still refused: a claim nothing can come back
+to take off would hold the process open for ever.
+
+**The claim is per conversation; survival is per process, and it cannot be otherwise.** The
+entry holds `detached_sessions: {session id: autonomy}`, so each conversation is left under
+its own level and taking one back leaves the others running — one flag for the workspace both
+restored a conversation left at `auto` under another's `auto_all`, and made a second
+conversation's run mortal the moment the first was taken back. What stays indivisible is the
+*process*: one server per workspace by construction (one journal, one `seq` writer per
+conversation, one `flock`), `dup2` on fds 1 and 2 belongs to the process rather than to a
+conversation, and each agent's ~19 MCP servers are its children. So the process lives for as
+long as any conversation claims it, and `detached` is kept beside the map as "anybody at
+all" — which is what the extension reads to decide whether to skip the kill, a decision about
+the process that stays right.
+
+The extension reads `detached` in the host, not the webview, because it is the host that does
+the killing: a module-global flag beside `serverProcess`, and the one path that does the
+killing — `endServerUnlessKeptRunning()`, called by `deactivate()`, `_teardownServer()` and the
+`disconnect` message — skips it when the flag is set. Beside those two sits `attachedPid`, the
+third answer to who owns this process and the one that was missing: `serverProcess` is
+undefined for a server this window attached to, so the handle is the pid from the registry
+entry it was found through, and it takes the same SIGTERM a child gets — the signal the
+server's own handler turns into the exit that reaps the MCP servers. Only this workspace's own
+entry: a server reached through `mimir.wsUrl` is the user's own statement about where a server
+is, possibly one they run by hand for several windows, and is not ours to kill. Two servers are
+not this window's to end — one that has detached, and one reached through that setting.
+
+**Which leaves "disconnect" with one meaning, and that is the point.** A server exists
+claimed — detached, asked to be left running — or owned by the window that started it. There
+is no third: a server a window has merely attached to is one it has taken back, and what used
+to sit there was the fragile case — nobody's to kill, still writing to a pipe whose reader had
+gone. It kept working, unobserved,
+and nobody had asked it to. So a server no conversation claims stops once its last client has
+been gone for the grace, whoever started it — `_AgentPool._nobody_asked_to_keep_it`, checked
+ahead of the idle predicate because a server nobody wants has no reason to live whatever it is
+in the middle of.
+
+Server-side, deliberately: the only place that can decide this reliably is the process itself.
+An extension host that is dying has no time to end a process it does not own and may be killed
+before it tries. The grace is the one a parked card already uses (`MIMIR_DETACH_GRACE`, 30s),
+because both are answering the same question — has the window actually gone — and a window
+reload closes and reopens the socket. A server that has never had a client has lost nothing and
+is left alone, which is what keeps a standalone run from stopping itself out from under the
+window about to attach.
+
+The run is not killed either way: it has its own process session and a trap that writes its
+exit code, so what the shutdown ends is the *watching*, and the next agent built for its
+conversation picks it up again. And the dialog can now say one true thing — disconnecting ends
+the server and their turns with it — where describing two outcomes meant guessing which one
+applied.
+
+**A stop the conversation can read.** `request_stop(headline=…)` writes into every
+conversation this process was keeping before the loop is asked to go: a wall-clock-stamped
+system bubble in the stored session plus a `server_stopped` entry in its journal. Recorded at
+that seam rather than at each deciding branch, so "the process decided to stop" is one fact in
+one place and a stop added later cannot forget to say it — the user-requested stop passes
+nothing, and should, since the user is there with the reasons on screen. The writing itself
+goes through `_tell_session`, shared with `_record_wake`: the store is the half the user reads
+on the way back in, the journal the half the mechanism is audited from, and the failure
+handling (a session that will not load, a save that will not write) is the fragile part, so it
+has one author.
+
+Nothing used to reach the transcript at all — the decision was printed in the process's own
+log, which the user has no reason to be reading, so a morning opened on a thread whose last
+line was hours old with nothing between. That reads as a night lost rather than a decision
+taken, and the two want opposite responses. What the notice says is only what `idle_report`
+told it, and the wording of the clock has one author (`idle_stop_reason`, beside the TTL, in
+both tenses because two layers say it). It names no remedy: a pool does not know whether this
+workspace has a scheduler at all, and naming a cluster tool there was the incident leaking
+into a general mechanism — that sentence belongs to the layer that knows one exists.
+
+**And what a detachment promises is checked against that.** "This run keeps working with
+this window closed" is a claim about what the process would still owe once the window has
+gone, so `_handle_detach` now asks — `idle_report(excluding=self._sub)`, the window asking what it
+would leave behind being itself an attachment that would otherwise answer "yes, you" — and
+only its own, because a second window of the same workspace really is keeping the process
+alive. With nothing owed, the line says so instead: nothing is being watched yet, and unless
+something starts it stops once it has had nothing to do for the whole TTL. Conditional on
+purpose, and quiet rather than a warning — the click can land while a turn is one tool call
+away from submitting the very job that would keep the process alive, and a warning that is
+sometimes false is one the user learns to skip. What it names is the trap behind the whole
+failure: a job MIMIR did not submit itself is never watched, and `slurm_watch(job_id)` adopts
+one.
+
+**A card nobody can answer is set aside, not waited out.** The wait behind an approval
+passes no timeout, deliberately: nothing may proceed because the user was slow. That is right
+while somebody is there and a deadlock once nobody is — a detached run meets its first
+sensitive tool, holds the worker thread for ever, and the pool then reaps the agent out from
+under it. So the condition added is *attached*, not *elapsed*, and `test_approval_wait` stays
+green unmodified, which is the check that no timeout crept in.
+
+The mechanism was already written and had no caller: `query_engine/deferral.py` parks a turn,
+hands the call a placeholder result, and resumes it when the answer comes. `_await_response`
+already polled in quarter-second slices and already had a `_deferring()` branch; one condition
+joins it. The grace period (`MIMIR_DETACH_GRACE`, 30s) is not decoration — reloading a VS Code
+window closes and reopens the socket, and parking every card on that blink would put the
+user's own question away under their nose.
+
+**The order inside the loop is load-bearing**, and a test found it: the queue is read before
+the grace is consulted. Checked the other way round, a reply that crossed with the grace
+elapsing was discarded and the user had answered into a void.
+
+The worker that needs to know is a *thread*, blocked in a queue poll; it cannot await
+anything and must not touch loop state. So the pump pushes a plain timestamp onto every worker
+each tick — including the ticks that move no events, since what it reports is the absence of
+events. And `releasable()` gains a clause: a deferred turn has cleared its pending card, so
+the parked-on-a-card clause no longer sees it, while the user still owes it an answer and
+releasing the agent would throw away the ~19 servers that answer is resumed against. (It has
+since gained three more, for the same shape of debt one step later: see *Who is allowed to
+act*.)
+
+**When a detached server stops.** The unclaimed case is settled above and never reaches
+here. What remains is a server conversations *did* ask to keep: it is no longer killed by
+closing the window, so it needs its own answer to "am I still needed", and
+`_AgentPool.idle_report()` is that answer in one interrogable place — read by the idle shutdown and by anyone asking whether this window
+has anything worth leaving running.
+
+The criterion is **positive**. "Not busy" is not "has finished": a worker is also not busy
+between queries, after a turn that broke, and while it waits behind a card, and an idle test
+built on the absence of noise stops a server whose turn merely paused. So a conversation
+counts as finished only once it has *concluded* — delivered a final answer, or ended in an
+error, which is also an ending and is tracked as one lest a failed session look busy for ever
+— which the bus records as it hands that event to the committer. And a run launched but not
+collected is work in progress with no turn running at all: the "I submitted a two-hour build
+and left" case, so a live job on disk holds the process open. Read from disk rather than from
+the pool, because a run outlives the agent that launched it and its session may have no worker
+right now; an unreadable state dir counts as busy, since erring the other way stops a server
+mid-build. The remaining clauses are not activity but prohibitions — a client attached, a card
+parked, a deferral owed, a turn queued for a slot, an agent being built.
+
+The TTL (`MIMIR_SERVER_IDLE_TTL`, two hours) is measured from when the process *first* looked
+idle and is reset by any activity, so the answer is "idle throughout" and not "idle at some
+point" — the difference between stopping a forgotten server and stopping one between two turns
+of a conversation the user is coming back to.
+
+Three doors, one exit: a signal, an explicit `shutdown` from the client, and the pool deciding
+it is no longer needed all resolve the same future, because what has to happen on the way out
+— unwinding each agent's exit stack — is the same in every case and is the only thing that
+reaps the MCP servers. A `shutdown` is *refused* while anything is still working, with the
+reasons sent back, unless forced: an arrest that silently discarded a two-hour build would be
+the worst answer this path could give. The VS Code command signals rather than asks over the
+socket, because the window that wants the server stopped may not be connected to it — which is
+the whole situation it exists for — and it sends SIGTERM, never SIGKILL, for the same reason
+the exit matters.
+
+**Asking the chain what it did.** Every link of this was tested on its own — the pump, the
+watermark, the committer, the approval wait — and that is exactly how three separate faults
+reached a running install: each piece was right, and what broke were the joins. A chat window
+cannot tell those apart. The pump never starting, the pump dying, a watermark swallowing what
+it delivers, a turn belonging to a conversation that is not on screen, and the agent emitting
+nothing all look like a conversation that went quiet.
+
+So the bus counts what it does — ticks, events stamped, delivery attempts, pump errors, and
+per subscription the watermarks (one per conversation), the filtered and the dropped — and `/diag` reports them beside
+the active session, the stored watermark and each worker's queue depth. One answer, and the
+candidates separate. `test_event_chain.py` is the other half of the same lesson: a coarse test
+that builds a real session over a real bus and a real worker queue, runs the handshake, sends
+a query and asserts that what the engine emitted arrived. It is the test that was missing.
+
+What has not changed is that the drain loop *handles* a durable event before it sends it: the
+event has already left the pump, nothing re-emits it, and a socket dying on the send must not
+be able to take the handler with it. Nor has the rule about cards: every parked card comes
+back, in every conversation — each wait has no timeout by design and no card left to end it,
+so a card left out is a conversation stopped for ever with nothing on screen to say why. A
+card is state, not a journal line, which is why `_resend_parked_prompt` still exists beside
+the replay.
 
 **Conversations run at the same time, one agent each.** One worker used to serve every
 session, which is why leaving a conversation had to cancel its turn — or defer it when it was
 parked on a person. That was never a policy: a single worker cannot stream two conversations
 anywhere the user can see, and a card it was parked on would have been answered from the next
 conversation's UI. `_AgentPool` gives each conversation its own agent, so leaving one leaves
-its turn running; its output goes to its own transcript, which is what makes coming back show
-the whole turn rather than only the answer that ended it.
+its turn running; its output goes to its own transcript — written by the pump, so it is
+written whether or not anyone is attached — which is what makes coming back show the whole
+turn rather than only the answer that ended it.
 
 What that costs is that "the running turn", "the parked card" and "the answer" stop being
 questions with one answer, and each one got wrong fails silently rather than loudly. So
@@ -1197,7 +1874,17 @@ installed.
 | `test_agent_loop.py` | the loop functions — intra-query compaction, `_post_dispatch_inject`, `_finalize_answer` (including the turn boundary surviving an in-turn rewrite, and matching on identity so two byte-identical job wakes are not confused), plan mode, and the non-interactive path. Plus the failing-call guard and the identical-success annotation |
 | `test_completion_honesty.py` | the end-of-run honesty surface: the ledger's rows and statuses, the marker contract, the tier-qualified completion sentence, `needs_incomplete_finalization`, the `unfinished_plan` nudge, and the checklist reader's fail-closed behaviour |
 | `test_observations.py` | the observer dispatch order, bash classification and credit, run-ledger keying, verdict grammar, exit attribution, `ValidationTierTests` (per-checker tiers, an execution earning none however green, a printed invariant earning nothing, monotonicity, retraction), and `DeclaredEditSetTests` (a revised checklist retracts what it dropped) |
-| `test_background_jobs.py` | the whole detached-run path: the server descriptor, the registration hook, `_watch_job`, the wake text, the detached resume and its coalescing — plus the check-in schedule and its never-interrupt rule, the three ways a finished run used to wake nobody (the wrong agent, a store that would not write, a socket dying on the send), what a reconnect may not purge, and re-arming a watcher from a status result |
+| `test_event_chain.py` | coming back to a running turn — the conversation restored under the level it was left on, a rebuilt worker coming up on it too, an ordinary connect deciding nothing about it, a turn in flight reported as running and an idle one not, and what the turn produced while away coming back — that an absence keeps the prose: the record interleaving what was said with what was called, the aggregate not being sent to a client that already had the deltas, a reconnect replaying both, and a blank block not recorded — plus the whole chain with the real objects: handshake, query, and the turn's `status` / `tool_call` / `tool_result` / `answer` arriving, nothing lost to the watermark, the journal holding the same turn the client saw, a second turn arriving, a brand-new conversation not silenced by an inherited watermark, the approval card reaching the client and its answer coming back — plus the ways a chat *can* go quiet, pinned so each is deliberate |
+| `test_event_bus.py` | the pump: that it drains and journals with nobody attached, that `seq` has one writer per session and no gaps, that the private answer keys reach the committer but neither the journal nor the wire, that a streamed delta is delivered live and never recorded, that an overflowing subscriber is gapped rather than allowed to stall the pump, and what counts as a session having *concluded* — the private keys reaching the committer once its first refusal expires, since an attached view is given the chance to write the turn itself |
+| `test_detached_commit.py` | the turn committer: an answer landing in its session file with nobody attached, a deferral stored as the card to put back, the answer-alone path for a non-full context mode, that the pump commits what no attached view claimed and never a cancelled turn, and the revision guard — a second writer that loaded earlier is refused, an owner saving repeatedly is not, a failed write does not consume a revision, and a file from before the field existed still writes |
+| `test_reattach_replay.py` | that the gate cannot silence a stream — a watermark above the journal is not honoured, the stream still arrives after one, a filtered event is counted rather than vanishing, and a stream delta bypasses the gate (which is why the failure looks like a half-working chat) — and that a new conversation clears the watermark instead of inheriting it, and that one conversation's gate never silences another's live events while still holding for its own; then the watermark: everything replayed to a client that has seen nothing, only the tail to one that has seen some, nothing to one that is current; that the gate lands where the replay ended so an event is never both replayed and delivered live; that nothing produced between subscribing and reading is lost; framing, the cap keeping the end and saying so, a socket dying mid-replay leaving the gate alone; and that streamed deltas are absent while their aggregates are not |
+| `test_job_rearm.py` | the baseline — a first scan reporting nothing while recording that it looked, a job ending *after* it reported, a live run re-armed either way, and a watcher's own report marking the run so a restart does not repeat it — then the scan: a live run reported live, a recorded exit code winning over whatever the pid looks like, a dead pid with no code reading `unknown` rather than `done`, a recycled pid not mistaken for the job, an ephemeral scratch buffer skipped, a Slurm job live until Slurm says otherwise and over once a poll has written down that it is — `done`, `crashed`, and the scheduler having forgotten it, which claims no outcome — an unreadable state word settling nothing, a submission nothing can settle ageing out, the status op naming a tool the HPC server really registers, and a marker landing in the submission's own directory while one written under the bare id still counts — then the re-arm itself, the wake going to the session that launched the run, a run already watched left alone, and the report-once marker — and finally a run watched by its own server: the scan re-arming the watcher it recorded rather than the stock poll, an ordinary submission still getting that poll, its end still settled by the Slurm record, the live watcher and a late scan settling one directory between them, and a local run keeping its own tree |
+| `test_server_registry.py` | one server per workspace, with real contending subprocesses because `flock` is a kernel object a mock would not exercise: a second process is refused while the first holds the claim, the lock is free again once the holder is *killed* rather than stopped, and two workspaces do not contend — then the registry: a published entry reading back with its pid and start time, an unreadable or wrong-protocol file reading as nothing, a failed write leaving no half file — and liveness over real sockets and real pids: a live pid whose listener has gone is *not* alive (while the process-only answer still says yes), a recycled pid is not mistaken for the server, `clear()` retires our own entry and leaves a stranger's |
+| `test_hot_detach.py` | detaching, exercised against the real system calls because a fake `dup2` would prove nothing about the thing that breaks: output following the descriptors into the log while the parent's pipe sees only what preceded the redirect, a child **surviving two hundred writes after its reader is gone**, a second detachment appending rather than truncating, `setsid` succeeding for a non-leader and declining for a leader without cancelling the redirect — then the handler: per-session autonomy touching only the sessions named, naming none recording it pool-wide, an unknown level refused with nothing detached, the registry entry keeping the address it was serving on, and that there is no terminal whichever conversations are named — then the claim, per conversation: each one coming back under its own level, taking one back leaving the others running, taking the last one back making the server mortal again — then coming back as the take-back: every claim dropped on arrival, the panel told the server is attached, and the level still restored when the registry refuses the write — and what coming back says: the level named, informatively rather than as a warning, with no explanation of a control already on screen, the ownership said even under `manual` where there is no level to name, and the notice not kept in the conversation — and what *leaving* says: what is being kept named row by row, a detachment with nothing owed saying that instead, conditionally and quietly, and the window never counted as the work it is asking about |
+| `test_unattended_park.py` | the parking: a card with somebody there still waiting for ever, one with nobody there deferred through the pre-built mechanism, the grace period leaving room for a window reload, a wait with its own deadline left alone — **an answer already in hand, or landing during the poll, winning over the grace** (the bug this file found) — the pump publishing attachment on ticks that move nothing and not restarting the clock each tick, and `releasable()` refusing a session that holds a deferral |
+| `test_wake_claim.py` | who is allowed to act, and that somebody always does: a wake taken in within the tick that drained it with nothing attached, an attached view given first refusal and the pool standing down, a claim granted to exactly one caller and to one this bus never offered, a view that routes nothing not costing the run its turn (with the take-over counted and logged), the run settled by whoever ends up delivering it, bulletins going the same way — then what a turn landing carries on: a steered wake the turn never read getting its own turn, one the turn did read settled instead of told twice, a burst arriving as one turn, the 🔔 of a steered wake, and a held bulletin delivered after the answer or dropped once its runs have finished — then the release invariant: an agent watching a run, owed a wake, holding an event still to be claimed or output still unread is never released while one with nothing outstanding still gives up its slot, so a wake for a closed agent cannot arise and is logged as a broken invariant if it does — and the subscription's lifetime: released on a handshake that raises, on a greeting that cannot be sent, and on an ordinary end, with a run finishing afterwards still answered for |
+| `test_idle_predicate.py` | what counts as finished: a concluded conversation with no jobs idle, one that never answered *not* idle, an error counting as an ending, a live run on disk holding the process open even for a session with no agent, an unreadable state dir counting as busy, and a Slurm submission holding it open until a poll has settled it, still holding it while its wake is owed, and letting go when nothing can ever settle it — plus each prohibition (attached client, parked card, owed answer, queued turn, agent being built, a worker that cannot be asked), and the clock: it starts rather than stopping at once, stops on the TTL, and is reset by activity rather than shortened — then the state that must not exist, a server nobody claimed and nobody is watching: a window still here keeping it whatever the claims, a reload not counting as a departure, gone past the grace with no claim ending it, one conversation's claim being enough for the whole process, a server never yet connected to having lost nothing, and claims that cannot be read not reading as nobody, and that both stops are written into the conversations they were keeping — stamped, journaled, and saying what the idleness consisted of |
+| `test_background_jobs.py` | the whole detached-run path: the server descriptor, the registration hook, `_watch_job`, the wake text, the detached resume and its coalescing — plus the check-in schedule and its never-interrupt rule, the three ways a finished run used to wake nobody (the wrong agent, a store that would not write, a socket dying on the send), that a reconnect throws nothing away, and re-arming a watcher from a status result — plus the fourth and quietest way, a tool call that never answers: a status op that hangs ending the run as `unknown` rather than polling for ever, a timed-out probe reported as `unreadable` rather than as still running, and a summary op that hangs not withholding the wake |
 | `test_policy_manager.py` | the gates and the state guard |
 | `test_client_helpers.py` | the nudge predicates, token counting, eviction and `ContextOverflowError` |
 | `test_capabilities.py` / `test_phase_b_servers.py` | `infer_tool_caps` precedence and the golden declared registry (`_golden_caps.py` AST-parses the server decorators) |

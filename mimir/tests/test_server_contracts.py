@@ -1219,14 +1219,20 @@ class BashServerTests(unittest.TestCase):
         self._state_dir = tempfile.mkdtemp(prefix="mimir-contract-state-")
         self._prior_state = os.environ.get("MIMIR_STATE_DIR")
         os.environ["MIMIR_STATE_DIR"] = self._state_dir
+        # And the global tier, for the same reason: it is the memory shared by every
+        # workspace, so left at its default a test run writes the real one.
+        self._prior_global = os.environ.get("MIMIR_GLOBAL_STATE_DIR")
+        os.environ["MIMIR_GLOBAL_STATE_DIR"] = os.path.join(self._state_dir, "global")
 
     def tearDown(self) -> None:
         import os
         import shutil as _shutil
-        if self._prior_state is None:
-            os.environ.pop("MIMIR_STATE_DIR", None)
-        else:
-            os.environ["MIMIR_STATE_DIR"] = self._prior_state
+        for var, prior in (("MIMIR_STATE_DIR", self._prior_state),
+                           ("MIMIR_GLOBAL_STATE_DIR", self._prior_global)):
+            if prior is None:
+                os.environ.pop(var, None)
+            else:
+                os.environ[var] = prior
         _shutil.rmtree(self._state_dir, ignore_errors=True)
 
     def test_bash_run_rejects_arbitrary_system_executable_by_path(self) -> None:
@@ -2147,7 +2153,7 @@ class EveryToolDescribesItsParametersTests(unittest.IsolatedAsyncioTestCase):
     four times against a docstring that says to raise it — 9 wasted turns in 107 calls.
     The prose reached the model every time; only the schema changes behaviour.
 
-    `_schema_with_arg_descriptions` closes that by lifting each tool's `Args:` block
+    `_schema_for_model` closes that by lifting each tool's `Args:` block
     into its schema, so the fix costs no new prose. This test is what keeps it closed:
     without it the invariant lapses at the first tool added with an undocumented
     parameter, and nothing would say so.
@@ -2157,7 +2163,7 @@ class EveryToolDescribesItsParametersTests(unittest.IsolatedAsyncioTestCase):
         import glob
         import importlib
         import os
-        from mimir.client.integration.server_manager import _schema_with_arg_descriptions
+        from mimir.client.integration.server_manager import _schema_for_model
 
         undescribed, total = [], 0
         # Anchored at this file, not at the current directory: globbing "mimir/servers/…"
@@ -2174,7 +2180,7 @@ class EveryToolDescribesItsParametersTests(unittest.IsolatedAsyncioTestCase):
             if mcp is None:
                 continue
             for tool in await mcp.list_tools():
-                props = _schema_with_arg_descriptions(tool).get("properties") or {}
+                props = _schema_for_model(tool).get("properties") or {}
                 for name, prop in props.items():
                     total += 1
                     if not prop.get("description"):
@@ -2228,6 +2234,46 @@ class TodoServerTests(unittest.TestCase):
         server_todo.todo_write(["only one"])
         payload = server_todo.todo_update(5, True)
         self.assertEqual(payload["status"], "error")
+
+    def test_todo_update_rewords_item_keeping_its_tick(self) -> None:
+        server_todo.todo_write(["x", "y"])
+        server_todo.todo_update(0, True)
+        payload = server_todo.todo_update(0, text="x, narrowed")
+        self.assertEqual(payload["status"], "ok")
+        self.assertEqual(payload["item"]["text"], "x, narrowed")
+        self.assertTrue(payload["item"]["done"])
+        self.assertEqual(server_todo.todo_read()["items"][1]["text"], "y")
+
+    def test_todo_update_with_neither_field_is_error(self) -> None:
+        server_todo.todo_write(["x"])
+        self.assertEqual(server_todo.todo_update(0)["status"], "error")
+
+    def test_todo_update_empty_text_is_error(self) -> None:
+        server_todo.todo_write(["x"])
+        self.assertEqual(server_todo.todo_update(0, text="  ")["status"], "error")
+
+    def test_todo_write_carries_over_ticks_of_unchanged_steps(self) -> None:
+        server_todo.todo_write(["a", "b", "c"])
+        server_todo.todo_update(0, True)
+        server_todo.todo_update(1, True)
+        payload = server_todo.todo_write(["a", "b", "b2 discovered", "c"])
+        self.assertEqual(payload["kept_done"], 2)
+        items = server_todo.todo_read()["items"]
+        self.assertEqual([it["done"] for it in items], [True, True, False, False])
+        self.assertEqual(server_todo.todo_read()["pending"], 2)
+
+    def test_todo_write_carries_over_one_tick_per_done_duplicate(self) -> None:
+        server_todo.todo_write(["same", "same"])
+        server_todo.todo_update(0, True)
+        server_todo.todo_write(["same", "same"])
+        items = server_todo.todo_read()["items"]
+        self.assertEqual([it["done"] for it in items], [True, False])
+
+    def test_todo_write_reworded_step_starts_pending(self) -> None:
+        server_todo.todo_write(["a"])
+        server_todo.todo_update(0, True)
+        server_todo.todo_write(["a, revised"])
+        self.assertFalse(server_todo.todo_read()["items"][0]["done"])
 
     def test_todo_write_empty_clears_list(self) -> None:
         server_todo.todo_write(["old step"])

@@ -57,7 +57,15 @@ export interface CommandItem {
  * How a command answer should read. "warn" is for something irreversible that has
  * just happened (a wipe), "empty" for a listing with nothing in it.
  */
-export type CommandTone = "ok" | "warn" | "empty";
+/**
+ * How a command's answer should read.
+ *
+ * `quiet` is not a weaker `ok`: it renders as a rule across the thread rather than as
+ * a result, for the one thing that is neither a listing nor something the user just
+ * did — a note about the state they have walked back into. A warning badge on that
+ * reads as a problem to deal with, and it is only a fact.
+ */
+export type CommandTone = "ok" | "warn" | "empty" | "quiet";
 
 /**
  * The answer to a session command the user typed ("/memory list", "/proxy clean x").
@@ -80,6 +88,16 @@ export interface CommandOutputMessage {
   /** A single line under the rows, e.g. "This cannot be undone." */
   note?: string;
   tone?: CommandTone;
+  /**
+   * Rendered, never stored.
+   *
+   * For a card that describes the state at this moment rather than something that
+   * happened in the conversation. Kept in the transcript it is replayed on every load,
+   * so a conversation reconnected to twenty times reopens on twenty copies of it, each
+   * above whatever answer it happened to follow and every one of them describing a
+   * past moment as if it were now.
+   */
+  transient?: boolean;
 }
 
 /** Which conversation a card belongs to.
@@ -111,6 +129,9 @@ export interface ApprovalMessage extends Attributed {
   scope: string;
   /** Canonical human label ("Proxy exec: run"); absent for tools with no template. */
   label?: string;
+  /** The tool's family of work, so the card carries the same icon as the activity row
+   *  for this call. Absent on a card from a server that predates the field. */
+  kind?: string;
   /** Set when the call is held because it touches paths outside the workspace.
    *  Every outside path the call names travels in this one card — the user judges
    *  the call, not each of its operands. The rest of the card describes the tool
@@ -165,6 +186,22 @@ export interface ConfigMessage {
   anthropicModels?: string[];
   /** Endpoint the user asked the host to remember, if any. */
   remembered?: RememberedEndpoint | null;
+  /** The server this workspace already has, when it has one.
+   *
+   *  Present means a run is going without this panel, and rejoining it is a click
+   *  rather than a connection: the backend and address in this message describe how a
+   *  *new* server would be started, and none of them apply to one already serving. */
+  running?: RunningServer | null;
+}
+
+/** A server already serving this workspace. */
+export interface RunningServer {
+  url: string;
+  pid: number;
+  model: string;
+  autonomy: string;
+  /** True when it was deliberately left running without a window. */
+  detached: boolean;
 }
 
 /** Address (never a key) the extension host reconnects to unattended. */
@@ -224,12 +261,20 @@ export interface ToolCallMessage {
   type: "tool_call";
   /** Correlation id matching a later tool_result. */
   id: string;
-  /** Raw tool name (used to pick an icon). */
+  /** Raw tool name. Never shown — the row is drawn from `kind` and `doing`. */
   name: string;
-  /** Human-readable label, e.g. "Reading file: x.py". */
+  /** Human-readable label, e.g. "Reading file: x.py". The row's tooltip; approval
+   *  cards and policy messages carry the same string. */
   label: string;
   /** Short arg preview, e.g. a command line or search pattern (may be empty). */
   detail: string;
+  /** The tool's family of work — "edit", "shell", "proxy eval" (see TOOL_KINDS
+   *  server-side). The word the row shows, and what its icon is picked from.
+   *  Absent on rows from a session recorded before the row carried one. */
+  kind?: string;
+  /** The model's own sentence about THIS call, under ~15 words: "fixing the
+   *  off-by-one bound". Empty whenever the model did not write one. */
+  doing?: string;
   /** Whether this row may be detached to the background while it runs. Decided by
    *  the server from the tool registry — the UI never learns which tool is a shell. */
   divertible?: boolean;
@@ -349,6 +394,11 @@ export interface SubAgentEventMessage {
   name?: string;
   label?: string;
   detail?: string;
+  /** On "tool_call": the child step's family of work. Named `tool_kind` because this
+   *  event's own `kind` already says which half of the child's activity it carries. */
+  tool_kind?: string;
+  /** On "tool_call": the child model's sentence about its own call. */
+  doing?: string;
   ok?: boolean;
   summary?: string;
   duration_ms?: number;
@@ -392,10 +442,13 @@ export interface DiffMessage {
 }
 
 
-/** Confirms a mid-run steer message was injected into the running agent's turn. */
+/** Confirms a mid-run steer message reached the agent: injected into the running
+ *  turn, or — when `starts_turn` is set — carried by a turn the server started for
+ *  it because the run it was typed into ended before reading it. */
 export interface SteerInjectedMessage {
   type: "steer_injected";
   text: string;
+  starts_turn?: boolean;
 }
 
 /** A workflow reminder the guardrail layer injected into the agent's user turn.
@@ -427,6 +480,12 @@ export interface SessionMeta {
   parked?: boolean;
   /** It asked for a turn but every agent slot is taken; it starts when one frees. */
   queued?: boolean;
+  /** How many background runs it still has going.
+   *
+   *  Not the same question as `running`: a conversation that launched a two-hour build
+   *  and answered has no turn in flight, and is exactly the one worth asking about
+   *  before walking away. */
+  runs?: number;
 }
 
 /** How far the user lets a sub-agent go. Mirrors config.constants.SUBAGENT_LEVELS:
@@ -530,6 +589,67 @@ export interface SessionLoadedMessage {
   todos: TodoItem[];
   /** A turn of this session is still in flight — it outlived the last connection. */
   turn_running?: boolean;
+}
+
+/** A whole streamed prose block, recorded rather than streamed.
+ *
+ *  Never sent live: a connected client has already had every one of its deltas as
+ *  `token`, and the aggregate on top would print the paragraph twice. It exists for
+ *  the replay, where the deltas are gone — the journal deliberately keeps hundreds of
+ *  `token` events out of itself, and without this a turn read back after an absence
+ *  would have only its tool rows and its final answer, having lost everything the
+ *  agent said in between.
+ *
+ *  Fed to the reducer as a `token`, which is what keeps a replayed turn interleaving
+ *  prose and tool cards the way the live one did: the same draft-and-boundary logic
+ *  decides where the block sits relative to the calls that followed it. */
+export interface AssistantTextMessage {
+  type: "assistant_text";
+  text: string;
+}
+
+/** The server has made itself survivable — the answer to `detach`.
+ *
+ *  It has re-pointed its output at `log` (so the pipe this window holds can close
+ *  without taking it down) and left this process group. The extension stops killing it
+ *  on window close from here on: it is no longer this window's to end. `autonomy` is
+ *  what it may do while unattended, and `sessions` are the conversations it applies to. */
+export interface DetachedMessage {
+  type: "detached";
+  /** False when the decision has been taken back and this window owns the server
+   *  again. Absent means detached: the message once existed only to announce one. */
+  detached?: boolean;
+  log: string | null;
+  autonomy: "manual" | "auto" | "auto_all";
+  sessions: string[];
+  pid: number;
+  setsid: boolean;
+}
+
+/** What this conversation produced while nobody was attached.
+ *
+ *  Read back from the session's journal past the watermark the client last reported,
+ *  and sent on attach in frames of at most a few hundred. Each event is the same shape
+ *  a live one has, so feed them to the same reducer: that is what rebuilds the rich
+ *  transcript — tool rows, diff cards, reasoning panels — for a period this window was
+ *  not there for.
+ *
+ *  Streamed deltas are deliberately absent. `token` and `thinking` are not journaled,
+ *  so a replayed turn arrives as the aggregates that closed its blocks (`thinking_end`,
+ *  `answer`) rather than its keystrokes — which is also what makes replaying a
+ *  twelve-hour run affordable. `context_usage`, `batch_status` and `todo` are re-derived
+ *  on load for the same reason.
+ *
+ *  `through_seq` is the watermark to send back on the next `transcript`; `more` says
+ *  another frame follows; `truncated` says older events were elided because the replay
+ *  hit its cap. */
+export interface ReplayMessage {
+  type: "replay";
+  session_id: string;
+  events: ServerMessage[];
+  through_seq: number;
+  more: boolean;
+  truncated: boolean;
 }
 
 export interface ContextModeMessage {
@@ -729,6 +849,14 @@ export interface ResourcesMessage {
   resources: ResourceItem[];
 }
 
+/** Workspace files matching an "@" query, ranked by the extension host.
+ *  `query` echoes the request so a reply overtaken by further typing is dropped. */
+export interface FileResultsMessage {
+  type: "file_results";
+  query: string;
+  files: string[]; // workspace-relative paths, best match first
+}
+
 /** The file (and optional selected line range) focused in the VS Code editor. */
 export interface ActiveEditorMessage {
   type: "active_editor";
@@ -792,10 +920,14 @@ export type ServerMessage =
   | JobCheckinMessage
   | TogglesListMessage
   | ResourcesMessage
+  | FileResultsMessage
   | ActiveEditorMessage
   | OpenEditorMessage
   | UserQuestionMessage
   | PromptExpiredMessage
+  | ReplayMessage
+  | AssistantTextMessage
+  | DetachedMessage
   | QueuedMessage;
 
 // ── Message types (client → server) ──────────────────────────────────────────
@@ -815,6 +947,46 @@ export interface TranscriptMessage {
   type: "transcript";
   session_id: string;
   messages: ChatMessage[];
+  /** How far into the session's journal these messages reach — the highest `seq` the
+   *  reducer has taken in, from a live event or a `replay` frame. Stored server-side
+   *  and used as the point a later re-attach replays *from*, so a window that has
+   *  rendered everything is sent nothing. Omitted, the watermark simply does not
+   *  advance and the next attach replays more than it needed to. */
+  through_seq?: number;
+}
+
+/** "Continue without me": make the server survive this window closing.
+ *
+ *  `autonomy` is required rather than defaulted, because the answer matters: at
+ *  `manual` a detached run parks at its first sensitive tool and does almost nothing
+ *  overnight, and that has to be a choice. Omitting `session_ids` means every
+ *  conversation — and that is the only form that outlives a worker being rebuilt,
+ *  since the server records UI settings per pool rather than per session. */
+export interface DetachMessage {
+  type: "detach";
+  autonomy: "manual" | "auto" | "auto_all";
+  session_ids?: string[];
+  /** `false` takes the decision back: the window owns the server again and closing it
+   *  stops the server. The process-level work is not undone — fds pointing at a log
+   *  file have no pipe to return to — and does not need to be: what makes a server
+   *  survive a window closing is that nobody kills it, which is a decision rather
+   *  than a state of the process. */
+  enabled?: boolean;
+}
+
+/**
+ * Stop the server, now or once it has nothing left to do.
+ *
+ * Sent rather than inferred from closing the socket, because a server this window did
+ * not start is not killed by the host: it has no process to signal, and ending a
+ * workspace's server is a decision in any case. `force` stops it whatever is in
+ * flight — the user's own call about their own machine, and the only way to end a run
+ * waiting on an answer they have decided not to give. Without it the request is
+ * refused while anything is still working, and the reasons come back.
+ */
+export interface ShutdownMessage {
+  type: "shutdown";
+  force?: boolean;
 }
 
 /** A message typed while the agent is busy — injected into the running turn. */
@@ -927,6 +1099,7 @@ export type ClientMessage =
   | QueryMessage
   | TranscriptMessage
   | SteerMessage
+  | DetachMessage
   | DivertToBackgroundMessage
   | ApprovalResponseMessage
   | UserQuestionResponseMessage
@@ -943,7 +1116,8 @@ export type ClientMessage =
   | ListResourcesMessage
   | ToggleServerMessage
   | ToggleSkillMessage
-  | SetModelMessage;
+  | SetModelMessage
+  | ShutdownMessage;
 
 // ── UI state types ─────────────────────────────────────────────────────────────
 
@@ -954,10 +1128,18 @@ export type MessageKind =
 /** A single tool invocation tracked from start (tool_call) to finish (tool_result). */
 export interface ToolActivity {
   id: string;
+  /** The structured tool name. Nothing renders it — the row is drawn from `kind` and
+   *  `doing` — but it is what a stored transcript is read back by. */
   name: string;
-  icon: string;
   label: string;
   detail: string;
+  /** The family of work this call belongs to: the word shown in the row, in full
+   *  colour, and what its icon is derived from at render time. The icon is deliberately
+   *  NOT stored here: it is a function of this, and one of them is an element that
+   *  would not survive the stored transcript's JSON. See ToolCallMessage.kind. */
+  kind?: string;
+  /** The model's sentence about this call, shown dim beside the family. */
+  doing?: string;
   /** "background" is a running row the user detached: settled for this turn, but the
    *  job carries on and a later job_complete fills in how it really ended. */
   status: "running" | "ok" | "error" | "background";

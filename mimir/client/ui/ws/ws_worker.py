@@ -17,6 +17,12 @@ from ._ws_runtime import (
     _todo_file_for_session,
     augment_query_with_resources,
 )
+# After the runtime: it reads the workspace root that the bootstrap above pins.
+from .job_scan import (
+    establish_baseline,
+    has_baseline,
+    scan_session,
+)
 
 import asyncio
 import concurrent.futures
@@ -81,6 +87,22 @@ class _Prompt:
     answer: "_queue.Queue[dict]"
     shown: bool = False
 
+# How long one of a watcher's own tool calls may take before it is given up on.
+#
+# There is no deadline anywhere beneath this: ``session.call_tool`` takes none, and the
+# MCP sessions are built without a read timeout, so a status op that stops answering —
+# a wedged server, a scheduler that hangs, a queue command that never returns — blocks
+# the watcher for ever. That is the one failure that genuinely loses a run: the task
+# stays in ``_bg_jobs``, so the agent is never released and never woken, the bulletins
+# keep repeating a status frozen at the moment it stopped, and nothing anywhere says
+# the run is no longer being watched. A watcher that dies at least says so.
+#
+# Generous on purpose: a status op is a cheap read, and this is the line between "slow"
+# and "never", not a budget to work inside. A tick that crosses it is counted as
+# unreadable, which is a case this loop already has — ``_UNREADABLE_POLL_LIMIT`` of
+# them in a row and the run is reported as unknown, with the reason — so a stuck status
+# op ends as an honest "I lost track of it" instead of silence.
+_TOOL_CALL_TIMEOUT = 60.0
 
 # When a background check-in fires, as seconds from the one before it: T+30s, T+2.5min,
 # T+12.5min, T+42.5min, and hourly from there for as long as the run lasts. A detached
@@ -122,6 +144,23 @@ def _first_line(value: Any) -> str:
     """The first line of an error payload, for a one-line reason. "" when there is none."""
     text = str(value or "").strip()
     return text.splitlines()[0][:200] if text else ""
+
+
+def _detach_grace() -> float:
+    """How long a socket may be gone before this process treats it as gone.
+
+    Not zero, and this is the whole reason the delay exists: reloading a VS Code window
+    closes and reopens the socket, and acting on that blink would be a regression — the
+    user is right there, and would find their question put away.
+
+    One value, two readers: an unanswered card is set aside past it, and a server no
+    conversation has asked to keep stops past it. Both are answering the same question
+    — has the window actually gone — so both must answer it the same way.
+    """
+    try:
+        return max(0.0, float(os.environ.get("MIMIR_DETACH_GRACE", "") or 30.0))
+    except ValueError:
+        return 30.0
 
 
 class _AgentWorker:
@@ -203,6 +242,16 @@ class _AgentWorker:
         # own id — see _emit_prompt for why that is not the single slot it used to be.
         self._prompts: "OrderedDict[str, _Prompt]" = OrderedDict()
         self._prompts_lock = threading.Lock()
+        # Length of the history the running turn was handed (see _run_query).
+        self._turn_submitted_len: int | None = None
+        # When this process last had a client listening, or None while one does. Written
+        # by the pump on the event loop and read by this worker's thread, which is why
+        # it is a plain float and not an asyncio primitive: the thread must never touch
+        # loop state. See _unattended_past_grace.
+        self.unattended_since: float | None = None
+        # True while a turn of this conversation is set aside awaiting an answer. Read
+        # by the pool, which must not reap the agent out from under it.
+        self.has_deferral: bool = False
         # The card currently on screen, set for exactly as long as it is up. Read by a
         # connection that arrives while the wait is on (see _emit_prompt).
         self._pending_prompt: dict | None = None
@@ -433,8 +482,7 @@ class _AgentWorker:
                 from mimir.client.extensions import all_servers
 
             agent = building = MimirAgent(model=self.model, session_id=self.session_id)
-            for name, script in all_servers().items():
-                await agent.connect_server(name, script)
+            await agent.connect_servers(all_servers())
             agent.seed_classification_from_caps()
 
             # Patch approval to route through WS.
@@ -521,6 +569,12 @@ class _AgentWorker:
 
             self._current_task = asyncio.current_task()
             self._query_session_id = item.get("session_id") or self._own_session()
+            # What this turn was handed, so whoever writes its answer can tell the
+            # turn's own messages from the prefix it inherited. Recorded here because
+            # this is where the turn begins, and carried on the answer rather than kept
+            # per socket: a turn can outlive the socket that submitted it, and a
+            # boundary held there is one nobody has when the answer lands.
+            self._turn_submitted_len = len(item.get("history") or [])
             await self._run_query(item)
             self._current_task = None
             self._query_session_id = None
@@ -541,15 +595,29 @@ class _AgentWorker:
         # Clear cancel flag from any previous cancellation before starting.
         if self._agent is not None:
             self._agent._cancel_flag.clear()
-        # Drop any steer messages left over from a finished/cancelled run so they
-        # can't bleed into this query (mirrors the cancel-flag clear above).
-
         tid = threading.get_ident()
         _ROUTER.register(tid, lambda text: self.out_q.put({"type": "output", "text": text}))
 
         cancelled = False
         try:
+            # The prose of the streamed block, kept so it can be *recorded*. The
+            # deltas themselves are not: hundreds per turn, and a journal of them is
+            # unreadable. But without an aggregate the record keeps only the tool rows
+            # and the final answer, so a turn read back after an absence has lost
+            # everything the agent said between its tools — which is most of what makes
+            # a turn legible. Flushed at each boundary, in order, so the replay
+            # interleaves prose and tools the way the live stream did.
+            text_buf: list[str] = []
+
+            def _flush_text() -> None:
+                if not text_buf:
+                    return
+                text = "".join(text_buf)
+                text_buf.clear()
+                self.emit_assistant_text(text)
+
             def _token_cb(delta: str) -> None:
+                text_buf.append(delta)
                 self.out_q.put({"type": "token", "text": delta})
 
             # Reasoning text of the streaming block, kept so its size can be reported
@@ -562,6 +630,7 @@ class _AgentWorker:
                 self.out_q.put({"type": "thinking", "text": delta})
 
             def _think_start_cb() -> None:
+                _flush_text()      # prose written before this block belongs above it
                 think_buf.clear()
                 self.out_q.put({"type": "thinking_start"})
 
@@ -574,6 +643,9 @@ class _AgentWorker:
             # onto out_q as event dicts — no stdout round-trip. The drain/send
             # loop already forwards any dict via json.dumps(ev).
             def _event_cb(ev: dict) -> None:
+                # Before the structured event, which is what puts the prose above the
+                # tools it preceded rather than after them.
+                _flush_text()
                 self.out_q.put(ev)
 
             task = asyncio.ensure_future(
@@ -611,6 +683,12 @@ class _AgentWorker:
             self._defer.clear()
             self._preanswer = None
 
+        # The answer carries the closing block in full, so whatever is still buffered
+        # is a copy of it: dropped rather than flushed, or the replay shows it twice.
+        try:
+            text_buf.clear()
+        except NameError:
+            pass
         answer_ev: dict = {"type": "answer", "text": answer, "cancelled": cancelled,
                            # Stamped here: the turn is over by the time the drain
                            # loop reads this, and its session must not be guessed.
@@ -622,9 +700,23 @@ class _AgentWorker:
             full = getattr(self._agent, "_last_full_messages", None)
             answer_ev["_full"] = list(full) if full else None
             answer_ev["_turn_start"] = getattr(self._agent, "_last_turn_start", None)
+            # This turn's agent, not whichever one is on screen: several conversations
+            # answer at once, and their modes need not agree.
+            answer_ev["_context_mode"] = getattr(self._agent, "context_mode", "full")
+        answer_ev["_submitted_len"] = getattr(self, "_turn_submitted_len", None)
         deferred = self._deferred_record()
         if deferred is not None and not cancelled:
             answer_ev["_deferred"] = deferred
+        # Steering the loop never read. It is drained at a step boundary, and the step
+        # that produces the final answer has none after it: a message typed while that
+        # answer streams lands in the queue after the loop has stopped looking. Taken
+        # off the queue here, so it cannot bleed into whatever runs next, and handed to
+        # the session, which starts a turn for it — unanswered, it is a message the user
+        # sees waiting for a run that has ended. Dropped after a cancel: the turn it was
+        # aimed at is abandoned, and so is the instruction aimed at it.
+        unread = self._drain_steer_q()
+        if unread and not cancelled:
+            answer_ev["_unconsumed_steer"] = unread
 
         # Push current todo state.
         self._push_todos()
@@ -753,6 +845,7 @@ class _AgentWorker:
         self._query_q.put({"text": record.get("query", ""), "history": history,
                            "session_id": session_id, "resume": record,
                            "answer": answer})
+        self.has_deferral = False     # answered: the turn is nobody's debt any more
         self._query_event.set()
 
     def _emit_prompt(self, payload: dict, questions: list | None = None) -> dict:
@@ -847,6 +940,47 @@ class _AgentWorker:
                 prompt.answer.put_nowait(response)
             except _queue.Full:
                 pass        # answered twice (a copy of the card on screen): the first wins
+    def emit_assistant_text(self, text: str) -> bool:
+        """Record one streamed prose block. True when it was worth recording.
+
+        The one rule in the aggregation, and the reason it is a method rather than a
+        line inside the streaming closure: whitespace between a tool result and the
+        next call is not something the agent *said*, and a journal of empty blocks
+        would put a blank bubble in every replayed turn.
+        """
+        if not text or not text.strip():
+            return False
+        self.out_q.put({"type": "assistant_text", "text": text})
+        return True
+
+    def _unattended_past_grace(self) -> bool:
+        """Whether this process has had no client for longer than the grace period.
+
+        The criterion is *attached*, not *elapsed*: a card with somebody there waits
+        for ever, which is deliberate and what ``test_approval_wait`` pins. What
+        changes when nobody is there is not how long the wait may be but whether there
+        is anything to wait for.
+        """
+        # Absent until the pump's first tick reaches this worker, which is a real
+        # state and not only a test's: the safe reading of no information is that
+        # somebody is there, because the cost of being wrong the other way is a card
+        # put away under the user's nose.
+        since = getattr(self, "unattended_since", None)
+        if since is None:
+            return False
+        return (time.monotonic() - since) >= _detach_grace()
+
+    def set_non_interactive(self, value: bool = True) -> None:
+        """Tell the agent there is no terminal behind it.
+
+        Read by the policy engine's ``_is_interactive_session``, which otherwise has to
+        infer it from the tty — and a detached server's stdout is a log file, which is
+        not a tty but also not proof that nobody is reachable. Saying so plainly is
+        what keeps the interactive path from being attempted at all.
+        """
+        agent = self._agent
+        if agent is not None:
+            agent.non_interactive = bool(value)
 
     def _deferring(self) -> bool:
         defer = getattr(self, "_defer", None)
@@ -924,7 +1058,24 @@ class _AgentWorker:
                     try:
                         return prompt.answer.get(timeout=0.25)
                     except _queue.Empty:
-                        continue
+                        pass
+                    # Only once the queue has had its turn and come back empty, and
+                    # this order is the point: an answer already in hand must win over
+                    # setting the card aside, or a reply that crossed with the grace
+                    # elapsing is thrown away and the user answered into a void.
+                    #
+                    # Nobody to answer, for long enough that it is not a window
+                    # reload. Set aside rather than waited out: the wait has no
+                    # timeout by design, so without this a detached run meets its
+                    # first sensitive tool and holds this thread for ever — and the
+                    # pool then reaps the agent out from under it.
+                    #
+                    # Only the indefinite waits. A question carries its own five
+                    # minutes and a documented meaning for running out of them
+                    # ("go ahead with what you recommend"); overriding that here
+                    # would change an answer the model has already been promised.
+                    if deadline is None and self._unattended_past_grace():
+                        self._defer.set()
         finally:
             # Answered, cancelled, expired or raised through: this card is not waiting
             # on anyone any more, and one resent past this point would be unheld.
@@ -946,6 +1097,10 @@ class _AgentWorker:
             "prompt": dict(prompt.payload),
             "questions": list(prompt.questions or []),
         }]
+        # The pool reads this: a deferred turn has cleared `_pending_prompt`, so
+        # `is_parked()` is False and nothing else would stop the agent being released
+        # while the user still owes it an answer.
+        self.has_deferral = True
 
     def _approval_shim(
         self, tool_name: str, arguments: dict, max_attempts: int = 3
@@ -956,7 +1111,7 @@ class _AgentWorker:
         prompt to the client and answers this card's own slot (see _deliver).
         """
         from ...context.capabilities import (
-            label_for, preview_spec, reversibility_of,
+            kind_for, label_for, preview_spec, reversibility_of,
         )
         from ...tool_execution.tool_status_messages import shorten_display_args
         from .file_preview import build_preview_diffs
@@ -996,6 +1151,10 @@ class _AgentWorker:
             "reversibility": reversibility_of(tool_name, agent.tool_caps),
             "scope": scope_label,
             "label": label,
+            # The tool's work family, so the card is drawn with the same icon as the
+            # activity row for the same call. Read off the registry like everything else
+            # here — the front-end must not learn which tool happens to be a shell.
+            "kind": kind_for(tool_name, agent.tool_caps),
         }
         self._emit_prompt(payload)
 
@@ -1032,7 +1191,7 @@ class _AgentWorker:
         per-path loop this replaced parked the agent on one queue behind several
         identical questions.
         """
-        from ...context.capabilities import IRREVERSIBLE, label_for
+        from ...context.capabilities import IRREVERSIBLE, kind_for, label_for
         from ...tool_execution.tool_status_messages import shorten_display_args
 
         agent = self._agent
@@ -1060,6 +1219,8 @@ class _AgentWorker:
                 shorten_display_args(tool_name, arguments or {}, agent.tool_caps),
                 agent.tool_caps,
             ),
+            # Same family (and so the same icon) as the row for this call.
+            "kind": kind_for(tool_name, agent.tool_caps),
             "oow_paths": list(paths),
             # Kept alongside the list so a client built against the single-path payload
             # still renders a path rather than nothing.
@@ -1253,7 +1414,7 @@ class _AgentWorker:
                 break
         return out
 
-    def _register_bg_job(self, descriptor: dict) -> bool:
+    def _register_bg_job(self, descriptor: dict, owner: str | None = None) -> bool:
         """Register a completion watcher for a detached run (the agent's hook).
 
         Called on the worker loop from the agent's tool dispatch. Dedups on
@@ -1265,6 +1426,11 @@ class _AgentWorker:
         watcher: a two-hour build outlives the conversation on screen, and the wake
         belongs to the conversation that asked for it, not to whichever one the user
         happens to be reading when it lands.
+
+        *owner* names that session explicitly. The running query is the right answer
+        when the agent registers a job it has just launched, and the wrong one when a
+        watcher is being put back on a run found on disk — there is no running query
+        then, and the session is whichever directory the descriptor came out of.
         """
         if not isinstance(descriptor, dict):
             logger.warning("background-job registration refused: descriptor is %s, "
@@ -1279,7 +1445,7 @@ class _AgentWorker:
         existing = self._bg_jobs.get(job_key)
         if existing is not None and not existing.task.done():
             return True  # already watched
-        session_id = self._query_session_id or self._own_session()
+        session_id = owner or self._query_session_id or self._own_session()
         try:
             # get_running_loop, not get_event_loop: the latter can hand back a loop
             # that is not running, and a task created on one of those never polls
@@ -1302,6 +1468,62 @@ class _AgentWorker:
                     job_key, session_id, (descriptor.get("status_op") or {}).get("tool"))
         self._start_checkins(session_id)
         return True
+
+    def rearm_detached_jobs(self) -> dict:
+        """Put watchers back on this session's runs, and report the ones that ended.
+
+        What a restart takes away is the *promise to report* a run, never the run: it
+        keeps going in its own session directory, indifferent. So this reads the
+        descriptors off disk and makes the promise again — a watcher for everything
+        still going, and a ``job_complete`` for everything that finished while nothing
+        was listening, which is the wake its conversation has been owed since.
+
+        Only runs nothing is already watching. ``_bg_jobs`` is the authority on that,
+        and the ordinary case — a server that simply stayed up — finds it full and does
+        nothing at all. Returns what it did, for the log and for tests.
+        """
+        session_id = self._own_session()
+        if not session_id:
+            return {"rearmed": [], "reported": []}
+        jobs = scan_session(session_id)
+        if not has_baseline(session_id):
+            # First time this session has been looked at: everything already finished
+            # was reported by whatever was watching it, long before markers existed.
+            # Claiming that history as a backlog of wakes would wake a conversation for
+            # every build it ever ran.
+            establish_baseline(session_id, jobs)
+            jobs = [job for job in jobs if job.live]
+        rearmed: list[str] = []
+        reported: list[str] = []
+        for job in jobs:
+            existing = self._bg_jobs.get(job.job_key)
+            if existing is not None and not existing.task.done():
+                continue   # a watcher is already holding it
+            if job.live:
+                if self._register_bg_job(job.descriptor(), owner=session_id):
+                    rearmed.append(job.job_key)
+                continue
+            # Ended with nobody watching. Emitted as the watcher would have — the
+            # descriptor's own server and kind included — because a consumer must not be
+            # able to tell a run reported late from one reported on time, and the wake
+            # text names the kind. Settled by that consumer, not here: see
+            # ``job_scan.mark_wakes_reported``.
+            descriptor = job.descriptor()
+            self.out_q.put({
+                "type": "job_complete",
+                "job_key": job.job_key,
+                "server": descriptor.get("server"),
+                "kind": descriptor.get("kind"),
+                "state": job.state,
+                "session_id": session_id,
+                "summary": {"command": job.command, "exit_code": job.exit_code},
+                "status_op": job.status_op(),
+            })
+            reported.append(job.job_key)
+        if rearmed or reported:
+            logger.info("job scan: session %s re-armed %d run(s) and reported %d "
+                        "that had ended", session_id, len(rearmed), len(reported))
+        return {"rearmed": rearmed, "reported": reported}
 
     @staticmethod
     def _watcher_died(task: asyncio.Task) -> None:
@@ -1391,11 +1613,17 @@ class _AgentWorker:
     def watched_job_keys(self) -> list[str]:
         """Keys of the runs this conversation still has in flight.
 
-        What the session asks before delivering a check-in it held back: a bulletin on
-        runs that have since finished is worse than none, their completion wakes having
-        already said more than it could.
+        Asked before delivering a check-in it held back — a bulletin on runs that have
+        since finished is worse than none — and by the panel, which reports a live run
+        beside a live turn so walking away from one is a question rather than a
+        surprise.
+
+        A worker with no table of watchers has no watchers, which is the honest answer
+        to give rather than an attribute error: this is read for every row of every
+        session listing, behind a guard that would blank the whole panel.
         """
-        return [k for k, w in self._bg_jobs.items() if not w.task.done()]
+        watched = getattr(self, "_bg_jobs", None) or {}
+        return [k for k, w in watched.items() if not w.task.done()]
 
     def _watched_bg_jobs(self) -> list[dict]:
         """Descriptors of the runs a watcher is currently holding (the agent's hook).
@@ -1447,9 +1675,11 @@ class _AgentWorker:
                 await asyncio.sleep(interval)
                 interval = min(interval * 1.5, max_interval)
                 try:
-                    raw = await self._agent._run_tool(
-                        status_tool, dict(status_op.get("args") or {}),
-                        record_observations=False)
+                    raw = await asyncio.wait_for(
+                        self._agent._run_tool(
+                            status_tool, dict(status_op.get("args") or {}),
+                            record_observations=False),
+                        timeout=_TOOL_CALL_TIMEOUT)
                     # parse_tool_payload, not json.loads: the result is an envelope
                     # followed by its text blocks and any appended annotation, and a
                     # bare load reads that as one broken document. Five of those in a
@@ -1461,6 +1691,16 @@ class _AgentWorker:
                                   or f"'{status_tool}' returned no state")
                 except asyncio.CancelledError:
                     raise
+                except asyncio.TimeoutError:
+                    # Named rather than lumped in with the failures below: "it never
+                    # answered" and "it answered with an error" are the two things a
+                    # reader most needs to tell apart, and only this knows which it saw.
+                    payload = {}
+                    state, reason = "", (f"'{status_tool}' did not answer within "
+                                         f"{_TOOL_CALL_TIMEOUT:.0f}s")
+                    logger.warning("background job %r: its status op %r did not answer "
+                                   "within %.0fs", job_key, status_tool,
+                                   _TOOL_CALL_TIMEOUT)
                 except Exception as exc:
                     payload = {}
                     state, reason = "", f"'{status_tool}' raised {type(exc).__name__}"
@@ -1512,9 +1752,14 @@ class _AgentWorker:
         summary_tool = summary_op.get("tool")
         if summary_tool:
             try:
-                raw = await self._agent._run_tool(
-                    summary_tool, dict(summary_op.get("args") or {}),
-                    record_observations=False)
+                # Under the same deadline as the status poll, and here it matters more:
+                # the run is already over, so a summary op that never answers holds back
+                # the wake itself. Better a wake with nothing in it than no wake.
+                raw = await asyncio.wait_for(
+                    self._agent._run_tool(
+                        summary_tool, dict(summary_op.get("args") or {}),
+                        record_observations=False),
+                    timeout=_TOOL_CALL_TIMEOUT)
                 # parse_tool_payload for the same reason the status tick uses it: a
                 # tool result is an envelope, its text blocks and any annotation
                 # appended after them, and a bare load reads that as one broken
@@ -1522,6 +1767,13 @@ class _AgentWorker:
                 # result of its own" — the wake still lands, emptied of the thing it
                 # was carrying.
                 summary = parse_tool_payload(raw) if isinstance(raw, str) else (raw or {})
+            except asyncio.CancelledError:
+                raise
+            except asyncio.TimeoutError:
+                summary = {}
+                logger.warning("background job %r finished, but its summary op %r did "
+                               "not answer within %.0fs; waking it without one",
+                               job_key, summary_tool, _TOOL_CALL_TIMEOUT)
             except Exception:
                 summary = {}
 
@@ -1539,6 +1791,11 @@ class _AgentWorker:
             "session_id": session_id,
             "reason":     reason if state == "unknown" else "",
         })
+        # Deliberately not marked as reported here. Emitting is not delivering: the
+        # event still has to be folded into a turn by whatever consumes the bus, and a
+        # run settled at the moment its event is queued is one every later scan takes
+        # for already delivered — so a wake nobody has read is a wake nobody ever will.
+        # The consumer writes the marker — see ``job_scan.mark_wakes_reported``.
         self._bg_jobs.pop(job_key, None)
 
     def resolve_approval(self, choice: str, approved_files: list | None = None,
@@ -1682,8 +1939,8 @@ class _AgentWorker:
 
     def get_enforcement(self) -> str:
         if self._agent is not None:
-            return getattr(self._agent, "enforcement", "strict")
-        return "strict"
+            return getattr(self._agent, "enforcement", "light")
+        return "light"
 
     def get_approval_mode(self) -> str:
         if self._agent is not None:
