@@ -1317,7 +1317,10 @@ def bash_watch(pid: int, what: str = "", log: str = "") -> dict:
         "state": "running",
         "headline": (f"Watching pid {pid}. End your turn — you are resumed when it "
                      "ends, with this window closed or not."),
-        "background_job": _job_descriptor(handle["job_key"], handle["job_dir"]),
+        # Plural, as every answer about work this call did not start is: see the same
+        # key in bash_job_status. Singular is a launch, and a launch is what the
+        # client reads only from a tool declaring BACKGROUNDABLE.
+        "background_jobs": [_job_descriptor(handle["job_key"], handle["job_dir"])],
     })
 
 

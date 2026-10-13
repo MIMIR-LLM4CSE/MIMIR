@@ -1091,7 +1091,11 @@ def slurm_watch(job_id: str, note: str = "", scheduler: str = "") -> dict:
     payload["headline"] = (f"Watching Slurm job {job_id} ({state}). End your turn — "
                            "you are resumed when it finishes, with this window closed "
                            "or not.")
-    payload["background_job"] = _slurm_background_job(job_id)
+    # The plural key, like a status answer and unlike a submission: this call launched
+    # nothing, it hands over a run already going. Singular says "this call started it",
+    # which is what gates it behind BACKGROUNDABLE — a capability an adopter has no
+    # business claiming, and whose absence here is why nothing ever read the descriptor.
+    payload["background_jobs"] = [_slurm_background_job(job_id)]
     # What is still unaccounted for, named here because this is the moment the model is
     # holding the ids: a launcher prints a server job and a client array, and adopting
     # the first is the usual place to stop.

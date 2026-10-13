@@ -959,7 +959,7 @@ class ManySchedulersOneSessionTests(unittest.TestCase):
         self._reaching("", "host-b")
         self._answers({"host-b": "RUNNING"})
         res = server_hpc.slurm_watch(job_id="7001")
-        self.assertEqual(res["background_job"]["status_op"],
+        self.assertEqual(res["background_jobs"][0]["status_op"],
                          {"tool": "slurm_job_status", "args": {"job_id": "7001"}})
 
     def test_a_job_no_scheduler_knows_is_refused_naming_the_ones_asked(self) -> None:
@@ -1178,9 +1178,13 @@ class SlurmWatchTests(unittest.TestCase):
         # The descriptor the scan reads, which is the whole point of the tool.
         with open(os.path.join(res["job_dir"], "slurm_job_id")) as fh:
             self.assertEqual(fh.read().strip(), "15306620")
-        # And the handle the client watcher arms on, in the shape sbatch_submit's has.
-        self.assertEqual(res["background_job"]["job_key"], "15306620")
-        self.assertEqual(res["background_job"]["status_op"]["tool"], "slurm_job_status")
+        # And the handle the client watcher arms on, in the shape sbatch_submit's has
+        # but under the plural key: this call launched nothing, it handed a run over,
+        # and the singular key is only ever read from a tool that declares a launch.
+        self.assertEqual(res["background_jobs"][0]["job_key"], "15306620")
+        self.assertEqual(res["background_jobs"][0]["status_op"]["tool"],
+                         "slurm_job_status")
+        self.assertNotIn("background_job", res)
 
     def test_an_array_base_id_is_accepted(self) -> None:
         res = self._watch({"squeue": ("ok", "RUNNING\nPENDING")}, job_id="15306621")
@@ -1206,7 +1210,7 @@ class SlurmWatchTests(unittest.TestCase):
         # wake for news the caller is already holding.
         res = self._watch({"squeue": ("ok", ""), "sacct": ("ok", "COMPLETED")})
         self.assertEqual(res["state"], "done")
-        self.assertNotIn("background_job", res)
+        self.assertNotIn("background_jobs", res)
         with open(os.path.join(res["job_dir"], "slurm_state")) as fh:
             self.assertEqual(fh.read().strip(), "done")
 
