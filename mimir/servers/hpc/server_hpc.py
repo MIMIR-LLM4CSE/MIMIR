@@ -276,6 +276,22 @@ def _record_terminal_state(job_dir: str, state: str) -> None:
         pass
 
 
+def _recorded_terminal_state(job_dir: str) -> str:
+    """The terminal state a poll wrote in *job_dir*, or "" while it has none.
+
+    The counterpart of :func:`_record_terminal_state`, and the same question the client
+    scan asks of the same file (``job_scan.is_settled``). What it buys here is an answer
+    about a recorded job without asking Slurm: over ssh a sweep is two round trips per
+    scheduler, and "has this one already ended?" is on disk.
+    """
+    try:
+        with open(os.path.join(job_dir, _STATE_FILE)) as fh:
+            word = fh.read().strip()
+    except OSError:
+        return ""
+    return word if word in _TERMINAL_STATES else ""
+
+
 # ── Which scheduler a call goes to ────────────────────────────────────────────
 #
 # An inventory, not a setting: ``_shared/slurm_site`` holds the schedulers this
@@ -1050,13 +1066,30 @@ def slurm_watch(job_id: str, note: str = "", scheduler: str = "") -> dict:
     # round trips, per scheduler swept, for an answer the directory already has.
     existing, from_session = _find_job_dir(job_id)
     if existing:
-        return ok({
+        settled = _recorded_terminal_state(existing)
+        payload = {
             "job_id": job_id,
             "job_dir": existing,
-            "already_watched_by": from_session or "this conversation",
-            "note": f"Job {job_id} is already recorded; nothing to adopt. "
-                    "slurm_job_status(job_id) for where it is at.",
-        })
+            "recorded_by": from_session or "this conversation",
+            "note": (f"Job {job_id} is already recorded ({settled}); nothing to adopt."
+                     if settled else
+                     f"Job {job_id} is already recorded; nothing to adopt. "
+                     "slurm_job_status(job_id) for where it is at."),
+        }
+        if settled:
+            payload["state"] = settled
+        # Recorded is not watched. A watcher is held by the agent that registered it and
+        # by nothing else, so a window reload leaves this directory saying "there is a
+        # job" with nobody polling it — and this branch used to answer "already watched"
+        # into exactly that silence. Handing the descriptor over makes the claim true:
+        # the client dedups on the job id, so a watcher that is still there costs
+        # nothing, and one that is gone is put back. Withheld for a sibling's job for
+        # the reason slurm_job_status withholds it — a wake is routed to the
+        # conversation whose agent registered it, and adopting another's delivers its
+        # result into this one.
+        if not settled and not from_session:
+            payload["background_jobs"] = [_slurm_background_job(job_id)]
+        return ok(payload)
 
     # Asked before anything is written, because a descriptor for a job no scheduler has
     # heard of is worse than no descriptor: it holds this process open until the
@@ -1097,10 +1130,18 @@ def slurm_watch(job_id: str, note: str = "", scheduler: str = "") -> dict:
         payload["headline"] = (f"Job {job_id} has already finished ({state}); "
                                "recorded, with nothing left to watch.")
         return ok(payload)
-    payload["headline"] = (f"Watching Slurm job {job_id} ({state}). End your turn — "
-                           "you are resumed when it finishes, with this window closed "
-                           "or not.")
-    payload["background_job"] = _slurm_background_job(job_id)
+    # What was adopted, not what will happen next: whether anything watches this job is
+    # the client's to know, and it says so itself when it registers a watcher. A server
+    # that promises a resume it does not perform produces a model that ends its turn on
+    # a guarantee nobody is holding — which is what the front-ends without a watcher
+    # hook were handing out here.
+    payload["headline"] = (f"Slurm job {job_id} ({state}) is recorded as this "
+                           "conversation's, and handed over to be watched.")
+    # The plural key, like a status answer and unlike a submission: this call launched
+    # nothing, it hands over a run already going. Singular says "this call started it",
+    # which is what gates it behind BACKGROUNDABLE — a capability an adopter has no
+    # business claiming, and whose absence here is why nothing ever read the descriptor.
+    payload["background_jobs"] = [_slurm_background_job(job_id)]
     # What is still unaccounted for, named here because this is the moment the model is
     # holding the ids: a launcher prints a server job and a client array, and adopting
     # the first is the usual place to stop.

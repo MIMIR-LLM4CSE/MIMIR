@@ -1166,7 +1166,7 @@ class ManySchedulersOneSessionTests(unittest.TestCase):
         self._reaching("", "host-b")
         self._answers({"host-b": "RUNNING"})
         res = server_hpc.slurm_watch(job_id="7001")
-        self.assertEqual(res["background_job"]["status_op"],
+        self.assertEqual(res["background_jobs"][0]["status_op"],
                          {"tool": "slurm_job_status", "args": {"job_id": "7001"}})
 
     def test_a_job_no_scheduler_knows_is_refused_naming_the_ones_asked(self) -> None:
@@ -1385,9 +1385,13 @@ class SlurmWatchTests(unittest.TestCase):
         # The descriptor the scan reads, which is the whole point of the tool.
         with open(os.path.join(res["job_dir"], "slurm_job_id")) as fh:
             self.assertEqual(fh.read().strip(), "15306620")
-        # And the handle the client watcher arms on, in the shape sbatch_submit's has.
-        self.assertEqual(res["background_job"]["job_key"], "15306620")
-        self.assertEqual(res["background_job"]["status_op"]["tool"], "slurm_job_status")
+        # And the handle the client watcher arms on, in the shape sbatch_submit's has
+        # but under the plural key: this call launched nothing, it handed a run over,
+        # and the singular key is only ever read from a tool that declares a launch.
+        self.assertEqual(res["background_jobs"][0]["job_key"], "15306620")
+        self.assertEqual(res["background_jobs"][0]["status_op"]["tool"],
+                         "slurm_job_status")
+        self.assertNotIn("background_job", res)
 
     def test_an_array_base_id_is_accepted(self) -> None:
         res = self._watch({"squeue": ("ok", "RUNNING\nPENDING")}, job_id="15306621")
@@ -1413,7 +1417,7 @@ class SlurmWatchTests(unittest.TestCase):
         # wake for news the caller is already holding.
         res = self._watch({"squeue": ("ok", ""), "sacct": ("ok", "COMPLETED")})
         self.assertEqual(res["state"], "done")
-        self.assertNotIn("background_job", res)
+        self.assertNotIn("background_jobs", res)
         with open(os.path.join(res["job_dir"], "slurm_state")) as fh:
             self.assertEqual(fh.read().strip(), "done")
 
@@ -1422,6 +1426,46 @@ class SlurmWatchTests(unittest.TestCase):
         again = self._watch({"squeue": ("ok", "RUNNING")})
         self.assertEqual(again["job_dir"], first["job_dir"])
         self.assertEqual(len(os.listdir(self._jobs)), 1)
+
+    def _refuse_slurm(self):
+        """A _run_bash that fails the test if anything asks a scheduler."""
+        def fake(*_a, **_k):
+            self.fail("it asked a scheduler for something the directory already knows")
+        server_hpc._run_bash = fake
+
+    def test_a_job_already_recorded_is_handed_over_again(self) -> None:
+        """Recorded is not watched, and the answer used to say otherwise.
+
+        A watcher is held by the agent that registered it and by nothing else, so a
+        window reload leaves the directory saying "there is a job" with nobody polling
+        it. Asking again is the moment that is repairable — and the answer carried no
+        descriptor, so it repaired nothing while reporting the job as watched.
+        """
+        self._watch({"squeue": ("ok", "RUNNING")})
+        self._refuse_slurm()          # the disk settles this, not two ssh round trips
+        again = server_hpc.slurm_watch(job_id="15306620")
+        self.assertEqual(again["status"], "ok")
+        self.assertEqual(again["background_jobs"][0]["job_key"], "15306620")
+        self.assertEqual(again["recorded_by"], "this conversation")
+
+    def test_a_job_already_recorded_as_over_is_not_handed_over(self) -> None:
+        # Its end was recorded by the poll that saw it, and a watcher put on it now
+        # would report at its first poll — a wake for news already delivered.
+        res = self._watch({"squeue": ("ok", ""), "sacct": ("ok", "COMPLETED")})
+        self.assertEqual(res["state"], "done")
+        self._refuse_slurm()
+        again = server_hpc.slurm_watch(job_id="15306620")
+        self.assertEqual(again["state"], "done")
+        self.assertNotIn("background_jobs", again)
+
+    def test_the_headline_promises_no_resume_of_its_own(self) -> None:
+        # Whether anything watches the job is the client's to say, and it says so when
+        # it registers a watcher. A server that guarantees a resume it does not perform
+        # produces a model that ends its turn on a promise nobody is holding — which is
+        # what every front-end with no watcher hook was handed here.
+        res = self._watch({"squeue": ("ok", "PENDING")})
+        self.assertNotIn("resumed", res["headline"])
+        self.assertIn("15306620", res["headline"])
 
 
 if __name__ == "__main__":

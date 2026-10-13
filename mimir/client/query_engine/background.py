@@ -70,9 +70,11 @@ def _detect_rewatchable_jobs(name: str, result_text: str, agent: Any) -> list[di
     The plural key, and the distinction from ``background_job`` is the point rather
     than a convenience. Singular means *this call launched it*: the row it belongs to
     is a run, not a read, and a client with no watcher has to wait it out in-turn.
-    Plural means *these are still going* — the answer a status op gives about work some
-    earlier call started. Nothing about the row changes, and nothing is awaited; the
-    only thing to do with them is put a watcher back on them.
+    Plural means *these are still going* — what a status op answers about work some
+    earlier call started, and what an adopter (``slurm_watch``, ``bash_watch``) hands
+    over: a watcher is not a launch, and the run it names was going before the call.
+    Nothing about the row changes, and nothing is awaited; the only thing to do with
+    them is put a watcher on them.
 
     That is what makes "where is the job at?" the gesture that restores tracking after
     an agent restart took the watchers with it. The runs are untouched on disk the whole
@@ -105,7 +107,8 @@ def _is_rewatchable(descriptor: Any) -> bool:
 
 
 def _maybe_rewatch_background_jobs(name: str, result_text: str, agent: Any) -> str:
-    """Put watchers back on the in-flight runs a status result reported.
+    """Put watchers on the in-flight runs a result reported — a status answer's, or
+    the one an adopter just handed over.
 
     Silent about the ones already watched: the hook dedups on ``job_key`` and reports
     success either way, so the note names what was re-armed only when that is news.
@@ -139,7 +142,7 @@ def _maybe_rewatch_background_jobs(name: str, result_text: str, agent: Any) -> s
         return result_text
     keys = ", ".join(f"'{k}'" for k in rearmed)
     note = (
-        f"\n\n[background] Now tracking {keys} again. A watcher resumes you "
+        f"\n\n[background] Now tracking {keys}. A watcher resumes you "
         "automatically when each one finishes, so do NOT poll their status and do NOT "
         "sleep waiting for them. Carry on with whatever else there is to do, or end "
         "your turn saying what you are waiting for."

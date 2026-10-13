@@ -19,7 +19,10 @@ from unittest import mock
 from mimir.tests._fake_pool import FakePool
 
 from mimir.client.context.capabilities import BACKGROUNDABLE, ToolCaps
-from mimir.client.query_engine.background import _maybe_register_background_job
+from mimir.client.query_engine.background import (
+    _maybe_register_background_job,
+    _maybe_rewatch_background_jobs,
+)
 from mimir.tests._proxy_fixtures import (_TmpStorageTest, pin_local_scheduler, server_proxy)
 
 
@@ -281,6 +284,85 @@ class LiveRegistrySeamTests(unittest.TestCase):
         # only proof a watcher exists. Its absence is what the field failure looked like.
         self.assertIn("[background]", out)
         self.assertIn(job_key, out)
+
+    def test_an_adopted_run_is_handed_over_without_the_launch_cap(self) -> None:
+        """The field failure of October 2026, and the other half of the same joint.
+
+        ``slurm_watch`` and ``bash_watch`` returned the *singular* ``background_job``
+        key, which the client reads only from a tool declaring ``backgroundable`` —
+        and an adopter does not declare it, because it launches nothing. So every
+        adoption said "end your turn, you are resumed when it finishes", wrote its
+        descriptor, and armed nothing: four Slurm probes ended with no wake, and the
+        user had to ask what had happened to them.
+
+        An adopter answers like a status op — the plural key, read with no capability
+        gate at all, because what it hands over is a run that was already going.
+        """
+        import subprocess
+        import sys
+        import types
+        registry = self._live_registry("bash_watch")
+        self.assertNotIn(
+            BACKGROUNDABLE, registry["bash_watch"].capabilities,
+            "an adopter must not claim a launch capability: it is the plural key, "
+            "read ungated, that gets a watcher onto work this call did not start")
+
+        # Its own session, and killed here rather than through the job manager: a stop
+        # signals the process *group*, and a child of the test runner shares that group.
+        proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"],
+                                start_new_session=True)
+        self.addCleanup(proc.wait)
+        self.addCleanup(proc.kill)
+        result = self.server_bash.bash_watch(pid=proc.pid, what="the overnight solver")
+        self.assertEqual(result["status"], "ok")
+        job_key = result["background_jobs"][0]["job_key"]
+
+        registered: list[dict] = []
+        agent = types.SimpleNamespace(
+            tool_caps=registry,
+            _watched_background_jobs=lambda: [],
+            _register_background_job=lambda d: bool(registered.append(d) or True),
+        )
+        out = _maybe_rewatch_background_jobs("bash_watch", json.dumps(result), agent)
+
+        self.assertEqual([d["job_key"] for d in registered], [job_key])
+        # The note is the only proof a watcher exists. Its absence is exactly what the
+        # field failure looked like from the model's side: a promise nobody held.
+        self.assertIn("[background]", out)
+        self.assertIn(job_key, out)
+
+    def test_a_launcher_still_needs_the_cap_it_declares(self) -> None:
+        """The singular key stays gated, and nothing may ship carrying it ungated.
+
+        Swept over the servers rather than asserted of one tool: the cap is the only
+        thing that makes the client look for a ``background_job``, so a tool returning
+        one without declaring it promises a wake nobody is holding.
+        """
+        import ast
+        import pathlib
+        servers = pathlib.Path(__file__).resolve().parents[1] / "servers"
+        offenders = []
+        for path in sorted(servers.rglob("*.py")):
+            tree = ast.parse(path.read_text())
+            for node in ast.walk(tree):
+                if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    continue
+                decorators = [d for d in node.decorator_list
+                              if isinstance(d, ast.Call)
+                              and isinstance(d.func, ast.Attribute)
+                              and d.func.attr == "tool"]
+                if not decorators:
+                    continue
+                if not any(isinstance(n, ast.Constant) and n.value == "background_job"
+                           for n in ast.walk(node)):
+                    continue
+                if not any(isinstance(n, ast.Name) and n.id == "BACKGROUNDABLE"
+                           for d in decorators for n in ast.walk(d)):
+                    offenders.append(f"{path.name}:{node.name}")
+        self.assertEqual(offenders, [],
+                         "these tools return a singular 'background_job' the client "
+                         "will never look for; an adopter wants the plural key "
+                         "instead: " + ", ".join(offenders))
 
     def test_the_server_does_not_promise_a_resume_on_its_own(self) -> None:
         # The launch note describes what was started. Whether anything is watching is
@@ -1962,7 +2044,7 @@ class RewatchDetectionTests(unittest.TestCase):
         out = self.background._maybe_rewatch_background_jobs(
             "bash_job", self._result(self._descriptor("j1")), self.agent)
         self.assertEqual([d["job_key"] for d in self.registered], ["j1"])
-        self.assertIn("Now tracking 'j1' again", out)
+        self.assertIn("Now tracking 'j1'", out)
         self.assertIn("do NOT poll", out)
 
     def test_a_listing_re_arms_every_run_still_going(self) -> None:

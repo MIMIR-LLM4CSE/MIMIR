@@ -594,11 +594,18 @@ class AdoptingARunningProcessTests(unittest.TestCase):
         res = server_bash.bash_watch(pid=proc.pid, what="the overnight solver")
         self.assertEqual(res["status"], "ok")
         self.assertEqual(res["state"], "running")
-        # The handle the client watcher arms on, in the shape a launch's has.
-        self.assertEqual(res["background_job"]["status_op"]["tool"], "bash_job")
-        self.assertEqual(res["background_job"]["job_key"], res["job_key"])
+        # The handle the client watcher arms on. Plural, as every answer about work
+        # this call did not launch is: an adoption is read without the launch cap.
+        handle = res["background_jobs"][0]
+        self.assertEqual(handle["status_op"]["tool"], "bash_job")
+        self.assertEqual(handle["job_key"], res["job_key"])
+        self.assertNotIn("background_job", res)
         # And the state the watcher polls, through the ordinary seam.
         self.assertEqual(_bash_jobs.state(res["job_key"])["state"], "running")
+        # What was adopted, not what will happen next: a resume is the client's to
+        # promise, and only once it is holding a watcher.
+        self.assertNotIn("resumed", res["headline"])
+        self.assertIn(str(proc.pid), res["headline"])
 
     def test_what_it_is_is_kept_as_the_command(self) -> None:
         proc = self._sleeper()
