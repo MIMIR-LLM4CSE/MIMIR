@@ -2247,10 +2247,10 @@ def _host_tree() -> list[dict]:
 @mcp.tool(**tool_caps(kind="slurm",
     caps=[PANEL_REPORT],
     read_only=True,
-    panel={"section": "Cluster", "order": 30},
+    panel={"section": "Cluster", "order": 30, "refresh_arg": "refresh"},
     label="Cluster status",
 ))
-def hpc_panel_report() -> dict:
+def hpc_panel_report(refresh: bool = False) -> dict:
     """Where the work goes, in a form a panel can show: the queue, the room, the nodes.
 
     Two halves with two shapes. The lines are this moment — what is queued, where there
@@ -2264,7 +2264,20 @@ def hpc_panel_report() -> dict:
     digest per scheduler for the life of the server. A host with nothing to say returns
     neither lines nor groups, and the client then shows no section — a laptop should not
     grow an empty cluster panel.
+
+    *refresh* is the reader asking, and it drops all of it: the per-TTL caches and the
+    per-host digest alike. The digest is the one that matters — it is kept for the life
+    of the server, so a scheduler that was unreachable at startup, or a partition added
+    since, is invisible until something clears it. That is what ⟳ is for, and the only
+    call that pays for the re-probe.
+
+    Args:
+        refresh: Drop every cache first and read the clusters again. The reader's own
+            refresh; a panel on a timer leaves it alone.
     """
+    if refresh:
+        _PANEL_CACHE.clear()
+        _forget_cluster_digest()
     lines: list[dict] = []
     queue = _queue_line()
     if queue:

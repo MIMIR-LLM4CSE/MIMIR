@@ -1185,10 +1185,6 @@ class MimirAgentViewProvider implements vscode.WebviewViewProvider {
           : "MIMIR a une question pour vous.";
         kind = "warn";
         break;
-      case "todo_prompt":
-        title = "MIMIR a besoin de votre intervention.";
-        kind = "warn";
-        break;
       case "job_complete":
         // A detached background run reached a terminal state; the session that
         // launched it auto-resumes, which is not necessarily the one on screen.

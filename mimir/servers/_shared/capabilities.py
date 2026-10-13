@@ -84,10 +84,17 @@ DELEGATE = "delegate"
 MAIN_ONLY = "main_only"
 
 # Fills one section of the client's scientific-computing panel. Declared with a
-# ``panel`` spec — ``{"section": <name>, "order": <int>, "args": {...}}`` — so the
-# client calls it by capability, never by name, and a plugin server adds a section of
-# its own by declaring this. The tool answers read-only, with its own words:
+# ``panel`` spec — ``{"section": <name>, "order": <int>, "args": {...},
+# "refresh_arg": <name>?}`` — so the client calls it by capability, never by name, and
+# a plugin server adds a section of its own by declaring this. The tool answers
+# read-only, with its own words:
 # ``{"title", "lines": [{"label", "value", "state"?}], "detail"?}``.
+#
+# ``refresh_arg`` names the parameter that means "read it again, do not serve the
+# cache". A panel refreshing on a timer must be cheap, so a section that costs an
+# ``sinfo`` or an ``ssh`` is served from a cache — and then the reader pressing ⟳ gets
+# back the page they just read. Declaring the argument is how a caching tool says which
+# call is the reader's; the client sets it only for that press, never for the timer.
 PANEL_REPORT = "panel_report"
 
 # Approval & mode policy
@@ -286,6 +293,8 @@ def build_descriptor(
             "order": int(panel.get("order") or 100),
             "args": dict(panel.get("args") or {}),
         }
+        if panel.get("refresh_arg"):
+            descriptor["panel"]["refresh_arg"] = str(panel["refresh_arg"])
 
     # A tool's own wall, for the few whose work the global per-call default cannot
     # bound. Omitted when undeclared so the existing catalog's descriptors are

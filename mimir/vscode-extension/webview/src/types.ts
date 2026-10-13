@@ -430,11 +430,6 @@ export interface ThinkingEndMessage {
   tokens?: number;
 }
 
-export interface TodoPromptMessage {
-  type: "todo_prompt";
-  items: TodoItem[];
-}
-
 export interface DiffMessage {
   type: "diff";
   file: string;
@@ -573,6 +568,10 @@ export interface PanelSection {
 
 export interface PanelReportMessage {
   type: "panel_report";
+  /** Whether a conversation's agent was there to ask. A report from one that has none
+   *  yet carries no sections — the servers that fill them are not running — which is
+   *  not the same answer as "this workspace reaches no clusters". */
+  agent_ready?: boolean;
   subagent_level: SubAgentLevel;
   subagents: SubAgent[];
   running?: number;
@@ -936,7 +935,6 @@ export type ServerMessage =
   | AnswerMessage
   | TokenMessage
   | TodoMessage
-  | TodoPromptMessage
   | ThinkingMessage
   | ThinkingStartMessage
   | ThinkingEndMessage

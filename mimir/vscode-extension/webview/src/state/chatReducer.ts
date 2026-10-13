@@ -1130,8 +1130,8 @@ export function createChatReducer(makeId: () => string) {
       }
 
       // Server messages handled outside the reducer (ready/config/todo/
-      // todo_prompt/batch_status/sessions_list/session_loaded/context_*) and
-      // any future additions fall through unchanged.
+      // batch_status/sessions_list/session_loaded/context_*) and any future
+      // additions fall through unchanged.
       default:
         return state;
     }

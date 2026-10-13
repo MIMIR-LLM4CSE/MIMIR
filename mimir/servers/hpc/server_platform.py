@@ -1234,9 +1234,10 @@ _PANEL_PROFILE_TTL_SECS = 300
 _PANEL_PROFILE: dict = {"at": 0.0, "profile": {}}
 
 
-def _panel_profile() -> dict:
+def _panel_profile(force: bool = False) -> dict:
     now = time.time()
-    if not _PANEL_PROFILE["profile"] or now - _PANEL_PROFILE["at"] > _PANEL_PROFILE_TTL_SECS:
+    if (force or not _PANEL_PROFILE["profile"]
+            or now - _PANEL_PROFILE["at"] > _PANEL_PROFILE_TTL_SECS):
         try:
             _PANEL_PROFILE["profile"] = _build_profile()
             _PANEL_PROFILE["at"] = now
@@ -1248,10 +1249,10 @@ def _panel_profile() -> dict:
 @mcp.tool(**tool_caps(kind="modules",
     caps=[PANEL_REPORT, ENV_DISCOVERY],
     read_only=True,
-    panel={"section": "Machine", "order": 40},
+    panel={"section": "Machine", "order": 40, "refresh_arg": "refresh"},
     label="Machine profile",
 ))
-def platform_panel_report() -> dict:
+def platform_panel_report(refresh: bool = False) -> dict:
     """The host MIMIR runs on, in a form a panel can show: a few lines, no probing.
 
     Deliberately narrow. On a cluster this is the login node — the one machine nothing
@@ -1260,10 +1261,14 @@ def platform_panel_report() -> dict:
     whole story, which is why it stays.
 
     The profile is probed at most once every few minutes (see ``_panel_profile``): the
-    panel refreshes whenever it is opened or a turn ends, and hardware does not change
-    between two of those.
+    panel refreshes on a timer while it is open and whenever a turn ends, and hardware
+    does not change between two of those.
+
+    Args:
+        refresh: Probe this machine again rather than serving the held profile — a GPU
+            that was busy, a module system loaded since. The reader's own refresh.
     """
-    profile = _panel_profile()
+    profile = _panel_profile(force=refresh)
     if not profile:
         return ok({"title": "Machine", "lines": [],
                    "detail": "The machine could not be probed."})

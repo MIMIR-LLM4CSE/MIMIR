@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from "react";
 import type { SubAgent } from "../types";
+import { PanelResizer, usePanelWidth } from "./PanelResizer";
 import {
   activityRows,
   anyRunning,
@@ -17,8 +18,6 @@ interface Props {
   onRefresh: () => void;
   onOpen: (id: string) => void;
   onClose: () => void;
-  /** Inside the scientific-computing panel: no frame and no header of its own. */
-  embedded?: boolean;
 }
 
 /**
@@ -35,9 +34,9 @@ export const SubAgentsPanel: React.FC<Props> = ({
   onRefresh,
   onOpen,
   onClose,
-  embedded,
 }) => {
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const { width, handleProps } = usePanelWidth("subagents");
 
   // The cards are files another process writes; ask again on open, and after a run
   // ends the list is refreshed by the caller.
@@ -67,22 +66,20 @@ export const SubAgentsPanel: React.FC<Props> = ({
   };
 
   return (
-    <div className={embedded ? "subagents-embedded" : "sessions-panel subagents-panel"}>
-      {!embedded && (
-        <div className="sessions-panel-header">
-          <span className="sessions-panel-title">Sub-agents</span>
-          <button
-            className="sessions-toggle-btn"
-            title="Refresh"
-            aria-label="Refresh sub-agents"
-            onClick={() => onRefresh()}
-          >
-            ⟳
-          </button>
-        </div>
-      )}
+    <div className="sessions-panel subagents-panel" style={{ width }}>
+      <div className="sessions-panel-header">
+        <span className="sessions-panel-title">Sub-agents</span>
+        <button
+          className="sessions-toggle-btn"
+          title="Refresh"
+          aria-label="Refresh sub-agents"
+          onClick={() => onRefresh()}
+        >
+          ⟳
+        </button>
+      </div>
 
-      <div className={embedded ? "" : "sessions-list"}>
+      <div className="sessions-list">
         {subAgents.length === 0 && (
           <div className="sessions-empty">
             Nothing delegated in this session yet.
@@ -149,6 +146,8 @@ export const SubAgentsPanel: React.FC<Props> = ({
           );
         })}
       </div>
+
+      <PanelResizer label="sub-agents" handleProps={handleProps} />
     </div>
   );
 };

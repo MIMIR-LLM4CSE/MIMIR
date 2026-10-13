@@ -2026,13 +2026,20 @@ class _AgentWorker:
 
         return asyncio.run_coroutine_threadsafe(_run(), self._loop)
 
-    def panel_sections(self) -> Any:
+    def panel_sections(self, *, force: bool = False) -> Any:
         """Collect every section the connected servers can fill. Future of a list.
 
         Asked by capability, never by name: a server declares ``PANEL_REPORT`` and the
         section it fills, and a plugin server's section appears with no client edit.
         Each answer is whatever that server chose to show — the panel renders lines, it
         does not interpret them.
+
+        *force* is the reader asking for a re-read rather than a timer asking for the
+        current picture. A section that costs an ``sinfo`` or a reach across ``ssh`` is
+        served from the owning server's cache, which is what makes a panel on a timer
+        affordable and what made pressing ⟳ hand back the page just read. A server that
+        caches names the argument meaning "read it again" in its ``panel`` descriptor;
+        this sets it, and only for that press.
 
         Straight to the owning session, like the slash commands above: this is the
         user opening a drawer, not the model taking a step, and routing it through the
@@ -2053,8 +2060,11 @@ class _AgentWorker:
                 owner = (getattr(agent, "tool_owner", None) or {}).get(tool)
                 if owner is None:
                     continue
+                args = dict(spec.get("args") or {})
+                if force and spec.get("refresh_arg"):
+                    args[str(spec["refresh_arg"])] = True
                 try:
-                    raw = await agent.sessions[owner].call_tool(tool, dict(spec.get("args") or {}))
+                    raw = await agent.sessions[owner].call_tool(tool, args)
                     text = agent._normalize_tool_content(raw)
                     payload = json.loads(text) if isinstance(text, str) else (text or {})
                 except Exception as exc:

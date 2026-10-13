@@ -45,7 +45,6 @@ import { workingSessions } from "./components/disconnectUtils";
 import { ModeSwitcher } from "./components/ModeSwitcher";
 import { TogglesPanel } from "./components/TogglesPanel";
 import { ConnectForm } from "./components/ConnectForm";
-import { ResumePlanPrompt } from "./components/ResumePlanPrompt";
 import { UserQuestion } from "./components/UserQuestion";
 import { SessionsPanel } from "./components/SessionsPanel";
 import { SubAgentsPanel } from "./components/SubAgentsPanel";
@@ -234,7 +233,6 @@ export const App: React.FC = () => {
     [slash, skillToggles]
   );
   const slashOpen = slash !== null && slashItems.length > 0;
-  const [pendingResumeItems, setPendingResumeItems] = useState<TodoItem[] | null>(null);
   const [userQuestion, setUserQuestion] = useState<{
     id: string;
     questions: QuestionSpec[];
@@ -299,6 +297,14 @@ export const App: React.FC = () => {
   const [runningSubAgents, setRunningSubAgents] = useState(0);
   const [subAgentLevel, setSubAgentLevel] = useState<SubAgentLevel>("explore");
   const [panelSections, setPanelSections] = useState<PanelSection[]>([]);
+  // An ask for the panel is in flight, so the ⟳ can say so: a button whose press
+  // changes nothing on screen reads as a broken button, and a re-read of the clusters
+  // takes a second or two.
+  const [panelPending, setPanelPending] = useState(false);
+  // Whether the last panel answer came from a conversation that has an agent. Before
+  // the first one is built there are no servers to fill the sections, and the drawer
+  // says that rather than showing an empty page.
+  const [panelAgentReady, setPanelAgentReady] = useState(false);
   const [watchedRuns, setWatchedRuns] = useState<WatchedRun[]>([]);
   const [showSciencePanel, setShowSciencePanel] = useState(false);
   const [showSubAgentsPanel, setShowSubAgentsPanel] = useState(false);
@@ -503,11 +509,6 @@ export const App: React.FC = () => {
         setTodos(msg.items);
         return;
 
-      case "todo_prompt":
-        // Don't auto-restore — ask the user.
-        setPendingResumeItems(msg.items);
-        return;
-
       case "batch_status":
         // Persistent batch review bar — accumulated file diffs.
         setBatchFiles(msg.files ?? []);
@@ -527,11 +528,16 @@ export const App: React.FC = () => {
         return;
 
       case "panel_report":
+        setPanelPending(false);
+        setPanelAgentReady(msg.agent_ready !== false);
         setSubAgentLevel(msg.subagent_level);
         setSubAgents(msg.subagents ?? []);
         setRunningSubAgents(msg.running ?? 0);
         setWatchedRuns(msg.runs ?? []);
-        setPanelSections(msg.sections ?? []);
+        // A conversation whose agent is not up yet carries no sections — the servers
+        // that fill them are not running. What is on screen stays rather than being
+        // blanked: the drawer asks again the moment the agent answers for itself.
+        if (msg.agent_ready !== false) setPanelSections(msg.sections ?? []);
         return;
 
       case "subagent":
@@ -699,7 +705,6 @@ export const App: React.FC = () => {
           // A reconnect to the *same* session keeps its cards: the worker is
           // still parked on them and will never re-send them.
           setUserQuestion(null);
-          setPendingResumeItems(null);
           setBatchFiles([]);
         }
         setContextUsage(null);
@@ -759,7 +764,6 @@ export const App: React.FC = () => {
     dispatch({ type: "reset" });
     setTodos([]);
     setModel("");
-    setPendingResumeItems(null);
     setUserQuestion(null);
     setActiveSessionId(null);
     setSessions([]);
@@ -793,6 +797,17 @@ export const App: React.FC = () => {
   // server's own section.
   const refreshPanel = useCallback(
     () => (send as any)({ type: "list_panel" }), [send]);
+  // The reader's own ask — the drawer opening, the ⟳ — and it is a different request
+  // from the one above in two ways. It tells the servers to read again rather than
+  // serve the caches they answer a timer from, which is why pressing ⟳ used to return
+  // the page the user had just read. And it builds this conversation's agent if it has
+  // none: the panel is filled by MCP servers, and before the first query of a session
+  // there is no agent holding any — which is why the clusters only ever appeared after
+  // the first request.
+  const reloadPanel = useCallback(() => {
+    setPanelPending(true);
+    (send as any)({ type: "list_panel", build: true, refresh: true });
+  }, [send]);
 
   // Creating a session also opens it: the server makes the new session active
   // and answers with `session_loaded`, so we only have to show the (empty)
@@ -882,6 +897,12 @@ export const App: React.FC = () => {
   //
   // The interface polls, never the model: the agent is woken when a run lands, and
   // asking it "are we there yet" is the one thing it must not do.
+  // The agent came up after the drawer was opened: its first ask found no servers to
+  // ask. Ask again, now that there are some.
+  useEffect(() => {
+    if (readyCount > 0 && showSciencePanel) refreshPanel();
+  }, [readyCount, showSciencePanel, refreshPanel]);
+
   const pollCards = showSciencePanel ? refreshPanel : refreshSubAgents;
   useEffect(() => {
     if (!chatState.busy && runningSubAgents === 0) return;
@@ -1403,17 +1424,6 @@ export const App: React.FC = () => {
   // data-mode drives the chat's accent colour: blue agent / red plan / green ask.
   return (
     <div className={`app ${showSessionsPanel ? "with-sessions" : ""}`} data-mode={agentMode}>
-      {pendingResumeItems && (
-        <ResumePlanPrompt
-          items={pendingResumeItems}
-          onChoice={(resume) => {
-            (send as any)({ type: "resume_plan", choice: resume ? "yes" : "no" });
-            if (resume) setTodos(pendingResumeItems);
-            setPendingResumeItems(null);
-          }}
-        />
-      )}
-
       {/* ── Sessions panel ───────────────────────────────────────────── */}
       {showSessionsPanel && connection === "connected" && (
         <SessionsPanel
@@ -1433,21 +1443,12 @@ export const App: React.FC = () => {
       {/* ── Scientific-computing panel ───────────────────────────────── */}
       {showSciencePanel && connection === "connected" && (
         <SciencePanel
-          level={subAgentLevel}
-          onLevelChange={(lvl) => {
-            setSubAgentLevel(lvl);
-            (send as any)({ type: "command", text: `/subagents ${lvl}` });
-          }}
-          subAgents={subAgents}
-          openedSubAgent={openedSubAgent}
           runs={watchedRuns}
           sections={panelSections}
           onRefresh={refreshPanel}
-          onOpenSubAgent={(id) => {
-            setOpenedSubAgent(null);
-            (send as any)({ type: "read_subagent", id });
-          }}
-          onCloseSubAgent={() => setOpenedSubAgent(null)}
+          onReload={reloadPanel}
+          refreshing={panelPending}
+          agentReady={panelAgentReady}
           onPrompt={sendPrompt}
         />
       )}
@@ -1805,6 +1806,11 @@ export const App: React.FC = () => {
                   streaming={streaming}
                   contextMode={contextMode}
                   enforcement={enforcement}
+                  subAgentLevel={subAgentLevel}
+                  onSubAgentLevelChange={(lvl) => {
+                    setSubAgentLevel(lvl);
+                    (send as any)({ type: "command", text: `/subagents ${lvl}` });
+                  }}
                   temperature={temperature}
                   onTemperatureChange={handleTemperatureChange}
                   onThinkingLevelChange={handleThinkingLevelChange}

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { SUBAGENT_LEVEL_OPTIONS } from "./SciencePanel";
+import { SUBAGENT_LEVEL_OPTIONS } from "./subAgentLevels";
 
 describe("SUBAGENT_LEVEL_OPTIONS", () => {
   it("mirrors the ladder in client/config/constants.py, weakest first", () => {

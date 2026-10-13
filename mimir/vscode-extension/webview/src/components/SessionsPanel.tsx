@@ -1,5 +1,6 @@
 import React, { useState, useRef, useCallback } from "react";
 import type { SessionMeta } from "../types";
+import { PanelResizer, usePanelWidth } from "./PanelResizer";
 
 interface Props {
   sessions: SessionMeta[];
@@ -75,6 +76,7 @@ export const SessionsPanel: React.FC<Props> = ({
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
   const renameInputRef = useRef<HTMLInputElement>(null);
+  const { width, handleProps } = usePanelWidth("sessions");
 
   const startRename = useCallback((session: SessionMeta, e: React.MouseEvent) => {
     e.stopPropagation();
@@ -105,7 +107,7 @@ export const SessionsPanel: React.FC<Props> = ({
   );
 
   return (
-    <div className="sessions-panel">
+    <div className="sessions-panel" style={{ width }}>
       {/* No new-session button here: the status bar carries the one ＋. */}
       <div className="sessions-panel-header">
         <span className="sessions-panel-title">Chat history</span>
@@ -161,6 +163,8 @@ export const SessionsPanel: React.FC<Props> = ({
           </div>
         ))}
       </div>
+
+      <PanelResizer label="chat history" handleProps={handleProps} />
     </div>
   );
 };

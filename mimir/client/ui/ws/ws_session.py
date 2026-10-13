@@ -515,6 +515,14 @@ class _Session:
 
         # If session had todos, restore them to disk so agent picks them up —
         # unless what is already on disk is newer than this snapshot (see below).
+        #
+        # And then simply show them. A checklist with work left on it used to raise a
+        # modal asking whether to resume the plan or start fresh, which was the wrong
+        # question asked at the worst moment: this runs on every session load, and a
+        # connection dropping mid-turn reloads the session — so the card arrived in the
+        # middle of the very work it was asking whether to continue. There is no reading
+        # of "start fresh" that is right there, and the plan of record is on disk either
+        # way: the agent reads the file, not this message.
         if session.todos:
             if not self._restore_todos(
                 session.todos, getattr(session, 'todo_deps', None),
@@ -528,44 +536,22 @@ class _Session:
                     }))
                 except Exception:
                     pass
-            # Only offer to resume if there are incomplete tasks remaining.
-            pending_todos = [t for t in session.todos if not t.get("done")]
-            try:
-                await self.ws.send(json.dumps({
-                    "type": "session_loaded",
-                    "session_id": session.id,
-                    "title": session.title,
-                    "display_messages": session.display_messages,
-                    "todos": [] if pending_todos else session.todos,
-                    # A turn of this conversation that outlived the last connection is
-                    # still producing. Said here rather than left to be inferred: the
-                    # client shows the run as live, and — the part that is not
-                    # cosmetic — knows a turn is open, so the answer that ends it is
-                    # what hands the finished transcript back for saving.
-                    "turn_running": self._running_turn_is_ours(),
-                }))
-            except Exception:
-                pass
-            if pending_todos:
-                try:
-                    await self.ws.send(json.dumps({
-                        "type": "todo_prompt",
-                        "items": session.todos,
-                    }))
-                except Exception:
-                    pass
-        else:
-            try:
-                await self.ws.send(json.dumps({
-                    "type": "session_loaded",
-                    "session_id": session.id,
-                    "title": session.title,
-                    "display_messages": session.display_messages,
-                    "todos": session.todos,
-                    "turn_running": self._running_turn_is_ours(),
-                }))
-            except Exception:
-                pass
+        try:
+            await self.ws.send(json.dumps({
+                "type": "session_loaded",
+                "session_id": session.id,
+                "title": session.title,
+                "display_messages": session.display_messages,
+                "todos": session.todos,
+                # A turn of this conversation that outlived the last connection is
+                # still producing. Said here rather than left to be inferred: the
+                # client shows the run as live, and — the part that is not
+                # cosmetic — knows a turn is open, so the answer that ends it is
+                # what hands the finished transcript back for saving.
+                "turn_running": self._running_turn_is_ours(),
+            }))
+        except Exception:
+            pass
         await self._resend_deferred_prompt()
         await self._remind_untracked_jobs(session.id)
         self._last_context_usage = None  # client cleared its bar on session_loaded
@@ -1247,7 +1233,6 @@ class _Session:
         "batch_review_revert": "_handle_batch_review_revert",
         "batch_review_accept_file": "_handle_batch_review_accept_file",
         "batch_review_revert_file": "_handle_batch_review_revert_file",
-        "resume_plan": "_handle_resume_plan",
         "clear_todos": "_handle_clear_todos",
         "create_session": "_handle_create_session",
         "switch_session": "_handle_switch_session",
@@ -2832,14 +2817,6 @@ class _Session:
                     await self._report_unreverted([os.path.relpath(key)])
         self.worker._push_batch_status()
 
-    async def _handle_resume_plan(self, msg: dict) -> None:
-        choice = msg.get("choice")  # "yes" or "no"
-        if choice == "yes":
-            self.worker._push_todos()
-        else:
-            self.worker._clear_todos()
-            await self.ws.send(json.dumps({"type": "todo", "items": []}))
-
     async def _handle_clear_todos(self, msg: dict) -> None:
         self.worker._clear_todos()
         await self.ws.send(json.dumps({"type": "todo", "items": []}))
@@ -3366,11 +3343,28 @@ class _Session:
     async def _handle_list_panel(self, msg: dict) -> None:
         """Serve the scientific-computing panel: the servers' sections, plus ours.
 
-        Two sections are the client's own because their state lives here — the rung the
-        user set with the sub-agents of this session, and the runs the watcher is
-        holding. The rest is whatever the connected servers declared they could fill.
+        One section is the client's own because its state lives here — the runs the
+        watcher is holding. The rest is whatever the connected servers declared they
+        could fill.
+
+        Two flags, and both are the difference between the reader asking and a timer
+        asking. ``build`` starts this conversation's agent if it has none: the sections
+        are filled by MCP servers, a conversation holds none until its first query, and
+        a drawer opened before that query showed nothing — which is why the clusters
+        only ever appeared once something had been asked of the model. ``refresh`` goes
+        on to the servers as "read it again", past the caches they answer a timer from.
+
+        The build is started, never waited on. It is the LLM backend wait plus ~19
+        server spawns, and this handler runs on the socket's own read loop — awaiting it
+        here would stop the user from typing for as long as it takes, for a drawer. So
+        the report below goes out now, saying no agent answered for it; the worker
+        announces itself with a ``ready`` once it is up, and that is the drawer's cue to
+        ask again.
         """
-        sections = await asyncio.wrap_future(self.worker.panel_sections())
+        if msg.get("build") and self.pool.get(self._active_session_id) is None:
+            self._schedule(self._ensure_worker())
+        sections = await asyncio.wrap_future(
+            self.worker.panel_sections(force=bool(msg.get("refresh"))))
         # The one place both halves exist: what a cluster is made of came from a
         # server, what is running on it is this client's own watcher state. A run that
         # no group claimed still travels, under `runs`, for the flat list — a run the
@@ -3379,6 +3373,9 @@ class _Session:
         cards = _list_subagents(self._active_session_id or "")
         await self.ws.send(json.dumps({
             "type": "panel_report",
+            # Whether there was anything to ask. An empty section list from a
+            # conversation with no agent is not "no clusters here".
+            "agent_ready": self.worker.agent_ready(),
             "subagent_level": self.worker.get_subagent_level(),
             "subagents": cards,
             "running": sum(1 for c in cards if c.get("state") == "running"),

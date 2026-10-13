@@ -58,6 +58,11 @@ class TestDeclaredSections:
         caps = _caps(status={"section": "Optimisation", "args": {"op": "status"}})
         assert panel_sections(caps)[0][1]["args"] == {"op": "status"}
 
+    def test_a_caching_tool_names_the_argument_that_bypasses_its_cache(self):
+        """So the client can tell a reader's press apart from a timer's tick."""
+        caps = _caps(cluster={"section": "Cluster", "refresh_arg": "refresh"})
+        assert panel_sections(caps)[0][1]["refresh_arg"] == "refresh"
+
 
 class TestTheServersThatFillIt:
     """The two first-party sections, read off the real declarations."""
@@ -114,6 +119,77 @@ def test_the_worker_asks_by_capability_and_survives_a_silent_server(monkeypatch)
 
     assert [s["section"] for s in sections] == ["Optimisation"]
     assert sections[0]["lines"] == [{"label": "state", "value": "running"}]
+
+
+def test_only_the_readers_own_refresh_reaches_past_a_servers_cache(monkeypatch):
+    """A section that costs an ``sinfo`` is served from a cache, which is what makes a
+    panel on a timer affordable — and what made pressing ⟳ hand back the page just
+    read. The tool that caches names the argument meaning "read it again"; the client
+    sets it for that press and for nothing else.
+    """
+    import asyncio
+    import json
+    from mimir.client.ui.ws.ws_worker import _AgentWorker
+
+    seen: list[dict] = []
+
+    class _Session:
+        async def call_tool(self, tool, args):
+            seen.append({"tool": tool, **args})
+            return "x"
+
+    agent = types.SimpleNamespace(
+        tool_caps=_caps(cluster={"section": "Cluster", "order": 10,
+                                 "refresh_arg": "refresh"},
+                        machine={"section": "Machine", "order": 20}),
+        tool_owner={"cluster": "hpc", "machine": "platform"},
+        sessions={"hpc": _Session(), "platform": _Session()},
+        _normalize_tool_content=lambda raw: json.dumps(
+            {"lines": [{"label": "l", "value": "v"}]}),
+    )
+    loop = asyncio.new_event_loop()
+    worker = object.__new__(_AgentWorker)
+    worker._agent = agent
+    worker._loop = loop
+
+    for force in (False, True):
+        future = worker.panel_sections(force=force)
+        loop.run_until_complete(asyncio.sleep(0))
+        future.result(timeout=5)
+    loop.close()
+
+    assert seen == [
+        {"tool": "cluster"},
+        {"tool": "machine"},
+        {"tool": "cluster", "refresh": True},
+        # Never invented for a tool that did not declare it: an unexpected argument
+        # costs that server its whole section.
+        {"tool": "machine"},
+    ]
+
+
+def test_a_refresh_drops_the_digest_that_outlives_every_other_cache():
+    """The one cache a timer can never clear.
+
+    A scheduler's digest is memoised for the life of the server process, so a cluster
+    that was unreachable at startup — or a partition added since — stays invisible
+    until something drops it. That is what the reader's ⟳ is for.
+    """
+    hpc = _load("server_hpc_refresh", SERVERS_DIR / "hpc" / "server_hpc.py")
+    hpc._PANEL_CACHE["hosts"] = {"at": 9e9, "value": [{"id": "host:stale"}]}
+    forgotten: list = []
+
+    with mock.patch.object(hpc, "_forget_cluster_digest",
+                           side_effect=lambda *a: forgotten.append(a)), \
+         mock.patch.object(hpc, "_host_tree", return_value=[{"id": "host:fresh"}]), \
+         mock.patch.object(hpc, "_queue_line", return_value=None), \
+         mock.patch.object(hpc, "_partition_lines", return_value=[]):
+        held = hpc.hpc_panel_report()
+        assert held["groups"] == [{"id": "host:stale"}]      # the timer's answer
+        asked = hpc.hpc_panel_report(refresh=True)
+
+    assert asked["groups"] == [{"id": "host:fresh"}]
+    assert forgotten == [()]                                  # every host, not one
 
 
 def test_a_server_with_nothing_to_say_gets_no_heading():

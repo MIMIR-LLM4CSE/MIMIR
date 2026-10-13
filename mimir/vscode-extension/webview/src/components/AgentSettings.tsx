@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
-import type { TemperatureState, ThinkingProfile } from "../types";
+import type { SubAgentLevel, TemperatureState, ThinkingProfile } from "../types";
+import { SUBAGENT_LEVEL_OPTIONS } from "./subAgentLevels";
 
 // Mode lives in its own toolbar control (ModeSwitcher), not in this popover.
 interface Props {
@@ -8,6 +9,8 @@ interface Props {
   streaming: boolean;
   contextMode: "compact" | "full";
   enforcement: "strict" | "light" | "off";
+  subAgentLevel: SubAgentLevel;
+  onSubAgentLevelChange: (level: SubAgentLevel) => void;
   temperature: TemperatureState;
   onTemperatureChange: (value: number | null) => void;
   onThinkingLevelChange: (level: number) => void;
@@ -138,6 +141,8 @@ export const AgentSettings: React.FC<Props> = ({
   streaming,
   contextMode,
   enforcement,
+  subAgentLevel,
+  onSubAgentLevelChange,
   temperature,
   onTemperatureChange,
   onThinkingLevelChange,
@@ -225,6 +230,29 @@ export const AgentSettings: React.FC<Props> = ({
         ))}
       </div>
       <div className="settings-context-hint">{ENFORCEMENT_HINTS[enforcement]}</div>
+
+      <div className="settings-divider" />
+
+      {/* How far a sub-agent may go. An agent setting, like the two above: it is set
+          once for the session and read by every delegation, which is why it is here
+          rather than in the drawer that lists the sub-agents at work. */}
+      <div className="settings-section-label">Sub-agents</div>
+      <div className="settings-row">
+        {SUBAGENT_LEVEL_OPTIONS.map((opt) => (
+          <button
+            key={opt.value}
+            className={`settings-option-btn ${subAgentLevel === opt.value ? "active" : ""}`}
+            title={opt.desc}
+            aria-pressed={subAgentLevel === opt.value}
+            onClick={() => onSubAgentLevelChange(opt.value)}
+          >
+            {opt.icon} {opt.label}
+          </button>
+        ))}
+      </div>
+      <div className="settings-context-hint">
+        {SUBAGENT_LEVEL_OPTIONS.find((o) => o.value === subAgentLevel)?.desc}
+      </div>
 
       <div className="settings-divider" />
 

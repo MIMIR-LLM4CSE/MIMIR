@@ -174,7 +174,6 @@ webview/src/
     ├── ModeSwitcher.tsx       ← mode button and picker; the active mode colours the chat
     ├── UserQuestion.tsx       ← a structured question the agent asked (elicitation)
     ├── PlanBar.tsx            ← plan-mode progress bar above the input
-    ├── ResumePlanPrompt.tsx   ← offers to resume an unfinished checklist on reopen
     ├── TodoSidebar.tsx        ← todo / plan items panel
     ├── SessionsPanel.tsx      ← session list (switch / rename / delete); each row shows a
     │                            model-generated one-sentence description, and a hand-picked
@@ -182,14 +181,18 @@ webview/src/
     ├── TogglesPanel.tsx       ← server / skill / nudge toggles
     ├── SubAgentsPanel.tsx     ← the sub-agents this session started, one open at a time;
     │                            opening a card is also what fetches its detail
+    ├── subAgentLevels.ts      ← the rung a sub-agent may be given (unit-tested); read by
+    │                            the settings popover, since it is an agent setting
     ├── subAgentPanelUtils.ts  ← what a sub-agent card says, by its state (unit-tested)
-    ├── SciencePanel.tsx       ← the scientific-computing drawer: the sub-agent rung and
-    │                            its cards, each server's own section, and the runs still
-    │                            going outside the turn
+    ├── SciencePanel.tsx       ← the scientific-computing drawer: each server's own
+    │                            section, and the runs still going outside the turn
     ├── PanelGroups.tsx        ← a section's nested half, rendered without being read:
     │                            scheduler → kind of machine → what a probe found, with
     │                            the runs in flight as badges on the machine each is on
     ├── panelGroupUtils.ts     ← opening a row, and what a badge says (unit-tested)
+    ├── PanelResizer.tsx       ← the grab edge of a drawer: its width is the reader's, and
+    │                            remembered per drawer
+    ├── panelWidthUtils.ts     ← clamping and storing that width (unit-tested)
     ├── AgentSettings.tsx      ← the settings popover
     ├── ConnectForm.tsx        ← connection form (backend · address · model)
     ├── ContextBar.tsx         ← context-window usage
@@ -288,6 +291,24 @@ a path.
 | `activeSessionId` | `string \| null` | Currently active session |
 | `endpointModels` | `string[]` | Models the endpoint reports it serves; fills the connect dropdown. Local `App.tsx` state, not a shared type |
 | `thinkingProfile` | `ThinkingProfile \| undefined` | How the served model switches reasoning, from `ready`; decides which rungs the depth control offers |
+| `panelPending` | `boolean` | A `list_panel` the reader asked for is in flight; turns the `⟳` glyph while it is |
+| `panelAgentReady` | `boolean` | Whether the last `panel_report` came from a conversation that has an agent. A report from one that does not carries no sections, which is not the same answer as "this workspace reaches no clusters" — so the sections on screen are kept rather than blanked |
+
+---
+
+## The side drawers, and their width
+
+Three drawers share `.sessions-panel`: the session list, the sub-agents, and the
+scientific-computing panel. Each sets its own width through `usePanelWidth(key)` and
+renders a `PanelResizer` at its right edge — drag, or arrow keys once focused
+(`shift` for a bigger step). The width is clamped against the live window
+(`clampPanelWidth`: a 180px floor, a 0.8-of-the-window ceiling, re-applied on resize)
+and stored per drawer in `localStorage`, once per drag rather than once per move.
+
+The widths are the reader's because the content is longer than any fixed one: a node
+kind's feature list, a CPU model, a sub-agent's task. So the text in them wraps
+(`overflow-wrap: anywhere`) instead of being cut to an ellipsis — widening a drawer has
+to show more, and an ellipsis is a fact no amount of widening gets back.
 
 ---
 
@@ -390,19 +411,32 @@ reloaded from disk splits again on the stored answer text. The CLI applies the s
 
 ## The scientific-computing panel
 
-A drawer beside the session list, opened with the `⚗` button. Two of its sections are the
-client's own — how far sub-agents may go, and the runs still going outside the current
-turn — and the rest are filled by whichever servers declared `PANEL_REPORT`, asked by
-capability rather than by name. The panel renders what a server chose to say and
-interprets none of it, which is what lets a plugin server add a section with no change
-here.
+A drawer beside the session list, opened with the `⚗` button. One of its sections is the
+client's own — the runs still going outside the current turn — and the rest are filled by
+whichever servers declared `PANEL_REPORT`, asked by capability rather than by name. The
+panel renders what a server chose to say and interprets none of it, which is what lets a
+plugin server add a section with no change here. The sub-agent rung is not here: how far
+delegation may go is an agent setting, and it sits in the settings popover beside
+thinking depth and enforcement.
+
+**Three asks, and they are not the same request.** Opening the drawer and pressing `⟳`
+send `list_panel` with `build` and `refresh`; the 20s timer while it is open sends it
+bare. `refresh` travels to each section's tool as the argument that tool declared in its
+`panel` descriptor (`refresh_arg`), which is what makes the button read past the server's
+own cache — the HPC section's per-host digest is otherwise memoised for the life of the
+server, so a cluster unreachable at startup would stay invisible. `build` starts the
+conversation's agent when it has none: the sections come from MCP servers, a conversation
+holds none until its first query, and without this the drawer was empty until something
+had been asked of the model. The build is never awaited — the report goes out saying
+`agent_ready: false`, the drawer says so, and the worker's own `ready` is the cue to ask
+again.
 
 A section may answer with a tree as well as with lines. `groups` is recursive
 (`{id, label, value?, lines?, nodes?, detail?, groups?, action?, badges?}`) and
 `PanelGroupList` renders any depth of it, so the shape is the server's decision: the HPC
 server fills it with the schedulers this workspace reaches, the kinds of node on each,
-and what a probe read on one of them. Everything starts collapsed — the drawer is 220px
-wide, and a workspace reaching three clusters would otherwise open onto a page of
+and what a probe read on one of them. Everything starts collapsed — a workspace reaching
+three clusters would otherwise open onto a page of
 machines. Which rows are open lives in `SciencePanel`, keyed on the servers' own ids so
 the answer survives a refresh; native `<details>` would lose it, since the drawer
 re-renders on every `panel_report`.

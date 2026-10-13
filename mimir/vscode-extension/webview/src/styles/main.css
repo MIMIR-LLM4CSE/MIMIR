@@ -138,14 +138,51 @@ body {
 .sessions-panel {
   display: flex;
   flex-direction: column;
+  /* The starting width only: the component sets its own, remembered per drawer, and
+     the resizer at its right edge is how the reader changes it. The ceiling is in
+     panelWidthUtils (a share of the window) rather than here, because a drawer has to
+     be clamped against the window it is actually in. */
   width: 220px;
   min-width: 180px;
-  max-width: 280px;
   height: 100vh;
   border-right: 1px solid var(--border);
   background: var(--vscode-sideBar-background, var(--bg));
   flex-shrink: 0;
   overflow: hidden;
+  position: relative;
+}
+
+/* The grab edge of a drawer. Six pixels of hit area over the one-pixel border, lit on
+   hover so it can be found, and never in the flow — a drawer's content is laid out
+   against its full width. */
+.panel-resizer {
+  position: absolute;
+  top: 0;
+  right: -3px;
+  width: 6px;
+  height: 100%;
+  cursor: col-resize;
+  background: none;
+  z-index: 5;
+  touch-action: none;
+}
+
+.panel-resizer:hover,
+.panel-resizer:focus-visible {
+  background: var(--vscode-focusBorder, var(--accent, #4aa3ff));
+  outline: none;
+}
+
+/* A press whose answer takes a second: the glyph turns until it lands, because a
+   button that changes nothing on screen reads as a button that does nothing. */
+.sessions-toggle-btn.is-busy {
+  animation: panel-refresh-spin 0.9s linear infinite;
+  pointer-events: none;
+}
+
+@keyframes panel-refresh-spin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
 }
 
 .sessions-panel-header {
@@ -2919,7 +2956,10 @@ button.ctx-mention:focus-visible {
   font-style: italic;
 }
 
-/* ── Resume plan modal ──────────────────────────────────────────────────────── */
+/* ── The card shell ─────────────────────────────────────────────────────────── */
+/* Named for the plan-resume card it was written for; that card is gone — a checklist
+   with work left on it is simply resumed — and the clarification / plan-approval
+   question is what wears these now. */
 .resume-overlay {
   position: absolute;
   inset: 0;
@@ -2929,23 +2969,6 @@ button.ctx-mention:focus-visible {
   justify-content: center;
   z-index: 100;
   backdrop-filter: blur(2px);
-}
-
-/* Floating, non-blocking variant (used by the plan-approval / clarification
-   question). It floats above the chat without dimming or blurring it, and lets
-   pointer/scroll events pass THROUGH the backdrop to the chat behind — so the
-   user can keep browsing the conversation while the card is open. Only the card
-   itself re-captures pointer events. Anchored near the top rather than dead
-   centre so it covers as little of the transcript as possible. */
-.resume-overlay--float {
-  background: transparent;
-  backdrop-filter: none;
-  pointer-events: none;
-  align-items: flex-start;
-  padding-top: 10%;
-}
-.resume-overlay--float .resume-modal {
-  pointer-events: auto;
 }
 
 /* In-flow variant — sits directly above the input box rather than floating
@@ -2983,42 +3006,6 @@ button.ctx-mention:focus-visible {
   color: var(--fg);
 }
 
-.resume-subtitle {
-  font-size: 11px;
-  color: var(--fg-dim);
-  margin-top: -6px;
-}
-
-.resume-list {
-  list-style: none;
-  padding: 0;
-  margin: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-  max-height: 180px;
-  overflow-y: auto;
-}
-
-.resume-item {
-  display: flex;
-  align-items: baseline;
-  gap: 6px;
-  font-size: 11px;
-  color: var(--fg);
-}
-
-.resume-item--done {
-  color: var(--fg-dim);
-  text-decoration: line-through;
-}
-
-.resume-item-check {
-  font-size: 10px;
-  color: var(--fg-dim);
-  min-width: 12px;
-}
-
 .resume-actions {
   display: flex;
   gap: 8px;
@@ -3040,13 +3027,6 @@ button.ctx-mention:focus-visible {
   color: var(--vscode-button-foreground);
 }
 .resume-btn--yes:hover { background: var(--vscode-button-hoverBackground); }
-
-.resume-btn--no {
-  background: var(--bg-hover);
-  color: var(--fg-dim);
-  border: 1px solid var(--border);
-}
-.resume-btn--no:hover { color: var(--fg); border-color: var(--fg-dim); }
 
 /* ── User clarification question ─────────────────────────────────────────── */
 /* The question card is tinted by the mode that raised it; the plan-approval card
@@ -4004,9 +3984,8 @@ body.vscode-light .hljs-deletion, body.vscode-high-contrast-light .hljs-deletion
 
 .subagent-task {
   font-size: 12px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .subagent-grant,
@@ -4036,9 +4015,9 @@ body.vscode-light .hljs-deletion, body.vscode-high-contrast-light .hljs-deletion
 }
 
 /* ── Scientific-computing panel ────────────────────────────────────────────
-   The drawer that gathers what is specific to this work: how far sub-agents may
-   go and what they are doing, the optimisation in progress, the machine, and the
-   runs still going outside the current turn. */
+   The drawer that gathers what is specific to this work: the optimisation in
+   progress, the clusters this workspace reaches, the machine, and the runs still
+   going outside the current turn. */
 .science-section {
   padding: 8px 10px;
   border-bottom: 1px solid var(--border);
@@ -4053,30 +4032,6 @@ body.vscode-light .hljs-deletion, body.vscode-high-contrast-light .hljs-deletion
   margin-bottom: 6px;
 }
 
-.science-levels { display: flex; gap: 4px; }
-
-.science-level {
-  flex: 1;
-  font-size: 11px;
-  padding: 3px 6px;
-  border: 1px solid var(--border);
-  border-radius: 3px;
-  background: none;
-  color: var(--fg-dim);
-  cursor: pointer;
-}
-
-.science-level.active {
-  color: var(--fg);
-  border-color: var(--vscode-focusBorder, var(--fg-dim));
-}
-
-.science-level-desc {
-  font-size: 10px;
-  color: var(--fg-dim);
-  margin: 4px 0 6px;
-}
-
 .science-line {
   display: flex;
   justify-content: space-between;
@@ -4087,11 +4042,15 @@ body.vscode-light .hljs-deletion, body.vscode-high-contrast-light .hljs-deletion
 
 .science-line-label { color: var(--fg-dim); flex-shrink: 0; }
 
+/* Wrapped, not cut. A node's feature list, a scheduler's CPU model and a partition
+   name are all longer than any width this drawer will be given, and an ellipsis is a
+   fact the reader cannot get back by widening anything. `anywhere` because much of
+   this is unspaced — a host name, a -march string — and would not break at all. */
 .science-line-value {
   text-align: right;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  min-width: 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .science-line-value.is-running { color: var(--vscode-charts-blue, #4aa3ff); }
@@ -4136,18 +4095,17 @@ body.vscode-light .hljs-deletion, body.vscode-high-contrast-light .hljs-deletion
 
 .science-group-label {
   font-weight: 600;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .science-group-value {
   margin-left: auto;
   color: var(--fg-dim);
   font-size: 10px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  min-width: 0;
+  text-align: right;
+  overflow-wrap: anywhere;
 }
 
 /* The one yellow the panel has: something a server wants read before the next run. */
@@ -4160,9 +4118,8 @@ body.vscode-light .hljs-deletion, body.vscode-high-contrast-light .hljs-deletion
   font-size: 10px;
   color: var(--fg-dim);
   text-align: right;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .science-group-action {
@@ -4230,5 +4187,5 @@ body.vscode-light .hljs-deletion, body.vscode-high-contrast-light .hljs-deletion
 
 .subagent-step-mark { flex-shrink: 0; color: var(--fg-dim); }
 .subagent-step.step-error .subagent-step-mark { color: var(--vscode-charts-red, #e06c6c); }
-.subagent-step-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.subagent-step-label { min-width: 0; overflow-wrap: anywhere; }
 .subagent-step-detail { color: var(--fg-dim); margin-left: auto; flex-shrink: 0; }

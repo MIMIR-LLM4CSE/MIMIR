@@ -525,6 +525,53 @@ class TodoRestoreTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(os.path.exists(deps_file))
 
 
+class AlwaysResumeTests(unittest.IsolatedAsyncioTestCase):
+    """A checklist with work left on it is resumed, never asked about.
+
+    There used to be a card: "previous session plan — resume, or start fresh". It was
+    raised from the session load, and a session is loaded on every connect — so a
+    connection dropping mid-turn put the question in the middle of the very work it was
+    asking whether to continue. And neither answer was right there: the plan of record
+    is the file on disk, which the agent reads either way, so "start fresh" threw away a
+    live plan while the turn that wrote it was still running.
+    """
+
+    def _loaded(self, todos):
+        async def _run():
+            sess = _session()
+            sess.ws = _FakeWS()
+            sess._emit_context_usage = mock.AsyncMock()
+            sess.store.saved["s1"] = FullSession(
+                id="s1", title="t", created_at="x",
+                updated_at=datetime.now(timezone.utc).isoformat(), todos=todos,
+            )
+            d = tempfile.mkdtemp()
+            with mock.patch("mimir.client.ui.ws.ws_session._write_active_session"), \
+                 mock.patch("mimir.client.ui.ws.ws_session._todo_file_for_session",
+                            lambda _sid: os.path.join(d, "todo_list.md")):
+                await sess._load_session("s1")
+            return [json.loads(m) for m in sess.ws.sent]
+        return _run()
+
+    PENDING = [{"text": "done step", "done": True},
+               {"text": "the one still open", "done": False}]
+
+    async def test_a_plan_with_work_left_comes_back_on_screen(self) -> None:
+        sent = await self._loaded(self.PENDING)
+        loaded = [m for m in sent if m["type"] == "session_loaded"]
+        self.assertEqual(loaded[0]["todos"], self.PENDING)
+
+    async def test_nothing_is_asked_about_it(self) -> None:
+        sent = await self._loaded(self.PENDING)
+        self.assertNotIn("todo_prompt", [m["type"] for m in sent])
+
+    async def test_a_finished_plan_still_travels_whole(self) -> None:
+        finished = [{"text": "done step", "done": True}]
+        sent = await self._loaded(finished)
+        loaded = [m for m in sent if m["type"] == "session_loaded"]
+        self.assertEqual(loaded[0]["todos"], finished)
+
+
 class ResumeTests(unittest.IsolatedAsyncioTestCase):
     async def test_loading_restores_the_untrimmed_record_not_the_window(self):
         sess = _session()

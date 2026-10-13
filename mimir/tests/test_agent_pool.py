@@ -443,14 +443,31 @@ class OpeningAConversationCostsNothingTests(_PoolCase):
         self.assertEqual(len(pool), 0)
         self.assertEqual(_StubWorker.built, 0)
 
-    async def test_only_the_query_path_can_build_one(self) -> None:
-        """Pinned on the code: one call site in the session layer, and it is the query."""
+    async def test_only_an_explicit_ask_can_build_one(self) -> None:
+        """Pinned on the code: two call sites in the session layer, and both are asks.
+
+        The query is the obvious one. The other is the scientific-computing drawer being
+        opened: its sections are filled by MCP servers — the clusters this workspace
+        reaches, the machine, the optimisation in progress — and a conversation that has
+        no agent holds none of them, so that drawer showed nothing until something had
+        been asked of the model. It is one build, for the conversation already on screen,
+        that its first query would have paid for anyway.
+
+        What this still forbids is the thing the cap is about: *reading* a conversation —
+        switching to it, listing it, replaying it — must never build, or browsing a
+        history of ten would hit the cap on the fourth click.
+        """
         import inspect
         from mimir.client.ui.ws import ws_session
         source = inspect.getsource(ws_session)
-        self.assertEqual(source.count("await self._ensure_worker()"), 1)
+        self.assertEqual(source.count("self._ensure_worker()"), 2)
+        # The query waits for its agent — it has nothing to say without one.
         self.assertIn("worker = await self._ensure_worker()",
                       inspect.getsource(ws_session._Session._handle_query))
+        # The drawer does not: it answers with what there is, and the build runs off the
+        # socket's read loop so the user can keep typing through it.
+        self.assertIn("self._schedule(self._ensure_worker())",
+                      inspect.getsource(ws_session._Session._handle_list_panel))
 
     async def test_returning_to_a_conversation_reuses_its_agent(self) -> None:
         """Its context is live, so coming back is instant and costs no rebuild."""

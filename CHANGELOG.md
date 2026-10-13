@@ -13,6 +13,43 @@ the server of the same checkout, so the two always move together.
 How to release is in [CONTRIBUTING.md](CONTRIBUTING.md#releasing). The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Changed
+- **The sub-agent rung moved to the settings popover.** How far a sub-agent may go is an
+  agent setting — set once, read by every delegation — not a fact about the machine, so it
+  sits beside thinking depth and enforcement rather than in the scientific-computing
+  drawer. That drawer is now what the servers fill, plus the runs going outside the turn;
+  the sub-agents at work still have their own drawer under the session that spawned them.
+- **The side drawers are as wide as you make them.** Drag the edge of the session list,
+  the sub-agents or the scientific-computing panel — or focus it and use the arrow keys —
+  and the width is remembered per drawer. Their text now wraps instead of being cut to an
+  ellipsis: at a fixed 220px a node kind's feature list, a CPU model and a sub-agent's
+  task were all cropped, and an ellipsis is a fact no amount of widening gave back.
+- **The panel's `⟳` reads past the servers' caches, and the drawer keeps itself current.**
+  Every section is served from a cache so that refreshing on a timer stays cheap — one of
+  them, the per-host cluster digest, for the life of the server — so pressing refresh
+  handed back the page just read, and a cluster that was unreachable at startup stayed
+  invisible. A tool that caches now names the argument that bypasses it, and only the
+  reader's own press sets it. The drawer also re-asks every 20s while it is open: a queue
+  moves and a job ends outside any turn, which is the one time nothing else was asking.
+
+### Removed
+- **The "previous session plan — resume or start fresh" card.** It was raised from the
+  session load, and a session is loaded on every connect, so a dropped connection mid-turn
+  put the question in the middle of the very work it was asking about. Neither answer was
+  right there either: the plan of record is the checklist on disk, which the agent reads
+  either way, so "start fresh" discarded a live plan while the turn that wrote it was
+  still running. A checklist with work left on it is simply restored and shown.
+
+### Fixed
+- **The scientific-computing panel fills itself on opening, instead of after the first
+  question.** Its sections come from MCP servers, a conversation holds no agent until its
+  first query, and the drawer asked a conversation that had none — so the clusters only
+  ever appeared once something had been asked of the model. Opening it now starts that
+  conversation's agent, without waiting on it: the drawer says the servers are coming up,
+  and fills itself the moment they answer. Typing is never blocked by it.
+
 ## [1.7.0] — 2026-10-13
 
 ### Added
