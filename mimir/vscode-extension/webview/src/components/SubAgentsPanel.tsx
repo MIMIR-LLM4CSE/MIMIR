@@ -36,7 +36,7 @@ export const SubAgentsPanel: React.FC<Props> = ({
   onClose,
 }) => {
   const [expandedId, setExpandedId] = useState<string | null>(null);
-  const { width, handleProps } = usePanelWidth("subagents");
+  const { width, panelRef, handleProps } = usePanelWidth("subagents");
 
   // The cards are files another process writes; ask again on open, and after a run
   // ends the list is refreshed by the caller.
@@ -66,7 +66,7 @@ export const SubAgentsPanel: React.FC<Props> = ({
   };
 
   return (
-    <div className="sessions-panel subagents-panel" style={{ width }}>
+    <div className="sessions-panel subagents-panel" ref={panelRef} style={{ width }}>
       <div className="sessions-panel-header">
         <span className="sessions-panel-title">Sub-agents</span>
         <button

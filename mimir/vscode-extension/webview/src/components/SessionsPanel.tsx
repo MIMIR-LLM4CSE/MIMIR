@@ -76,7 +76,7 @@ export const SessionsPanel: React.FC<Props> = ({
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
   const renameInputRef = useRef<HTMLInputElement>(null);
-  const { width, handleProps } = usePanelWidth("sessions");
+  const { width, panelRef, handleProps } = usePanelWidth("sessions");
 
   const startRename = useCallback((session: SessionMeta, e: React.MouseEvent) => {
     e.stopPropagation();
@@ -107,7 +107,7 @@ export const SessionsPanel: React.FC<Props> = ({
   );
 
   return (
-    <div className="sessions-panel" style={{ width }}>
+    <div className="sessions-panel" ref={panelRef} style={{ width }}>
       {/* No new-session button here: the status bar carries the one ＋. */}
       <div className="sessions-panel-header">
         <span className="sessions-panel-title">Chat history</span>

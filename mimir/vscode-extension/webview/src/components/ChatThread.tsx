@@ -70,6 +70,10 @@ export const ChatThread: React.FC<Props> = ({
   const visible = messages;
 
   const lastIdx = visible.length - 1;
+  let lastUserIdx = -1;
+  for (let i = lastIdx; i >= 0; i--) {
+    if (visible[i].role === "user") { lastUserIdx = i; break; }
+  }
 
   const liveBlocks = liveThinkingBlocks.filter((b) => b.text.trim().length > 0);
   const liveDraftSeq = draft.trim().length > 0 ? draftSeq ?? 0 : null;
@@ -120,9 +124,7 @@ export const ChatThread: React.FC<Props> = ({
     // Skip approval shells that carry no content.
     if (msg.kind === "approval") return null;
 
-    const isLastUser =
-      msg.role === "user" &&
-      !visible.slice(idx + 1).some((m) => m.role === "user");
+    const isLastUser = idx === lastUserIdx;
     const isLatestError = msg.kind === "error" && idx === lastIdx;
 
     return (

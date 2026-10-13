@@ -6,12 +6,16 @@ import { clampPanelWidth, readPanelWidth, storePanelWidth } from "./panelWidthUt
  *
  * Returns what to put on the panel's own style and the handle to render at its edge.
  * The width is held in state while dragging and written to storage on release only:
- * one write per drag rather than one per mouse move.
+ * one write per drag rather than one per mouse move. During the drag the width goes
+ * straight onto the element, once per frame, and React hears of it on release.
  */
 export function usePanelWidth(key: string, fallback = 220) {
   const [width, setWidth] = useState(() =>
     readPanelWidth(key, fallback, window.innerWidth));
   const drag = useRef<{ x: number; width: number } | null>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
+  const pending = useRef<number | null>(null);
+  const frame = useRef<number | null>(null);
 
   // The window can be made narrower than the drawer — by the user, or by VS Code
   // moving the view into a side bar. A drawer wider than its window would push the
@@ -24,6 +28,7 @@ export function usePanelWidth(key: string, fallback = 220) {
 
   const onPointerDown = useCallback((e: React.PointerEvent) => {
     drag.current = { x: e.clientX, width };
+    document.body.classList.add("is-resizing");
     // Capture, so the drag survives the pointer leaving the 6px handle — at speed it
     // always does, and a drag that stops when it does is a drag that cannot be used.
     (e.target as HTMLElement).setPointerCapture?.(e.pointerId);
@@ -33,17 +38,29 @@ export function usePanelWidth(key: string, fallback = 220) {
   const onPointerMove = useCallback((e: React.PointerEvent) => {
     const from = drag.current;
     if (!from) return;
-    setWidth(clampPanelWidth(from.width + (e.clientX - from.x), window.innerWidth));
+    pending.current = clampPanelWidth(from.width + (e.clientX - from.x), window.innerWidth);
+    if (frame.current !== null) return;
+    frame.current = requestAnimationFrame(() => {
+      frame.current = null;
+      if (panelRef.current && pending.current !== null) {
+        panelRef.current.style.width = `${pending.current}px`;
+      }
+    });
   }, []);
 
   const onPointerUp = useCallback((e: React.PointerEvent) => {
     if (!drag.current) return;
     drag.current = null;
+    document.body.classList.remove("is-resizing");
+    if (frame.current !== null) cancelAnimationFrame(frame.current);
+    frame.current = null;
     (e.target as HTMLElement).releasePointerCapture?.(e.pointerId);
-    setWidth((w) => {
-      storePanelWidth(key, w);
-      return w;
-    });
+    const final = pending.current;
+    pending.current = null;
+    if (final === null) return;
+    if (panelRef.current) panelRef.current.style.width = `${final}px`;
+    setWidth(final);
+    storePanelWidth(key, final);
   }, [key]);
 
   // The handle with the keyboard on it: the arrow keys are what a reader who cannot
@@ -62,6 +79,7 @@ export function usePanelWidth(key: string, fallback = 220) {
 
   return {
     width,
+    panelRef,
     handleProps: {
       onPointerDown,
       onPointerMove,

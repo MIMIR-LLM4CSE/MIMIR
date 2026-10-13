@@ -67,7 +67,7 @@ export const SciencePanel: React.FC<Props> = ({
     (key: string) => setOpenGroups((open) => toggle(open, key)),
     [],
   );
-  const { width, handleProps } = usePanelWidth("science");
+  const { width, panelRef, handleProps } = usePanelWidth("science");
 
   // Opening the drawer serves whatever the servers have cached, and starts this
   // conversation's agent if it has none. It is not a re-read: a drawer that probed
@@ -86,7 +86,7 @@ export const SciencePanel: React.FC<Props> = ({
   }, [onRefresh]);
 
   return (
-    <div className="sessions-panel science-panel" style={{ width }}>
+    <div className="sessions-panel science-panel" ref={panelRef} style={{ width }}>
       <div className="sessions-panel-header">
         <span className="sessions-panel-title">Scientific computing</span>
         <button
