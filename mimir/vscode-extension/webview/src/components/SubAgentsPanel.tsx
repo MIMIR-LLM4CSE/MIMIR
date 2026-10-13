@@ -98,15 +98,17 @@ export const SubAgentsPanel: React.FC<Props> = ({
                 aria-expanded={isOpen}
               >
                 <span className={`subagent-state state-${sub.state}`}>{stateLabel(sub)}</span>
-                <span className="subagent-task">{taskTitle(sub)}</span>
+                <span className="subagent-task" title={taskTitle(sub)}>{taskTitle(sub)}</span>
               </button>
-              <div className="subagent-grant">{grantSummary(sub)}</div>
+              <div className="subagent-grant" title={grantSummary(sub)}>{grantSummary(sub)}</div>
 
               {isOpen && (
                 <div className="subagent-detail">
-                  {sub.model && <div className="subagent-model">{sub.model}</div>}
+                  {sub.model && <div className="subagent-model" title={sub.model}>{sub.model}</div>}
                   {detail && workspaceLine(detail) && (
-                    <div className="subagent-model">{workspaceLine(detail)}</div>
+                    <div className="subagent-model" title={workspaceLine(detail)}>
+                      {workspaceLine(detail)}
+                    </div>
                   )}
                   {/* Indexed key, not row.id: a status row has no id, and several in
                       a row would otherwise share the empty one. */}
@@ -121,8 +123,12 @@ export const SubAgentsPanel: React.FC<Props> = ({
                               ? "·"
                               : "✗"}
                       </span>
-                      <span className="subagent-step-label">{row.label || row.name}</span>
-                      {row.detail && <span className="subagent-step-detail">{row.detail}</span>}
+                      <span className="subagent-step-label" title={row.label || row.name}>
+                        {row.label || row.name}
+                      </span>
+                      {row.detail && (
+                        <span className="subagent-step-detail" title={row.detail}>{row.detail}</span>
+                      )}
                     </div>
                   ))}
                   {todo.length > 0 && (

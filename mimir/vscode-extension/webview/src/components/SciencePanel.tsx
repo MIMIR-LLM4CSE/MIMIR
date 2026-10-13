@@ -126,8 +126,11 @@ export const SciencePanel: React.FC<Props> = ({
             <div className="science-section-title">{section.title}</div>
             {section.lines.map((line, i) => (
               <div className="science-line" key={i}>
-                <span className="science-line-label">{line.label}</span>
-                <span className={`science-line-value ${line.state ? `is-${line.state}` : ""}`}>
+                <span className="science-line-label" title={line.label}>{line.label}</span>
+                <span
+                  className={`science-line-value ${line.state ? `is-${line.state}` : ""}`}
+                  title={line.value}
+                >
                   {line.value}
                 </span>
               </div>

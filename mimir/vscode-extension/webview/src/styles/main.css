@@ -355,29 +355,53 @@ body {
 /* ── Status bar ─────────────────────────────────────────────────────────────── */
 
 .status-bar {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 4px 12px;
-  border-bottom: 1px solid var(--border);
+  padding: 5px 12px;
   font-size: 11px;
   color: var(--fg-dim);
   flex-shrink: 0;
 }
 
+/* Same one-pixel brand ribbon as the drawers' headers. */
+.status-bar::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 1px;
+  background: var(--mimir-gradient);
+  opacity: 0.7;
+}
+
 .connection-dot { font-size: 9px; }
-.model-name { font-weight: 500; }
+.connection-dot.is-connecting,
+.connection-dot.is-error { animation: science-pulse 2s ease-in-out infinite; }
+.model-name {
+  font-weight: 500;
+  color: var(--fg);
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .model-picker {
   font: inherit;
   font-weight: 500;
   color: var(--fg);
-  background: var(--bg);
+  background: var(--surface-1);
   border: 1px solid var(--border);
-  border-radius: 3px;
-  padding: 1px 4px;
-  max-width: 160px;
+  border-radius: var(--radius-md);
+  padding: 2px 6px;
+  max-width: 180px;
+  text-overflow: ellipsis;
   cursor: pointer;
+  transition: border-color var(--motion-fast);
 }
+.model-picker:hover { border-color: var(--focus-ring); }
 /* ── Other conversations waiting on the user ─────────────────────────────────── */
 
 /* Above the thread, not in it: the card belongs to another transcript. Deliberately
@@ -662,41 +686,91 @@ body {
   pointer-events: none;
   user-select: none;
 }
-.empty-text { font-size: 16px; font-weight: 500; color: var(--fg); }
-.empty-hint { font-size: 12px; }
+.empty-text {
+  font-size: 18px;
+  font-weight: 600;
+  letter-spacing: 0.18em;
+  color: var(--fg);
+}
+/* A short brand stroke under the name, the ribbon of the headers in miniature. */
+.empty-text::after {
+  content: "";
+  display: block;
+  width: 28px;
+  height: 2px;
+  margin: 6px auto 0;
+  border-radius: 1px;
+  background: var(--mimir-gradient);
+}
+.empty-hint { font-size: 12px; text-align: center; max-width: 300px; }
+
+/* While connecting or waiting on the backend: a thin indeterminate bar. */
+.loading-track {
+  position: relative;
+  width: 140px;
+  height: 2px;
+  margin-top: 4px;
+  border-radius: 1px;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--fg-dim) 18%, transparent);
+}
+.loading-track::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 40%;
+  border-radius: 1px;
+  background: var(--mimir-gradient);
+  animation: loading-slide 1.6s ease-in-out infinite;
+}
+@keyframes loading-slide {
+  from { left: -40%; }
+  to   { left: 100%; }
+}
+
 .connect-btn {
   margin-top: 4px;
-  padding: 6px 18px;
+  padding: 7px 18px;
   background: var(--vscode-button-background);
   color: var(--vscode-button-foreground);
   border: none;
-  border-radius: 4px;
+  border-radius: var(--radius-md);
   cursor: pointer;
   font-size: 13px;
+  font-weight: 500;
   width: 100%;
+  transition: background var(--motion-fast);
 }
 .connect-btn:hover { background: var(--vscode-button-hoverBackground); }
 
 /* Cancel-connection button — secondary styling to sit apart from Connect. */
 .cancel-connect-btn {
-  background: var(--vscode-button-secondaryBackground, transparent);
-  color: var(--vscode-button-secondaryForeground, var(--fg));
-  border: 1px solid var(--vscode-button-border, var(--fg-dim));
+  background: transparent;
+  color: var(--fg);
+  border: 1px solid var(--border);
   margin-top: 8px;
+  font-weight: 400;
 }
 .cancel-connect-btn:hover {
-  background: var(--vscode-button-secondaryHoverBackground, var(--vscode-toolbar-hoverBackground));
+  background: var(--bg-hover);
+  border-color: var(--focus-ring);
 }
+.empty-state > .cancel-connect-btn { width: auto; min-width: 160px; }
 
 /* ── Connect form (backend · address · model) ─────────────────────────────── */
 .connect-form {
   display: flex;
   flex-direction: column;
   align-items: stretch;
-  gap: 8px;
+  gap: 10px;
   width: 100%;
-  max-width: 260px;
-  padding: 0 4px;
+  max-width: 300px;
+  margin-top: 8px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface-1);
 }
 .connect-field {
   display: flex;
@@ -715,7 +789,7 @@ body {
   font-size: 10px;
   color: var(--fg-dim);
   line-height: 1.35;
-  overflow-wrap: anywhere;
+  overflow-wrap: break-word;
 }
 .connect-field-hint code {
   font-family: var(--mono);
@@ -742,10 +816,17 @@ body {
   padding: 5px 8px;
   background: var(--vscode-dropdown-background);
   color: var(--vscode-dropdown-foreground);
-  border: 1px solid var(--vscode-dropdown-border);
-  border-radius: 4px;
+  border: 1px solid var(--vscode-dropdown-border, var(--border));
+  border-radius: var(--radius-md);
   font-size: 12px;
   width: 100%;
+  text-overflow: ellipsis;
+  transition: border-color var(--motion-fast);
+}
+.connect-select:focus,
+.connect-input:focus {
+  outline: none;
+  border-color: var(--focus-ring);
 }
 .connect-select:disabled {
   opacity: 0.6;
@@ -762,9 +843,11 @@ body {
   background: var(--vscode-input-background);
   color: var(--vscode-input-foreground);
   border: 1px solid var(--vscode-input-border, var(--border));
-  border-radius: 4px;
+  border-radius: var(--radius-md);
   font-size: 12px;
   font-family: var(--mono);
+  text-overflow: ellipsis;
+  transition: border-color var(--motion-fast);
 }
 .connect-refresh {
   flex: 0 0 auto;
@@ -772,7 +855,7 @@ body {
   background: var(--bg-input);
   color: var(--fg-dim);
   border: 1px solid var(--border);
-  border-radius: 4px;
+  border-radius: var(--radius-md);
   font-size: 13px;
   cursor: pointer;
 }
@@ -2968,38 +3051,55 @@ button.ctx-mention:focus-visible {
 
 .disconnect-btn {
   background: transparent;
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  padding: 3px 8px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  padding: 2px 7px;
   cursor: pointer;
-  color: var(--vscode-testing-iconFailed);
-  font-size: 18px;
+  color: var(--fg-dim);
+  font-size: 16px;
   line-height: 1;
   margin-left: auto;
-  transition: background 0.1s, border-color 0.1s;
+  transition: background var(--motion-fast), border-color var(--motion-fast), color var(--motion-fast);
 }
-.disconnect-btn:hover { background: color-mix(in srgb, var(--vscode-testing-iconFailed) 15%, transparent); border-color: var(--vscode-testing-iconFailed); }
+.disconnect-btn:hover {
+  color: var(--vscode-testing-iconFailed);
+  background: color-mix(in srgb, var(--vscode-testing-iconFailed) 12%, transparent);
+  border-color: color-mix(in srgb, var(--vscode-testing-iconFailed) 50%, transparent);
+}
 
 /* ── Reconnect panel ────────────────────────────────────────────────────────── */
 .reconnect-panel {
+  position: relative;
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 8px;
-  padding: 16px 12px 12px;
-  border-top: 1px solid var(--border);
+  padding: 16px 12px 14px;
+}
+.reconnect-panel::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 1px;
+  background: var(--mimir-gradient);
+  opacity: 0.7;
 }
 
 .reconnect-hint {
-  font-size: 11px;
-  color: var(--fg-dim);
+  font-size: 12px;
+  color: var(--fg);
   text-align: center;
 }
 .reconnect-panel--connecting {
+  flex-direction: row;
+  justify-content: center;
+  padding: 10px 12px;
   font-size: 12px;
   color: var(--fg-dim);
-  font-style: italic;
 }
+.reconnect-panel--connecting .reconnect-btn { margin: 0 0 0 8px; }
 
 /* ── The card shell ─────────────────────────────────────────────────────────── */
 /* Named for the plan-resume card it was written for; that card is gone — a checklist
@@ -4062,10 +4162,9 @@ body.vscode-light .hljs-deletion, body.vscode-high-contrast-light .hljs-deletion
 .subagent-step.step-note { opacity: 0.7; font-style: italic; }
 
 .subagent-task {
+  flex: 1 1 auto;
   font-size: 12px;
   font-weight: 500;
-  min-width: 0;
-  overflow-wrap: anywhere;
 }
 
 .subagent-grant,
@@ -4073,7 +4172,6 @@ body.vscode-light .hljs-deletion, body.vscode-high-contrast-light .hljs-deletion
   font-size: 10px;
   color: var(--fg-dim);
   margin-top: 3px;
-  word-break: break-word;
 }
 
 .subagent-detail {
@@ -4151,17 +4249,11 @@ body.vscode-light .hljs-deletion, body.vscode-high-contrast-light .hljs-deletion
   padding: 3px 0;
 }
 
-.science-line-label { color: var(--fg-dim); flex-shrink: 0; }
+.science-line-label { color: var(--fg-dim); flex: 0 1 auto; max-width: 55%; }
 
-/* Wrapped, not cut. A node's feature list, a scheduler's CPU model and a partition
-   name are all longer than any width this drawer will be given, and an ellipsis is a
-   fact the reader cannot get back by widening anything. `anywhere` because much of
-   this is unspaced — a host name, a -march string — and would not break at all. */
 .science-line-value {
+  flex: 1 1 0;
   text-align: right;
-  min-width: 0;
-  white-space: normal;
-  overflow-wrap: anywhere;
   color: var(--fg);
   font-variant-numeric: tabular-nums;
 }
@@ -4269,18 +4361,16 @@ body.vscode-light .hljs-deletion, body.vscode-high-contrast-light .hljs-deletion
 }
 
 .science-group-label {
+  flex: 0 1 auto;
   font-weight: 600;
-  min-width: 0;
-  overflow-wrap: anywhere;
 }
 
 .science-group-value {
+  flex: 0 1 auto;
   margin-left: auto;
   color: var(--fg-dim);
   font-size: 12px;
-  min-width: 0;
   text-align: right;
-  overflow-wrap: anywhere;
 }
 
 /* The one yellow the panel has: something a server wants read before the next run. */
@@ -4298,8 +4388,6 @@ body.vscode-light .hljs-deletion, body.vscode-high-contrast-light .hljs-deletion
   font-size: 12px;
   color: var(--fg-dim);
   text-align: right;
-  min-width: 0;
-  overflow-wrap: anywhere;
 }
 
 .science-group-action {
@@ -4332,6 +4420,7 @@ body.vscode-light .hljs-deletion, body.vscode-high-contrast-light .hljs-deletion
 }
 
 .science-badge {
+  max-width: 100%;
   font-family: var(--mono);
   font-size: 11px;
   padding: 1px 6px;
@@ -4378,5 +4467,43 @@ body.vscode-light .hljs-deletion, body.vscode-high-contrast-light .hljs-deletion
 .subagent-step.step-ok .subagent-step-mark { color: var(--ok); }
 .subagent-step.step-running .subagent-step-mark { color: var(--vscode-charts-blue, #4aa3ff); }
 .subagent-step.step-error .subagent-step-mark { color: var(--vscode-charts-red, #e06c6c); }
-.subagent-step-label { min-width: 0; overflow-wrap: anywhere; }
-.subagent-step-detail { color: var(--fg-dim); margin-left: auto; flex-shrink: 0; }
+.subagent-step-label { flex: 1 1 auto; }
+.subagent-step-detail { color: var(--fg-dim); margin-left: auto; flex: 0 1 auto; max-width: 45%; }
+
+/* ── Text in the drawers ─────────────────────────────────────────────────────────────────────
+   Never a word cut in two. Narrow: one line and an ellipsis, the full text on hover.
+   Wide: values and titles wrap at word boundaries, clamped to two lines; labels stay
+   on one line so rows keep the same shape. */
+.sessions-panel { container-type: inline-size; }
+
+.science-line-label,
+.science-line-value,
+.science-group-label,
+.science-group-value,
+.science-group-nodes,
+.science-badge,
+.subagent-task,
+.subagent-grant,
+.subagent-model,
+.subagent-step-label,
+.subagent-step-detail {
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+@container (min-width: 360px) {
+  .science-line-value,
+  .science-group-label,
+  .science-group-value,
+  .subagent-task,
+  .subagent-grant,
+  .subagent-model,
+  .subagent-step-label {
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    white-space: normal;
+  }
+}

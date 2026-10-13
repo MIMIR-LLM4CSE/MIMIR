@@ -43,10 +43,11 @@ export const PanelGroupList: React.FC<Props> = ({
             <span className="science-group-chevron" aria-hidden="true">
               {isOpen ? "▾" : "▸"}
             </span>
-            <span className="science-group-label">{group.label}</span>
+            <span className="science-group-label" title={group.label}>{group.label}</span>
             {group.value && (
               <span
                 className={`science-group-value${group.state ? ` is-${group.state}` : ""}`}
+                title={group.value}
               >
                 {group.value}
               </span>
@@ -72,9 +73,10 @@ export const PanelGroupList: React.FC<Props> = ({
             <div className="science-group-body" id={bodyId} role="group">
               {(group.lines ?? []).map((line, i) => (
                 <div className="science-line" key={i}>
-                  <span className="science-line-label">{line.label}</span>
+                  <span className="science-line-label" title={line.label}>{line.label}</span>
                   <span
                     className={`science-line-value${line.state ? ` is-${line.state}` : ""}`}
+                    title={line.value}
                   >
                     {line.value}
                   </span>
@@ -129,8 +131,8 @@ const RunBadge: React.FC<{ run: WatchedRun; open: boolean; onToggle: () => void 
       <div className="science-badge-detail">
         {badgeDetailRows(run).map((row) => (
           <div className="science-line" key={row.label}>
-            <span className="science-line-label">{row.label}</span>
-            <span className="science-line-value">{row.value}</span>
+            <span className="science-line-label" title={row.label}>{row.label}</span>
+            <span className="science-line-value" title={row.value}>{row.value}</span>
           </div>
         ))}
       </div>

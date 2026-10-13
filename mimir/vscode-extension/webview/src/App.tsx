@@ -1515,7 +1515,7 @@ export const App: React.FC = () => {
             </>
           )}
           <span
-            className="connection-dot"
+            className={`connection-dot is-${connection}`}
             style={{ color: connectionColor }}
             title={connection}
             role="img"
@@ -1654,6 +1654,9 @@ export const App: React.FC = () => {
                       ? "Type a message to start"
                       : "Starting the agent — waiting for the model backend…"}
                 </div>
+                {(connection === "connecting" || connection === "error" || !agentReady) && (
+                  <div className="loading-track" aria-hidden="true" />
+                )}
                 {(connection === "connecting" || connection === "error") && (
                   <button className="connect-btn cancel-connect-btn" onClick={handleCancelConnect}>
                     Cancel connection
