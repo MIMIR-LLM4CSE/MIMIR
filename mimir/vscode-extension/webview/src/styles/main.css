@@ -4025,7 +4025,7 @@ body.vscode-light .hljs-deletion, body.vscode-high-contrast-light .hljs-deletion
    progress, the clusters this workspace reaches, the machine, and the runs still
    going outside the current turn. */
 .science-section {
-  padding: 8px 10px;
+  padding: 12px 12px;
   border-bottom: 1px solid var(--border);
 }
 
@@ -4035,15 +4035,16 @@ body.vscode-light .hljs-deletion, body.vscode-high-contrast-light .hljs-deletion
   text-transform: uppercase;
   letter-spacing: 0.06em;
   color: var(--fg-dim);
-  margin-bottom: 6px;
+  margin-bottom: 8px;
 }
 
 .science-line {
   display: flex;
   justify-content: space-between;
-  gap: 8px;
-  font-size: 11px;
-  padding: 1px 0;
+  gap: 10px;
+  font-size: 12.5px;
+  line-height: 1.45;
+  padding: 3px 0;
 }
 
 .science-line-label { color: var(--fg-dim); flex-shrink: 0; }
@@ -4064,7 +4065,7 @@ body.vscode-light .hljs-deletion, body.vscode-high-contrast-light .hljs-deletion
    never profiled, a measurement pinned to another machine. */
 .science-line-value.is-warn { color: var(--vscode-charts-yellow, #d7a441); }
 
-.science-detail { font-size: 10px; color: var(--fg-dim); margin-top: 4px; }
+.science-detail { font-size: 11.5px; line-height: 1.45; color: var(--fg-dim); margin-top: 6px; }
 
 /* ── The tree inside a panel section ──────────────────────────────────────────
    A scheduler, the kinds of machine on it, what a probe found on one — and the
@@ -4079,14 +4080,15 @@ body.vscode-light .hljs-deletion, body.vscode-high-contrast-light .hljs-deletion
 .science-group-row {
   display: flex;
   align-items: baseline;
-  gap: 4px;
+  gap: 6px;
   width: 100%;
-  padding: 2px 0;
+  padding: 5px 2px;
   border: none;
   background: none;
   color: var(--fg);
   font: inherit;
-  font-size: 11px;
+  font-size: 13px;
+  line-height: 1.4;
   text-align: left;
   cursor: pointer;
 }
@@ -4108,7 +4110,7 @@ body.vscode-light .hljs-deletion, body.vscode-high-contrast-light .hljs-deletion
 .science-group-value {
   margin-left: auto;
   color: var(--fg-dim);
-  font-size: 10px;
+  font-size: 12px;
   min-width: 0;
   text-align: right;
   overflow-wrap: anywhere;
@@ -4117,11 +4119,11 @@ body.vscode-light .hljs-deletion, body.vscode-high-contrast-light .hljs-deletion
 /* The one yellow the panel has: something a server wants read before the next run. */
 .science-group-value.is-warn { color: var(--vscode-charts-yellow, #d7a441); }
 
-.science-group-body { padding-left: 12px; }
+.science-group-body { padding: 2px 0 8px 16px; }
 
 .science-group-nodes {
   font-family: var(--mono);
-  font-size: 10px;
+  font-size: 12px;
   color: var(--fg-dim);
   text-align: right;
   min-width: 0;
@@ -4129,9 +4131,9 @@ body.vscode-light .hljs-deletion, body.vscode-high-contrast-light .hljs-deletion
 }
 
 .science-group-action {
-  margin-top: 4px;
-  font-size: 10px;
-  padding: 2px 6px;
+  margin-top: 6px;
+  font-size: 12px;
+  padding: 3px 8px;
   border: 1px solid var(--border);
   border-radius: 3px;
   background: none;
@@ -4149,14 +4151,14 @@ body.vscode-light .hljs-deletion, body.vscode-high-contrast-light .hljs-deletion
 .science-badges {
   display: flex;
   flex-wrap: wrap;
-  gap: 3px;
-  padding: 1px 0 2px 16px;
+  gap: 4px;
+  padding: 2px 0 4px 18px;
 }
 
 .science-badge {
   font-family: var(--mono);
-  font-size: 9px;
-  padding: 0 4px;
+  font-size: 11px;
+  padding: 1px 6px;
   border: 1px solid var(--border);
   border-radius: 999px;
   background: none;
