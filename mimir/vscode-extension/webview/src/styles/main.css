@@ -909,14 +909,15 @@ body {
 /* Only the user side is a (light) bubble: background, no border. */
 .chat-message.user .message-body {
   max-width: 85%;
-  border-radius: 8px;
+  border-radius: var(--radius-lg) var(--radius-lg) var(--radius-sm) var(--radius-lg);
   padding: var(--sp-4) var(--sp-5);
+  border: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
   /* Each turn is tagged with the mode it was asked in. */
   border-right: 2px solid var(--mode-accent);
   background: linear-gradient(var(--mode-tint), var(--mode-tint)), var(--user-bubble);
 }
 
-.user-text { white-space: pre-wrap; word-break: break-word; }
+.user-text { white-space: pre-wrap; overflow-wrap: break-word; }
 
 /* ── Attached context inside a sent message ───────────────────────────────────
    An "@"-mention is the part of a message the user comes back to, so it is drawn
@@ -933,7 +934,7 @@ body {
   background: var(--vscode-editor-findMatchHighlightBackground, rgba(14, 99, 156, 0.35));
   color: var(--fg);
   white-space: normal;
-  word-break: break-all;
+  overflow-wrap: break-word;
 }
 
 button.ctx-mention {
@@ -978,7 +979,7 @@ button.ctx-mention:focus-visible {
   gap: var(--sp-3);
   padding: var(--sp-4) var(--sp-5);
   border-left: 3px solid var(--danger);
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-md);
   background: color-mix(in srgb, var(--danger) 6%, transparent);
   color: var(--fg);
   font-size: 12px;
@@ -1680,12 +1681,13 @@ button.ctx-mention:focus-visible {
   width: 100%;
   flex: 1 1 auto;
   padding: 5px 6px;
-  border-radius: 4px;
+  border-radius: var(--radius-md);
   cursor: default;
   min-width: 0;
+  transition: background var(--motion-fast);
 }
 .tool-row-head:not([aria-disabled="true"]) { cursor: pointer; }
-.tool-row-head:not([aria-disabled="true"]):hover { background: var(--bg-input); }
+.tool-row-head:not([aria-disabled="true"]):hover { background: var(--bg-hover); }
 
 /* The secondary bits of a row are sized in `em` so the whole row scales with
    --chat-font-size instead of drifting apart from the label at other sizes. */
@@ -2273,7 +2275,7 @@ button.ctx-mention:focus-visible {
   display: flex;
   min-width: 0;
   background: var(--bg-input);
-  border-radius: 6px;
+  border-radius: var(--radius-lg);
 }
 
 .chat-input-mirror {
@@ -2314,17 +2316,20 @@ button.ctx-mention:focus-visible {
   background: transparent;
   color: var(--fg);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius-lg);
   resize: none;
   outline: none;
   min-height: 40px;
   max-height: 160px;
-  transition: border-color 0.15s;
+  transition: border-color var(--motion-fast), box-shadow var(--motion-fast);
   position: relative;
 }
 
 /* Mode colour only on focus — the resting textarea keeps the neutral border. */
-.chat-input:focus { border-color: var(--mode-accent, var(--accent)); }
+.chat-input:focus {
+  border-color: var(--mode-accent, var(--accent));
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--mode-accent, var(--accent)) 18%, transparent);
+}
 .chat-input:disabled { opacity: 0.5; }
 .chat-input::placeholder { color: var(--fg-dim); }
 
@@ -2332,7 +2337,7 @@ button.ctx-mention:focus-visible {
   background: var(--mode-accent, var(--accent));
   color: var(--mode-accent-fg, var(--accent-fg));
   border: none;
-  border-radius: 6px;
+  border-radius: var(--radius-lg);
   width: 34px;
   height: 34px;
   font-size: 18px;
@@ -2341,18 +2346,19 @@ button.ctx-mention:focus-visible {
   display: flex;
   align-items: center;
   justify-content: center;
-  transition: background 0.1s;
+  transition: background var(--motion-fast), transform var(--motion-fast);
 }
 .send-btn:hover:not(:disabled) {
   background: color-mix(in srgb, var(--mode-accent, var(--accent)) 82%, #ffffff);
 }
+.send-btn:active:not(:disabled) { transform: scale(0.96); }
 .send-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 
 .stop-btn {
-  background: var(--vscode-inputValidation-errorBackground, #5a1d1d);
+  background: color-mix(in srgb, var(--error-fg) 12%, transparent);
   color: var(--error-fg);
-  border: 1px solid var(--error-fg);
-  border-radius: 6px;
+  border: 1px solid color-mix(in srgb, var(--error-fg) 60%, transparent);
+  border-radius: var(--radius-lg);
   width: 34px;
   height: 34px;
   font-size: 18px;
@@ -2839,20 +2845,31 @@ button.ctx-mention:focus-visible {
 .markdown-body { line-height: 1.6; }
 .markdown-body h1, .markdown-body h2, .markdown-body h3,
 .markdown-body h4, .markdown-body h5, .markdown-body h6 {
-  margin: 14px 0 6px;
+  margin: 16px 0 6px;
   font-weight: 600;
+  line-height: 1.3;
 }
+.markdown-body h1, .markdown-body h2 {
+  padding-bottom: 4px;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+}
+.markdown-body > :first-child { margin-top: 0; }
 .markdown-body p { margin: 6px 0; }
 .markdown-body ul, .markdown-body ol { margin: 6px 0; padding-left: 20px; }
 .markdown-body li { margin: 3px 0; }
-.markdown-body hr { border: none; border-top: 1px solid var(--border); margin: 10px 0; }
-.markdown-body a { color: var(--vscode-textLink-foreground, #3794ff); }
+.markdown-body li::marker { color: var(--fg-dim); }
+.markdown-body hr { border: none; border-top: 1px solid var(--border); margin: 12px 0; }
+.markdown-body a {
+  color: var(--vscode-textLink-foreground, #3794ff);
+  text-decoration: none;
+}
+.markdown-body a:hover { text-decoration: underline; }
 
 .inline-code {
   background: var(--code-bg);
   border: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
   padding: 1px 5px;
-  border-radius: 3px;
+  border-radius: var(--radius-md);
   font-family: var(--mono);
   font-size: 0.9em;
 }
@@ -2860,7 +2877,7 @@ button.ctx-mention:focus-visible {
 .code-block {
   background: var(--code-bg);
   border: 1px solid var(--border);
-  border-radius: 4px;
+  border-radius: var(--radius-lg);
   padding: 10px 12px;
   overflow-x: auto;
   margin: 8px 0;
@@ -2900,25 +2917,38 @@ button.ctx-mention:focus-visible {
 
 /* ── GFM tables ──────────────────────────────────────────────────────────────── */
 .markdown-body table {
-  border-collapse: collapse;
+  border-collapse: separate;
+  border-spacing: 0;
   margin: 8px 0;
   display: block;
   overflow-x: auto;
   font-size: 0.95em;
+  width: fit-content;
+  max-width: 100%;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
 }
 .markdown-body th,
 .markdown-body td {
-  border: 1px solid var(--border);
-  padding: 4px 8px;
+  border-bottom: 1px solid var(--border);
+  padding: 5px 10px;
   text-align: left;
 }
-.markdown-body th { background: var(--bg-hover); font-weight: 600; }
+.markdown-body th + th,
+.markdown-body td + td { border-left: 1px solid color-mix(in srgb, var(--border) 60%, transparent); }
+.markdown-body tr:last-child td { border-bottom: none; }
+.markdown-body th { background: var(--surface-2); font-weight: 600; }
+.markdown-body tbody tr:nth-child(even) td {
+  background: color-mix(in srgb, var(--fg) 3%, transparent);
+}
 
 /* ── Blockquotes ─────────────────────────────────────────────────────────────── */
 .markdown-body blockquote {
   margin: 8px 0;
-  padding: 2px 12px;
-  border-left: 3px solid var(--border);
+  padding: 4px 12px;
+  border-left: 3px solid color-mix(in srgb, var(--accent) 60%, var(--border));
+  border-radius: 0 var(--radius-md) var(--radius-md) 0;
+  background: color-mix(in srgb, var(--fg) 4%, transparent);
   color: var(--fg-dim);
 }
 
@@ -2926,7 +2956,7 @@ button.ctx-mention:focus-visible {
 .code-block-wrap {
   margin: 8px 0;
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius-lg);
   overflow: hidden;
 }
 .code-block-wrap .code-block {
@@ -2940,7 +2970,7 @@ button.ctx-mention:focus-visible {
   align-items: center;
   justify-content: space-between;
   padding: 3px 10px 3px 12px;
-  background: var(--bg-hover);
+  background: var(--surface-2);
   border-bottom: 1px solid var(--border);
 }
 .code-block-lang {
@@ -2968,10 +2998,15 @@ button.ctx-mention:focus-visible {
 
 /* ── Scrollbar styling ───────────────────────────────────────────────────────── */
 
-::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar { width: 8px; height: 8px; }
 ::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
-::-webkit-scrollbar-thumb:hover { background: var(--fg-dim); }
+::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--fg-dim) 30%, transparent);
+  border: 2px solid transparent;
+  border-radius: 4px;
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover { background-color: color-mix(in srgb, var(--fg-dim) 60%, transparent); }
 
 /* ── Agent settings button & popover ─────────────────────────────────────────── */
 
