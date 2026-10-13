@@ -197,14 +197,14 @@ export const AgentSettings: React.FC<Props> = ({
           title="Compact: summarise history after each write — efficient for small models"
           onClick={() => { onContextModeChange("compact"); onClose(); }}
         >
-          ⚡ compact
+          compact
         </button>
         <button
           className={`settings-option-btn settings-option-btn--full ${contextMode === "full" ? "active" : ""}`}
           title="Full: keep all tool messages in history — best on large-context models"
           onClick={() => { onContextModeChange("full"); onClose(); }}
         >
-          🧠 full
+          full
         </button>
       </div>
       <div className="settings-context-hint">
@@ -246,7 +246,7 @@ export const AgentSettings: React.FC<Props> = ({
             aria-pressed={subAgentLevel === opt.value}
             onClick={() => onSubAgentLevelChange(opt.value)}
           >
-            {opt.icon} {opt.label}
+            {opt.label}
           </button>
         ))}
       </div>
@@ -261,7 +261,7 @@ export const AgentSettings: React.FC<Props> = ({
       <div className="settings-depth-wrap">
         <div className="settings-depth-header">
           <span className={`settings-depth-badge ${scale.depths[rung] === 0 ? "off" : "on"}`}>
-            💭 {scale.labels[rung]}
+            {scale.labels[rung]}
           </span>
           <span className="settings-depth-budget">{scale.budgets[rung]}</span>
         </div>
@@ -310,7 +310,7 @@ export const AgentSettings: React.FC<Props> = ({
           {temperature.value !== null && (
             <div className="settings-depth-wrap">
               <div className="settings-depth-header">
-                <span className="settings-depth-badge on">🌡 {tempDraft.toFixed(2)}</span>
+                <span className="settings-depth-badge on">{tempDraft.toFixed(2)}</span>
                 <span className="settings-depth-budget">this model only</span>
               </div>
               <input
@@ -342,7 +342,7 @@ export const AgentSettings: React.FC<Props> = ({
       {/* Streaming toggle */}
       <div className="settings-section-label">Capabilities</div>
       <div className="settings-toggle-row" onClick={() => onStreamingToggle(!streaming)}>
-        <span className="settings-toggle-label">⚡ streaming</span>
+        <span className="settings-toggle-label">Streaming</span>
         <span className={`settings-toggle ${streaming ? "on" : "off"}`}>
           {streaming ? "on" : "off"}
         </span>

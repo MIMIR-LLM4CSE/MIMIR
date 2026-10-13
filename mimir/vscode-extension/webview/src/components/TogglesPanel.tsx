@@ -20,8 +20,8 @@ const Row: React.FC<{ item: ToggleItem; onToggle: (name: string, enabled: boolea
     aria-pressed={item.enabled}
     onClick={() => onToggle(item.name, !item.enabled)}
   >
-    <span className="toggles-check" aria-hidden="true">{item.enabled ? "☑" : "☐"}</span>
     <span className="toggles-name">{item.name}</span>
+    <span className="toggles-check" aria-hidden="true" />
   </button>
 );
 
