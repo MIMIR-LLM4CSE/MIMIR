@@ -7,7 +7,6 @@ import { ToolActivityList } from "./ToolActivityList";
 import { CommandResult } from "./CommandResult";
 import { ThinkingPanel } from "./ThinkingPanel";
 import { CompletionReport } from "./CompletionReport";
-import { VerificationLedger } from "./VerificationLedger";
 import { splitAnswerCompletion } from "./completionUtils";
 import { splitAnswerLedger } from "./ledgerUtils";
 import { vscodePostMessage } from "../hooks/useWebSocket";
@@ -128,10 +127,9 @@ const ChatMessageInner: React.FC<Props> = ({ message, onApprovalResponse, onRetr
 
   const isUser = message.role === "user";
   // The verification ledger and the completion report both ride at the end of the
-  // answer text (history keeps them for the model); the bubble shows the prose and
-  // hands each block to its own collapsed panel. Order matters: the ledger is appended
-  // last, so it comes off first and the report is the tail of what is left.
-  const { body: withReport, ledger } = splitAnswerLedger(message.text ?? "");
+  // answer text (history keeps them for the model). The ledger is stripped and not
+  // shown; it is appended last, so it comes off first and the report is the tail.
+  const { body: withReport } = splitAnswerLedger(message.text ?? "");
   const { body: answerBody, report } = splitAnswerCompletion(withReport);
 
   return (
@@ -157,7 +155,6 @@ const ChatMessageInner: React.FC<Props> = ({ message, onApprovalResponse, onRetr
                 is intentionally NOT duplicated on the answer bubble here. */}
             <MarkdownContent text={answerBody} />
             {report && <CompletionReport block={report} />}
-            {ledger && <VerificationLedger block={ledger} />}
             {(message.diffs ?? []).length > 0 && (
               <div className="diff-list">
                 {(message.diffs ?? []).map((d, i) => (
