@@ -80,12 +80,6 @@ export const PanelGroupList: React.FC<Props> = ({
                   </span>
                 </div>
               ))}
-              {(group.nodes?.length ?? 0) > 0 && (
-                <div className="science-line">
-                  <span className="science-line-label">nodes</span>
-                  <span className="science-group-nodes">{group.nodes!.join(", ")}</span>
-                </div>
-              )}
               {group.detail && <div className="science-detail">{group.detail}</div>}
               {group.action && (
                 <GroupAction

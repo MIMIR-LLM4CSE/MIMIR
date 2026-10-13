@@ -2100,19 +2100,61 @@ def _node_kind_label(kind: dict) -> str:
     hardware signature is what grouped them, and it is unreadable.
     """
     parts = []
-    gres = str(kind.get("gres") or "")
-    if gres.startswith("gpu:"):
-        bits = gres.split(":")
-        model = bits[1] if len(bits) > 2 else ""
-        count = bits[-1] if bits[-1].isdigit() else ""
-        parts.append(" ".join(x for x in (f"{count}×" if count else "", model) if x)
-                     .strip() or gres)
+    gpu = _gpu_of(kind)
+    if gpu:
+        parts.append(gpu)
     if kind.get("cpus"):
         parts.append(f"{kind['cpus']} cpus")
     mem_mb = kind.get("mem_mb")
     if isinstance(mem_mb, (int, float)) and mem_mb:
         parts.append(f"{round(mem_mb / 1024)} GB")
     return " · ".join(parts) or str(kind.get("arch") or "node")
+
+
+def _gpu_of(kind: dict) -> str:
+    """``gpu:a100:4`` as ``4× a100``; empty when the kind has no GPU."""
+    gres = str(kind.get("gres") or "")
+    if not gres.startswith("gpu:"):
+        return ""
+    bits = gres.split(":")
+    model = bits[1] if len(bits) > 2 else ""
+    count = bits[-1] if bits[-1].isdigit() else ""
+    return " ".join(x for x in (f"{count}×" if count else "", model) if x).strip() or gres
+
+
+def _node_names_label(kind: dict) -> str:
+    """The kind's nodes by name, ``+N`` for those beyond the sample."""
+    names = list(kind.get("example_nodes") or [])
+    if not names:
+        return _node_kind_label(kind)
+    more = (kind.get("nodes_total") or len(names)) - len(names)
+    return ", ".join(names) + (f" +{more}" if more > 0 else "")
+
+
+def _kind_spec_lines(kind: dict) -> list[dict]:
+    """What Slurm says a node of this kind is, one fact per line."""
+    lines = [{"label": "arch", "value": kind.get("arch") or "?"}]
+    if kind.get("cpus"):
+        value = str(kind["cpus"])
+        topo = [kind.get(f) for f in ("sockets", "cores_per_socket", "threads_per_core")]
+        if all(topo):
+            value += f" ({topo[0]} sockets × {topo[1]} cores × {topo[2]} threads)"
+        lines.append({"label": "cpus", "value": value})
+    gpu = _gpu_of(kind)
+    if gpu:
+        lines.append({"label": "gpu", "value": gpu})
+    elif kind.get("gres"):
+        lines.append({"label": "gres", "value": str(kind["gres"])})
+    mem_mb = kind.get("mem_mb")
+    if isinstance(mem_mb, (int, float)) and mem_mb:
+        lines.append({"label": "mem", "value": f"{round(mem_mb / 1024)} GB"})
+    if kind.get("partitions"):
+        lines.append({"label": "partitions", "value": ", ".join(kind["partitions"])})
+    if kind.get("features"):
+        lines.append({"label": "features", "value": kind["features"]})
+    if kind.get("nodes_total"):
+        lines.append({"label": "nodes", "value": str(kind["nodes_total"])})
+    return lines
 
 
 def _kind_id(host: str, kind: dict) -> str:
@@ -2222,14 +2264,11 @@ def _host_tree() -> list[dict]:
                                    "state": "warn"})
         kinds = []
         for kind in digest["node_types"]:
-            lines = [{"label": "arch", "value": kind.get("arch") or "?"}]
-            if kind.get("features"):
-                lines.append({"label": "features", "value": kind["features"]})
             profiled, detail = _profiled_kind_lines(kind, host)
             entry = {
                 "id": _kind_id(host, kind),
-                "label": _node_kind_label(kind),
-                "lines": lines + profiled,
+                "label": _node_names_label(kind),
+                "lines": _kind_spec_lines(kind) + profiled,
                 "nodes": list(kind.get("example_nodes") or []),
             }
             if detail:

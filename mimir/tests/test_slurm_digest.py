@@ -83,6 +83,14 @@ class DigestTests(_DigestTestCase):
         self.assertEqual(digest["partitions"][0]["partition"], "compute")
         self.assertEqual(digest["degraded"], "")
 
+    def test_each_node_type_names_its_nodes(self):
+        """The panel labels a kind by its nodes and reads probe results by node name."""
+        types = slurm_digest.cluster_digest("host-a")["node_types"]
+        for t in types:
+            self.assertTrue(t["example_nodes"])
+            self.assertEqual(t["nodes_total"], len(t["example_nodes"]))
+        self.assertNotIn("by_state", types[0])
+
     def test_occupancy_alone_does_not_move_the_signature(self):
         """What makes the digest keepable at all: a busy cluster is not a changed one."""
         before = slurm_digest.cluster_digest("host-a")["signature"]

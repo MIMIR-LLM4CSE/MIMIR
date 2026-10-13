@@ -126,7 +126,12 @@ def cluster_digest(host: str = LOCAL, *, timeout: int = _TIMEOUT) -> dict:
         digest["source"] = "sinfo"
         digest["degraded"] = _DEGRADED
 
-    digest["node_types"] = stable_types(aggregate_node_types(nodes)) if nodes else []
+    types = aggregate_node_types(nodes) if nodes else []
+    # Names and counts are not occupancy; the signature below is computed without them.
+    digest["node_types"] = [
+        {**stable, "example_nodes": t["example_nodes"], "nodes_total": t["nodes_total"]}
+        for stable, t in zip(stable_types(types), types)
+    ]
     digest["signature"] = stable_signature(nodes) if nodes else ""
 
     stdout = _capture(f"sinfo -h -o '{_PARTITIONS_FORMAT}'", host, timeout)

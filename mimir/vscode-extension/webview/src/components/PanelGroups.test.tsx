@@ -13,11 +13,14 @@ import type { PanelGroup, WatchedRun } from "../types";
 
 const kind: PanelGroup = {
   id: "host:hpc1/kind:bb",
-  label: "4× a100 · 64 cpus · 503 GB",
+  label: "gpu001, gpu007",
   value: "not profiled",
   state: "warn",
   nodes: ["gpu001", "gpu007"],
-  lines: [{ label: "arch", value: "x86_64" }],
+  lines: [
+    { label: "arch", value: "x86_64" },
+    { label: "gpu", value: "4× a100" },
+  ],
   action: {
     kind: "probe",
     label: "Profile a node",
@@ -46,7 +49,7 @@ describe("a closed tree", () => {
     expect(html).toContain("hpc1");
     expect(html).toContain("1 node type · x86_64 · a100 · 2 partitions");
     expect(html).not.toContain("over ssh to hpc1");
-    expect(html).not.toContain("4× a100");
+    expect(html).not.toContain("gpu001");
   });
 
   it("says it is closed, and is a button a keyboard can reach", () => {
@@ -63,14 +66,15 @@ describe("an opened scheduler", () => {
     expect(html).toContain('aria-expanded="true"');
     expect(html).toContain("▾");
     expect(html).toContain("over ssh to hpc1");
-    expect(html).toContain("4× a100 · 64 cpus · 503 GB");
+    expect(html).toContain("gpu001, gpu007");
     // One level at a time: the kind is listed, not unfolded.
     expect(html).not.toContain("x86_64</span>");
   });
 
   it("unfolds a kind of machine on its own", () => {
     const html = tree({ "host:hpc1": true, "host:hpc1/kind:bb": true });
-    expect(html).toContain("gpu001, gpu007");
+    expect(html).toContain("x86_64</span>");
+    expect(html).toContain("4× a100");
     expect(html).toContain("Profile a node");
   });
 

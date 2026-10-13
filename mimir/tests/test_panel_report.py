@@ -340,7 +340,8 @@ _DIGEST = {
     "node_types": [{"arch": "x86_64", "cpus": 64, "mem_mb": 515000,
                     "gres": "gpu:a100:4", "sockets": 2, "cores_per_socket": 32,
                     "threads_per_core": 1, "features": "avx512,ib",
-                    "partitions": ["gpu"], "example_nodes": ["gpu001", "gpu002"]}],
+                    "partitions": ["gpu"], "example_nodes": ["gpu001", "gpu002"],
+                    "nodes_total": 10}],
 }
 
 _SILENT_DIGEST = {"scheduler": "hpc2", "built_at": "", "source": "", "signature": "",
@@ -403,11 +404,18 @@ def test_a_silent_host_is_listed_as_unknown_not_as_empty():
     assert "groups" not in tree[0]        # never an empty machine list
 
 
-def test_a_node_kind_is_named_the_way_it_would_be_chosen():
+def test_a_node_kind_is_named_by_its_nodes_and_lists_its_specs():
     tree = _tree(["hpc1"], {"hpc1": _DIGEST})
     kind = tree[0]["groups"][0]
-    assert kind["label"] == "4× a100 · 64 cpus · 503 GB"
+    assert kind["label"] == "gpu001, gpu002 +8"
     assert kind["nodes"] == ["gpu001", "gpu002"]
+    values = {line["label"]: line["value"] for line in kind["lines"]}
+    assert values["arch"] == "x86_64"
+    assert values["cpus"] == "64 (2 sockets × 32 cores × 1 threads)"
+    assert values["gpu"] == "4× a100"
+    assert values["mem"] == "503 GB"
+    assert values["partitions"] == "gpu"
+    assert values["nodes"] == "10"
 
 
 def test_an_unprofiled_kind_offers_the_request_that_would_fix_it_and_says_nothing_else():
