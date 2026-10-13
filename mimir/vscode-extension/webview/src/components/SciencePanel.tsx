@@ -7,6 +7,14 @@ import { toggle } from "./panelGroupUtils";
 /** While the drawer is open, ask again this often. */
 const PANEL_POLL_MS = 20000;
 
+/** Accent for the sections MIMIR ships; a plugin's own section gets the fallback. */
+const SECTION_ACCENT: Record<string, string> = {
+  machine: "var(--mimir-cyan)",
+  cluster: "var(--mimir-blue)",
+  optimisation: "var(--mimir-coral)",
+};
+const FALLBACK_ACCENT = "var(--mimir-violet)";
+
 interface Props {
   sections: PanelSection[];
   /** Ask again, serving whatever the servers have cached. The timer's call. */
@@ -94,14 +102,27 @@ export const SciencePanel: React.FC<Props> = ({
 
       <div className="sessions-list">
         {!agentReady && sections.length === 0 && (
-          <div className="sessions-empty">
-            Starting this conversation's agent — the servers that fill this panel are
-            coming up.
+          <div>
+            <div className="science-skeleton" aria-hidden="true">
+              <span />
+              <span />
+              <span />
+            </div>
+            <div className="sessions-empty">
+              Starting this conversation's agent — the servers that fill this panel are
+              coming up.
+            </div>
           </div>
         )}
 
-        {sections.map((section) => (
-          <div className="science-section" key={section.section}>
+        {sections.map((section) => {
+          const accent = SECTION_ACCENT[section.section.toLowerCase()] ?? FALLBACK_ACCENT;
+          return (
+          <div
+            className="science-section"
+            key={section.section}
+            style={{ ["--section-accent" as any]: accent }}
+          >
             <div className="science-section-title">{section.title}</div>
             {section.lines.map((line, i) => (
               <div className="science-line" key={i}>
@@ -121,7 +142,8 @@ export const SciencePanel: React.FC<Props> = ({
             )}
             {section.detail && <div className="science-detail">{section.detail}</div>}
           </div>
-        ))}
+          );
+        })}
       </div>
 
       <PanelResizer label="scientific computing" handleProps={handleProps} />

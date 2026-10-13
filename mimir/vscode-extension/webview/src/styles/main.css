@@ -186,12 +186,24 @@ body {
 }
 
 .sessions-panel-header {
+  position: relative;
   display: flex;
   align-items: center;
   justify-content: space-between;
   padding: 8px 10px 6px;
-  border-bottom: 1px solid var(--border);
   flex-shrink: 0;
+}
+
+/* The brand ribbon, one pixel, in place of the plain rule. */
+.sessions-panel-header::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 1px;
+  background: var(--mimir-gradient);
+  opacity: 0.7;
 }
 
 .sessions-panel-title {
@@ -199,13 +211,13 @@ body {
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.06em;
-  color: var(--fg-dim);
+  color: var(--fg);
 }
 
 .sessions-list {
   flex: 1;
   overflow-y: auto;
-  padding: 4px 0;
+  padding: 6px 6px 12px;
 }
 
 .sessions-empty {
@@ -216,13 +228,16 @@ body {
 }
 
 .session-item {
+  position: relative;
   display: flex;
   align-items: center;
-  padding: 6px 10px;
+  padding: 6px 8px 6px 10px;
+  margin-bottom: 1px;
   cursor: pointer;
   gap: 6px;
-  border-left: 2px solid transparent;
+  border-radius: var(--radius-md);
   min-height: 44px;
+  transition: background var(--motion-fast);
 }
 .session-item:hover {
   background: var(--vscode-list-hoverBackground, rgba(255,255,255,0.05));
@@ -231,8 +246,18 @@ body {
   visibility: visible;
 }
 .session-item.active {
-  border-left-color: var(--accent, var(--vscode-focusBorder));
   background: var(--vscode-list-activeSelectionBackground, rgba(255,255,255,0.08));
+}
+/* The active conversation: a short accent bar, inset from the row's rounded edge. */
+.session-item.active::before {
+  content: "";
+  position: absolute;
+  left: 2px;
+  top: 8px;
+  bottom: 8px;
+  width: 3px;
+  border-radius: 2px;
+  background: var(--accent, var(--vscode-focusBorder));
 }
 
 .session-item-body {
@@ -260,22 +285,30 @@ body {
 }
 
 .session-time {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   font-size: 10px;
   color: var(--fg-dim);
+  font-variant-numeric: tabular-nums;
 }
 
 .session-delete-btn {
   visibility: hidden;
   background: none;
   border: none;
+  border-radius: var(--radius-sm);
   cursor: pointer;
   color: var(--fg-dim);
   font-size: 16px;
-  padding: 0 2px;
-  line-height: 1;
+  padding: 0 4px;
+  line-height: 1.2;
   flex-shrink: 0;
 }
-.session-delete-btn:hover { color: var(--error-fg, var(--vscode-errorForeground)); }
+.session-delete-btn:hover {
+  color: var(--error-fg, var(--vscode-errorForeground));
+  background: var(--vscode-toolbar-hoverBackground, rgba(255,255,255,0.08));
+}
 
 .session-rename-input {
   font-size: 12px;
@@ -428,6 +461,18 @@ body {
 .session-activity.running {
   background: var(--vscode-badge-background);
   color: var(--vscode-badge-foreground);
+}
+
+.session-activity.running::before {
+  content: "";
+  display: inline-block;
+  width: 5px;
+  height: 5px;
+  margin-right: 4px;
+  border-radius: 50%;
+  background: currentColor;
+  vertical-align: 1px;
+  animation: science-pulse 2s ease-in-out infinite;
 }
 
 .session-activity.parked {
@@ -3955,41 +4000,70 @@ body.vscode-light .hljs-deletion, body.vscode-high-contrast-light .hljs-deletion
 
 /* ── Sub-agents panel ──────────────────────────────────────────────────────
    Same drawer as the session list, under the session that spawned them. */
+.subagents-panel .sessions-list { padding: 6px 8px 12px; }
+
 .subagent-row {
-  padding: 6px 10px;
-  border-bottom: 1px solid var(--border);
+  margin-bottom: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface-1);
 }
+
+.subagent-row.open { border-color: color-mix(in srgb, var(--focus-ring) 45%, var(--border)); }
 
 .subagent-head {
   display: flex;
   align-items: baseline;
-  gap: 6px;
+  gap: 8px;
   width: 100%;
   background: none;
   border: none;
   padding: 0;
   text-align: left;
   color: var(--fg);
+  font: inherit;
   cursor: pointer;
 }
 
+/* The state as a small pill, tinted by what it means. */
 .subagent-state {
-  font-size: 10px;
+  --state-color: var(--fg-dim);
+  font-size: 9.5px;
+  font-weight: 600;
   text-transform: uppercase;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.05em;
   flex-shrink: 0;
-  color: var(--fg-dim);
+  padding: 1px 6px;
+  border-radius: 999px;
+  color: var(--state-color);
+  background: color-mix(in srgb, var(--state-color) 14%, transparent);
 }
 
-.subagent-state.state-running { color: var(--vscode-charts-blue, #4aa3ff); }
-.subagent-state.state-failed { color: var(--vscode-charts-red, #e06c6c); }
-.subagent-state.state-abandoned { color: var(--vscode-charts-orange, #d99a4e); }
+.subagent-state.state-running { --state-color: var(--vscode-charts-blue, #4aa3ff); }
+.subagent-state.state-finished { --state-color: var(--ok); }
+.subagent-state.state-failed { --state-color: var(--vscode-charts-red, #e06c6c); }
+.subagent-state.state-abandoned { --state-color: var(--vscode-charts-orange, #d99a4e); }
+
+.subagent-state.state-running::before {
+  content: "";
+  display: inline-block;
+  width: 5px;
+  height: 5px;
+  margin-right: 4px;
+  border-radius: 50%;
+  background: currentColor;
+  vertical-align: 1px;
+  animation: science-pulse 2s ease-in-out infinite;
+}
+
 /* A status row is the loop explaining itself between two tool calls — present so the
    gap is readable, recessed so it never competes with the calls themselves. */
 .subagent-step.step-note { opacity: 0.7; font-style: italic; }
 
 .subagent-task {
   font-size: 12px;
+  font-weight: 500;
   min-width: 0;
   overflow-wrap: anywhere;
 }
@@ -3998,23 +4072,33 @@ body.vscode-light .hljs-deletion, body.vscode-high-contrast-light .hljs-deletion
 .subagent-model {
   font-size: 10px;
   color: var(--fg-dim);
-  margin-top: 2px;
+  margin-top: 3px;
   word-break: break-word;
 }
 
-.subagent-detail { margin-top: 6px; }
+.subagent-detail {
+  margin-top: 8px;
+  padding-top: 6px;
+  border-top: 1px solid var(--border);
+}
 
 .subagent-todo {
   list-style: none;
-  margin: 4px 0;
+  margin: 6px 0;
   padding: 0;
   font-size: 11px;
+  line-height: 1.6;
 }
 
 .subagent-todo li.done { color: var(--fg-dim); text-decoration: line-through; }
 
 .subagent-answer {
+  margin-top: 6px;
+  padding: 6px 8px;
+  border-radius: var(--radius-md);
+  background: var(--bg);
   font-size: 11px;
+  line-height: 1.5;
   white-space: pre-wrap;
   max-height: 220px;
   overflow-y: auto;
@@ -4024,23 +4108,43 @@ body.vscode-light .hljs-deletion, body.vscode-high-contrast-light .hljs-deletion
    The drawer that gathers what is specific to this work: the optimisation in
    progress, the clusters this workspace reaches, the machine, and the runs still
    going outside the current turn. */
+.science-panel .sessions-list { padding: 6px 8px 12px; }
+
 .science-section {
-  padding: 12px 12px;
-  border-bottom: 1px solid var(--border);
+  --section-accent: var(--mimir-violet);
+  margin-bottom: 8px;
+  padding: 10px 10px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface-1);
 }
 
 .science-section-title {
+  display: flex;
+  align-items: center;
+  gap: 7px;
   font-size: 11px;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.06em;
-  color: var(--fg-dim);
-  margin-bottom: 8px;
+  color: var(--fg);
+  margin-bottom: 6px;
+}
+
+/* The section's accent, as a short bar ahead of its title. */
+.science-section-title::before {
+  content: "";
+  width: 3px;
+  height: 11px;
+  border-radius: 2px;
+  background: var(--section-accent);
+  flex-shrink: 0;
 }
 
 .science-line {
   display: flex;
   justify-content: space-between;
+  align-items: baseline;
   gap: 10px;
   font-size: 12.5px;
   line-height: 1.45;
@@ -4058,14 +4162,70 @@ body.vscode-light .hljs-deletion, body.vscode-high-contrast-light .hljs-deletion
   min-width: 0;
   white-space: normal;
   overflow-wrap: anywhere;
+  color: var(--fg);
+  font-variant-numeric: tabular-nums;
 }
 
 .science-line-value.is-running { color: var(--vscode-charts-blue, #4aa3ff); }
+
+.science-line-value.is-running::before,
+.science-badge.is-running::before {
+  content: "";
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: 5px;
+  border-radius: 50%;
+  background: currentColor;
+  vertical-align: 1px;
+  animation: science-pulse 2s ease-in-out infinite;
+}
+
 /* Something a server wants read before the next run, not an error: a node that was
    never profiled, a measurement pinned to another machine. */
 .science-line-value.is-warn { color: var(--vscode-charts-yellow, #d7a441); }
 
-.science-detail { font-size: 11.5px; line-height: 1.45; color: var(--fg-dim); margin-top: 6px; }
+@keyframes science-pulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.35; }
+}
+
+.science-detail {
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--fg-dim);
+  margin-top: 6px;
+}
+
+/* While the agent comes up: placeholder bars rather than a bare sentence. */
+.science-skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface-1);
+}
+
+.science-skeleton span {
+  height: 8px;
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--fg-dim) 18%, transparent);
+  animation: science-pulse 1.6s ease-in-out infinite;
+}
+
+.science-skeleton span:nth-child(1) { width: 40%; }
+.science-skeleton span:nth-child(2) { width: 80%; }
+.science-skeleton span:nth-child(3) { width: 60%; }
+
+@media (prefers-reduced-motion: reduce) {
+  .science-line-value.is-running::before,
+  .science-badge.is-running::before,
+  .session-activity.running::before,
+  .subagent-state.state-running::before,
+  .science-skeleton span { animation: none; }
+}
 
 /* ── The tree inside a panel section ──────────────────────────────────────────
    A scheduler, the kinds of machine on it, what a probe found on one — and the
@@ -4082,8 +4242,9 @@ body.vscode-light .hljs-deletion, body.vscode-high-contrast-light .hljs-deletion
   align-items: baseline;
   gap: 6px;
   width: 100%;
-  padding: 5px 2px;
+  padding: 5px 6px;
   border: none;
+  border-radius: var(--radius-md);
   background: none;
   color: var(--fg);
   font: inherit;
@@ -4091,6 +4252,7 @@ body.vscode-light .hljs-deletion, body.vscode-high-contrast-light .hljs-deletion
   line-height: 1.4;
   text-align: left;
   cursor: pointer;
+  transition: background var(--motion-fast);
 }
 
 .science-group-row:hover { background: var(--bg-hover); }
@@ -4099,6 +4261,11 @@ body.vscode-light .hljs-deletion, body.vscode-high-contrast-light .hljs-deletion
   font-size: 0.9em;
   opacity: 0.6;
   flex-shrink: 0;
+}
+
+.science-group-row.is-open .science-group-chevron {
+  opacity: 1;
+  color: var(--section-accent, inherit);
 }
 
 .science-group-label {
@@ -4119,7 +4286,12 @@ body.vscode-light .hljs-deletion, body.vscode-high-contrast-light .hljs-deletion
 /* The one yellow the panel has: something a server wants read before the next run. */
 .science-group-value.is-warn { color: var(--vscode-charts-yellow, #d7a441); }
 
-.science-group-body { padding: 2px 0 8px 16px; }
+/* A tree guide down the open row's children. */
+.science-group-body {
+  margin: 2px 0 6px 11px;
+  padding: 2px 0 4px 10px;
+  border-left: 1px solid var(--border);
+}
 
 .science-group-nodes {
   font-family: var(--mono);
@@ -4133,15 +4305,19 @@ body.vscode-light .hljs-deletion, body.vscode-high-contrast-light .hljs-deletion
 .science-group-action {
   margin-top: 6px;
   font-size: 12px;
-  padding: 3px 8px;
+  padding: 3px 10px;
   border: 1px solid var(--border);
-  border-radius: 3px;
+  border-radius: var(--radius-sm);
   background: none;
-  color: var(--fg-dim);
+  color: var(--fg);
   cursor: pointer;
+  transition: background var(--motion-fast), border-color var(--motion-fast);
 }
 
-.science-group-action:hover { color: var(--fg); }
+.science-group-action:hover {
+  background: var(--bg-hover);
+  border-color: var(--focus-ring);
+}
 
 .science-group-confirm { margin-top: 4px; }
 .science-group-confirm-row { display: flex; gap: 4px; margin-top: 4px; }
@@ -4164,11 +4340,15 @@ body.vscode-light .hljs-deletion, body.vscode-high-contrast-light .hljs-deletion
   background: none;
   color: var(--fg-dim);
   cursor: pointer;
+  transition: background var(--motion-fast);
 }
+
+.science-badge:hover { background: var(--bg-hover); }
 
 .science-badge.is-running {
   color: var(--vscode-charts-blue, #4aa3ff);
   border-color: color-mix(in srgb, var(--vscode-charts-blue, #4aa3ff) 50%, transparent);
+  background: color-mix(in srgb, var(--vscode-charts-blue, #4aa3ff) 8%, transparent);
 }
 
 .science-badge-detail {
@@ -4188,12 +4368,15 @@ body.vscode-light .hljs-deletion, body.vscode-high-contrast-light .hljs-deletion
 
 .subagent-step {
   display: flex;
-  gap: 4px;
-  font-size: 10px;
+  gap: 6px;
+  font-size: 10.5px;
+  line-height: 1.5;
   padding: 1px 0;
 }
 
-.subagent-step-mark { flex-shrink: 0; color: var(--fg-dim); }
+.subagent-step-mark { flex-shrink: 0; width: 10px; text-align: center; color: var(--fg-dim); }
+.subagent-step.step-ok .subagent-step-mark { color: var(--ok); }
+.subagent-step.step-running .subagent-step-mark { color: var(--vscode-charts-blue, #4aa3ff); }
 .subagent-step.step-error .subagent-step-mark { color: var(--vscode-charts-red, #e06c6c); }
 .subagent-step-label { min-width: 0; overflow-wrap: anywhere; }
 .subagent-step-detail { color: var(--fg-dim); margin-left: auto; flex-shrink: 0; }
