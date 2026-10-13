@@ -1315,8 +1315,10 @@ def bash_watch(pid: int, what: str = "", log: str = "") -> dict:
     return ok({
         **handle,
         "state": "running",
-        "headline": (f"Watching pid {pid}. End your turn — you are resumed when it "
-                     "ends, with this window closed or not."),
+        # What was adopted, not what will happen next — the same rule as a launch's
+        # note a few hundred lines up: a resume is the client's to promise, and only
+        # once it is holding a watcher.
+        "headline": f"Pid {pid} is recorded here, and handed over to be watched.",
         # Plural, as every answer about work this call did not start is: see the same
         # key in bash_job_status. Singular is a launch, and a launch is what the
         # client reads only from a tool declaring BACKGROUNDABLE.

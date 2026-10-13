@@ -105,8 +105,11 @@ So for **every id the submission printed**, the server job and the client array 
   the submission actually landed.
 - If what you started is a *process* on this host rather than a scheduler job — a driver
   a script left running in the background — the same applies with `bash_watch(pid)`.
-- Then **end your turn**, exactly as after `sbatch_submit`: you are resumed when the job
-  finishes, with the window closed or not.
+- Then **end your turn**, exactly as after `sbatch_submit` — once the result says a
+  watcher is holding the job (`[background] Now tracking '<id>'`). That note is the only
+  promise of a resume there is, and the client appends it when it has actually armed
+  one. Without it nothing is polling the job: say that, rather than end the turn on a
+  guarantee nobody made.
 
 Do this in the same turn as the submission, before you report anything. A job submitted
 and not adopted is a job whose result reaches nobody — and if the user detaches on the

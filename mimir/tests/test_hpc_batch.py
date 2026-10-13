@@ -1220,6 +1220,46 @@ class SlurmWatchTests(unittest.TestCase):
         self.assertEqual(again["job_dir"], first["job_dir"])
         self.assertEqual(len(os.listdir(self._jobs)), 1)
 
+    def _refuse_slurm(self):
+        """A _run_bash that fails the test if anything asks a scheduler."""
+        def fake(*_a, **_k):
+            self.fail("it asked a scheduler for something the directory already knows")
+        server_hpc._run_bash = fake
+
+    def test_a_job_already_recorded_is_handed_over_again(self) -> None:
+        """Recorded is not watched, and the answer used to say otherwise.
+
+        A watcher is held by the agent that registered it and by nothing else, so a
+        window reload leaves the directory saying "there is a job" with nobody polling
+        it. Asking again is the moment that is repairable — and the answer carried no
+        descriptor, so it repaired nothing while reporting the job as watched.
+        """
+        self._watch({"squeue": ("ok", "RUNNING")})
+        self._refuse_slurm()          # the disk settles this, not two ssh round trips
+        again = server_hpc.slurm_watch(job_id="15306620")
+        self.assertEqual(again["status"], "ok")
+        self.assertEqual(again["background_jobs"][0]["job_key"], "15306620")
+        self.assertEqual(again["recorded_by"], "this conversation")
+
+    def test_a_job_already_recorded_as_over_is_not_handed_over(self) -> None:
+        # Its end was recorded by the poll that saw it, and a watcher put on it now
+        # would report at its first poll — a wake for news already delivered.
+        res = self._watch({"squeue": ("ok", ""), "sacct": ("ok", "COMPLETED")})
+        self.assertEqual(res["state"], "done")
+        self._refuse_slurm()
+        again = server_hpc.slurm_watch(job_id="15306620")
+        self.assertEqual(again["state"], "done")
+        self.assertNotIn("background_jobs", again)
+
+    def test_the_headline_promises_no_resume_of_its_own(self) -> None:
+        # Whether anything watches the job is the client's to say, and it says so when
+        # it registers a watcher. A server that guarantees a resume it does not perform
+        # produces a model that ends its turn on a promise nobody is holding — which is
+        # what every front-end with no watcher hook was handed here.
+        res = self._watch({"squeue": ("ok", "PENDING")})
+        self.assertNotIn("resumed", res["headline"])
+        self.assertIn("15306620", res["headline"])
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

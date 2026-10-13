@@ -602,6 +602,10 @@ class AdoptingARunningProcessTests(unittest.TestCase):
         self.assertNotIn("background_job", res)
         # And the state the watcher polls, through the ordinary seam.
         self.assertEqual(_bash_jobs.state(res["job_key"])["state"], "running")
+        # What was adopted, not what will happen next: a resume is the client's to
+        # promise, and only once it is holding a watcher.
+        self.assertNotIn("resumed", res["headline"])
+        self.assertIn(str(proc.pid), res["headline"])
 
     def test_what_it_is_is_kept_as_the_command(self) -> None:
         proc = self._sleeper()
