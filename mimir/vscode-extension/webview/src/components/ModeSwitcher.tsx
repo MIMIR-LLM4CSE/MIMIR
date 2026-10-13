@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import { MimirMark } from "./MimirMark";
+import { AskIcon, PlanIcon } from "./icons";
 import type { AgentMode } from "../types";
 
 interface Props {
@@ -25,13 +26,13 @@ export const MODE_OPTIONS: {
   },
   {
     value: "plan",
-    icon: "📋",
+    icon: <PlanIcon />,
     label: "plan",
     desc: "Read-only research, then a plan you approve before any work starts",
   },
   {
     value: "ask",
-    icon: "💬",
+    icon: <AskIcon />,
     label: "ask",
     desc: "Read-only Q&A about the codebase — no edits, no plan",
   },
@@ -81,7 +82,7 @@ export const ModeSwitcher: React.FC<Props> = ({ mode, onModeChange }) => {
                 }}
               >
                 <span className="settings-mode-btn-label">
-                  {opt.icon} {opt.label}
+                  {opt.icon}{opt.label}
                 </span>
                 <span className="settings-mode-btn-desc">{opt.desc}</span>
               </button>

@@ -42,6 +42,7 @@ import { DetachButton } from "./components/DetachButton";
 import { DisconnectPrompt } from "./components/DisconnectPrompt";
 import { workingSessions } from "./components/disconnectUtils";
 import { ModeSwitcher } from "./components/ModeSwitcher";
+import { BlocksIcon, GearIcon, SendIcon, StopIcon } from "./components/icons";
 import { TogglesPanel } from "./components/TogglesPanel";
 import { ConnectForm } from "./components/ConnectForm";
 import { UserQuestion } from "./components/UserQuestion";
@@ -1796,7 +1797,7 @@ export const App: React.FC = () => {
                 {/* The gear alone. The two pills beside it — reasoning on, streaming
                     off — stated what the popover they open already says, and a button
                     whose glyphs come and go is a button the eye has to re-find. */}
-                <span className="settings-gear">⚙</span>
+                <span className="settings-gear"><GearIcon /></span>
               </button>
               {settingsOpen && (
                 <AgentSettings
@@ -1835,7 +1836,7 @@ export const App: React.FC = () => {
                   });
                 }}
               >
-                <span className="settings-gear">🧩</span>
+                <span className="settings-gear"><BlocksIcon /></span>
               </button>
               {togglesOpen && (
                 <TogglesPanel
@@ -1943,7 +1944,7 @@ export const App: React.FC = () => {
                     title="Send steer (Enter) — queued for the agent's next step"
                     aria-label="Send steer message"
                   >
-                    ↑
+                    <SendIcon />
                   </button>
                 )}
                 <button
@@ -1952,7 +1953,7 @@ export const App: React.FC = () => {
                   title="Stop (cancel current query)"
                   aria-label="Stop current query"
                 >
-                  ⏹
+                  <StopIcon />
                 </button>
               </>
             ) : (
@@ -1963,7 +1964,7 @@ export const App: React.FC = () => {
                 title="Send (Enter)"
                 aria-label="Send message"
               >
-                ↑
+                <SendIcon />
               </button>
             )}
           </div>

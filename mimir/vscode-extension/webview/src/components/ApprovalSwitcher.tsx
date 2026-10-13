@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import type { ApprovalMode } from "../types";
+import { BoltCircleIcon, BoltIcon, LockIcon } from "./icons";
 
 interface Props {
   mode: ApprovalMode;
@@ -13,25 +14,25 @@ interface Props {
 // never read as "unguarded".
 export const APPROVAL_OPTIONS: {
   value: ApprovalMode;
-  icon: string;
+  icon: React.ReactNode;
   label: string;
   desc: string;
 }[] = [
   {
     value: "manual",
-    icon: "🔒",
+    icon: <LockIcon />,
     label: "manual",
     desc: "Every sensitive call, and every step outside the workspace, comes back to you",
   },
   {
     value: "auto",
-    icon: "⚡",
+    icon: <BoltIcon />,
     label: "auto",
     desc: "Sensitive tools run unasked — leaving the workspace still asks",
   },
   {
     value: "auto_all",
-    icon: "⚡⚡",
+    icon: <BoltCircleIcon />,
     label: "all",
     desc: "Nothing asks. Guardrails (denylist, sandbox) still apply",
   },
@@ -87,7 +88,7 @@ export const ApprovalSwitcher: React.FC<Props> = ({ mode, onModeChange }) => {
                 }}
               >
                 <span className="settings-mode-btn-label">
-                  {opt.icon} {opt.label}
+                  {opt.icon}{opt.label}
                 </span>
                 <span className="settings-mode-btn-desc">{opt.desc}</span>
               </button>

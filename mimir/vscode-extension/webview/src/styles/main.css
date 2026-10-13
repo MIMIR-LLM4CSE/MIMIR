@@ -452,7 +452,7 @@ body {
   padding: 2px 8px;
   cursor: pointer;
   border: 1px solid var(--vscode-button-border, transparent);
-  border-radius: 2px;
+  border-radius: var(--radius-md);
   background: var(--vscode-button-secondaryBackground);
   color: var(--vscode-button-secondaryForeground);
 }
@@ -1329,22 +1329,23 @@ button.ctx-mention:focus-visible {
 
 /* ── Copilot-style approval row ──────────────────────────────────────────────── */
 .ap-row {
+  --card-accent: var(--accent);
   display: flex;
   flex-direction: column;
   gap: 8px;
-  padding: 7px 10px;
-  border-radius: 6px;
+  padding: 9px 12px;
+  border-radius: var(--radius-lg);
   border: 1px solid var(--border);
-  background: var(--bg-input);
+  border-left: 3px solid var(--card-accent);
+  background: var(--surface-1);
   font-size: 12px;
 }
 .ap-row--high {
-  border-color: var(--vscode-errorForeground, #f85149);
-  border-left: 3px solid var(--vscode-errorForeground, #f85149);
+  --card-accent: var(--danger);
+  background: linear-gradient(color-mix(in srgb, var(--danger) 5%, transparent),
+              color-mix(in srgb, var(--danger) 5%, transparent)), var(--surface-1);
 }
-.ap-row--med {
-  border-left: 3px solid var(--vscode-editorWarning-foreground, #cca700);
-}
+.ap-row--med { --card-accent: var(--warn); }
 
 /* Header line: icon + humanized tool/op label + optional risk chip. */
 .ap-head {
@@ -1447,33 +1448,34 @@ button.ctx-mention:focus-visible {
 .ap-actions {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 6px;
 }
 .ap-btn {
   all: unset;
   cursor: pointer;
   font-size: 11px;
   font-family: var(--font);
-  padding: 3px 9px;
-  border-radius: 4px;
+  padding: 4px 11px;
+  border-radius: var(--radius-md);
   border: 1px solid var(--border);
-  color: var(--fg-dim);
+  color: var(--fg);
   background: transparent;
-  transition: background 0.1s, color 0.1s, border-color 0.1s;
+  transition: background var(--motion-fast), color var(--motion-fast), border-color var(--motion-fast);
   white-space: nowrap;
 }
 .ap-btn--allow {
   background: var(--accent);
   color: var(--accent-fg, #fff);
   border-color: transparent;
+  font-weight: 500;
 }
-.ap-btn--allow:hover  { opacity: 0.85; }
+.ap-btn--allow:hover  { background: var(--accent-hover); }
 .ap-btn--block:hover  {
-  background: color-mix(in srgb, #f85149 15%, transparent);
-  color: #f85149;
-  border-color: #f85149;
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  color: var(--danger);
+  border-color: color-mix(in srgb, var(--danger) 60%, transparent);
 }
-.ap-btn--always:hover { color: var(--fg); border-color: var(--fg-dim); }
+.ap-btn--always:hover { background: var(--bg-hover); border-color: var(--focus-ring); }
 
 /* ── When .ap-row is rendered inline in the chat thread ─────────────────────── */
 .inline-approval-wrap {
@@ -2046,24 +2048,35 @@ button.ctx-mention:focus-visible {
 /* ── Input area ──────────────────────────────────────────────────────────────── */
 
 .input-area {
+  position: relative;
   display: flex;
   flex-direction: column;
   gap: 0;
   padding: 0;
-  /* The composer carries the active mode's colour as a 2px rule across the top
-     — no background wash, so the toolbar rows stay quiet. */
-  border-top: 2px solid var(--mode-accent, var(--border));
+  border-top: 1px solid var(--border);
   flex-shrink: 0;
-  transition: border-color var(--motion-med);
+}
+
+/* The active mode as a short stroke fading into the rule, not a full-width bar. */
+.input-area::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: -1px;
+  height: 2px;
+  background: linear-gradient(90deg, var(--mode-accent, var(--accent)), transparent 45%);
+  opacity: 0.85;
+  transition: background var(--motion-med);
+  pointer-events: none;
 }
 
 /* ── Bottom toolbar (settings + disconnect) ─────────────────────────────────── */
 .bottom-toolbar {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 4px 10px;
-  border-bottom: 1px solid var(--border);
+  gap: 4px;
+  padding: 5px 10px;
   font-size: 11px;
   color: var(--fg-dim);
 }
@@ -2340,36 +2353,42 @@ button.ctx-mention:focus-visible {
   border-radius: var(--radius-lg);
   width: 34px;
   height: 34px;
-  font-size: 18px;
+  font-size: 16px;
   cursor: pointer;
   flex-shrink: 0;
   display: flex;
   align-items: center;
   justify-content: center;
-  transition: background var(--motion-fast), transform var(--motion-fast);
+  transition: background var(--motion-fast), opacity var(--motion-fast), transform var(--motion-fast);
 }
 .send-btn:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--mode-accent, var(--accent)) 82%, #ffffff);
+  background: color-mix(in srgb, var(--mode-accent, var(--accent)) 85%, #ffffff);
 }
 .send-btn:active:not(:disabled) { transform: scale(0.96); }
-.send-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+/* Idle send reads as a quiet outline, not a dimmed block of colour. */
+.send-btn:disabled {
+  background: transparent;
+  color: var(--fg-dim);
+  box-shadow: inset 0 0 0 1px var(--border);
+  cursor: not-allowed;
+}
 
 .stop-btn {
   background: color-mix(in srgb, var(--error-fg) 12%, transparent);
   color: var(--error-fg);
-  border: 1px solid color-mix(in srgb, var(--error-fg) 60%, transparent);
+  border: 1px solid color-mix(in srgb, var(--error-fg) 45%, transparent);
   border-radius: var(--radius-lg);
   width: 34px;
   height: 34px;
-  font-size: 18px;
+  font-size: 14px;
   cursor: pointer;
   flex-shrink: 0;
   display: flex;
   align-items: center;
   justify-content: center;
-  transition: background 0.1s, opacity 0.1s;
+  transition: background var(--motion-fast), opacity var(--motion-fast);
 }
-.stop-btn:hover { opacity: 0.85; }
+.stop-btn:hover { background: color-mix(in srgb, var(--error-fg) 22%, transparent); }
 .stop-btn:disabled { opacity: 0.25; cursor: not-allowed; }
 
 /* ── Detach ─────────────────────────────────────────────────────────────────── */
@@ -2378,31 +2397,31 @@ button.ctx-mention:focus-visible {
    control that competes with Send would be pressed by accident. */
 .detach-btn {
   background: transparent;
-  color: var(--vscode-descriptionForeground, #9d9d9d);
-  border: 1px solid var(--vscode-widget-border, #3c3c3c);
-  border-radius: 4px;
-  width: 24px;
-  height: 20px;
-  font-size: 11px;
+  color: var(--fg-dim);
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  width: 26px;
+  height: 24px;
+  font-size: 14px;
   cursor: pointer;
   flex-shrink: 0;
   display: flex;
   align-items: center;
   justify-content: center;
-  transition: background 0.1s, color 0.1s;
+  transition: background var(--motion-fast), color var(--motion-fast), border-color var(--motion-fast);
 }
 
 .detach-btn:hover {
-  background: var(--vscode-toolbar-hoverBackground, #2a2d2e);
-  color: var(--vscode-foreground, #ccc);
+  background: var(--bg-hover);
+  color: var(--fg);
 }
 
 /* Held on, so the standing state is visible without reading a tooltip — and still a
    button, because the decision is revocable until the window actually closes. */
 .detach-btn.detached {
-  color: var(--vscode-editorWarning-foreground, #cca700);
-  border-color: var(--vscode-editorWarning-foreground, #cca700);
-  background: var(--vscode-inputValidation-warningBackground, #352a05);
+  color: var(--warn);
+  border-color: color-mix(in srgb, var(--warn) 45%, transparent);
+  background: color-mix(in srgb, var(--warn) 12%, transparent);
 }
 
 /* Once detached it is a standing fact about the run, not an action: no hover, no
@@ -2426,6 +2445,7 @@ button.ctx-mention:focus-visible {
   inset: 0;
   z-index: 300;
   background: rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(2px);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -2436,13 +2456,14 @@ button.ctx-mention:focus-visible {
   position: relative;
   max-width: 420px;
   width: 100%;
-  background: var(--vscode-editorWidget-background, #252526);
-  border: 1px solid var(--vscode-widget-border, #3c3c3c);
-  border-radius: 6px;
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--warn);
+  border-radius: var(--radius-lg);
   padding: 14px 16px;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+  box-shadow: var(--shadow-2);
   font-size: 12px;
-  color: var(--vscode-foreground, #ccc);
+  color: var(--fg);
 }
 
 .disconnect-title {
@@ -2461,12 +2482,12 @@ button.ctx-mention:focus-visible {
 
 .disconnect-list li {
   margin: 2px 0;
-  overflow-wrap: anywhere;
+  overflow-wrap: break-word;
 }
 
 .disconnect-note {
   margin: 0 0 12px;
-  color: var(--vscode-descriptionForeground, #9d9d9d);
+  color: var(--fg-dim);
   line-height: 1.45;
 }
 
@@ -2479,46 +2500,49 @@ button.ctx-mention:focus-visible {
 
 .disconnect-primary,
 .disconnect-secondary {
-  border-radius: 4px;
+  border-radius: var(--radius-md);
   padding: 5px 12px;
   font-size: 12px;
   cursor: pointer;
   border: 1px solid transparent;
+  transition: background var(--motion-fast), border-color var(--motion-fast);
 }
 
 .disconnect-primary {
-  background: var(--vscode-button-background, #0e639c);
-  color: var(--vscode-button-foreground, #fff);
+  background: var(--accent);
+  color: var(--accent-fg);
+  font-weight: 500;
 }
 
-.disconnect-primary:hover { opacity: 0.9; }
+.disconnect-primary:hover { background: var(--accent-hover); }
 
 /* The destructive answer reads as one, and is not the default: it is not where focus
    lands and not what Enter presses. */
 .disconnect-secondary {
   background: transparent;
-  color: var(--vscode-editorWarning-foreground, #cca700);
-  border-color: var(--vscode-editorWarning-foreground, #cca700);
+  color: var(--warn);
+  border-color: color-mix(in srgb, var(--warn) 60%, transparent);
 }
 
 .disconnect-secondary:hover {
-  background: var(--vscode-inputValidation-warningBackground, #352a05);
+  background: color-mix(in srgb, var(--warn) 12%, transparent);
 }
 
 .disconnect-close {
   position: absolute;
-  top: 6px;
+  top: 8px;
   right: 8px;
   background: transparent;
   border: none;
-  color: var(--vscode-descriptionForeground, #9d9d9d);
+  border-radius: var(--radius-sm);
+  color: var(--fg-dim);
   font-size: 16px;
   line-height: 1;
   cursor: pointer;
-  padding: 2px 4px;
+  padding: 2px 5px;
 }
 
-.disconnect-close:hover { color: var(--vscode-foreground, #ccc); }
+.disconnect-close:hover { color: var(--fg); background: var(--bg-hover); }
 
 /* ── Plan bar ────────────────────────────────────────────────────────────────── */
 
@@ -3068,21 +3092,34 @@ button.ctx-mention:focus-visible {
   padding: 4px 6px;
 }
 
+/* Toolbar controls are ghost buttons: no frame at rest, a soft fill on hover. */
 .settings-btn {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 5px;
+  height: 24px;
   background: transparent;
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  padding: 2px 7px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  padding: 0 7px;
   cursor: pointer;
   color: var(--fg-dim);
   font-size: 11px;
   font-family: var(--font);
-  transition: background 0.1s, border-color 0.1s;
+  transition: background var(--motion-fast), border-color var(--motion-fast), color var(--motion-fast);
 }
-.settings-btn:hover { background: var(--bg-hover); border-color: var(--fg-dim); }
+.settings-btn:hover,
+.settings-btn[aria-expanded="true"] {
+  background: var(--bg-hover);
+  color: var(--fg);
+}
+
+.ui-icon {
+  width: 1em;
+  height: 1em;
+  flex-shrink: 0;
+  display: block;
+}
 
 .disconnect-btn {
   background: transparent;
@@ -3169,20 +3206,21 @@ button.ctx-mention:focus-visible {
 }
 
 .resume-modal {
-  background: var(--vscode-editorWidget-background, var(--bg-input));
-  border: 1px solid var(--vscode-editorWidget-border, var(--border));
-  border-radius: 6px;
-  padding: 16px;
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 14px 16px;
   width: min(280px, 90%);
   display: flex;
   flex-direction: column;
   gap: 10px;
-  box-shadow: 0 4px 24px rgba(0,0,0,0.4);
+  box-shadow: var(--shadow-2);
 }
 
 .resume-title {
   font-size: 13px;
-  font-weight: 700;
+  font-weight: 600;
+  line-height: 1.4;
   color: var(--fg);
 }
 
@@ -3194,12 +3232,13 @@ button.ctx-mention:focus-visible {
 
 .resume-btn {
   flex: 1;
-  padding: 5px 10px;
-  border-radius: 4px;
+  padding: 6px 10px;
+  border-radius: var(--radius-md);
   border: none;
   cursor: pointer;
   font-size: 12px;
-  font-weight: 600;
+  font-weight: 500;
+  transition: background var(--motion-fast);
 }
 
 .resume-btn--yes {
@@ -3215,7 +3254,8 @@ button.ctx-mention:focus-visible {
 .uq-modal {
   width: min(360px, 92%);
   --card-accent: var(--mode-accent, var(--accent));
-  border-color: color-mix(in srgb, var(--card-accent) 45%, var(--border));
+  border-left: 3px solid var(--card-accent);
+  box-shadow: var(--shadow-1);
 }
 
 .uq-modal--plan { --card-accent: var(--vscode-charts-red, #f14c4c); }
@@ -3242,11 +3282,11 @@ button.ctx-mention:focus-visible {
   font-size: 10px;
   font-weight: 700;
   text-transform: uppercase;
-  letter-spacing: 0.04em;
-  color: var(--mode-accent-fg, #ffffff);
-  background: var(--card-accent, var(--vscode-button-background, var(--bg-hover)));
+  letter-spacing: 0.05em;
+  color: var(--card-accent, var(--fg));
+  background: color-mix(in srgb, var(--card-accent, var(--fg-dim)) 16%, transparent);
   padding: 2px 8px;
-  border-radius: 10px;
+  border-radius: 999px;
 }
 
 /* Whose question this is, when it is not the turn on screen. Quieter than the header
@@ -3281,17 +3321,21 @@ button.ctx-mention:focus-visible {
   gap: 2px;
   text-align: left;
   padding: 7px 10px;
-  border-radius: 4px;
+  border-radius: var(--radius-md);
   border: 1px solid var(--border);
-  background: var(--bg-hover);
+  background: transparent;
   color: var(--fg);
   cursor: pointer;
+  transition: background var(--motion-fast), border-color var(--motion-fast);
 }
-.uq-option:hover { border-color: color-mix(in srgb, var(--card-accent) 60%, var(--fg-dim)); }
+.uq-option:hover {
+  background: var(--bg-hover);
+  border-color: color-mix(in srgb, var(--card-accent) 60%, var(--border));
+}
 
 .uq-option--active {
   border-color: var(--card-accent, var(--fg));
-  background: color-mix(in srgb, var(--card-accent, var(--fg)) 18%, transparent);
+  background: color-mix(in srgb, var(--card-accent, var(--fg)) 14%, transparent);
 }
 
 .uq-option-label {
@@ -3313,7 +3357,7 @@ button.ctx-mention:focus-visible {
   width: 100%;
   box-sizing: border-box;
   padding: 6px 8px;
-  border-radius: 4px;
+  border-radius: var(--radius-md);
   border: 1px solid var(--border);
   background: var(--bg-input);
   color: var(--fg);
@@ -3333,20 +3377,25 @@ button.ctx-mention:focus-visible {
 /* ── Mode switcher (its own toolbar control) ─────────────────────────────── */
 .mode-wrapper { position: relative; }
 
+/* The mode as a tinted pill: its colour, without a heavy outline or shouting caps. */
 .mode-btn {
-  gap: 5px;
-  color: var(--mode-accent);
-  border-color: color-mix(in srgb, var(--mode-accent) 55%, transparent);
-  background: transparent;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
+  gap: 6px;
+  padding: 0 9px 0 8px;
+  color: var(--fg);
+  border-color: color-mix(in srgb, var(--mode-accent) 30%, transparent);
+  background: color-mix(in srgb, var(--mode-accent) 12%, transparent);
+  border-radius: 999px;
+  font-weight: 500;
+  text-transform: capitalize;
   transition: color var(--motion-med), border-color var(--motion-med), background var(--motion-med);
 }
-.mode-btn:hover {
-  background: var(--mode-tint);
-  border-color: var(--mode-accent);
+.mode-btn:hover,
+.mode-btn[aria-expanded="true"] {
+  color: var(--fg);
+  background: color-mix(in srgb, var(--mode-accent) 20%, transparent);
+  border-color: color-mix(in srgb, var(--mode-accent) 50%, transparent);
 }
+.mode-btn .mode-btn-icon { color: var(--mode-accent); }
 /* MIMIR brand mark (see MimirMark.tsx) — sized in em so it tracks the parent's
    font-size wherever it stands in for an emoji. */
 .mimir-mark {
@@ -3366,7 +3415,7 @@ button.ctx-mention:focus-visible {
   width: 1.35em;
   height: 1.35em;
 }
-.mode-btn-caret { font-size: 9px; opacity: 0.8; }
+.mode-btn-caret { font-size: 9px; opacity: 0.6; }
 
 /* Per-mode swatch on the picker rows, so the colour is learnable before the
    mode is active. Mirrors the --mode-accent values above. */
@@ -3397,27 +3446,28 @@ button.ctx-mention:focus-visible {
   justify-content: center;
   padding: 0;
   background: transparent;
+  border-color: var(--border);
+  border-radius: var(--radius-lg);
   transition: color var(--motion-med), border-color var(--motion-med), background var(--motion-med);
 }
 .approval-btn--auto {
-  --approval-accent: var(--vscode-editorWarning-foreground, #cca700);
+  --approval-accent: var(--warn);
   color: var(--approval-accent);
-  border-color: color-mix(in srgb, var(--approval-accent) 55%, transparent);
-}
-.approval-btn--auto:hover {
+  border-color: color-mix(in srgb, var(--approval-accent) 40%, transparent);
   background: color-mix(in srgb, var(--approval-accent) 10%, transparent);
-  border-color: var(--approval-accent);
+}
+.approval-btn--auto:hover,
+.approval-btn--auto[aria-expanded="true"] {
+  color: var(--approval-accent);
+  background: color-mix(in srgb, var(--approval-accent) 18%, transparent);
+  border-color: color-mix(in srgb, var(--approval-accent) 60%, transparent);
 }
 
-/* ⚡⚡ is two glyphs in the width of one ↑, so the icon shrinks to fit rather than
-   letting the widest mode set the column. */
 .approval-btn-icon {
   display: inline-flex;
   align-items: center;
-  font-size: 12px;
+  font-size: 14px;
   line-height: 1;
-  max-width: 100%;
-  overflow: hidden;
 }
 
 /* The picker hangs above the button and is pinned to the right edge: at the far
@@ -3445,11 +3495,10 @@ button.ctx-mention:focus-visible {
    gear was a 12px glyph on a dim foreground, which is small for the control that holds
    every agent setting. */
 .settings-gear {
+  display: inline-flex;
   font-size: 15px;
   line-height: 1;
-  color: var(--fg);
 }
-.settings-btn:hover .settings-gear { color: var(--vscode-focusBorder, var(--fg)); }
 
 .settings-popover {
   position: absolute;

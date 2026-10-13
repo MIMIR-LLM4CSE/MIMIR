@@ -1,6 +1,7 @@
 import React from "react";
 import type { ApprovalMode } from "../types";
 import { APPROVAL_OPTIONS } from "./ApprovalSwitcher";
+import { DetachIcon } from "./icons";
 
 interface Props {
   /** The autonomy the run will have while unattended — whatever is set right here. */
@@ -43,7 +44,7 @@ export const DetachButton: React.FC<Props> = ({
         title="MIMIR keeps working when this window closes, and reopening the workspace comes back to it. Click to take that back: the window owns the server again and closing it stops it."
         aria-label="Stop keeping the server alive without this window"
       >
-        ⛓️‍💥
+        <DetachIcon />
       </button>
     );
   }
@@ -61,7 +62,7 @@ export const DetachButton: React.FC<Props> = ({
       title={`Keep working without me. At "${option?.label ?? mode}" ${consequence}.`}
       aria-label="Keep working without me"
     >
-      ⛓️‍💥
+      <DetachIcon />
     </button>
   );
 };
