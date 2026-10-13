@@ -180,7 +180,7 @@ def grantable_tools(agent: Any) -> dict[str, str]:
     * the **sub-agent rung** the user set (``config.constants.SUBAGENT_LEVELS``): at
       "explore" the surface is read-only whatever mode the orchestrator is in, because
       a child that writes is something the user hands over, not something the model
-      decides. At "parallel" the writing tools may be granted, and the child that gets
+      decides. At "build" the writing tools may be granted, and the child that gets
       one works in a copy of the repository — never in this tree;
     * :func:`~context.capabilities.reserved_for_main`, the tools a child is never
       granted, read off the capabilities the servers declare.
@@ -192,7 +192,7 @@ def grantable_tools(agent: Any) -> dict[str, str]:
     tools = agent.advertised_tools()
     level = getattr(agent, "subagent_level", DEFAULT_SUBAGENT_LEVEL)
     mode = getattr(agent, "mode", "")
-    if mode in READONLY_MODES or not subagent_level_allows(level, "parallel"):
+    if mode in READONLY_MODES or not subagent_level_allows(level, "build"):
         tools = tools_for_readonly_mode(
             tools, agent.tool_caps, mode=mode if mode in READONLY_MODES else "ask")
     granted: dict[str, str] = {}

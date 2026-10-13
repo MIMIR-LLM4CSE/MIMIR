@@ -814,9 +814,9 @@ def build_system_content(
         # a team of writers to a session where sub-agents may only read is the same
         # phantom instruction the gate above exists to prevent.
         section = _SECTION_SUBAGENTS
-        if subagent_level_allows(subagent_level, "parallel"):
+        if subagent_level_allows(subagent_level, "build"):
             section += _SECTION_SUBAGENTS_LEAD
-        if subagent_level_allows(subagent_level, "parallel"):
+        if subagent_level_allows(subagent_level, "build"):
             section += _SECTION_SUBAGENTS_AXES
         system_content += _section("\n" + section)
 

@@ -6,6 +6,7 @@ import os
 from typing import Any, Awaitable, Callable, Iterable
 
 from ...config import (
+    SUBAGENT_LEVEL_ALIASES,
     SUBAGENT_LEVELS,
     TEMPERATURE_BACKENDS, TEMPERATURE_MAX, TEMPERATURE_MIN, THINKING_DEPTH_LABELS,
     parse_temperature, thinking_depth_from_label,
@@ -236,11 +237,12 @@ async def handle_chat_command(
         if len(parts) == 1:
             return True, (
                 f"\nSub-agents may currently: {current}  "
-                "(explore=read only; parallel=+edit and run commands, each in a copy "
+                "(explore=read only; build=+edit and run commands, each in a copy "
                 "of the repository on its own branch)\n"
             )
         val = parts[1].lower()
-        if val not in SUBAGENT_LEVELS:
+        # The rung's former name is still accepted; `set_subagent_level` resolves it.
+        if val not in SUBAGENT_LEVELS and val not in SUBAGENT_LEVEL_ALIASES:
             return True, f"\n❌ Usage: /subagents {'|'.join(SUBAGENT_LEVELS)}\n"
         return True, f"\nSub-agents may now: {agent.set_subagent_level(val)}.\n"
 

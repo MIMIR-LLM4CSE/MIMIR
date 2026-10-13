@@ -2054,23 +2054,33 @@ class _AgentWorker:
         agent = self._agent
         declared = _declared(getattr(agent, "tool_caps", None))
 
+        async def _ask(tool: str, spec: dict) -> dict | None:
+            owner = (getattr(agent, "tool_owner", None) or {}).get(tool)
+            if owner is None:
+                return None
+            args = dict(spec.get("args") or {})
+            if force and spec.get("refresh_arg"):
+                args[str(spec["refresh_arg"])] = True
+            try:
+                raw = await agent.sessions[owner].call_tool(tool, args)
+                text = agent._normalize_tool_content(raw)
+                return json.loads(text) if isinstance(text, str) else (text or {})
+            except Exception as exc:
+                # One server that cannot answer costs its own section, never the
+                # panel: the others have already said something worth showing.
+                logger.debug("panel section %r failed: %s", tool, exc)
+                return None
+
         async def _run() -> list[dict]:
+            # All at once: the sections are independent, they are owned by different
+            # processes, and the slow one is slow because it is waiting on a scheduler.
+            # Asked in turn, the drawer cost the sum of every server's wait; asked
+            # together it costs the longest. The order below is still the declared one.
+            payloads = await asyncio.gather(
+                *(_ask(tool, spec) for tool, spec in declared))
             out: list[dict] = []
-            for tool, spec in declared:
-                owner = (getattr(agent, "tool_owner", None) or {}).get(tool)
-                if owner is None:
-                    continue
-                args = dict(spec.get("args") or {})
-                if force and spec.get("refresh_arg"):
-                    args[str(spec["refresh_arg"])] = True
-                try:
-                    raw = await agent.sessions[owner].call_tool(tool, args)
-                    text = agent._normalize_tool_content(raw)
-                    payload = json.loads(text) if isinstance(text, str) else (text or {})
-                except Exception as exc:
-                    # One server that cannot answer costs its own section, never the
-                    # panel: the others have already said something worth showing.
-                    logger.debug("panel section %r failed: %s", tool, exc)
+            for (tool, spec), payload in zip(declared, payloads):
+                if payload is None:
                     continue
                 lines = payload.get("lines") or []
                 detail = payload.get("detail") or ""

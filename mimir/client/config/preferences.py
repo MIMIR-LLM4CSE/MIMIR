@@ -18,7 +18,7 @@ Schema::
       "disabled_skills":  ["proxy-optimize"],
       "disabled_nudges":  ["authz_reminder"],
       "temperatures":     {"qwen3-32b": 0.6},
-      "subagent_level":   "parallel"
+      "subagent_level":   "build"
     }
 
 Only *disabled* names are stored (an absent name is enabled), so newly added servers,

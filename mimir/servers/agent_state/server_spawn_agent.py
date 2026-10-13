@@ -110,8 +110,12 @@ _CALLER_MODE_META = "mimir/mode"
 # How far the user lets a sub-agent go (client config.constants.SUBAGENT_LEVELS,
 # config.models.SUBAGENT_LEVEL_META). A rung hands something over, so an absent or
 # unknown one is read as the weakest: a child that only reads.
-_SUBAGENT_LEVELS = ("explore", "parallel")
+_SUBAGENT_LEVELS = ("explore", "build")
 _DEFAULT_SUBAGENT_LEVEL = _SUBAGENT_LEVELS[0]
+# The rung's former name, still read: it is in the preferences file of everyone who
+# set it, and an unknown rung is read as the weakest — which would take away a right
+# the user had granted (client config.constants.SUBAGENT_LEVEL_ALIASES).
+_SUBAGENT_LEVEL_ALIASES = {"parallel": "build"}
 _SUBAGENT_LEVEL_META = "mimir/subagent_level"
 
 
@@ -655,12 +659,19 @@ def _caller_mode(ctx: Context | None) -> str:
 
 
 def _subagent_level(ctx: Context | None) -> str:
-    """How far the user lets this child go; the weakest rung when unsaid or unknown."""
+    """How far the user lets this child go; the weakest rung when unsaid or unknown.
+
+    The former name of a rung resolves here rather than being read as unknown: a client
+    of the previous version says "parallel", and reading that as the weakest rung would
+    take away the right its user granted.
+    """
     level = str(_meta_value(ctx, _SUBAGENT_LEVEL_META) or "").strip().lower()
+    level = _SUBAGENT_LEVEL_ALIASES.get(level, level)
     return level if level in _SUBAGENT_LEVELS else _DEFAULT_SUBAGENT_LEVEL
 
 
 def _level_allows(level: str, required: str) -> bool:
+    level = _SUBAGENT_LEVEL_ALIASES.get(level, level)
     return _SUBAGENT_LEVELS.index(level) >= _SUBAGENT_LEVELS.index(required)
 
 
@@ -1561,7 +1572,7 @@ async def spawn_agent(
     # executing tool is working, everything else is reconnaissance. Computed here
     # because the budget has to be known before the run starts, and the tool
     # classification that _drive_sub_agent uses is not available until it has connected.
-    working = _level_allows(level, "parallel") and bool(set(requested) & _caller_writers(ctx))
+    working = _level_allows(level, "build") and bool(set(requested) & _caller_writers(ctx))
     ceiling = (SUBAGENT_WORKING_BUDGET_SECS if working
                else SUBAGENT_EXPLORE_BUDGET_SECS)
     budget = max(SUBAGENT_MIN_BUDGET_SECS,
@@ -2098,7 +2109,7 @@ async def _drive_sub_agent(
     # tool and it works, which is the only way a granted shell can actually run a build.
     # Set on the agent as well as passed to run(), so the loop's mode tracking starts
     # where it ends and reads no switch on the first step.
-    working = _level_allows(level, "parallel") and any(
+    working = _level_allows(level, "build") and any(
         has_cap(name, PLAN_BLOCKED, agent.tool_caps)
         or has_cap(name, PLAN_READONLY, agent.tool_caps)
         for name in requested

@@ -2801,6 +2801,53 @@ class ClientHelperTests(unittest.TestCase):
             os.unlink(tmp_path)
 
 
+class SubAgentRungTests(unittest.TestCase):
+    """The ladder, and the name a rung used to have.
+
+    "parallel" named the consequence — children at work at the same time — rather than
+    what the user grants, which is the right to change files and run commands. Renaming
+    it is a one-line change here and a trap everywhere else: the old name is in the
+    preferences file of everyone who set it, and an unknown rung is deliberately read as
+    the weakest one, so the rename would quietly take away a granted right.
+    """
+
+    def test_the_rungs_are_explore_then_build(self):
+        from mimir.client.config.constants import SUBAGENT_LEVELS
+        self.assertEqual(SUBAGENT_LEVELS, ("explore", "build"))
+
+    def test_a_stored_parallel_still_means_the_writing_rung(self):
+        from mimir.client.config.constants import (
+            clamp_subagent_level, subagent_level_allows)
+        self.assertEqual(clamp_subagent_level("parallel"), "build")
+        self.assertTrue(subagent_level_allows("parallel", "build"))
+
+    def test_an_unknown_rung_still_concedes_nothing(self):
+        from mimir.client.config.constants import (
+            clamp_subagent_level, subagent_level_allows)
+        self.assertEqual(clamp_subagent_level("whatever"), "explore")
+        self.assertFalse(subagent_level_allows("whatever", "build"))
+
+    def test_the_server_that_grants_the_tools_reads_the_old_name_too(self):
+        """Both ends have their own copy of the ladder, and both must agree.
+
+        The rung travels to the delegation server in a call's metadata, so a client of
+        the previous version says "parallel" to a server of this one.
+        """
+        import importlib.util
+        import sys
+        from pathlib import Path as _Path
+        root = _Path(__file__).resolve().parents[1] / "servers"
+        for sub in ("_shared", "agent_state"):
+            if str(root / sub) not in sys.path:
+                sys.path.insert(0, str(root / sub))
+        spec = importlib.util.spec_from_file_location(
+            "server_spawn_agent_rungs", root / "agent_state" / "server_spawn_agent.py")
+        spawn = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(spawn)
+        self.assertEqual(spawn._SUBAGENT_LEVELS, ("explore", "build"))
+        self.assertTrue(spawn._level_allows("parallel", "build"))
+
+
 class ModulesCommandTests(unittest.TestCase):
     """/modules — the user's own handle on the module catalogue.
 

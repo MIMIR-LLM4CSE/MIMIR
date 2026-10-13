@@ -1249,7 +1249,7 @@ def _panel_profile(force: bool = False) -> dict:
 @mcp.tool(**tool_caps(kind="modules",
     caps=[PANEL_REPORT, ENV_DISCOVERY],
     read_only=True,
-    panel={"section": "Machine", "order": 40, "refresh_arg": "refresh"},
+    panel={"section": "Machine", "order": 10, "refresh_arg": "refresh"},
     label="Machine profile",
 ))
 def platform_panel_report(refresh: bool = False) -> dict:
@@ -1257,8 +1257,9 @@ def platform_panel_report(refresh: bool = False) -> dict:
 
     Deliberately narrow. On a cluster this is the login node — the one machine nothing
     is measured on — so it is a landmark, not the answer to "what will this run on";
-    the Cluster section answers that, and this one sits after it. On a laptop it is the
-    whole story, which is why it stays.
+    the Cluster section answers that. It sits first all the same: it is the one section
+    that is always there and always cheap, so the drawer has something true in it before
+    anything has been asked of a scheduler. On a laptop it is the whole story.
 
     The profile is probed at most once every few minutes (see ``_panel_profile``): the
     panel refreshes on a timer while it is open and whenever a turn ends, and hardware

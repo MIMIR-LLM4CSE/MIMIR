@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useState } from "react";
-import type { PanelSection, WatchedRun } from "../types";
+import type { PanelSection } from "../types";
 import { PanelGroupList } from "./PanelGroups";
 import { PanelResizer, usePanelWidth } from "./PanelResizer";
 import { toggle } from "./panelGroupUtils";
@@ -8,7 +8,6 @@ import { toggle } from "./panelGroupUtils";
 const PANEL_POLL_MS = 20000;
 
 interface Props {
-  runs: WatchedRun[];
   sections: PanelSection[];
   /** Ask again, serving whatever the servers have cached. The timer's call. */
   onRefresh: () => void;
@@ -26,11 +25,11 @@ interface Props {
 /**
  * What is specific to scientific computing, in one drawer.
  *
- * Almost none of it is the client's own. The optimisation in progress, the machine, the
- * clusters this workspace reaches — each is filled by the server that owns those facts,
- * asked by capability rather than by name, so a plugin server adds its own section
- * without a line changing here. What stays client-side is the runs still going outside
- * the current turn, because that is this process's own watcher state.
+ * None of it is the client's own. The machine, the clusters this workspace reaches, the
+ * optimisation in progress — each is filled by the server that owns those facts, asked
+ * by capability rather than by name, so a plugin server adds its own section without a
+ * line changing here. Nearest first: the host, then the clusters it reaches, then what
+ * is being optimised on them.
  *
  * The sub-agent rung is deliberately not here: how far delegation may go is an agent
  * setting, set once alongside thinking depth and enforcement, not a fact about the
@@ -39,11 +38,12 @@ interface Props {
  *
  * A server's section may answer with a tree as well as with lines — the clusters, the
  * kinds of machine on each, what a probe found on one — and the runs in flight are hung
- * on the machines they are running on. Which rows are open is held here, because it
+ * on the machines they are running on, as badges. That is the only place they appear: a
+ * flat list of them under the sections said where a run was not, which is the one thing
+ * a reader of this drawer never asks. Which rows are open is held here, because it
  * belongs to the reader rather than to any one section.
  */
 export const SciencePanel: React.FC<Props> = ({
-  runs,
   sections,
   onRefresh,
   onReload,
@@ -61,11 +61,12 @@ export const SciencePanel: React.FC<Props> = ({
   );
   const { width, handleProps } = usePanelWidth("science");
 
-  // Opening the drawer is the one ask that must not be answered from a cache: it is
-  // also the ask that may have to start the agent whose servers hold the answers.
+  // Opening the drawer serves whatever the servers have cached, and starts this
+  // conversation's agent if it has none. It is not a re-read: a drawer that probed
+  // every cluster each time it was opened took seconds to say what it already knew.
   useEffect(() => {
-    onReload();
-  }, [onReload]);
+    onRefresh();
+  }, [onRefresh]);
 
   // And while it stays open. A queue moves, a job ends, a partition fills — none of
   // which happens inside a turn, so the panel cannot be left to the turn's own
@@ -121,19 +122,6 @@ export const SciencePanel: React.FC<Props> = ({
             {section.detail && <div className="science-detail">{section.detail}</div>}
           </div>
         ))}
-
-        <div className="science-section">
-          <div className="science-section-title">Runs outside this turn</div>
-          {/* The ones no machine claimed. A run on a scheduler this panel knows is a
-              badge on that machine's row instead, where it means more. */}
-          {runs.length === 0 && <div className="sessions-empty">Nothing running.</div>}
-          {runs.map((run) => (
-            <div className="science-line" key={run.job_key}>
-              <span className="science-line-label">{run.kind || run.server || "run"}</span>
-              <span className="science-line-value">{run.job_key}</span>
-            </div>
-          ))}
-        </div>
       </div>
 
       <PanelResizer label="scientific computing" handleProps={handleProps} />

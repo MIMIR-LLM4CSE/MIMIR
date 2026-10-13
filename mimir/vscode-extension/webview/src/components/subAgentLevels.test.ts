@@ -3,7 +3,7 @@ import { SUBAGENT_LEVEL_OPTIONS } from "./subAgentLevels";
 
 describe("SUBAGENT_LEVEL_OPTIONS", () => {
   it("mirrors the ladder in client/config/constants.py, weakest first", () => {
-    expect(SUBAGENT_LEVEL_OPTIONS.map((o) => o.value)).toEqual(["explore", "parallel"]);
+    expect(SUBAGENT_LEVEL_OPTIONS.map((o) => o.value)).toEqual(["explore", "build"]);
   });
 
   it("has no rung for writing in the shared tree", () => {

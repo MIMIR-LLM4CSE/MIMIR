@@ -1259,7 +1259,7 @@ Tools:
     is refused with the list of usable ones. There is no fuzzy matching.
   - The result carries `model`, the model the child ran on.
   - **The user's setting decides what may be handed over at all** — `explore` or
-    `parallel` (`config.constants.SUBAGENT_LEVELS`), sent per call in the request
+    `build` (`config.constants.SUBAGENT_LEVELS`), sent per call in the request
     `_meta` (`mimir/subagent_level`). At `explore` the grantable table holds nothing
     that writes. There is deliberately no rung in between: sub-agents editing one
     shared tree overwrite each other in silence, so a child that writes gets a copy of

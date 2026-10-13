@@ -1031,7 +1031,7 @@ def _comparability_lines(cfg: dict, metric: str) -> list[dict]:
 @mcp.tool(**tool_caps(kind="proxy",
     caps=[PANEL_REPORT],
     read_only=True,
-    panel={"section": "Optimisation", "order": 20},
+    panel={"section": "Optimisation", "order": 50},
     label="Optimisation status",
 ))
 def proxy_panel_report() -> dict:

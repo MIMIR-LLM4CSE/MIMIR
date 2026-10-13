@@ -16,7 +16,6 @@ import type {
   PromptOrigin,
   SubAgent,
   SubAgentLevel,
-  WatchedRun,
   TodoItem,
   DiffEntry,
   QuestionSpec,
@@ -204,7 +203,6 @@ export const App: React.FC = () => {
   // Which rungs of that ladder the served model can honour — reported by the server
   // in "ready". Undefined until it arrives, which the control reads as the full ladder.
   const [thinkingProfile, setThinkingProfile] = useState<ThinkingProfile | undefined>(undefined);
-  const thinking = thinkingLevel > 0;
   const [streaming, setStreaming] = useState(true);
 
   const [contextMode, setContextMode] = useState<"compact" | "full">("full");
@@ -305,7 +303,6 @@ export const App: React.FC = () => {
   // the first one is built there are no servers to fill the sections, and the drawer
   // says that rather than showing an empty page.
   const [panelAgentReady, setPanelAgentReady] = useState(false);
-  const [watchedRuns, setWatchedRuns] = useState<WatchedRun[]>([]);
   const [showSciencePanel, setShowSciencePanel] = useState(false);
   const [showSubAgentsPanel, setShowSubAgentsPanel] = useState(false);
   // Cards raised by conversations the user is not reading, newest per conversation.
@@ -533,7 +530,6 @@ export const App: React.FC = () => {
         setSubAgentLevel(msg.subagent_level);
         setSubAgents(msg.subagents ?? []);
         setRunningSubAgents(msg.running ?? 0);
-        setWatchedRuns(msg.runs ?? []);
         // A conversation whose agent is not up yet carries no sections — the servers
         // that fill them are not running. What is on screen stays rather than being
         // blanked: the drawer asks again the moment the agent answers for itself.
@@ -794,16 +790,15 @@ export const App: React.FC = () => {
   const refreshSubAgents = useCallback(
     () => (send as any)({ type: "list_subagents" }), [send]);
   // One call fills the whole drawer: the sub-agents, the runs still going, and each
-  // server's own section.
+  // server's own section. Served from the servers' caches, so it is what the timer
+  // asks and what opening the drawer asks. `build` because before the first query of
+  // a session there is no agent holding the servers — which is why the clusters only
+  // ever appeared after the first request; it is a no-op once one is up.
   const refreshPanel = useCallback(
-    () => (send as any)({ type: "list_panel" }), [send]);
-  // The reader's own ask — the drawer opening, the ⟳ — and it is a different request
-  // from the one above in two ways. It tells the servers to read again rather than
-  // serve the caches they answer a timer from, which is why pressing ⟳ used to return
-  // the page the user had just read. And it builds this conversation's agent if it has
-  // none: the panel is filled by MCP servers, and before the first query of a session
-  // there is no agent holding any — which is why the clusters only ever appeared after
-  // the first request.
+    () => (send as any)({ type: "list_panel", build: true }), [send]);
+  // The ⟳, and only it: read again past every cache, including the per-host digest a
+  // server keeps for its lifetime. That costs an ssh to each cluster, which is a price
+  // worth paying when the reader asked for it and not when a drawer was opened.
   const reloadPanel = useCallback(() => {
     setPanelPending(true);
     (send as any)({ type: "list_panel", build: true, refresh: true });
@@ -1443,7 +1438,6 @@ export const App: React.FC = () => {
       {/* ── Scientific-computing panel ───────────────────────────────── */}
       {showSciencePanel && connection === "connected" && (
         <SciencePanel
-          runs={watchedRuns}
           sections={panelSections}
           onRefresh={refreshPanel}
           onReload={reloadPanel}
@@ -1795,8 +1789,9 @@ export const App: React.FC = () => {
                 aria-expanded={settingsOpen}
                 onClick={() => setSettingsOpen((o) => !o)}
               >
-                {thinking && <span className="settings-cap-pill">💭</span>}
-                {!streaming && <span className="settings-cap-pill">⏸</span>}
+                {/* The gear alone. The two pills beside it — reasoning on, streaming
+                    off — stated what the popover they open already says, and a button
+                    whose glyphs come and go is a button the eye has to re-find. */}
                 <span className="settings-gear">⚙</span>
               </button>
               {settingsOpen && (

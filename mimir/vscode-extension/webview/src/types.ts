@@ -484,9 +484,9 @@ export interface SessionMeta {
 }
 
 /** How far the user lets a sub-agent go. Mirrors config.constants.SUBAGENT_LEVELS:
- *  "explore" reads, "parallel" also writes — each in a copy of the repository, which
+ *  "explore" reads, "build" also writes — each in a copy of the repository, which
  *  is why there is no rung in between. */
-export type SubAgentLevel = "explore" | "parallel";
+export type SubAgentLevel = "explore" | "build";
 
 /** One line of a panel section, in the words of the server that filled it. */
 export interface PanelLine {

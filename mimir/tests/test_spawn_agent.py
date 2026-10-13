@@ -121,7 +121,7 @@ class _FakeAgent:
 
 def _run_child(tools: list[str] | None = None, answer: str = "done",
                agent: _FakeAgent | None = None, on_event=None,
-               approval_mode: str = "manual", level: str = "parallel"):
+               approval_mode: str = "manual", level: str = "build"):
     """Drive _run_sub_agent against a fake agent and the real server catalog."""
     agent = agent or _FakeAgent(answer)
     with _patched_agent(agent):
@@ -742,7 +742,7 @@ def _no_real_worktree():
 class _GrantCtx(_RecordingCtx):
     """A caller sending what it may grant, its mode and its rung, as the client does."""
 
-    def __init__(self, grantable=None, mode="agent", level="parallel"):
+    def __init__(self, grantable=None, mode="agent", level="build"):
         super().__init__()
         from mcp.types import RequestParams
         self.request_context = types.SimpleNamespace(meta=RequestParams.Meta(**{
@@ -810,7 +810,7 @@ class SubAgentLevelTests(unittest.TestCase):
     def test_there_is_no_rung_for_writing_in_the_shared_tree(self):
         """Two sub-agents editing one tree overwrite each other in silence, and no
         instruction to a model prevents that. So writing means a copy, or nothing."""
-        self.assertEqual(spawn._SUBAGENT_LEVELS, ("explore", "parallel"))
+        self.assertEqual(spawn._SUBAGENT_LEVELS, ("explore", "build"))
 
     def test_an_absent_or_unknown_rung_is_the_weakest(self):
         self.assertEqual(spawn._subagent_level(_RecordingCtx()), "explore")
@@ -1221,7 +1221,7 @@ class TimeBudgetTests(unittest.TestCase):
         self.assertEqual(budget, 600)
 
     def test_a_child_that_writes_gets_two_hours(self):
-        budget, _ = self._budget(_GrantCtx(level="parallel"), tools=["write_file"])
+        budget, _ = self._budget(_GrantCtx(level="build"), tools=["write_file"])
         self.assertEqual(budget, spawn.SUBAGENT_WORKING_BUDGET_SECS)
         self.assertEqual(budget, 7200)
 
@@ -1289,7 +1289,7 @@ class ForcedDetachmentTests(unittest.TestCase):
         return out
 
     def test_a_two_hour_child_is_detached_even_when_not_asked(self):
-        out = self._spawn(_GrantCtx(level="parallel"), tools=["write_file"],
+        out = self._spawn(_GrantCtx(level="build"), tools=["write_file"],
                           background=False)
         self.assertIn("background_job", out)
         self.assertIn("Detached automatically", out["note"])
@@ -1473,7 +1473,7 @@ class WorktreeTests(unittest.TestCase):
         with _patched_agent(agent), mock.patch.object(spawn, "_drive_sub_agent", _drive):
             out = asyncio.run(spawn.spawn_agent(
                 "vectorise the loop", tools=["write_file"], time_budget_secs=300,
-                ctx=_GrantCtx(level="parallel")))
+                ctx=_GrantCtx(level="build")))
         self.assertNotIn("background_job", out)   # premise: this call waited
         return out, agent
 
@@ -1690,7 +1690,7 @@ class WorktreeTests(unittest.TestCase):
         with mock.patch.dict(os.environ, {"MCP_FILES_ROOT": plain}), \
              _patched_agent(agent):
             out = asyncio.run(spawn.spawn_agent(
-                "axis", tools=["write_file"], ctx=_GrantCtx(level="parallel")))
+                "axis", tools=["write_file"], ctx=_GrantCtx(level="build")))
         self.assertEqual(out["status"], "error")
         self.assertIn("git repository", out["error"])
         self.assertEqual(agent.connected, [])
@@ -1700,7 +1700,7 @@ class WorktreeTests(unittest.TestCase):
         agent = _FakeAgent()
         with _patched_agent(agent):
             asyncio.run(spawn.spawn_agent("axis", tools=["read_file_lines"],
-                                          ctx=_GrantCtx(level="parallel")))
+                                          ctx=_GrantCtx(level="build")))
         self.assertEqual(self._branches(), ["main"])
 
 

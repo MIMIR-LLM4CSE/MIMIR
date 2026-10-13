@@ -214,19 +214,27 @@ def thinking_depth_from_label(label: str) -> int | None:
 #
 #   explore   read, search, navigate. What a sub-agent could do before this ladder
 #             existed, and what it falls back to whenever the rung is unknown.
-#   parallel  + editing and running commands — always in a git worktree of its own,
+#   build     + editing and running commands — always in a git worktree of its own,
 #             on its own branch. There is deliberately no rung in between: sub-agents
 #             editing one shared tree overwrite each other in silence (one reads a
 #             file, another rewrites it, the first writes back what it read), and no
 #             arbitration the model can be trusted with fixes that. A sub-agent that
 #             writes gets a copy, or it does not write.
-SUBAGENT_LEVELS: tuple[str, ...] = ("explore", "parallel")
+SUBAGENT_LEVELS: tuple[str, ...] = ("explore", "build")
 DEFAULT_SUBAGENT_LEVEL: str = SUBAGENT_LEVELS[0]
+
+# What this rung used to be called. "parallel" named the consequence — children at work
+# at the same time — rather than what the user is actually granting, which is the right
+# of a child to change files and run commands. It is still read: it is in the
+# preferences file of everyone who set it, and a rung that silently fell back to
+# "explore" would quietly take a granted right away.
+SUBAGENT_LEVEL_ALIASES: dict[str, str] = {"parallel": "build"}
 
 
 def clamp_subagent_level(level: str) -> str:
     """Resolve a rung name, falling back to the one that concedes nothing."""
     name = (level or "").strip().lower()
+    name = SUBAGENT_LEVEL_ALIASES.get(name, name)
     return name if name in SUBAGENT_LEVELS else DEFAULT_SUBAGENT_LEVEL
 
 

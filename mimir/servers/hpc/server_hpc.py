@@ -25,6 +25,8 @@ Safety model:
   allocation, so the local-validation hold has nothing to protect there.
 """
 
+import concurrent.futures
+import contextlib
 import hashlib
 import json
 import os
@@ -2177,8 +2179,18 @@ def _host_tree() -> list[dict]:
     machines: an unreachable cluster and an empty one are not the same thing, and only
     one of them is worth waiting for.
     """
+    hosts = slurm_hosts()
+    # Fill the memo for every host at once. Each miss is an ssh away and waits on a
+    # scheduler rather than on this process, so one after another the drawer cost the
+    # sum of the clusters it reaches; together it costs the slowest of them. Reads
+    # below still go through _cluster_digest, which now finds them already there.
+    if len(hosts) > 1:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=len(hosts)) as pool:
+            for done in [pool.submit(_cluster_digest, h) for h in hosts]:
+                with contextlib.suppress(Exception):
+                    done.result()
     groups = []
-    for host in slurm_hosts():
+    for host in hosts:
         name = _host_name(host)
         digest = _cluster_digest(host)
         group = {"id": f"host:{name}", "label": name, "host": name,
@@ -2218,11 +2230,13 @@ def _host_tree() -> list[dict]:
             if detail:
                 entry["detail"] = detail
             if not profiled:
-                entry["state"] = "warn"
-                entry["value"] = "not profiled"
-                # What the panel can offer instead of the answer: the request that
-                # would get it. The server writes the words because it is the end that
-                # knows the scheduler and the partition.
+                # No badge for it. A kind nothing has been probed on is the ordinary
+                # case — most workspaces never probe any — so "not profiled" on every
+                # row was a warning colour carrying no warning, and it sat next to the
+                # one thing on the row worth reading. What is offered instead is the
+                # request that would get the answer, inside the row once it is opened.
+                # The server writes the words because it is the end that knows the
+                # scheduler and the partition.
                 part = partitions[0] if partitions else ""
                 for candidate in partitions:
                     if candidate in (kind.get("partitions") or []):

@@ -32,7 +32,7 @@ _TOOLS = {
 
 
 def _agent(mode: str = "agent", disabled: set[str] | None = None,
-           level: str = "parallel"):
+           level: str = "build"):
     disabled = disabled or set()
     tools = [{"type": "function", "function": {"name": n}} for n in _TOOLS]
     owner = {n: s for n, (s, _) in _TOOLS.items()}
@@ -102,7 +102,7 @@ class TestSubAgentLevels:
         assert "read_file_lines" in granted
 
     def test_parallel_may_give_the_writing_tools(self):
-        assert "write_file" in grantable_tools(_agent(level="parallel"))
+        assert "write_file" in grantable_tools(_agent(level="build"))
 
     def test_an_agent_with_no_rung_is_treated_as_explore(self):
         """The absence of a choice is the cautious answer, not the permissive one."""
@@ -115,7 +115,7 @@ class TestSubAgentLevels:
 
     def test_the_rung_does_not_widen_a_readonly_mode(self):
         """A rung hands something over; it never takes a mode's word back."""
-        assert "write_file" not in grantable_tools(_agent(mode="plan", level="parallel"))
+        assert "write_file" not in grantable_tools(_agent(mode="plan", level="build"))
 
 
 class TestSubSessionEnv:

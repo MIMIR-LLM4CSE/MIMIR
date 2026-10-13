@@ -310,7 +310,7 @@ A few notes worth keeping:
   per-agent because a sub-agent runs with a subset of servers — and, since it is given a
   named list of tools, with a subset of those servers' tools too.
 - **How far a sub-agent may go is the user's setting, not the model's choice.** Two
-  rungs (`config.constants.SUBAGENT_LEVELS`): `explore` reads, `parallel` also writes.
+  rungs (`config.constants.SUBAGENT_LEVELS`): `explore` reads, `build` also writes.
   There is deliberately nothing in between — sub-agents editing one shared tree
   overwrite each other in silence, and no instruction to a model prevents it, so a
   child that writes gets a git worktree of its own or it does not write. Enforced at

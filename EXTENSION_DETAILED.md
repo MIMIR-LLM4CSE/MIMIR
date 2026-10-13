@@ -411,25 +411,31 @@ reloaded from disk splits again on the stored answer text. The CLI applies the s
 
 ## The scientific-computing panel
 
-A drawer beside the session list, opened with the `⚗` button. One of its sections is the
-client's own — the runs still going outside the current turn — and the rest are filled by
+A drawer beside the session list, opened with the `⚗` button. Its sections are filled by
 whichever servers declared `PANEL_REPORT`, asked by capability rather than by name. The
 panel renders what a server chose to say and interprets none of it, which is what lets a
 plugin server add a section with no change here. The sub-agent rung is not here: how far
 delegation may go is an agent setting, and it sits in the settings popover beside
 thinking depth and enforcement.
 
-**Three asks, and they are not the same request.** Opening the drawer and pressing `⟳`
-send `list_panel` with `build` and `refresh`; the 20s timer while it is open sends it
-bare. `refresh` travels to each section's tool as the argument that tool declared in its
-`panel` descriptor (`refresh_arg`), which is what makes the button read past the server's
-own cache — the HPC section's per-host digest is otherwise memoised for the life of the
-server, so a cluster unreachable at startup would stay invisible. `build` starts the
+**Two asks, and they are not the same request.** Opening the drawer and the 20s timer
+while it is open send `list_panel` with `build`; pressing `⟳` adds `refresh`. `refresh`
+travels to each section's tool as the argument that tool declared in its `panel`
+descriptor (`refresh_arg`), which is what makes the button read past the server's own
+cache — the HPC section's per-host digest is otherwise memoised for the life of the
+server, so a cluster unreachable at startup would stay invisible. It is the reader's
+button alone because it costs an `ssh` to every cluster; a drawer that re-probed each
+time it was opened took seconds to say what it already knew. `build` starts the
 conversation's agent when it has none: the sections come from MCP servers, a conversation
 holds none until its first query, and without this the drawer was empty until something
 had been asked of the model. The build is never awaited — the report goes out saying
 `agent_ready: false`, the drawer says so, and the worker's own `ready` is the cue to ask
 again.
+
+The sections are asked all at once rather than in turn: they are owned by different
+processes, and the slow ones are slow because they are waiting on a scheduler. The
+drawer costs the longest of those waits, not their sum — the same reason `_host_tree`
+reaches every registered scheduler concurrently.
 
 A section may answer with a tree as well as with lines. `groups` is recursive
 (`{id, label, value?, lines?, nodes?, detail?, groups?, action?, badges?}`) and

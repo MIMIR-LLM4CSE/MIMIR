@@ -84,6 +84,17 @@ class TestTheServersThatFillIt:
             assert "plan_blocked" not in caps and "code_exec" not in caps, name
 
 
+def _drain(loop, future):
+    """Turn the loop until the panel's coroutine is done.
+
+    It asks every server at once, so it yields once per section rather than once in
+    total; a single tick of the loop would read a half-filled list.
+    """
+    import asyncio
+    while not future.done():
+        loop.run_until_complete(asyncio.sleep(0))
+
+
 def test_the_worker_asks_by_capability_and_survives_a_silent_server(monkeypatch):
     """One server that cannot answer costs its own section, never the panel."""
     import asyncio
@@ -113,12 +124,59 @@ def test_the_worker_asks_by_capability_and_survives_a_silent_server(monkeypatch)
     worker._loop = loop
 
     future = worker.panel_sections()
-    loop.run_until_complete(asyncio.sleep(0))
+    _drain(loop, future)
     sections = future.result(timeout=5)
     loop.close()
 
     assert [s["section"] for s in sections] == ["Optimisation"]
     assert sections[0]["lines"] == [{"label": "state", "value": "running"}]
+
+
+def test_the_servers_are_all_asked_before_any_of_them_answers():
+    """Together, not in turn — and still in the declared order on the way out.
+
+    Each section is owned by a different process, and the slow ones are slow because
+    they are waiting on a scheduler. Asked one after another the drawer cost the sum
+    of those waits; asked at once it costs the longest of them.
+    """
+    import asyncio
+    import json
+    from mimir.client.ui.ws.ws_worker import _AgentWorker
+
+    started: list[str] = []
+    release = []
+
+    class _Session:
+        async def call_tool(self, tool, args):
+            started.append(tool)
+            await release[0]          # nobody answers until everyone has asked
+            return "x"
+
+    agent = types.SimpleNamespace(
+        tool_caps=_caps(machine={"section": "Machine", "order": 10},
+                        cluster={"section": "Cluster", "order": 20},
+                        proxy={"section": "Optimisation", "order": 30}),
+        tool_owner={"machine": "platform", "cluster": "hpc", "proxy": "proxy"},
+        sessions={"platform": _Session(), "hpc": _Session(), "proxy": _Session()},
+        _normalize_tool_content=lambda raw: json.dumps(
+            {"lines": [{"label": "l", "value": "v"}]}),
+    )
+    loop = asyncio.new_event_loop()
+    release.append(loop.create_future())
+    worker = object.__new__(_AgentWorker)
+    worker._agent = agent
+    worker._loop = loop
+
+    future = worker.panel_sections()
+    while len(started) < 3:
+        loop.run_until_complete(asyncio.sleep(0))
+    release[0].set_result(None)
+    _drain(loop, future)
+    sections = future.result(timeout=5)
+    loop.close()
+
+    assert started == ["machine", "cluster", "proxy"]
+    assert [s["section"] for s in sections] == ["Machine", "Cluster", "Optimisation"]
 
 
 def test_only_the_readers_own_refresh_reaches_past_a_servers_cache(monkeypatch):
@@ -154,7 +212,7 @@ def test_only_the_readers_own_refresh_reaches_past_a_servers_cache(monkeypatch):
 
     for force in (False, True):
         future = worker.panel_sections(force=force)
-        loop.run_until_complete(asyncio.sleep(0))
+        _drain(loop, future)
         future.result(timeout=5)
     loop.close()
 
@@ -231,7 +289,7 @@ def test_a_server_with_nothing_to_say_gets_no_heading():
     worker._loop = loop
 
     future = worker.panel_sections()
-    loop.run_until_complete(asyncio.sleep(0))
+    _drain(loop, future)
     sections = future.result(timeout=5)
     loop.close()
 
@@ -266,7 +324,7 @@ def test_a_section_that_only_has_groups_is_kept():
     worker._agent = agent
     worker._loop = loop
     future = worker.panel_sections()
-    loop.run_until_complete(asyncio.sleep(0))
+    _drain(loop, future)
     sections = future.result(timeout=5)
     loop.close()
 
@@ -311,6 +369,30 @@ def test_every_registered_scheduler_is_in_the_tree():
     assert [g["local"] for g in tree] == [True, False]
 
 
+def test_the_schedulers_are_all_reached_at_once():
+    """A digest this workspace does not hold yet is an ssh away, and the wait is the
+    cluster's, not this process's. Three of them one after another is three waits for
+    a reader who asked one question."""
+    import threading
+    hpc = _load("server_hpc_parallel", SERVERS_DIR / "hpc" / "server_hpc.py")
+    hpc._PANEL_CACHE.clear()
+    hosts = ["hpc1", "hpc2", "hpc3"]
+    barrier = threading.Barrier(len(hosts), timeout=5)
+    probed: set[str] = set()
+
+    def _slow(host):
+        if host not in probed:        # the first ask per host is the one that reaches
+            barrier.wait()            # raises unless all three are inside at once
+            probed.add(host)
+        return _DIGEST
+
+    with mock.patch.object(hpc, "slurm_hosts", return_value=hosts), \
+         mock.patch.object(hpc, "_cluster_digest", side_effect=_slow), \
+         mock.patch.object(hpc, "_read_node_profile", return_value=None):
+        tree = hpc._host_tree()
+    assert [g["label"] for g in tree] == hosts
+
+
 def test_a_silent_host_is_listed_as_unknown_not_as_empty():
     """An unreachable cluster and a cluster with no machines are not the same thing,
     and only one of them is worth waiting for."""
@@ -328,12 +410,17 @@ def test_a_node_kind_is_named_the_way_it_would_be_chosen():
     assert kind["nodes"] == ["gpu001", "gpu002"]
 
 
-def test_an_unprofiled_kind_says_so_and_offers_the_request_that_would_fix_it():
-    """The server writes the words: it is the end that knows the scheduler and the
-    partition, which keeps tool names out of the webview entirely."""
+def test_an_unprofiled_kind_offers_the_request_that_would_fix_it_and_says_nothing_else():
+    """The offer is inside the row; there is no badge beside its name.
+
+    Nothing has been probed in most workspaces, so a "not profiled" on every kind was a
+    warning colour carrying no warning — next to the one thing on the row worth reading.
+    The server still writes the request, because it is the end that knows the scheduler
+    and the partition, which keeps tool names out of the webview entirely.
+    """
     kind = _tree(["hpc1"], {"hpc1": _DIGEST})[0]["groups"][0]
-    assert kind["state"] == "warn"
-    assert kind["value"] == "not profiled"
+    assert "state" not in kind
+    assert "value" not in kind
     assert kind["action"]["kind"] == "probe"
     assert "'hpc1'" in kind["action"]["prompt"]
     assert "'gpu'" in kind["action"]["prompt"]
@@ -473,17 +560,17 @@ def test_the_worker_reports_what_its_poll_learned():
     assert "at" not in run
 
 
-def test_the_sections_read_from_the_work_outwards():
-    """Optimisation, then the cluster it runs on, then the host MIMIR itself sits on.
+def test_the_sections_read_from_the_machine_outwards():
+    """This host, then the clusters it reaches, then what is being optimised on them.
 
-    The order is the order of the question: what is being optimised, where it will run,
-    and — last, because on a cluster it is the one machine nothing is measured on —
-    this host.
+    Nearest first. The machine section is the one that is always there and always cheap,
+    so the drawer says something true before any scheduler has been asked anything; the
+    optimisation is last because it is the section a workspace most often has none of.
     """
     from mimir.tests import _golden_caps as golden
     declared = panel_sections(golden.build_declared_registry())
     assert [spec["section"] for _, spec in declared] == [
-        "Optimisation", "Cluster", "Machine"]
+        "Machine", "Cluster", "Optimisation"]
 
 
 def test_a_host_without_a_scheduler_reports_no_cluster_at_all():

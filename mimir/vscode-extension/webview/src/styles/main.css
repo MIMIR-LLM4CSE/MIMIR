@@ -3202,8 +3202,6 @@ button.ctx-mention:focus-visible {
   color: var(--fg);
 }
 
-.settings-cap-pill { font-size: 12px; }
-
 /* ── Approval switcher (its own toolbar control) ─────────────────────────────
    Sits beside the mode switcher rather than inside the settings popover: an auto
    mode answers the cards on the user's behalf, so it is a standing state that has
@@ -3263,7 +3261,15 @@ button.ctx-mention:focus-visible {
   border-color: var(--row-accent);
   color: var(--fg);
 }
-.settings-gear { font-size: 12px; }
+/* The whole content of the two toolbar buttons, so it carries their legibility: the
+   gear was a 12px glyph on a dim foreground, which is small for the control that holds
+   every agent setting. */
+.settings-gear {
+  font-size: 15px;
+  line-height: 1;
+  color: var(--fg);
+}
+.settings-btn:hover .settings-gear { color: var(--vscode-focusBorder, var(--fg)); }
 
 .settings-popover {
   position: absolute;
