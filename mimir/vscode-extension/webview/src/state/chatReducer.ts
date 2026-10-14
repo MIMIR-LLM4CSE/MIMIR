@@ -444,6 +444,12 @@ export function createChatReducer(makeId: () => string) {
       case "session_loaded_messages":
         return {
           ...state,
+          // Past every stamp the stored messages carry: a counter behind them gives
+          // the next live rows smaller stamps, and the last stored message is then
+          // read as part of the step in flight and pinned below it.
+          nextSeq: action.messages.reduce(
+            (n, m) => (typeof m.seq === "number" && m.seq >= n ? m.seq + 1 : n),
+            state.nextSeq),
           // What a run was doing is not worth restoring: it described a moment, and
           // the watcher that could have refreshed it may have died with the process
           // that wrote the file. Left in place, a row saved mid-build would come back

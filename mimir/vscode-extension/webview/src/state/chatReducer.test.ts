@@ -563,6 +563,21 @@ describe("chatReducer", () => {
     expect(row.jobKey).toBeUndefined();
   });
 
+  it("stamps live rows after a reloaded session's own stamps", () => {
+    // Behind them, the last stored message read as part of the step in flight and
+    // stayed pinned at the bottom of the thread while new work streamed above it.
+    const state = run([
+      {
+        type: "session_loaded_messages",
+        messages: [
+          { id: "m1", role: "agent", kind: "text", text: "earlier", seq: 900 },
+        ],
+      } as Parameters<ReturnType<typeof makeReducer>>[1],
+      { type: "tool_call", id: "c1", name: "bash_run", label: "Running", detail: "" },
+    ]);
+    expect(state.liveToolCalls[0].seq).toBeGreaterThan(900);
+  });
+
   it("does not restore what a run was doing when the session is reloaded", () => {
     // The phase described a moment, and the watcher that could refresh it may have
     // died with the process that wrote the file.
