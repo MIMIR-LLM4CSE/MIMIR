@@ -2025,6 +2025,8 @@ def slurm_node_profile(partition: str = "", node: str = "",
 # two refreshes, a partition's shape and a node's hardware do not.
 _PANEL_QUEUE_TTL_SECS = 15
 _PANEL_CLUSTER_TTL_SECS = 300
+# A tree holding a host that did not answer is asked again this soon instead.
+_PANEL_RETRY_SECS = 30
 _PANEL_CACHE: dict = {}
 
 
@@ -2320,6 +2322,37 @@ def _host_tree() -> list[dict]:
     return groups
 
 
+def _host_tree_cached() -> list[dict]:
+    """The host tree, rebuilt the moment what it is drawn from changes.
+
+    A plain TTL held a node profiled during a turn, or a scheduler recorded by one,
+    off the panel for five minutes — only ⟳ showed it. The key is the registry and the
+    mtime of each host's profile directory (a profile lands by rename), both a stat
+    away; the per-host digest behind the tree stays memoised, so a rebuild is cheap.
+    """
+    hosts = slurm_hosts()
+    stamps = []
+    for host in hosts:
+        try:
+            stamps.append(os.stat(_profile_host_dir(host)).st_mtime_ns)
+        except OSError:
+            stamps.append(0)
+    key = (tuple(hosts), tuple(stamps))
+    entry = _PANEL_CACHE.get("hosts")
+    now = time.time()
+    if entry and entry.get("key") == key:
+        unanswered = any(g.get("state") == "warn" for g in entry["value"])
+        ttl = _PANEL_RETRY_SECS if unanswered else _PANEL_CLUSTER_TTL_SECS
+        if now - entry["at"] <= ttl:
+            return entry["value"]
+    try:
+        value = _host_tree()
+    except Exception:
+        return entry["value"] if entry else []
+    _PANEL_CACHE["hosts"] = {"at": now, "key": key, "value": value}
+    return value
+
+
 @mcp.tool(**tool_caps(kind="slurm",
     caps=[PANEL_REPORT],
     read_only=True,
@@ -2359,7 +2392,7 @@ def hpc_panel_report(refresh: bool = False) -> dict:
     if queue:
         lines.append(queue)
     lines.extend(_partition_lines())
-    groups = _panel_cached("hosts", _PANEL_CLUSTER_TTL_SECS, _host_tree) or []
+    groups = _host_tree_cached()
     if not lines and not groups:
         # No queue, no partitions and no registered scheduler: there is nothing here to
         # report on. Said with nothing rather than with a row saying "unavailable",

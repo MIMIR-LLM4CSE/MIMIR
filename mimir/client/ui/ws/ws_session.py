@@ -199,6 +199,10 @@ class _Session:
         # running. Asking again goes through: the warning is there to be read, not to
         # make the conversation undeletable, and the second click is the confirmation.
         self._delete_refused: set[str] = set()
+        # The panel report in flight, and whether another ask (and a re-read) came in
+        # behind it. Asks arriving while one is served are folded into one more pass.
+        self._panel_task: asyncio.Task | None = None
+        self._panel_again: dict | None = None
 
     @property
     def worker(self) -> _AgentWorker:
@@ -3417,12 +3421,42 @@ class _Session:
         here would stop the user from typing for as long as it takes, for a drawer. So
         the report below goes out now, saying no agent answered for it; the worker
         announces itself with a ``ready`` once it is up, and that is the drawer's cue to
-        ask again.
+        ask again — and this end sends the report itself as soon as the build lands, so
+        the drawer fills whether or not that cue makes it back.
+
+        The report is not awaited here either. A cold cluster section is seconds of
+        ``squeue``/``sinfo``, and the read loop held for it kept the user's own messages
+        waiting behind a drawer. Asks that arrive while one is being served are folded
+        into a single further pass, so a timer and a ⟳ never queue up reports.
         """
         if msg.get("build") and self.pool.get(self._active_session_id) is None:
-            self._schedule(self._ensure_worker())
+            self._schedule(self._report_panel_once_built(self._ensure_worker()))
+        self._request_panel(refresh=bool(msg.get("refresh")))
+
+    def _request_panel(self, *, refresh: bool = False) -> None:
+        """Have a panel report sent, without waiting for it."""
+        wanted = self._panel_again or {}
+        self._panel_again = {"refresh": wanted.get("refresh", False) or refresh}
+        if self._panel_task is None or self._panel_task.done():
+            self._panel_task = asyncio.get_running_loop().create_task(
+                self._serve_panel())
+
+    async def _report_panel_once_built(self, build: Any) -> None:
+        if await build is not None:
+            self._request_panel()
+
+    async def _serve_panel(self) -> None:
+        while self._panel_again is not None:
+            msg, self._panel_again = self._panel_again, None
+            try:
+                await self._send_panel_report(refresh=msg["refresh"])
+            except Exception:
+                logger.debug("panel report failed", exc_info=True)
+                return
+
+    async def _send_panel_report(self, *, refresh: bool) -> None:
         sections = await asyncio.wrap_future(
-            self.worker.panel_sections(force=bool(msg.get("refresh"))))
+            self.worker.panel_sections(force=refresh))
         agent_ready = self.worker.agent_ready()
         if not agent_ready:
             from ...config import constants

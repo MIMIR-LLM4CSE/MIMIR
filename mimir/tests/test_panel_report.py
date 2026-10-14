@@ -8,6 +8,7 @@ plugin server's section appears without a client edit.
 from __future__ import annotations
 
 import importlib.util
+import os
 import sys
 import types
 from pathlib import Path
@@ -234,20 +235,56 @@ def test_a_refresh_drops_the_digest_that_outlives_every_other_cache():
     until something drops it. That is what the reader's ⟳ is for.
     """
     hpc = _load("server_hpc_refresh", SERVERS_DIR / "hpc" / "server_hpc.py")
-    hpc._PANEL_CACHE["hosts"] = {"at": 9e9, "value": [{"id": "host:stale"}]}
+    hpc._PANEL_CACHE.clear()
     forgotten: list = []
 
     with mock.patch.object(hpc, "_forget_cluster_digest",
                            side_effect=lambda *a: forgotten.append(a)), \
-         mock.patch.object(hpc, "_host_tree", return_value=[{"id": "host:fresh"}]), \
+         mock.patch.object(hpc, "slurm_hosts", return_value=[]), \
          mock.patch.object(hpc, "_queue_line", return_value=None), \
          mock.patch.object(hpc, "_partition_lines", return_value=[]):
-        held = hpc.hpc_panel_report()
-        assert held["groups"] == [{"id": "host:stale"}]      # the timer's answer
-        asked = hpc.hpc_panel_report(refresh=True)
+        with mock.patch.object(hpc, "_host_tree", return_value=[{"id": "host:stale"}]):
+            hpc.hpc_panel_report()
+        with mock.patch.object(hpc, "_host_tree", return_value=[{"id": "host:fresh"}]):
+            held = hpc.hpc_panel_report()
+            assert held["groups"] == [{"id": "host:stale"}]      # the timer's answer
+            asked = hpc.hpc_panel_report(refresh=True)
 
     assert asked["groups"] == [{"id": "host:fresh"}]
     assert forgotten == [()]                                  # every host, not one
+
+
+def test_a_profile_landing_shows_without_a_refresh(tmp_path):
+    """A node profiled during a turn reaches the timer's answer, not only ⟳'s."""
+    hpc = _load("server_hpc_profile_lands", SERVERS_DIR / "hpc" / "server_hpc.py")
+    hpc._PANEL_CACHE.clear()
+    host_dir = tmp_path / "local"
+    host_dir.mkdir()
+
+    with mock.patch.object(hpc, "slurm_hosts", return_value=[""]), \
+         mock.patch.object(hpc, "_profile_host_dir", return_value=str(host_dir)), \
+         mock.patch.object(hpc, "_queue_line", return_value=None), \
+         mock.patch.object(hpc, "_partition_lines", return_value=[]):
+        with mock.patch.object(hpc, "_host_tree", return_value=[{"id": "before"}]):
+            assert hpc.hpc_panel_report()["groups"] == [{"id": "before"}]
+        (host_dir / "n01.json").write_text("{}")
+        os.utime(host_dir, ns=(0, os.stat(host_dir).st_mtime_ns + 10**9))
+        with mock.patch.object(hpc, "_host_tree", return_value=[{"id": "after"}]):
+            assert hpc.hpc_panel_report()["groups"] == [{"id": "after"}]
+
+
+def test_a_host_that_did_not_answer_is_asked_again_soon():
+    hpc = _load("server_hpc_retry", SERVERS_DIR / "hpc" / "server_hpc.py")
+    hpc._PANEL_CACHE.clear()
+    with mock.patch.object(hpc, "slurm_hosts", return_value=[]), \
+         mock.patch.object(hpc, "_queue_line", return_value=None), \
+         mock.patch.object(hpc, "_partition_lines", return_value=[]):
+        with mock.patch.object(hpc, "_host_tree",
+                               return_value=[{"id": "h", "state": "warn"}]):
+            hpc.hpc_panel_report()
+        hpc._PANEL_CACHE["hosts"]["at"] -= hpc._PANEL_RETRY_SECS + 1
+        with mock.patch.object(hpc, "_host_tree", return_value=[{"id": "h"}]):
+            assert hpc.hpc_panel_report()["groups"] == [{"id": "h"}]
 
 
 def test_a_server_with_nothing_to_say_gets_no_heading():

@@ -5,7 +5,7 @@ import { PanelResizer, usePanelWidth } from "./PanelResizer";
 import { toggle } from "./panelGroupUtils";
 
 /** While the drawer is open, ask again this often. */
-const PANEL_POLL_MS = 20000;
+const PANEL_POLL_MS = 10000;
 
 /** Accent for the sections MIMIR ships; a plugin's own section gets the fallback. */
 const SECTION_ACCENT: Record<string, string> = {

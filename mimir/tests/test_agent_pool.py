@@ -466,7 +466,7 @@ class OpeningAConversationCostsNothingTests(_PoolCase):
                       inspect.getsource(ws_session._Session._handle_query))
         # The drawer does not: it answers with what there is, and the build runs off the
         # socket's read loop so the user can keep typing through it.
-        self.assertIn("self._schedule(self._ensure_worker())",
+        self.assertIn("self._schedule(self._report_panel_once_built(self._ensure_worker()))",
                       inspect.getsource(ws_session._Session._handle_list_panel))
 
     async def test_returning_to_a_conversation_reuses_its_agent(self) -> None:

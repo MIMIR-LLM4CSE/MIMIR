@@ -15,6 +15,15 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+- **The scientific-computing panel keeps itself current without `⟳`.** The cluster tree
+  was held for five minutes whatever happened, so a node profiled or a scheduler
+  recorded during a turn only appeared after a manual refresh. It is now rebuilt as soon
+  as the registry or a node profile changes, and a cluster that did not answer is asked
+  again after 30s rather than 5 minutes. The panel is also filled the moment the agent a
+  drawer started is up, re-asked every 10s instead of 20s, and served off the socket's
+  read loop, so a slow `sinfo` no longer holds back your messages or stacks up reports.
+
 ## [1.7.0] — 2026-10-14
 
 ### Added
