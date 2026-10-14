@@ -1480,14 +1480,24 @@ class _Session:
         what it injected, not which event it came from — and a wake names its job key,
         so the match is exact. Anything not matched here stays pending and is carried by
         the catch-up turn, which is what keeps an unread steer from losing a run.
+
+        What is forgotten is settled on disk too: read here is the only proof it will
+        ever get, and left unmarked, every later scan announced the run again.
         """
+        read: list[dict] = []
         for owner, items in list(self._pending_wakes.items()):
-            kept = [i for i in items
-                    if str(i["ev"].get("job_key") or "\x00") not in text]
+            kept = []
+            for i in items:
+                if str(i["ev"].get("job_key") or "\x00") in text:
+                    read.append(i["ev"])
+                else:
+                    kept.append(i)
             if kept:
                 self._pending_wakes[owner] = kept
             else:
                 self._pending_wakes.pop(owner, None)
+        if read:
+            mark_wakes_reported(read)
 
     async def _flush_pending_wakes(self, owner: str | None) -> bool:
         """Start one turn for every job of *owner* still waiting to be reported.

@@ -1679,6 +1679,20 @@ class WakeCoalescingTests(unittest.TestCase):
         self._answer()
         self.assertEqual(self.worker.submitted, [], "the running turn already had it")
 
+    def test_an_injected_wake_is_settled_so_no_scan_announces_it_again(self) -> None:
+        # Seen on 2026-10-14: a Slurm job steered into a running turn and read there was
+        # forgotten with no marker, and every later scan — each agent rebuild, each
+        # attach — announced it again, one approval card after another.
+        from mimir.client.ui.ws import job_scan
+        self._running(self.here.id)
+        self._wake(self._event("j1"))
+        self._wake(self._event("j2"))
+        self.session._drop_injected_wakes(self.worker.steered[0])   # j1 only
+        reported = {key: os.path.exists(os.path.join(
+            job_scan._job_dir(self.here.id, key, "shell"), job_scan._REPORTED))
+            for key in ("j1", "j2")}
+        self.assertEqual(reported, {"j1": True, "j2": False})
+
     def test_only_the_unconfirmed_half_is_carried(self) -> None:
         self._running(self.here.id)
         self._wake(self._event("j1"))
