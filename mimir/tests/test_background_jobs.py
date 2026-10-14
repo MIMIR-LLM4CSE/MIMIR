@@ -1648,15 +1648,13 @@ class WakeCoalescingTests(unittest.TestCase):
         self.assertEqual(submitted.count("'j1'"), 1)
 
     def test_a_duplicate_arriving_after_the_turn_began_starts_no_second_one(self) -> None:
-        # The first announcement started a turn, so the run is settled and no scan will
-        # offer it again. A duplicate already in flight joins that turn as a steer
-        # rather than opening a second one — the ordinary busy route, reached here
-        # because submitting the turn is what made the conversation busy.
+        # The first announcement started a turn and settled the run on disk, so a
+        # duplicate already in flight is dropped: neither a second turn nor a steer.
         self._wake(self._event("j1"))
         self.assertEqual(len(self.worker.submitted), 1)
         self._wake(self._event("j1"))
         self.assertEqual(len(self.worker.submitted), 1)
-        self.assertEqual(len(self.worker.steered), 1)
+        self.assertEqual(len(self.worker.steered), 0)
 
     def test_a_steered_wake_does_not_tell_the_client_a_turn_began(self) -> None:
         # Seen on 2026-09-18: the client took this flag as a new turn and cleared the

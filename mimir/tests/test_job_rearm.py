@@ -334,6 +334,16 @@ class ASubAgentsRunsAreFoundTests(_ScanCase):
         self.assertEqual(job.session_id, "s1/subagents/sub-1a2b")
         self.assertEqual(job.owner_session, "s1")
 
+    def test_a_childs_wake_is_settled_where_the_scan_looks(self):
+        # Woken in the parent, marked under the child: otherwise every scan re-announces it.
+        self._job("s1/subagents/sub-1a2b", "j2", exit_code=0)
+        ev = {"job_key": "j2", "server": "bash", "session_id": "s1",
+              "run_session": "s1/subagents/sub-1a2b"}
+        self.assertFalse(job_scan.wake_reported(ev))
+        job_scan.mark_wakes_reported([ev])
+        self.assertTrue(job_scan.wake_reported(ev))
+        self.assertEqual(scan_session("s1/subagents/sub-1a2b"), [])
+
     def test_a_run_of_its_own_is_owned_by_the_session_that_holds_it(self):
         self._job("s1", "j1", exit_code=0)
         self.assertEqual(scan_session("s1")[0].owner_session, "s1")

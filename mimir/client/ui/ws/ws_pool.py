@@ -40,7 +40,7 @@ from typing import Any, Callable, Iterator
 
 from . import server_registry
 from .event_bus import _EventBus
-from .job_scan import has_baseline, mark_wakes_reported, scan_all_sessions
+from .job_scan import has_baseline, mark_wakes_reported, scan_all_sessions, wake_reported
 from .job_wakes import DURABLE_EVENTS, checkin_text, wake_text
 from .session_store import SessionStore
 from .turn_commit import commit_answer
@@ -430,6 +430,10 @@ class _AgentPool:
                 self._held_checkin[owner] = ev
                 return
             self._submit_checkin(owner, worker, ev)
+            return
+        if wake_reported(ev):
+            logger.info("wake for job %r of session %s already delivered; dropping the "
+                        "re-announcement", ev.get("job_key"), owner)
             return
         pending = self._wakes_pending.setdefault(owner, [])
         # One wake per run, however many times it is announced. Two emitters can speak

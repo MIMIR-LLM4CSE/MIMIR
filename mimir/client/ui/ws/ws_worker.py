@@ -1541,6 +1541,7 @@ class _AgentWorker:
                 "kind": descriptor.get("kind"),
                 "state": job.state,
                 "session_id": session_id,
+                "run_session": job.session_id,
                 "summary": {"command": job.command, "exit_code": job.exit_code},
                 "status_op": job.status_op(),
             })

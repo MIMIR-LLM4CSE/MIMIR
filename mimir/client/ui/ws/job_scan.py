@@ -514,7 +514,30 @@ def mark_wakes_reported(events: list[dict]) -> None:
     own. Its marker is written by the flush that eventually gives it one.
     """
     for ev in events or ():
-        mark_job_reported(ev.get("session_id"), ev.get("job_key"), ev.get("server"))
+        mark_job_reported(_run_session(ev), ev.get("job_key"), ev.get("server"))
+
+
+def _run_session(ev: dict) -> str | None:
+    # A sub-agent's run is woken in the parent but its files, and markers, are the child's.
+    return ev.get("run_session") or ev.get("session_id")
+
+
+def wake_reported(ev: dict) -> bool:
+    """Whether the run this ``job_complete`` announces has already been handed to a turn.
+
+    Checked by the consumers, because pending-only dedup misses an announcement that
+    arrives after the first one was delivered — and several emitters announce one run.
+    """
+    session_id, job_key = _run_session(ev), ev.get("job_key")
+    if not session_id or not job_key:
+        return False
+    try:
+        return was_reported(DetachedJob(
+            session_id=session_id, job_key=str(job_key),
+            kind={"hpc": "slurm", "proxy": "proxy"}.get(ev.get("server") or "", "shell"),
+            live=False, exit_code=None))
+    except Exception:
+        return False
 
 
 def scan_session(session_id: str, *, include_reported: bool = False

@@ -33,6 +33,7 @@ from .job_scan import (
     is_settled,
     mark_wakes_reported,
     scan_all_sessions,
+    wake_reported,
 )
 from .job_wakes import DURABLE_EVENTS, checkin_text, wake_text
 from .detach import detach as detach_process
@@ -982,6 +983,11 @@ class _Session:
                     # Routed by the session that launched the job rather than the one
                     # on screen, so it is handled ahead of the foreign-event filter.
                     checkin = ev.get("type") == "job_checkin"
+                    if not checkin and wake_reported(ev):
+                        logger.info("wake for job %r of session %s already delivered; "
+                                    "dropping the re-announcement", ev.get("job_key"),
+                                    owner)
+                        continue
                     foreign = self._is_foreign_event(ev)
                     # Decided once, before the send: the send yields, and a turn that
                     # ended meanwhile would otherwise have the client and the handler
@@ -1394,6 +1400,10 @@ class _Session:
         # twice. Telling the model the same job finished twice in one message is the
         # visible half; the worse half is a second turn for a run already reported.
         job_key = ev.get("job_key")
+        if wake_reported(ev):
+            logger.info("wake for job %r of session %s already delivered; dropping the "
+                        "re-announcement", job_key, owner)
+            return False
         if job_key and any(i["ev"].get("job_key") == job_key
                            for i in self._pending_wakes.get(owner, ())):
             logger.info("wake for job %r of session %s already pending; dropping the "
@@ -1738,6 +1748,7 @@ class _Session:
                     # that delegated it. Its markers stay under the child, where the
                     # scan that found it will look again.
                     "session_id": job.owner_session,
+                    "run_session": job.session_id,
                     "summary": {"command": job.command, "exit_code": job.exit_code},
                     "status_op": job.status_op(),
                 })
