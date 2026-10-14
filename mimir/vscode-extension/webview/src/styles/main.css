@@ -173,10 +173,9 @@ body {
   outline: none;
 }
 
-/* While a drawer is dragged nothing else animates or reacts to the pointer. */
+/* While a drawer is dragged nothing else animates. */
 body.is-resizing { cursor: col-resize; user-select: none; }
 body.is-resizing * { transition: none !important; }
-body.is-resizing .main { pointer-events: none; }
 
 /* A press whose answer takes a second: the glyph turns until it lands, because a
    button that changes nothing on screen reads as a button that does nothing. */
@@ -659,6 +658,22 @@ body.is-resizing .main { pointer-events: none; }
   max-width: 100%;
 }
 
+/* The way back into a history only partly rendered; scrolling to the top does the same. */
+.chat-thread > .thread-more {
+  align-self: center;
+  width: auto;
+  padding: 4px 12px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--fg-dim);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+  transition: background var(--motion-fast), color var(--motion-fast);
+}
+.chat-thread > .thread-more:hover { background: var(--bg-hover); color: var(--fg); }
+
 /* Side air grows with the pane, so lines never run into the edges. */
 @media (min-width: 1100px) {
   .chat-thread { padding: 16px 32px; }
@@ -877,8 +892,22 @@ body.is-resizing .main { pointer-events: none; }
   padding: var(--sp-4) 0;
   align-items: flex-start;
   animation: msg-in 0.15s ease;
-  /* No content-visibility: skipping off-screen rows left them blank under a fast
-     scroll until it stopped, and mis-sized the tail the pane pins to. */
+  /* Skip layout/paint for rows scrolled out of view in long histories.
+     The size estimate keeps the scrollbar stable before a row is rendered. */
+  content-visibility: auto;
+  contain-intrinsic-size: auto 60px;
+}
+
+/* The tail of the thread is exempt. A row that lands below the fold has never
+   been laid out, so content-visibility answers with the 60px estimate above —
+   and pinning the pane to a scrollHeight built from that estimate is what left a
+   tall row (a bash call and its output) cut off at the bottom: the row got its
+   real height only once it had entered the viewport, by which time the pane was
+   no longer at the bottom. The history above keeps the optimisation, where the
+   estimate costs nothing and the scroll position does not depend on it. */
+.chat-thread > *:nth-last-child(-n + 8) .chat-message,
+.chat-thread > .chat-message:nth-last-child(-n + 8) {
+  content-visibility: visible;
 }
 
 @keyframes msg-in {

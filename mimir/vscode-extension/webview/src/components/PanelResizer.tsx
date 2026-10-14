@@ -12,10 +12,28 @@ import { clampPanelWidth, readPanelWidth, storePanelWidth } from "./panelWidthUt
 export function usePanelWidth(key: string, fallback = 220) {
   const [width, setWidth] = useState(() =>
     readPanelWidth(key, fallback, window.innerWidth));
-  const drag = useRef<{ x: number; width: number } | null>(null);
+  const drag = useRef<{ x: number; width: number; main: HTMLElement | null } | null>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const pending = useRef<number | null>(null);
   const frame = useRef<number | null>(null);
+
+  // Undo everything a drag set up. Safe to call twice, and from any way a drag ends.
+  const endDrag = useCallback(() => {
+    const from = drag.current;
+    drag.current = null;
+    document.body.classList.remove("is-resizing");
+    if (frame.current !== null) cancelAnimationFrame(frame.current);
+    frame.current = null;
+    if (from?.main) {
+      from.main.style.width = "";
+      from.main.style.flex = "";
+    }
+    const final = pending.current;
+    pending.current = null;
+    return from ? final : null;
+  }, []);
+
+  useEffect(() => () => { endDrag(); }, [endDrag]);
 
   // The window can be made narrower than the drawer — by the user, or by VS Code
   // moving the view into a side bar. A drawer wider than its window would push the
@@ -27,7 +45,14 @@ export function usePanelWidth(key: string, fallback = 220) {
   }, []);
 
   const onPointerDown = useCallback((e: React.PointerEvent) => {
-    drag.current = { x: e.clientX, width };
+    // The chat keeps its width for the drag: re-wrapping the whole conversation on
+    // every frame is what made dragging crawl. It re-lays out once, on release.
+    const main = document.querySelector<HTMLElement>(".main");
+    if (main) {
+      main.style.width = `${main.getBoundingClientRect().width}px`;
+      main.style.flex = "none";
+    }
+    drag.current = { x: e.clientX, width, main };
     document.body.classList.add("is-resizing");
     // Capture, so the drag survives the pointer leaving the 6px handle — at speed it
     // always does, and a drag that stops when it does is a drag that cannot be used.
@@ -50,18 +75,13 @@ export function usePanelWidth(key: string, fallback = 220) {
 
   const onPointerUp = useCallback((e: React.PointerEvent) => {
     if (!drag.current) return;
-    drag.current = null;
-    document.body.classList.remove("is-resizing");
-    if (frame.current !== null) cancelAnimationFrame(frame.current);
-    frame.current = null;
     (e.target as HTMLElement).releasePointerCapture?.(e.pointerId);
-    const final = pending.current;
-    pending.current = null;
+    const final = endDrag();
     if (final === null) return;
     if (panelRef.current) panelRef.current.style.width = `${final}px`;
     setWidth(final);
     storePanelWidth(key, final);
-  }, [key]);
+  }, [key, endDrag]);
 
   // The handle with the keyboard on it: the arrow keys are what a reader who cannot
   // drag will try, and each press is a width worth keeping.
@@ -85,6 +105,7 @@ export function usePanelWidth(key: string, fallback = 220) {
       onPointerMove,
       onPointerUp,
       onPointerCancel: onPointerUp,
+      onLostPointerCapture: onPointerUp,
       onKeyDown,
     },
   };

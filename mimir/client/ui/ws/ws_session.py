@@ -2242,11 +2242,40 @@ class _Session:
             return
         if msg.get("session_id") != self._active_session_id:
             return
-        messages = msg.get("messages")
-        if not isinstance(messages, list):
-            return
+        sid = self._active_session_id
+        # Per session: the client's copy as last applied, by id, and which revision of
+        # which run of full-then-deltas it is. A delta is only ever applied to that.
+        syncs = getattr(self, "_transcript_sync", None)
+        if syncs is None:
+            syncs = self._transcript_sync = {}
+        if msg.get("delta"):
+            held = syncs.get(sid)
+            order = msg.get("order")
+            changed = msg.get("changed")
+            if (held is None or held["epoch"] != msg.get("epoch")
+                    or held["rev"] != msg.get("base_rev")
+                    or not isinstance(order, list) or not isinstance(changed, list)):
+                await self._send_transcript_resync(sid)
+                return
+            by_id = dict(held["by_id"])
+            for m in changed:
+                if isinstance(m, dict) and m.get("id"):
+                    by_id[m["id"]] = m
+            if any(i not in by_id for i in order):
+                await self._send_transcript_resync(sid)
+                return
+            messages = [by_id[i] for i in order]
+        else:
+            messages = msg.get("messages")
+            if not isinstance(messages, list):
+                return
         if self._text_count(messages) < self._text_count(self._display_messages):
             return
+        syncs[sid] = {
+            "epoch": msg.get("epoch"),
+            "rev": msg.get("rev", 0),
+            "by_id": {m["id"]: m for m in messages if isinstance(m, dict) and m.get("id")},
+        }
         self._display_messages = messages
         # The client says how far the transcript it just sent reaches. Taken on trust
         # the same way the transcript itself is, and only ever forward: a webview that
@@ -2255,6 +2284,14 @@ class _Session:
         if isinstance(through, int) and through > self._rendered_seq:
             self._rendered_seq = through
         self._autosave_session(list(self._display_messages))
+
+    async def _send_transcript_resync(self, session_id: str) -> None:
+        """Ask for the transcript whole: a delta arrived on a revision not held here."""
+        try:
+            await self.ws.send(json.dumps(
+                {"type": "transcript_resync", "session_id": session_id}))
+        except Exception:
+            pass
 
     async def _handle_steer(self, msg: dict) -> None:
         """A message typed while the agent is busy — inject it into the running run.

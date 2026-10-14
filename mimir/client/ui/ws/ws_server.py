@@ -113,6 +113,7 @@ Protocol — all messages are JSON objects, one per send/recv:
                                                        # is what was still running, which
                                                        # a forced stop is ending
     {"type": "shutdown_refused", "reasons": [...]}     # it is still needed, and why
+    {"type": "transcript_resync", "session_id": "..."}  # send the transcript whole
     {"type": "detached",       "detached": true, "log": "...",
                                "autonomy": "manual|auto|auto_all",
                                "sessions": [...], "pid": 0, "setsid": true}
@@ -158,9 +159,15 @@ Protocol — all messages are JSON objects, one per send/recv:
 
   Client → Server
     {"type": "query",             "text": "..."}   # @<uri> mentions are read & injected
-    {"type": "transcript",        "session_id": "...", "messages": [...]}
+    {"type": "transcript",        "session_id": "...", "messages": [...],
+                                  "epoch": "...", "rev": 0}
                                   # the client's rendered chat, stored verbatim as the
                                   # session's display messages (see _handle_transcript)
+    {"type": "transcript",        "session_id": "...", "delta": true, "order": [ids],
+                                  "changed": [...], "epoch": "...", "base_rev": n,
+                                  "rev": n+1}
+                                  # only what is new or replaced since base_rev; a
+                                  # server not holding it answers transcript_resync
     {"type": "list_resources"}                     # request the attachable-resource list
     {"type": "approval_response", "id": "...", "session_id": "...",
                                "choice": "y"|"n"|"a"}

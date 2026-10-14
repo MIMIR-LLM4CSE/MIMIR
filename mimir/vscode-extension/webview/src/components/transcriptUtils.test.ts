@@ -1,8 +1,50 @@
 import { describe, it, expect } from "vitest";
 import {
-  EXEC_CLIP_CHARS, chooseRestoredMessages, pruneForStorage, textBubbleCount,
+  EXEC_CLIP_CHARS, chooseRestoredMessages, planTranscript, pruneForStorage, textBubbleCount,
 } from "./transcriptUtils";
 import type { ChatMessage, ToolActivity } from "../types";
+
+describe("planTranscript", () => {
+  const text = (id: string, t = id): ChatMessage =>
+    ({ id, role: "user", kind: "text", text: t }) as ChatMessage;
+  let n = 0;
+  const epoch = () => `e${++n}`;
+
+  it("sends the first transcript whole", () => {
+    const { body, next } = planTranscript([text("a")], "s1", null, false, epoch);
+    expect("messages" in body && body.messages.map((m) => m.id)).toEqual(["a"]);
+    expect(next.rev).toBe(0);
+  });
+
+  it("then only what is new or replaced, with the full order", () => {
+    const a = text("a"), b = text("b");
+    const first = planTranscript([a, b], "s1", null, false, epoch);
+    const b2 = text("b", "edited"), c = text("c");
+    const { body, next } = planTranscript([a, b2, c], "s1", first.next, false, epoch);
+    expect(body).toMatchObject({
+      delta: true, order: ["a", "b", "c"], epoch: first.next.epoch, base_rev: 0, rev: 1,
+    });
+    expect("changed" in body && body.changed.map((m) => m.text)).toEqual(["edited", "c"]);
+    expect(next.rev).toBe(1);
+  });
+
+  it("goes whole again when forced or on another session", () => {
+    const a = text("a");
+    const first = planTranscript([a], "s1", null, false, epoch);
+    const forced = planTranscript([a], "s1", first.next, true, epoch);
+    expect("messages" in forced.body).toBe(true);
+    expect(forced.next.epoch).not.toBe(first.next.epoch);
+    const other = planTranscript([a], "s2", first.next, false, epoch);
+    expect("messages" in other.body).toBe(true);
+  });
+
+  it("goes whole when a message cannot be addressed by id", () => {
+    const first = planTranscript([text("a")], "s1", null, false, epoch);
+    const anon = { role: "user", kind: "text", text: "x" } as ChatMessage;
+    const { body } = planTranscript([text("a"), anon], "s1", first.next, false, epoch);
+    expect("messages" in body).toBe(true);
+  });
+});
 
 function tool(extra: Partial<ToolActivity> = {}): ToolActivity {
   return {

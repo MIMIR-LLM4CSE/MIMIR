@@ -56,7 +56,8 @@ import { useOffscreenRows } from "./hooks/useOffscreenRows";
 import type { ContextUsage } from "./components/ContextBar";
 import { BatchReviewBar } from "./components/BatchReviewBar";
 import { MimirIntro } from "./components/MimirIntro";
-import { chooseRestoredMessages, pruneForStorage } from "./components/transcriptUtils";
+import { chooseRestoredMessages, planTranscript } from "./components/transcriptUtils";
+import type { TranscriptSync } from "./components/transcriptUtils";
 import { MentionAutocomplete } from "./components/MentionAutocomplete";
 import { DraftAttachments } from "./components/DraftAttachments";
 import { DraftHighlight } from "./components/DraftHighlight";
@@ -322,6 +323,8 @@ export const App: React.FC = () => {
   // Messages sent from this input, oldest first, recalled with the arrow keys.
   const sentHistoryRef = useRef<string[]>([]);
   const historyStateRef = useRef<HistoryState>(HISTORY_IDLE);
+  // Read by the message handler, which is set up before sendTranscript exists.
+  const sendTranscriptRef = useRef<(force?: boolean) => void>(() => {});
 
   // The pane follows the bottom of the thread as it grows, and lets go when the
   // reader scrolls up. The hook owns that decision — see useStickToBottom for why
@@ -666,6 +669,12 @@ export const App: React.FC = () => {
 
       // The server has made itself survivable. Shown rather than announced: what
       // changes is a standing fact about this run, not an event in the conversation.
+      case "transcript_resync":
+        if (msg.session_id === activeSessionIdRef.current) {
+          sendTranscriptRef.current(true);
+        }
+        return;
+
       case "detached":
         // Absent means detached: an older server sends no flag, and the message
         // existed only to announce one.
@@ -850,21 +859,27 @@ export const App: React.FC = () => {
   // costs nothing on a quiet turn. The reducer never mutates, so identity is the whole
   // test: a changed transcript is always a new array.
   const lastSentMessagesRef = useRef<ChatMessage[] | null>(null);
+  // What the server was last sent, so the next send carries only what changed.
+  const transcriptSyncRef = useRef<TranscriptSync | null>(null);
   const sendTranscript = useCallback((force = false) => {
     const sessionId = activeSessionIdRef.current;
     const messages = chatStateRef.current.messages;
     if (!sessionId || messages.length === 0) return;
     if (!force && messages === lastSentMessagesRef.current) return;
     lastSentMessagesRef.current = messages;
+    const { body, next } = planTranscript(
+      messages, sessionId, transcriptSyncRef.current, force, makeId);
+    transcriptSyncRef.current = next;
     send({
       type: "transcript",
       session_id: sessionId,
-      messages: pruneForStorage(messages),
+      ...body,
       // How far these messages reach. The server stores it and replays from it, so a
       // window that has rendered everything is sent nothing on its next attach.
       through_seq: renderedSeqRef.current[sessionId] ?? 0,
     });
   }, [send]);
+  sendTranscriptRef.current = sendTranscript;
 
   // At the end of the turn. The delay lets the last few events (a trailing verdict,
   // the batch status) land in the transcript before it is sent.

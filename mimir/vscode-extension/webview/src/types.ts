@@ -982,7 +982,14 @@ export type ServerMessage =
   | ReplayMessage
   | AssistantTextMessage
   | DetachedMessage
+  | TranscriptResyncMessage
   | QueuedMessage;
+
+/** The server does not hold the revision a transcript delta was built on: send it whole. */
+export interface TranscriptResyncMessage {
+  type: "transcript_resync";
+  session_id: string;
+}
 
 // ── Message types (client → server) ──────────────────────────────────────────
 
@@ -1000,7 +1007,17 @@ export interface QueryMessage {
 export interface TranscriptMessage {
   type: "transcript";
   session_id: string;
-  messages: ChatMessage[];
+  /** Whole: every stored message. Absent on a delta. */
+  messages?: ChatMessage[];
+  /** A delta: `order` names every stored message by id, `changed` carries the ones
+   *  new or replaced since revision `base_rev` of the same `epoch`. A server that
+   *  does not hold that revision answers `transcript_resync`. */
+  delta?: boolean;
+  order?: string[];
+  changed?: ChatMessage[];
+  epoch?: string;
+  base_rev?: number;
+  rev?: number;
   /** How far into the session's journal these messages reach — the highest `seq` the
    *  reducer has taken in, from a live event or a `replay` frame. Stored server-side
    *  and used as the point a later re-attach replays *from*, so a window that has

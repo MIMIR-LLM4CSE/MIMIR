@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useCallback, useLayoutEffect, useRef, useState } from "react";
 import type { ChatMessage, ToolActivity } from "../types";
 import type { ThinkingBlock } from "../state/chatReducer";
 import { ChatMessage as ChatMessageView } from "./ChatMessage";
@@ -8,6 +8,11 @@ import { ThinkingPanel } from "./ThinkingPanel";
 import { GlobalApprovalBar } from "./GlobalApprovalBar";
 import { StreamingStatus } from "./StreamingStatus";
 import { orderLiveStream } from "./liveStreamUtils";
+
+/** Messages rendered at first, and added each time the reader reaches the top. */
+export const THREAD_WINDOW_STEP = 120;
+/** How close to the top, in px, counts as reaching it. */
+const GROW_THRESHOLD_PX = 300;
 
 interface Props {
   messages: ChatMessage[];
@@ -96,6 +101,43 @@ export const ChatThread: React.FC<Props> = ({
   const settled = visible.slice(0, settledCount);
   const duringStep = visible.slice(settledCount);
 
+  // Only the tail of a long history is rendered: a session of thousands of rows cost
+  // every render and every relayout. The window starts at the last STEP messages of
+  // the conversation on screen, and opening another conversation starts it again.
+  const firstId = visible[0]?.id;
+  const [win, setWin] = useState<{ first: string | undefined; start: number }>(
+    () => ({ first: firstId, start: Math.max(0, settledCount - THREAD_WINDOW_STEP) }));
+  let start = win.start;
+  if (win.first !== firstId) {
+    start = Math.max(0, settledCount - THREAD_WINDOW_STEP);
+    setWin({ first: firstId, start });
+  }
+  start = Math.min(start, settledCount);
+
+  // Where the reader was when the window grew, so the rows they were looking at stay
+  // put once the older ones are inserted above them.
+  const anchorRef = useRef<{ height: number; top: number } | null>(null);
+  const showEarlier = useCallback(() => {
+    const el = chatThreadRef.current;
+    if (!el || anchorRef.current) return;
+    anchorRef.current = { height: el.scrollHeight, top: el.scrollTop };
+    setWin((w) => ({ ...w, start: Math.max(0, w.start - THREAD_WINDOW_STEP) }));
+  }, [chatThreadRef]);
+
+  useLayoutEffect(() => {
+    const el = chatThreadRef.current;
+    const anchor = anchorRef.current;
+    if (!el || !anchor) return;
+    anchorRef.current = null;
+    el.scrollTop = anchor.top + (el.scrollHeight - anchor.height);
+  }, [start, chatThreadRef]);
+
+  const handleScroll = useCallback(() => {
+    onScroll();
+    const el = chatThreadRef.current;
+    if (el && start > 0 && el.scrollTop < GROW_THRESHOLD_PX) showEarlier();
+  }, [onScroll, chatThreadRef, start, showEarlier]);
+
   const liveEntries = orderLiveStream({
     thinking: liveBlocks,
     tools: liveToolCalls,
@@ -142,7 +184,7 @@ export const ChatThread: React.FC<Props> = ({
     <div
       className="chat-thread"
       ref={chatThreadRef}
-      onScroll={onScroll}
+      onScroll={handleScroll}
       role="log"
       aria-live="polite"
       aria-label="Conversation"
@@ -156,7 +198,12 @@ export const ChatThread: React.FC<Props> = ({
         </div>
       ) : (
         <>
-          {settled.map(renderMessage)}
+          {start > 0 && (
+            <button className="thread-more" onClick={showEarlier}>
+              Show earlier messages ({start} hidden)
+            </button>
+          )}
+          {settled.slice(start).map((m, i) => renderMessage(m, start + i))}
 
           {/* The step in flight, in the order it arrived: prose, reasoning and
               tool rows are three separate streams, and orderLiveStream reads

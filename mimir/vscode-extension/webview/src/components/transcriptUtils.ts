@@ -50,20 +50,76 @@ function pruneTool(tool: ToolActivity): ToolActivity {
  * arrives repeats it instead of replacing it.
  */
 export function pruneForStorage(messages: ChatMessage[]): ChatMessage[] {
-  return messages
-    .filter((m) => !(m.kind === "approval" && m.approval))
-    // Cards about the moment rather than about the conversation. Stored, they are
-    // replayed on every load: a conversation reconnected to twenty times reopens on
-    // twenty of them, each describing a past attachment as if it were now. The detach
-    // notice is one by nature, however it reached the transcript — naming it is what
-    // takes the copies already there back out.
-    .filter((m) => !(m.kind === "command"
-                     && (m.command?.transient || m.command?.command === "detach")))
-    .map((m) => {
-      const { approval, streaming, live, queued, ...rest } = m;
-      const tools = rest.tools?.map(pruneTool);
-      return tools ? { ...rest, tools } : rest;
-    });
+  return messages.filter(keepForStorage).map(pruneMessage);
+}
+
+/** Whether *m* belongs in a stored transcript at all. */
+export function keepForStorage(m: ChatMessage): boolean {
+  if (m.kind === "approval" && m.approval) return false;
+  // Cards about the moment rather than about the conversation. Stored, they are
+  // replayed on every load: a conversation reconnected to twenty times reopens on
+  // twenty of them, each describing a past attachment as if it were now. The detach
+  // notice is one by nature, however it reached the transcript — naming it is what
+  // takes the copies already there back out.
+  return !(m.kind === "command"
+           && (m.command?.transient || m.command?.command === "detach"));
+}
+
+/** *m* as it should be stored: no in-flight state, no unbounded output. */
+export function pruneMessage(m: ChatMessage): ChatMessage {
+  const { approval, streaming, live, queued, ...rest } = m;
+  const tools = rest.tools?.map(pruneTool);
+  return tools ? { ...rest, tools } : rest;
+}
+
+/** What this window last told the server, for sending only what changed since. */
+export interface TranscriptSync {
+  session: string;
+  /** Names one run of full-then-deltas; the server drops a delta from another. */
+  epoch: string;
+  rev: number;
+  sent: Map<string, ChatMessage>;
+}
+
+export type TranscriptBody =
+  | { messages: ChatMessage[]; epoch: string; rev: number }
+  | { delta: true; order: string[]; changed: ChatMessage[];
+      epoch: string; base_rev: number; rev: number };
+
+/**
+ * The transcript to send, whole or as a delta, and the record to keep afterwards.
+ *
+ * A delta names every stored message in order and carries only those that are new
+ * or were replaced since the last send. The reducer never mutates a message, so
+ * "replaced" is an identity test. Whole when forced, on another session, the first
+ * time, or when a message has no id to be addressed by.
+ */
+export function planTranscript(
+  messages: ChatMessage[],
+  session: string,
+  prev: TranscriptSync | null,
+  force: boolean,
+  newEpoch: () => string,
+): { body: TranscriptBody; next: TranscriptSync } {
+  const kept = messages.filter(keepForStorage);
+  const sent = new Map(kept.map((m) => [m.id, m]));
+  const addressable = sent.size === kept.length && kept.every((m) => !!m.id);
+  if (force || !prev || prev.session !== session || !addressable) {
+    const epoch = newEpoch();
+    return {
+      body: { messages: kept.map(pruneMessage), epoch, rev: 0 },
+      next: { session, epoch, rev: 0, sent },
+    };
+  }
+  const changed = kept.filter((m) => prev.sent.get(m.id) !== m).map(pruneMessage);
+  const rev = prev.rev + 1;
+  return {
+    body: {
+      delta: true, order: kept.map((m) => m.id), changed,
+      epoch: prev.epoch, base_rev: prev.rev, rev,
+    },
+    next: { session, epoch: prev.epoch, rev, sent },
+  };
 }
 
 /**

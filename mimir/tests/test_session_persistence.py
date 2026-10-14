@@ -349,6 +349,75 @@ class TranscriptHandlerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(sess._display_messages, incoming)
 
 
+class TranscriptDeltaTests(unittest.IsolatedAsyncioTestCase):
+    """A long session's transcript is sent once, then only what changed in it."""
+
+    async def _with_full(self):
+        sess = _session()
+        sess.ws = _FakeWS()
+        await sess._handle_transcript({"session_id": "s1", "messages": RICH_MESSAGES,
+                                       "epoch": "e1", "rev": 0})
+        return sess
+
+    async def test_a_delta_replaces_and_appends_by_id(self):
+        sess = await self._with_full()
+        edited = {"id": "m5", "role": "agent", "kind": "text", "text": "solve() and setup()."}
+        added = {"id": "m6", "role": "user", "kind": "text", "text": "fix it"}
+        await sess._handle_transcript({
+            "session_id": "s1", "delta": True, "epoch": "e1", "base_rev": 0, "rev": 1,
+            "order": ["m1", "m2", "m3", "m4", "m5", "m6"], "changed": [edited, added]})
+        self.assertEqual(sess._display_messages, RICH_MESSAGES[:4] + [edited, added])
+        self.assertEqual(sess.store.saved["s1"].display_messages, sess._display_messages)
+        self.assertEqual(sess.ws.sent, [])
+
+    async def test_a_message_left_out_of_the_order_is_dropped(self):
+        sess = await self._with_full()
+        await sess._handle_transcript({
+            "session_id": "s1", "delta": True, "epoch": "e1", "base_rev": 0, "rev": 1,
+            "order": ["m1", "m2", "m3", "m5"], "changed": []})
+        self.assertEqual([m["id"] for m in sess._display_messages], ["m1", "m2", "m3", "m5"])
+
+    async def test_deltas_chain_on_the_revision_just_applied(self):
+        sess = await self._with_full()
+        order = [m["id"] for m in RICH_MESSAGES]
+        for rev, text in ((1, "a"), (2, "b")):
+            await sess._handle_transcript({
+                "session_id": "s1", "delta": True, "epoch": "e1",
+                "base_rev": rev - 1, "rev": rev, "order": order + [f"x{rev}"],
+                "changed": [{"id": f"x{rev}", "role": "user", "kind": "text", "text": text}]})
+            order = order + [f"x{rev}"]
+        self.assertEqual(sess._display_messages[-1]["text"], "b")
+        self.assertEqual(sess.ws.sent, [])
+
+    async def test_a_delta_on_a_revision_not_held_asks_for_the_whole(self):
+        """A restarted server, or a delta whose predecessor was lost on the wire."""
+        for held in (False, True):
+            sess = await self._with_full() if held else _session()
+            sess.ws = getattr(sess, "ws", None) or _FakeWS()
+            before = list(sess._display_messages)
+            await sess._handle_transcript({
+                "session_id": "s1", "delta": True, "epoch": "e1", "base_rev": 7, "rev": 8,
+                "order": ["m1"], "changed": []})
+            self.assertEqual(sess._display_messages, before)
+            self.assertEqual(json.loads(sess.ws.sent[-1]),
+                             {"type": "transcript_resync", "session_id": "s1"})
+
+    async def test_a_delta_naming_a_message_never_sent_asks_for_the_whole(self):
+        sess = await self._with_full()
+        await sess._handle_transcript({
+            "session_id": "s1", "delta": True, "epoch": "e1", "base_rev": 0, "rev": 1,
+            "order": ["m1", "ghost"], "changed": []})
+        self.assertEqual(sess._display_messages, RICH_MESSAGES)
+        self.assertEqual(json.loads(sess.ws.sent[-1])["type"], "transcript_resync")
+
+    async def test_a_delta_still_cannot_shorten_the_history(self):
+        sess = await self._with_full()
+        await sess._handle_transcript({
+            "session_id": "s1", "delta": True, "epoch": "e1", "base_rev": 0, "rev": 1,
+            "order": ["m2"], "changed": []})
+        self.assertEqual(sess._display_messages, RICH_MESSAGES)
+
+
 class UntrimmedHistoryTests(unittest.TestCase):
     def test_the_record_keeps_what_the_window_drops(self):
         sess = _session()
