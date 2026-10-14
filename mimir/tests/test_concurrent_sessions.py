@@ -245,6 +245,18 @@ class WhatIsRunningTests(unittest.IsolatedAsyncioTestCase):
 class DeletingAConversationTests(unittest.IsolatedAsyncioTestCase):
     """Deleting closes the agent, so a turn in flight is cut short — and said first."""
 
+    def setUp(self) -> None:
+        # The job dirs are read off disk: a real state dir with an "s1" of its own leaks in.
+        import tempfile
+        from unittest import mock
+        from mimir.client.ui.ws import ws_session as ws
+
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        patcher = mock.patch.object(ws, "_MIMIR_DIR_WS", tmp.name)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def _session(self) -> _Session:
         self.a = _worker("s1")
         pool = _ManyPool({"s1": self.a})
