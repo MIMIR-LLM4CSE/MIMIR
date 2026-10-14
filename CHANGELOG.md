@@ -15,42 +15,7 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-### Changed
-- **The sub-agent rung moved to the settings popover.** How far a sub-agent may go is an
-  agent setting — set once, read by every delegation — not a fact about the machine, so it
-  sits beside thinking depth and enforcement rather than in the scientific-computing
-  drawer. That drawer is now what the servers fill, plus the runs going outside the turn;
-  the sub-agents at work still have their own drawer under the session that spawned them.
-- **The side drawers are as wide as you make them.** Drag the edge of the session list,
-  the sub-agents or the scientific-computing panel — or focus it and use the arrow keys —
-  and the width is remembered per drawer. Their text now wraps instead of being cut to an
-  ellipsis: at a fixed 220px a node kind's feature list, a CPU model and a sub-agent's
-  task were all cropped, and an ellipsis is a fact no amount of widening gave back.
-- **The panel's `⟳` reads past the servers' caches, and the drawer keeps itself current.**
-  Every section is served from a cache so that refreshing on a timer stays cheap — one of
-  them, the per-host cluster digest, for the life of the server — so pressing refresh
-  handed back the page just read, and a cluster that was unreachable at startup stayed
-  invisible. A tool that caches now names the argument that bypasses it, and only the
-  reader's own press sets it. The drawer also re-asks every 20s while it is open: a queue
-  moves and a job ends outside any turn, which is the one time nothing else was asking.
-
-### Removed
-- **The "previous session plan — resume or start fresh" card.** It was raised from the
-  session load, and a session is loaded on every connect, so a dropped connection mid-turn
-  put the question in the middle of the very work it was asking about. Neither answer was
-  right there either: the plan of record is the checklist on disk, which the agent reads
-  either way, so "start fresh" discarded a live plan while the turn that wrote it was
-  still running. A checklist with work left on it is simply restored and shown.
-
-### Fixed
-- **The scientific-computing panel fills itself on opening, instead of after the first
-  question.** Its sections come from MCP servers, a conversation holds no agent until its
-  first query, and the drawer asked a conversation that had none — so the clusters only
-  ever appeared once something had been asked of the model. Opening it now starts that
-  conversation's agent, without waiting on it: the drawer says the servers are coming up,
-  and fills itself the moment they answer. Typing is never blocked by it.
-
-## [1.7.0] — 2026-10-13
+## [1.7.0] — 2026-10-14
 
 ### Added
 - **A sub-agent watches its own detached runs, and answers for them.** In `parallel` mode
@@ -85,10 +50,59 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   and on its node's, which opens in place onto the job id or pid, the command, its state
   and phase, how long it has been going — and **which agent launched it**, named with its
   task when it was a sub-agent's. A detached shell command has no scheduler to name, which
-  is what places it on this machine. A run no machine claimed is still listed, under the
-  flat list it always was: a run you cannot see is worse than one shown out of place.
+  is what places it on this machine. This is the only place runs appear: the flat list
+  under the sections is gone (see Removed).
+- **A check-in reads the run's last lines, and stays quiet when there is nothing new.**
+  The status of a running bash, Slurm or proxy job now carries its last five lines, and
+  the watcher scans them for the signs of a run going wrong — non-finite values, an
+  overflow, a traceback, a fatal signal, running out of memory. A sign not seen before on
+  that job triggers a check-in at once, once per kind; a scheduled check-in that would say
+  exactly what the last one said is skipped.
 
 ### Changed
+- **The sub-agent rung moved to the settings popover.** How far a sub-agent may go is an
+  agent setting — set once, read by every delegation — not a fact about the machine, so it
+  sits beside thinking depth and enforcement rather than in the scientific-computing
+  drawer. That drawer is now what the servers fill; the sub-agents at work still have
+  their own drawer under the session that spawned them.
+- **The `parallel` rung is now `build`** ("build & run" in the UI), named for what it
+  grants. The old name is still accepted from stored preferences and `/subagents`.
+- **The side drawers are as wide as you make them.** Drag the edge of the session list,
+  the sub-agents or the scientific-computing panel — or focus it and use the arrow keys —
+  and the width is remembered per drawer. At a fixed 220px a node kind's feature list, a
+  CPU model and a sub-agent's task were all cropped, and an ellipsis is a fact no amount
+  of widening gave back. Text is now never cut mid-word: a narrow drawer shows one line
+  with the full text on hover, and past 360px values and titles wrap at word boundaries,
+  up to two lines.
+- **The panel's `⟳` reads past the servers' caches, and the drawer keeps itself current.**
+  Every section is served from a cache so that refreshing on a timer stays cheap — one of
+  them, the per-host cluster digest, for the life of the server — so pressing refresh
+  handed back the page just read, and a cluster that was unreachable at startup stayed
+  invisible. A tool that caches now names the argument that bypasses it, and only the
+  reader's own press sets it. The drawer also re-asks every 20s while it is open: a queue
+  moves and a job ends outside any turn, which is the one time nothing else was asking.
+  Sections are asked concurrently, and every scheduler's digest is built concurrently.
+- **The scientific-computing panel reads nearest first, and a node kind is named by its
+  nodes.** The machine first, then the clusters, the optimisation last. The cluster digest
+  kept only hardware fields, so node names never reached the panel and a probed node's
+  profile was never found: each kind is now labelled by its nodes and opens onto one spec
+  per line — arch, CPUs, GPU, memory, partitions, features, node count. `mem` is split
+  into `cpu mem` and `gpu mem`, the latter per GPU from a probe, and said to be unknown
+  until one runs, since Slurm's gres never carries it. Node kinds lose the "not profiled"
+  badge, and the drawer's text is larger.
+- **The interface wears one quiet style.** Drawers, chat, cards, composer and popovers
+  share one shell: a one-pixel brand ribbon, section cards with an accent bar, tinted
+  state pills, uniform radii. Colour emojis are replaced by monochrome line icons; a
+  high-risk approval is an accent rail and a faint tint rather than a red frame; two- and
+  three-way choices are segmented controls and on/off choices are switches.
+- **Long sessions stay fast.** The thread renders the last 120 messages and grows by 120
+  when you reach the top, anchored so nothing jumps. The end-of-turn transcript is sent
+  whole once, then as deltas; a server that no longer holds the revision answers with the
+  whole of it. Finding the last user message was a scan per message — quadratic in the
+  history, and paid on every click, panel report and streamed chunk — and is now one
+  pass. A drawer drag sizes the element once per frame and commits on release.
+- **The verification ledger stays with the model, and leaves the chat.** It is still
+  appended to the answer the model's history keeps; the bubble no longer shows it.
 - **Node profiles are filed under the scheduler they were read on.** Slurm's node names
   are chosen per site, so two clusters each with a `node01` are two unrelated machines —
   and one flat directory had the second overwrite the first. `slurm_probe_node` and
@@ -106,7 +120,38 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   containment: a directory inside the reading session's own state directory, which is
   exactly its own runs and its children's.
 
+### Removed
+- **The "previous session plan — resume or start fresh" card.** It was raised from the
+  session load, and a session is loaded on every connect, so a dropped connection mid-turn
+  put the question in the middle of the very work it was asking about. Neither answer was
+  right there either: the plan of record is the checklist on disk, which the agent reads
+  either way, so "start fresh" discarded a live plan while the turn that wrote it was
+  still running. A checklist with work left on it is simply restored and shown.
+- **The "Runs outside this turn" section of the scientific-computing panel.** The runs in
+  flight are badges on the machines running them; a flat list under the sections said
+  only where a run was not.
+
 ### Fixed
+- **The scientific-computing panel fills itself on opening, instead of after the first
+  question.** Its sections come from MCP servers, a conversation holds no agent until its
+  first query, and the drawer asked a conversation that had none — so the clusters only
+  ever appeared once something had been asked of the model. Opening it now starts that
+  conversation's agent, without waiting on it. Until the servers answer, the drawer names
+  the clusters the workspace has recorded on disk, and the rows you opened survive the
+  swap. Typing is never blocked by it.
+- **A run already reported no longer wakes its conversation again.** A second
+  announcement of the same finished run — from the reconnect scan, the worker-build scan
+  or the watcher — arriving after the first was delivered started another turn; both
+  consumers now check the on-disk "reported" marker first. A sub-agent's run was marked
+  under the parent session but looked for under the child's, so it was re-announced at
+  every reconnection; the marker is now written and read where the run lives.
+- **A wake read inside a running turn is settled.** A finished job steered into a turn in
+  flight was dropped from the pending wakes without being marked reported, so every later
+  scan — an agent rebuild, an attach — announced it again, restarting the step it gated
+  and its approval card.
+- **A reloaded session's last message no longer sticks below the live turn.** The counter
+  that orders messages restarted at 1 after a window reload, so new rows sorted before the
+  last stored message, which stayed pinned at the bottom while new work streamed above.
 - **A job the queue reports as COMPLETED, FAILED or CANCELLED stops being followed.** Only
   `RUNNING` and `COMPLETING` counted as going, and `PENDING`, `CONFIGURING` and `REQUEUED`
   as waiting; anything else in the queue fell through to "a state I do not recognise, so
