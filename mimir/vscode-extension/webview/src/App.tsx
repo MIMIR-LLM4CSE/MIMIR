@@ -912,7 +912,12 @@ export const App: React.FC = () => {
   // The agent came up after the drawer was opened: its first ask found no servers to
   // ask. Ask again, now that there are some.
   useEffect(() => {
-    if (readyCount > 0 && showSciencePanel) refreshPanel();
+    if (readyCount > 0 && showSciencePanel) {
+      // The first read after the agent lands is a cold probe; show it is under way.
+      if (agentReady && !panelAgentReady) setPanelPending(true);
+      refreshPanel();
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [readyCount, showSciencePanel, refreshPanel]);
 
   const pollCards = showSciencePanel ? refreshPanel : refreshSubAgents;

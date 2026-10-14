@@ -23,6 +23,12 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   again after 30s rather than 5 minutes. The panel is also filled the moment the agent a
   drawer started is up, re-asked every 10s instead of 20s, and served off the socket's
   read loop, so a slow `sinfo` no longer holds back your messages or stacks up reports.
+- **The panel's first read after start-up is quick and no longer stalls the agent.** The
+  Machine section built the full host profile (modules, conda, `-march`…) to show four
+  lines; it now reads only those, in ~2s instead of ~15s. Both panel reads run off their
+  server's loop, so the agent's own calls to those servers no longer wait behind a cold
+  `sinfo`. A report taken while the agent was coming up could also blank the drawer
+  until `⟳`; the drawer now shows a read in progress until the real one lands.
 
 ## [1.7.0] — 2026-10-14
 

@@ -25,6 +25,7 @@ Safety model:
   allocation, so the local-validation hold has nothing to protect there.
 """
 
+import asyncio
 import concurrent.futures
 import contextlib
 import hashlib
@@ -35,6 +36,7 @@ import shlex
 import socket
 import subprocess
 import sys
+import threading
 import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '_shared'))
@@ -2359,7 +2361,7 @@ def _host_tree_cached() -> list[dict]:
     panel={"section": "Cluster", "order": 30, "refresh_arg": "refresh"},
     label="Cluster status",
 ))
-def hpc_panel_report(refresh: bool = False) -> dict:
+async def hpc_panel_report(refresh: bool = False) -> dict:
     """Where the work goes, in a form a panel can show: the queue, the room, the nodes.
 
     Two halves with two shapes. The lines are this moment — what is queued, where there
@@ -2384,6 +2386,20 @@ def hpc_panel_report(refresh: bool = False) -> dict:
         refresh: Drop every cache first and read the clusters again. The reader's own
             refresh; a panel on a timer leaves it alone.
     """
+    # Off the server's loop: a cold read is seconds of ssh/sinfo, and a sync tool holds
+    # every other call to this server for that long.
+    return await asyncio.to_thread(_hpc_panel_report, refresh)
+
+
+_PANEL_LOCK = threading.Lock()
+
+
+def _hpc_panel_report(refresh: bool) -> dict:
+    with _PANEL_LOCK:
+        return _hpc_panel_report_locked(refresh)
+
+
+def _hpc_panel_report_locked(refresh: bool) -> dict:
     if refresh:
         _PANEL_CACHE.clear()
         _forget_cluster_digest()

@@ -3455,9 +3455,11 @@ class _Session:
                 return
 
     async def _send_panel_report(self, *, refresh: bool) -> None:
-        sections = await asyncio.wrap_future(
-            self.worker.panel_sections(force=refresh))
-        agent_ready = self.worker.agent_ready()
+        # One worker for the whole report: the agent may land during the await, and a
+        # report read off the stand-in must not then claim to be the agent's.
+        worker = self.worker
+        sections = await asyncio.wrap_future(worker.panel_sections(force=refresh))
+        agent_ready = worker.agent_ready()
         if not agent_ready:
             from ...config import constants
             sections = recorded_hosts_sections(constants.STATE_DIR)

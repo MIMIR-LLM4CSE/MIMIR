@@ -23,6 +23,7 @@ tree changes (hostname, effective MODULEPATH, a stat-hash of the modulefile tree
 of Lmod's own spider cache). No TTL is ever consulted.
 """
 
+import asyncio
 import hashlib
 import os
 import platform
@@ -1232,6 +1233,19 @@ def platform_catalogue_status() -> dict:
 # time it refreshes. Probed at most this often, per server process.
 _PANEL_PROFILE_TTL_SECS = 300
 _PANEL_PROFILE: dict = {"at": 0.0, "profile": {}}
+_PANEL_LOCK = threading.Lock()
+
+
+def _build_panel_profile() -> dict:
+    """The fields the panel shows. The full profile costs ~15 s (modules, digest, march)."""
+    return {
+        "timestamp": now_iso(),
+        "hostname": socket.gethostname(),
+        "cpu": _collect_cpu(),
+        "gpu": _collect_gpu(),
+        "memory": _collect_memory(),
+        "slurm": _collect_slurm(),
+    }
 
 
 def _panel_profile(force: bool = False) -> dict:
@@ -1239,7 +1253,7 @@ def _panel_profile(force: bool = False) -> dict:
     if (force or not _PANEL_PROFILE["profile"]
             or now - _PANEL_PROFILE["at"] > _PANEL_PROFILE_TTL_SECS):
         try:
-            _PANEL_PROFILE["profile"] = _build_profile()
+            _PANEL_PROFILE["profile"] = _build_panel_profile()
             _PANEL_PROFILE["at"] = now
         except Exception:
             return dict(_PANEL_PROFILE["profile"])
@@ -1252,7 +1266,7 @@ def _panel_profile(force: bool = False) -> dict:
     panel={"section": "Machine", "order": 10, "refresh_arg": "refresh"},
     label="Machine profile",
 ))
-def platform_panel_report(refresh: bool = False) -> dict:
+async def platform_panel_report(refresh: bool = False) -> dict:
     """The host MIMIR runs on, in a form a panel can show: a few lines, no probing.
 
     Deliberately narrow. On a cluster this is the login node — the one machine nothing
@@ -1269,7 +1283,14 @@ def platform_panel_report(refresh: bool = False) -> dict:
         refresh: Probe this machine again rather than serving the held profile — a GPU
             that was busy, a module system loaded since. The reader's own refresh.
     """
-    profile = _panel_profile(force=refresh)
+    # Off the server's loop: a sync tool holds every other call to this server for as
+    # long as the probe runs.
+    return await asyncio.to_thread(_platform_panel_report, refresh)
+
+
+def _platform_panel_report(refresh: bool) -> dict:
+    with _PANEL_LOCK:
+        profile = _panel_profile(force=refresh)
     if not profile:
         return ok({"title": "Machine", "lines": [],
                    "detail": "The machine could not be probed."})
