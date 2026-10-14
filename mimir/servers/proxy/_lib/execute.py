@@ -309,8 +309,19 @@ def _seal_reference(
     ref_metrics["proxy_name"] = proxy_name
 
     output_stored: str | None = None
+    output_format = entry.get("output_format", "npz")
+    ext = command._output_ext(output_format)
     proxy_out = ref_metrics.pop("output_file", None)
-    if proxy_out and os.path.isfile(str(proxy_out)):
+    if not (proxy_out and os.path.isfile(str(proxy_out))):
+        # The {output_file} path the solver was given: echoing it back is optional.
+        proxy_out = os.path.join(tmp_run_dir, f"output.{ext}")
+    if output_format != "none" and not os.path.isfile(proxy_out):
+        ref_metrics["output_file_warning"] = (
+            f"No field output found at {proxy_out} and none declared via "
+            "output_file= in the metrics block. Field not stored, so field "
+            "comparisons (l2_rel/linf_rel) against this reference are unavailable."
+        )
+    elif output_format != "none":
         size = os.path.getsize(str(proxy_out))
         if size > max_out_bytes:
             ref_metrics["output_file_warning"] = (
@@ -318,7 +329,6 @@ def _seal_reference(
                 f"max_output_mb={max_output_mb}. Field not stored."
             )
         else:
-            ext = command._output_ext(entry.get("output_format", "npz"))
             dest = os.path.join(rd, f"output.{ext}")
             try:
                 shutil.copy2(str(proxy_out), dest)

@@ -108,7 +108,8 @@ from _lib.execute import _DEFAULT_MAX_OUTPUT_MB, _REF_RUN_TIMEOUT
 from _lib.procs import (_validate_slurm_args, _validate_slurm_comment,
                         _validate_slurm_token)
 from slurm_script import validate_target
-from _ops import eval_session, references, registry, runs, scaffold as scaffold_ops, slurm, suites
+from _ops import (eval_session, exec_jobs, references, registry, runs,
+                  scaffold as scaffold_ops, slurm, suites)
 
 mcp = FastMCP(
     "ProxyServer",
@@ -463,13 +464,19 @@ def proxy_manage(
 
 _EXEC_OPS = ("run", "reference", "suite", "benchmark_create", "cancel")
 
+# reference/suite/benchmark_create wait for the job they launch, so the default 120 s
+# tool wall would cut them off. The job detaches itself before this is reached.
+_EXEC_JOB_TIMEOUT = 1200
 
-@mcp.tool(**tool_caps(kind="proxy", caps=[PLAN_BLOCKED, CODE_EXEC], reversibility=RECOVERABLE, non_batch=True,
+
+@mcp.tool(**tool_caps(kind="proxy", caps=[PLAN_BLOCKED, CODE_EXEC, BACKGROUNDABLE, DIVERTIBLE],
+                      reversibility=RECOVERABLE, non_batch=True,
                       label="Proxy exec: {op}",
                       run_outcome={**_RUN_OUTCOME,
                                    "rows": {"field": "rows", "id": "run_dir",
-                                            "failed_when_present": ["error"]}}))
-def proxy_exec(
+                                            "failed_when_present": ["error"]}},
+                      timeout_secs=_EXEC_JOB_TIMEOUT))
+async def proxy_exec(
     op: Annotated[str, Field(
         description="Which operation to perform. Required — it selects everything else, and the parameters each one needs.",
         json_schema_extra={"enum": list(_EXEC_OPS)},
@@ -489,6 +496,7 @@ def proxy_exec(
     timeout_s: int = 0,
     per_case_timeout_s: int = 0,
     run_id: str = "",
+    background: bool = False,
     confirm: bool = False,
 ) -> dict:
     """Execute proxies locally (sensitive).
@@ -496,15 +504,20 @@ def proxy_exec(
     Operations (set ``op``; all require confirm=True):
       run              -> non-blocking background run of one proxy (requires:
                           proxy_name); monitor with proxy_runs()
-      reference        -> blocking run whose output is sealed as an immutable
+      reference        -> run whose output is sealed as an immutable
                           reference dataset (requires: proxy_name, reference_name)
-      suite            -> blocking run of every case×sweep in a suite; writes
+      suite            -> run of every case×sweep in a suite; writes
                           the summary table (requires: suite_name)
-      benchmark_create -> one blocking call = seal a reference + define a
+      benchmark_create -> one call = seal a reference + define a
                           one-case suite named `benchmark_name` (requires:
                           proxy_name, benchmark_name)
-      cancel           -> stop a running proxy: SIGTERM->SIGKILL local, scancel
-                          Slurm (requires: run_id)
+      cancel           -> stop a running proxy or exec job: SIGTERM->SIGKILL
+                          local, scancel Slurm (requires: run_id)
+
+    reference/suite/benchmark_create run as a job and the call waits for its reply.
+    A job still going after the wait budget detaches itself, and background=True
+    detaches up front: both hand it to a watcher that resumes you with the result —
+    end your turn when told to, do not poll.
 
     For Slurm submission of the same work, use proxy_slurm instead.
 
@@ -531,7 +544,9 @@ def proxy_exec(
             to it, so a larger value has no effect. 7200 for 'suite'.
         per_case_timeout_s: For 'suite': per-case cap in seconds (0 = no cap
             beyond the remaining budget).
-        run_id: For 'cancel': run ID or absolute path.
+        run_id: For 'cancel': run ID or absolute path (a job_dir too).
+        background: For 'reference'/'suite'/'benchmark_create': skip the wait and
+            detach immediately. Use it when the job is known to be long.
         confirm: Must be True to execute.
     """
     if op not in _EXEC_OPS:
@@ -545,19 +560,27 @@ def proxy_exec(
                                    compare_to_reference))
     if op == "reference":
         return (_missing_args(op, proxy_name=proxy_name, reference_name=reference_name)
-                or references.create(proxy_name, reference_name, extra_params,
-                                     param_overrides, max_output_mb,
-                                     timeout_s or _REF_RUN_TIMEOUT))
+                or await exec_jobs.run_awaited(op, {
+                    "proxy_name": proxy_name, "reference_name": reference_name,
+                    "extra_params": extra_params, "param_overrides": param_overrides,
+                    "max_output_mb": max_output_mb,
+                    "timeout_s": timeout_s or _REF_RUN_TIMEOUT,
+                }, background=background))
     if op == "suite":
         return (_missing_args(op, suite_name=suite_name)
-                or suites.run_suite(suite_name, extra_metrics,
-                                    timeout_s or suites._SUITE_RUN_TIMEOUT,
-                                    per_case_timeout_s))
+                or await exec_jobs.run_awaited(op, {
+                    "suite_name": suite_name, "extra_metrics": extra_metrics,
+                    "timeout_s": timeout_s or suites._SUITE_RUN_TIMEOUT,
+                    "per_case_timeout_s": per_case_timeout_s,
+                }, background=background))
     if op == "benchmark_create":
         return (_missing_args(op, proxy_name=proxy_name, benchmark_name=benchmark_name)
-                or suites.benchmark_create(proxy_name, benchmark_name, param_sweeps,
-                                           reference_params, extra_metrics, description,
-                                           timeout_s or _REF_RUN_TIMEOUT))
+                or await exec_jobs.run_awaited(op, {
+                    "proxy_name": proxy_name, "benchmark_name": benchmark_name,
+                    "param_sweeps": param_sweeps, "reference_params": reference_params,
+                    "extra_metrics": extra_metrics, "description": description,
+                    "timeout_s": timeout_s or _REF_RUN_TIMEOUT,
+                }, background=background))
     # op == "cancel"
     return _missing_args(op, run_id=run_id) or runs.cancel(run_id)
 

@@ -16,6 +16,16 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Fixed
+- **A sealed reference keeps its field.** `proxy_exec(op='reference')` and
+  `op='benchmark_create'` stored the field only when the solver echoed
+  `output_file=` in its metrics block, so a proxy writing to `{output_file}` got
+  `output_stored: null` and no field comparison, silently. The field is now taken from
+  `{output_file}` too, and a reference with no field at all says so.
+- **Long baselines can be created with `proxy_exec`.** `reference`, `suite` and
+  `benchmark_create` were cut off at the 120s tool limit and held the proxy server
+  for the whole run. They now run as a job: the call waits for the result, and hands
+  the job to the background watcher with `background=True`, when moved to the
+  background, or after ~18 min.
 - **The scientific-computing panel keeps itself current without `⟳`.** The cluster tree
   was held for five minutes whatever happened, so a node profiled or a scheduler
   recorded during a turn only appeared after a manual refresh. It is now rebuilt as soon

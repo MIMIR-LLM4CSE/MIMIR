@@ -7,6 +7,7 @@ import sys
 from datetime import datetime, timezone
 
 from _ops import _PROXY_DIR, _with_next, err, ok
+from _ops import exec_jobs
 from _lib.command import _output_ext, _build_run_cmd
 from _lib.execute import _compare_to_reference
 from _lib.procs import (
@@ -81,6 +82,8 @@ def run_status(run_id: str) -> dict:
     run_dir = _resolve_run_dir(run_id)
     if not os.path.isdir(run_dir):
         return err(f"Run directory not found: {run_dir}")
+    if exec_jobs.is_job_dir(run_dir):
+        return exec_jobs.status(run_dir)
     rs = _run_state(run_dir)
     payload = {"run_id": run_id, "run_dir": run_dir, "log": _log_path(run_dir), **rs}
     metrics = _read_json(os.path.join(run_dir, "metrics.json"))

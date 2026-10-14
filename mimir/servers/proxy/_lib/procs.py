@@ -467,7 +467,8 @@ def _update_run_config(run_dir: str, updates: dict) -> None:
     _write_run_config(run_dir, cfg)
 
 
-def _launch_detached(argv: list[str], run_dir: str, log_file: str | None = None) -> int:
+def _launch_detached(argv: list[str], run_dir: str, log_file: str | None = None,
+                     env: dict | None = None) -> int:
     """Spawn *argv* in a new session; record pid + pid_starttime; return the pid.
 
     When *log_file* is given, stdout/stderr are redirected into it; otherwise
@@ -477,6 +478,8 @@ def _launch_detached(argv: list[str], run_dir: str, log_file: str | None = None)
     # reads it eats the client's JSON-RPC traffic.
     kwargs: dict = {"close_fds": True, "start_new_session": True,
                     "stdin": subprocess.DEVNULL}
+    if env is not None:
+        kwargs["env"] = env
     if log_file:
         kwargs["stdout"] = open(log_file, "w")
         kwargs["stderr"] = subprocess.STDOUT

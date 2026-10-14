@@ -70,7 +70,7 @@ CLUSTER_SUBMIT_TOOLS = {
 # status ops that report such a run as still in flight are deliberately NOT here:
 # re-arming a watcher reads a descriptor's shape, not a reader's capabilities.
 BACKGROUNDABLE_TOOLS = {
-    "bash_run", "proxy_eval", "proxy_slurm", "sbatch_submit", "slurm_probe_node",
+    "bash_run", "proxy_eval", "proxy_exec", "proxy_slurm", "sbatch_submit", "slurm_probe_node",
     # A sub-agent the caller detaches: same handle, same watcher, same resume.
     "spawn_agent",
 }
@@ -80,7 +80,7 @@ BACKGROUNDABLE_TOOLS = {
 # proxy_slurm and sbatch_submit return the moment they have submitted, so there is
 # never a wait of theirs to divert.
 DIVERTIBLE_TOOLS = {
-    "bash_run", "proxy_eval",
+    "bash_run", "proxy_eval", "proxy_exec",
 }
 
 # Dual-use tools kept available in a read-only mode for read-only invocations only:

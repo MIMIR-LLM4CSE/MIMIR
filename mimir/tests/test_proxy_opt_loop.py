@@ -13,7 +13,7 @@ import json
 import os
 
 from mimir.tests._proxy_fixtures import (
-    _TmpStorageTest, _eval, eval_session, procs, ratchet, server_proxy, store,
+    _TmpStorageTest, _call, _eval, eval_session, procs, ratchet, server_proxy, store,
 )
 
 
@@ -264,7 +264,8 @@ class RunnerConvergenceRequirementTests(_TmpStorageTest):
             output_format="npz", confirm=True,
         )
         self.assertEqual(res.get("status"), "ok")
-        res = server_proxy.proxy_exec(
+        res = _call(
+            server_proxy.proxy_exec,
             op="benchmark_create", proxy_name="conv", benchmark_name="convb",
             param_sweeps=[{"n": 10}, {"n": 20}, {"n": 40}],
             reference_params={"n": 40}, confirm=True,

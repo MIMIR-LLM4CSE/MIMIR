@@ -41,10 +41,10 @@ class DispatchTests(_TmpStorageTest):
         res = server_proxy.proxy_runs(op="logs")
         self.assertIn("op 'logs' requires: run_id", res["error"])
 
-        res = server_proxy.proxy_exec(op="run", confirm=True)
+        res = _call(server_proxy.proxy_exec, op="run", confirm=True)
         self.assertIn("op 'run' requires: proxy_name", res["error"])
 
-        res = server_proxy.proxy_exec(op="reference", proxy_name="p", confirm=True)
+        res = _call(server_proxy.proxy_exec, op="reference", proxy_name="p", confirm=True)
         self.assertIn("op 'reference' requires: reference_name", res["error"])
 
     def test_confirm_gate_on_every_sensitive_tool(self) -> None:

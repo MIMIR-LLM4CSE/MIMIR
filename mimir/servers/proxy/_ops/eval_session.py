@@ -503,7 +503,7 @@ def run(proxy_name: str = "", background: bool = False, axis: str = "") -> dict:
 
 async def _await_terminal_state(
     run_dir: str, wait_s: float, channel: str = "", job_key: str = "",
-    pid: int = 0,
+    pid: int = 0, state_fn=None, label: str = "optimization run",
 ) -> tuple[str | None, str]:
     """Poll *run_dir* until the run finishes, reporting what it is doing as it goes.
 
@@ -529,13 +529,13 @@ async def _await_terminal_state(
         # started the process, and an extra state read here would be one more poll of
         # the run dir for a fact already in hand.
         run_channel.publish(channel, job_key, pid,
-                            f"optimization run {os.path.basename(run_dir)}",
+                            f"{label} {os.path.basename(run_dir)}",
                             run_dir, wait_s)
     try:
         while True:
             # One read serves both the terminal test and the phase: `_run_state`
             # already folds in what the run says it is doing.
-            st = _run_state(run_dir)
+            st = (state_fn or _run_state)(run_dir)
             state = st["state"]
             if state in _TERMINAL_STATES:
                 return state, ""
