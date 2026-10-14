@@ -47,6 +47,7 @@ from capabilities import (tool_caps, PLAN_BLOCKED, CLUSTER_SUBMIT, BACKGROUNDABL
 from responses import err, ok
 from state_paths import state_dir
 from slurm_site import (
+    ADOPTED_FILE as _ADOPTED_FILE,
     HOST_FILE as _HOST_FILE,
     ID_FILE as _ID_FILE,
     LOCAL as _LOCAL_HOST,
@@ -57,6 +58,7 @@ from slurm_site import (
     name_of as _host_name,
     jobs_dir as _hpc_jobs_dir,
     new_job_dir as _new_job_dir,
+    owned_job_hosts as _owned_job_hosts,
     record_job_dir as _record_job_dir,
     recorded_jobs as _recorded_jobs,
     resolve_host as _resolve_host,
@@ -196,10 +198,6 @@ def _find_job_dir(job_id: str) -> tuple[str, str]:
             return found, sid
     return "", ""
 
-
-# What an adopted submission's directory carries instead of a batch script: the job was
-# not built here, so there is nothing of ours to keep but the fact that we took it on.
-_ADOPTED_FILE = "adopted"
 
 # What a job's own output is called, beside the work it did. ``%j`` is Slurm's, and the
 # id is not knowable until the submission answers.
@@ -371,8 +369,9 @@ def _locate_job(job_id: str, requested: str = "",
     for host in order:
         state, raw, nodes = _normalized_job_state(job_id, host=host)
         if state != "unknown":
-            # Found, so the next poll of this job is one call rather than a sweep.
-            if job_dir and hint != host:
+            # Found, so the next poll of this job is one call rather than a sweep. A
+            # recorded host is never replaced: it is what slurm_cancel trusts.
+            if job_dir and hint is None:
                 _record_job_host(job_dir, host)
             return host, state, raw, nodes
     return "", "unknown", "", []
@@ -1227,13 +1226,14 @@ def _current_user() -> str:
     label="Slurm cancel {job_id}",
 ))
 def slurm_cancel(job_id: str, confirm: bool = False, scheduler: str = "") -> dict:
-    """Cancel one of your own Slurm jobs, pending or running (sensitive).
+    """Cancel a Slurm job this conversation submitted, pending or running (sensitive).
 
     For a job that is wrong or no longer needed: a bad submission, a run superseded by
     a fix, a hung job burning allocation hours. A running job stops where it is, so its
     output is whatever it had written by then. One job per call — or one task of an
-    array, as '1234_5'; a job that is not yours, or no longer in the queue, is refused
-    with its state.
+    array, as '1234_5'. Only jobs submitted by this conversation or by its sub-agents
+    can be cancelled: one from another conversation or workspace, one adopted with
+    slurm_watch, or one no longer in the queue is refused.
 
     A job this session watches ends like any other: you are resumed with its end, so
     there is nothing to poll after cancelling it.
@@ -1241,8 +1241,9 @@ def slurm_cancel(job_id: str, confirm: bool = False, scheduler: str = "") -> dic
     Args:
         job_id: The Slurm job ID, as sbatch_submit or slurm_queue gave it.
         confirm: Must be True to cancel.
-        scheduler: Only to skip the search for the one running it. Omitted is the
-            normal case — a cancellation goes where the job is.
+        scheduler: Only when the same id was submitted here on two schedulers, to
+            say which. Omitted is the normal case — a cancellation goes to the
+            scheduler the job was submitted to.
     """
     job_id = str(job_id or "").strip()
     if not _JOB_ID_RE.fullmatch(job_id):
@@ -1252,12 +1253,26 @@ def slurm_cancel(job_id: str, confirm: bool = False, scheduler: str = "") -> dic
         return err("Cancellation not confirmed.",
                    hint="Set confirm=True only after user approval.")
 
-    # Where it is, before anything is sent: a scancel aimed at the wrong scheduler
-    # either hits nothing or — the id existing on both — somebody else's job.
-    host, located, located_raw, _nodes = _locate_job(job_id, scheduler)
+    # Same Unix user is not ownership: other conversations and workspaces share it.
+    owned = _owned_job_hosts(job_id)
+    if scheduler:
+        scheduler = scheduler.strip()
+        owned &= {_LOCAL_HOST if scheduler == _LOCAL_NAME else scheduler}
+    if not owned:
+        return err(f"Job {job_id} was not submitted by this conversation or its "
+                   "sub-agents, so it is not this conversation's to cancel.",
+                   hint="Jobs of other conversations, other workspaces, or adopted "
+                        "with slurm_watch are left alone; ask the user to cancel "
+                        "them where they were started.")
+    if len(owned) > 1:
+        return err(f"Job {job_id} was submitted here on several schedulers: "
+                   + ", ".join(_host_name(h) for h in sorted(owned)) + ".",
+                   hint="Name the one to cancel on with scheduler=.")
+    # Only the scheduler it was submitted to: the same id elsewhere is another job.
+    host = next(iter(owned))
+    located, located_raw, _nodes = _normalized_job_state(job_id, host=host)
     if located == "unknown":
-        known = ", ".join(_host_name(h) for h in slurm_hosts()) or "none reachable"
-        return err(f"No scheduler this workspace reaches knows job {job_id} ({known}), "
+        return err(f"{_host_name(host)} no longer knows job {job_id}, "
                    "so there is nothing to cancel.",
                    hint="List what is running with slurm_queue(scheduler=...).")
 

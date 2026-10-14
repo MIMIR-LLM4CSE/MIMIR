@@ -25,8 +25,11 @@ from slurm_site import (
     LOCAL as _SLURM_LOCAL,
     exec_argv as _slurm_exec_argv,
     hosts as _slurm_hosts,
+    owned_job_hosts as _owned_job_hosts,
+    owns_job as _owns_slurm_job,
     record_host as _record_slurm_host,
 )
+from state_paths import active_session_id, session_owns
 
 from _lib import store
 
@@ -61,6 +64,19 @@ def _build_log_path(run_dir: str) -> str:
 
 def _phase_path(run_dir: str) -> str:
     return os.path.join(run_dir, "phase.json")
+
+# The session that started the run: run directories are shared by the whole workspace.
+_OWNER_FILE = "owner_session"
+
+
+def _run_owned(run_dir: str) -> bool:
+    """Whether this session (or the sub-agent that started it) owns *run_dir*."""
+    try:
+        with open(os.path.join(run_dir, _OWNER_FILE)) as fh:
+            owner = fh.read().strip()
+    except OSError:
+        return False
+    return session_owns(owner)
 
 
 def _read_int_file(path: str) -> int | None:
@@ -451,6 +467,8 @@ def _new_run_dir(base_dir: str, tag_suffix: str = "") -> str:
         os.makedirs(run_dir, exist_ok=True)
     with open(os.path.join(run_dir, "start_time"), "w") as fh:
         fh.write(str(time.time()))
+    with open(os.path.join(run_dir, _OWNER_FILE), "w") as fh:
+        fh.write(active_session_id())
     return run_dir
 
 
@@ -556,7 +574,13 @@ def _submit_sbatch(
 
 
 def _scancel(job_id: int, *, host: str = _SLURM_LOCAL) -> str | None:
-    """Cancel one Slurm job on *host*; returns an error message, or None when it worked."""
+    """Cancel one Slurm job on *host*; returns an error message, or None when it worked.
+
+    Refused unless this session or one of its sub-agents submitted it there.
+    """
+    if not _owns_slurm_job(str(job_id), host):
+        return (f"Slurm job {job_id} was not submitted by this conversation or its "
+                "sub-agents; it is not this conversation's to cancel.")
     try:
         res = _slurm_run(["scancel", str(job_id)], 15, host=host)
     except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
@@ -582,9 +606,21 @@ def _cancel_run(run_dir: str) -> dict:
         # would leave the build compiling for a run that no longer exists, on
         # allocation hours nobody is going to look at.
         build_job_id = _read_build_slurm_id(run_dir)
-        # Both halves are one submission, so they are on one scheduler: the run's.
-        host, _ = _locate_slurm_job(run_dir, job_id)
-        for jid in ([build_job_id] if build_job_id is not None else []) + [job_id]:
+        # The scheduler it was submitted to, from this session's own record: a sweep
+        # could land on the same id elsewhere, which is somebody else's job.
+        hosts = _owned_job_hosts(str(job_id))
+        if len(hosts) != 1:
+            return {"error": f"Slurm job {job_id} of {run_dir} was not submitted by "
+                              "this conversation or its sub-agents; it is not this "
+                              "conversation's to cancel."}
+        host = next(iter(hosts))
+        jids = ([build_job_id] if build_job_id is not None else []) + [job_id]
+        # All or nothing: never leave half of a split submission cancelled.
+        foreign = [jid for jid in jids if not _owns_slurm_job(str(jid), host)]
+        if foreign:
+            return {"error": f"Slurm job {foreign[0]} was not submitted by this "
+                              "conversation or its sub-agents; nothing was cancelled."}
+        for jid in jids:
             error = _scancel(jid, host=host)
             if error:
                 return {"error": error}
@@ -593,6 +629,9 @@ def _cancel_run(run_dir: str) -> dict:
             payload["build_job_id"] = build_job_id
         return payload
 
+    if not _run_owned(run_dir):
+        return {"error": f"{run_dir} was not started by this conversation or its "
+                          "sub-agents; it is not this conversation's to stop."}
     pid = _read_pid(run_dir)
     if not pid:
         return {"note": "No PID found; run may have already ended."}

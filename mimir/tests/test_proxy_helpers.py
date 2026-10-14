@@ -13,10 +13,12 @@ Run:
 
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import textwrap
 import unittest
+import unittest.mock
 from pathlib import Path
 
 SERVERS_DIR = Path(__file__).resolve().parents[1] / "servers"
@@ -340,6 +342,102 @@ class RunLifecycleTests(_TmpStorageTest):
         result = procs._cancel_run(d)
         self.assertEqual(result.get("note"), "Run is not active.")
         self.assertNotIn("cancelled", result)
+
+
+class CancelOwnershipTests(_TmpStorageTest):
+    """Run directories are shared by the workspace; stopping one is its session's alone."""
+
+    def setUp(self) -> None:
+        # Before the base: its cleanup must restore the environment the base set up in.
+        self._env = unittest.mock.patch.dict(os.environ, {"MIMIR_SESSION_ID": "s-a"})
+        self._env.start()
+        self.addCleanup(self._env.stop)
+        super().setUp()
+        os.environ.pop("MIMIR_HPC_JOBS_DIR", None)
+        self.scancels: list[list[str]] = []
+        orig = procs._slurm_run
+        procs._slurm_run = self._fake_slurm
+        self.addCleanup(setattr, procs, "_slurm_run", orig)
+
+    def _fake_slurm(self, argv, timeout, *, stdin=None, host=""):
+        if argv[0] == "scancel":
+            self.scancels.append(argv)
+        out = "RUNNING" if argv[0] == "squeue" else ""
+        return subprocess.CompletedProcess(argv, 0, stdout=out, stderr="")
+
+    def _local_run(self, session: str) -> tuple[str, int]:
+        with unittest.mock.patch.dict(os.environ, {"MIMIR_SESSION_ID": session}):
+            d = procs._new_run_dir(os.path.join(self.root, "runs", "p"))
+        pid = procs._launch_detached(
+            [sys.executable, "-c", "import time; time.sleep(60)"], d)
+        self.addCleanup(lambda: procs._is_running(pid) and os.kill(pid, 9))
+        return d, pid
+
+    def _slurm_run(self, session: str, job_id: int, build_id: int | None = None) -> str:
+        with unittest.mock.patch.dict(os.environ, {"MIMIR_SESSION_ID": session}):
+            d = procs._new_run_dir(os.path.join(self.root, "runs", "p"))
+            for name, jid in (("slurm_job_id", job_id), ("build_slurm_job_id", build_id)):
+                if jid is None:
+                    continue
+                with open(os.path.join(d, name), "w") as fh:
+                    fh.write(str(jid))
+                procs._record_job_dir(str(jid), **{procs._SLURM_HOST_FILE: ""})
+        return d
+
+    def test_another_sessions_local_run_is_not_killed(self) -> None:
+        d, pid = self._local_run("s-b")
+        result = procs._cancel_run(d)
+        self.assertIn("error", result)
+        self.assertTrue(procs._is_running(pid))
+
+    def test_a_parent_stops_its_sub_agents_local_run(self) -> None:
+        d, _pid = self._local_run("s-a/subagents/sub-1")
+        result = procs._cancel_run(d)
+        self.assertIn(result.get("cancelled"), ("sigterm", "sigkill"))
+
+    def test_a_sub_agent_does_not_stop_its_parents_local_run(self) -> None:
+        d, pid = self._local_run("s-a")
+        with unittest.mock.patch.dict(os.environ, {"MIMIR_SESSION_ID": "s-a/subagents/sub-1"}):
+            self.assertIn("error", procs._cancel_run(d))
+        self.assertTrue(procs._is_running(pid))
+
+    def test_a_run_dir_without_an_owner_is_not_killed(self) -> None:
+        d, pid = self._local_run("s-a")
+        os.remove(os.path.join(d, procs._OWNER_FILE))
+        self.assertIn("error", procs._cancel_run(d))
+        self.assertTrue(procs._is_running(pid))
+
+    def test_own_slurm_run_is_cancelled_build_first(self) -> None:
+        d = self._slurm_run("s-a", 9001, build_id=9000)
+        result = procs._cancel_run(d)
+        self.assertEqual(result.get("cancelled"), "slurm")
+        self.assertEqual(self.scancels, [["scancel", "9000"], ["scancel", "9001"]])
+
+    def test_another_sessions_slurm_run_is_not_cancelled(self) -> None:
+        d = self._slurm_run("s-b", 9101, build_id=9100)
+        self.assertIn("error", procs._cancel_run(d))
+        self.assertEqual(self.scancels, [])
+
+    def test_a_foreign_build_job_cancels_nothing(self) -> None:
+        d = self._slurm_run("s-a", 9201)
+        with open(os.path.join(d, "build_slurm_job_id"), "w") as fh:
+            fh.write("9200")
+        self.assertIn("error", procs._cancel_run(d))
+        self.assertEqual(self.scancels, [])
+
+    def test_scancel_refuses_an_unrecorded_job(self) -> None:
+        self.assertIsNotNone(procs._scancel(9300, host=""))
+        self.assertEqual(self.scancels, [])
+
+
+class ScancelHasTwoCallersTests(unittest.TestCase):
+    def test_only_the_guarded_paths_run_scancel(self) -> None:
+        servers = Path(__file__).resolve().parents[1] / "servers"
+        callers = sorted(
+            str(p.relative_to(servers)) for p in servers.rglob("*.py")
+            if '["scancel"' in p.read_text(encoding="utf-8")
+        )
+        self.assertEqual(callers, ["hpc/server_hpc.py", "proxy/_lib/procs.py"])
 
 
 class FieldNormsTests(unittest.TestCase):

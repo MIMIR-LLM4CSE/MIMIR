@@ -119,6 +119,16 @@ def active_session_id(base: str | None = None) -> str:
         return ""
 
 
+def session_owns(owner: str) -> bool:
+    """Whether work started by session *owner* is this session's to stop.
+
+    Its own, and its sub-agents' at any depth (``<current>/subagents/...``); never a
+    parent's or a sibling's.
+    """
+    cur = active_session_id()
+    return owner == cur or (bool(cur) and owner.startswith(f"{cur}/subagents/"))
+
+
 def session_state_dir(base: str | None = None, session_id: str | None = None) -> str:
     """Where everything belonging to one *conversation* lives.
 

@@ -834,7 +834,7 @@ class NodeProfileTests(unittest.TestCase):
         self.assertFalse(os.listdir(self._jobs_dir) if os.path.isdir(
             self._jobs_dir) else [])
 class SlurmCancelTests(unittest.TestCase):
-    """One job of the user's, approved as such: never a sweep, never someone else's."""
+    """One job of this conversation's, approved as such: never a sweep, never another's."""
 
     def setUp(self) -> None:
         self._orig = (server_hpc._run_argv, server_hpc._current_user,
@@ -842,6 +842,14 @@ class SlurmCancelTests(unittest.TestCase):
         self.argvs: list[list[str]] = []
         self.queue = "alice|RUNNING"
         server_hpc._current_user = lambda: "alice"
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        env = patch.dict(os.environ, {"MIMIR_STATE_DIR": tmp.name,
+                                      "MIMIR_SESSION_ID": "s-a"}, clear=False)
+        env.start()
+        self.addCleanup(env.stop)
+        os.environ.pop("MIMIR_HPC_JOBS_DIR", None)
+        self._submit("1234")
         # A cancellation finds the job before it sends anything, so this class needs
         # the scheduler to answer "running" as well: a scancel aimed at a scheduler
         # that never heard of the id either hits nothing or, the number existing on
@@ -860,8 +868,20 @@ class SlurmCancelTests(unittest.TestCase):
         (server_hpc._run_argv, server_hpc._current_user,
          server_hpc._run_bash) = self._orig
 
+    def _submit(self, job_id: str, session: str = "s-a", host: str = "",
+                **files: str) -> None:
+        """File *job_id* as submitted by *session* on *host*, as a submission does."""
+        with patch.dict(os.environ, {"MIMIR_SESSION_ID": session}):
+            slurm_site.record_job_dir(job_id, **{slurm_site.HOST_FILE: host, **files})
+
     def _cancels(self) -> list[list[str]]:
         return [a for a in self.argvs if a[0] == "scancel"]
+
+    def _refused(self, job_id: str, **kwargs) -> dict:
+        res = server_hpc.slurm_cancel(job_id=job_id, confirm=True, **kwargs)
+        self.assertEqual(res["status"], "error")
+        self.assertEqual(self._cancels(), [])
+        return res
 
     def test_an_own_running_job_is_cancelled_by_id_alone(self) -> None:
         res = server_hpc.slurm_cancel(job_id="1234", confirm=True)
@@ -872,6 +892,42 @@ class SlurmCancelTests(unittest.TestCase):
     def test_an_array_task_is_one_job(self) -> None:
         server_hpc.slurm_cancel(job_id="1234_5", confirm=True)
         self.assertEqual(self._cancels(), [["scancel", "1234_5"]])
+
+    def test_another_sessions_job_of_the_same_user_is_refused(self) -> None:
+        self._submit("2000", session="s-b")
+        res = self._refused("2000")
+        self.assertIn("not submitted by this conversation", res["error"])
+        self.assertEqual(self.argvs, [])
+
+    def test_a_job_no_session_here_submitted_is_refused(self) -> None:
+        # Another workspace's, or a shell's: same Unix user, not this conversation's.
+        self._refused("3000")
+        self.assertEqual(self.argvs, [])
+
+    def test_an_adopted_job_is_refused(self) -> None:
+        self._submit("4000", adopted="\n")
+        self._refused("4000")
+
+    def test_a_job_recorded_on_another_scheduler_is_refused_here(self) -> None:
+        self._submit("5000", host="cluster-b")
+        self._refused("5000", scheduler="local")
+
+    def test_a_job_without_a_recorded_scheduler_is_refused(self) -> None:
+        with patch.dict(os.environ, {"MIMIR_SESSION_ID": "s-a"}):
+            slurm_site.record_job_dir("6000")
+        self._refused("6000")
+
+    def test_a_parent_cancels_its_sub_agents_job(self) -> None:
+        self._submit("7000", session="s-a/subagents/sub-1/subagents/sub-2")
+        res = server_hpc.slurm_cancel(job_id="7000", confirm=True)
+        self.assertEqual(res["status"], "ok")
+        self.assertEqual(self._cancels(), [["scancel", "7000"]])
+
+    def test_a_sub_agent_cannot_cancel_its_parents_or_siblings_job(self) -> None:
+        self._submit("8000", session="s-a/subagents/sub-2")
+        with patch.dict(os.environ, {"MIMIR_SESSION_ID": "s-a/subagents/sub-1"}):
+            self._refused("1234")
+            self._refused("8000")
 
     def test_anything_wider_than_one_job_is_refused_before_slurm(self) -> None:
         for job_id in ("", "-u alice", "1234 1235", "1234,1235", "--partition=gpu", "abc"):

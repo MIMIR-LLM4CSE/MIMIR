@@ -16,6 +16,13 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Fixed
+- **A conversation can no longer cancel another conversation's jobs.** `slurm_cancel`
+  only checked that the job belonged to the same Unix user, and the proxy's
+  `cancel`/`stop` acted on any run directory of the workspace — including the shared
+  `active` run of another conversation. Both now cancel only Slurm jobs submitted by
+  the calling conversation or its sub-agents, on the scheduler they were submitted
+  to, and stop only local runs it started. A sub-agent cannot cancel its parent's or
+  a sibling's jobs, and jobs adopted with `slurm_watch` are never cancelled.
 - **A new conversation no longer shows "waiting for the LLM backend".** Each
   conversation's agent probed the backend again, although the server had already seen
   it answer, and a conversation with no agent yet was shown as starting. The probe

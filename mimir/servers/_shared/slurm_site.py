@@ -513,6 +513,66 @@ def recorded_jobs() -> set[tuple[str | None, str]]:
     return found
 
 
+# Marks a descriptor written by adopting a job MIMIR did not submit.
+ADOPTED_FILE = "adopted"
+
+
+def _owned_jobs_roots() -> list[str]:
+    """The job directories of this session and of its sub-agents, at any depth."""
+    roots = [jobs_dir()]
+    if os.environ.get("MIMIR_HPC_JOBS_DIR"):
+        return roots
+    pending = [session_state_dir()]
+    while pending:
+        sub = os.path.join(pending.pop(), "subagents")
+        try:
+            children = sorted(os.listdir(sub))
+        except OSError:
+            continue
+        for child in children:
+            child_dir = os.path.join(sub, child)
+            roots.append(os.path.join(child_dir, _JOBS_SUBDIR))
+            pending.append(child_dir)
+    return roots
+
+
+def owned_job_hosts(job_id: str) -> set[str]:
+    """The schedulers on which this session (or a sub-agent of it) submitted *job_id*.
+
+    The one gate in front of every ``scancel``: a job of the same Unix user is not
+    enough, since other sessions and other workspaces run as that user too. Adopted
+    jobs do not count — MIMIR did not start them — and a descriptor without a host
+    names none, because the same id on another cluster is somebody else's job.
+    """
+    job_id = str(job_id or "").strip()
+    found: set[str] = set()
+    if not job_id:
+        return found
+    ids = {job_id, job_id.split("_", 1)[0]}
+    for root in _owned_jobs_roots():
+        try:
+            names = os.listdir(root)
+        except OSError:
+            continue
+        for name in names:
+            job_dir = os.path.join(root, name)
+            try:
+                with open(os.path.join(job_dir, ID_FILE)) as fh:
+                    recorded = fh.read().strip()
+            except OSError:
+                continue
+            host = job_host(job_dir)
+            if (recorded in ids and host is not None
+                    and not os.path.exists(os.path.join(job_dir, ADOPTED_FILE))):
+                found.add(host)
+    return found
+
+
+def owns_job(job_id: str, host: str) -> bool:
+    """Whether *job_id* on *host* is this session's (or a sub-agent's) to cancel."""
+    return host in owned_job_hosts(job_id)
+
+
 def job_host(job_dir: str) -> str | None:
     """The scheduler *job_dir*'s job is on: a hostname, ``LOCAL``, or None if unrecorded.
 
