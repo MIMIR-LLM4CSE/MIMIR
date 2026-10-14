@@ -12,7 +12,7 @@ Step-by-step instructions to go from a fresh clone to a running agent.
 |-------------|-------|
 | Python ≥ 3.10 | Any CPython distribution |
 | Git | For cloning and the GitHub MCP server |
-| Node.js ≥ 18 + npm | Only for the VS Code extension — [how to install it](#6a-get-nodejs-and-npm) |
+| Node.js ≥ 20 + npm | Only for the VS Code extension — [how to install it](#6a-get-nodejs-and-npm) |
 | An LLM server | A running vLLM, Ray Serve or Ollama endpoint you can reach over HTTP, or an Anthropic API key (see §3) |
 
 ---
@@ -403,7 +403,7 @@ approval dialogs, and tool-status indicators.
 The extension is built with npm, which ships with Node.js. Check what you have:
 
 ```bash
-node -v      # want v18.0.0 or later
+node -v      # want v20.0.0 or later
 npm -v
 ```
 
@@ -429,8 +429,8 @@ nvm install --lts           # installs Node + npm into ~/.nvm
 node -v && npm -v           # confirm
 ```
 
-Distribution packages are often older than Node 18 — check `node -v` after
-installing, and fall back to nvm if it is behind.
+Distribution packages are often older than Node 20 (Ubuntu 24.04 ships 18) —
+check `node -v` after installing, and fall back to nvm if it is behind.
 
 **Two caveats.**
 

@@ -483,7 +483,7 @@ The agent runs in a background thread with its own asyncio loop, so blocking app
 never freeze the WebSocket.
 
 ```bash
-# 1. Build and install the extension (needs Node.js >= 18 + npm; SETUP.md #6a)
+# 1. Build and install the extension (needs Node.js >= 20 + npm; SETUP.md #6a)
 cd mimir/vscode-extension
 npm install && npm run deploy      # installs it, or updates it in place
 #    then reload the VS Code window (Ctrl+Shift+P -> Developer: Reload Window)
