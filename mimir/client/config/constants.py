@@ -271,9 +271,11 @@ def parse_temperature(text: str) -> tuple[bool, float | None]:
 # has no step ceiling) should survive a flaky connection / 5xx / rate-limit rather
 # than discarding the whole query. Total attempts = 1 + LLM_RETRY_ATTEMPTS.
 # Backoff is exponential with jitter: LLM_RETRY_BASE_DELAY_SECS * 2**(n-1).
-LLM_RETRY_ATTEMPTS: int = 3
+# ~2 min in total: gateway outages (503 "no endpoint candidates", ext_proc resets)
+# outlast a few seconds, and losing a long run costs far more than waiting.
+LLM_RETRY_ATTEMPTS: int = 8
 LLM_RETRY_BASE_DELAY_SECS: float = 1.0
-LLM_RETRY_MAX_DELAY_SECS: float = 20.0
+LLM_RETRY_MAX_DELAY_SECS: float = 30.0
 
 
 # ── Nudge frequency caps & thresholds ──────────────────────────────────────────

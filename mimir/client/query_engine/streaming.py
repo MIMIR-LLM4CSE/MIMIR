@@ -239,7 +239,11 @@ def _stream_chat(model: str,
                 "text": f"  ⚠ Model call failed ({type(exc).__name__}); retrying in "
                         f"{delay:.1f}s (attempt {attempt + 1}/{LLM_RETRY_ATTEMPTS})",
             })
-            time.sleep(delay)
+            # A Stop during a 30 s backoff must not wait it out.
+            if cancel_flag is not None and hasattr(cancel_flag, "wait"):
+                cancel_flag.wait(delay)
+            else:
+                time.sleep(delay)
 
     if last_exc is not None and not _is_retryable(last_exc):
         emit({
