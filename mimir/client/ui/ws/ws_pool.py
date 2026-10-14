@@ -1154,7 +1154,8 @@ class _AgentPool:
             "model": self.model,
             "thinking": source.get_thinking_profile(),
             "temperature": source.get_temperature_state(),
-            "agent_ready": source.agent_ready(),
+            # No worker means nothing is starting: the agent is built on the first query.
+            "agent_ready": worker is None or worker.agent_ready(),
         }
         for key, getter, setter in self._UI_STATE:
             value = getattr(source, getter)()

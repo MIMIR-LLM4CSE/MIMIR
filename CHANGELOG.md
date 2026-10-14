@@ -16,6 +16,11 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Fixed
+- **A new conversation no longer shows "waiting for the LLM backend".** Each
+  conversation's agent probed the backend again, although the server had already seen
+  it answer, and a conversation with no agent yet was shown as starting. The probe
+  now runs once per server, and switching to a conversation reports whether its own
+  agent is ready.
 - **A sealed reference keeps its field.** `proxy_exec(op='reference')` and
   `op='benchmark_create'` stored the field only when the solver echoed
   `output_file=` in its metrics block, so a proxy writing to `{output_file}` got

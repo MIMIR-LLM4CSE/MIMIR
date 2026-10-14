@@ -701,6 +701,7 @@ export const App: React.FC = () => {
         dispatch({ type: "session_loaded_messages", messages: restore.messages });
         // After the restore, which resets the turn state this window arrives with.
         if (msg.turn_running) dispatch({ type: "turn_resumed" });
+        if (msg.agent_ready !== undefined) setAgentReady(msg.agent_ready);
         // Hand the richer copy straight back rather than waiting for the next turn
         // to end — the reconnect may be the last thing that happens in this session.
         if (restore.push) setTranscriptPush((n) => n + 1);

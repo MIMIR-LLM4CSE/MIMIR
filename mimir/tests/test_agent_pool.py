@@ -312,6 +312,14 @@ class SettingsTests(_PoolCase):
         pool.apply_setting("set_context_mode", "full")
         self.assertEqual(pool.ui_state(None)["context_mode"], "full")
 
+    async def test_a_conversation_with_no_agent_is_not_shown_as_starting(self) -> None:
+        """Its agent is built on the first query: nothing is waiting on the backend."""
+        pool = self._pool()
+        self.assertTrue(pool.ui_state("s1")["agent_ready"])
+        worker = await pool.worker_for("s1")
+        worker.agent_ready = lambda: False
+        self.assertFalse(pool.ui_state("s1")["agent_ready"])
+
     async def test_the_screen_pointer_reaches_every_worker(self) -> None:
         pool = self._pool(cap=2)
         a, b = await pool.worker_for("s1"), await pool.worker_for("s2")

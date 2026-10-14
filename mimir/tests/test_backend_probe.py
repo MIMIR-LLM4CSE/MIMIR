@@ -159,3 +159,29 @@ class TestOtherBackends:
         with pytest.raises(RuntimeError):
             _run(_Stub())
         assert asked == ["http://head:8000/llm/v1/models"]
+
+
+def test_a_second_conversation_does_not_wait_on_the_backend_again(monkeypatch):
+    # The backend belongs to the server: a new conversation's agent re-probing it showed
+    # "waiting for the LLM backend" again on an endpoint already known to be up.
+    from mimir.client import agent_core
+    from mimir.client.ui.ws import ws_worker
+
+    monkeypatch.setattr(ws_worker, "_backend_seen_up", False)
+    probes: list[int] = []
+
+    async def _probe(self):
+        probes.append(1)
+
+    monkeypatch.setattr(_AgentWorker, "_wait_for_backend", _probe)
+
+    class _NoAgent:
+        def __init__(self, *a, **kw):
+            raise RuntimeError("past the probe")
+
+    monkeypatch.setattr(agent_core, "MimirAgent", _NoAgent)
+    for sid in ("s1", "s2"):
+        worker = _AgentWorker.detached("m")
+        worker.session_id = sid
+        asyncio.run(worker._setup())
+    assert probes == [1]

@@ -644,6 +644,8 @@ export interface SessionLoadedMessage {
   todos: TodoItem[];
   /** A turn of this session is still in flight — it outlived the last connection. */
   turn_running?: boolean;
+  /** False only while this session's agent is being built. */
+  agent_ready?: boolean;
 }
 
 /** A whole streamed prose block, recorded rather than streamed.

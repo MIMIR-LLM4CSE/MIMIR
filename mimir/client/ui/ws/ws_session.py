@@ -461,6 +461,7 @@ class _Session:
                 "title": session.title,
                 "display_messages": [],
                 "todos": [],
+                "agent_ready": self.pool.ui_state(session.id)["agent_ready"],
             }))
         except Exception:
             pass
@@ -554,6 +555,7 @@ class _Session:
                 # cosmetic — knows a turn is open, so the answer that ends it is
                 # what hands the finished transcript back for saving.
                 "turn_running": self._running_turn_is_ours(),
+                "agent_ready": self.pool.ui_state(session.id)["agent_ready"],
             }))
         except Exception:
             pass

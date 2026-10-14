@@ -51,6 +51,10 @@ logger = logging.getLogger(__name__)
 # as a user who said no.
 TIMED_OUT: dict = {"timed_out": True}
 
+# The backend is the server's, not a conversation's: once one agent has seen it answer,
+# the next conversation's agent does not wait on it again.
+_backend_seen_up = False
+
 
 def _direct_opener():
     """An opener that ignores HTTP_PROXY/HTTPS_PROXY.
@@ -480,9 +484,12 @@ class _AgentWorker:
         # Holds the agent for as long as it is half-built, so a failure partway through
         # the ~19 connects still has something to close. ``self._agent`` cannot serve
         # that: every getter reads it, and it means "ready", not "under construction".
+        global _backend_seen_up
         building: Any = None
         try:
-            await self._wait_for_backend()
+            if not _backend_seen_up:
+                await self._wait_for_backend()
+                _backend_seen_up = True
             try:
                 from ...agent_core import MimirAgent
             except ImportError:
