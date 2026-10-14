@@ -160,7 +160,7 @@ webview/src/
     ├── CommandResult.tsx      ← terminal-style in/out panel for an exec-shaped result
     ├── FileDiff.tsx           ← unified-diff renderer
     ├── diffUtils.ts           ← diff parsing helpers
-    ├── VerificationLedger.tsx ← the collapsed evidence panel under an answer
+    ├── VerificationLedger.tsx ← the former evidence panel; no longer mounted
     ├── ledgerUtils.ts         ← ledger split/parse helpers (unit-tested)
     ├── CompletionReport.tsx   ← the collapsed completion report
     ├── completionUtils.ts     ← its split/parse helpers — mirrors guardrails/workflow.py
@@ -185,7 +185,7 @@ webview/src/
     │                            the settings popover, since it is an agent setting
     ├── subAgentPanelUtils.ts  ← what a sub-agent card says, by its state (unit-tested)
     ├── SciencePanel.tsx       ← the scientific-computing drawer: each server's own
-    │                            section, and the runs still going outside the turn
+    │                            section, nearest machine first
     ├── PanelGroups.tsx        ← a section's nested half, rendered without being read:
     │                            scheduler → kind of machine → what a probe found, with
     │                            the runs in flight as badges on the machine each is on
@@ -303,12 +303,33 @@ scientific-computing panel. Each sets its own width through `usePanelWidth(key)`
 renders a `PanelResizer` at its right edge — drag, or arrow keys once focused
 (`shift` for a bigger step). The width is clamped against the live window
 (`clampPanelWidth`: a 180px floor, a 0.8-of-the-window ceiling, re-applied on resize)
-and stored per drawer in `localStorage`, once per drag rather than once per move.
+and stored per drawer in `localStorage`, once per drag rather than once per move. During
+the drag the element is sized once per animation frame, outside React; the chat's width
+is frozen and its pointer events are off until release, and the release always cleans up.
 
 The widths are the reader's because the content is longer than any fixed one: a node
-kind's feature list, a CPU model, a sub-agent's task. So the text in them wraps
-(`overflow-wrap: anywhere`) instead of being cut to an ellipsis — widening a drawer has
-to show more, and an ellipsis is a fact no amount of widening gets back.
+kind's feature list, a CPU model, a sub-agent's task. Text is never cut mid-word: a
+narrow drawer shows one line with an ellipsis and the full text on hover; past 360px,
+values and titles wrap at word boundaries, clamped to two lines, while labels stay on one.
+
+---
+
+## A long session
+
+`ChatThread` renders the tail of the conversation, `THREAD_WINDOW_STEP` (120) messages at
+a time, and grows by that much when the reader reaches the top or asks, anchored so
+nothing jumps. The last user message is found in one pass rather than a scan per message,
+which was quadratic in the history and paid on every render.
+
+The end-of-turn transcript handed back to the server (`transcriptUtils.ts`) is sent whole
+once per `epoch`, then as deltas: `order` names every stored message by id and `changed`
+carries only the messages new or replaced since `base_rev`. A server that does not hold
+that revision answers `transcript_resync`, and the next send is whole.
+
+Loading a session advances the reducer's `seq` counter past every stamp the stored
+messages carry. Restarted at 1 after a window reload, new live rows were stamped below
+the last stored message, which then sorted as part of the step in flight and stuck
+below it.
 
 ---
 
@@ -386,26 +407,15 @@ to show more, and an ellipsis is a fact no amount of widening gets back.
 
 ---
 
-## Verification ledger panel
+## Verification ledger
 
 The agent appends its machine-recorded verification ledger to the answer text, so
 conversation history carries the evidence for the model's next turn (`POLICY.md` → Final
-Answer Gating). Rendering it as trailing prose put a wall of bookkeeping under every
-answer, so `ChatMessage` splits the answer on the ledger's `<!--mimir:ledger …-->` marker
-(`ledgerUtils.splitAnswerLedger`) and hands the block to `VerificationLedger`:
-
-- **collapsed by default** — a native `<details>` line: chevron, status glyph, "Verification",
-  then the summary as chips (`2 files`, `1 not checked`, `2 steps open`). No state, no wiring.
-- **status drives the colour** — `ok` (settled evidence) / `note` (it passed but discriminates
-  nothing) / `warn` (needs action) set `--ledger-accent`, which the glyph, chips, body rail and
-  row dots all read from.
-- **rows keep their meaning** — bold marks exactly what a reader must act on, so `rowLevel`
-  tints those rows and leaves settled file rows and prose notes quiet. `inlineSegments` renders
-  the rows' `` `paths` `` and bold without a markdown pass.
-
-Nothing is lost when the marker is ignored: the block is plain markdown, and a session
-reloaded from disk splits again on the stored answer text. The CLI applies the same split
-(`chat_session.format_ledger_summary`, `/ledger` to expand).
+Answer Gating). The ledger is for the model, not the chat: `ChatMessage` splits the answer
+on the ledger's `<!--mimir:ledger …-->` marker (`ledgerUtils.splitAnswerLedger`) and drops
+the block, so the bubble shows the prose and the completion report alone. The stored answer
+keeps it, and a session reloaded from disk splits again. The CLI still shows a one-line
+summary (`chat_session.format_ledger_summary`, `/ledger` to expand).
 
 ---
 
@@ -430,7 +440,9 @@ conversation's agent when it has none: the sections come from MCP servers, a con
 holds none until its first query, and without this the drawer was empty until something
 had been asked of the model. The build is never awaited — the report goes out saying
 `agent_ready: false`, the drawer says so, and the worker's own `ready` is the cue to ask
-again.
+again. Meanwhile that report carries the Cluster section as the workspace registry has it
+(`panel_runs.recorded_hosts_sections`, from `slurm_hosts` in the state directory): names
+only, with the server's own ids, so the rows a reader opens survive the swap.
 
 The sections are asked all at once rather than in turn: they are owned by different
 processes, and the slow ones are slow because they are waiting on a scheduler. The
@@ -441,7 +453,10 @@ A section may answer with a tree as well as with lines. `groups` is recursive
 (`{id, label, value?, lines?, nodes?, detail?, groups?, action?, badges?}`) and
 `PanelGroupList` renders any depth of it, so the shape is the server's decision: the HPC
 server fills it with the schedulers this workspace reaches, the kinds of node on each,
-and what a probe read on one of them. Everything starts collapsed — a workspace reaching
+and what a probe read on one of them. A kind is labelled by its nodes (the digest's
+`example_nodes` and `nodes_total`) and opens onto one spec per line — arch, cpus, gpu,
+`cpu mem`, `gpu mem`, partitions, features, nodes. `gpu mem` is per GPU from a probe, or
+said to be unknown until one runs, since Slurm's gres never carries it. Everything starts collapsed — a workspace reaching
 three clusters would otherwise open onto a page of
 machines. Which rows are open lives in `SciencePanel`, keyed on the servers' own ids so
 the answer survives a refresh; native `<details>` would lose it, since the drawer

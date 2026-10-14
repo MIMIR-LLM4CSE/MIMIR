@@ -614,6 +614,7 @@ class MimirAgent:
                 if fn.get("name")
             },
             skills_index=self.model_invocable_skills(),
+            model_name=self.model,
         )
 
     def model_invocable_skills(self) -> list[tuple[str, str]]:

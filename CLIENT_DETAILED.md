@@ -1154,6 +1154,14 @@ launched in one step share a schedule and report together. It costs no status tr
 each bulletin is built from `_Watch.status`, written by the poll the watcher is running
 anyway.
 
+**A check-in says only what is new.** A scheduled point whose bulletin matches the last
+one sent, clock and log excepted (`_checkin_fingerprint`, ignoring `_CHECKIN_VOLATILE`), is
+skipped. And the schedule is not the only trigger: the status ops of running bash, Slurm
+and proxy jobs carry `log_tail`, the run's last five lines, which the watcher scans on each
+poll (`job_poll.log_alerts`) for a non-finite value, an overflow, a traceback, a fatal
+signal or running out of memory. A category not yet seen on that job triggers a check-in
+at once; each is reported once per job.
+
 Because that tail never runs out, a cycle can be asleep for an hour after its last job
 ended, so **a registration that starts a wave replaces the cycle rather than joining it** —
 otherwise a job launched into that gap would inherit the remainder of a schedule describing
@@ -1392,7 +1400,9 @@ transcript is assembled in the webview and exists nowhere else: `transcript` car
 `through_seq` beside the messages, and it is stored on the session as `rendered_seq` rather
 than kept per connection, so a fresh window or another machine can resume too. It only ever
 moves forward, for the same reason the transcript itself is only ever taken when it is not
-shorter than what we hold.
+shorter than what we hold. The transcript is sent whole once per `epoch`, then as deltas
+(`order` of every id, `changed` messages since `base_rev`); a delta on a revision the
+server does not hold is answered with `transcript_resync`, and the webview sends it whole.
 
 The no-duplicate / no-gap argument is an **ordering**, and `run()` is where it lives:
 
@@ -1514,10 +1524,16 @@ owed; settling it at that moment makes the only record of the debt say it was al
 and the run is then filtered out of every later scan. That is a conversation waiting for ever
 on a job that finished hours ago, which is precisely the failure this path exists to fix. So
 an announcement repeats until a consumer has taken the wake in, and the consumers dedup
-instead: a job already pending for a conversation is not added twice. A steered wake is
-deliberately left unsettled — a steer is only known to have been read when the loop says so,
-and the flush that eventually gives it a turn writes the marker. The marker is best-effort,
-because a duplicate wake is a nuisance and a missing one is the bug.
+instead: a run whose marker is already on disk is dropped (`job_scan.wake_reported`), and a
+job already pending for a conversation is not added twice. Checking pending wakes alone
+missed a second announcement arriving after the first was delivered, and several emitters
+— the reconnect scan, the worker-build scan, the watcher — announce one run. A steered wake
+is settled when the loop confirms it was read (`steer_injected`): `_drop_injected_wakes`
+marks what it drops, since with the run no longer held by a watcher that marker is the only
+guard against every later scan announcing it again. A sub-agent's run is marked and looked
+for under the session the run lives in (`run_session` on the event), not the parent it
+wakes. The marker is best-effort, because a duplicate wake is a nuisance and a missing one
+is the bug.
 
 **The first look at a session establishes a baseline rather than claiming a backlog.** A
 detached job's directory is never swept, however old, so an existing workspace has every

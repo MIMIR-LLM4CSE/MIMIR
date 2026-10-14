@@ -411,6 +411,29 @@ class SubAgentSectionGateTests(unittest.TestCase):
         self.assertNotIn("## Sub-agents", cb._DEFAULT_BASE_SYSTEM_CONTENT)
 
 
+class AuthorshipSectionTests(unittest.TestCase):
+    """Co-authorship is a default the user can revoke, credited to the model in use."""
+
+    def _build(self, mode: str = "agent", model: str = "qwen3-32b") -> str:
+        return cb.build_system_content(
+            active_mode=mode, tool_owner={}, sensitive_tools=set(), model_name=model,
+        )
+
+    def test_trailer_names_the_model(self) -> None:
+        self.assertIn("Co-authored-by: MIMIR (qwen3-32b) <", self._build())
+
+    def test_user_can_turn_it_off(self) -> None:
+        self.assertIn("default the user may turn off", self._build())
+
+    def test_only_in_agent_mode(self) -> None:
+        for mode in ("plan", "ask"):
+            with self.subTest(mode=mode):
+                self.assertNotIn("## Authorship", self._build(mode))
+
+    def test_not_a_non_negotiable(self) -> None:
+        self.assertNotIn("Co-authored-by", cb._CORE_SYSTEM_CONTENT)
+
+
 class ClarifySectionGateTests(unittest.TestCase):
     """The "ask the user" contract is injected only where it can actually be acted on.
 

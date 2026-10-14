@@ -23,7 +23,7 @@ On top of that loop sits a policy and context layer:
 - **Safety** — approval before sensitive actions, discovery-before-write checks, and
   validation-gated completion (no "done" while edits are unvalidated).
 - **Honest completion** — every answer carries a machine-recorded verification ledger,
-  shown as a collapsed panel you expand on demand (`/ledger` in the CLI):
+  kept in the model's history rather than in the chat (`/ledger` expands it in the CLI):
   what was written, how strongly each file was actually checked, and an explicit note
   when nothing showed that the checks *discriminate* — that they tell working code from
   broken code. A check seen failing before the fix and passing after counts; one that was

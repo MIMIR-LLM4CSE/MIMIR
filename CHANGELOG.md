@@ -52,6 +52,11 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   task when it was a sub-agent's. A detached shell command has no scheduler to name, which
   is what places it on this machine. This is the only place runs appear: the flat list
   under the sections is gone (see Removed).
+- **MIMIR credits itself as co-author of the commits and pull requests it writes.** By
+  default each one ends with a `Co-authored-by: MIMIR (<model>)` line naming the model the
+  session runs on, filled in by the client rather than recalled by the model. It is a
+  default, not a rule: ask in a query to leave it out, once or for the rest of the
+  conversation.
 - **A check-in reads the run's last lines, and stays quiet when there is nothing new.**
   The status of a running bash, Slurm or proxy job now carries its last five lines, and
   the watcher scans them for the signs of a run going wrong — non-finite values, an

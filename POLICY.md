@@ -1503,8 +1503,8 @@ cannot loop and cannot be argued with.
 **Marker contract.** The block is always the answer's tail and opens with a
 `<!--mimir:ledger …-->` marker carrying `status` (`ok` = settled evidence · `note` = it
 passed but discriminates nothing · `warn` = something needs action), the number of files,
-and a one-line summary. Front-ends split on the marker and render a collapsed panel: the
-webview as `VerificationLedger`, the CLI as a one-liner plus `/ledger`. Bold marks exactly
+and a one-line summary. Front-ends split on the marker: the webview strips the block and
+shows the prose alone, the CLI shows a one-liner plus `/ledger`. Bold marks exactly
 the rows a reader must act on. Nothing is lost if a consumer ignores the marker — the block
 is plain markdown.
 

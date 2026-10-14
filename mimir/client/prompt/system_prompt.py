@@ -455,6 +455,23 @@ def _skills_section(skills_index: list[tuple[str, str]]) -> str:
     )
 
 
+# A default, not a rule: the user can drop it from any query, so it stays out of the
+# Non-negotiables. The model is named by the client, since a model cannot be trusted
+# to know its own name.
+def _authorship_section(model_name: str) -> str:
+    who = f"MIMIR ({model_name})" if model_name else "MIMIR"
+    trailer = f"Co-authored-by: {who} <mimir@noreply.invalid>"
+    return (
+        "## Authorship\n"
+        "- By default, credit yourself as co-author of every commit you create and every "
+        "pull request you open: end the commit message, and the pull request description, "
+        f"with this line, after a blank line:\n  `{trailer}`\n"
+        "- This is a default the user may turn off. When they ask you to leave it out, "
+        "omit it — for that commit, or for the rest of the conversation if that is what "
+        "they asked — without arguing or mentioning it again."
+    )
+
+
 _SECTION_CLARIFY = (
     "## Clarifying with the user\n"
     "You can put a choice to the user and wait for the answer. Its tool description states "
@@ -793,6 +810,7 @@ def build_system_content(
     subagent_level: str = DEFAULT_SUBAGENT_LEVEL,
     workspace_root: str = "",
     skills_index: list[tuple[str, str]] | None = None,
+    model_name: str = "",
 ) -> str:
     system_content = build_base_system_content(context_file)
 
@@ -836,6 +854,11 @@ def build_system_content(
     # changing checklist or memory index never pushes the index out of the cached prefix.
     if skills_index and "load_skill" in (tool_owner or {}):
         system_content += _section("\n" + _skills_section(skills_index))
+
+    # Only the mode that writes can commit; the model is fixed per query, so the prefix
+    # stays stable until the user switches it.
+    if active_mode == "agent":
+        system_content += _section("\n" + _authorship_section(model_name))
 
     # Two absolute paths, and nothing else foundational: the workspace root (which the
     # model needs to BUILD an in-workspace path, since the file tools reject relative
