@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { runsInFlight } from "../components/runDockUtils";
 import {
   createChatReducer,
   initialChatState,
@@ -561,6 +562,56 @@ describe("chatReducer", () => {
     expect(row.phase).toBeUndefined();
     expect(row.percent).toBeUndefined();
     expect(row.jobKey).toBeUndefined();
+  });
+
+  it("settles the detached row even when a live status call shares its job key", () => {
+    // The agent polls the run it launched, so a second row carrying the same key is
+    // live when the ending lands. Settling only the first list that matched left the
+    // frozen launch row marked background and still mid-"compiling" for good — and
+    // its dock card with it.
+    const state = run([
+      { type: "tool_call", id: "c1", name: "geos_build", label: "Build", detail: "" },
+      { type: "tool_result", id: "c1", name: "geos_build", ok: true, summary: "launched" },
+      { type: "tool_backgrounded", id: "c1", job_key: "J1" },
+      { type: "job_progress", job_key: "J1", phase: "compiling", percent: 40 },
+      { type: "answer", text: "launched" },
+      {
+        type: "tool_call", id: "c2", name: "geos_status", label: "Status", detail: "",
+        exec: { command: "squeue", stdout: "", stderr: "", running: true, job_key: "J1" },
+      },
+      { type: "job_complete", job_key: "J1", state: "done" },
+    ]);
+    const launched = state.messages.flatMap((m) => m.tools ?? []).find((t) => t.id === "c1");
+    expect(launched?.status).toBe("ok");
+    expect(launched?.phase).toBeUndefined();
+    expect(runsInFlight(state.messages, state.liveToolCalls)).toEqual([]);
+  });
+
+  it("settles the detached row even when an earlier message shares its job key", () => {
+    // A status call made before the launch carries the key in its terminal panel and
+    // sits in an earlier message, so the search for "the" row found that one first.
+    const state = run([
+      {
+        type: "tool_call", id: "c0", name: "geos_status", label: "Status", detail: "",
+        exec: { command: "squeue", stdout: "", stderr: "", running: false, job_key: "J1" },
+      },
+      {
+        type: "tool_result", id: "c0", name: "geos_status", ok: true, summary: "queued",
+        exec: { command: "squeue", stdout: "PENDING\n", stderr: "", job_key: "J1" },
+      },
+      { type: "answer", text: "queued" },
+      { type: "tool_call", id: "c1", name: "geos_build", label: "Build", detail: "" },
+      { type: "tool_result", id: "c1", name: "geos_build", ok: true, summary: "launched" },
+      { type: "tool_backgrounded", id: "c1", job_key: "J1" },
+      { type: "job_progress", job_key: "J1", phase: "compiling", percent: 40 },
+      { type: "answer", text: "launched" },
+      { type: "job_complete", job_key: "J1", state: "done" },
+    ]);
+    const rows = state.messages.flatMap((m) => m.tools ?? []);
+    expect(rows.find((t) => t.id === "c1")?.status).toBe("ok");
+    expect(runsInFlight(state.messages, state.liveToolCalls)).toEqual([]);
+    // The question asked before the launch is not relabelled as the run's own ending.
+    expect(rows.find((t) => t.id === "c0")?.summary).toBe("queued");
   });
 
   it("stamps live rows after a reloaded session's own stamps", () => {

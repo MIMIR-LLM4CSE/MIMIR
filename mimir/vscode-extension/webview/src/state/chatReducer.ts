@@ -110,6 +110,36 @@ function patchToolWhere(
   return null;
 }
 
+/**
+ * Apply *transform* to every list that holds a row matching *match*.
+ *
+ * The twin of :func:`patchToolWhere`, for news that arrives keyed by a job rather
+ * than by a call id. A call id names one row, so stopping at the first list that has
+ * it is right; a job key does not. The launch row carries it, so does any status call
+ * whose exec payload names the same run, and so does a row a re-watch adopted — and
+ * settling only the first of those left the one the dock was drawing still marked
+ * `background`, still mid-"compiling", for the rest of the session.
+ *
+ * Returns null when no list holds a match, so a caller can tell "nothing to do" from
+ * "done" exactly as with the single-target form.
+ */
+function patchToolsEverywhere(
+  state: ChatState,
+  match: (t: ToolActivity) => boolean,
+  transform: (tools: ToolActivity[]) => ToolActivity[],
+): ChatState | null {
+  const inLive = state.liveToolCalls.some(match);
+  const hits = state.messages.map((m) => m.kind === "tools" && (m.tools ?? []).some(match));
+  if (!inLive && !hits.some(Boolean)) return null;
+  return {
+    ...state,
+    liveToolCalls: inLive ? transform(state.liveToolCalls) : state.liveToolCalls,
+    messages: hits.some(Boolean)
+      ? state.messages.map((m, i) => (hits[i] ? { ...m, tools: transform(m.tools ?? []) } : m))
+      : state.messages,
+  };
+}
+
 /** The common case: the row is known by the call id it was opened with. */
 function patchToolById(
   state: ChatState,
@@ -549,9 +579,14 @@ export function createChatReducer(makeId: () => string) {
         // an optimization run — carries the key on the row itself. Before the second
         // one existed, such a row settled as an ordinary success and its ending
         // landed nowhere.
+        // A row still waiting on this run: the one the launch left `background`, and
+        // any other row that adopted the same key. Settled rows are left alone — a
+        // finished status probe happens to carry the key too, and rewriting it as
+        // "background run done" would relabel a call that only asked a question.
         const isThisJob = (t: ToolActivity) =>
-          t.exec?.job_key === action.job_key || t.jobKey === action.job_key;
-        const settled = patchToolWhere(
+          (t.status === "background" || t.status === "running") &&
+          (t.exec?.job_key === action.job_key || t.jobKey === action.job_key);
+        const settled = patchToolsEverywhere(
           state,
           isThisJob,
           (tools) =>
@@ -945,13 +980,19 @@ export function createChatReducer(makeId: () => string) {
         // Same fact as tool_progress, from the other side of the hand-off: by now the
         // row has settled, so the job key is what finds it.
         const { job_key: jKey, phase: jPhase, percent: jPercent } = action;
+        // Only a row still waiting on the run, for the reason tool_progress checks the
+        // same thing: a settled row has an outcome, and a bar on it would describe work
+        // that is over.
+        const waitingOn = (t: ToolActivity) =>
+          (t.status === "background" || t.status === "running") &&
+          (t.jobKey === jKey || t.exec?.job_key === jKey);
         return (
-          patchToolWhere(
+          patchToolsEverywhere(
             state,
-            (t) => t.jobKey === jKey || t.exec?.job_key === jKey,
+            waitingOn,
             (tools) =>
               tools.map((t) =>
-                t.jobKey === jKey || t.exec?.job_key === jKey
+                waitingOn(t)
                   ? { ...t, phase: jPhase,
                       percent: typeof jPercent === "number" ? jPercent : undefined }
                   : t

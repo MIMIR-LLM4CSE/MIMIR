@@ -1624,9 +1624,10 @@ export const App: React.FC = () => {
           }}
         />
 
-        {/* Chat thread, with the progress dock anchored to its bottom-left. The
-            wrapper exists for the anchor: absolute inside `.main` would put the
-            dock over the composer, whose height changes as the user types. */}
+        {/* Chat thread, with the progress dock under it. The wrapper keeps the two
+            together, so the dock sits at the bottom of the reading area rather than
+            of the pane — above the composer, whose height changes as the user
+            types. */}
         <div className="thread-area">
         <ChatThread
           messages={messages}

@@ -517,9 +517,9 @@ body.is-resizing * { transition: none !important; }
 
 /* ── Chat thread ────────────────────────────────────────────────────────────── */
 
-/* Holds the thread and the progress dock together, so the dock can be anchored to
-   the bottom of the *reading area* rather than of the pane. Anchored to the pane it
-   would sit over the composer, whose height changes as the user types. */
+/* Holds the thread and the progress dock together, so the dock sits at the bottom of
+   the *reading area* rather than of the pane — under the thread, above the composer,
+   whose height changes as the user types. */
 .thread-area {
   position: relative;
   flex: 1;
@@ -530,24 +530,22 @@ body.is-resizing * { transition: none !important; }
 
 /* ── Progress dock: runs still going, whose rows have scrolled away ──────────── */
 
+/* In the flow under the thread, not floating over it: a card drawn on top of the
+   last lines of the conversation hides the very text the reader came back for, and
+   the dock is up for as long as a run lasts. Taking its own strip costs two lines of
+   height and covers nothing. */
 .run-dock {
-  position: absolute;
-  left: 12px;
-  bottom: 12px;
-  z-index: 5;
+  flex: none;
   display: flex;
   flex-direction: column;
   align-items: flex-start;
   gap: var(--sp-3);
-  max-width: min(340px, calc(100% - 24px));
-  /* The dock floats over the thread; only its cards should intercept anything, so
-     the text behind the gaps stays selectable. */
-  pointer-events: none;
+  max-width: 340px;
+  padding: 0 12px 12px;
 }
 
 .run-dock-card {
   all: unset;
-  pointer-events: auto;
   cursor: pointer;
   box-sizing: border-box;
   position: relative;

@@ -16,6 +16,14 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Fixed
+- **A finished run's progress card leaves the thread.** The card for a detached run
+  was settled on the first row that carried its job key, which is not always the row
+  waiting on it: a status call the agent made about the same run matched first, and
+  the launch row stayed marked as running, mid-"compiling", for the rest of the
+  session. Every row waiting on the run is now settled, and only those — a status
+  call that merely asked about it keeps its own result.
+- **The progress card no longer covers the last lines of the conversation.** It sat
+  over the bottom of the thread; it now takes its own strip under it.
 - **A conversation can no longer cancel another conversation's jobs.** `slurm_cancel`
   only checked that the job belonged to the same Unix user, and the proxy's
   `cancel`/`stop` acted on any run directory of the workspace — including the shared
