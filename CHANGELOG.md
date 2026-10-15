@@ -16,6 +16,11 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Fixed
+- **Dropping MIMIR's co-author line covers the pull request too.** The default has
+  always applied to both, but the sentence offering to leave it out named only the
+  commit — which read as if the pull request, the published half, kept the line
+  anyway. Either can be dropped, in any query, for one of them or for the rest of the
+  conversation.
 - **A refused cancellation says which refusal it is.** `proxy_eval(op='stop')` and
   `proxy_exec(op='cancel')` answered "not submitted by this conversation" to three
   different situations: a run of another conversation, a run that recorded no owner at

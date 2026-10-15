@@ -466,9 +466,10 @@ def _authorship_section(model_name: str) -> str:
         "- By default, credit yourself as co-author of every commit you create and every "
         "pull request you open: end the commit message, and the pull request description, "
         f"with this line, after a blank line:\n  `{trailer}`\n"
-        "- This is a default the user may turn off. When they ask you to leave it out, "
-        "omit it — for that commit, or for the rest of the conversation if that is what "
-        "they asked — without arguing or mentioning it again."
+        "- This is a default the user may turn off, in any query. When they ask you to "
+        "leave it out, omit it — from that commit or that pull request, or for the rest "
+        "of the conversation if that is what they asked — without arguing or mentioning "
+        "it again."
     )
 
 

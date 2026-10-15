@@ -422,8 +422,20 @@ class AuthorshipSectionTests(unittest.TestCase):
     def test_trailer_names_the_model(self) -> None:
         self.assertIn("Co-authored-by: MIMIR (qwen3-32b) <", self._build())
 
-    def test_user_can_turn_it_off(self) -> None:
-        self.assertIn("default the user may turn off", self._build())
+    def test_it_covers_pull_requests_as_well_as_commits(self) -> None:
+        # Both, and the test says so: a pull request is where the credit is most
+        # visible and the easiest half of the sentence to lose in a later edit.
+        section = self._build()
+        self.assertIn("every commit you create", section)
+        self.assertIn("every pull request you open", section)
+        self.assertIn("the pull request description", section)
+
+    def test_user_can_turn_it_off_in_a_query_for_either_kind(self) -> None:
+        # The opt-out named only the commit, which read as "the pull request keeps the
+        # line" — the half that is published.
+        section = self._build()
+        self.assertIn("default the user may turn off, in any query", section)
+        self.assertIn("from that commit or that pull request", section)
 
     def test_only_in_agent_mode(self) -> None:
         for mode in ("plan", "ask"):
