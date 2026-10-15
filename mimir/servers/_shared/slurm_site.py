@@ -488,7 +488,6 @@ def recorded_jobs() -> set[tuple[str | None, str]]:
     runs read as work nobody is watching to everything built on this, so
     :func:`record_job_dir` is the only writer there is.
     """
-    found: set[tuple[str | None, str]] = set()
     roots = [jobs_dir()]
     sessions = os.path.join(state_dir(), "sessions")
     try:
@@ -496,9 +495,20 @@ def recorded_jobs() -> set[tuple[str | None, str]]:
                   for sid in sorted(os.listdir(sessions))]
     except OSError:
         pass
+    return {(host, recorded) for _, recorded, host in _descriptors(roots)}
+
+
+def _descriptors(roots: list[str]):
+    """Every job descriptor under *roots*, as ``(job_dir, recorded id, host)``.
+
+    The one walk both readers below share. A directory that is not there, and a
+    descriptor with no readable id, are skipped rather than reported: they are what a
+    half-written submission and a tree belonging to something else look like, and
+    neither can vouch for a job.
+    """
     for root in roots:
         try:
-            names = os.listdir(root)
+            names = sorted(os.listdir(root))
         except OSError:
             continue
         for name in names:
@@ -509,8 +519,7 @@ def recorded_jobs() -> set[tuple[str | None, str]]:
             except OSError:
                 continue
             if recorded:
-                found.add((job_host(job_dir), recorded))
-    return found
+                yield job_dir, recorded, job_host(job_dir)
 
 
 # Marks a descriptor written by adopting a job MIMIR did not submit.
@@ -536,41 +545,45 @@ def _owned_jobs_roots() -> list[str]:
     return roots
 
 
-def owned_job_hosts(job_id: str) -> set[str]:
-    """The schedulers on which this session (or a sub-agent of it) submitted *job_id*.
+def owned_jobs() -> dict[str, set[str]]:
+    """What this session (and its sub-agents) submitted, as ``{job id: hosts}``.
 
     The one gate in front of every ``scancel``: a job of the same Unix user is not
     enough, since other sessions and other workspaces run as that user too. Adopted
-    jobs do not count — MIMIR did not start them — and a descriptor without a host
-    names none, because the same id on another cluster is somebody else's job.
+    jobs are left out — MIMIR did not start them — and so is a descriptor without a
+    host, because the same id on another cluster is somebody else's job.
+
+    The whole map rather than a search per id, for the reason :func:`recorded_jobs`
+    gives: a cancellation asks about two ids at least (a split submission is a build
+    and a run), and every one of them paid a complete walk of the tree.
+    """
+    owned: dict[str, set[str]] = {}
+    for job_dir, recorded, host in _descriptors(_owned_jobs_roots()):
+        if host is None or os.path.exists(os.path.join(job_dir, ADOPTED_FILE)):
+            continue
+        owned.setdefault(recorded, set()).add(host)
+    return owned
+
+
+def owned_job_hosts(job_id: str, owned: dict[str, set[str]] | None = None) -> set[str]:
+    """The schedulers on which this session submitted *job_id*. See :func:`owned_jobs`.
+
+    *owned* is a map already walked for, so a caller asking about several ids walks
+    once. A task of an array is its own submission or part of one: ``1234_5`` is owned
+    by a descriptor recording either it or ``1234``.
     """
     job_id = str(job_id or "").strip()
-    found: set[str] = set()
     if not job_id:
-        return found
-    ids = {job_id, job_id.split("_", 1)[0]}
-    for root in _owned_jobs_roots():
-        try:
-            names = os.listdir(root)
-        except OSError:
-            continue
-        for name in names:
-            job_dir = os.path.join(root, name)
-            try:
-                with open(os.path.join(job_dir, ID_FILE)) as fh:
-                    recorded = fh.read().strip()
-            except OSError:
-                continue
-            host = job_host(job_dir)
-            if (recorded in ids and host is not None
-                    and not os.path.exists(os.path.join(job_dir, ADOPTED_FILE))):
-                found.add(host)
-    return found
+        return set()
+    if owned is None:
+        owned = owned_jobs()
+    return (owned.get(job_id, set()) | owned.get(job_id.split("_", 1)[0], set()))
 
 
-def owns_job(job_id: str, host: str) -> bool:
+def owns_job(job_id: str, host: str,
+             owned: dict[str, set[str]] | None = None) -> bool:
     """Whether *job_id* on *host* is this session's (or a sub-agent's) to cancel."""
-    return host in owned_job_hosts(job_id)
+    return host in owned_job_hosts(job_id, owned)
 
 
 def job_host(job_dir: str) -> str | None:

@@ -26,6 +26,7 @@ from slurm_site import (
     exec_argv as _slurm_exec_argv,
     hosts as _slurm_hosts,
     owned_job_hosts as _owned_job_hosts,
+    owned_jobs as _owned_slurm_jobs,
     owns_job as _owns_slurm_job,
     record_host as _record_slurm_host,
 )
@@ -69,14 +70,19 @@ def _phase_path(run_dir: str) -> str:
 _OWNER_FILE = "owner_session"
 
 
-def _run_owned(run_dir: str) -> bool:
-    """Whether this session (or the sub-agent that started it) owns *run_dir*."""
+def _run_owner(run_dir: str) -> str | None:
+    """The session that started *run_dir*, or None when the run recorded none.
+
+    None is "the run recorded nothing", not "nobody": it was started before MIMIR
+    recorded owners, or by something that is not MIMIR, and neither is a claim this
+    session can make. An *empty* record is a claim — it is what a run started with no
+    conversation at all (the CLI) writes, and :func:`session_owns` matches it.
+    """
     try:
         with open(os.path.join(run_dir, _OWNER_FILE)) as fh:
-            owner = fh.read().strip()
+            return fh.read().strip()
     except OSError:
-        return False
-    return session_owns(owner)
+        return None
 
 
 def _read_int_file(path: str) -> int | None:
@@ -573,12 +579,16 @@ def _submit_sbatch(
     return job_id, None
 
 
-def _scancel(job_id: int, *, host: str = _SLURM_LOCAL) -> str | None:
+def _scancel(job_id: int, *, host: str = _SLURM_LOCAL,
+             owned: dict[str, set[str]] | None = None) -> str | None:
     """Cancel one Slurm job on *host*; returns an error message, or None when it worked.
 
-    Refused unless this session or one of its sub-agents submitted it there.
+    Refused unless this session or one of its sub-agents submitted it there. *owned* is
+    the ownership map when the caller has already walked for one (see
+    :func:`slurm_site.owned_jobs`); the check is made here either way, because this is
+    the only thing every cancellation goes through.
     """
-    if not _owns_slurm_job(str(job_id), host):
+    if not _owns_slurm_job(str(job_id), host, owned):
         return (f"Slurm job {job_id} was not submitted by this conversation or its "
                 "sub-agents; it is not this conversation's to cancel.")
     try:
@@ -606,22 +616,30 @@ def _cancel_run(run_dir: str) -> dict:
         # would leave the build compiling for a run that no longer exists, on
         # allocation hours nobody is going to look at.
         build_job_id = _read_build_slurm_id(run_dir)
+        # Walked for once and handed to every check below: each of them asks about a
+        # job of the same session, and a walk apiece re-read every descriptor in the
+        # tree to answer the same question.
+        owned = _owned_slurm_jobs()
         # The scheduler it was submitted to, from this session's own record: a sweep
         # could land on the same id elsewhere, which is somebody else's job.
-        hosts = _owned_job_hosts(str(job_id))
-        if len(hosts) != 1:
+        hosts = _owned_job_hosts(str(job_id), owned)
+        if not hosts:
             return {"error": f"Slurm job {job_id} of {run_dir} was not submitted by "
                               "this conversation or its sub-agents; it is not this "
                               "conversation's to cancel."}
+        if len(hosts) > 1:
+            return {"error": f"Slurm job {job_id} of {run_dir} was submitted here on "
+                             "several schedulers (" + ", ".join(sorted(hosts))
+                             + "); cancel it with slurm_cancel(scheduler=...)."}
         host = next(iter(hosts))
         jids = ([build_job_id] if build_job_id is not None else []) + [job_id]
         # All or nothing: never leave half of a split submission cancelled.
-        foreign = [jid for jid in jids if not _owns_slurm_job(str(jid), host)]
+        foreign = [jid for jid in jids if not _owns_slurm_job(str(jid), host, owned)]
         if foreign:
             return {"error": f"Slurm job {foreign[0]} was not submitted by this "
                               "conversation or its sub-agents; nothing was cancelled."}
         for jid in jids:
-            error = _scancel(jid, host=host)
+            error = _scancel(jid, host=host, owned=owned)
             if error:
                 return {"error": error}
         payload = {"cancelled": "slurm", "job_id": job_id}
@@ -629,9 +647,14 @@ def _cancel_run(run_dir: str) -> dict:
             payload["build_job_id"] = build_job_id
         return payload
 
-    if not _run_owned(run_dir):
-        return {"error": f"{run_dir} was not started by this conversation or its "
-                          "sub-agents; it is not this conversation's to stop."}
+    owner = _run_owner(run_dir)
+    if owner is None:
+        return {"error": f"{run_dir} records no session that started it, so there is "
+                          "nothing here that says it is this conversation's to stop. "
+                          "Ask the user to stop it where it was started."}
+    if not session_owns(owner):
+        return {"error": f"{run_dir} was started by another conversation; it is not "
+                          "this conversation's to stop."}
     pid = _read_pid(run_dir)
     if not pid:
         return {"note": "No PID found; run may have already ended."}

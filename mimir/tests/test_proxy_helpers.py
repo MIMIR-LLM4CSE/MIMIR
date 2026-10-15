@@ -425,6 +425,27 @@ class CancelOwnershipTests(_TmpStorageTest):
         self.assertIn("error", procs._cancel_run(d))
         self.assertEqual(self.scancels, [])
 
+    def test_an_unowned_run_dir_is_refused_as_unrecorded_not_as_foreign(self) -> None:
+        # The two refusals are different facts, and only one of them is true at a
+        # time: "another conversation started it" tells the user where to stop it,
+        # and is a lie about a run that recorded no owner at all.
+        d, _pid = self._local_run("s-a")
+        os.remove(os.path.join(d, procs._OWNER_FILE))
+        self.assertIn("records no session", procs._cancel_run(d)["error"])
+        foreign, _pid2 = self._local_run("s-b")
+        self.assertIn("another conversation", procs._cancel_run(foreign)["error"])
+
+    def test_a_job_recorded_on_two_schedulers_asks_which_one(self) -> None:
+        # Its own refusal: the job IS this conversation's, so saying it was not
+        # submitted here sent the reader looking for a conversation that does not
+        # exist. What it needs is the scheduler named.
+        d = self._slurm_run("s-a", 9401)
+        procs._record_job_dir("9401", **{procs._SLURM_HOST_FILE: "cluster-b"})
+        error = procs._cancel_run(d)["error"]
+        self.assertIn("several schedulers", error)
+        self.assertIn("cluster-b", error)
+        self.assertEqual(self.scancels, [])
+
     def test_scancel_refuses_an_unrecorded_job(self) -> None:
         self.assertIsNotNone(procs._scancel(9300, host=""))
         self.assertEqual(self.scancels, [])

@@ -310,20 +310,25 @@ def _seal_reference(
 
     output_stored: str | None = None
     output_format = entry.get("output_format", "npz")
-    ext = command._output_ext(output_format)
-    proxy_out = ref_metrics.pop("output_file", None)
-    if not (proxy_out and os.path.isfile(str(proxy_out))):
-        # The {output_file} path the solver was given: echoing it back is optional.
-        proxy_out = os.path.join(tmp_run_dir, f"output.{ext}")
-    if output_format != "none" and not os.path.isfile(proxy_out):
-        ref_metrics["output_file_warning"] = (
-            f"No field output found at {proxy_out} and none declared via "
-            "output_file= in the metrics block. Field not stored, so field "
-            "comparisons (l2_rel/linf_rel) against this reference are unavailable."
-        )
-    elif output_format != "none":
-        size = os.path.getsize(str(proxy_out))
-        if size > max_out_bytes:
+    # Popped whatever the format: it names a path inside the temporary run directory,
+    # which is gone by the time anyone reads these metrics.
+    declared = str(ref_metrics.pop("output_file", "") or "")
+    if output_format != "none":
+        ext = command._output_ext(output_format)
+        proxy_out = declared
+        if not os.path.isfile(proxy_out):
+            # The {output_file} path the solver was given: echoing it back in the
+            # metrics block is optional, so the field is looked for where it was asked
+            # for as well as where it was declared.
+            proxy_out = os.path.join(tmp_run_dir, f"output.{ext}")
+        size = os.path.getsize(proxy_out) if os.path.isfile(proxy_out) else None
+        if size is None:
+            ref_metrics["output_file_warning"] = (
+                f"No field output found at {proxy_out} and none declared via "
+                "output_file= in the metrics block. Field not stored, so field "
+                "comparisons (l2_rel/linf_rel) against this reference are unavailable."
+            )
+        elif size > max_out_bytes:
             ref_metrics["output_file_warning"] = (
                 f"output_file ({size / 1024 / 1024:.1f} MB) exceeds "
                 f"max_output_mb={max_output_mb}. Field not stored."
@@ -331,7 +336,7 @@ def _seal_reference(
         else:
             dest = os.path.join(rd, f"output.{ext}")
             try:
-                shutil.copy2(str(proxy_out), dest)
+                shutil.copy2(proxy_out, dest)
                 output_stored = dest
                 ref_metrics["output_size_mb"] = round(size / 1024 / 1024, 3)
             except OSError as exc:

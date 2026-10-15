@@ -16,6 +16,11 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Fixed
+- **A refused cancellation says which refusal it is.** `proxy_eval(op='stop')` and
+  `proxy_exec(op='cancel')` answered "not submitted by this conversation" to three
+  different situations: a run of another conversation, a run that recorded no owner at
+  all, and a job of this conversation submitted on two schedulers. Each now says what
+  it found, and the last one names the schedulers to choose between.
 - **A finished run's progress card leaves the thread.** The card for a detached run
   was settled on the first row that carried its job key, which is not always the row
   waiting on it: a status call the agent made about the same run matched first, and
