@@ -3160,6 +3160,13 @@ button.ctx-mention:focus-visible {
   background: var(--bg-hover);
   color: var(--fg);
 }
+/* A toggle pressed in stays pressed in: unlike aria-expanded, this is a state the
+   view is left in, so it is marked with the mode accent rather than a hover fill. */
+.settings-btn[aria-pressed="true"] {
+  background: var(--bg-hover);
+  border-color: var(--mode-accent);
+  color: var(--mode-accent);
+}
 
 .ui-icon {
   width: 1em;

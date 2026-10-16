@@ -8,6 +8,7 @@ import { ThinkingPanel } from "./ThinkingPanel";
 import { GlobalApprovalBar } from "./GlobalApprovalBar";
 import { StreamingStatus } from "./StreamingStatus";
 import { orderLiveStream } from "./liveStreamUtils";
+import { keepInAnswersOnlyView } from "./answersOnlyUtils";
 
 /** Messages rendered at first, and added each time the reader reaches the top. */
 export const THREAD_WINDOW_STEP = 120;
@@ -30,6 +31,12 @@ interface Props {
   liveThinkingBlocks?: ThinkingBlock[];
   /** Rendered in place of the message list when there are no messages. */
   emptyState?: React.ReactNode;
+  /** When true, only the conversation proper is rendered — user prompts, agent
+   *  answers, error cards, approvals and command replies — and the working
+   *  machinery (tool rows, reasoning panels, edit cards) is left out, both
+   *  frozen in the transcript and in flight. The draft stays: it is the answer
+   *  being written. */
+  answersOnly?: boolean;
   /** When true, a spinner replaces the thread (e.g. while a session loads). */
   loading?: boolean;
   chatThreadRef: React.RefObject<HTMLDivElement>;
@@ -61,6 +68,7 @@ export const ChatThread: React.FC<Props> = ({
   liveToolCalls = [],
   liveThinkingBlocks = [],
   emptyState,
+  answersOnly = false,
   loading,
   chatThreadRef,
   bottomRef,
@@ -71,8 +79,10 @@ export const ChatThread: React.FC<Props> = ({
   onDivert,
 }) => {
   // All message kinds render via renderMessage; thinking blocks (frozen) and
-  // tool lists each have their own render branch in ChatMessage.
-  const visible = messages;
+  // tool lists each have their own render branch in ChatMessage. In answers-only
+  // view the same filter takes the machinery out of the live step as well, by
+  // emptying its streams before they are ordered.
+  const visible = answersOnly ? messages.filter(keepInAnswersOnlyView) : messages;
 
   const lastIdx = visible.length - 1;
   let lastUserIdx = -1;
@@ -80,7 +90,8 @@ export const ChatThread: React.FC<Props> = ({
     if (visible[i].role === "user") { lastUserIdx = i; break; }
   }
 
-  const liveBlocks = liveThinkingBlocks.filter((b) => b.text.trim().length > 0);
+  const liveBlocks = (answersOnly ? [] : liveThinkingBlocks).filter((b) => b.text.trim().length > 0);
+  const liveTools = answersOnly ? [] : liveToolCalls;
   const liveDraftSeq = draft.trim().length > 0 ? draftSeq ?? 0 : null;
 
   // A message can land while the step is still in flight — a steer bubble, an edit
@@ -90,7 +101,7 @@ export const ChatThread: React.FC<Props> = ({
   const liveFloor = Math.min(
     liveDraftSeq ?? Infinity,
     ...liveBlocks.map((b) => b.seq),
-    ...liveToolCalls.map((t) => t.seq ?? Infinity),
+    ...liveTools.map((t) => t.seq ?? Infinity),
   );
   let settledCount = visible.length;
   while (settledCount > 0) {
@@ -140,7 +151,7 @@ export const ChatThread: React.FC<Props> = ({
 
   const liveEntries = orderLiveStream({
     thinking: liveBlocks,
-    tools: liveToolCalls,
+    tools: liveTools,
     draftSeq: liveDraftSeq,
     messages: duringStep,
   });
