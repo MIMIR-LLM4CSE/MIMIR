@@ -10,12 +10,8 @@ pass, and the fact that each backend's own preparation preserves it.
 import json
 import unittest
 
-from mimir.client.query_engine.history import (
-    EVICTED_TOOL_RESULT,
-    _enforce_context_budget,
-    _trim_tool_history,
-    reconcile_tool_pairs,
-)
+from mimir.client.query_engine.history import _enforce_context_budget, _trim_tool_history
+from mimir.client.protocol.messages import EVICTED_TOOL_RESULT, reconcile_tool_pairs
 
 
 def _assistant(*ids, content=""):
@@ -193,7 +189,7 @@ class BackendPreparationTests(unittest.TestCase):
         ]
 
     def test_vllm_preparation_pairs_every_call(self) -> None:
-        from mimir.client.query_engine.backends.vllm_backend import (
+        from mimir.client.query_engine.backends.openai_compat import (
             _prepare_messages_for_openai,
         )
         prepared = _prepare_messages_for_openai(self._broken())
@@ -203,7 +199,9 @@ class BackendPreparationTests(unittest.TestCase):
 
     def test_anthropic_preparation_pairs_every_tool_use(self) -> None:
         from mimir.client.query_engine.backends.anthropic_backend import AnthropicBackend
-        _, conv = AnthropicBackend()._prepare(self._broken())
+        # The repair is LLMBackend.chat's; what is checked here is that the
+        # conversion keeps a repaired history paired.
+        _, conv = AnthropicBackend()._prepare(reconcile_tool_pairs(self._broken()))
         used = [
             b["id"]
             for m in conv if m["role"] == "assistant"
@@ -219,11 +217,11 @@ class BackendPreparationTests(unittest.TestCase):
 
     def test_anthropic_drops_a_result_with_no_tool_use(self) -> None:
         from mimir.client.query_engine.backends.anthropic_backend import AnthropicBackend
-        _, conv = AnthropicBackend()._prepare([
+        _, conv = AnthropicBackend()._prepare(reconcile_tool_pairs([
             {"role": "user", "content": "q"},
             _tool("gone", "orphan"),
             {"role": "assistant", "content": "done"},
-        ])
+        ]))
         blocks = [b for m in conv if isinstance(m["content"], list) for b in m["content"]]
         self.assertEqual([b for b in blocks if b.get("type") == "tool_result"], [])
 

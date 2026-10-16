@@ -25,8 +25,8 @@ from mimir.client.query_engine.history import (
     _force_fit_to_window,
     _maybe_compact_intra_query,
     _trim_tool_history,
-    reconcile_tool_pairs,
 )
+from mimir.client.protocol.messages import reconcile_tool_pairs
 
 
 def _agent(disabled: set[str] = frozenset()) -> types.SimpleNamespace:

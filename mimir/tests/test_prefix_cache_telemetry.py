@@ -9,7 +9,7 @@ that on every call with nothing to show for it.
 import logging
 import unittest
 
-from mimir.client.query_engine.backends import vllm_backend as vb
+from mimir.client.query_engine.backends import openai_compat as vb
 
 
 class _Details:

@@ -12,7 +12,7 @@ from __future__ import annotations
 from typing import Any
 
 from ..guardrails.nudges.engine import record_exercise_obstacle
-from .history import reconcile_tool_pairs
+from ..protocol.messages import reconcile_tool_pairs
 from .verification import build_ledger, render_ledger
 
 

@@ -6,7 +6,7 @@ import unittest
 from unittest.mock import patch
 
 from mimir.client.config.limits import CTX_RESERVED_RATIO
-from mimir.client.query_engine.backends.vllm_backend import _answer_max_tokens
+from mimir.client.query_engine.backends.openai_compat import _answer_max_tokens
 
 
 class AnswerMaxTokensTests(unittest.TestCase):
@@ -63,7 +63,7 @@ class FinishReasonTests(unittest.TestCase):
             choices=[types.SimpleNamespace(finish_reason=finish, delta=delta)])
 
     def _run(self, streaming, response):
-        import mimir.client.query_engine.backends.vllm_backend as vb
+        import mimir.client.query_engine.backends.openai_compat as vb
         with patch.object(vb, "_create", lambda client, kwargs: response), \
              patch.object(vb, "served_model_len", lambda model, config=None: None):
             return self._backend().chat(
@@ -104,7 +104,7 @@ class SamplingParamsTests(unittest.TestCase):
     """
 
     def _sent(self, options):
-        import mimir.client.query_engine.backends.vllm_backend as vb
+        import mimir.client.query_engine.backends.openai_compat as vb
         sent = {}
         message = types.SimpleNamespace(role="assistant", content="ok", tool_calls=None)
         response = types.SimpleNamespace(
@@ -203,7 +203,7 @@ class UnknownWindowTests(unittest.TestCase):
     """
 
     def _sent(self, options, window=None):
-        import mimir.client.query_engine.backends.vllm_backend as vb
+        import mimir.client.query_engine.backends.openai_compat as vb
         sent: dict = {}
         message = types.SimpleNamespace(role="assistant", content="ok", tool_calls=None)
         response = types.SimpleNamespace(
@@ -242,7 +242,7 @@ class WindowPrecedenceTests(unittest.TestCase):
     """
 
     def _window(self, declared, served):
-        import mimir.client.query_engine.backends.vllm_backend as vb
+        import mimir.client.query_engine.backends.openai_compat as vb
         env = {"MIMIR_VLLM_MAX_MODEL_LEN": str(declared)} if declared is not None else {}
         b = FinishReasonTests._backend()
         with patch.dict("os.environ", env, clear=False), \
@@ -281,7 +281,7 @@ class DeclaredWindowBoundsTheAnswerTests(unittest.TestCase):
     """
 
     def _sent(self, options, declared=None, served=None):
-        import mimir.client.query_engine.backends.vllm_backend as vb
+        import mimir.client.query_engine.backends.openai_compat as vb
         sent: dict = {}
         message = types.SimpleNamespace(role="assistant", content="ok", tool_calls=None)
         response = types.SimpleNamespace(

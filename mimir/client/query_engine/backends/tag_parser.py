@@ -57,6 +57,10 @@ class ThinkTagParser:
         self._buf += raw
         self._process(default_to_thinking=True)
 
+    def feed_text(self, text: str) -> None:
+        """Feed prose a provider already separated from its reasoning: never parsed."""
+        self._emit_content(text)
+
     def feed_reasoning(self, text: str) -> None:
         """Feed reasoning a provider sends in its own field (vLLM ``reasoning``).
 

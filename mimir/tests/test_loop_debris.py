@@ -18,7 +18,7 @@ from mimir.client.guardrails.nudges import drop_transient_reminders, inject_remi
 from mimir.client.guardrails.workflow import EMPTY_TURN_OPENING
 from mimir.client.query_engine import agent_loop as agent_loop_module
 from mimir.client.query_engine import streaming as streaming_module
-from mimir.client.query_engine.history import merge_consecutive_user_messages
+from mimir.client.protocol.messages import merge_consecutive_user_messages
 from mimir.tests._fake_backend import ScriptedBackend
 from mimir.tests.test_agent_loop import (
     RunAgentQueryNonInteractiveTests,
@@ -326,32 +326,19 @@ class SharedRoleNormalizationTests(unittest.TestCase):
         ])
         self.assertEqual(out, [{"role": "user", "content": "same"}])
 
-    def test_the_anthropic_path_applies_it(self) -> None:
-        from mimir.client.query_engine.backends.anthropic_backend import AnthropicBackend
+    def test_every_backend_gets_it_from_the_shared_chat(self) -> None:
+        # Once applied per backend, and forgotten by two of the three.
+        from mimir.client.query_engine.backends.base import LLMBackend
 
-        _system, out = AnthropicBackend()._prepare([
-            {"role": "user", "content": "q"},
-            {"role": "user", "content": "reminder"},
-        ])
-        self.assertEqual(len(out), 1)
-        self.assertEqual(out[0]["content"][0]["text"], "q\n\nreminder")
+        class _Recording(LLMBackend):
+            def _complete(self, model, messages, tools, thinking, streaming, options, turn):
+                self.sent = messages
 
-    def test_the_ollama_path_applies_it(self) -> None:
-        import mimir.client.query_engine.backends.ollama_backend as ob
-
-        sent: dict = {}
-
-        def _fake_chat(**kw):
-            sent["messages"] = kw["messages"]
-            return {"message": {"role": "assistant", "content": "hi"}}
-
-        with patch.object(ob.ollama, "chat", _fake_chat):
-            ob.OllamaBackend().chat(
-                "m",
-                [{"role": "user", "content": "q"}, {"role": "user", "content": "reminder"}],
-                [], False, False, {"num_ctx": 4096}, token_callback=lambda t: None,
-            )
-        self.assertEqual(sent["messages"], [{"role": "user", "content": "q\n\nreminder"}])
+        backend = _Recording()
+        backend.chat("m", [{"role": "user", "content": "q"},
+                           {"role": "user", "content": "reminder"}],
+                     [], False, False, {}, token_callback=lambda t: None)
+        self.assertEqual(backend.sent, [{"role": "user", "content": "q\n\nreminder"}])
 
 
 class PlanModeEmptyTurnTests(unittest.TestCase):

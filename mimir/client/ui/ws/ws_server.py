@@ -275,18 +275,17 @@ def _no_model_message() -> str:
     about reachability.
     """
     advice = "No model specified. Pass --model <name> or set MIMIR_DEFAULT_MODEL."
+    from ...query_engine.backends.factory import get_backend
+    from ...query_engine.backends.openai_compat import OpenAICompatBackend
     try:
-        from ...query_engine.backends.vllm_backend import probe_models, _get_vllm_config
-    except ImportError:
-        return advice
-    backend = os.environ.get("LLM_BACKEND", "vllm")
-    if backend not in ("vllm", "ray"):
-        return advice
-    try:
-        base_url, api_key = _get_vllm_config()
-        _, reason = probe_models((base_url, api_key))
+        backend_obj = get_backend()
+        if not isinstance(backend_obj, OpenAICompatBackend):
+            return advice
+        base_url = backend_obj.endpoint.config()[0]
+        _, reason = backend_obj.probe_models()
     except Exception as exc:  # config resolution itself failed
         return f"{advice} (could not resolve the endpoint address: {exc})"
+    backend = os.environ.get("LLM_BACKEND", "vllm")
     if reason:
         return (
             f"The {backend} endpoint at {base_url} did not answer, so the served "

@@ -15,7 +15,8 @@ from unittest.mock import patch
 
 from mimir.client.config import paths
 from mimir.client.query_engine import streaming, token_calibration
-from mimir.client.query_engine.backends.base import LLMBackend, message_wire_form
+from mimir.client.query_engine.backends.base import LLMBackend
+from mimir.client.protocol.messages import message_wire_form
 
 
 class _IsolatedCalibrationCache:

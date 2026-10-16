@@ -27,13 +27,12 @@ the rest of the engine.
 """
 from __future__ import annotations
 
-import asyncio
+import json
 import logging
 import os
-import sys
-from typing import Any, Callable
+from typing import Any
 
-from .base import LLMBackend, normalize_finish_reason
+from .base import ChatTurn, LLMBackend, env_positive_int
 
 logger = logging.getLogger(__name__)
 
@@ -73,10 +72,7 @@ def _get_config() -> dict:
 
 
 def _default_max_tokens() -> int:
-    env = os.environ.get("MIMIR_ANTHROPIC_MAX_TOKENS", "").strip()
-    if env.isdigit() and int(env) > 0:
-        return int(env)
-    return 16_000
+    return env_positive_int("MIMIR_ANTHROPIC_MAX_TOKENS") or 16_000
 
 
 def _effort() -> str | None:
@@ -189,9 +185,9 @@ class AnthropicBackend(LLMBackend):
     # ── context window ─────────────────────────────────────────────────────────
 
     def _fetch_context_window(self, model: str) -> int | None:
-        env = os.environ.get("MIMIR_ANTHROPIC_MAX_INPUT_TOKENS", "").strip()
-        if env.isdigit() and int(env) > 0:
-            return int(env)
+        pinned = env_positive_int("MIMIR_ANTHROPIC_MAX_INPUT_TOKENS")
+        if pinned:
+            return pinned
         try:
             info = self._get_client().models.retrieve(model)
             win = getattr(info, "max_input_tokens", None)
@@ -238,17 +234,11 @@ class AnthropicBackend(LLMBackend):
         so signed thinking blocks survive; otherwise they are reconstructed from the
         flattened text + tool_calls (valid whenever thinking was not used).
 
-        Pairing is reconciled first: the API rejects a ``tool_use`` with no matching
-        ``tool_result`` (and the converse) outright, so an unpaired turn is a hard 400
-        rather than a degraded prompt. The loop already reconciles before every call;
-        this is the last-mile guard for any caller that doesn't.
+        Reached through ``LLMBackend.chat``, which has already reconciled the
+        tool-call pairing (the API rejects a ``tool_use`` with no matching
+        ``tool_result`` outright) and merged adjacent user turns (it requires strict
+        alternation).
         """
-        from ..history import merge_consecutive_user_messages, reconcile_tool_pairs
-        # The API requires strict user/assistant alternation, and nothing upstream
-        # guarantees it: a query followed by a reminder, or a reminder followed by the
-        # checklist pin, arrives as two adjacent user turns. The vLLM path has always
-        # merged them; this one had no equivalent.
-        messages = merge_consecutive_user_messages(reconcile_tool_pairs(list(messages)))
 
         system_parts: list[str] = []
         out: list[dict] = []
@@ -267,7 +257,6 @@ class AnthropicBackend(LLMBackend):
             if role == "tool":
                 content = msg.get("content")
                 if not isinstance(content, str):
-                    import json
                     try:
                         content = json.dumps(content)
                     except (TypeError, ValueError):
@@ -391,127 +380,48 @@ class AnthropicBackend(LLMBackend):
                 + (getattr(usage, "cache_creation_input_tokens", 0) or 0)
                 + (getattr(usage, "input_tokens", 0) or 0))
 
-    def chat(
-        self,
-        model: str,
-        messages: list[dict],
-        tools: list[dict],
-        thinking: bool,
-        streaming: bool,
-        options: dict,
-        cancel_flag: Any = None,
-        token_callback: Callable[[str], None] | None = None,
-        think_token_callback: Callable[[str], None] | None = None,
-        think_start_callback: Callable[[], None] | None = None,
-        think_end_callback: Callable[[], None] | None = None,
-    ) -> dict:
+    def _complete(self, model: str, messages: list[dict], tools: list[dict],
+                  thinking: bool, streaming: bool, options: dict, turn: ChatTurn) -> None:
         client = self._get_client()
         create_kwargs = self._build_kwargs(model, messages, tools, thinking, options)
-
-        content_parts: list[str] = []
-        thinking_parts: list[str] = []
-        tool_calls_parts: list[dict] = []
-        thinking_started = False
-
-        def _on_text(text: str) -> None:
-            if not text:
-                return
-            content_parts.append(text)
-            if token_callback is not None:
-                token_callback(text)
-            else:
-                sys.stdout.write(text)
-                sys.stdout.flush()
-
-        def _on_thinking(text: str) -> None:
-            nonlocal thinking_started
-            if not text:
-                return
-            if not thinking_started:
-                thinking_started = True
-                if think_start_callback is not None:
-                    think_start_callback()
-            thinking_parts.append(text)
-            if think_token_callback is not None:
-                think_token_callback(text)
 
         if streaming:
             with client.messages.stream(**create_kwargs) as stream:
                 for event in stream:
-                    if cancel_flag is not None and cancel_flag.is_set():
-                        raise asyncio.CancelledError("Cancelled by user")
-                    etype = getattr(event, "type", None)
-                    if etype == "content_block_delta":
-                        delta = getattr(event, "delta", None)
-                        dtype = getattr(delta, "type", None)
-                        if dtype == "text_delta":
-                            _on_text(getattr(delta, "text", "") or "")
-                        elif dtype == "thinking_delta":
-                            _on_thinking(getattr(delta, "thinking", "") or "")
+                    turn.check_cancelled()
+                    if getattr(event, "type", None) != "content_block_delta":
+                        continue
+                    delta = getattr(event, "delta", None)
+                    dtype = getattr(delta, "type", None)
+                    if dtype == "text_delta":
+                        turn.text(getattr(delta, "text", "") or "")
+                    elif dtype == "thinking_delta":
+                        turn.reasoning(getattr(delta, "thinking", "") or "")
                 final = stream.get_final_message()
-            self._collect_final(final, content_parts, thinking_parts, tool_calls_parts, streamed=True)
         else:
             final = client.messages.create(**create_kwargs)
-            self._collect_final(final, content_parts, thinking_parts, tool_calls_parts, streamed=False,
-                                text_sink=_on_text)
 
-        if thinking_started and think_end_callback is not None:
-            think_end_callback()
-
-        if content_parts and token_callback is None:
-            sys.stdout.write("\n")
-            sys.stdout.flush()
-
-        self._cache_blocks(getattr(final, "content", []) or [])
-        _log_cache_usage(final)
-
-        result: dict = {"role": "assistant", "content": "".join(content_parts)}
-        if thinking_parts:
-            result["thinking"] = "".join(thinking_parts)
-        if tool_calls_parts:
-            result["tool_calls"] = tool_calls_parts
-        # Both paths converge on `final`, so one read covers streaming and not.
-        # "max_tokens" is the one that matters: it is a turn cut off mid-sentence,
-        # which without this key looks exactly like a model that chose to stop.
-        finish_reason = normalize_finish_reason(getattr(final, "stop_reason", None))
-        if finish_reason:
-            result["finish_reason"] = finish_reason
-        prompt_tokens = self._prompt_tokens(final)
-        if prompt_tokens > 0:
-            result["prompt_tokens"] = prompt_tokens
-        return result
-
-    @staticmethod
-    def _collect_final(
-        final: Any,
-        content_parts: list[str],
-        thinking_parts: list[str],
-        tool_calls_parts: list[dict],
-        *,
-        streamed: bool,
-        text_sink: Callable[[str], None] | None = None,
-    ) -> None:
-        """Read tool_use (always) and, when not already streamed, text/thinking
-        from the final message's content blocks into the accumulators.
-
-        Streaming already routed text/thinking through the delta callbacks; here we
-        only need the tool calls. Non-streaming has no deltas, so we pull everything.
-        """
+        # Both paths converge on `final`. Streaming already routed text and thinking
+        # through the deltas, so only the tool calls are read here; without streaming
+        # there were no deltas, and everything is.
         for block in getattr(final, "content", []) or []:
             btype = getattr(block, "type", None)
             if btype == "tool_use":
-                tool_calls_parts.append({
+                turn.tool_calls.append({
                     "id": getattr(block, "id", "") or "",
                     "function": {
                         "name": getattr(block, "name", "") or "",
                         "arguments": getattr(block, "input", {}) or {},
                     },
                 })
-            elif not streamed and btype == "text":
-                text = getattr(block, "text", "") or ""
-                if text_sink is not None:
-                    text_sink(text)
-                else:
-                    content_parts.append(text)
-            elif not streamed and btype == "thinking":
-                thinking_parts.append(getattr(block, "thinking", "") or "")
+            elif not streaming and btype == "text":
+                turn.text(getattr(block, "text", "") or "")
+            elif not streaming and btype == "thinking":
+                turn.reasoning(getattr(block, "thinking", "") or "")
+
+        self._cache_blocks(getattr(final, "content", []) or [])
+        _log_cache_usage(final)
+        # "max_tokens" is the stop reason that matters: a turn cut off mid-sentence,
+        # which without it looks exactly like a model that chose to stop.
+        turn.stopped(getattr(final, "stop_reason", None))
+        turn.prompt_tokens = self._prompt_tokens(final)

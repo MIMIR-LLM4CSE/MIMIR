@@ -6,6 +6,7 @@ signal at all, which is indistinguishable from a provider that sent none.
 """
 
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import mimir.client.query_engine.backends.ollama_backend as ob
@@ -21,7 +22,8 @@ def _chunk(content="", done_reason=None):
 
 class DoneReasonTests(unittest.TestCase):
     def _run(self, streaming, answer):
-        with patch.object(ob.ollama, "chat", lambda **kw: answer):
+        # The SDK itself, stood in for: it need not be installed to test the read.
+        with patch.object(ob, "ollama", SimpleNamespace(chat=lambda **kw: answer)):
             return OllamaBackend().chat(
                 "m", [{"role": "user", "content": "q"}], [], False, streaming,
                 {"num_ctx": 4096}, token_callback=lambda t: None,

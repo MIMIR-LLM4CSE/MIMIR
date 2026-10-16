@@ -7,7 +7,8 @@ from . import streaming as _streaming
 from ..event_sink import emit
 from .toollist import tools_for_context, tools_for_readonly_mode
 from .streaming import _DraftHold, _note_truncated_turn, _process_response, _stream_chat
-from .history import _enforce_context_budget, reconcile_tool_pairs
+from .history import _enforce_context_budget
+from ..protocol.messages import reconcile_tool_pairs
 from .deferral import (
     KIND_CALLS, KIND_PLAN_DECISION, end_deferred_calls, end_deferred_turn,
     take_deferred_calls,

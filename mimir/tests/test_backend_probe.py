@@ -161,6 +161,17 @@ class TestOtherBackends:
         assert asked == ["http://head:8000/llm/v1/models"]
 
 
+class TestHostedBackends:
+    def test_a_hosted_api_is_not_waited_on(self, monkeypatch):
+        # It fell into the Ollama branch, and waited the whole timeout on a localhost
+        # Ollama that was never going to answer.
+        monkeypatch.setenv("LLM_BACKEND", "anthropic")
+        monkeypatch.setenv("MIMIR_BACKEND_TIMEOUT", "0")
+        asked = _responder(monkeypatch, lambda url: httpx.Response(500))
+        _run(_Stub())
+        assert asked == []
+
+
 def test_a_second_conversation_does_not_wait_on_the_backend_again(monkeypatch):
     # The backend belongs to the server: a new conversation's agent re-probing it showed
     # "waiting for the LLM backend" again on an endpoint already known to be up.

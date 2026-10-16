@@ -8,8 +8,8 @@ and its behaviour when the router turns out not to serve vLLM's extra routes.
 import os
 import unittest
 
-from mimir.client.query_engine.backends import vllm_backend
-from mimir.client.query_engine.backends.ray_backend import RayBackend, _get_ray_config
+from mimir.client.query_engine.backends import openai_compat
+from mimir.client.query_engine.backends.ray_backend import RAY_ENDPOINT, RayBackend
 
 
 class _EnvGuard(unittest.TestCase):
@@ -32,18 +32,18 @@ class _EnvGuard(unittest.TestCase):
 class RayConfigTests(_EnvGuard):
     def test_v1_is_appended_once(self) -> None:
         os.environ["RAY_BASE_URL"] = "http://head:8000"
-        self.assertEqual(_get_ray_config()[0], "http://head:8000/v1")
+        self.assertEqual(RAY_ENDPOINT.config()[0], "http://head:8000/v1")
 
     def test_v1_the_user_typed_is_not_doubled(self) -> None:
         """A trailing slash is left as the user typed it — as on the vLLM side —
         but must not earn a second /v1."""
         os.environ["RAY_BASE_URL"] = "https://ray.internal/v1/"
-        self.assertEqual(_get_ray_config()[0], "https://ray.internal/v1/")
+        self.assertEqual(RAY_ENDPOINT.config()[0], "https://ray.internal/v1/")
 
     def test_route_prefix_is_preserved(self) -> None:
         """A Serve app mounted under a route prefix keeps it; /v1 goes after."""
         os.environ["RAY_BASE_URL"] = "http://head:8000/llm"
-        self.assertEqual(_get_ray_config()[0], "http://head:8000/llm/v1")
+        self.assertEqual(RAY_ENDPOINT.config()[0], "http://head:8000/llm/v1")
 
     def test_vllm_variables_do_not_leak_in(self) -> None:
         """The whole point of the backend: its own address, not vLLM's."""
@@ -55,14 +55,14 @@ class RayConfigTests(_EnvGuard):
         self.assertEqual(key, "EMPTY")
 
     def test_api_key_defaults_to_empty_sentinel(self) -> None:
-        self.assertEqual(_get_ray_config()[1], "EMPTY")
+        self.assertEqual(RAY_ENDPOINT.config()[1], "EMPTY")
 
 
 class RayContextWindowTests(_EnvGuard):
     """Priority: the router's reported window, then the override, then unknown."""
 
     def _patched(self, value):
-        import mimir.client.query_engine.backends.ray_backend as rb
+        import mimir.client.query_engine.backends.openai_compat as rb
         original = rb.served_model_len
         rb.served_model_len = lambda *a, **k: value
         return rb, original
@@ -109,7 +109,7 @@ class RayContextWindowTests(_EnvGuard):
             seen.append((model, config))
             return 4096
 
-        import mimir.client.query_engine.backends.ray_backend as rb
+        import mimir.client.query_engine.backends.openai_compat as rb
         original = rb.served_model_len
         rb.served_model_len = _fake
         try:
@@ -129,25 +129,25 @@ class RayTokenizeTests(_EnvGuard):
             attempts.append(text)
             raise RuntimeError("404 /tokenize")
 
-        original = vllm_backend.VllmBackend._tokenize_text
-        vllm_backend.VllmBackend._tokenize_text = _boom
+        original = openai_compat.OpenAICompatBackend._tokenize_text
+        openai_compat.OpenAICompatBackend._tokenize_text = _boom
         try:
             for text in ("first", "second", "third"):
                 # count_text_tokens swallows the raise and uses the heuristic.
                 self.assertGreater(backend.count_text_tokens("m", text), 0)
         finally:
-            vllm_backend.VllmBackend._tokenize_text = original
+            openai_compat.OpenAICompatBackend._tokenize_text = original
         self.assertEqual(attempts, ["first"])
         self.assertTrue(backend._no_tokenize)
 
     def test_a_router_that_does_answer_is_used(self) -> None:
         backend = RayBackend()
-        original = vllm_backend.VllmBackend._tokenize_text
-        vllm_backend.VllmBackend._tokenize_text = lambda self, model, text: 7
+        original = openai_compat.OpenAICompatBackend._tokenize_text
+        openai_compat.OpenAICompatBackend._tokenize_text = lambda self, model, text: 7
         try:
             self.assertEqual(backend.count_text_tokens("m", "hello"), 7)
         finally:
-            vllm_backend.VllmBackend._tokenize_text = original
+            openai_compat.OpenAICompatBackend._tokenize_text = original
         self.assertFalse(backend._no_tokenize)
 
 
@@ -155,12 +155,12 @@ class ServedModelsTests(_EnvGuard):
     def test_ray_enumerates_its_own_endpoint(self) -> None:
         os.environ["RAY_BASE_URL"] = "http://head:8000"
         seen = []
-        original = vllm_backend._fetch_models
-        vllm_backend._fetch_models = lambda config=None: seen.append(config) or [{"id": "Qwen3-32B"}]
+        original = openai_compat._fetch_models
+        openai_compat._fetch_models = lambda config=None: seen.append(config) or [{"id": "Qwen3-32B"}]
         try:
             self.assertEqual(RayBackend().served_models(), ["Qwen3-32B"])
         finally:
-            vllm_backend._fetch_models = original
+            openai_compat._fetch_models = original
         self.assertEqual(seen, [("http://head:8000/v1", "EMPTY")])
 
     def test_backends_without_a_listing_answer_empty(self) -> None:

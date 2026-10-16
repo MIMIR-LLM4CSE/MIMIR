@@ -20,9 +20,8 @@ from ._ws_runtime import (
 )
 from .session_store import list_subagents as _list_subagents, read_subagent as _read_subagent
 from ...query_engine.deferral import KIND_CALLS, take_deferred_calls
-from ...query_engine.history import (
-    carries_compaction_summary, reconcile_tool_pairs,
-)
+from ...query_engine.history import carries_compaction_summary
+from ...protocol.messages import reconcile_tool_pairs
 from .ws_worker import _AgentWorker
 from .turn_commit import commit_answer, turn_messages
 from .transcript_log import read_since
@@ -95,7 +94,7 @@ def _reconcile(messages: list[dict]) -> list[dict]:
     one, so a failure here returns the messages untouched.
     """
     try:
-        from ...query_engine.history import reconcile_tool_pairs
+        from ...protocol.messages import reconcile_tool_pairs
         return reconcile_tool_pairs(messages)
     except Exception:
         return messages

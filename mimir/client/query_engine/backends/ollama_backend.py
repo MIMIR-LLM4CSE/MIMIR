@@ -1,15 +1,17 @@
 """Ollama LLM backend — wraps the ollama Python package."""
 from __future__ import annotations
 
-import asyncio
+import json
 import os
-import sys
-from typing import Any, Callable
+import urllib.request
+from typing import Any
 
-import ollama
+try:
+    import ollama
+except ImportError:  # the backend is optional: its SDK is needed only to call it
+    ollama = None
 
-from .base import LLMBackend, normalize_finish_reason
-from .tag_parser import ThinkTagParser
+from .base import ChatTurn, LLMBackend, env_positive_int
 from ...protocol.tool_call import as_dict
 
 
@@ -21,6 +23,26 @@ def _done_reason(obj: Any) -> Any:
 
 
 class OllamaBackend(LLMBackend):
+    def readiness_urls(self) -> list[str]:
+        base = os.environ.get("OLLAMA_BASE_URL", "http://127.0.0.1:11434").rstrip("/")
+        return [f"{base}/api/tags"]
+
+    def prewarm(self, model: str) -> None:
+        """Load *model* into VRAM: ``/api/generate`` with an empty prompt.
+
+        Through an opener that ignores HTTP(S)_PROXY — the server is an internal
+        address a corporate proxy has no route to, and ``urlopen`` would otherwise
+        consult the environment, unlike the ``trust_env=False`` clients elsewhere.
+        """
+        base = os.environ.get("OLLAMA_BASE_URL", "http://127.0.0.1:11434").rstrip("/")
+        body = json.dumps({"model": model, "prompt": "", "stream": False,
+                           "keep_alive": "60m"}).encode()
+        request = urllib.request.Request(f"{base}/api/generate", data=body,
+                                         headers={"Content-Type": "application/json"})
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        with opener.open(request, timeout=120):
+            pass
+
     def _fetch_context_window(self, model: str) -> int | None:
         """Ollama context window = the model's trained context length.
 
@@ -29,9 +51,11 @@ class OllamaBackend(LLMBackend):
         The returned value is also what :meth:`chat` passes as ``num_ctx`` so the
         budget and what Ollama actually allocates stay in agreement.
         """
-        env = os.environ.get("MIMIR_OLLAMA_NUM_CTX", "").strip()
-        if env.isdigit() and int(env) > 0:
-            return int(env)
+        pinned = env_positive_int("MIMIR_OLLAMA_NUM_CTX")
+        if pinned:
+            return pinned
+        if ollama is None:
+            return None
         info = as_dict(ollama.show(model)).get("modelinfo") or {}
         arch = info.get("general.architecture")
         if arch and isinstance(info.get(f"{arch}.context_length"), int):
@@ -42,31 +66,8 @@ class OllamaBackend(LLMBackend):
                 return val
         return None
 
-    def chat(
-        self,
-        model: str,
-        messages: list[dict],
-        tools: list[dict],
-        thinking: bool,
-        streaming: bool,
-        options: dict,
-        cancel_flag: Any = None,
-        token_callback: Callable[[str], None] | None = None,
-        think_token_callback: Callable[[str], None] | None = None,
-        think_start_callback: Callable[[], None] | None = None,
-        think_end_callback: Callable[[], None] | None = None,
-    ) -> dict:
-        parser = ThinkTagParser(
-            token_callback=token_callback,
-            think_token_callback=think_token_callback,
-            think_start_callback=think_start_callback,
-            think_end_callback=think_end_callback,
-        )
-
-        tool_calls_parts: list[dict] = []
-        final_msg: dict = {}
-        finish_reason: str | None = None
-
+    def _complete(self, model: str, messages: list[dict], tools: list[dict],
+                  thinking: bool, streaming: bool, options: dict, turn: ChatTurn) -> None:
         # Ollama defaults num_ctx to a small window (~4K) and silently truncates
         # the prompt. Set it to the model's real context window so it matches the
         # agent's budget — unless the caller already pinned num_ctx.
@@ -75,11 +76,6 @@ class OllamaBackend(LLMBackend):
             if win:
                 options = {**options, "num_ctx": win}
 
-        # Same normalization the other two backends apply: this path sent `messages`
-        # through untouched, so adjacent user turns reached whatever template the
-        # served model uses without ever being merged.
-        from ..history import merge_consecutive_user_messages
-        messages = merge_consecutive_user_messages(list(messages))
         # History keeps an assistant step's reasoning under `reasoning`; Ollama's
         # message schema names the same thing `thinking`.
         messages = [
@@ -88,6 +84,8 @@ class OllamaBackend(LLMBackend):
             for m in messages
         ]
 
+        if ollama is None:
+            raise RuntimeError("LLM_BACKEND=ollama needs the 'ollama' package installed")
         answer = ollama.chat(
             model=model,
             messages=messages,
@@ -96,80 +94,15 @@ class OllamaBackend(LLMBackend):
             stream=streaming,
             options=options,
         )
-
-        if streaming:
-            for chunk in answer:
-                if cancel_flag is not None and cancel_flag.is_set():
-                    raise asyncio.CancelledError("Cancelled by user")
-
-                # done_reason rides on the response envelope, not on `message`,
-                # and is only set on the terminal chunk.
-                raw_finish = _done_reason(chunk)
-                if raw_finish:
-                    finish_reason = normalize_finish_reason(raw_finish)
-
-                chunk_msg = as_dict(chunk.get("message", {}))
-
-                raw_content = chunk_msg.get("content") or ""
-                if raw_content:
-                    parser.feed_content(raw_content)
-
-                think_delta = chunk_msg.get("thinking") or ""
-                if think_delta:
-                    parser.feed_thinking(think_delta)
-
-                chunk_tool_calls = chunk_msg.get("tool_calls") or []
-                if chunk_tool_calls:
-                    tool_calls_parts.extend(chunk_tool_calls)
-
-                if "role" in chunk_msg:
-                    final_msg["role"] = chunk_msg["role"]
-                if "name" in chunk_msg:
-                    final_msg["name"] = chunk_msg["name"]
-        else:
-            finish_reason = normalize_finish_reason(_done_reason(answer))
-            chunk_msg = as_dict(answer.get("message", {}))
-            raw_content = chunk_msg.get("content") or ""
-            if raw_content:
-                # Use a callback-free parser to separate <think>...</think> from
-                # content without firing streaming events — _process_response emits
-                # the thinking block after this call returns.
-                _p = ThinkTagParser()
-                _p.feed_content(raw_content)
-                _p.finish()
-                parser.content_parts.extend(_p.content_parts)
-                parser.thinking_parts.extend(_p.thinking_parts)
-                if _p.content_parts and token_callback is None:
-                    sys.stdout.write("".join(_p.content_parts))
-                    sys.stdout.flush()
-
-            think_delta = chunk_msg.get("thinking") or ""
-            if think_delta:
-                parser.thinking_parts.append(think_delta)
-
-            chunk_tool_calls = chunk_msg.get("tool_calls") or []
-            if chunk_tool_calls:
-                tool_calls_parts.extend(chunk_tool_calls)
-
-            if "role" in chunk_msg:
-                final_msg["role"] = chunk_msg["role"]
-            if "name" in chunk_msg:
-                final_msg["name"] = chunk_msg["name"]
-
-        parser.finish()
-        if parser.content_parts and token_callback is None:
-            sys.stdout.write("\n")
-            sys.stdout.flush()
-
-        final_msg["content"] = "".join(parser.content_parts)
-
-        if parser.thinking_parts:
-            final_msg["thinking"] = "".join(parser.thinking_parts)
-
-        if tool_calls_parts:
-            final_msg["tool_calls"] = tool_calls_parts
-
-        if finish_reason:
-            final_msg["finish_reason"] = finish_reason
-
-        return final_msg
+        for chunk in (answer if streaming else [answer]):
+            turn.check_cancelled()
+            # done_reason rides on the response envelope, not on `message`, and is
+            # only set on the terminal chunk.
+            turn.stopped(_done_reason(chunk))
+            msg = as_dict(chunk.get("message", {}))
+            turn.content(msg.get("content") or "")
+            turn.thinking(msg.get("thinking") or "")
+            turn.tool_calls.extend(msg.get("tool_calls") or [])
+            for key in ("role", "name"):
+                if key in msg:
+                    turn.fields[key] = msg[key]

@@ -1,29 +1,38 @@
-"""Backend factory — returns a cached LLMBackend singleton based on LLM_BACKEND env var."""
+"""Backend factory — one cached LLMBackend per process, chosen by ``LLM_BACKEND``."""
 from __future__ import annotations
 
+import importlib
 import os
 
 from .base import LLMBackend
 
-_singleton: dict[str, LLMBackend] = {}
+# Every backend, by the name LLM_BACKEND gives it: (module, class). Imported on first
+# use, so a provider's SDK is needed only when that provider is the one chosen.
+BACKENDS: dict[str, tuple[str, str]] = {
+    "vllm": (".vllm_backend", "VllmBackend"),
+    "ray": (".ray_backend", "RayBackend"),
+    "ollama": (".ollama_backend", "OllamaBackend"),
+    "anthropic": (".anthropic_backend", "AnthropicBackend"),
+    "claude": (".anthropic_backend", "AnthropicBackend"),
+}
+
+_cache: dict[str, LLMBackend] = {}
 
 
 def get_backend() -> LLMBackend:
-    backend_name = os.environ.get("LLM_BACKEND", "vllm").lower()
-    if backend_name not in _singleton:
-        if backend_name == "vllm":
-            from .vllm_backend import VllmBackend
-            _singleton[backend_name] = VllmBackend()
-        elif backend_name == "ray":
-            from .ray_backend import RayBackend
-            _singleton[backend_name] = RayBackend()
-        elif backend_name in ("anthropic", "claude"):
-            from .anthropic_backend import AnthropicBackend
-            _singleton[backend_name] = AnthropicBackend()
-        else:
-            from .ollama_backend import OllamaBackend
-            _singleton[backend_name] = OllamaBackend()
-    return _singleton[backend_name]
+    """The backend ``LLM_BACKEND`` names (default ``vllm``).
+
+    An unknown name is an error: it used to fall through to Ollama, so a typo talked to
+    a server nobody had asked for and failed somewhere far from the cause.
+    """
+    name = os.environ.get("LLM_BACKEND", "vllm").strip().lower()
+    if name not in _cache:
+        if name not in BACKENDS:
+            raise ValueError(f"unknown LLM_BACKEND {name!r}; expected one of "
+                             f"{', '.join(sorted(BACKENDS))}")
+        module, cls = BACKENDS[name]
+        _cache[name] = getattr(importlib.import_module(module, __package__), cls)()
+    return _cache[name]
 
 
 def switch_backend(name: str) -> None:
@@ -38,4 +47,4 @@ def switch_backend(name: str) -> None:
 
 def clear_backend_cache() -> None:
     """Evict the cached singleton so the next call to get_backend() recreates it."""
-    _singleton.clear()
+    _cache.clear()

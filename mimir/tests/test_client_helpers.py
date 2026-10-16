@@ -9,10 +9,8 @@ from unittest.mock import patch
 import asyncio
 
 import mimir.client.event_sink as event_sink_module
-from mimir.client.query_engine.backends.base import (
-    PromptTooLongError,
-    message_wire_form,
-)
+from mimir.client.query_engine.backends.base import PromptTooLongError
+from mimir.client.protocol.messages import message_wire_form
 from mimir.client.query_engine.backends.vllm_backend import VllmBackend
 from mimir.tests._fake_backend import ScriptedBackend
 

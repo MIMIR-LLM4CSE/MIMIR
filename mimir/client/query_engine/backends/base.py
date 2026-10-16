@@ -1,16 +1,19 @@
 """Abstract LLM backend interface."""
 from __future__ import annotations
 
+import asyncio
 import json
-from abc import ABC, abstractmethod
+import os
+import sys
+from abc import ABC
 from typing import Any, Callable
 
 from ...config.limits import CHARS_PER_TOKEN
+from ...protocol.messages import message_wire_form
 from .. import token_calibration
+from ...protocol.messages import merge_consecutive_user_messages, reconcile_tool_pairs
+from .tag_parser import ThinkTagParser
 
-# Cap on the per-text token-count cache so a long-running session can't grow it
-# unbounded. When exceeded the cache is cleared wholesale (simple + adequate;
-# entries are cheap to recompute).
 class PromptTooLongError(ValueError):
     """The prompt does not fit the model's window, as the provider counted it.
 
@@ -22,6 +25,9 @@ class PromptTooLongError(ValueError):
     """
 
 
+# Cap on the per-text token-count cache so a long-running session can't grow it
+# unbounded. When exceeded the cache is cleared wholesale (simple + adequate;
+# entries are cheap to recompute).
 _TOKEN_CACHE_CAP = 8192
 
 # Chars-per-token calibration from the server's own prompt_tokens (see
@@ -68,56 +74,102 @@ def normalize_finish_reason(raw: Any) -> str | None:
     return _FINISH_REASONS.get(key, "unknown")
 
 
-# The keys a message actually travels with. Serialising the dict wholesale would
-# also count local bookkeeping a backend never sees, so the wire form is spelled
-# out rather than inferred — an extra key added here later must be one the
-# provider receives.
-_WIRE_KEYS = ("role", "content", "name", "tool_call_id", "tool_calls", "thinking",
-              "reasoning")
+def env_positive_int(name: str) -> int | None:
+    """The positive integer environment variable *name* holds, or None."""
+    raw = os.environ.get(name, "").strip()
+    return int(raw) if raw.isdigit() and int(raw) > 0 else None
 
 
-def message_wire_form(message: dict) -> str:
-    """*message* as the provider is sent it: the JSON, envelope included.
+class ChatTurn:
+    """What one model call has produced so far, whichever backend is making it.
 
-    Content alone is not the message: in full-context mode history keeps the
-    structured transcript, where an assistant turn carries its ``tool_calls`` and
-    usually has empty content. Counting content only scored those turns at ~0 —
-    including calls whose arguments hold a whole file — so the context bar
-    under-reported and the pre-query trim under-trimmed.
+    A backend reads its provider's response and hands each piece here — prose,
+    reasoning, a tool call, the stop reason, the reported prompt size — and the turn
+    routes it: prose and reasoning through the shared ``<think>`` parser to the
+    front-end's callbacks, the rest into the message :meth:`result` assembles. One
+    place, so a call cut off, cancelled or answered without streaming reads the same
+    whichever backend made it.
 
-    Serialising content and arguments as bare *text* closed that gap and left a
-    second one of the same kind. What a window is measured against is
-    ``json.dumps(messages)`` — see the guard in ``VLLMBackend.chat`` — so every
-    ``\n`` that serialisation escapes, every quote it doubles and every ``role`` /
-    ``tool_call_id`` key it adds is prompt that a text-shaped count never saw. On
-    an ordinary tool-heavy history that envelope is ~18% of the total; on
-    escape-dense content — HTML, LaTeX, JSON inside JSON, the shapes a web fetch
-    returns — it reaches 30%. Measured in the wrong units, a budget cannot be
-    conservative by accident: it is optimistic by construction, and it was an
-    optimism of exactly this size that let a backstop announce a fit on a prompt
-    the provider then rejected.
-
-    Falls back to the joined-text approximation on anything unserialisable. That
-    only ever under-counts, which is the old behaviour rather than a new failure.
+    Without streaming, reasoning never reaches the callbacks: the whole block is
+    emitted once by ``streaming._process_response``, and firing the callbacks too
+    showed it twice. Prose still does — it is the answer, once.
     """
-    # Keyed on presence, not on truth: a message that carries ``content: None``
-    # is serialised with ``"content": null`` and paid for, so dropping the falsy
-    # ones would reintroduce the same under-count one level down — ~16 characters
-    # per assistant turn, and an assistant turn is every other message.
-    payload = {k: message[k] for k in _WIRE_KEYS if k in message}
-    if not payload:
-        return ""
-    try:
-        return json.dumps(payload, default=str)
-    except Exception:
-        parts = [str(message.get("content") or "")]
-        tool_calls = message.get("tool_calls")
-        if tool_calls:
-            parts.append(str(tool_calls))
-        thinking = message.get("thinking")
-        if thinking:
-            parts.append(str(thinking))
-        return "\n".join(p for p in parts if p)
+
+    def __init__(
+        self, *, streaming: bool, cancel_flag: Any = None,
+        token_callback: Callable[[str], None] | None = None,
+        think_token_callback: Callable[[str], None] | None = None,
+        think_start_callback: Callable[[], None] | None = None,
+        think_end_callback: Callable[[], None] | None = None,
+    ) -> None:
+        self.parser = ThinkTagParser(
+            token_callback=token_callback,
+            think_token_callback=think_token_callback if streaming else None,
+            think_start_callback=think_start_callback if streaming else None,
+            think_end_callback=think_end_callback if streaming else None,
+        )
+        self._echo = token_callback is None
+        self._cancel_flag = cancel_flag
+        self.tool_calls: list[dict] = []
+        self.finish_reason: str | None = None
+        self.prompt_tokens = 0
+        # Message fields a provider reports beyond the text (``role``, ``name``).
+        self.fields: dict[str, Any] = {}
+
+    def check_cancelled(self) -> None:
+        """Raise when the user pressed Stop. Called per chunk by a streaming read."""
+        if self._cancel_flag is not None and self._cancel_flag.is_set():
+            raise asyncio.CancelledError("Cancelled by user")
+
+    def content(self, text: str) -> None:
+        """Prose that may carry inline ``<think>`` tags."""
+        if text:
+            self.parser.feed_content(text)
+
+    def text(self, text: str) -> None:
+        """Prose a provider already separated from its reasoning."""
+        if text:
+            self.parser.feed_text(text)
+
+    def thinking(self, text: str) -> None:
+        """A provider's reasoning field that may still carry the answer's head
+        (Ollama's ``thinking``)."""
+        if text:
+            self.parser.feed_thinking(text)
+
+    def reasoning(self, text: str) -> None:
+        """A provider's reasoning field, holding nothing but the reasoning."""
+        if text:
+            self.parser.feed_reasoning(text)
+
+    def stopped(self, raw: Any) -> None:
+        """Record why the provider stopped, when it says."""
+        normalized = normalize_finish_reason(raw)
+        if normalized:
+            self.finish_reason = normalized
+
+    def result(self) -> dict:
+        """The assistant message this call produced.
+
+        Keys: ``role``, ``content``, and optionally ``thinking``, ``tool_calls``,
+        ``finish_reason`` and ``prompt_tokens`` (the last two describe the call and are
+        taken off before the message enters history).
+        """
+        self.parser.finish()
+        if self.parser.content_parts and self._echo:
+            sys.stdout.write("\n")
+            sys.stdout.flush()
+        msg: dict = {"role": "assistant", **self.fields,
+                     "content": "".join(self.parser.content_parts)}
+        if self.parser.thinking_parts:
+            msg["thinking"] = "".join(self.parser.thinking_parts)
+        if self.tool_calls:
+            msg["tool_calls"] = self.tool_calls
+        if self.finish_reason:
+            msg["finish_reason"] = self.finish_reason
+        if self.prompt_tokens > 0:
+            msg["prompt_tokens"] = self.prompt_tokens
+        return msg
 
 
 class LLMBackend(ABC):
@@ -250,6 +302,17 @@ class LLMBackend(ABC):
         """Backend-specific context-window lookup. Default: unknown."""
         return None
 
+    def readiness_urls(self) -> list[str]:
+        """URLs whose answer says the endpoint is up, best first; [] for none to wait on.
+
+        A hosted API is up as far as anyone here can tell, so the default waits on
+        nothing; a self-hosted server that may still be loading names what to poll.
+        """
+        return []
+
+    def prewarm(self, model: str) -> None:
+        """Load *model* ahead of the first query, where the backend can. Default: none."""
+
     def served_models(self) -> list[str]:
         """Model ids the endpoint reports it is serving, weakest-guarantee first.
 
@@ -259,7 +322,6 @@ class LLMBackend(ABC):
         """
         return []
 
-    @abstractmethod
     def chat(
         self,
         model: str,
@@ -274,10 +336,7 @@ class LLMBackend(ABC):
         think_start_callback: Callable[[], None] | None = None,
         think_end_callback: Callable[[], None] | None = None,
     ) -> dict:
-        """Run a chat completion and return a message dict.
-
-        Return value keys: ``role``, ``content``, and optionally ``thinking``,
-        ``tool_calls`` and ``finish_reason``.
+        """Run a chat completion and return the assistant message (see :class:`ChatTurn`).
 
         ``finish_reason`` is why the provider stopped generating, normalized by
         :func:`normalize_finish_reason` — every provider spells it differently
@@ -287,7 +346,29 @@ class LLMBackend(ABC):
         to say. It describes the *call*, not the message: strip it before the
         message is appended to history (``streaming._process_response`` does),
         or it goes back to the provider on the next turn.
+
+        The history is repaired here, for every provider: the tool-call pairing
+        (a strict API rejects a dangling pair outright) and adjacent user turns
+        merged (several templates require strict alternation). The loop does the same
+        before every call; this is the last-mile guard for any caller that doesn't.
         """
+        turn = ChatTurn(
+            streaming=streaming, cancel_flag=cancel_flag,
+            token_callback=token_callback, think_token_callback=think_token_callback,
+            think_start_callback=think_start_callback, think_end_callback=think_end_callback,
+        )
+        messages = merge_consecutive_user_messages(reconcile_tool_pairs(list(messages)))
+        self._complete(model, messages, tools, thinking, streaming, options, turn)
+        return turn.result()
+
+    def _complete(self, model: str, messages: list[dict], tools: list[dict],
+                  thinking: bool, streaming: bool, options: dict, turn: ChatTurn) -> None:
+        """Send the request, and hand everything the provider answers to *turn*.
+
+        What every real backend implements. Not abstract only so a test double can
+        stand in for the whole call by overriding :meth:`chat` instead.
+        """
+        raise NotImplementedError
 
     # ── Token counting ──────────────────────────────────────────────────────────
 

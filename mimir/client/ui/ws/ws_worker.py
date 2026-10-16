@@ -56,19 +56,6 @@ TIMED_OUT: dict = {"timed_out": True}
 _backend_seen_up = False
 
 
-def _direct_opener():
-    """An opener that ignores HTTP_PROXY/HTTPS_PROXY.
-
-    The LLM backend is an internal cluster address; a corporate proxy has no
-    route to it, so a proxied probe hangs until its own timeout instead of
-    failing fast. ``urlopen`` consults the environment by default, unlike the
-    ``trust_env=False`` httpx clients the backends use — same posture, stated
-    explicitly here.
-    """
-    import urllib.request as _r
-    return _r.build_opener(_r.ProxyHandler({}))
-
-
 @dataclass
 class _Prompt:
     """One card put to the user, and the slot the thread that raised it waits on.
@@ -326,17 +313,17 @@ class _AgentWorker:
     async def _wait_for_backend(self) -> None:
         """Poll the LLM backend until it answers, or fail fast when it never will.
 
-        The request is the one the agent actually depends on — the model list for
-        every OpenAI-compatible endpoint (``/v1/models``), ``/api/tags`` for Ollama —
-        asked with the same client, proxy posture and TLS policy the backends
-        themselves use. A probe that asks a different question of a different client
+        The request is the one the agent actually depends on — the backend's
+        ``readiness_urls`` (the model list for every OpenAI-compatible endpoint,
+        ``/api/tags`` for Ollama, nothing for a hosted API) — asked with the same
+        client, proxy posture and TLS policy the backends themselves use. A probe that asks a different question of a different client
         than the chat path can fail where the chat path succeeds, which is exactly
         what a readiness check must never do.
 
-        ``/health`` is kept as a fallback for a local vLLM: it answers while the
-        engine is still loading weights, before ``/v1/models`` does. It is only a
-        fallback because it lives at the server root, which an ingress route in front
-        of the endpoint usually does not expose.
+        A second URL is a fallback (a local vLLM's ``/health`` answers while the engine
+        is still loading weights, before ``/v1/models`` does). It is only a fallback
+        because it lives at the server root, which an ingress route in front of the
+        endpoint usually does not expose.
 
         Not every failure is worth waiting on. A refused certificate or a route that
         is not there answers identically on the first attempt and on the hundredth,
@@ -355,31 +342,15 @@ class _AgentWorker:
 
         from ....servers._shared.embed import verify_ssl
 
-        try:
-            from ...config.models import LLM_BACKEND, RAY_BASE_URL, VLLM_BASE_URL
-        except ImportError:
-            LLM_BACKEND = os.environ.get("LLM_BACKEND", "vllm")
-            VLLM_BASE_URL = os.environ.get("VLLM_BASE_URL", "http://127.0.0.1:8000")
-            RAY_BASE_URL = os.environ.get("RAY_BASE_URL", "http://127.0.0.1:8000")
+        from ...query_engine.backends.factory import get_backend
 
-        # Env first, like the base URLs below: ``--backend`` writes LLM_BACKEND into
-        # the environment after this module was imported, so the constant captured at
-        # import time is the *shell's* backend, not the one this server was launched
-        # for. Reading it would probe one endpoint while the agent talks to another.
-        backend = os.environ.get("LLM_BACKEND", LLM_BACKEND)
-
-        if backend in ("vllm", "ray"):
-            env_var = "VLLM_BASE_URL" if backend == "vllm" else "RAY_BASE_URL"
-            default = VLLM_BASE_URL if backend == "vllm" else RAY_BASE_URL
-            base = os.environ.get(env_var, default).rstrip("/")
-            health_url = base + ("/models" if base.endswith("/v1") else "/v1/models")
-            # Only a local vLLM serves this; behind a route it 404s, which the
-            # fallback treats as "no answer here" rather than as a failure.
-            fallback_url = f"{base}/health" if backend == "vllm" else ""
-        else:
-            base = os.environ.get("OLLAMA_BASE_URL", "http://127.0.0.1:11434").rstrip("/")
-            health_url = f"{base}/api/tags"
-            fallback_url = ""
+        # Which endpoint, and what to ask it, is the backend's to say: a hosted API has
+        # nothing to wait on, a self-hosted server names what to poll.
+        backend = os.environ.get("LLM_BACKEND", "vllm")
+        urls = get_backend().readiness_urls()
+        if not urls:
+            return
+        health_url, fallback_url = urls[0], (urls[1] if len(urls) > 1 else "")
 
         timeout = int(os.environ.get("MIMIR_BACKEND_TIMEOUT", "600"))
         poll = float(os.environ.get("MIMIR_BACKEND_POLL_INTERVAL", "5"))
@@ -515,30 +486,13 @@ class _AgentWorker:
                 asyncio.get_event_loop().create_task(self._prewarm_model())
 
     async def _prewarm_model(self) -> None:
-        import urllib.request as _urllib_req
-        import json as _json_pw
-        import os as _os
-        # /api/generate with an empty prompt is Ollama's "load this into VRAM" call.
-        # It has no equivalent on the other backends, and firing it regardless meant
-        # every vLLM/Ray session opened with a request to a localhost Ollama that
-        # isn't there — a wasted connection, and a misleading one in a trace.
-        if _os.environ.get("LLM_BACKEND", "vllm").lower() != "ollama":
-            return
-        _base = _os.environ.get("OLLAMA_BASE_URL", "http://127.0.0.1:11434").rstrip("/")
-        _url = f"{_base}/api/generate"
-        _body = _json_pw.dumps({
-            "model": self.model,
-            "prompt": "",
-            "stream": False,
-            "keep_alive": "60m",
-        }).encode()
-        def _call():
-            req = _urllib_req.Request(_url, data=_body,
-                                      headers={"Content-Type": "application/json"})
-            with _direct_opener().open(req, timeout=120):
-                pass
+        """Ask the backend to load the model now, off the first query's clock."""
+        from ...query_engine.backends.factory import get_backend
+
+        model = self.model
         try:
-            await asyncio.get_event_loop().run_in_executor(None, _call)
+            await asyncio.get_running_loop().run_in_executor(
+                None, lambda: get_backend().prewarm(model))
         except Exception:
             pass  # Non-fatal — first real query will trigger load.
 

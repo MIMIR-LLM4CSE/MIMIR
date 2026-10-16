@@ -10,7 +10,7 @@ own ``vllm serve`` command, not something MIMIR sends or needs to know.
 import unittest
 
 from mimir.client.config import models
-from mimir.client.query_engine.backends import vllm_backend
+from mimir.client.query_engine.backends import openai_compat
 
 
 class ThinkingMechanismTest(unittest.TestCase):
@@ -109,30 +109,30 @@ class ThinkingExtraBodyTest(unittest.TestCase):
     """
 
     def test_kwarg_mechanism_sends_enable_thinking_both_ways(self):
-        on = vllm_backend._thinking_extra_body("qwen3:30b", True, {})
-        off = vllm_backend._thinking_extra_body("qwen3:30b", False, {})
+        on = openai_compat._thinking_extra_body("qwen3:30b", True, {})
+        off = openai_compat._thinking_extra_body("qwen3:30b", False, {})
         self.assertIs(on["chat_template_kwargs"]["enable_thinking"], True)
         # Explicitly False, not omitted: most templates default the kwarg to True.
         self.assertIs(off["chat_template_kwargs"]["enable_thinking"], False)
 
     def test_budget_rides_along_only_when_thinking(self):
-        on = vllm_backend._thinking_extra_body("qwen3:30b", True, {"thinking_budget": 4096})
+        on = openai_compat._thinking_extra_body("qwen3:30b", True, {"thinking_budget": 4096})
         self.assertEqual(on["chat_template_kwargs"]["thinking_budget"], 4096)
-        off = vllm_backend._thinking_extra_body("qwen3:30b", False, {"thinking_budget": 4096})
+        off = openai_compat._thinking_extra_body("qwen3:30b", False, {"thinking_budget": 4096})
         self.assertNotIn("thinking_budget", off["chat_template_kwargs"])
 
     def test_effort_mechanism_sends_reasoning_effort_and_no_kwargs(self):
-        body = vllm_backend._thinking_extra_body("openai/gpt-oss-120b", True, {})
+        body = openai_compat._thinking_extra_body("openai/gpt-oss-120b", True, {})
         self.assertNotIn("chat_template_kwargs", body)
         self.assertIn(body["reasoning_effort"], ("low", "medium", "high"))
 
     def test_effort_ladder_climbs_with_the_budget(self):
         levels = ["low", "medium", "high"]
-        self.assertEqual(vllm_backend._effort_level(levels, 512), "low")
-        self.assertEqual(vllm_backend._effort_level(levels, 4096), "medium")
-        self.assertEqual(vllm_backend._effort_level(levels, 16384), "high")
+        self.assertEqual(openai_compat._effort_level(levels, 512), "low")
+        self.assertEqual(openai_compat._effort_level(levels, 4096), "medium")
+        self.assertEqual(openai_compat._effort_level(levels, 16384), "high")
         # -1 is "model-chosen"/unlimited, which an effort scale can only call middling.
-        self.assertEqual(vllm_backend._effort_level(levels, -1), "medium")
+        self.assertEqual(openai_compat._effort_level(levels, -1), "medium")
 
     def test_a_family_gets_its_own_ladder_not_openai_s(self):
         """The rung sent must be one the template accepts.
@@ -146,7 +146,7 @@ class ThinkingExtraBodyTest(unittest.TestCase):
                 levels = models.thinking_profile(model)["levels"]
                 self.assertNotIn("medium", levels)
                 for budget in (512, 4096, 16384, -1):
-                    body = vllm_backend._thinking_extra_body(
+                    body = openai_compat._thinking_extra_body(
                         model, True, {"thinking_budget": budget})
                     self.assertIn(body["reasoning_effort"], levels)
 
@@ -164,10 +164,10 @@ class ThinkingExtraBodyTest(unittest.TestCase):
         of reasoning prose in `content`, repeating one block 59 times until it hit
         max_tokens.
         """
-        off = vllm_backend._thinking_extra_body("deepseek-v4", False, {})
+        off = openai_compat._thinking_extra_body("deepseek-v4", False, {})
         self.assertEqual(off, {"reasoning_effort": "low"})
         self.assertNotIn("thinking_mode", off)
-        on = vllm_backend._thinking_extra_body("deepseek-v4", True, {})
+        on = openai_compat._thinking_extra_body("deepseek-v4", True, {})
         self.assertEqual(on.get("reasoning_effort"), "high")
 
     def test_no_profile_declares_a_toggle_it_cannot_demonstrate(self):
@@ -203,13 +203,13 @@ class ThinkingExtraBodyTest(unittest.TestCase):
         """-1 and 0 mean "model-chosen"/unlimited, not a token count."""
         for sentinel in (-1, 0):
             with self.subTest(budget=sentinel):
-                ctk = vllm_backend._thinking_extra_body(
+                ctk = openai_compat._thinking_extra_body(
                     "qwen3:30b", True, {"thinking_budget": sentinel})["chat_template_kwargs"]
                 self.assertNotIn("thinking_budget", ctk)
 
     def test_directive_mechanism_sends_nothing_in_the_body(self):
         # The switch is a line in the system message; the template has no kwarg.
-        body = vllm_backend._thinking_extra_body(
+        body = openai_compat._thinking_extra_body(
             "nvidia/Llama-3_1-Nemotron-Ultra-253B-v1", True, {}
         )
         self.assertEqual(body, {})
@@ -221,7 +221,7 @@ class ThinkingExtraBodyTest(unittest.TestCase):
             "enforcement": "strict", "some_future_knob": 12, "thinking": "kwarg",
         }
         self.addCleanup(models.VLLM_MODEL_PROFILES.pop, "knobby", None)
-        body = vllm_backend._thinking_extra_body("knobby", True, {})
+        body = openai_compat._thinking_extra_body("knobby", True, {})
         flat = {**body, **body.get("chat_template_kwargs", {})}
         for key in ("enforcement", "some_future_knob", "thinking", "thinking_directive"):
             self.assertNotIn(key, flat)
@@ -237,8 +237,8 @@ class TemplateKwargFallbackTest(unittest.TestCase):
             return "400: chat template does not accept enable_thinking"
 
     def setUp(self):
-        vllm_backend._NO_TEMPLATE_KWARGS.clear()
-        self.addCleanup(vllm_backend._NO_TEMPLATE_KWARGS.clear)
+        openai_compat._NO_TEMPLATE_KWARGS.clear()
+        self.addCleanup(openai_compat._NO_TEMPLATE_KWARGS.clear)
 
     def _client(self, fail_with_kwargs: bool):
         calls: list[dict] = []
@@ -261,29 +261,29 @@ class TemplateKwargFallbackTest(unittest.TestCase):
 
     def test_retries_without_the_kwarg_and_remembers(self):
         client, calls = self._client(fail_with_kwargs=True)
-        self.assertEqual(vllm_backend._create(client, self._kwargs()), "response")
+        self.assertEqual(openai_compat._create(client, self._kwargs()), "response")
         self.assertEqual(len(calls), 2)  # one rejected, one retried
-        self.assertIn("picky", vllm_backend._NO_TEMPLATE_KWARGS)
+        self.assertIn("picky", openai_compat._NO_TEMPLATE_KWARGS)
 
         # Second turn: the kwarg is dropped up front, so no wasted round trip.
         client, calls = self._client(fail_with_kwargs=True)
-        self.assertEqual(vllm_backend._create(client, self._kwargs()), "response")
+        self.assertEqual(openai_compat._create(client, self._kwargs()), "response")
         self.assertEqual(len(calls), 1)
 
     def test_structural_kwargs_survive_the_retry(self):
         client, calls = self._client(fail_with_kwargs=True)
         kwargs = self._kwargs()
         kwargs["extra_body"]["chat_template_kwargs"]["continue_final_message"] = True
-        vllm_backend._create(client, kwargs)
+        openai_compat._create(client, kwargs)
         # Dropping continue_final_message would 400 the request it was there to fix.
         retried = calls[-1]["extra_body"]["chat_template_kwargs"]
         self.assertEqual(retried, {"continue_final_message": True})
 
     def test_a_healthy_model_is_never_flagged(self):
         client, calls = self._client(fail_with_kwargs=False)
-        vllm_backend._create(client, self._kwargs())
+        openai_compat._create(client, self._kwargs())
         self.assertEqual(len(calls), 1)
-        self.assertEqual(vllm_backend._NO_TEMPLATE_KWARGS, set())
+        self.assertEqual(openai_compat._NO_TEMPLATE_KWARGS, set())
 
     def test_unrelated_errors_propagate(self):
         class _Other(Exception):
@@ -297,8 +297,8 @@ class TemplateKwargFallbackTest(unittest.TestCase):
                         raise _Other("upstream exploded")
 
         with self.assertRaises(_Other):
-            vllm_backend._create(_Client(), self._kwargs())
-        self.assertEqual(vllm_backend._NO_TEMPLATE_KWARGS, set())
+            openai_compat._create(_Client(), self._kwargs())
+        self.assertEqual(openai_compat._NO_TEMPLATE_KWARGS, set())
 
 
 class ThinkingDirectiveTest(unittest.TestCase):
@@ -325,7 +325,7 @@ class ThinkingDirectiveTest(unittest.TestCase):
 
     def test_directive_prepended_to_system_message(self):
         msgs = [{"role": "system", "content": "# Identity"}, {"role": "user", "content": "hi"}]
-        out = vllm_backend._apply_thinking_directive(
+        out = openai_compat._apply_thinking_directive(
             msgs, models.profile_for_model(self.ULTRA)["thinking_directive"], True
         )
         self.assertEqual(out[0]["content"], "detailed thinking on\n\n# Identity")
@@ -335,12 +335,12 @@ class ThinkingDirectiveTest(unittest.TestCase):
     def test_toggling_does_not_stack_directives(self):
         directives = models.profile_for_model(self.ULTRA)["thinking_directive"]
         msgs = [{"role": "system", "content": "# Identity"}]
-        on = vllm_backend._apply_thinking_directive(msgs, directives, True)
-        off = vllm_backend._apply_thinking_directive(on, directives, False)
+        on = openai_compat._apply_thinking_directive(msgs, directives, True)
+        off = openai_compat._apply_thinking_directive(on, directives, False)
         self.assertEqual(off[0]["content"], "detailed thinking off\n\n# Identity")
 
     def test_system_message_synthesised_when_absent(self):
-        out = vllm_backend._apply_thinking_directive(
+        out = openai_compat._apply_thinking_directive(
             [{"role": "user", "content": "hi"}],
             models.profile_for_model(self.ULTRA)["thinking_directive"],
             True,
@@ -349,7 +349,7 @@ class ThinkingDirectiveTest(unittest.TestCase):
 
     def test_models_without_the_knob_are_untouched(self):
         msgs = [{"role": "system", "content": "# Identity"}]
-        self.assertIs(vllm_backend._apply_thinking_directive(msgs, {}, True), msgs)
+        self.assertIs(openai_compat._apply_thinking_directive(msgs, {}, True), msgs)
 
 
 if __name__ == "__main__":

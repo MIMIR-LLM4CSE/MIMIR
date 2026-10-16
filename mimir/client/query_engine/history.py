@@ -14,7 +14,10 @@ import re
 from typing import Any
 
 from ..event_sink import emit
-from .backends.base import message_wire_form
+from ..protocol.messages import (
+    message_wire_form,
+    reconcile_tool_pairs,
+)
 from ..config.limits import (
     TOOL_HISTORY_CHAR_BUDGET as _TOOL_HISTORY_CHAR_BUDGET,
     TOOL_HISTORY_TOKEN_BUDGET as _TOOL_HISTORY_TOKEN_BUDGET,
@@ -22,7 +25,6 @@ from ..config.limits import (
     INTRA_QUERY_COMPACT_CHARS as _INTRA_QUERY_COMPACT_CHARS,
 )
 from .context_budget import context_budget_for
-from ..protocol.tool_result import json_error_payload
 
 
 class ContextOverflowError(RuntimeError):
@@ -35,98 +37,6 @@ class ContextOverflowError(RuntimeError):
     back as an opaque provider 400 (vLLM: ``max_tokens must be at least 1, got -N``),
     behind a status line claiming the history was trimmed to fit.
     """
-
-
-# Placeholder result emitted for an assistant tool call whose real result is absent —
-# keeps the assistant↔tool pairing valid and tells the model the output is gone.
-EVICTED_TOOL_RESULT = json_error_payload(
-    "tool result not in history (evicted to stay within the context budget)",
-)
-
-
-def _declared_call_ids(assistant: dict) -> list[str | None]:
-    """Ids of an assistant turn's tool calls; ``None`` where the model emitted none.
-
-    Ollama-style calls carry no id at all, so the caller must fall back to positional
-    matching rather than assume a key that isn't there.
-    """
-    out: list[str | None] = []
-    for tc in assistant.get("tool_calls") or []:
-        cid = tc.get("id") if isinstance(tc, dict) else None
-        out.append(cid if isinstance(cid, str) and cid else None)
-    return out
-
-
-def reconcile_tool_pairs(messages: list[dict]) -> list[dict]:
-    """Repair assistant.tool_calls ↔ tool-message pairing.
-
-    Two upstream mechanisms legitimately break the pairing: ``_trim_tool_history``
-    evicts a tool result while preserving its assistant turn, and
-    ``_maybe_compact_intra_query`` can slice between an assistant turn and its results.
-    (The dispatcher answers every call it declines to run under that call's own id, so
-    it no longer leaves gaps of its own.)
-
-    The invariant belongs to the history, not to one provider: strict backends reject a
-    dangling pair outright (the Claude API 400s on a ``tool_use`` with no ``tool_result``)
-    and lenient ones render an incoherent prompt. For each assistant turn declaring
-    calls, the following run of tool messages is matched by ``tool_call_id`` first, then
-    positionally for any lacking a usable id; each declared call is emitted with its
-    response or a stub. Tool messages belonging to no preceding call are dropped.
-    """
-    out: list[dict] = []
-    i = 0
-    n = len(messages)
-    while i < n:
-        m = messages[i]
-        if m.get("role") == "assistant" and m.get("tool_calls"):
-            declared = _declared_call_ids(m)
-
-            # Contiguous run of tool messages answering this assistant turn.
-            j = i + 1
-            run: list[dict] = []
-            while j < n and messages[j].get("role") == "tool":
-                run.append(messages[j])
-                j += 1
-
-            responses: list[dict | None] = [None] * len(declared)
-            leftovers: list[dict] = []
-            for tmsg in run:
-                tcid = tmsg.get("tool_call_id")
-                slot = (
-                    declared.index(tcid)
-                    if isinstance(tcid, str) and tcid in declared
-                    else -1
-                )
-                if slot >= 0 and responses[slot] is None:
-                    responses[slot] = tmsg
-                else:
-                    leftovers.append(tmsg)
-            for tmsg in leftovers:
-                slot = next((k for k, r in enumerate(responses) if r is None), None)
-                if slot is None:
-                    break  # all calls answered — remaining tool messages are orphans
-                fixed = dict(tmsg)
-                if declared[slot] is not None:
-                    fixed["tool_call_id"] = declared[slot]
-                responses[slot] = fixed
-
-            out.append(m)
-            for cid, resp in zip(declared, responses):
-                if resp is not None:
-                    out.append(resp)
-                    continue
-                stub: dict = {"role": "tool", "content": EVICTED_TOOL_RESULT}
-                if cid is not None:
-                    stub["tool_call_id"] = cid
-                out.append(stub)
-            i = j
-        elif m.get("role") == "tool":
-            # Orphan tool message (no preceding assistant tool_calls run) — drop it.
-            i += 1
-        else:
-            out.append(m)
-            i += 1
-    return out
 
 
 # Opening of the one message a compaction leaves behind. Both producers build it
@@ -480,42 +390,6 @@ def _maybe_compact_intra_query(
     messages[2:-4] = list(summary_messages) + kept
     # The task checklist lives in messages[0], which this slice does not touch, so
     # compaction of the middle never disturbs it — nothing to refresh.
-
-
-def merge_consecutive_user_messages(prepared: list[dict]) -> list[dict]:
-    """Collapse adjacent plain ``user`` messages into one.
-
-    Lives here, beside :func:`reconcile_tool_pairs`, because every backend needs it
-    and only one used to have it: it was defined inside the vLLM backend, so the same
-    history produced a legal prompt there and two adjacent ``user`` entries on the
-    Anthropic path — which requires strict alternation — and no normalization at all
-    on Ollama.
-
-    A strict tokenizer (vLLM's ``--tokenizer-mode mistral`` is one) enforces
-    strict role alternation and degenerates into token salad when it sees two
-    consecutive ``user`` turns. Upstream can legitimately produce them (plan-mode
-    nudges, a caller that already appended the current turn). Joining their text
-    with a blank line preserves the content while keeping the sequence legal; only
-    string-content user messages with no tool fields are merged, so tool pairing is
-    untouched.
-    """
-    out: list[dict] = []
-    for m in prepared:
-        if (
-            out
-            and m.get("role") == "user"
-            and out[-1].get("role") == "user"
-            and isinstance(m.get("content"), str)
-            and isinstance(out[-1].get("content"), str)
-            and not m.get("tool_calls")
-            and not out[-1].get("tool_calls")
-        ):
-            if m["content"] != out[-1]["content"]:
-                out[-1] = {**out[-1], "content": out[-1]["content"] + "\n\n" + m["content"]}
-            # identical duplicate → drop entirely
-            continue
-        out.append(m)
-    return out
 
 
 def _truncate_text_to_tokens(text: str, max_tokens: int, token_counter: Any) -> str:

@@ -26,8 +26,8 @@ from mimir.client.query_engine.history import (
     _maybe_compact_intra_query,
     _message_tokens,
     WIRE_LIST_TOKENS_PER_MESSAGE,
-    reconcile_tool_pairs,
 )
+from mimir.client.protocol.messages import reconcile_tool_pairs
 
 
 def _call(call_id: str, name: str = "write_file", **args) -> dict:
