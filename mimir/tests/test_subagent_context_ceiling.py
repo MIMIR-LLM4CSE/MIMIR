@@ -18,15 +18,14 @@ from __future__ import annotations
 import unittest
 from unittest.mock import patch
 
-from mimir.client.config.constants import (
-    CTX_RESERVED_RATIO, CTX_TOTAL_COMPACT, CTX_TOTAL_FULL, context_budget_for,
-)
+from mimir.client.config.limits import CTX_RESERVED_RATIO, CTX_TOTAL_COMPACT, CTX_TOTAL_FULL
+from mimir.client.query_engine.context_budget import context_budget_for
 
 
 class _WindowFixture(unittest.TestCase):
     def budget(self, window, mode="full", ceiling=None):
         backend = type("B", (), {"context_window": lambda self, m: window})()
-        with patch("mimir.client.query_engine.backends.factory.get_backend",
+        with patch("mimir.client.query_engine.context_budget.get_backend",
                    lambda: backend):
             return context_budget_for("m", mode, ceiling=ceiling)
 

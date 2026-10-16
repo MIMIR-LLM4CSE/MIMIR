@@ -28,7 +28,7 @@ import re
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
-from ..tool_execution.formatter import parse_tool_payload
+from ..protocol.tool_result import parse_tool_payload
 
 logger = logging.getLogger(__name__)
 

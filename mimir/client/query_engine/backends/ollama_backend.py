@@ -10,14 +10,7 @@ import ollama
 
 from .base import LLMBackend, normalize_finish_reason
 from .tag_parser import ThinkTagParser
-
-
-def _to_dict(obj: Any) -> dict:
-    if isinstance(obj, dict):
-        return obj
-    if hasattr(obj, "__dict__"):
-        return obj.__dict__
-    return {}
+from ...protocol.tool_call import as_dict
 
 
 def _done_reason(obj: Any) -> Any:
@@ -39,7 +32,7 @@ class OllamaBackend(LLMBackend):
         env = os.environ.get("MIMIR_OLLAMA_NUM_CTX", "").strip()
         if env.isdigit() and int(env) > 0:
             return int(env)
-        info = _to_dict(ollama.show(model)).get("modelinfo") or {}
+        info = as_dict(ollama.show(model)).get("modelinfo") or {}
         arch = info.get("general.architecture")
         if arch and isinstance(info.get(f"{arch}.context_length"), int):
             return info[f"{arch}.context_length"]
@@ -115,7 +108,7 @@ class OllamaBackend(LLMBackend):
                 if raw_finish:
                     finish_reason = normalize_finish_reason(raw_finish)
 
-                chunk_msg = _to_dict(chunk.get("message", {}))
+                chunk_msg = as_dict(chunk.get("message", {}))
 
                 raw_content = chunk_msg.get("content") or ""
                 if raw_content:
@@ -135,7 +128,7 @@ class OllamaBackend(LLMBackend):
                     final_msg["name"] = chunk_msg["name"]
         else:
             finish_reason = normalize_finish_reason(_done_reason(answer))
-            chunk_msg = _to_dict(answer.get("message", {}))
+            chunk_msg = as_dict(answer.get("message", {}))
             raw_content = chunk_msg.get("content") or ""
             if raw_content:
                 # Use a callback-free parser to separate <think>...</think> from

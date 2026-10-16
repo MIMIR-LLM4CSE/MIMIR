@@ -13,7 +13,7 @@ import unittest
 from unittest import mock
 
 import mimir.client.extensions as ur
-from mimir.client.config.constants import SERVERS_DIR_ENV, SKILLS_DIR_ENV
+from mimir.client.config.paths import SERVERS_DIR_ENV, SKILLS_DIR_ENV
 
 
 def _write(path: str, content: str) -> None:

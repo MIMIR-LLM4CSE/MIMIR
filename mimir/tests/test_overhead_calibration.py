@@ -13,7 +13,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from mimir.client.config import constants
+from mimir.client.config import paths
 from mimir.client.query_engine import streaming, token_calibration
 from mimir.client.query_engine.backends.base import LLMBackend, message_wire_form
 
@@ -30,7 +30,7 @@ class _IsolatedCalibrationCache:
     def setUp(self) -> None:
         super().setUp()
         self._state_dir = tempfile.TemporaryDirectory()
-        patcher = patch.object(constants, "STATE_DIR", self._state_dir.name)
+        patcher = patch.object(paths, "STATE_DIR", self._state_dir.name)
         patcher.start()
         self.addCleanup(patcher.stop)
         token_calibration.reset_for_tests()

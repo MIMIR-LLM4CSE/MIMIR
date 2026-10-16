@@ -28,12 +28,12 @@ import mimir.client.event_sink as event_sink_module
 from mimir.client.context.capabilities import (
     PLAN_BLOCKED, PLAN_READONLY, TASK_PLANNING, ToolCaps,
 )
-from mimir.client.config.constants import PLAN_EXPLORE_MAX_TURNS, AGENT_EMPTY_TURN_RETRIES
+from mimir.client.config.limits import PLAN_EXPLORE_MAX_TURNS, AGENT_EMPTY_TURN_RETRIES
 from mimir.client.context.execution_context import build_execution_context, loop_control
 from mimir.client.guardrails.observations import _observe_todo_flags
-from mimir.client.query_engine.streaming import _to_dict
+from mimir.client.protocol.tool_call import as_dict
 from mimir.client.tool_execution.normalizer import _make_hashable
-from mimir.client.tool_execution.formatter import normalize_arguments
+from mimir.client.protocol.tool_call import normalize_arguments
 from mimir.client.agent_core import MimirAgent
 from mimir.tests._fake_backend import ScriptedBackend
 
@@ -92,7 +92,7 @@ def _record_plan_flags(tool_calls, agent, execution_context) -> None:
     observer is called here rather than a local imitation of its rules.
     """
     for tc in tool_calls:
-        name = _to_dict(_to_dict(tc).get("function", {})).get("name", "")
+        name = as_dict(as_dict(tc).get("function", {})).get("name", "")
         _observe_todo_flags(agent, name, "ok", execution_context)
 
 
@@ -248,7 +248,7 @@ class PostDispatchInjectTests(unittest.TestCase):
         self.assertEqual(self._tick(ec, "tests/test_x.py"), [])
 
     def test_the_todo_reminder_honours_a_per_query_cap(self) -> None:
-        from mimir.client.config.constants import NUDGE_MAX_TODO_TICK
+        from mimir.client.config.limits import NUDGE_MAX_TODO_TICK
         ec = {"todo_written": True, "todo_file_path": "/tmp/todo.md"}
         fired = sum(bool(self._tick(ec, f"src/f{i}.py")) for i in range(NUDGE_MAX_TODO_TICK + 3))
         self.assertEqual(fired, NUDGE_MAX_TODO_TICK)
@@ -603,7 +603,7 @@ class RunPlanModeTests(unittest.TestCase):
 
         async def _plan_dispatch(tool_calls, agent, messages, execution_context):
             dispatched.extend(
-                _to_dict(_to_dict(tc).get("function", {})).get("name", "") for tc in tool_calls
+                as_dict(as_dict(tc).get("function", {})).get("name", "") for tc in tool_calls
             )
             _record_plan_flags(tool_calls, agent, execution_context)
 
@@ -873,7 +873,7 @@ class RunPlanModeTests(unittest.TestCase):
 
         async def _plan_dispatch(tool_calls, agent, messages, execution_context):
             for tc in tool_calls:
-                fn = _to_dict(_to_dict(tc).get("function", {}))
+                fn = as_dict(as_dict(tc).get("function", {}))
                 dispatched.append(dict(normalize_arguments(fn.get("arguments") or {})))
             _record_plan_flags(tool_calls, agent, execution_context)
 
@@ -1499,7 +1499,8 @@ class AskModeInLoopTests(RunAgentQueryNonInteractiveTests):
         agent._normalize_arguments = staticmethod(MimirAgent._normalize_arguments)
         agent.tool_caps = {
             "write_file": ToolCaps(name="write_file", capabilities=frozenset({PLAN_BLOCKED})),
-            "bash_run": ToolCaps(name="bash_run", capabilities=frozenset({PLAN_READONLY})),
+            "bash_run": ToolCaps(name="bash_run", capabilities=frozenset({PLAN_READONLY}),
+                                scope={"args": ["command"], "kind": "command_prefix"}),
             "read_file": ToolCaps(name="read_file", capabilities=frozenset()),
         }
         agent.tools = [{"function": {"name": n}} for n in agent.tool_caps]

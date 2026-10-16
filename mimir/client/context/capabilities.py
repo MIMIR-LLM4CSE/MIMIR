@@ -30,7 +30,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Iterable
 
-from ..config.constants import TOOL_CALL_TIMEOUT_MAX_SECS, TOOL_CALL_TIMEOUT_SECS
+from ..config.limits import TOOL_CALL_TIMEOUT_MAX_SECS, TOOL_CALL_TIMEOUT_SECS
 
 # ---------------------------------------------------------------------------
 # Capability vocabulary — orthogonal semantic flags a server declares per tool,
@@ -510,6 +510,33 @@ def arg_role(name: str, role: str, registry: dict[str, ToolCaps] | None = None) 
     return c.arg_roles.get(role, ()) if c else ()
 
 
+# Where a tool that declares no ``path`` arg-role conventionally carries the file it
+# targets, and where a listing tool carries the directory. The one list every consumer
+# reads — the snapshot taken before a write, the observers, the guards, the status row
+# — so a tool is never one file's target to one of them and nobody's to another.
+CONVENTIONAL_PATH_ARGS: tuple[str, ...] = ("path", "filepath", "filePath", "file_path", "file")
+DIRECTORY_ARGS: tuple[str, ...] = ("subdir", "directory")
+
+
+def target_path_arg(name: str, arguments: dict[str, Any],
+                    registry: dict[str, ToolCaps] | None = None, *,
+                    directories: bool = False) -> str:
+    """The raw path argument this call targets, or "".
+
+    The tool's declared ``path`` arg-role first, else the conventional names; with
+    *directories*, a listing tool's directory argument counts too. Unnormalised: the
+    caller resolves it against the workspace it works in.
+    """
+    keys = arg_role(name, "path", registry) or CONVENTIONAL_PATH_ARGS
+    if directories:
+        keys = (*keys, *DIRECTORY_ARGS)
+    for key in keys:
+        value = arguments.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
 def names_with_arg_role(role: str, registry: dict[str, ToolCaps] | None = None) -> set[str]:
     """Tool names that declare ``role`` in their arg-roles.
 
@@ -621,6 +648,31 @@ def run_outcome_spec(
     """
     c = _registry(registry).get(name)
     return c.run_outcome if c else None
+
+
+# The scope kind a tool taking a raw shell command line declares. What identifies a
+# shell tool everywhere — never its name: the guards and observers that read arguments
+# *as shell* key off this declaration about the tool's interface.
+SHELL_SCOPE_KIND = "command_prefix"
+
+
+def shell_command_args(name: str, registry: dict[str, ToolCaps] | None = None
+                       ) -> tuple[str, ...] | None:
+    """The argument names that carry a raw shell command, if ``name`` takes one, else None."""
+    spec = scope_spec(name, registry)
+    if not spec or spec.get("kind") != SHELL_SCOPE_KIND:
+        return None
+    return tuple(spec.get("args") or ("command",))
+
+
+def shell_command_of(name: str, arguments: dict[str, Any],
+                     registry: dict[str, ToolCaps] | None = None) -> str:
+    """The shell command this call carries, or "" when it carries none."""
+    for arg in shell_command_args(name, registry) or ():
+        value = arguments.get(arg)
+        if isinstance(value, str) and value.strip():
+            return value
+    return ""
 
 
 def scope_spec(name: str, registry: dict[str, ToolCaps] | None = None) -> dict[str, Any] | None:

@@ -7,7 +7,7 @@ one). This module only resolves the directory; the loading lives on the agent.
 
 from __future__ import annotations
 
-from ..config.constants import SKILLS_DIR_ENV, SKILLS_DIRNAME, resolve_extension_dir
+from ..config.paths import SKILLS_DIR_ENV, SKILLS_DIRNAME, resolve_extension_dir
 
 
 def resolve_skills_dir() -> str:

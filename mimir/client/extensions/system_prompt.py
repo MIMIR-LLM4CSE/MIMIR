@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import os
 
-from ..config.constants import MIMIR_DIR, SYSTEM_PROMPT_ENV, SYSTEM_PROMPT_FILENAME
+from ..config.paths import MIMIR_DIR, SYSTEM_PROMPT_ENV, SYSTEM_PROMPT_FILENAME
 
 
 def resolve_system_prompt_file(override: str = "") -> str:

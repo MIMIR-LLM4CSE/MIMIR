@@ -13,7 +13,7 @@ import asyncio
 import unittest
 from unittest.mock import patch
 
-from mimir.client.config.constants import AGENT_EMPTY_TURN_RETRIES
+from mimir.client.config.limits import AGENT_EMPTY_TURN_RETRIES
 from mimir.client.guardrails.nudges import drop_transient_reminders, inject_reminder
 from mimir.client.guardrails.workflow import EMPTY_TURN_OPENING
 from mimir.client.query_engine import agent_loop as agent_loop_module

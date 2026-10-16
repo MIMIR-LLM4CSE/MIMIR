@@ -10,7 +10,7 @@ from typing import Any, Callable
 
 from .base import LLMBackend, normalize_finish_reason, PromptTooLongError
 from .tag_parser import ThinkTagParser
-from ...tool_execution.formatter import normalize_arguments
+from ...protocol.tool_call import normalize_arguments
 # The assistant↔tool pairing invariant belongs to the history, not to this provider:
 # history.py owns the single implementation and applies it before every model call.
 # Re-applied here because _prepare_messages_for_openai normalises ids first, which can
@@ -137,7 +137,7 @@ def _answer_max_tokens(mml: int, prompt_tokens: int) -> int:
     May return <= 0 when the prompt estimate is near the window; the call site
     clamps to >= 1 (vLLM rejects non-positive max_tokens outright).
     """
-    from ...config.constants import CTX_RESERVED_RATIO
+    from ...config.limits import CTX_RESERVED_RATIO
     margin = max(512, prompt_tokens // 8)
     remaining = mml - prompt_tokens - margin
     return min(remaining, int(mml * CTX_RESERVED_RATIO))
@@ -149,7 +149,7 @@ def _unknown_window_answer_tokens() -> int:
     The reserve the context budget already sets aside for the answer on the assumed
     window — the one number here that does not pretend to know the real window.
     """
-    from ...config.constants import CTX_RESERVED_RATIO, CTX_TOTAL_FULL
+    from ...config.limits import CTX_RESERVED_RATIO, CTX_TOTAL_FULL
     return max(1, int(CTX_TOTAL_FULL * CTX_RESERVED_RATIO))
 
 

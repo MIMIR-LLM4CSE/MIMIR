@@ -15,8 +15,8 @@ from __future__ import annotations
 import os
 from typing import Any
 
-from .formatter import parse_tool_payload
-from .tool_status_messages import _PATH_KEYS
+from ..protocol.tool_result import parse_tool_payload
+from ..context.capabilities import target_path_arg
 
 # Result keys carrying the span a call covered, in priority order: an edit reports
 # where it landed in the file it produced, a read the range it returned.
@@ -28,13 +28,8 @@ def _as_line(value: Any) -> int | None:
 
 
 def _path_arg(name: str, args: dict, tool_caps) -> str | None:
-    from ..context.capabilities import arg_role
-    keys = arg_role(name, "path", tool_caps) or _PATH_KEYS
-    for key in keys:
-        val = args.get(key)
-        if isinstance(val, str) and os.path.isabs(val.strip()):
-            return val.strip()
-    return None
+    raw = target_path_arg(name, args, tool_caps)
+    return raw if raw and os.path.isabs(raw) else None
 
 
 def result_span(result_text: str) -> dict[str, int]:

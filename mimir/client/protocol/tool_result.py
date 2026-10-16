@@ -1,32 +1,13 @@
+"""What a tool sends back: how its payload is rendered for the model, and read again.
+
+The wire format of a result, shared by every layer that builds or reads one — an error
+the policy engine refuses a call with is the same shape as one a server returns.
+Depends on nothing above it.
+"""
 from __future__ import annotations
 
 import json
 from typing import Any
-
-
-# Set on a call whose arguments are not a JSON object — most often a call the model
-# was cut off in the middle of, at its output cap. Read as empty arguments, such a call
-# ran anyway (a write with no content); the dispatcher answers it with an error instead.
-UNPARSED_ARGUMENTS = "__unparsed_arguments__"
-
-
-def normalize_arguments(arguments: Any) -> dict[str, Any]:
-    """Tool-call arguments as a dict, whichever shape the provider sent them in.
-
-    Every backend parses through here, so a malformed call is caught the same way
-    whichever one produced it: it comes back as ``{UNPARSED_ARGUMENTS: raw}``.
-    """
-    if isinstance(arguments, dict):
-        return arguments
-    if arguments is None or arguments == "":
-        return {}
-    if isinstance(arguments, str):
-        try:
-            parsed = json.loads(arguments)
-        except json.JSONDecodeError:
-            return {UNPARSED_ARGUMENTS: arguments}
-        return parsed if isinstance(parsed, dict) else {UNPARSED_ARGUMENTS: arguments}
-    return {}
 
 
 # Payload keys whose value is a block of program text — a file's contents, a run's

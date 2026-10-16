@@ -38,7 +38,9 @@ import time
 from collections import deque
 from typing import Callable, Iterable
 
-from .job_wakes import DURABLE_EVENTS
+from ...protocol.events import (
+    CONCLUSIVE_EVENTS, DURABLE_EVENTS, REPLAY_ONLY_EVENTS, pop_answer_extras,
+)
 from .transcript_log import TranscriptLog
 
 logger = logging.getLogger(__name__)
@@ -74,21 +76,6 @@ _CLAIM_GRACE = 2.0
 # when it looks a tick later: past that nothing is asking, and an unbounded record of
 # every run a long-lived server ever reported is a leak for no reader.
 _CLAIMED_MEMORY = 512
-
-# The event types that end a turn. An ``error`` is a conclusion as much as an ``answer``
-# is — the turn is over either way — and conflating "concluded" with "succeeded" would
-# leave a session that failed looking busy for ever.
-_CONCLUSIVE = frozenset({"answer", "error"})
-
-# Recorded, never delivered live. ``assistant_text`` is the aggregate of a streamed
-# prose block, and a client that is attached has already had every one of its deltas:
-# sending the aggregate as well would print the paragraph twice. It exists for the
-# replay, where the deltas are gone — the journal keeps hundreds of `token` events out
-# of itself, and without this aggregate a turn read back after an absence would have
-# only its tool rows and its final answer, having lost everything the agent said in
-# between.
-_REPLAY_ONLY = frozenset({"assistant_text"})
-
 
 class _Subscription:
     """One attached client's view of the stream.
@@ -545,7 +532,7 @@ class _EventBus:
         moved = 0
         for ev in self._collect():
             owner = ev.get("session_id") or ""
-            extras = _pop_answer_extras(ev)
+            extras = pop_answer_extras(ev)
             if owner:
                 try:
                     ev = self._log_for(owner).append_and_stamp(ev)
@@ -554,7 +541,7 @@ class _EventBus:
                                    exc_info=True)
             etype = ev.get("type")
             if owner:
-                if etype in _CONCLUSIVE:
+                if etype in CONCLUSIVE_EVENTS:
                     self._concluded[owner] = time.time()
                 else:
                     # It is producing again, so whatever it concluded before is history.
@@ -574,7 +561,7 @@ class _EventBus:
                 self._offer(ev, {}, lambda e, _x: self._durable(e))
             if isinstance(ev.get("seq"), int):
                 self.journaled += 1
-            if etype in _REPLAY_ONLY:
+            if etype in REPLAY_ONLY_EVENTS:
                 continue   # journaled above; the live client had the deltas
             for sub in list(self._subs):
                 sub.offer(ev, extras)
@@ -603,19 +590,3 @@ class _EventBus:
             except Exception:
                 logger.warning("bus: could not drain a worker", exc_info=True)
         return events
-
-
-def _pop_answer_extras(ev: dict) -> dict:
-    """Take the session-layer payload off an answer event.
-
-    ``_full`` / ``_turn_start`` / ``_deferred`` are how a finished turn hands its
-    history and its deferral record to whatever writes the session file, and
-    ``_unconsumed_steer`` the steering it ended without reading. They are not
-    part of the protocol and must reach neither the journal nor the wire.
-    """
-    if ev.get("type") != "answer":
-        return {}
-    return {k: ev.pop(k) for k in
-            ("_full", "_turn_start", "_deferred", "_submitted_len", "_context_mode",
-             "_unconsumed_steer")
-            if k in ev}

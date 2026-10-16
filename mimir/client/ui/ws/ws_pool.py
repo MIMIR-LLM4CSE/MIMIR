@@ -41,7 +41,8 @@ from typing import Any, Callable, Iterator
 from . import server_registry
 from .event_bus import _EventBus
 from .job_scan import has_baseline, mark_wakes_reported, scan_all_sessions, wake_reported
-from .job_wakes import DURABLE_EVENTS, checkin_text, wake_text
+from .job_wakes import checkin_text, wake_text
+from ...protocol.events import DURABLE_EVENTS
 from .session_store import SessionStore
 from .turn_commit import commit_answer
 from .ws_worker import _AgentWorker, _detach_grace

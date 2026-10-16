@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from .formatter import parse_tool_payload
+from ..protocol.tool_result import parse_tool_payload
 
 # A formula past this length is no longer something to read at a glance, and KaTeX
 # on a huge matrix is slow; the row then keeps its plain summary.

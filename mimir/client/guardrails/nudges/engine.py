@@ -44,7 +44,7 @@ from ..builtin_check import builtin_check_failures
 from ...config.models import resolve_enforcement
 from ...context.capabilities import CODE_EXEC, names_with_cap
 from ...event_sink import emit
-from ...config.constants import (
+from ...config.limits import (
     CUSTOM_NUDGE_MAX_PER_QUERY,
     EXERCISE_BUDGET,
     NUDGE_MAX_BLAST_RADIUS,
@@ -737,7 +737,7 @@ def _should_nudge_stuck_repair(execution_context: dict[str, Any]) -> bool:
 # is a recommendation: a build needs a toolchain and a run needs an environment, neither
 # of which the loop can conjure. Once the model has answered (a run it judged, or an
 # `unknown` saying it cannot), the subject is closed for the rest of the query. The
-# shared counter key is `EXERCISE_BUDGET` (config.constants).
+# shared counter key is `EXERCISE_BUDGET` (config.limits).
 #
 # There is deliberately no third row asking for a *verdict* on a run that has one
 # outstanding. That ask fired on the happy path — edit, run, all green, answer — and

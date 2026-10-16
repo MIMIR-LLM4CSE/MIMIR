@@ -149,7 +149,7 @@ def _parse_answer(raw_answer: Any) -> dict[str, Any]:
 # for itself. Read from the client so there is one number, and defaulted here so the
 # server still runs when imported on its own (tests, a bare subprocess).
 try:
-    from mimir.client.config.constants import USER_QUESTION_TIMEOUT_SECS
+    from mimir.client.config.limits import USER_QUESTION_TIMEOUT_SECS
 except ImportError:  # pragma: no cover - running without the client package on the path
     USER_QUESTION_TIMEOUT_SECS = 300
 

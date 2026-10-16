@@ -346,7 +346,7 @@ class StepResultBudgetTests(unittest.TestCase):
             results, model="m", context_mode=mode, token_counter=self._TOK)
 
     def _budget(self, mode="full"):
-        from mimir.client.config.constants import context_budget_for
+        from mimir.client.query_engine.context_budget import context_budget_for
         total, reserved, _t, _c = context_budget_for("m", mode)
         return total - reserved
 
@@ -423,7 +423,7 @@ class BackstopIsWideEnoughTests(unittest.TestCase):
     _CHARS_PER_TOKEN = 4                      # constants.CHARS_PER_TOKEN
 
     def test_no_shipped_tool_is_cut_at_its_own_maximum(self):
-        from mimir.client.config.constants import context_budget_for
+        from mimir.client.query_engine.context_budget import context_budget_for
         from mimir.client.query_engine import history as H
 
         total, reserved, _t, _c = context_budget_for("m", "full")
@@ -444,7 +444,7 @@ class BackstopIsWideEnoughTests(unittest.TestCase):
     def test_the_original_incident_is_still_caught(self):
         """The four fetches that took a 200k window to 215k: a 131k-token error body
         beside three ordinary ones."""
-        from mimir.client.config.constants import context_budget_for
+        from mimir.client.query_engine.context_budget import context_budget_for
 
         total, reserved, _t, _c = context_budget_for("m", "full")
         usable = total - reserved

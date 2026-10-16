@@ -49,6 +49,7 @@ from .context.capabilities import (
     names_with_cap,
     path_args,
     unannotated_live_tools,
+    target_path_arg,
 )
 from .prompt.system_prompt import (
     build_base_system_content,
@@ -63,13 +64,13 @@ from .integration.server_manager import connect_servers as connect_servers_runti
 from .query_engine import run_agent_query
 from .query_engine.toollist import tools_for_readonly_mode
 from .event_sink import set_event_sink, reset_event_sink
-from .tool_execution.formatter import (
+from .protocol.tool_result import (
     json_error_payload,
-    normalize_arguments,
     normalize_tool_content,
     parse_tool_payload,
     truncate_text,
 )
+from .protocol.tool_call import normalize_arguments
 from .tool_execution.normalizer import (
     normalize_tool_arguments,
     normalize_tool_path_argument,
@@ -286,7 +287,7 @@ class MimirAgent:
         # config/preferences.py.
         from .config.preferences import load_disabled, load_subagent_level
         self.disabled_servers, self.disabled_skills, self.disabled_nudges = load_disabled()
-        # How far a sub-agent of this agent may go (config.constants.SUBAGENT_LEVELS).
+        # How far a sub-agent of this agent may go (config.settings.SUBAGENT_LEVELS).
         # The user's call, persisted like the toggles above; the weakest rung when they
         # have never chosen, because each rung hands something over rather than taking
         # it away.
@@ -524,7 +525,6 @@ class MimirAgent:
         )
 
     # Canonical argument key names that carry a target file path.
-    _PATH_ARG_KEYS: tuple[str, ...] = ("path", "filepath", "filePath", "file_path", "file")
 
     def _is_write_tool(self, tool_name: str) -> bool:
         """Kept for backward compatibility; prefer get_tool_file_targets."""
@@ -541,14 +541,9 @@ class MimirAgent:
             # Generic: any tool that carries a file-path argument.
             # We snapshot the file before execution and compare after — tools
             # that don't modify it (reads, checks, etc.) produce no diff.
-            for key in self._PATH_ARG_KEYS:
-                raw = arguments.get(key)
-                if isinstance(raw, str) and raw:
-                    normalized = self._normalize_workspace_path(raw)
-                    if normalized:
-                        return [normalized]
-
-            return []
+            raw = target_path_arg(tool_name, arguments, self.tool_caps)
+            normalized = self._normalize_workspace_path(raw) if raw else ""
+            return [normalized] if normalized else []
 
 
     def _get_todo_file(self) -> str:

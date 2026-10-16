@@ -11,7 +11,6 @@ hard guard it would sit outside the enforcement dial that exists to tune exactly
 """
 from __future__ import annotations
 
-import json
 import os
 from typing import Any
 
@@ -26,8 +25,10 @@ from ...context.capabilities import (
     OVERWRITE,
     REMOVE,
     has_cap,
+    target_path_arg,
 )
-from ...config.constants import REPEATED_EDIT_FAILURE_LIMIT
+from ...config.limits import REPEATED_EDIT_FAILURE_LIMIT
+from ...protocol.tool_result import json_error_payload
 
 
 def has_delete_context(path: str, execution_context: dict[str, Any]) -> bool:
@@ -50,16 +51,14 @@ UNCONFIRMED_PATH = "unconfirmed_path"
 
 def write_policy_violation(tool_name: str, path: str, detail: str | None = None,
                            *, kind: str = "policy") -> str:
-    payload = {
-        "status": "error",
-        "violation_kind": kind,
-        "error": f"Write policy blocked tool '{tool_name}' for path '{path}'.",
-        "hint": detail or (
+    return json_error_payload(
+        f"Write policy blocked tool '{tool_name}' for path '{path}'.",
+        hint=detail or (
             "Inspect the workspace structure first (list/search), then confirm the "
             "exact target path (existence check / read) before retrying."
         ),
-    }
-    return json.dumps(payload, indent=2, ensure_ascii=False)
+        violation_kind=kind,
+    )
 
 
 def check_write_policy(
@@ -74,7 +73,8 @@ def check_write_policy(
     if execution_context is None or not agent._is_write_tool(tool_name):
         return None
 
-    path = agent._normalize_workspace_path(arguments.get("path"))
+    path = agent._normalize_workspace_path(
+        target_path_arg(tool_name, arguments, agent.tool_caps))
     if not path:
         return None
 

@@ -12,7 +12,8 @@ from ...query_engine.history import (
     compacted_exchanges, compaction_summary_message,
 )
 from ...query_engine.verification import parse_ledger_block, split_answer_ledger
-from ...config.constants import context_budget_for, STATE_DIR
+from ...query_engine.context_budget import context_budget_for
+from ...config.paths import STATE_DIR
 from ...guardrails.workflow import (
     is_incomplete_answer, parse_completion_block, split_answer_completion,
 )

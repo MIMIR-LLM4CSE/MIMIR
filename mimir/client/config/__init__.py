@@ -1,4 +1,4 @@
-from .constants import (
+from .paths import (
     GLOBAL_STATE_DIR,
     MIMIR_DIR,
     STATE_DIR,
@@ -7,8 +7,9 @@ from .constants import (
     WORKSPACE_ROOT,
     SERVER_BASE,
     SKILL_BASE,
-    SERVERS,
-    SERVER_DESCRIPTIONS,
+)
+from .servers import SERVERS, SERVER_DESCRIPTIONS
+from .limits import (
     TOOL_CALL_TIMEOUT_SECS,
     USER_QUESTION_TIMEOUT_SECS,
     TOOL_HISTORY_CHAR_BUDGET,
@@ -18,7 +19,8 @@ from .constants import (
     CTX_TOTAL_COMPACT,
     CTX_TOTAL_FULL,
     CTX_RESERVED_RATIO,
-    context_budget_for,
+)
+from .settings import (
     THINKING_DEPTH_LABELS,
     THINKING_DEPTH_BUDGETS,
     THINKING_DEPTH_AUTO,
@@ -41,7 +43,6 @@ from .models import DEFAULT_MODEL, VALID_MODES, READONLY_MODES, LLM_BACKEND, VLL
 
 __all__ = [
     "CHARS_PER_TOKEN",
-    "context_budget_for",
     "CTX_RESERVED_RATIO",
     "CTX_TOTAL_COMPACT",
     "CTX_TOTAL_FULL",

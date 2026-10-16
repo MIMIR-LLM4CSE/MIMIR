@@ -33,7 +33,7 @@ import logging
 import os
 import threading
 
-from ..config import constants
+from ..config import paths
 from ..util.files import write_json_atomic
 
 logger = logging.getLogger(__name__)
@@ -55,7 +55,7 @@ def _path() -> str:
     install keeps its state, and a test that moves it expects the cache to move with
     it rather than to reach into the user's own.
     """
-    return os.path.join(constants.STATE_DIR, _FILE)
+    return os.path.join(paths.STATE_DIR, _FILE)
 
 
 def _load_locked() -> dict:

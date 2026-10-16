@@ -17,7 +17,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from .formatter import parse_tool_payload
+from ..protocol.tool_result import parse_tool_payload
 from .tool_status_messages import _COMMAND_KEYS
 
 # CSI / OSC escape sequences (colors, cursor movement) — noise in an HTML panel.

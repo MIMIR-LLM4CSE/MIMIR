@@ -86,7 +86,7 @@ class RegistryHelpersTest(unittest.TestCase):
         That is how the set carried "code" — the server is "code_intel" — leaving an
         exploring sub-agent with no symbol navigation at all, and nothing said so.
         """
-        from mimir.client.config.constants import SERVERS
+        from mimir.client.config.servers import SERVERS
         self.assertEqual(caps.explorer_servers() - set(SERVERS), set())
 
     def test_explorer_servers_exclude_the_spawn_server(self):
@@ -187,7 +187,7 @@ class WorkFamilyTest(unittest.TestCase):
                 self.assertIn(kind, caps.TOOL_KINDS)
 
     def test_declared_timeout_round_trips_and_is_clamped(self):
-        from mimir.client.config.constants import TOOL_CALL_TIMEOUT_MAX_SECS
+        from mimir.client.config.limits import TOOL_CALL_TIMEOUT_MAX_SECS
         from mimir.servers._shared import capabilities as srv
         for declared, expected in (
             (660, 660),

@@ -550,7 +550,6 @@ class WatchJobTests(unittest.TestCase):
         # for ever: the agent is never released and never woken, and the bulletins keep
         # repeating a status frozen at the moment it stopped. A watcher that dies at
         # least says so; this one says nothing.
-        import mimir.client.ui.ws.ws_worker as ws
 
         agent = _HangingAgent(hang_on="status")
         worker = self._make_worker(agent)
@@ -583,7 +582,6 @@ class WatchJobTests(unittest.TestCase):
     def test_a_summary_that_never_answers_does_not_hold_back_the_wake(self) -> None:
         # The run is already over here, so a summary op that hangs withholds the wake
         # itself. Better a wake with nothing in it than no wake.
-        import mimir.client.ui.ws.ws_worker as ws
 
         agent = _HangingAgent(hang_on="summary", states=["done"])
         worker = self._make_worker(agent)
@@ -996,7 +994,7 @@ class WatchedRunProgressNoteTests(unittest.TestCase):
     def test_the_note_leaves_the_payload_readable(self) -> None:
         """Appended after the JSON, like the launch note: the payload still parses."""
         from mimir.client.query_engine.dispatch import _watched_progress_note
-        from mimir.client.tool_execution.formatter import parse_tool_payload
+        from mimir.client.protocol.tool_result import parse_tool_payload
         raw = json.dumps({"status": "ok", "state": "running", "job_key": "j1"})
         note = _watched_progress_note("j1")
         self.assertIn("end your turn", note)

@@ -134,7 +134,7 @@ class ApprovedPathsAreNotSharedTests(_StateDirCase):
 
     def _patched_state_dir(self):
         # The client reads STATE_DIR frozen at import, so point it at the temp dir.
-        return patch("mimir.client.config.constants.STATE_DIR", self.state)
+        return patch("mimir.client.config.paths.STATE_DIR", self.state)
 
     def test_each_session_writes_its_own_file(self):
         with self._patched_state_dir():
@@ -205,7 +205,7 @@ class AgentCarriesItsSessionTests(_StateDirCase):
     def test_the_todo_file_named_in_the_system_prompt_is_the_agents_own(self):
         """It goes into the prompt, so the pointer would aim every agent at one list."""
         from mimir.client.agent_core import MimirAgent
-        with patch("mimir.client.config.constants.STATE_DIR", self.state), \
+        with patch("mimir.client.config.paths.STATE_DIR", self.state), \
              patch("mimir.client.agent_core.STATE_DIR", self.state):
             self.write_pointer("the-one-on-screen")
             agent = MimirAgent(session_id="mine")

@@ -522,7 +522,7 @@ class ApprovalManager:
         tests). Passing None through rather than coercing it to "" is what keeps the writer
         and the servers' reader naming the same file.
         """
-        from ...config.constants import STATE_DIR
+        from ...config.paths import STATE_DIR
         from ....servers._shared.state_paths import session_state_dir
         return os.path.join(
             session_state_dir(STATE_DIR, self.session_id), "approved_paths.json"

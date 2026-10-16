@@ -206,7 +206,7 @@ Protocol — all messages are JSON objects, one per send/recv:
 
 from __future__ import annotations
 
-# Import the shared runtime FIRST so its cwd bootstrap runs before config.constants
+# Import the shared runtime FIRST so its cwd bootstrap runs before config.paths
 # (and the backend factory) capture the workspace root at import time.
 from ._ws_runtime import (
     _CTX_DEFAULT_FULL,

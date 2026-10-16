@@ -170,7 +170,8 @@ class BashCommandReadonlyTests(unittest.TestCase):
 class PlanModeToolVisibilityTests(unittest.TestCase):
     def test_plan_readonly_tool_stays_visible_plan_blocked_stripped(self):
         registry = {
-            "bash_run": ToolCaps(name="bash_run", capabilities=frozenset({PLAN_READONLY, SENSITIVE})),
+            "bash_run": ToolCaps(name="bash_run", capabilities=frozenset({PLAN_READONLY, SENSITIVE}),
+                                scope={"args": ["command"], "kind": "command_prefix"}),
             "write_file": ToolCaps(name="write_file", capabilities=frozenset({PLAN_BLOCKED})),
             "grep": ToolCaps(name="grep", capabilities=frozenset()),
         }
@@ -237,7 +238,8 @@ class _FakeAgent:
     def __init__(self, mode):
         self.mode = mode
         self.tool_caps = {
-            "bash_run": ToolCaps(name="bash_run", capabilities=frozenset({PLAN_READONLY, SENSITIVE})),
+            "bash_run": ToolCaps(name="bash_run", capabilities=frozenset({PLAN_READONLY, SENSITIVE}),
+                                scope={"args": ["command"], "kind": "command_prefix"}),
             "code_run": ToolCaps(name="code_run", capabilities=frozenset({SENSITIVE})),
             "write_file": ToolCaps(name="write_file", capabilities=frozenset({PLAN_BLOCKED})),
             "todo_set_plan": ToolCaps(name="todo_set_plan", capabilities=frozenset({TASK_PLANNING})),

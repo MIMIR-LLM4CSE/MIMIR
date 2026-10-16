@@ -29,7 +29,7 @@ import types
 import unittest
 from unittest import mock
 
-from mimir.client.ui.ws.event_bus import _pop_answer_extras
+from mimir.client.protocol.events import pop_answer_extras
 from mimir.client.ui.ws.ws_worker import _AgentWorker
 
 from mimir.tests._fake_pool import FakePool
@@ -114,7 +114,7 @@ class UnreadSteerLeavesWithTheAnswerTests(unittest.TestCase):
     def test_it_reaches_the_session_and_not_the_wire(self) -> None:
         """A private key: the client is told by the session, in its own message."""
         ev = {"type": "answer", "text": "done", "_unconsumed_steer": ["x"]}
-        extras = _pop_answer_extras(ev)
+        extras = pop_answer_extras(ev)
         self.assertEqual(extras["_unconsumed_steer"], ["x"])
         self.assertNotIn("_unconsumed_steer", ev)
 

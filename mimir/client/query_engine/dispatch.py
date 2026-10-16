@@ -16,26 +16,29 @@ import json
 import time
 from typing import Any
 
-from ..config.constants import (
+from ..config.limits import (
     AUTO_VALIDATION_TIMEOUT_SECS as _AUTO_VALIDATION_TIMEOUT_SECS,
     IDENTICAL_REPEAT_THRESHOLD,
     NUDGE_MAX_TODO_TICK,
-    SKILL_LOAD_TOOL,
+    HARD_REPEAT_LIMIT,
+    SOFT_REPEAT_THRESHOLD,
 )
+from ..config.servers import SKILL_LOAD_TOOL
 from ..event_sink import emit
 from .. import human_pause
 from ..context.capabilities import (
-    CODE_EXEC, DIVERTIBLE, EDIT, has_cap, kind_for, label_for, scope_spec, timeout_for,
+    CODE_EXEC, DIVERTIBLE, EDIT, has_cap, kind_for, label_for, timeout_for,
+    shell_command_args,
 )
 from ..context.execution_context import loop_control, nudge_count
-from ..tool_execution.formatter import UNPARSED_ARGUMENTS
+from ..protocol.tool_call import UNPARSED_ARGUMENTS
+from ..protocol.tool_result import json_error_payload
 from ..tool_execution.normalizer import _make_hashable
 from ..tool_execution.executor import run_post_tool_annotations
 from ..tool_execution.exec_preview import exec_input_preview, extract_exec_preview
 from ..tool_execution.math_preview import extract_math_preview
 from ..tool_execution.file_target import file_target
 from ..tool_execution.tool_status_messages import (
-    DOING_ARG,
     clip_doing,
     tool_status_message,
     tool_arg_preview,
@@ -44,6 +47,7 @@ from ..tool_execution.tool_status_messages import (
     summarize_tool_result,
     error_detail,
 )
+from ..protocol.tool_call import DOING_ARG
 from ..guardrails.workflow import (
     handback_corrective_message,
     handback_required,
@@ -52,7 +56,7 @@ from ..guardrails.workflow import (
     repeat_corrective_message,
 )
 from ..guardrails.nudges import inject_reminder, maybe_inject_env_resolution
-from .streaming import _to_dict
+from ..protocol.tool_call import as_dict
 from .deferral import CURRENT_CALL_ID
 from .background import (
     _maybe_emit_open_editor,
@@ -181,8 +185,7 @@ def _waits_by_blocking_the_turn(agent: Any, name: str, args: dict) -> bool:
     """True when this call's command opens by doing nothing but passing time.
 
     Registry-driven on both halves: the tool that carries a raw command line is the one
-    declaring a ``command_prefix`` scope (the test ``gates._shell_command_args`` and
-    ``observations._carries_shell_command`` already make), and the program of the
+    declaring a shell scope (``capabilities.shell_command_args``), and the program of the
     leading segment comes from the shared segmenter, which skips ``VAR=val`` assignments
     and wrappers of its own. ``sleep`` is named as a POSIX program, the way this
     codebase already names interpreters and wrappers — never as a tool.
@@ -191,19 +194,18 @@ def _waits_by_blocking_the_turn(agent: Any, name: str, args: dict) -> bool:
     ``make; sleep 1`` has already done the work; neither is a turn spent waiting.
     Fail-open on a command the shared parser refuses, as every other shell guard does.
     """
-    spec = scope_spec(name, getattr(agent, "tool_caps", None))
-    if not spec or spec.get("kind") != "command_prefix":
+    command_args = shell_command_args(name, getattr(agent, "tool_caps", None))
+    if command_args is None:
         return False
-    from ..guardrails.policy.bash_classify import shell_segments
-    from ..guardrails.policy.gates import _segment_program
-    for arg in (spec.get("args") or ("command",)):
+    from ..guardrails.policy.bash_classify import segment_program, shell_segments
+    for arg in command_args:
         command = args.get(arg)
         if not isinstance(command, str) or not command.strip():
             continue
         segments = shell_segments(command, allow_expansion=True)
         if not segments:
             continue
-        program = _segment_program(list(segments[0].argv))
+        program = segment_program(list(segments[0].argv))
         if program and os.path.basename(program) == "sleep":
             return True
     return False
@@ -211,37 +213,35 @@ def _waits_by_blocking_the_turn(agent: Any, name: str, args: dict) -> bool:
 
 def _watched_poll_blocked_payload(job_key: str) -> str:
     """Synthetic result for a call asking whether a watched run has finished."""
-    return json.dumps({
-        "status": "error",
-        "error": (
+    return json_error_payload(
+        (
             f"Background job '{job_key}' is being watched, so its state was not read. "
             "You will be resumed automatically with its results the moment it finishes."
         ),
-        "hint": (
+        hint=(
             "Do not ask again whether it is done. If there is other useful work in this "
             "task, carry on with it now. If the only thing left is waiting for this run, "
             "end your turn and say what you are waiting for. Reading the run's output "
             "for progress is still available if you need to see how far along it is."
         ),
-    })
+    )
 
 
 def _blocking_wait_payload() -> str:
     """Synthetic result for a turn spent waiting on a run something else is watching."""
-    return json.dumps({
-        "status": "error",
-        "error": (
+    return json_error_payload(
+        (
             "This command opens by waiting, and a background job is already being "
             "watched for you, so it was not run. Blocking the turn this way also delays "
             "the completion notice it is waiting for, and any message the user sends "
             "meanwhile."
         ),
-        "hint": (
+        hint=(
             "You will be resumed automatically when the run finishes. If there is other "
             "useful work in this task, carry on with it now. If the only thing left is "
             "waiting, end your turn and say what you are waiting for."
         ),
-    })
+    )
 
 
 # What anyio raises once the stdio transport of an MCP server is gone — the server's
@@ -313,8 +313,8 @@ async def _dispatch_tool_calls(
     # still emitted for the model's tool_call id, but never actually executed.
     blocked_results: dict[str, str] = {}
     for idx, tc in enumerate(tool_calls):
-        tc = _to_dict(tc)
-        fn = _to_dict(tc.get("function", {}))
+        tc = as_dict(tc)
+        fn = as_dict(tc.get("function", {}))
         name = fn.get("name", "")
         args = agent._normalize_arguments(fn.get("arguments") or {})
         # The universal per-call description (server_manager.DOING_ARG) is taken out of
@@ -337,14 +337,17 @@ async def _dispatch_tool_calls(
         call_id = tc.get("id") if isinstance(tc.get("id"), str) and tc.get("id") else f"call_{idx}"
         row_doing[call_id] = doing
         if UNPARSED_ARGUMENTS in args:
-            blocked_results[call_id] = json.dumps({
-                "status": "error",
-                "error": f"The arguments of this {name} call are not valid JSON — most "
-                         "likely the call was cut off at the output limit — so it was "
-                         "not run.",
-                "hint": "Issue the call again, complete. For a large write, split it "
-                        "into several smaller calls.",
-            })
+            blocked_results[call_id] = json_error_payload(
+                (
+                    f"The arguments of this {name} call are not valid JSON — most "
+                    "likely the call was cut off at the output limit — so it was "
+                    "not run."
+                ),
+                hint=(
+                    "Issue the call again, complete. For a large write, split it "
+                    "into several smaller calls."
+                ),
+            )
             emit({"type": "status", "text": f"  ⛔ Not running {name}: its arguments were cut off"})
             normalized.append((name, args, call_id))
             continue
@@ -651,12 +654,13 @@ async def _dispatch_tool_calls(
                     "or a read-only alternative."
                 ),
             )
-            return json.dumps({
-                "status": "error",
-                "error": f"Tool '{name}' timed out after {budget}s.",
-                "hint": "The operation took too long; consider a narrower query or a "
-                        "read-only alternative.",
-            })
+            return json_error_payload(
+                f"Tool '{name}' timed out after {budget}s.",
+                hint=(
+                    "The operation took too long; consider a narrower query or a "
+                    "read-only alternative."
+                ),
+            )
 
         except Exception as exc:
             # Any other exception here — most often a dead server subprocess whose
@@ -680,11 +684,10 @@ async def _dispatch_tool_calls(
                 error=(f"Tool '{name}' failed to execute: {detail}\n\nHint: {hint}")
                 if detail else "The tool call failed with no error detail.",
             )
-            return json.dumps({
-                "status": "error",
-                "error": f"Tool '{name}' failed to execute: {detail}",
-                "hint": hint,
-            })
+            return json_error_payload(
+                f"Tool '{name}' failed to execute: {detail}",
+                hint=hint,
+            )
 
 
     # Reads can run concurrently safely. Write tools must NOT: each does a
@@ -928,29 +931,23 @@ async def _post_dispatch_inject(
     )
 
 
-# Repeated-failing-call guard. Nudges only fire when the model stops calling tools,
-# and cross-step dedup only blocks *writes* — so a non-write call that fails can be
-# re-issued identically every step until the step ceiling. These two thresholds turn
-# that silent spin into (a) a one-time mid-loop corrective and (b) a hard backstop.
-# (The corrective *copy* lives in guardrails.workflow; only the gating/thresholds and the
-# synthetic tool-result payloads stay here, next to the dispatch that uses them.)
-SOFT_REPEAT_THRESHOLD = 2   # after this many identical FAILED dispatches, inject the corrective once
-HARD_REPEAT_LIMIT = 3       # once this many identical failures are recorded, block further attempts
+# Repeated-failing-call guard: the thresholds are in config.limits, the corrective
+# *copy* in guardrails.workflow; the synthetic tool-result payloads stay here, next to
+# the dispatch that uses them.
 
 
 
 def _repeat_blocked_payload(tool_name: str, fails: int) -> str:
     """Synthetic tool result returned in place of an over-repeated failing call."""
-    return json.dumps({
-        "status": "error",
-        "error": (
+    return json_error_payload(
+        (
             f"This exact call failed {fails} times already and was not retried. "
             "Repeating an identical failing call is blocked."
         ),
-        "hint": (
+        hint=(
             "Do not repeat this call. Either change the approach (different arguments, "
             "a different tool, or resolve the underlying environment/precondition), or "
             "stop and conclude clearly that you cannot proceed and why."
         ),
-    })
+    )
 

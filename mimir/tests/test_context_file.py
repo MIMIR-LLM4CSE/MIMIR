@@ -16,7 +16,7 @@ from unittest.mock import patch
 
 import mimir.client.prompt.system_prompt as cb
 import mimir.client.extensions.system_prompt as sp_resolver
-from mimir.client.config.constants import SYSTEM_PROMPT_ENV, SYSTEM_PROMPT_FILENAME
+from mimir.client.config.paths import SYSTEM_PROMPT_ENV, SYSTEM_PROMPT_FILENAME
 
 
 class ResolveContextFileTests(unittest.TestCase):

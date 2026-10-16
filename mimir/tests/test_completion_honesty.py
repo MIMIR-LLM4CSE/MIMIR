@@ -25,7 +25,7 @@ import types
 import unittest
 from unittest import mock
 
-from mimir.client.config.constants import EXERCISE_BUDGET
+from mimir.client.config.limits import EXERCISE_BUDGET
 from mimir.client.context.capabilities import CODE_EXEC, JUDGE, ToolCaps
 from mimir.client.context.execution_context import (
     build_execution_context,
@@ -333,7 +333,7 @@ class OutputVerdictLedgerTests(_ChecklistFixture):
         self.assertIn("further runs not listed", out)
 
     def test_what_was_tried_is_reported_when_the_budget_runs_out(self):
-        from mimir.client.config.constants import VALIDATION_RETRY_BUDGET
+        from mimir.client.config.limits import VALIDATION_RETRY_BUDGET
         ec = self._run(
             verdict="fail", reason="energy grew by 0.6%",
             failures=VALIDATION_RETRY_BUDGET,
@@ -748,7 +748,7 @@ class UnfinishedPlanNudgeTests(_ChecklistFixture):
         self.assertFalse(self._should(ec))
 
     def test_capped_at_one(self):
-        from mimir.client.config.constants import NUDGE_MAX_UNFINISHED_PLAN
+        from mimir.client.config.limits import NUDGE_MAX_UNFINISHED_PLAN
         ec = _written({"a.py"}, tier="static")
         self.checklist(ec, ["- [ ] two"])
         self.assertTrue(self._should(ec))

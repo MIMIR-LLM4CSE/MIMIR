@@ -9,7 +9,6 @@ from unittest.mock import patch
 import asyncio
 
 import mimir.client.event_sink as event_sink_module
-import mimir.client.config.constants as constants_module
 from mimir.client.query_engine.backends.base import (
     PromptTooLongError,
     message_wire_form,
@@ -677,7 +676,7 @@ class ClientHelperTests(unittest.TestCase):
         # one tells it to stop — a reminder to stop that is itself suppressed leaves
         # the model going.
         import importlib
-        from mimir.client.config.constants import NUDGE_MAX_DENIAL
+        from mimir.client.config.limits import NUDGE_MAX_DENIAL
         nudge_logic = importlib.import_module("mimir.client.guardrails.nudges.engine")
 
         execution_context = {
@@ -902,7 +901,7 @@ class ClientHelperTests(unittest.TestCase):
         at `REPEATED_EDIT_FAILURE_LIMIT` the write is refused so the model stops
         re-sending a patch that has already failed unchanged.
         """
-        from mimir.client.config.constants import REPEATED_EDIT_FAILURE_LIMIT
+        from mimir.client.config.limits import REPEATED_EDIT_FAILURE_LIMIT
         agent = client_module.MimirAgent()
         agent.tool_caps = build_declared_registry()
         execution_context = {
@@ -1139,13 +1138,6 @@ class ClientHelperTests(unittest.TestCase):
         self.assertEqual(backend.count_text_tokens("m", "abcdefgh"), 2)  # heuristic 8/4
         self.assertEqual(backend.count_text_tokens("m", "abcdefgh"), 2)  # still not cached
         self.assertEqual(calls["n"], 2)
-
-    def test_chars_per_token_for_longest_match(self) -> None:
-        with patch.dict(constants_module.CHARS_PER_TOKEN_BY_MODEL,
-                        {"qwen": 3.5, "qwen3-coder": 3.0}, clear=True):
-            self.assertEqual(constants_module.chars_per_token_for("Qwen3-Coder-30B"), 3.0)
-            self.assertEqual(constants_module.chars_per_token_for("qwen2.5"), 3.5)
-            self.assertEqual(constants_module.chars_per_token_for("llama-3"), 4.0)
 
     def test_vllm_tokenize_exact_then_fallback_on_error(self) -> None:
         # The tokenize path must be live for the exact-count assertion below:
@@ -2094,7 +2086,7 @@ class ClientHelperTests(unittest.TestCase):
         """
         import importlib
         ec = importlib.import_module("mimir.client.context.execution_context")
-        from mimir.client.config.constants import DISCOVERY_EVIDENCE_MIN_DISTINCT as BAR
+        from mimir.client.config.limits import DISCOVERY_EVIDENCE_MIN_DISTINCT as BAR
 
         def cleared(ctx):
             return ec.has_discovery_evidence(ctx, min_distinct=BAR)
@@ -2812,18 +2804,16 @@ class SubAgentRungTests(unittest.TestCase):
     """
 
     def test_the_rungs_are_explore_then_build(self):
-        from mimir.client.config.constants import SUBAGENT_LEVELS
+        from mimir.client.config.settings import SUBAGENT_LEVELS
         self.assertEqual(SUBAGENT_LEVELS, ("explore", "build"))
 
     def test_a_stored_parallel_still_means_the_writing_rung(self):
-        from mimir.client.config.constants import (
-            clamp_subagent_level, subagent_level_allows)
+        from mimir.client.config.settings import clamp_subagent_level, subagent_level_allows
         self.assertEqual(clamp_subagent_level("parallel"), "build")
         self.assertTrue(subagent_level_allows("parallel", "build"))
 
     def test_an_unknown_rung_still_concedes_nothing(self):
-        from mimir.client.config.constants import (
-            clamp_subagent_level, subagent_level_allows)
+        from mimir.client.config.settings import clamp_subagent_level, subagent_level_allows
         self.assertEqual(clamp_subagent_level("whatever"), "explore")
         self.assertFalse(subagent_level_allows("whatever", "build"))
 

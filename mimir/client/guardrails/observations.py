@@ -62,7 +62,8 @@ from ..context.capabilities import (
     names_with_cap,
     path_args,
     run_outcome_spec,
-    scope_spec,
+    shell_command_args,
+    target_path_arg,
 )
 from ..tool_execution.validation import (
     is_python_test_filepath,
@@ -77,6 +78,7 @@ from ...servers._shared.shell_paths import (
 )
 from .policy.bash_classify import (
     Kind, classify_bash_command, opaque_command_executes,
+    FILE_LIKE_RE,
 )
 
 
@@ -132,9 +134,10 @@ def _register_known_path(execution_context: dict[str, Any], candidate_path: str)
     execution_context["existing_paths"].add(candidate_path)
 
 
-def _target_path(agent: Any, arguments: dict) -> str | None:
-    """Normalized workspace path from the conventional file-target args (path/filepath)."""
-    return agent._normalize_workspace_path(arguments.get("path") or arguments.get("filepath"))
+def _target_path(agent: Any, tool_name: str, arguments: dict) -> str | None:
+    """The normalized workspace path this call targets."""
+    return agent._normalize_workspace_path(
+        target_path_arg(tool_name, arguments, agent.tool_caps))
 
 
 def _clear_edit_fail_streak(execution_context: dict[str, Any], path: str) -> None:
@@ -218,7 +221,7 @@ def _observe_edit_outcome(
     """
     if not has_cap(tool_name, EDIT, agent.tool_caps):
         return
-    edited_path = _target_path(agent, arguments)
+    edited_path = _target_path(agent, tool_name, arguments)
     if not (edited_path and agent._is_code_filepath(edited_path)):
         return
 
@@ -654,20 +657,6 @@ def _observe_action_op(
         execution_context["action_op_count"] = int(execution_context.get("action_op_count", 0)) + 1
 
 
-def _carries_shell_command(agent: Any, tool_name: str) -> tuple[str, ...] | None:
-    """Command-arg names if *tool_name* is a shell-command tool, else None.
-
-    Registry-driven (no tool name in code): a tool that takes a raw shell command
-    declares a ``command_prefix`` scope kind (see server_bash's ``bash_run``); the
-    scope's ``args`` name the command argument. Returns those names so the observer
-    can classify the command a call carried.
-    """
-    spec = scope_spec(tool_name, agent.tool_caps)
-    if not spec or spec.get("kind") != "command_prefix":
-        return None
-    return tuple(spec.get("args") or ("command",))
-
-
 def _run_key(tool_name: str, payload: dict, spec: dict[str, Any] | None) -> str:
     """The ledger key for a run this tool performed.
 
@@ -720,7 +709,7 @@ def _observe_tool_run(
     no file: an execution's exit code says the program reached its end, and which file
     it exercised is not a question anyone here can answer.
     """
-    if status != "ok" or _carries_shell_command(agent, tool_name) is not None:
+    if status != "ok" or shell_command_args(tool_name, agent.tool_caps) is not None:
         return
     if not has_cap(tool_name, CODE_EXEC, agent.tool_caps):
         return
@@ -830,9 +819,6 @@ def _settle_from_machine(
 _PROJECT_VALIDATORS = frozenset({
     "ruff", "mypy", "pyflakes", "black", "py_compile",
 })
-# A positional that names a specific file (has a dotted extension), vs a directory/`.`.
-_FILE_EXT_RE = _re.compile(r"\.[A-Za-z0-9]+$")
-
 # The checkers, keyed by command head, and what kind of check each one is. Reached only
 # for a segment `shell_paths.EXEC_EFFECTS` already declared a *validator*: a head absent
 # from this table credits nothing, it does not thereby become an execution.
@@ -998,7 +984,7 @@ def _bash_validation_scan(
         if seg_tier == "compiled" and any(f in seg.argv for f in _SYNTAX_ONLY_FLAGS):
             seg_tier = "syntax"
         tier_rank = max(tier_rank, VALIDATION_TIERS.index(seg_tier))
-        if seg.head in _PROJECT_VALIDATORS and not any(_FILE_EXT_RE.search(op) for op in seg.operands):
+        if seg.head in _PROJECT_VALIDATORS and not any(FILE_LIKE_RE.search(op) for op in seg.operands):
             whole_project = True
     tier = VALIDATION_TIERS[tier_rank] if tier_rank >= 0 else ""
     # The shell hands back the last segment's status. It is the run's exactly when the
@@ -1152,7 +1138,7 @@ def _observe_bash_validation(
     once. Test files are recorded in ``tests_run`` either way (pass or fail) so the
     regression nudge sees them. Only shell-command tools qualify.
     """
-    command_args = _carries_shell_command(agent, tool_name)
+    command_args = shell_command_args(tool_name, agent.tool_caps)
     if command_args is None:
         return
     if payload.get("background_job"):
@@ -1221,7 +1207,7 @@ def _observe_command(
     """
     if status != "ok":
         return
-    command_args = _carries_shell_command(agent, tool_name)
+    command_args = shell_command_args(tool_name, agent.tool_caps)
     if command_args is None:
         return
     if payload.get("background_job"):
@@ -1382,8 +1368,7 @@ def record_tool_observation(
 
     payload = agent._parse_tool_payload(result) or {}
     path = agent._normalize_workspace_path(
-        arguments.get("path") or arguments.get("subdir") or arguments.get("directory")
-    )
+        target_path_arg(tool_name, arguments, agent.tool_caps, directories=True))
     status = payload.get("status")
 
     # Order is load-bearing — see the handler-section note above.

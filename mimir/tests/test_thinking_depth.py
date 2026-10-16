@@ -1,6 +1,6 @@
 """Adaptive thinking: the depth ladder and the prompt directive that backs "auto".
 
-The ladder (config/constants.py) is the single source of truth for the reasoning
+The ladder (config/settings.py) is the single source of truth for the reasoning
 depth; the agent derives `thinking` / `thinking_budget` from it, and only the "auto"
 rung adds a calibration directive to the system prompt.
 """

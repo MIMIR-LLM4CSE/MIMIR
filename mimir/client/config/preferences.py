@@ -1,5 +1,5 @@
 """Operator preferences persisted per-workspace in the central state dir at
-``<STATE_DIR>/preferences.json`` (see config.constants.STATE_DIR).
+``<STATE_DIR>/preferences.json`` (see config.paths.STATE_DIR).
 
 This is *operator config* — which MCP servers and skills the user has switched off
 from the toggle panel — part of the agent STATE (alongside the agent's own
@@ -42,7 +42,7 @@ import os
 import threading
 from typing import Any
 
-from .constants import STATE_DIR
+from .paths import STATE_DIR
 from ..util.files import write_json_atomic
 
 logger = logging.getLogger(__name__)
@@ -114,13 +114,13 @@ def save_disabled(
 
 def load_subagent_level() -> str:
     """The rung the user last chose, or the weakest one."""
-    from .constants import clamp_subagent_level
+    from .settings import clamp_subagent_level
     return clamp_subagent_level(str(load_preferences().get("subagent_level") or ""))
 
 
 def save_subagent_level(level: str) -> None:
     """Persist the rung, keeping every other key."""
-    from .constants import clamp_subagent_level, DEFAULT_SUBAGENT_LEVEL
+    from .settings import clamp_subagent_level, DEFAULT_SUBAGENT_LEVEL
     payload = load_preferences()
     level = clamp_subagent_level(level)
     if level == DEFAULT_SUBAGENT_LEVEL:

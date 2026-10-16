@@ -21,9 +21,7 @@ from mimir.client.context.capabilities import CODE_NAV, EDIT, READ, CACHEABLE, T
 from mimir.client.context.execution_context import build_execution_context
 from mimir.client.tool_execution import bash_effect as be
 from mimir.client.tool_execution import executor as ex
-from mimir.client.tool_execution.formatter import (
-    normalize_tool_content, parse_tool_payload,
-)
+from mimir.client.protocol.tool_result import normalize_tool_content, parse_tool_payload
 from mimir.tests._golden_caps import build_declared_registry
 
 _DECLARED_REGISTRY = build_declared_registry()
@@ -173,7 +171,7 @@ class ForkHintTests(unittest.TestCase):
 
     def test_the_scratchpad_is_exactly_where_these_files_belong(self) -> None:
         from mimir.servers._shared.state_paths import scratch_dir
-        from mimir.client.config.constants import STATE_DIR
+        from mimir.client.config.paths import STATE_DIR
         scratch = scratch_dir(STATE_DIR)
         ec = build_execution_context()
         ec["dirty_written_files"].add(os.path.join(scratch, "probe.py"))

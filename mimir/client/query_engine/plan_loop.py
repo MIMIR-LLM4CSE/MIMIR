@@ -17,9 +17,8 @@ from ..context.execution_context import plan_evidence_ready
 from ..context.capabilities import DELEGATE, arg_role, names_with_cap
 from ..context.signals import query_requires_repo_discovery
 from ..config.models import resolve_enforcement
-from ..config.constants import (
-    AGENT_EMPTY_TURN_RETRIES, PLAN_EXPLORE_MAX_TURNS, THINKING_DEPTH_AUTO,
-)
+from ..config.limits import AGENT_EMPTY_TURN_RETRIES, PLAN_EXPLORE_MAX_TURNS
+from ..config.settings import THINKING_DEPTH_AUTO
 from ..guardrails.workflow import (
     PLAN_TODO_NUDGE_EARLY,
     PLAN_TODO_NUDGE_LATE,
@@ -37,8 +36,9 @@ from ..guardrails.workflow import (
     plan_revision_nudge,
 )
 from ..guardrails.nudges import drop_transient_reminders, inject_reminder
-from ..tool_execution.formatter import normalize_arguments
-from .streaming import _DraftHold, _note_truncated_turn, _stream_chat, _process_response, _to_dict
+from ..protocol.tool_call import normalize_arguments
+from .streaming import _DraftHold, _note_truncated_turn, _stream_chat, _process_response
+from ..protocol.tool_call import as_dict
 from .history import _enforce_context_budget
 from .dispatch import _dispatch_tool_calls, _post_dispatch_inject
 from .deferral import (
@@ -73,7 +73,7 @@ def _plan_title_arg(name: str, agent: Any) -> str:
 def _plan_document_title(tool_calls: list[Any], agent: Any) -> str:
     """Title carried by the plan-document write in *tool_calls*, if there is one."""
     for tc in tool_calls:
-        fn = _to_dict(_to_dict(tc).get("function", {}))
+        fn = as_dict(as_dict(tc).get("function", {}))
         arg = _plan_title_arg(fn.get("name", ""), agent)
         if not arg:
             continue
@@ -94,8 +94,8 @@ def _pin_plan_title(tool_calls: list[Any], agent: Any, title: str) -> list[Any]:
     """
     pinned: list[Any] = []
     for tc in tool_calls:
-        tc_d = dict(_to_dict(tc))
-        fn = dict(_to_dict(tc_d.get("function", {})))
+        tc_d = dict(as_dict(tc))
+        fn = dict(as_dict(tc_d.get("function", {})))
         arg = _plan_title_arg(fn.get("name", ""), agent)
         args = dict(normalize_arguments(fn.get("arguments") or {})) if arg else {}
         if not arg or str(args.get(arg) or "").strip() == title:
@@ -116,7 +116,7 @@ def _reject_stalled_calls(tool_calls: list[Any], messages: list[dict]) -> None:
     dropped call so the transcript stays well-formed and the model sees the reason.
     """
     for tc in tool_calls:
-        name = _to_dict(_to_dict(tc).get("function", {})).get("name", "")
+        name = as_dict(as_dict(tc).get("function", {})).get("name", "")
         emit({"type": "status", "text": f"  ⏭ Plan already recorded — skipped '{name}'"})
         messages.append(refusal_reply(tc, PLAN_ALREADY_RECORDED_ERROR))
 

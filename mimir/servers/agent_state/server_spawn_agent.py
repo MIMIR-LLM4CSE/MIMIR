@@ -77,7 +77,7 @@ SUBAGENT_WORKING_BUDGET_SECS = 7200           # 2 h:   edit, build, measure, rep
 SUBAGENT_MIN_BUDGET_SECS = 60
 
 # The longest a BLOCKING sub-agent call can last. The client caps any timeout a tool
-# declares at config.constants.TOOL_CALL_TIMEOUT_MAX_SECS (1200s, see
+# declares at config.limits.TOOL_CALL_TIMEOUT_MAX_SECS (1200s, see
 # context.capabilities), so a call cannot hold a child for longer whatever this server
 # declares — a longer budget is detached instead (see spawn_agent). The margin below
 # that ceiling is what lets this server's own cap fire first and hand back what the
@@ -107,14 +107,14 @@ _GRANTABLE_TOOLS_META = "mimir/grantable"
 _GRANTABLE_WRITERS_META = "mimir/grantable_writers"
 _CALLER_MODE_META = "mimir/mode"
 
-# How far the user lets a sub-agent go (client config.constants.SUBAGENT_LEVELS,
+# How far the user lets a sub-agent go (client config.settings.SUBAGENT_LEVELS,
 # config.models.SUBAGENT_LEVEL_META). A rung hands something over, so an absent or
 # unknown one is read as the weakest: a child that only reads.
 _SUBAGENT_LEVELS = ("explore", "build")
 _DEFAULT_SUBAGENT_LEVEL = _SUBAGENT_LEVELS[0]
 # The rung's former name, still read: it is in the preferences file of everyone who
 # set it, and an unknown rung is read as the weakest — which would take away a right
-# the user had granted (client config.constants.SUBAGENT_LEVEL_ALIASES).
+# the user had granted (client config.settings.SUBAGENT_LEVEL_ALIASES).
 _SUBAGENT_LEVEL_ALIASES = {"parallel": "build"}
 _SUBAGENT_LEVEL_META = "mimir/subagent_level"
 

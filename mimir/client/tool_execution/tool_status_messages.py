@@ -9,7 +9,7 @@ import os
 import re
 from typing import Any
 
-from ..context.capabilities import READ, SEARCH_WITH_PATH, has_cap
+from ..context.capabilities import READ, SEARCH_WITH_PATH, has_cap, CONVENTIONAL_PATH_ARGS
 
 def _relpath(path: str) -> str:
     """The file name alone — what a tool-activity row should show.
@@ -57,7 +57,7 @@ def shorten_display_args(name: str, args: dict, tool_caps=None) -> dict:
         return args
     from ..context.capabilities import arg_role
     declared = arg_role(name, "path", tool_caps) or ()
-    keys = declared or _PATH_KEYS
+    keys = declared or CONVENTIONAL_PATH_ARGS
     shortened = dict(args)
     # A url's `user:password@` never belongs on screen. It is not part of any decision
     # — a consent prompt asks about the host and the path — and the label it lands in
@@ -167,7 +167,6 @@ def tool_status_message(name: str, args: dict) -> str:
 
 # Argument keys that carry a runnable command / code body, in priority order.
 _COMMAND_KEYS = ("command", "cmd", "script", "code")
-_PATH_KEYS = ("path", "filepath", "file")
 # The *object* of a call, in priority order: the thing it is acting on or asking about.
 # Argument names, never tool identities — the same convention `shorten_display_args`
 # and `file_preview` already follow, and the reason a new tool needs no entry anywhere.
@@ -246,7 +245,7 @@ def tool_arg_preview(name: str, args: dict) -> str:
         a, b = args.get(left), args.get(right)
         if isinstance(a, str) and a.strip() and isinstance(b, str) and b.strip():
             whole = f"{a.strip()}/{b.strip()}"
-            for key in _PATH_KEYS:
+            for key in CONVENTIONAL_PATH_ARGS:
                 val = args.get(key)
                 if isinstance(val, str) and val.strip():
                     whole += "/" + val.strip().lstrip("/")
@@ -259,7 +258,7 @@ def tool_arg_preview(name: str, args: dict) -> str:
     # path on a remote-fetch tool is already short and its leading segments are what
     # identify it. Applied here and not only there because `policy.gates` previews the
     # raw arguments.
-    for key in _PATH_KEYS:
+    for key in CONVENTIONAL_PATH_ARGS:
         val = args.get(key)
         if isinstance(val, str) and val.strip():
             val = val.strip()
@@ -353,11 +352,6 @@ def _url_preview(url: str) -> str:
     tail = path.rstrip("/")
     return host + "/…" + tail[-room:] if room > 4 else _clip(host, _PREVIEW_LIMIT)
 
-
-# The argument the model's per-call description arrives in. Named here, with the helper
-# that renders it, so the schema builder that adds the parameter and the dispatcher that
-# strips it cannot disagree about its spelling.
-DOING_ARG = "doing"
 
 # Upper bound on the model's per-call description. The 15-word limit is asked of the
 # model, not enforced here: a sentence cut mid-word reads worse than a long one, and

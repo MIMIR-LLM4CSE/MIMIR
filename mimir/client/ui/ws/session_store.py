@@ -38,7 +38,7 @@ import uuid
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
 
-from ...config.constants import STATE_DIR
+from ...config.paths import STATE_DIR
 from ...util.files import write_json_atomic
 
 logger = logging.getLogger(__name__)

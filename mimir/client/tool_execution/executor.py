@@ -9,7 +9,7 @@ from typing import Any
 from ..event_sink import captured_emitter
 from ..guardrails.observations import record_tool_observation
 from ..guardrails.policy.approval import APPROVAL_MODE_META
-from ..config.constants import DEFAULT_SUBAGENT_LEVEL
+from ..config.settings import DEFAULT_SUBAGENT_LEVEL
 from ..config.models import (
     CALLER_MODE_META, CALLER_MODEL_META, GRANTABLE_TOOLS_META,
     GRANTABLE_WRITERS_META, SUBAGENT_LEVEL_META,
@@ -19,8 +19,10 @@ from ..context.execution_context import failed_runs, unsettled_runs
 from ..context.capabilities import (
     CACHEABLE, CODE_NAV, DELEGATE, EDIT, JUDGE,
     has_cap, names_with_cap,
+    target_path_arg,
 )
 from . import bash_effect
+from ..protocol.tool_result import json_error_payload
 from .plugins import PostToolRegistry
 from .validation import absolute_workspace_path, is_scratch_path
 from .normalizer import _make_hashable
@@ -265,7 +267,7 @@ def _build_fork_hint(
     stem, _ext = os.path.splitext(os.path.basename(path))
     parent = os.path.dirname(path)
     from ...servers._shared.state_paths import scratch_dir
-    from ..config.constants import STATE_DIR
+    from ..config.paths import STATE_DIR
     # This agent's scratchpad, named by its own session: the hint compares where the
     # file landed against where *this* conversation's throwaway work belongs, and the
     # active-session pointer would hand a concurrent session another one's directory.
@@ -479,18 +481,16 @@ async def execute_tool_call(
     # produce a diff and revert if the user rejects the batch at the end of turn.
     if agent.approvals.batch_mode:
         path = agent._normalize_workspace_path(
-            arguments.get("path") or arguments.get("filepath") or ""
-        )
+            target_path_arg(tool_name, arguments, agent.tool_caps))
         if path:
             agent.approvals.record_snapshot(path)
 
     if tool_name not in agent.tool_owner:
         available = sorted(agent.tool_owner.keys())
-        return json.dumps({
-            "status": "error",
-            "error": f"Unknown tool '{tool_name}'. This tool does not exist.",
-            "available_tools": available,
-        })
+        return json_error_payload(
+            f"Unknown tool '{tool_name}'. This tool does not exist.",
+            available_tools=available,
+        )
     session = agent.sessions[agent.tool_owner[tool_name]]
     # Taken before the call and read after it: a shell write is the one mutation in the
     # system that returns no diff, so what it did has to be observed rather than

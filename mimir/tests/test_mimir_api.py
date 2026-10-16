@@ -20,7 +20,8 @@ for _p in (SERVERS_DIR / "_shared", SERVERS_DIR / "agent_state"):
     if str(_p) not in sys.path:
         sys.path.insert(0, str(_p))
 
-from mimir.client.config import constants as k                      # noqa: E402
+from mimir.client.config import paths as k                          # noqa: E402
+from mimir.client.config.servers import SERVERS                     # noqa: E402
 from mimir.client.context import capabilities as caps               # noqa: E402
 from mimir.client.extensions import resolve_skills_dir              # noqa: E402
 from mimir.servers._shared import extension_paths                   # noqa: E402
@@ -155,7 +156,7 @@ class TopicTests(unittest.TestCase):
     def test_reserved_namespaces_come_from_the_registry(self):
         # A filename is not a namespace: server_spawn_agent.py registers as `agent`.
         reserved = api.mimir_api("server")["reserved_server_namespaces"]
-        self.assertEqual(set(reserved["names"]), set(k.SERVERS))
+        self.assertEqual(set(reserved["names"]), set(SERVERS))
         self.assertIn("agent", reserved["names"])
         self.assertNotIn("spawn_agent", reserved["names"])
 

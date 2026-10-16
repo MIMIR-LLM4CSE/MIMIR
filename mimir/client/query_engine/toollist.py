@@ -40,7 +40,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from ..config.constants import DEFAULT_SUBAGENT_LEVEL, subagent_level_allows
+from ..config.settings import DEFAULT_SUBAGENT_LEVEL, subagent_level_allows
 from ..config.models import READONLY_MODES
 from ..context.capabilities import (
     PLAN_BLOCKED, PLAN_READONLY, TASK_PLANNING, has_cap, names_with_arg_role,
@@ -177,7 +177,7 @@ def grantable_tools(agent: Any) -> dict[str, str]:
     * the user's server toggles, already applied by ``agent.advertised_tools()``;
     * its own mode — a read-only mode has no write surface to give away, which is why
       a sub-agent cannot be the way around plan mode;
-    * the **sub-agent rung** the user set (``config.constants.SUBAGENT_LEVELS``): at
+    * the **sub-agent rung** the user set (``config.settings.SUBAGENT_LEVELS``): at
       "explore" the surface is read-only whatever mode the orchestrator is in, because
       a child that writes is something the user hands over, not something the model
       decides. At "build" the writing tools may be granted, and the child that gets

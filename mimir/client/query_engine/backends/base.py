@@ -5,7 +5,7 @@ import json
 from abc import ABC, abstractmethod
 from typing import Any, Callable
 
-from ...config.constants import chars_per_token_for
+from ...config.limits import CHARS_PER_TOKEN
 from .. import token_calibration
 
 # Cap on the per-text token-count cache so a long-running session can't grow it
@@ -157,7 +157,7 @@ class LLMBackend(ABC):
         Pairing two calls to measure the difference between them was tried and
         dropped: it measures only the last stretch, off by a fifth on real sessions.
         """
-        default = chars_per_token_for(model)
+        default = float(CHARS_PER_TOKEN)
         fixed_chars = len(message_wire_form(system)) if system else 0
         if tools:
             fixed_chars += len(json.dumps(tools))
@@ -351,5 +351,5 @@ class LLMBackend(ABC):
         """
         ratio = (self._calibrated_cpt.get(model)
                  or token_calibration.recall_chars_per_token(model)
-                 or chars_per_token_for(model))
+                 or CHARS_PER_TOKEN)
         return max(1, int(len(text) / ratio))

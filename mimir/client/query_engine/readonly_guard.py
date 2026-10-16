@@ -11,15 +11,15 @@ Extracted from ``plan_loop.py`` when ask mode started sharing the same guard.
 """
 from __future__ import annotations
 
-import json
 from typing import Any
 
 from ..event_sink import emit
 from ..context.capabilities import (
-    PLAN_BLOCKED, PLAN_READONLY, has_cap, readonly_invocation_spec,
+    PLAN_BLOCKED, PLAN_READONLY, has_cap, readonly_invocation_spec, shell_command_of,
 )
 from ..guardrails.policy.readonly_exempt import is_readonly_invocation
-from .streaming import _to_dict
+from ..protocol.tool_call import as_dict
+from ..protocol.tool_result import json_error_payload
 from .toollist import hidden_planning_tools
 
 # Why a mode has no plan-writing tool, told to a model that called one anyway.
@@ -41,9 +41,8 @@ def refusal_reply(tool_call: Any, error: str) -> dict:
     Carries the call's id: without it the history repair pairs the reply by position,
     and with several calls in a step one call's refusal was read as another's result.
     """
-    reply: dict = {"role": "tool",
-                   "content": json.dumps({"status": "error", "error": error})}
-    call_id = _to_dict(tool_call).get("id")
+    reply: dict = {"role": "tool", "content": json_error_payload(error)}
+    call_id = as_dict(tool_call).get("id")
     if isinstance(call_id, str) and call_id:
         reply["tool_call_id"] = call_id
     return reply
@@ -69,7 +68,7 @@ def filter_readonly_tool_calls(
     no_planning = hidden_planning_tools(mode_label, agent.tool_caps)
     safe: list[Any] = []
     for tc in tool_calls:
-        fn = _to_dict(_to_dict(tc).get("function", {}))
+        fn = as_dict(as_dict(tc).get("function", {}))
         tc_name = fn.get("name", "")
         if has_cap(tc_name, PLAN_BLOCKED, agent.tool_caps):
             emit({"type": "status", "text": f"  ⚠ Blocked '{tc_name}' in {mode_label} mode"})
@@ -90,7 +89,7 @@ def filter_readonly_tool_calls(
                 emit({"type": "status", "text": f"  ⚠ Blocked '{tc_name}' ({spec['arg']}={value or 'unset'}) in {mode_label} mode"})
                 messages.append(refusal_reply(tc, f"In {mode_label} mode '{tc_name}' is available only with {spec['arg']}={' or '.join(allowed)} — nothing may write, execute or mutate. Re-issue the call that way."))
             else:
-                cmd = args.get("command", "")
+                cmd = shell_command_of(tc_name, args, agent.tool_caps)
                 emit({"type": "status", "text": f"  ⚠ Blocked exec command in {mode_label} mode: {tc_name}"})
                 messages.append(refusal_reply(tc, f"Only read-only discovery commands are allowed in {mode_label} mode. '{cmd}' runs code or mutates state — use it for inspection only (e.g. search, list, read files)."))
         else:

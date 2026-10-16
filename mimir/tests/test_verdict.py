@@ -23,7 +23,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..",
 
 import mimir.client.guardrails.observations as observations
 import mimir.client.tool_execution.executor as executor
-from mimir.client.config.constants import EXERCISE_BUDGET, VALIDATION_RETRY_BUDGET
+from mimir.client.config.limits import EXERCISE_BUDGET, VALIDATION_RETRY_BUDGET
 from mimir.client.context.capabilities import JUDGE, ToolCaps
 from mimir.client.context.execution_context import build_execution_context, record_run
 from mimir.client.event_sink import event_sink

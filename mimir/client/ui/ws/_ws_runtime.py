@@ -5,7 +5,7 @@ Split out of ``ws_server.py`` so ``_AgentWorker`` (``ws_worker``) and ``_Session
 the context-budget constants without a circular import.
 
 IMPORTANT — cwd bootstrap ordering: ``_bootstrap_cwd()`` MUST run before any import
-that captures the workspace root *at import time* — ``config.constants`` resolves
+that captures the workspace root *at import time* — ``config.paths`` resolves
 WORKSPACE_ROOT / MIMIR_DIR from MCP_FILES_ROOT or os.getcwd() when first imported,
 and the backend factory / ``resource_context`` do likewise. The ``--cwd`` flag is
 only applied in ``main()``, which runs after module-level imports, so without this
@@ -89,9 +89,11 @@ _ROUTER = _ThreadAwareOutput(_ORIGINAL_STDOUT)
 _ROUTER_INSTALLED = False
 
 # ── Context-window budget constants ────────────────────────────────────────────
-# Canonical values live in config.constants; aliased here to the private names
-# this module already uses (kept in sync with chat_session.py via the shared source).
-from ...config.constants import context_budget_for, CTX_TOTAL_FULL as _CTX_DEFAULT_FULL, STATE_DIR
+# Canonical values live in config.limits; aliased here to the private names this
+# module already uses (kept in sync with chat_session.py via the shared source).
+from ...query_engine.context_budget import context_budget_for
+from ...config.limits import CTX_TOTAL_FULL as _CTX_DEFAULT_FULL
+from ...config.paths import STATE_DIR
 
 
 def _ensure_router_installed() -> None:

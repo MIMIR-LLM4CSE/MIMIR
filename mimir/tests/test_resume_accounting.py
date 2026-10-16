@@ -18,8 +18,8 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from mimir.client.config import constants
-from mimir.client.config.constants import context_budget_for
+from mimir.client.config import limits, paths
+from mimir.client.query_engine.context_budget import context_budget_for
 from mimir.client.query_engine import token_calibration
 from mimir.client.query_engine.backends.base import LLMBackend
 from mimir.client.ui.ws.session_store import FullSession
@@ -63,11 +63,11 @@ class ResumedBudgetTests(unittest.TestCase):
         full_total, _, _, _ = context_budget_for("test-model", "full")
         total, reserved = _session("full")._ctx_budget()
         self.assertEqual(total, full_total)
-        self.assertGreater(total, constants.CTX_TOTAL_COMPACT)
+        self.assertGreater(total, limits.CTX_TOTAL_COMPACT)
 
     def test_a_resumed_compact_session_keeps_the_compact_window(self):
         total, _ = _session("compact")._ctx_budget()
-        self.assertEqual(total, constants.CTX_TOTAL_COMPACT)
+        self.assertEqual(total, limits.CTX_TOTAL_COMPACT)
 
     def test_a_live_agent_still_answers_for_itself(self):
         """The saved mode is a fallback, not an override: a mode switched mid-session
@@ -141,7 +141,7 @@ class RememberedCalibrationTests(unittest.TestCase):
     def setUp(self) -> None:
         self._dir = tempfile.TemporaryDirectory()
         self.addCleanup(self._dir.cleanup)
-        patcher = patch.object(constants, "STATE_DIR", self._dir.name)
+        patcher = patch.object(paths, "STATE_DIR", self._dir.name)
         patcher.start()
         self.addCleanup(patcher.stop)
         token_calibration.reset_for_tests()
@@ -227,7 +227,7 @@ class MeasuredOverheadTests(unittest.TestCase):
     def setUp(self) -> None:
         self._dir = tempfile.TemporaryDirectory()
         self.addCleanup(self._dir.cleanup)
-        patcher = patch.object(constants, "STATE_DIR", self._dir.name)
+        patcher = patch.object(paths, "STATE_DIR", self._dir.name)
         patcher.start()
         self.addCleanup(patcher.stop)
         token_calibration.reset_for_tests()

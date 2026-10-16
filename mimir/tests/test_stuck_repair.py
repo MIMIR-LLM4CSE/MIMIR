@@ -20,7 +20,7 @@ import unittest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
-from mimir.client.config.constants import (
+from mimir.client.config.limits import (
     NUDGE_MAX_STUCK_REPAIR,
     STUCK_REPAIR_ADVISE_AFTER,
     STUCK_REPAIR_CONSTRAIN_AFTER,

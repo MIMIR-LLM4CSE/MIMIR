@@ -5,7 +5,7 @@ import types
 import unittest
 from unittest.mock import patch
 
-from mimir.client.config.constants import CTX_RESERVED_RATIO
+from mimir.client.config.limits import CTX_RESERVED_RATIO
 from mimir.client.query_engine.backends.vllm_backend import _answer_max_tokens
 
 
@@ -220,7 +220,7 @@ class UnknownWindowTests(unittest.TestCase):
         return sent
 
     def test_no_published_window_still_caps_the_answer(self) -> None:
-        from mimir.client.config.constants import CTX_TOTAL_FULL
+        from mimir.client.config.limits import CTX_TOTAL_FULL
         sent = self._sent({})
         self.assertEqual(sent["max_tokens"], int(CTX_TOTAL_FULL * CTX_RESERVED_RATIO))
 

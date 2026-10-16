@@ -223,7 +223,7 @@ def _bundled_server_names() -> dict:
     closest honest answer rather than no answer.
     """
     try:
-        from mimir.client.config.constants import SERVERS
+        from mimir.client.config.servers import SERVERS
         return {"names": sorted(SERVERS), "source": "the client's bundled server registry"}
     except Exception:
         names = set()

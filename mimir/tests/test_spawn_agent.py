@@ -799,7 +799,7 @@ class SubAgentLevelTests(unittest.TestCase):
     """The rung the user set, read off the call rather than guessed."""
 
     def test_the_meta_keys_and_the_rungs_match_the_client_s(self):
-        from mimir.client.config.constants import SUBAGENT_LEVELS
+        from mimir.client.config.settings import SUBAGENT_LEVELS
         from mimir.client.config.models import (
             GRANTABLE_WRITERS_META, SUBAGENT_LEVEL_META,
         )
@@ -1302,7 +1302,7 @@ class ForcedDetachmentTests(unittest.TestCase):
     def test_the_blocking_cap_stays_under_what_the_client_allows(self):
         """Or the dispatcher kills the call before this server's own cap can hand back
         what the child had."""
-        from mimir.client.config.constants import TOOL_CALL_TIMEOUT_MAX_SECS
+        from mimir.client.config.limits import TOOL_CALL_TIMEOUT_MAX_SECS
         self.assertLess(spawn.SUBAGENT_HARD_CAP_SECS, TOOL_CALL_TIMEOUT_MAX_SECS)
 
     def test_a_child_out_of_time_hands_back_where_it_got_to(self):
@@ -1849,7 +1849,7 @@ class DeclaredBudgetTests(unittest.TestCase):
 
     def test_the_dispatcher_reads_that_wall_and_not_the_global_default(self):
         from mimir.client.context.capabilities import timeout_for
-        from mimir.client.config.constants import TOOL_CALL_TIMEOUT_SECS
+        from mimir.client.config.limits import TOOL_CALL_TIMEOUT_SECS
         registry = {"spawn_agent": self._descriptor()}
         self.assertGreater(timeout_for("spawn_agent", registry), TOOL_CALL_TIMEOUT_SECS)
         self.assertEqual(timeout_for("other_tool", registry), TOOL_CALL_TIMEOUT_SECS)
@@ -1862,7 +1862,7 @@ class DeclaredBudgetTests(unittest.TestCase):
         any declared wall to its own ceiling. That is precisely why a budget past the
         blocking cap is detached instead of waited on.
         """
-        from mimir.client.config.constants import TOOL_CALL_TIMEOUT_MAX_SECS
+        from mimir.client.config.limits import TOOL_CALL_TIMEOUT_MAX_SECS
         self.assertGreater(spawn.SUBAGENT_HARD_CAP_SECS, spawn.SUBAGENT_EXPLORE_BUDGET_SECS)
         self.assertLessEqual(self._descriptor().timeout_secs, TOOL_CALL_TIMEOUT_MAX_SECS)
         self.assertGreater(spawn.SUBAGENT_WORKING_BUDGET_SECS, spawn.SUBAGENT_HARD_CAP_SECS)

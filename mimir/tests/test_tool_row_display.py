@@ -545,7 +545,7 @@ class _FakeAgent:
     def _normalize_arguments(self, args):
         # The real one hands back the dict it was given (formatter.normalize_arguments).
         # Copying here would hide exactly the mutation these tests are watching for.
-        from mimir.client.tool_execution.formatter import normalize_arguments
+        from mimir.client.protocol.tool_call import normalize_arguments
         return normalize_arguments(args)
 
     def _rewrite_tool_for_context(self, name, args):

@@ -16,7 +16,8 @@ import json
 import types
 import unittest
 
-from mimir.client.config.constants import SKILL_LOAD_TOOL, SKILL_PULL_MAX
+from mimir.client.config.servers import SKILL_LOAD_TOOL
+from mimir.client.config.limits import SKILL_PULL_MAX
 from mimir.client.guardrails.policy.gates import _check_skill_pull
 from mimir.client.query_engine import dispatch as dispatch_module
 from mimir.client.query_engine import history as history_module

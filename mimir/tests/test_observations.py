@@ -25,7 +25,7 @@ from mimir.client.guardrails.runner_output import (
     judge_run,
     observed_failure_verdict,
 )
-from mimir.client.config.constants import VALIDATION_RETRY_BUDGET
+from mimir.client.config.limits import VALIDATION_RETRY_BUDGET
 from mimir.client.context.execution_context import (
     build_execution_context,
     declared_edit_set_complete,
@@ -71,6 +71,7 @@ def _stub_agent():
     return types.SimpleNamespace(
         _parse_tool_payload=lambda result: {},
         _normalize_workspace_path=lambda p: p or "",
+        tool_caps={},
     )
 
 
@@ -583,7 +584,7 @@ class BashValidationObservationTests(unittest.TestCase):
         self.assertEqual(ec["runs"]["python main.py"]["verdict"], "pass")
 
     def test_a_run_that_cannot_be_fixed_releases_the_workflow(self):
-        from mimir.client.config.constants import VALIDATION_RETRY_BUDGET
+        from mimir.client.config.limits import VALIDATION_RETRY_BUDGET
         agent, ec = self._agent(), self._ctx({"foo.py"})
         self._run(agent, "ruff check foo.py", ec)
         for _ in range(VALIDATION_RETRY_BUDGET):
@@ -621,7 +622,7 @@ class BashValidationObservationTests(unittest.TestCase):
         self.assertEqual(ec["workflow_state"], "edit")
 
     def test_exhausted_retry_budget_escapes_to_conclude(self):
-        from mimir.client.config.constants import VALIDATION_RETRY_BUDGET
+        from mimir.client.config.limits import VALIDATION_RETRY_BUDGET
         agent, ec = self._agent(), self._ctx({"foo.py"})
         for _ in range(VALIDATION_RETRY_BUDGET):
             self._run(agent, "ruff check foo.py", ec, status="error")
@@ -1436,8 +1437,8 @@ class DeclaredEditSetTests(unittest.TestCase):
     def test_a_declared_target_written_under_another_spelling_counts_as_kept(self):
         # A write outside the workspace records an absolute path while the checklist
         # names the file bare or relative to the root. All three are the same promise.
-        import mimir.client.config.constants as constants
-        root = constants.WORKSPACE_ROOT
+        import mimir.client.config.paths as paths
+        root = paths.WORKSPACE_ROOT
         outside = os.path.abspath(os.path.join(root, "../other/wave_solver_2d.py"))
         for declared in ("wave_solver_2d.py", "../other/wave_solver_2d.py", outside):
             ec = build_execution_context()
@@ -1447,8 +1448,8 @@ class DeclaredEditSetTests(unittest.TestCase):
 
     def test_a_declared_path_elsewhere_is_a_different_file(self):
         # Basename matching is only for a *bare* mention, which carried no location.
-        import mimir.client.config.constants as constants
-        root = constants.WORKSPACE_ROOT
+        import mimir.client.config.paths as paths
+        root = paths.WORKSPACE_ROOT
         ec = build_execution_context()
         ec["declared_edit_set"] = {"tests/solver.py"}
         ec["dirty_written_files"] = {os.path.abspath(os.path.join(root, "src/solver.py"))}

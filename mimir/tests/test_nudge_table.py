@@ -1,6 +1,6 @@
 import unittest
 
-from mimir.client.config.constants import EXERCISE_BUDGET
+from mimir.client.config.limits import EXERCISE_BUDGET
 from mimir.client.guardrails.nudges.engine import (
     _ALL_GUIDANCE,
     _CORE_NUDGES,
@@ -138,7 +138,7 @@ class UnwatchedRunNudgeTest(unittest.TestCase):
         self.assertTrue(self._fires(self._context(), level="light"))
 
     def test_it_is_budgeted_once(self):
-        from mimir.client.config.constants import NUDGE_MAX_UNWATCHED_RUN
+        from mimir.client.config.limits import NUDGE_MAX_UNWATCHED_RUN
         ctx = self._context(nudge_counts={"unwatched_run": NUDGE_MAX_UNWATCHED_RUN})
         self.assertFalse(self._fires(ctx))
 

@@ -7,7 +7,7 @@ the user drops in: MCP **servers**, **skills**, and policy/nudge **plugin packs*
 
 Each is env-overridable and fail-open. The raw path primitives (``MIMIR_DIR``,
 ``resolve_extension_dir``, the ``*_DIRNAME``/``*_DIR_ENV`` constants) live in
-``config.constants``; this package owns discovery + loading.
+``config.paths``; this package owns discovery + loading.
 
 Public authoring surface for a plugin pack (dropped into the plugins dir)::
 

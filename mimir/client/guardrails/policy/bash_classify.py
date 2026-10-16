@@ -33,6 +33,7 @@ from typing import NamedTuple
 # the bash *server* validates with, so classification tracks what the server
 # actually permits and confines — one implementation, no drift (see its docstring).
 from ....servers._shared.shell_paths import (
+    COMMAND_WRAPPERS,
     EFFECT_RUN,
     allocates_cluster,
     ENV_MANAGER_COMMANDS,
@@ -252,7 +253,10 @@ def _inspect_operands(argv: list[str]) -> list[str]:
 # A positional that unambiguously names a file: path separator or dotted extension.
 # Stricter than :func:`_looks_like_path`, so a module name (`python -m py_compile`),
 # sub-command (`ruff check`) or bare flag value is never mistaken for the target file.
-_FILE_LIKE_RE = re.compile(r"\.[A-Za-z0-9]+$")
+# A shell ``VAR=value`` assignment word.
+ENV_ASSIGN_RE = re.compile(r"^[A-Za-z_]\w*=")
+# A token that names a file by its extension.
+FILE_LIKE_RE = re.compile(r"\.[A-Za-z0-9]+$")
 
 
 def _exec_head(argv: list[str]) -> str:
@@ -287,7 +291,7 @@ def _exec_operands(argv: list[str]) -> list[str]:
     """
     return [
         a for a in argv[1:]
-        if not a.startswith("-") and ("/" in a or _FILE_LIKE_RE.search(a))
+        if not a.startswith("-") and ("/" in a or FILE_LIKE_RE.search(a))
     ]
 
 
@@ -486,7 +490,6 @@ def classify_bash_command(
 # Command position, for a command the tokenizer could not read: the start, or whatever
 # follows a separator. Textual on purpose — the whole point is that shlex already failed.
 _OPAQUE_SEGMENT_SPLIT_RE = re.compile(r"[;&|]+")
-_OPAQUE_ENV_ASSIGN_RE = re.compile(r"^[A-Za-z_]\w*=")
 
 
 def opaque_command_executes(command: str) -> bool:
@@ -513,7 +516,7 @@ def opaque_command_executes(command: str) -> bool:
     """
     for piece in _OPAQUE_SEGMENT_SPLIT_RE.split(command):
         for tok in piece.split():
-            if _OPAQUE_ENV_ASSIGN_RE.match(tok):
+            if ENV_ASSIGN_RE.match(tok):
                 continue
             name = os.path.basename(tok)
             if name in EXEC_COMMANDS or (name and is_path_like_command(tok)):
@@ -546,3 +549,49 @@ def bash_command_is_readonly(command: str) -> bool:
     if segments is None:
         return False
     return all(seg.kind in READONLY_KINDS for seg in segments)
+
+
+# Wrappers are unwrapped by the shared ``unwrap_argv`` — the one the bash validator
+# uses — so a wrapper's own arguments (``timeout 300``, ``srun -n 4``, ``mpirun -np 8``)
+# are never mistaken for the program. ``time`` is handled here: it is a shell keyword
+# rather than a command, so it never reaches that validator as a head.
+_EXEC_WRAPPERS = COMMAND_WRAPPERS | {"time"}
+# Interpreters that execute their first non-flag argument as the real program.
+_EXEC_INTERPRETERS = frozenset({
+    "python", "python3", "python2", "pypy", "pypy3", "sh", "bash", "zsh",
+    "node", "ruby", "perl",
+})
+# Bounds the peel loop on adversarial input; no real call nests this deep.
+_MAX_PEEL = 8
+
+
+def segment_program(argv: list[str]) -> str | None:
+    """The program a single shell segment executes, or ``None``.
+
+    Peels leading ``VAR=val`` assignments, ``time`` and the shared wrappers
+    (``env``/``timeout``/``srun``/``mpirun``… with their flags and values), then
+    returns the head — or, if the head is an interpreter, its first non-flag argument
+    (``python proxy.py`` runs proxy.py). A wrapper with nothing inside it runs no
+    program of interest, and yields ``None``.
+    """
+    current = list(argv)
+    for _ in range(_MAX_PEEL):
+        while current and ENV_ASSIGN_RE.match(current[0]) and not current[0].startswith("/"):
+            current = current[1:]
+        if not current:
+            return None
+        if os.path.basename(current[0]) == "time":
+            current = current[1:]
+            while current and current[0].startswith("-"):
+                current = current[1:]
+            continue
+        inner, wrappers = unwrap_argv(current)
+        if not wrappers:
+            break
+        current = inner
+    if not current or os.path.basename(current[0]) in _EXEC_WRAPPERS:
+        return None
+    head = current[0]
+    if os.path.basename(head) in _EXEC_INTERPRETERS:
+        return next((a for a in current[1:] if not a.startswith("-")), None)
+    return head

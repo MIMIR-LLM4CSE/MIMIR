@@ -182,7 +182,7 @@ class RebuildRuleTests(unittest.TestCase):
         self.assertEqual(out, messages[0]["content"])
 
     def test_a_thinking_rung_change_keeps_the_skill_block(self):
-        from mimir.client.config.constants import THINKING_DEPTH_AUTO
+        from mimir.client.config.settings import THINKING_DEPTH_AUTO
         agent = self._agent()
         agent.thinking_depth = THINKING_DEPTH_AUTO
         ctx = {"_skill_suffix": "\n\nSKILL CONTEXT (SUBORDINATE). xyz"}

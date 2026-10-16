@@ -37,7 +37,7 @@ import subprocess
 from dataclasses import dataclass, field
 from typing import Any
 
-from ..config.constants import (
+from ..config.limits import (
     BASH_EFFECT_DIFF_MAX_LINES,
     BASH_EFFECT_DUP_MAX_LINES,
     BASH_EFFECT_DUP_MIN_BLOCK,
@@ -50,25 +50,9 @@ from ..guardrails.policy.bash_classify import (
     bash_command_is_readonly,
     classify_bash_command,
 )
-from ..context.capabilities import scope_spec
+from ..context.capabilities import shell_command_of
 
 _GIT_TIMEOUT_SECS = 10
-
-
-def _shell_command(agent: Any, tool_name: str, arguments: dict) -> str:
-    """The raw command string when *tool_name* takes one, else "".
-
-    Registry-driven, like every other consumer: a shell tool declares a
-    ``command_prefix`` scope kind and names the argument carrying the command.
-    """
-    spec = scope_spec(tool_name, getattr(agent, "tool_caps", None))
-    if not spec or spec.get("kind") != "command_prefix":
-        return ""
-    for name in spec.get("args") or ("command",):
-        value = arguments.get(name)
-        if isinstance(value, str) and value.strip():
-            return value
-    return ""
 
 
 def _git(root: str, *args: str) -> str | None:
@@ -201,7 +185,7 @@ def capture(
 ) -> _Probe | None:
     """Snapshot enough state to report what this call changes, or None to skip it."""
     try:
-        command = _shell_command(agent, tool_name, arguments)
+        command = shell_command_of(tool_name, arguments, getattr(agent, "tool_caps", None))
         if not command or bash_command_is_readonly(command):
             return None
         root = getattr(agent, "workspace_root", "") or os.getcwd()

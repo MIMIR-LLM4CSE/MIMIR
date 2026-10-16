@@ -18,7 +18,7 @@ from pathlib import Path
 from mimir.client.context.capabilities import ToolCaps, CODE_EXEC, READ, EDIT
 from mimir.client.guardrails.policy import approval as approval_mod
 from mimir.client.guardrails.policy import engine
-import mimir.client.config.constants as constants
+import mimir.client.config.paths as paths
 
 
 class _TmpStateDir(unittest.TestCase):
@@ -26,13 +26,13 @@ class _TmpStateDir(unittest.TestCase):
 
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
-        self._old_state = constants.STATE_DIR
-        constants.STATE_DIR = self._tmp.name
+        self._old_state = paths.STATE_DIR
+        paths.STATE_DIR = self._tmp.name
         self._old_env = os.environ.get("MIMIR_STATE_DIR")
         os.environ["MIMIR_STATE_DIR"] = self._tmp.name
 
     def tearDown(self) -> None:
-        constants.STATE_DIR = self._old_state
+        paths.STATE_DIR = self._old_state
         if self._old_env is None:
             os.environ.pop("MIMIR_STATE_DIR", None)
         else:
@@ -213,7 +213,7 @@ class OutOfWorkspaceGateTests(_TmpStateDir):
         old = os.environ.pop("MIMIR_STATE_DIR", None)
         try:
             agent = self._agent(cap=READ)
-            plan = os.path.join(constants.STATE_DIR, "sessions", "s1", "plans", "p.md")
+            plan = os.path.join(paths.STATE_DIR, "sessions", "s1", "plans", "p.md")
             out = engine._check_out_of_workspace_access(
                 agent, "read_file_lines", {"path": plan}, {})
             self.assertIsNone(out)
@@ -252,7 +252,7 @@ class OutOfWorkspaceGateTests(_TmpStateDir):
         for path in (
             os.path.join(os.path.dirname(home), "someone_else.py"),
             home + "_evil/probe.py",
-            os.path.join(constants.STATE_DIR, "sessions", "s1", "plans", "p.md"),
+            os.path.join(paths.STATE_DIR, "sessions", "s1", "plans", "p.md"),
         ):
             with self.subTest(path=path):
                 out = engine._check_out_of_workspace_access(

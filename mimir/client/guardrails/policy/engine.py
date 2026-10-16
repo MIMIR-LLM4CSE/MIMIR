@@ -24,8 +24,8 @@ from .gates import (
 from .readonly_exempt import _readonly_bash_exempt
 from ..workflow import approval_is_settled
 from .approval import MODE_DENIED_NOTE
-from ...config.constants import DISCOVERY_EVIDENCE_MIN_DISTINCT
-from ...context.capabilities import EDIT, REMOVE, has_cap
+from ...config.limits import DISCOVERY_EVIDENCE_MIN_DISTINCT
+from ...context.capabilities import EDIT, REMOVE, has_cap, target_path_arg
 from ...context.execution_context import (
     has_discovery_evidence,
     unwritten_declared_files,
@@ -447,7 +447,8 @@ def evaluate_tool_preconditions(
         # but only when the path itself is unconfirmed (path confusion). Skip the prompt
         # when the path is already known from a prior read/check: in that case the
         # violation is about policy semantics (e.g. missing overwrite=True), not the path.
-        write_path = agent._normalize_workspace_path(rewritten_arguments.get("path", ""))
+        write_path = agent._normalize_workspace_path(
+            target_path_arg(normalized_tool_name, rewritten_arguments, agent.tool_caps))
         path_already_confirmed = bool(write_path) and is_known_to_exist(
             normalized_context, write_path
         )

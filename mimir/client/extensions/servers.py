@@ -15,13 +15,8 @@ from __future__ import annotations
 import logging
 import os
 
-from ..config.constants import (
-    SERVER_DESCRIPTIONS,
-    SERVERS,
-    SERVERS_DIR_ENV,
-    SERVERS_DIRNAME,
-    resolve_extension_dir,
-)
+from ..config.servers import SERVER_DESCRIPTIONS, SERVERS
+from ..config.paths import SERVERS_DIR_ENV, SERVERS_DIRNAME, resolve_extension_dir
 
 logger = logging.getLogger(__name__)
 

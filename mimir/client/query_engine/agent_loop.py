@@ -17,11 +17,8 @@ from .verification import build_ledger
 from .dispatch import _dispatch_tool_calls, _post_dispatch_inject
 from .readonly_guard import filter_readonly_tool_calls
 from .plan_loop import _run_plan_mode
-from ..config.constants import (
-    AGENT_EMPTY_TURN_RETRIES,
-    NUDGE_MAX_CONSECUTIVE_NOOP,
-    THINKING_DEPTH_AUTO,
-)
+from ..config.limits import AGENT_EMPTY_TURN_RETRIES, NUDGE_MAX_CONSECUTIVE_NOOP
+from ..config.settings import THINKING_DEPTH_AUTO
 from ..config.models import READONLY_MODES, VALID_MODES
 from ..context import validate_execution_context
 from ..guardrails.builtin_check import sweep_builtin_checks

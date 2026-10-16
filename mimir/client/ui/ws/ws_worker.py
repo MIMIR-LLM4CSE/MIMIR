@@ -9,7 +9,7 @@ protocol.
 
 from __future__ import annotations
 
-# Import the shared runtime FIRST so its cwd bootstrap runs before config.constants
+# Import the shared runtime FIRST so its cwd bootstrap runs before config.paths
 # (and the backend factory) capture the workspace root at import time.
 from ._ws_runtime import (
     _ORIGINAL_STDOUT,
@@ -40,7 +40,7 @@ from itertools import chain, repeat
 from typing import Any
 
 from ... import human_pause
-from ...config.constants import DEFAULT_SUBAGENT_LEVEL
+from ...config.settings import DEFAULT_SUBAGENT_LEVEL
 from ...query_engine import job_poll
 
 logger = logging.getLogger(__name__)

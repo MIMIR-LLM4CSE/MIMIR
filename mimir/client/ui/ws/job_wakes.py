@@ -19,11 +19,6 @@ from __future__ import annotations
 
 import json
 
-# Events that describe a detached run rather than a turn. Everything else a worker
-# queues — its tokens, its rows, its answer — is debris once the socket drawing it is
-# gone; these two are the reason the pool consumes the bus at all. They have to reach a
-# turn whether or not anyone is attached, so both consumers key off this one set.
-DURABLE_EVENTS = frozenset({"job_complete", "job_checkin"})
 
 # How much of a finished job's own summary a wake carries. Enough for an exit code
 # and the tail of a build log; short of pasting a whole test suite into the history.

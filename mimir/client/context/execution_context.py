@@ -5,8 +5,9 @@ from dataclasses import dataclass, field
 from collections.abc import Iterable
 from typing import Any, Callable, TypedDict, cast
 
-from ..config.constants import (
-    DISCOVERY_EVIDENCE_MIN_DISTINCT_PLAN, PLAN_EVIDENCE_MIN_FILES_READ,
+from ..config.limits import (
+    DISCOVERY_EVIDENCE_MIN_DISTINCT_PLAN,
+    PLAN_EVIDENCE_MIN_FILES_READ,
 )
 
 
@@ -577,7 +578,7 @@ def unwritten_declared_files(execution_context: dict[str, Any]) -> list[str]:
     if not declared:
         return []
     dirty = set(execution_context.get("dirty_written_files", set()) or set())
-    from ..config.constants import WORKSPACE_ROOT
+    from ..config.paths import WORKSPACE_ROOT
     # Off the context, not off the import: a sub-agent in a copy of the repository
     # declares paths under its own root, and this function never sees the agent.
     root = os.path.abspath(execution_context.get("workspace_root") or WORKSPACE_ROOT)

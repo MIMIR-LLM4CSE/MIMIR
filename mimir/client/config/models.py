@@ -20,7 +20,7 @@ GRANTABLE_TOOLS_META = "mimir/grantable"
 # (it holds names, and no capability registry until it connects the servers).
 GRANTABLE_WRITERS_META = "mimir/grantable_writers"
 CALLER_MODE_META = "mimir/mode"
-# How far the user lets a sub-agent go (config.constants.SUBAGENT_LEVELS). Sent with
+# How far the user lets a sub-agent go (config.settings.SUBAGENT_LEVELS). Sent with
 # the same call, because the server that spawns the child cannot read a preference
 # that lives in the client's state dir and changes mid-session.
 SUBAGENT_LEVEL_META = "mimir/subagent_level"

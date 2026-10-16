@@ -18,7 +18,7 @@ import logging
 import os
 import sys
 
-from ..config.constants import PLUGINS_DIRNAME, PLUGINS_DIR_ENV, resolve_extension_dir
+from ..config.paths import PLUGINS_DIRNAME, PLUGINS_DIR_ENV, resolve_extension_dir
 
 logger = logging.getLogger(__name__)
 

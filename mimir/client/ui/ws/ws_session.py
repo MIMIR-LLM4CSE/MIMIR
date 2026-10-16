@@ -9,7 +9,7 @@ module's docstring for the wire protocol.
 
 from __future__ import annotations
 
-# Import the shared runtime FIRST so its cwd bootstrap runs before config.constants
+# Import the shared runtime FIRST so its cwd bootstrap runs before config.paths
 # (and the backend factory) capture the workspace root at import time.
 from ._ws_runtime import (
     _MIMIR_DIR_WS,
@@ -35,7 +35,8 @@ from .job_scan import (
     scan_all_sessions,
     wake_reported,
 )
-from .job_wakes import DURABLE_EVENTS, checkin_text, wake_text
+from .job_wakes import checkin_text, wake_text
+from ...protocol.events import DURABLE_EVENTS
 from .detach import detach as detach_process
 from . import server_registry
 from .ws_pool import _AgentPool, idle_stop_reason
@@ -73,14 +74,6 @@ logger = logging.getLogger(__name__)
 # ``prompt_expired`` rides with them: it takes one of these cards back off the screen,
 # and filtering it as foreign would leave a card up for a wait that has ended.
 _INTERACTION_EVENTS = frozenset({"approval", "user_question", "prompt_expired"})
-
-# Events a reconnect may not throw away. Everything else a worker queues describes a
-# turn — its tokens, its rows, its answer — and is debris once the socket that was
-# drawing it is gone. These two describe a detached run instead: nothing re-emits them,
-# their watcher is finished by the time they are read, and the conversation they belong
-# to is idle precisely because it is waiting for them. Shared with the pool, which
-# routes the same two when no socket exists to do it.
-_DURABLE_EVENTS = DURABLE_EVENTS
 
 # How many journal events one ``replay`` frame carries. The frame cap is 32 MiB, which a
 # long detached run's transcript can exceed whole; chunking also lets the webview render
@@ -987,7 +980,7 @@ class _Session:
                 # session rather than "the session", because more than one may be
                 # producing at this instant.
                 owner = ev.get("session_id") or self._active_session_id
-                if ev.get("type") in _DURABLE_EVENTS:
+                if ev.get("type") in DURABLE_EVENTS:
                     # Routed by the session that launched the job rather than the one
                     # on screen, so it is handled ahead of the foreign-event filter.
                     checkin = ev.get("type") == "job_checkin"
@@ -3521,8 +3514,8 @@ class _Session:
         sections = await asyncio.wrap_future(worker.panel_sections(force=refresh))
         agent_ready = worker.agent_ready()
         if not agent_ready:
-            from ...config import constants
-            sections = recorded_hosts_sections(constants.STATE_DIR)
+            from ...config import paths
+            sections = recorded_hosts_sections(paths.STATE_DIR)
         # The one place both halves exist: what a cluster is made of came from a
         # server, what is running on it is this client's own watcher state. A run that
         # no group claimed still travels, under `runs`, for the flat list — a run the

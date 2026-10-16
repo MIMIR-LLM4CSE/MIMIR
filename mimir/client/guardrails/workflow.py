@@ -11,8 +11,8 @@ from ..context.execution_context import (
     weakest_validation_tier,
 )
 # Re-exported here for backward compatibility; the canonical definition lives in
-# config.constants alongside the other agent-loop tuning knobs.
-from ..config.constants import VALIDATION_RETRY_BUDGET
+# config.limits alongside the other agent-loop tuning knobs.
+from ..config.limits import VALIDATION_RETRY_BUDGET
 
 WORKFLOW_STATES: tuple[str, ...] = ("discover", "edit", "validate", "conclude")
 
@@ -82,7 +82,7 @@ def denial_stage(execution_context: dict, scope: str = "") -> str:
     is called: the stage describes the situation the model is being handed, so the
     first refusal of a scope reports ``reconsider`` (all three readings open).
     """
-    from ..config.constants import (
+    from ..config.limits import (
         DENIAL_QUERY_HANDBACK_TOTAL,
         DENIAL_SCOPE_DROP_AFTER,
         DENIAL_SCOPE_HANDBACK_AFTER,
@@ -139,7 +139,7 @@ def approval_is_settled(execution_context: dict, scope: str) -> bool:
     The query-wide hand-back keeps its own reach: past that point nothing sensitive is
     worth another prompt, whatever scope it belongs to.
     """
-    from ..config.constants import DENIAL_SCOPE_DROP_AFTER
+    from ..config.limits import DENIAL_SCOPE_DROP_AFTER
     return (
         denial_scope_count(execution_context, scope) >= DENIAL_SCOPE_DROP_AFTER
         or denial_stage(execution_context, scope) == STAGE_HANDBACK

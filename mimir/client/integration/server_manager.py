@@ -18,8 +18,9 @@ from mcp.client.stdio import stdio_client
 
 from .. import human_pause
 from ..context.capabilities import infer_tool_caps
-from ..tool_execution.tool_status_messages import DOING_ARG
-from ..config.constants import GLOBAL_STATE_DIR, STATE_DIR, USER_QUESTION_TIMEOUT_SECS
+from ..protocol.tool_call import DOING_ARG
+from ..config.paths import GLOBAL_STATE_DIR, STATE_DIR
+from ..config.limits import USER_QUESTION_TIMEOUT_SECS
 from ...servers._shared.state_paths import scratch_home
 
 logger = logging.getLogger(__name__)
@@ -352,7 +353,7 @@ async def _spawn_session(*, agent: Any, name: str, script: str) -> Any:
     # Propagate the client's cwd as the file-server root so paths are predictable,
     # and the central per-workspace state dir so state-owning servers (memory, todo,
     # platform profile) persist to the same place the client resolves. The state dir
-    # is deliberately distinct from the file/search sandbox — see config.constants.
+    # is deliberately distinct from the file/search sandbox — see config.paths.
     # The scratchpad travels the same way: the client vetted that path at startup
     # (ensure_scratch_home), so servers must use its answer, not re-derive one.
     #

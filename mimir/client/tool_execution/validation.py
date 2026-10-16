@@ -21,7 +21,7 @@ def scratch_roots() -> list[str]:
     subprocesses' environment.
     """
     from ...servers._shared.state_paths import standing_roots
-    from ..config.constants import STATE_DIR
+    from ..config.paths import STATE_DIR
     return [os.path.realpath(os.path.abspath(r)) for r in standing_roots(STATE_DIR)]
 
 

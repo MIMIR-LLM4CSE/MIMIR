@@ -22,24 +22,7 @@ from ..workflow import (
 from ...context import (
     bootstrap_state_context,
 )
-from ...context.capabilities import scope_spec
-from ...config.constants import STUCK_REPAIR_CONSTRAIN_AFTER
-
-
-def shell_tool_name(agent: Any) -> str:
-    """The connected shell tool, resolved from the scope its server declares.
-
-    Same identity ``observations._carries_shell_command`` reads, for the same reason:
-    the tool that takes a raw command line is the one declaring a ``command_prefix``
-    scope, and that declaration — not a name written here — is what says which one it
-    is. Falls back to a description, so copy stays sensible with none connected.
-    """
-    registry = getattr(agent, "tool_caps", None) or {}
-    names = sorted(
-        n for n in registry
-        if (scope_spec(n, registry) or {}).get("kind") == "command_prefix"
-    )
-    return names[0] if names else "the shell"
+from ...config.limits import STUCK_REPAIR_CONSTRAIN_AFTER
 
 
 # A refusal is an instruction, not an error to report and retry. The three readings

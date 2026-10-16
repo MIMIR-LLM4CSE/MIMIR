@@ -14,16 +14,16 @@ one-policy module. Behaviour is unchanged for the three original gates.
 from __future__ import annotations
 
 import os
-import re
-import shlex
 from typing import Any
 
-from ....servers._shared.shell_paths import COMMAND_WRAPPERS, allocates_cluster, unwrap_argv
+from ....servers._shared.shell_paths import allocates_cluster
+from .bash_classify import segment_program, shell_segments
 
-from ...config.constants import SKILL_LOAD_TOOL, SKILL_PULL_MAX
+from ...config.servers import SKILL_LOAD_TOOL
+from ...config.limits import SKILL_PULL_MAX
 from ...context.capabilities import (
     CLUSTER_SUBMIT, EDIT, PLAN_BLOCKED, PLAN_READONLY, READ,
-    arg_role, has_cap, scope_spec,
+    arg_role, has_cap, shell_command_args,
 )
 
 
@@ -83,23 +83,9 @@ def _trusted_read_roots() -> list[str]:
     prompt, while the servers, which do see the variable, would have allowed it.
     """
     from ....servers._shared.trusted_read_roots import trusted_read_roots
-    from ...config.constants import STATE_DIR
+    from ...config.paths import STATE_DIR
     return [os.path.realpath(os.path.abspath(r))
             for r in (*trusted_read_roots(), STATE_DIR)]
-
-
-def _shell_command_args(agent: Any, tool_name: str) -> tuple[str, ...] | None:
-    """Command-arg names if *tool_name* takes a raw shell command, else None.
-
-    Registry-driven: a shell tool declares a ``command_prefix`` scope kind. The twin of
-    ``observations._carries_shell_command`` — the guards below read tool arguments *as
-    shell*, which is a statement about the tool's interface, not about whether it
-    executes.
-    """
-    spec = scope_spec(tool_name, getattr(agent, "tool_caps", None))
-    if not spec or spec.get("kind") != "command_prefix":
-        return None
-    return tuple(spec.get("args") or ("command",))
 
 
 def _shell_path_targets(agent: Any, tool_name: str, arguments: dict, base: str) -> list[str]:
@@ -142,7 +128,7 @@ def _shell_path_targets(agent: Any, tool_name: str, arguments: dict, base: str) 
     what makes "asked about" and "confined" the same set of paths. A command
     ``parse_segments`` itself refuses never reaches a shell, so it needs no prompt.
     """
-    if _shell_command_args(agent, tool_name) is None:
+    if shell_command_args(tool_name, getattr(agent, "tool_caps", None)) is None:
         return []
     from ....servers._shared.shell_paths import (
         cd_destination, normalize_path_arg, parse_segments, segment_path_operands,
@@ -184,7 +170,7 @@ def _call_base(agent: Any, tool_name: str, arguments: dict) -> tuple[str, str]:
     """``(root, base)``: the agent's workspace root, and where this call's relative
     paths resolve — a declared ``cwd`` arg-role where the tool has one, else the root.
     """
-    from ...config.constants import WORKSPACE_ROOT
+    from ...config.paths import WORKSPACE_ROOT
     from ...tool_execution.validation import absolute_workspace_path
     # The agent's own root: a sub-agent working in a copy of the repository is inside
     # ITS workspace there, and outside the caller's — which is the whole point of the
@@ -380,95 +366,25 @@ def _check_cluster_submit(
 # proxy (command position), never read-only inspection of its source. Locked and
 # non-tiered — a correctness boundary, not guidance. Fail-open on internal error.
 
-# Wrappers are unwrapped by the shared ``unwrap_argv`` — the one the bash validator
-# uses — so a wrapper's own arguments (``timeout 300``, ``srun -n 4``, ``mpirun -np 8``)
-# are never mistaken for the program. ``time`` is handled here: it is a shell keyword
-# rather than a command, so it never reaches that validator as a head.
-_EXEC_WRAPPERS = COMMAND_WRAPPERS | {"time"}
-# Interpreters that execute their first non-flag argument as the real program.
-_EXEC_INTERPRETERS = frozenset({
-    "python", "python3", "python2", "pypy", "pypy3", "sh", "bash", "zsh",
-    "node", "ruby", "perl",
-})
-_ENV_ASSIGN_RE = re.compile(r"^[A-Za-z_]\w*=")
-# Bounds the peel loop on adversarial input; no real call nests this deep.
-_MAX_PEEL = 8
-
-
-def _segment_program(argv: list[str]) -> str | None:
-    """The program a single shell segment executes, or ``None``.
-
-    Peels leading ``VAR=val`` assignments, ``time`` and the shared wrappers
-    (``env``/``timeout``/``srun``/``mpirun``… with their flags and values), then
-    returns the head — or, if the head is an interpreter, its first non-flag argument
-    (``python proxy.py`` runs proxy.py). A wrapper with nothing inside it runs no
-    program of interest, and yields ``None``.
-    """
-    current = list(argv)
-    for _ in range(_MAX_PEEL):
-        while current and _ENV_ASSIGN_RE.match(current[0]) and not current[0].startswith("/"):
-            current = current[1:]
-        if not current:
-            return None
-        if os.path.basename(current[0]) == "time":
-            current = current[1:]
-            while current and current[0].startswith("-"):
-                current = current[1:]
-            continue
-        inner, wrappers = unwrap_argv(current)
-        if not wrappers:
-            break
-        current = inner
-    if not current or os.path.basename(current[0]) in _EXEC_WRAPPERS:
-        return None
-    head = current[0]
-    if os.path.basename(head) in _EXEC_INTERPRETERS:
-        return next((a for a in current[1:] if not a.startswith("-")), None)
-    return head
-
-
 def _executed_programs(command: str, base: str) -> set[str]:
     """Real paths of the programs a shell command (or a bare path) would execute.
 
     A relative program resolves against *base*, the directory the call runs in, so
     ``python proxy.py`` and ``python /abs/proxy.py`` name the same file. (Matched on
     basenames instead, any ``main.py`` anywhere was blocked as the proxy whenever the
-    proxy happened to be called ``main.py``.) Mirrors the shlex segmentation of
-    ``bash_classify.classify_bash_command`` (split on ``; && || |``, per-segment
-    leading command). A bare path (e.g. running ``./proxy`` directly) parses to a
-    single segment whose head is that path, so the same routine covers direct-path
-    args. Fail-open: an unparseable payload yields the empty set.
+    proxy happened to be called ``main.py``.) Segmented by the parser the bash server
+    validates with, so a command it refuses outright yields the empty set: it never
+    reaches a shell to run anything.
     """
     if not isinstance(command, str) or not command.strip():
         return set()
-    try:
-        lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
-        lexer.whitespace_split = True
-        lexer.commenters = ""
-        tokens = list(lexer)
-    except ValueError:
-        return set()
-
-    segments: list[list[str]] = []
-    current: list[str] = []
-    for tok in tokens:
-        if tok in (";", "&&", "||", "|"):
-            if current:
-                segments.append(current)
-                current = []
-            continue
-        current.append(tok)
-    if current:
-        segments.append(current)
-
+    segments = shell_segments(command, allow_expansion=True) or []
     progs: set[str] = set()
-    for argv in segments:
-        prog = _segment_program(argv)
-        if not prog:
-            continue
-        progs.add(os.path.realpath(os.path.join(base, os.path.expanduser(prog))))
+    for seg in segments:
+        prog = segment_program(list(seg.argv))
+        if prog:
+            progs.add(os.path.realpath(os.path.join(base, os.path.expanduser(prog))))
     return progs
-
 
 def active_proxy_source(session_id: str | None = None) -> str:
     """The source file of the currently active proxy optimization session, or "".
@@ -544,7 +460,7 @@ def _check_proxy_exec(
 
     Scoped on the ``command_prefix`` scope rather than CODE_EXEC: the sanctioned route
     ``proxy_exec`` declares CODE_EXEC too, and its ``proxy_name`` argument is a bare
-    name that :func:`_segment_program` would read as a program — matching the basenames
+    name that :func:`segment_program` would read as a program — matching the basenames
     in :func:`_proxy_exec_targets` and blocking the very tool this guard exists to steer
     the model towards.
 
@@ -552,7 +468,7 @@ def _check_proxy_exec(
     by pasting its body inline into a fresh script is a narrower, documented residual
     gap; the reserved-metrics guard still prevents forging an accepted result there.
     """
-    if _shell_command_args(agent, tool_name) is None:
+    if shell_command_args(tool_name, getattr(agent, "tool_caps", None)) is None:
         return None
     try:
         targets = _proxy_exec_targets(getattr(agent, "session_id", None))

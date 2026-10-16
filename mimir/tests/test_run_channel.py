@@ -40,8 +40,8 @@ class _ChannelFixture(unittest.TestCase):
         os.environ["MIMIR_STATE_DIR"] = self._state
         # The client half reads STATE_DIR at import time, so it is reloaded under the
         # temp dir rather than monkeypatched — the same value the server resolves.
-        from mimir.client.config import constants
-        importlib.reload(constants)
+        from mimir.client.config import paths
+        importlib.reload(paths)
         from mimir.client.tool_execution import run_channel
         self.client_side = importlib.reload(run_channel)
 
@@ -50,8 +50,8 @@ class _ChannelFixture(unittest.TestCase):
             os.environ.pop("MIMIR_STATE_DIR", None)
         else:
             os.environ["MIMIR_STATE_DIR"] = self._orig
-        from mimir.client.config import constants
-        importlib.reload(constants)
+        from mimir.client.config import paths
+        importlib.reload(paths)
         from mimir.client.tool_execution import run_channel
         importlib.reload(run_channel)
         shutil.rmtree(self._state, ignore_errors=True)

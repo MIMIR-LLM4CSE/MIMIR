@@ -15,7 +15,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from ...context.capabilities import PLAN_READONLY, has_cap, readonly_invocation_spec
+from ...context.capabilities import (
+    PLAN_READONLY, has_cap, readonly_invocation_spec, shell_command_of,
+)
 from .bash_classify import bash_command_is_readonly
 
 
@@ -34,7 +36,7 @@ def is_readonly_invocation(tool_name: str, arguments: dict[str, Any], caps: Any)
     if spec is not None:
         value = str(arguments.get(spec["arg"], "")).strip().lower()
         return not value or value in {v.lower() for v in spec["values"]}
-    return bash_command_is_readonly(arguments.get("command", ""))
+    return bash_command_is_readonly(shell_command_of(tool_name, arguments, caps))
 
 
 def _readonly_bash_exempt(agent: Any, tool_name: str, arguments: dict[str, Any]) -> bool:

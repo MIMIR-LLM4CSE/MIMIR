@@ -7,8 +7,10 @@ import re
 # The user system-prompt override lives in ``.mimir/`` — its resolution belongs with
 # the other user-extension resolvers (servers/skills/plugins); building lives here.
 from ..extensions.system_prompt import resolve_system_prompt_file
-from ..config.constants import (
-    DEFAULT_SUBAGENT_LEVEL, THINKING_DEPTH_AUTO, subagent_level_allows,
+from ..config.settings import (
+    DEFAULT_SUBAGENT_LEVEL,
+    THINKING_DEPTH_AUTO,
+    subagent_level_allows,
 )
 
 logger = logging.getLogger(__name__)
@@ -700,7 +702,7 @@ def _scratch_dir_for_prompt(session_id: str | None = None) -> str:
     """
     try:
         from ...servers._shared.state_paths import scratch_dir
-        from ..config.constants import STATE_DIR
+        from ..config.paths import STATE_DIR
         return scratch_dir(STATE_DIR, session_id)
     except Exception:
         return ""

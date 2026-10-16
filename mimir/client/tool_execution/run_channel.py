@@ -32,7 +32,7 @@ is what it does when nothing asks it to detach.
 import json
 import os
 
-from ..config.constants import STATE_DIR
+from ..config.paths import STATE_DIR
 
 
 def _dir(channel: str, session_id: str | None = None) -> str:

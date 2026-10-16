@@ -13,7 +13,7 @@ from typing import Any
 
 from ..event_sink import emit
 from ..context.capabilities import BACKGROUNDABLE, has_cap
-from ..tool_execution.formatter import parse_tool_payload
+from ..protocol.tool_result import parse_tool_payload
 from . import job_poll
 
 logger = logging.getLogger(__name__)

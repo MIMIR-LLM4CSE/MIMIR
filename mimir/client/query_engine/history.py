@@ -15,13 +15,14 @@ from typing import Any
 
 from ..event_sink import emit
 from .backends.base import message_wire_form
-from ..config.constants import (
+from ..config.limits import (
     TOOL_HISTORY_CHAR_BUDGET as _TOOL_HISTORY_CHAR_BUDGET,
     TOOL_HISTORY_TOKEN_BUDGET as _TOOL_HISTORY_TOKEN_BUDGET,
     INTRA_QUERY_COMPACT_TOKENS as _INTRA_QUERY_COMPACT_TOKENS,
     INTRA_QUERY_COMPACT_CHARS as _INTRA_QUERY_COMPACT_CHARS,
-    context_budget_for,
 )
+from .context_budget import context_budget_for
+from ..protocol.tool_result import json_error_payload
 
 
 class ContextOverflowError(RuntimeError):
@@ -38,10 +39,9 @@ class ContextOverflowError(RuntimeError):
 
 # Placeholder result emitted for an assistant tool call whose real result is absent —
 # keeps the assistant↔tool pairing valid and tells the model the output is gone.
-EVICTED_TOOL_RESULT = json.dumps({
-    "status": "error",
-    "error": "tool result not in history (evicted to stay within the context budget)",
-})
+EVICTED_TOOL_RESULT = json_error_payload(
+    "tool result not in history (evicted to stay within the context budget)",
+)
 
 
 def _declared_call_ids(assistant: dict) -> list[str | None]:

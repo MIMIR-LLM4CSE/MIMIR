@@ -1,9 +1,8 @@
 """Model round-trip: the single backend call with retry, and response shaping.
 
 ``_stream_chat`` runs ONE model call with decorrelated-jitter retry/backoff;
-``_process_response`` emits the thinking event and appends the assistant message;
-``_to_dict`` normalizes an Ollama/Pydantic response to a plain dict. Extracted
-from ``agent_loop.py``.
+``_process_response`` emits the thinking event and appends the assistant message.
+Extracted from ``agent_loop.py``.
 """
 from __future__ import annotations
 
@@ -14,24 +13,14 @@ import uuid
 from typing import Any
 
 from .backends.base import PromptTooLongError
+from ..protocol.tool_call import as_dict
 from .backends.factory import get_backend
 from ..event_sink import emit
-from ..config.constants import (
+from ..config.limits import (
     LLM_RETRY_ATTEMPTS,
     LLM_RETRY_BASE_DELAY_SECS,
     LLM_RETRY_MAX_DELAY_SECS,
 )
-
-
-def _to_dict(obj: Any) -> dict:
-    """Normalize an Ollama response object (Pydantic model or dict) to a plain dict."""
-    if isinstance(obj, dict):
-        return obj
-    if hasattr(obj, "model_dump"):
-        return obj.model_dump()
-    if hasattr(obj, "__dict__"):
-        return vars(obj)
-    return {}
 
 
 def _ensure_unique_call_ids(msg: dict, messages: list[dict]) -> None:
@@ -49,7 +38,7 @@ def _ensure_unique_call_ids(msg: dict, messages: list[dict]) -> None:
     taken = {tc.get("id") for m in messages if m.get("role") == "assistant"
              for tc in (m.get("tool_calls") or []) if isinstance(tc, dict)}
     # Ollama's calls can be SDK objects; a dict is what history and dispatch hold.
-    calls = msg["tool_calls"] = [tc if isinstance(tc, dict) else _to_dict(tc)
+    calls = msg["tool_calls"] = [tc if isinstance(tc, dict) else as_dict(tc)
                                  for tc in calls]
     for tc in calls:
         call_id = tc.get("id")
