@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from ... import human_pause
@@ -31,6 +32,8 @@ from ...context.execution_context import (
     unwritten_declared_files,
     bootstrap_engine_context as _bootstrap_engine_context,
 )
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -273,45 +276,194 @@ def _enrich_violation_payload(
     return json.dumps(payload, indent=2, ensure_ascii=False)
 
 
-def _run_extra_checks(
-    extra_checks: list | None,
-    stage: str,
-    agent: Any,
-    tool_name: str,
-    arguments: dict[str, Any],
-    execution_context: dict[str, Any] | None,
-) -> PolicyEvaluation | None:
+@dataclass
+class _PolicyCall:
+    """The call under evaluation, as every gate of the pipeline sees and may refine it."""
+
+    agent: Any
+    tool_name: str
+    arguments: dict[str, Any]
+    execution_context: dict[str, Any] | None
+    # Out-of-workspace targets, set by the workspace gate for the approval gate.
+    oow_targets: list = field(default_factory=list)
+
+    def refuse(self, violation: str, stage: str) -> PolicyEvaluation:
+        """The evaluation that blocks this call, its violation enriched for *stage*."""
+        return PolicyEvaluation(
+            tool_name=self.tool_name,
+            arguments=self.arguments,
+            execution_context=self.execution_context,
+            violation=_enrich_violation_payload(
+                violation=violation,
+                policy_stage=stage,
+                execution_context=self.execution_context,
+                tool_name=self.tool_name,
+            ),
+        )
+
+    def allow(self) -> PolicyEvaluation:
+        return PolicyEvaluation(tool_name=self.tool_name, arguments=self.arguments,
+                                execution_context=self.execution_context, violation=None)
+
+    def record_denial(self, note: str) -> None:
+        self.agent._record_denied_tool_call(
+            self.tool_name, self.arguments, self.execution_context, note)
+
+
+def _run_extra_checks(extra_checks: list | None, stage: str,
+                      call: _PolicyCall) -> PolicyEvaluation | None:
     """Run application-registered PolicyChecks for *stage*; return the first violation.
 
     Custom checks are additive constraints layered on the built-in core — they run at
     a fixed slot ("pre_mutation" or "pre_approval") and can only BLOCK (return a
-    violation string); returning None never relaxes a core gate. A misbehaving check
-    is caught so a bad pack cannot break the tool pipeline. Returns a ready
-    ``PolicyEvaluation`` (with the violation enriched) so the caller just returns it.
+    violation string); returning None never relaxes a core gate. A check that raises
+    is "no opinion", so a bad pack cannot break the tool pipeline — but it is logged:
+    swallowed silently, a pack that never ran looked exactly like one that approved.
     """
-    if not extra_checks:
-        return None
-    for pc in extra_checks:
+    for pc in extra_checks or ():
         if pc.stage != stage:
             continue
         try:
-            violation = pc.check(agent, tool_name, arguments, execution_context)
+            violation = pc.check(call.agent, call.tool_name, call.arguments,
+                                 call.execution_context)
         except Exception:
-            # A pack check that raises is treated as "no opinion", not a hard failure.
+            logger.warning("policy check %r raised; treated as no opinion", pc.name,
+                           exc_info=True)
             continue
         if violation:
-            return PolicyEvaluation(
-                tool_name=tool_name,
-                arguments=arguments,
-                execution_context=execution_context,
-                violation=_enrich_violation_payload(
-                    violation=violation,
-                    policy_stage=pc.name,
-                    execution_context=execution_context,
-                    tool_name=tool_name,
-                ),
-            )
+            return call.refuse(violation, pc.name)
     return None
+
+
+# ── The built-in gates, in pipeline order ──────────────────────────────────────
+# Each takes the call and returns the evaluation that blocks it, or None to let it on.
+# The guards they consult are read off this module at call time.
+
+def _registry_gate(call: _PolicyCall) -> PolicyEvaluation | None:
+    if call.tool_name in call.agent.tool_owner:
+        return None
+    return call.refuse(call.agent._json_error_payload(
+        f"Unknown tool '{call.tool_name}'.",
+        hint="Refresh the server registry or choose one of the registered tool names.",
+        tool=call.tool_name,
+    ), "registry")
+
+
+def _cluster_gate(call: _PolicyCall) -> PolicyEvaluation | None:
+    violation = _check_cluster_submit(call.agent, call.tool_name, call.execution_context,
+                                      call.arguments)
+    return call.refuse(violation, "cluster_submit") if violation is not None else None
+
+
+def _proxy_gate(call: _PolicyCall) -> PolicyEvaluation | None:
+    violation = _check_proxy_exec(call.agent, call.tool_name, call.arguments,
+                                  call.execution_context)
+    return call.refuse(violation, "proxy_exec") if violation is not None else None
+
+
+def _skill_gate(call: _PolicyCall) -> PolicyEvaluation | None:
+    violation = _check_skill_pull(call.agent, call.tool_name, call.arguments,
+                                  call.execution_context)
+    return call.refuse(violation, "skill_pull") if violation is not None else None
+
+
+def _state_gate(call: _PolicyCall) -> PolicyEvaluation | None:
+    violation = check_state_machine_guard(call.agent, call.tool_name, call.arguments,
+                                          call.execution_context)
+    return call.refuse(violation, "state_guard") if violation is not None else None
+
+
+def _write_gate(call: _PolicyCall) -> PolicyEvaluation | None:
+    violation = check_write_policy(call.agent, call.tool_name, call.arguments,
+                                   call.execution_context)
+    if violation is None:
+        return None
+    # A target nobody confirmed may be a mistyped path rather than a policy matter:
+    # offer to clarify it before blocking — only then, and only when the path is not
+    # already known from a prior read or check.
+    write_path = call.agent._normalize_workspace_path(
+        target_path_arg(call.tool_name, call.arguments, call.agent.tool_caps))
+    path_already_confirmed = bool(write_path) and is_known_to_exist(
+        call.execution_context, write_path)
+    if _violation_kind(violation) == UNCONFIRMED_PATH and not path_already_confirmed:
+        clarified_path = _interactive_clarify_path(
+            agent=call.agent, tool_name=call.tool_name,
+            path=call.arguments.get("path", ""), execution_context=call.execution_context,
+        )
+        if clarified_path:
+            call.arguments = {**call.arguments, "path": clarified_path}
+            # The clarified path may change what the state guard decides.
+            blocked = _state_gate(call)
+            if blocked is not None:
+                return blocked
+            violation = check_write_policy(call.agent, call.tool_name, call.arguments,
+                                           call.execution_context)
+    return call.refuse(violation, "write_policy") if violation is not None else None
+
+
+def _workspace_gate(call: _PolicyCall) -> PolicyEvaluation | None:
+    """A target outside the workspace is asked about before anything else is.
+
+    Its targets are kept on the call: the out-of-workspace prompt already shows this
+    call's label and arguments, so the approval card after it would be the same
+    decision asked twice. Once the gate has recorded its grants they no longer exist,
+    which is why they are computed here rather than inside the approval gate.
+    """
+    call.oow_targets = _out_of_workspace_targets(call.agent, call.tool_name, call.arguments)
+    violation = _check_out_of_workspace_access(
+        call.agent, call.tool_name, call.arguments, call.execution_context, call.oow_targets)
+    if violation is None:
+        return None
+    call.record_denial(MODE_DENIED_NOTE if call.agent.approvals.unattended
+                       else "path outside the workspace was not approved")
+    return call.refuse(violation, "approval")
+
+
+def _approval_gate(call: _PolicyCall) -> PolicyEvaluation | None:
+    agent, approvals = call.agent, call.agent.approvals
+    if (not approvals.is_sensitive(call.tool_name, call.arguments)
+            or call.oow_targets
+            or _readonly_bash_exempt(agent, call.tool_name, call.arguments)):
+        return None
+    if approvals.unattended and not approvals.auto_tools():
+        # No one can answer a card here (a sub-agent): refuse without asking. First,
+        # so a repeat reads as the mode's refusal too — no user was ever asked.
+        call.record_denial(MODE_DENIED_NOTE)
+        return call.refuse(
+            mode_denied_payload(agent, call.tool_name, call.arguments, "auto"), "approval")
+    scope = agent.approval_scope(call.tool_name, call.arguments)
+    if approval_is_settled(call.execution_context or {}, scope):
+        # Already refused twice on this scope: refuse it ourselves rather than putting
+        # the same card in front of the user again. From `drop_or_stop` on, the ladder
+        # has already ruled out another attempt at the same goal.
+        approved, note = False, "already refused; not asked again"
+    elif approvals.auto_tools():
+        # Auto mode: the user has taken the decision for the session. Deliberately
+        # *after* the settled check — a refusal already given stands.
+        approved, note = True, "auto-approved (auto mode)"
+    else:
+        approved, note = agent._request_tool_approval(call.tool_name, call.arguments)
+    if approved:
+        return None
+    call.record_denial(note)
+    return call.refuse(agent._denied_tool_result(
+        call.tool_name, call.arguments, note, call.execution_context), "approval")
+
+
+# The order is the policy. Stages named by a string are where the registered
+# PolicyChecks of that stage run.
+_PIPELINE: tuple = (
+    _registry_gate,
+    "pre_mutation",
+    _cluster_gate,
+    _proxy_gate,
+    _skill_gate,
+    _state_gate,
+    _write_gate,
+    "pre_approval",
+    _workspace_gate,
+    _approval_gate,
+)
 
 
 def evaluate_tool_preconditions(
@@ -323,14 +475,12 @@ def evaluate_tool_preconditions(
 ) -> PolicyEvaluation:
     """Run registry/state/write/approval checks and return normalized execution inputs.
 
-    The single call-time entry point. Built-in gates run in a fixed order and call
-    the module-level guards directly (``ensure_execution_context`` /
-    ``check_state_machine_guard`` / ``check_write_policy``); application-registered
-    :class:`PolicyCheck`s from :data:`PolicyRegistry` run at their declared stage
-    between the built-in gates and can only add constraints.
+    The single call-time entry point: the call goes through :data:`_PIPELINE` and the
+    first gate that blocks it decides. Application-registered :class:`PolicyCheck`s
+    from :data:`PolicyRegistry` run at their declared stage between the built-in gates
+    and can only add constraints.
     """
     extra_checks = PolicyRegistry.active_checks()
-
     normalized_context = ensure_execution_context(execution_context)
     normalized_context = _bootstrap_engine_context(normalized_context)
 
@@ -338,258 +488,15 @@ def evaluate_tool_preconditions(
     # model's habitual `read_file` are intentionally unregistered and exist only
     # to be healed here (→ read_file_lines). Checking the registry on the raw
     # name first would reject the alias before the rewrite that resolves it can
-    # run — the very false negative this ordering prevents. Both helpers no-op
-    # safely on an unregistered name, so genuinely unknown tools fall through to
-    # the single check below and still report an "Unknown tool" violation.
+    # run. Both helpers no-op safely on an unregistered name, so genuinely unknown
+    # tools still reach the registry gate and report an "Unknown tool" violation.
     normalized_arguments = agent._normalize_tool_arguments(tool_name, arguments)
     normalized_tool_name, rewritten_arguments = agent._rewrite_tool_for_context(
-        tool_name,
-        normalized_arguments,
-    )
-
-    if normalized_tool_name not in agent.tool_owner:
-        violation = agent._json_error_payload(
-            f"Unknown tool '{normalized_tool_name}'.",
-            hint="Refresh the server registry or choose one of the registered tool names.",
-            tool=normalized_tool_name,
-        )
-        return PolicyEvaluation(
-            tool_name=normalized_tool_name,
-            arguments=rewritten_arguments,
-            execution_context=normalized_context,
-            violation=_enrich_violation_payload(
-                violation=violation,
-                policy_stage="registry",
-                execution_context=normalized_context,
-                tool_name=normalized_tool_name,
-            ),
-        )
-
-    pre_mutation_eval = _run_extra_checks(
-        extra_checks, "pre_mutation", agent, normalized_tool_name, rewritten_arguments, normalized_context,
-    )
-    if pre_mutation_eval is not None:
-        return pre_mutation_eval
-
-    cluster_violation = _check_cluster_submit(
-        agent, normalized_tool_name, normalized_context, rewritten_arguments)
-    if cluster_violation is not None:
-        return PolicyEvaluation(
-            tool_name=normalized_tool_name,
-            arguments=rewritten_arguments,
-            execution_context=normalized_context,
-            violation=_enrich_violation_payload(
-                violation=cluster_violation,
-                policy_stage="cluster_submit",
-                execution_context=normalized_context,
-                tool_name=normalized_tool_name,
-            ),
-        )
-
-    proxy_exec_violation = _check_proxy_exec(
-        agent, normalized_tool_name, rewritten_arguments, normalized_context)
-    if proxy_exec_violation is not None:
-        return PolicyEvaluation(
-            tool_name=normalized_tool_name,
-            arguments=rewritten_arguments,
-            execution_context=normalized_context,
-            violation=_enrich_violation_payload(
-                violation=proxy_exec_violation,
-                policy_stage="proxy_exec",
-                execution_context=normalized_context,
-                tool_name=normalized_tool_name,
-            ),
-        )
-
-    skill_pull_violation = _check_skill_pull(
-        agent, normalized_tool_name, rewritten_arguments, normalized_context)
-    if skill_pull_violation is not None:
-        return PolicyEvaluation(
-            tool_name=normalized_tool_name,
-            arguments=rewritten_arguments,
-            execution_context=normalized_context,
-            violation=_enrich_violation_payload(
-                violation=skill_pull_violation,
-                policy_stage="skill_pull",
-                execution_context=normalized_context,
-                tool_name=normalized_tool_name,
-            ),
-        )
-
-    state_violation = check_state_machine_guard(
-        agent,
-        normalized_tool_name,
-        rewritten_arguments,
-        normalized_context,
-    )
-    if state_violation is not None:
-        return PolicyEvaluation(
-            tool_name=normalized_tool_name,
-            arguments=rewritten_arguments,
-            execution_context=normalized_context,
-            violation=_enrich_violation_payload(
-                violation=state_violation,
-                policy_stage="state_guard",
-                execution_context=normalized_context,
-                tool_name=normalized_tool_name,
-            ),
-        )
-
-    write_policy_violation = check_write_policy(
-        agent,
-        normalized_tool_name,
-        rewritten_arguments,
-        normalized_context,
-    )
-
-    if write_policy_violation is not None:
-        # For path-related violations, offer interactive clarification before blocking —
-        # but only when the path itself is unconfirmed (path confusion). Skip the prompt
-        # when the path is already known from a prior read/check: in that case the
-        # violation is about policy semantics (e.g. missing overwrite=True), not the path.
-        write_path = agent._normalize_workspace_path(
-            target_path_arg(normalized_tool_name, rewritten_arguments, agent.tool_caps))
-        path_already_confirmed = bool(write_path) and is_known_to_exist(
-            normalized_context, write_path
-        )
-        if _violation_kind(write_policy_violation) == UNCONFIRMED_PATH and not path_already_confirmed:
-            clarified_path = _interactive_clarify_path(
-                agent=agent,
-                tool_name=normalized_tool_name,
-                path=rewritten_arguments.get("path", ""),
-                execution_context=normalized_context,
-            )
-
-            if clarified_path:
-                rewritten_arguments = {**rewritten_arguments, "path": clarified_path}
-
-                # Re-run state guard because the clarified path may change validity.
-                state_violation = check_state_machine_guard(
-                    agent,
-                    normalized_tool_name,
-                    rewritten_arguments,
-                    normalized_context,
-                )
-                if state_violation is not None:
-                    return PolicyEvaluation(
-                        tool_name=normalized_tool_name,
-                        arguments=rewritten_arguments,
-                        execution_context=normalized_context,
-                        violation=_enrich_violation_payload(
-                            violation=state_violation,
-                            policy_stage="state_guard",
-                            execution_context=normalized_context,
-                            tool_name=normalized_tool_name,
-                        ),
-                    )
-
-                # Re-run write policy on the corrected path.
-                write_policy_violation = check_write_policy(
-                    agent,
-                    normalized_tool_name,
-                    rewritten_arguments,
-                    normalized_context,
-                )
-
-        if write_policy_violation is not None:
-            return PolicyEvaluation(
-                tool_name=normalized_tool_name,
-                arguments=rewritten_arguments,
-                execution_context=normalized_context,
-                violation=_enrich_violation_payload(
-                    violation=write_policy_violation,
-                    policy_stage="write_policy",
-                    execution_context=normalized_context,
-                    tool_name=normalized_tool_name,
-                ),
-            )
-
-    pre_approval_eval = _run_extra_checks(
-        extra_checks, "pre_approval", agent, normalized_tool_name, rewritten_arguments, normalized_context,
-    )
-    if pre_approval_eval is not None:
-        return pre_approval_eval
-
-    # Computed here, not just inside the gate: the out-of-workspace prompt already
-    # shows this call's label and arguments, so when it runs the sensitive-tool card
-    # below would be the same decision asked twice. The targets are what tells the two
-    # apart, and once the gate has recorded its grants they no longer exist.
-    oow_targets = _out_of_workspace_targets(agent, normalized_tool_name, rewritten_arguments)
-    oow_violation = _check_out_of_workspace_access(
-        agent, normalized_tool_name, rewritten_arguments, normalized_context, oow_targets)
-    if oow_violation is not None:
-        agent._record_denied_tool_call(
-            normalized_tool_name, rewritten_arguments, normalized_context,
-            MODE_DENIED_NOTE if agent.approvals.unattended
-            else "path outside the workspace was not approved")
-        return PolicyEvaluation(
-            tool_name=normalized_tool_name,
-            arguments=rewritten_arguments,
-            execution_context=normalized_context,
-            violation=_enrich_violation_payload(
-                violation=oow_violation,
-                policy_stage="approval",
-                execution_context=normalized_context,
-                tool_name=normalized_tool_name,
-            ),
-        )
-
-    if (agent.approvals.is_sensitive(normalized_tool_name, rewritten_arguments)
-            and not oow_targets
-            and not _readonly_bash_exempt(agent, normalized_tool_name, rewritten_arguments)):
-        if agent.approvals.unattended and not agent.approvals.auto_tools():
-            # No one can answer a card here (a sub-agent): refuse without asking. First,
-            # so a repeat reads as the mode's refusal too — no user was ever asked.
-            agent._record_denied_tool_call(
-                normalized_tool_name, rewritten_arguments, normalized_context,
-                MODE_DENIED_NOTE)
-            return PolicyEvaluation(
-                tool_name=normalized_tool_name,
-                arguments=rewritten_arguments,
-                execution_context=normalized_context,
-                violation=_enrich_violation_payload(
-                    violation=mode_denied_payload(
-                        agent, normalized_tool_name, rewritten_arguments, "auto"),
-                    policy_stage="approval",
-                    execution_context=normalized_context,
-                    tool_name=normalized_tool_name,
-                ),
-            )
-        scope = agent.approval_scope(normalized_tool_name, rewritten_arguments)
-        # Already refused twice on this scope: refuse it ourselves rather than putting
-        # the same card in front of the user again. Being asked again after saying no is
-        # the friction the ladder exists to remove, and from `drop_or_stop` on the ladder
-        # has already ruled out another attempt at the same goal — which the same route
-        # most certainly is.
-        if approval_is_settled(normalized_context or {}, scope):
-            note = "already refused; not asked again"
-            approved = False
-        elif agent.approvals.auto_tools():
-            # Auto mode: the user has taken the decision for the session, so the card is
-            # never built and nothing is sent. Deliberately *after* the settled check —
-            # a refusal already given stands until the user revisits it themselves.
-            approved, note = True, "auto-approved (auto mode)"
-        else:
-            approved, note = agent._request_tool_approval(normalized_tool_name, rewritten_arguments)
-        if not approved:
-            agent._record_denied_tool_call(
-                normalized_tool_name, rewritten_arguments, normalized_context, note)
-            return PolicyEvaluation(
-                tool_name=normalized_tool_name,
-                arguments=rewritten_arguments,
-                execution_context=normalized_context,
-                violation=_enrich_violation_payload(
-                    violation=agent._denied_tool_result(
-                        normalized_tool_name, rewritten_arguments, note, normalized_context),
-                    policy_stage="approval",
-                    execution_context=normalized_context,
-                    tool_name=normalized_tool_name,
-                ),
-            )
-
-    return PolicyEvaluation(
-        tool_name=normalized_tool_name,
-        arguments=rewritten_arguments,
-        execution_context=normalized_context,
-        violation=None,
-    )
+        tool_name, normalized_arguments)
+    call = _PolicyCall(agent, normalized_tool_name, rewritten_arguments, normalized_context)
+    for step in _PIPELINE:
+        blocked = (_run_extra_checks(extra_checks, step, call) if isinstance(step, str)
+                   else step(call))
+        if blocked is not None:
+            return blocked
+    return call.allow()

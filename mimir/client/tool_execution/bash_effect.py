@@ -46,10 +46,7 @@ from ..config.limits import (
     BASH_EFFECT_SNAPSHOT_MAX_FILES,
 )
 from ..context.signals import SOURCE_FILE_EXTENSIONS
-from ..guardrails.policy.bash_classify import (
-    bash_command_is_readonly,
-    classify_bash_command,
-)
+from ..context.bash_classify import bash_command_is_readonly, classify_bash_command
 from ..context.capabilities import shell_command_of
 
 _GIT_TIMEOUT_SECS = 10

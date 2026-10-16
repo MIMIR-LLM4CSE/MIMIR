@@ -4,6 +4,8 @@ import re
 import warnings
 
 from ..context.signals import SOURCE_FILE_EXTENSIONS
+from ..context.todo import load_todo_items
+from .proxy_state import active_proxy_source
 from ..context.execution_context import (
     failed_runs,
     unwritten_declared_files,
@@ -13,6 +15,7 @@ from ..context.execution_context import (
 # Re-exported here for backward compatibility; the canonical definition lives in
 # config.limits alongside the other agent-loop tuning knobs.
 from ..config.limits import VALIDATION_RETRY_BUDGET
+from ..config.limits import DENIAL_QUERY_HANDBACK_TOTAL, DENIAL_SCOPE_DROP_AFTER, DENIAL_SCOPE_HANDBACK_AFTER
 
 WORKFLOW_STATES: tuple[str, ...] = ("discover", "edit", "validate", "conclude")
 
@@ -82,11 +85,6 @@ def denial_stage(execution_context: dict, scope: str = "") -> str:
     is called: the stage describes the situation the model is being handed, so the
     first refusal of a scope reports ``reconsider`` (all three readings open).
     """
-    from ..config.limits import (
-        DENIAL_QUERY_HANDBACK_TOTAL,
-        DENIAL_SCOPE_DROP_AFTER,
-        DENIAL_SCOPE_HANDBACK_AFTER,
-    )
 
     history = execution_context.get("denial_history", [])
     total = len(history)
@@ -139,7 +137,6 @@ def approval_is_settled(execution_context: dict, scope: str) -> bool:
     The query-wide hand-back keeps its own reach: past that point nothing sensitive is
     worth another prompt, whatever scope it belongs to.
     """
-    from ..config.limits import DENIAL_SCOPE_DROP_AFTER
     return (
         denial_scope_count(execution_context, scope) >= DENIAL_SCOPE_DROP_AFTER
         or denial_stage(execution_context, scope) == STAGE_HANDBACK
@@ -232,8 +229,7 @@ def unchecked_checklist_items(execution_context: dict) -> list[dict]:
         return []
     # Imported lazily: the prompt package pulls in the extension loader, and the
     # guardrails layer is imported during its construction.
-    from ..prompt.system_prompt import _load_todo_items
-    return [it for it in _load_todo_items(todo_fp) if not it.get("done")]
+    return [it for it in load_todo_items(todo_fp) if not it.get("done")]
 
 
 def _plural_runs(n: int) -> str:
@@ -396,7 +392,6 @@ def unmeasured_proxy_source_lines(execution_context: dict) -> list[str]:
     queue or a dataset may simply not be there, and a gate that cannot be satisfied is
     an impasse rather than a guarantee. What an unmeasured change owes is a statement.
     """
-    from .policy.gates import active_proxy_source
 
     source = active_proxy_source()
     if not source or source not in execution_context.get("dirty_written_files", set()):

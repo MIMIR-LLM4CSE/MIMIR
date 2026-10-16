@@ -45,7 +45,6 @@ from ...config.models import resolve_enforcement
 from ...context.capabilities import CODE_EXEC, names_with_cap
 from ...event_sink import emit
 from ...config.limits import (
-    CUSTOM_NUDGE_MAX_PER_QUERY,
     EXERCISE_BUDGET,
     NUDGE_MAX_BLAST_RADIUS,
     NUDGE_MAX_CREATION,
@@ -66,7 +65,7 @@ from ...config.limits import (
     TODO_NUDGE_MULTIFILE_THRESHOLD,
     TODO_NUDGE_OP_THRESHOLD,
 )
-from .plugins import NudgeRegistry, rule_tier_enabled
+from .plugins import NudgeRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -438,45 +437,20 @@ def maybe_append_nudge(
     """
     execution_context = _bootstrap_nudge_context(execution_context)
     level = resolve_enforcement(agent)
-
-    # Verification reminders run regardless of model strength.
-    if _append_core_nudge(
-        agent=agent, query=query, active_mode=active_mode,
-        execution_context=execution_context, messages=messages,
-        layer="verification", level=level,
-    ):
-        return True
-
-    # Application verification nudges (extension packs) — always on, like core
-    # verification. Run after core so a built-in reality check always wins.
-    if _append_custom_nudge(
-        agent=agent, query=query, active_mode=active_mode,
-        execution_context=execution_context, messages=messages, layer="verification",
-    ):
-        return True
-
-    # Guidance nudges are a weak-model compatibility shim — skip entirely when
-    # the model's enforcement level is "off". This gate applies to core AND
-    # application guidance nudges alike.
-    if level == "off":
-        _log_no_nudge(execution_context, level=level, active_mode=active_mode)
-        return False
-
-    if _append_core_nudge(
-        agent=agent, query=query, active_mode=active_mode,
-        execution_context=execution_context, messages=messages,
-        layer="guidance", level=level,
-    ):
-        return True
-
-    # Application guidance nudges (extension packs) — tier-gated, after core guidance.
-    fired = _append_custom_nudge(
-        agent=agent, query=query, active_mode=active_mode,
-        execution_context=execution_context, messages=messages, layer="guidance",
-    )
-    if not fired:
-        _log_no_nudge(execution_context, level=level, active_mode=active_mode)
-    return fired
+    for layer in ("verification", "guidance"):
+        # Guidance nudges are a weak-model compatibility shim — skipped entirely when
+        # the model's enforcement level is "off", core and application alike.
+        if layer == "guidance" and level == "off":
+            break
+        for nudge in _cascade(layer):
+            if not nudge.fires(agent, query, active_mode, execution_context, level):
+                continue
+            content = nudge.text(agent, execution_context)
+            if content.strip():
+                return _fire_nudge(execution_context, messages, nudge.name, content,
+                                   nudge.budget_key)
+    _log_no_nudge(execution_context, level=level, active_mode=active_mode)
+    return False
 
 
 def nudge_pending(
@@ -500,23 +474,9 @@ def nudge_pending(
     """
     execution_context = _bootstrap_nudge_context(execution_context)
     level = resolve_enforcement(agent)
-    if _core_nudge_pending(
-        agent=agent, query=query, active_mode=active_mode,
-        execution_context=execution_context, layer="verification", level=level,
-    ) or _custom_nudge_pending(
-        agent=agent, query=query, active_mode=active_mode,
-        execution_context=execution_context, layer="verification",
-    ):
-        return True
-    if level == "off":
-        return False
-    return _core_nudge_pending(
-        agent=agent, query=query, active_mode=active_mode,
-        execution_context=execution_context, layer="guidance", level=level,
-    ) or _custom_nudge_pending(
-        agent=agent, query=query, active_mode=active_mode,
-        execution_context=execution_context, layer="guidance",
-    )
+    layers = ("verification",) if level == "off" else ("verification", "guidance")
+    return any(nudge.fires(agent, query, active_mode, execution_context, level)
+               for layer in layers for nudge in _cascade(layer))
 
 
 def _log_no_nudge(
@@ -546,75 +506,10 @@ def _log_no_nudge(
     )
 
 
-def _append_custom_nudge(
-    *,
-    agent: Any,
-    query: str,
-    active_mode: str,
-    execution_context: dict[str, Any],
-    messages: list[dict[str, Any]],
-    layer: str,
-) -> bool:
-    """Fire at most one application-registered nudge of *layer*, in priority order.
-
-    Preserves every core invariant: toggle suppression (``agent.disabled_nudges``),
-    tier gating for guidance rules (``rule_tier_enabled``), the per-query frequency
-    cap, and injection through the shared ``_fire_nudge`` (``_NUDGE_TAG`` + role
-    ``"user"`` + counter). A rule whose predicate/render raises is skipped, so a bad
-    pack cannot break the loop.
-    """
-    disabled = getattr(agent, "disabled_nudges", None) or set()
-    counts = execution_context["nudge_counts"]
-    enforcement = resolve_enforcement(agent)
-    for rule in NudgeRegistry.rules(layer):
-        if rule.name in disabled:
-            continue
-        if counts.get(rule.name, 0) >= CUSTOM_NUDGE_MAX_PER_QUERY:
-            continue
-        if layer == "guidance" and not rule_tier_enabled(
-            rule, enforcement=enforcement, active_mode=active_mode
-        ):
-            continue
-        try:
-            if not rule.predicate(agent, query, active_mode, execution_context):
-                continue
-            content = rule.render(agent, execution_context)
-        except Exception:
-            continue
-        if not content or not str(content).strip():
-            continue
-        return _fire_nudge(execution_context, messages, rule.name, str(content))
-    return False
-
-
-def _custom_nudge_pending(
-    *,
-    agent: Any,
-    query: str,
-    active_mode: str,
-    execution_context: dict[str, Any],
-    layer: str,
-) -> bool:
-    """Would any pack-registered rule of *layer* fire? Mirrors the gates of
-    :func:`_append_custom_nudge` (toggle, per-query cap, tier) without rendering."""
-    disabled = getattr(agent, "disabled_nudges", None) or set()
-    counts = execution_context["nudge_counts"]
-    enforcement = resolve_enforcement(agent)
-    for rule in NudgeRegistry.rules(layer):
-        if rule.name in disabled:
-            continue
-        if counts.get(rule.name, 0) >= CUSTOM_NUDGE_MAX_PER_QUERY:
-            continue
-        if layer == "guidance" and not rule_tier_enabled(
-            rule, enforcement=enforcement, active_mode=active_mode
-        ):
-            continue
-        try:
-            if rule.predicate(agent, query, active_mode, execution_context):
-                return True
-        except Exception:
-            continue
-    return False
+def _cascade(layer: str) -> list:
+    """The nudges of *layer*, in the order they are tried: the core table, then the
+    packs — so a built-in reality check always wins over an application's."""
+    return [n for n in _CORE_NUDGES if n.layer == layer] + NudgeRegistry.rules(layer)
 
 
 def _first_failing_edit_path(execution_context: dict[str, Any]) -> str | None:
@@ -1147,6 +1042,15 @@ class _CoreNudge:
     render: Callable[[Any, dict[str, Any]], str]                       # (agent, ec) -> text
     budget_key: str = ""  # counter charged when rows ration a shared budget; default = name
 
+    # Per-category caps and (for guidance) the enforcement/mode gate live inside each
+    # row's ``should_fire``, so the row answers the cascade's interface directly.
+
+    def fires(self, agent: Any, query: str, mode: str, ec: dict[str, Any], level: str) -> bool:
+        return self.should_fire(agent, query, mode, ec, level)
+
+    def text(self, agent: Any, ec: dict[str, Any]) -> str:
+        return str(self.render(agent, ec) or "")
+
 
 _CORE_NUDGES: tuple[_CoreNudge, ...] = (
     # ── Verification (reality checks; always run, independent of enforcement) ──
@@ -1242,50 +1146,3 @@ _CORE_NUDGES: tuple[_CoreNudge, ...] = (
         lambda agent, ec: todo_nudge_message(ec),
     ),
 )
-
-
-def _core_nudge_pending(
-    *,
-    agent: Any,
-    query: str,
-    active_mode: str,
-    execution_context: dict[str, Any],
-    layer: str,
-    level: str,
-) -> bool:
-    """Would any built-in row of *layer* fire? Same table, predicates only."""
-    return any(
-        spec.layer == layer
-        and spec.should_fire(agent, query, active_mode, execution_context, level)
-        for spec in _CORE_NUDGES
-    )
-
-
-def _append_core_nudge(
-    *,
-    agent: Any,
-    query: str,
-    active_mode: str,
-    execution_context: dict[str, Any],
-    messages: list[dict[str, Any]],
-    layer: str,
-    level: str,
-) -> bool:
-    """Fire at most one built-in nudge of *layer*, first matching row wins.
-
-    Per-category caps and (for guidance) the enforcement/mode gate live inside each
-    row's ``should_fire`` predicate, so this runner only walks ``_CORE_NUDGES`` in
-    priority order and injects the first row whose predicate is satisfied.
-    """
-    for spec in _CORE_NUDGES:
-        if spec.layer != layer:
-            continue
-        if not spec.should_fire(agent, query, active_mode, execution_context, level):
-            continue
-        content = spec.render(agent, execution_context)
-        if not content or not str(content).strip():
-            continue
-        return _fire_nudge(
-            execution_context, messages, spec.name, str(content), spec.budget_key,
-        )
-    return False

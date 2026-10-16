@@ -1723,9 +1723,7 @@ class BashServerTests(unittest.TestCase):
         one that does. The taxonomy and the denylist must stay disjoint.
         """
         from mimir.client.guardrails import observations as obs
-        from mimir.client.guardrails.policy.bash_classify import (
-            READONLY_KINDS, classify_bash_command,
-        )
+        from mimir.client.context.bash_classify import READONLY_KINDS, classify_bash_command
         from mimir.servers._shared.shell_paths import (
             DENIED_COMMANDS, ENV_MANAGER_COMMANDS, EXEC_COMMANDS, INSPECT_COMMANDS,
             NEUTRAL_COMMANDS, READ_COMMANDS, SEARCH_COMMANDS,
@@ -1853,7 +1851,7 @@ class BashServerTests(unittest.TestCase):
         unreachable — refused with no way to allow it — and the user never learns
         why. So: every path this guard rejects must be one the gate would surface.
         """
-        from mimir.client.guardrails.policy.bash_classify import shell_segments
+        from mimir.client.context.bash_classify import shell_segments
         from mimir.servers._shared.shell_paths import (
             cd_destination, normalize_path_arg, segment_path_operands,
         )

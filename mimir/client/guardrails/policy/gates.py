@@ -17,7 +17,8 @@ import os
 from typing import Any
 
 from ....servers._shared.shell_paths import allocates_cluster
-from .bash_classify import segment_program, shell_segments
+from ..proxy_state import active_proxy_source
+from ...context.bash_classify import segment_program, shell_segments
 
 from ...config.servers import SKILL_LOAD_TOOL
 from ...config.limits import SKILL_PULL_MAX
@@ -25,16 +26,22 @@ from ...context.capabilities import (
     CLUSTER_SUBMIT, EDIT, PLAN_BLOCKED, PLAN_READONLY, READ,
     arg_role, has_cap, shell_command_args,
 )
+from ...config import paths
+from ....servers._shared.shell_paths import (
+    cd_destination, normalize_path_arg, parse_segments, segment_path_operands,
+)
+from ....servers._shared.trusted_read_roots import trusted_read_roots
+from ...context.capabilities import label_for
+from ...tool_execution.tool_status_messages import (
+    shorten_display_args, tool_arg_preview, tool_status_message,
+)
+from ...tool_execution.validation import absolute_workspace_path, scratch_roots
 
 
 # ── unattended agents ─────────────────────────────────────────────────────────
 
 def describe_action(agent: Any, tool_name: str, arguments: dict) -> str:
     """The action as the user would read it on a tool row — never the tool's name."""
-    from ...context.capabilities import label_for
-    from ...tool_execution.tool_status_messages import (
-        shorten_display_args, tool_arg_preview, tool_status_message,
-    )
     short_args = shorten_display_args(tool_name, arguments or {}, agent.tool_caps)
     label = label_for(tool_name, short_args, agent.tool_caps)
     if label:
@@ -76,16 +83,14 @@ def _trusted_read_roots() -> list[str]:
     truth with the servers via ``servers._shared.trusted_read_roots`` so the two
     lists can't drift.
 
-    ``STATE_DIR`` is appended explicitly because the shared helper resolves it from
+    ``paths.STATE_DIR`` is appended explicitly because the shared helper resolves it from
     ``MIMIR_STATE_DIR``, and that variable is only ever placed in the *server*
     subprocesses' env (server_manager) — the client process itself does not carry
     it. Without this the agent could not read back its own plans/sessions without a
     prompt, while the servers, which do see the variable, would have allowed it.
     """
-    from ....servers._shared.trusted_read_roots import trusted_read_roots
-    from ...config.paths import STATE_DIR
     return [os.path.realpath(os.path.abspath(r))
-            for r in (*trusted_read_roots(), STATE_DIR)]
+            for r in (*trusted_read_roots(), paths.STATE_DIR)]
 
 
 def _shell_path_targets(agent: Any, tool_name: str, arguments: dict, base: str) -> list[str]:
@@ -130,9 +135,6 @@ def _shell_path_targets(agent: Any, tool_name: str, arguments: dict, base: str) 
     """
     if shell_command_args(tool_name, getattr(agent, "tool_caps", None)) is None:
         return []
-    from ....servers._shared.shell_paths import (
-        cd_destination, normalize_path_arg, parse_segments, segment_path_operands,
-    )
 
     out: list[str] = []
     for val in arguments.values():
@@ -170,13 +172,11 @@ def _call_base(agent: Any, tool_name: str, arguments: dict) -> tuple[str, str]:
     """``(root, base)``: the agent's workspace root, and where this call's relative
     paths resolve — a declared ``cwd`` arg-role where the tool has one, else the root.
     """
-    from ...config.paths import WORKSPACE_ROOT
-    from ...tool_execution.validation import absolute_workspace_path
     # The agent's own root: a sub-agent working in a copy of the repository is inside
     # ITS workspace there, and outside the caller's — which is the whole point of the
     # copy. Falls back to the module constant for anything agent-like without one.
     root = os.path.realpath(os.path.abspath(
-        getattr(agent, "workspace_root", None) or WORKSPACE_ROOT))
+        getattr(agent, "workspace_root", None) or paths.WORKSPACE_ROOT))
     # The bash server has no cwd role — every call starts at the workspace root — so
     # this normally leaves the base at the root.
     base = root
@@ -196,7 +196,6 @@ def _out_of_workspace_targets(agent: Any, tool_name: str, arguments: dict) -> li
     the file-target extractor cannot see because they live inside a string. Reads of
     the trusted roots (item 1) and already-approved paths are excluded.
     """
-    from ...tool_execution.validation import absolute_workspace_path
     root, call_base = _call_base(agent, tool_name, arguments)
 
     raw: list[str] = []
@@ -217,7 +216,6 @@ def _out_of_workspace_targets(agent: Any, tool_name: str, arguments: dict) -> li
         or has_cap(tool_name, PLAN_BLOCKED, agent.tool_caps))
     trusted = _trusted_read_roots()
 
-    from ...tool_execution.validation import scratch_roots
     scratch = scratch_roots()
 
     out: list[str] = []
@@ -385,34 +383,6 @@ def _executed_programs(command: str, base: str) -> set[str]:
         if prog:
             progs.add(os.path.realpath(os.path.join(base, os.path.expanduser(prog))))
     return progs
-
-def active_proxy_source(session_id: str | None = None) -> str:
-    """The source file of the currently active proxy optimization session, or "".
-
-    Reads the proxy server's own store (single source of truth); an absent or
-    unreadable session yields "" so every caller abstains. Best-effort by design —
-    this informs guards and evidence, never correctness.
-
-    *session_id* names the conversation asking. The store's pointer is per MIMIR
-    session, and in this process N sessions share one environment, so a caller that
-    knows which agent it is acting for must say. A caller that does not — the two
-    evidence paths in guardrails/workflow.py and guardrails/observations.py, which
-    receive only an execution_context — gets the pointer's own fallback, i.e. the
-    session on screen. Imprecise under concurrency, and bounded: those two only ever
-    raise a file's validation tier or add a reported line, never gate or block.
-    """
-    try:
-        from ....servers.proxy._lib import store
-
-        name = store._resolve_proxy_name("", session_id)
-        if not name:
-            return ""
-        cfg = store._read_json(store._opt_config_file(name))
-        src = cfg.get("proxy_source_path") if isinstance(cfg, dict) else None
-        return src if isinstance(src, str) else ""
-    except Exception:
-        return ""
-
 
 def _proxy_exec_targets(session_id: str | None = None) -> set[str]:
     """Real paths that count as "executing the proxy under optimization".

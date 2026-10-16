@@ -16,7 +16,7 @@ from ...config.limits import HARD_REPEAT_LIMIT
 from ...context.capabilities import EDIT, has_cap, shell_command_args
 from ...context.execution_context import loop_control
 from ...event_sink import emit
-from ...guardrails.policy.bash_classify import segment_program, shell_segments
+from ...context.bash_classify import segment_program, shell_segments
 from ...protocol.tool_call import DOING_ARG, UNPARSED_ARGUMENTS, as_dict
 from ...protocol.tool_result import json_error_payload
 from ...tool_execution.normalizer import _make_hashable

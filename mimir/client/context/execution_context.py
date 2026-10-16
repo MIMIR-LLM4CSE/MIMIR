@@ -9,6 +9,8 @@ from ..config.limits import (
     DISCOVERY_EVIDENCE_MIN_DISTINCT_PLAN,
     PLAN_EVIDENCE_MIN_FILES_READ,
 )
+from .bash_classify import Kind, classify_bash_command
+from ..config import paths
 
 
 class ExecutionContext(TypedDict):
@@ -578,10 +580,9 @@ def unwritten_declared_files(execution_context: dict[str, Any]) -> list[str]:
     if not declared:
         return []
     dirty = set(execution_context.get("dirty_written_files", set()) or set())
-    from ..config.paths import WORKSPACE_ROOT
     # Off the context, not off the import: a sub-agent in a copy of the repository
     # declares paths under its own root, and this function never sees the agent.
-    root = os.path.abspath(execution_context.get("workspace_root") or WORKSPACE_ROOT)
+    root = os.path.abspath(execution_context.get("workspace_root") or paths.WORKSPACE_ROOT)
     return sorted(d for d in declared if not _declared_target_written(d, dirty, root))
 
 
@@ -747,12 +748,6 @@ def run_ledger_key(command: str) -> str:
 
     Idempotent, so a caller holding a key may pass it back in place of a command.
     """
-    # Imported lazily: the classifier lives under ``guardrails.policy``, which imports
-    # this module. Same shape as workflow.py's lazy ``policy.gates`` import.
-    try:
-        from ..guardrails.policy.bash_classify import Kind, classify_bash_command
-    except Exception:  # pragma: no cover - defensive
-        return command
     try:
         segments = classify_bash_command(command, allow_expansion=True) or []
     except Exception:  # pragma: no cover - the classifier owns its own refusals

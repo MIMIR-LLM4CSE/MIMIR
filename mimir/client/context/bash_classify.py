@@ -32,7 +32,7 @@ from typing import NamedTuple
 # Tokenization, command groups and path-operand extraction all come from the module
 # the bash *server* validates with, so classification tracks what the server
 # actually permits and confines — one implementation, no drift (see its docstring).
-from ....servers._shared.shell_paths import (
+from ...servers._shared.shell_paths import (
     COMMAND_WRAPPERS,
     EFFECT_RUN,
     allocates_cluster,

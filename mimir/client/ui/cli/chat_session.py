@@ -6,7 +6,7 @@ from typing import Any
 from .chat_commands import handle_chat_command
 from ...context.capabilities import name_with_arg_role
 from ...context.resource_context import augment_query_with_resources
-from ...prompt.system_prompt import _load_todo_items
+from ...context.todo import load_todo_items
 from ...query_engine.backends.factory import get_backend
 from ...query_engine.history import (
     compacted_exchanges, compaction_summary_message,
@@ -98,7 +98,7 @@ def _is_proceed_signal(query: str) -> bool:
 
 def _confirm_plan_execution() -> bool:
     """Display pending plan steps and ask the user to confirm before executing."""
-    items = _load_todo_items(_TODO_FILE)
+    items = load_todo_items(_TODO_FILE)
     pending = [it for it in items if not it.get("done")]
     if not pending:
         return True  # Nothing to show; proceed silently.
@@ -117,7 +117,7 @@ def _confirm_plan_execution() -> bool:
 
 def _offer_session_resume() -> bool:
     """If a previous plan exists on disk, show it and ask whether to resume."""
-    items = _load_todo_items(_TODO_FILE)
+    items = load_todo_items(_TODO_FILE)
     pending = [it for it in items if not it.get("done")]
     if not pending:
         return False

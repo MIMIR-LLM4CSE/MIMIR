@@ -32,6 +32,8 @@ import json
 import os
 import re
 from dataclasses import dataclass
+from .observations import _mark_file_validated, _register_validation_failure
+from .workflow import pending_validation_paths
 
 # Anything larger is not read: the floor is a cheap check, and a multi-megabyte source
 # file is not what it was built for.
@@ -532,8 +534,6 @@ def sweep_builtin_checks(execution_context: dict, absolute_path_fn=None) -> None
     stamp is what makes that true across the several places the gate is consulted:
     an unchanged file is skipped, one edited since is checked again.
     """
-    from .observations import _mark_file_validated, _register_validation_failure
-    from .workflow import pending_validation_paths
 
     resolve = absolute_path_fn or os.path.abspath
     stamps = execution_context.setdefault("builtin_check_stamp", {})

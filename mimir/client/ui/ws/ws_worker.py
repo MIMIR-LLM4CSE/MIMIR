@@ -41,6 +41,7 @@ from typing import Any
 
 from ... import human_pause
 from ...config.settings import DEFAULT_SUBAGENT_LEVEL
+from ...context.todo import load_todo_items
 from ...query_engine import job_poll
 
 logger = logging.getLogger(__name__)
@@ -739,11 +740,7 @@ class _AgentWorker:
 
     def _load_todos(self) -> list:
         try:
-            try:
-                from ...prompt.system_prompt import _load_todo_items
-            except ImportError:
-                from mimir.client.prompt.system_prompt import _load_todo_items
-            return _load_todo_items(_todo_file_for_session(self._own_session()))
+            return load_todo_items(_todo_file_for_session(self._own_session()))
         except Exception:
             return []
 

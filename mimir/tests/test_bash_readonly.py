@@ -8,9 +8,9 @@ like ``sed -i`` are not read-only and keep the approval prompt. See
 """
 import unittest
 
-from mimir.client.guardrails.policy.bash_classify import bash_command_is_readonly
+from mimir.client.context.bash_classify import bash_command_is_readonly
 from mimir.client.guardrails.policy.readonly_exempt import _readonly_bash_exempt
-from mimir.client.query_engine.toollist import tools_for_plan_mode, tools_for_readonly_mode
+from mimir.client.guardrails.toollist import tools_for_plan_mode, tools_for_readonly_mode
 from mimir.client.query_engine.readonly_guard import filter_readonly_tool_calls
 from mimir.client.context.capabilities import (
     ToolCaps,

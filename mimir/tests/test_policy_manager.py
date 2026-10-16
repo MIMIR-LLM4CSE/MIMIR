@@ -6,8 +6,8 @@ from unittest import mock
 from unittest.mock import patch
 
 import mimir.client.guardrails.policy.engine as policy_manager_module
-from mimir.client.guardrails.policy.bash_classify import bash_command_is_readonly
-from mimir.client.query_engine import toollist
+from mimir.client.context.bash_classify import bash_command_is_readonly
+from mimir.client.guardrails import toollist
 from mimir.tests._golden_caps import build_declared_registry
 
 # Per-agent registry, built once from the server declarations (what connect_server

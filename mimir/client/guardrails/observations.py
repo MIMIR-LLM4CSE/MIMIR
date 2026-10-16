@@ -33,6 +33,7 @@ from .runner_output import (
     test_failure_signature,
 )
 from ..event_sink import emit
+from .proxy_state import active_proxy_source
 from .workflow import (
     VALIDATION_RETRY_BUDGET,
     has_pending_validation,
@@ -76,8 +77,10 @@ from ...servers._shared.shell_paths import (
     any_command_on_path as _any_command_on_path,
     is_path_like_command,
 )
-from .policy.bash_classify import (
-    Kind, classify_bash_command, opaque_command_executes,
+from ..context.bash_classify import (
+    Kind,
+    classify_bash_command,
+    opaque_command_executes,
     FILE_LIKE_RE,
 )
 
@@ -770,7 +773,6 @@ def _credit_measured_source(
         return
     if not _matches(payload, spec, "measured"):
         return
-    from .policy.gates import active_proxy_source
 
     source = active_proxy_source()
     if source and source in execution_context.get("dirty_written_files", set()):

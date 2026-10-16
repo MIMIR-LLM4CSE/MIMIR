@@ -29,7 +29,7 @@ from mimir.client.context.execution_context import (  # noqa: E402
 from mimir.client.context import failed_runs, unsettled_runs  # noqa: E402
 from mimir.client.guardrails import observations as O  # noqa: E402
 from mimir.client.guardrails import workflow  # noqa: E402
-from mimir.client.guardrails.policy.bash_classify import opaque_command_executes  # noqa: E402
+from mimir.client.context.bash_classify import opaque_command_executes
 from mimir.client.guardrails.verdict import apply_verdict  # noqa: E402
 from mimir.servers._shared.capabilities import build_descriptor  # noqa: E402
 from mimir.servers.proxy._lib import store  # noqa: E402

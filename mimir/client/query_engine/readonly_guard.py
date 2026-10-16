@@ -20,7 +20,7 @@ from ..context.capabilities import (
 from ..guardrails.policy.readonly_exempt import is_readonly_invocation
 from ..protocol.tool_call import as_dict
 from ..protocol.tool_result import json_error_payload
-from .toollist import hidden_planning_tools
+from ..guardrails.toollist import hidden_planning_tools
 
 # Why a mode has no plan-writing tool, told to a model that called one anyway.
 _NO_PLANNING_REASON = {

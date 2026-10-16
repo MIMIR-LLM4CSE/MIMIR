@@ -37,7 +37,7 @@ from mimir.client.context.capabilities import ToolCaps
 from mimir.client.context.execution_context import build_execution_context, unsettled_runs
 from mimir.client.guardrails import observations as _observations
 from mimir.client.guardrails.observations import record_tool_observation
-from mimir.client.guardrails.policy.bash_classify import classify_bash_command
+from mimir.client.context.bash_classify import classify_bash_command
 
 BASH_TOOL = "bash_run"
 

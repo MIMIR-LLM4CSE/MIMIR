@@ -26,6 +26,9 @@ from ..protocol.tool_result import json_error_payload
 from .plugins import PostToolRegistry
 from .validation import absolute_workspace_path, is_scratch_path
 from .normalizer import _make_hashable
+from ..config import paths
+from ...servers._shared.state_paths import scratch_dir
+from ..guardrails.toollist import grantable_tools, grantable_writers
 
 _CONTINUATION_CHUNK = 120
 _OUTLINE_HINT_MAX_SYMBOLS = 40
@@ -266,12 +269,10 @@ def _build_fork_hint(
 
     stem, _ext = os.path.splitext(os.path.basename(path))
     parent = os.path.dirname(path)
-    from ...servers._shared.state_paths import scratch_dir
-    from ..config.paths import STATE_DIR
     # This agent's scratchpad, named by its own session: the hint compares where the
     # file landed against where *this* conversation's throwaway work belongs, and the
     # active-session pointer would hand a concurrent session another one's directory.
-    scratch = scratch_dir(STATE_DIR, getattr(agent, "session_id", None))
+    scratch = scratch_dir(paths.STATE_DIR, getattr(agent, "session_id", None))
 
     base = _fork_base_stem(stem)
     if base:
@@ -514,7 +515,6 @@ async def execute_tool_call(
         # spawns the child keeps the environment it started with.
         # Imported here, not at module scope: query_engine's package init pulls the
         # agent loop, which pulls this module back.
-        from ..query_engine.toollist import grantable_tools, grantable_writers
         granted = grantable_tools(agent)
         call_meta[GRANTABLE_TOOLS_META] = granted
         call_meta[GRANTABLE_WRITERS_META] = grantable_writers(agent, granted)

@@ -18,7 +18,7 @@ from typing import Any
 from ...context.capabilities import (
     PLAN_READONLY, has_cap, readonly_invocation_spec, shell_command_of,
 )
-from .bash_classify import bash_command_is_readonly
+from ...context.bash_classify import bash_command_is_readonly
 
 
 def is_readonly_invocation(tool_name: str, arguments: dict[str, Any], caps: Any) -> bool:

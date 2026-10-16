@@ -10,6 +10,7 @@ import re
 from typing import Any
 
 from ..context.capabilities import READ, SEARCH_WITH_PATH, has_cap, CONVENTIONAL_PATH_ARGS
+from ..context.capabilities import arg_role
 
 def _relpath(path: str) -> str:
     """The file name alone — what a tool-activity row should show.
@@ -55,7 +56,6 @@ def shorten_display_args(name: str, args: dict, tool_caps=None) -> dict:
     """
     if not isinstance(args, dict):
         return args
-    from ..context.capabilities import arg_role
     declared = arg_role(name, "path", tool_caps) or ()
     keys = declared or CONVENTIONAL_PATH_ARGS
     shortened = dict(args)

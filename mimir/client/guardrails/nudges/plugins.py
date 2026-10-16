@@ -1,6 +1,6 @@
 """Pluggable nudges — the extension seam for application-specific guidance.
 
-The built-in nudge cascade in :mod:`query_engine.nudge_logic` (``maybe_append_nudge`` →
+The built-in nudge cascade in :mod:`guardrails.nudges.engine` (``maybe_append_nudge`` →
 a verification layer that is always on + a guidance layer gated by
 ``_GUIDANCE_BY_LEVEL_MODE[(enforcement, mode)]``) is the fixed *core*. This module lets an
 application register **additional** nudges on top — e.g. an "confirm this action is
@@ -29,8 +29,13 @@ Reference *capabilities* (``names_with_cap``/``has_cap``), never literal tool na
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Any, Callable
+
+from ...config.limits import CUSTOM_NUDGE_MAX_PER_QUERY
+
+logger = logging.getLogger(__name__)
 
 # (agent, query, active_mode, execution_context) -> should this nudge fire now?
 NudgePredicate = Callable[[Any, str, str, dict], bool]
@@ -58,10 +63,40 @@ class NudgeRule:
                 f"NudgeRule.layer must be one of {VALID_NUDGE_LAYERS}, got {self.layer!r}"
             )
 
+    # The interface every nudge of the cascade answers (see nudges.engine).
+
+    @property
+    def budget_key(self) -> str:
+        return self.name
+
+    def fires(self, agent: Any, query: str, mode: str, ec: dict, level: str) -> bool:
+        """Whether the rule would fire now: not switched off, under its per-query cap,
+        in tier (guidance), and its predicate holds. A predicate that raises is "no": a
+        bad pack cannot break the loop — but it is logged."""
+        if self.name in (getattr(agent, "disabled_nudges", None) or set()):
+            return False
+        if (ec.get("nudge_counts") or {}).get(self.name, 0) >= CUSTOM_NUDGE_MAX_PER_QUERY:
+            return False
+        if self.layer == "guidance" and not rule_tier_enabled(
+                self, enforcement=level, active_mode=mode):
+            return False
+        try:
+            return bool(self.predicate(agent, query, mode, ec))
+        except Exception:
+            logger.warning("nudge rule %r raised; skipped", self.name, exc_info=True)
+            return False
+
+    def text(self, agent: Any, ec: dict) -> str:
+        try:
+            return str(self.render(agent, ec) or "")
+        except Exception:
+            logger.warning("nudge rule %r raised; skipped", self.name, exc_info=True)
+            return ""
+
 
 # Default tier membership for a guidance rule that declares no explicit tiers: fire in
 # 'strict' only, in both agent and plan modes. Mirrors the core "strict babysits
-# everything" stance in nudge_logic._GUIDANCE_BY_LEVEL_MODE.
+# everything" stance in nudges.engine._GUIDANCE_BY_LEVEL_MODE.
 _DEFAULT_TIERS: frozenset[tuple[str, str]] = frozenset({("strict", "agent"), ("strict", "plan")})
 
 

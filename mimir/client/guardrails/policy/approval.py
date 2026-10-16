@@ -19,6 +19,8 @@ from ...context.capabilities import (
     scope_spec,
 )
 from ...util.files import write_json_atomic
+from ...config import paths
+from ....servers._shared.state_paths import session_state_dir
 
 
 def _packages_scope_token(packages) -> str:
@@ -522,10 +524,8 @@ class ApprovalManager:
         tests). Passing None through rather than coercing it to "" is what keeps the writer
         and the servers' reader naming the same file.
         """
-        from ...config.paths import STATE_DIR
-        from ....servers._shared.state_paths import session_state_dir
         return os.path.join(
-            session_state_dir(STATE_DIR, self.session_id), "approved_paths.json"
+            session_state_dir(paths.STATE_DIR, self.session_id), "approved_paths.json"
         )
 
     def _flush_allowed_paths(self) -> None:

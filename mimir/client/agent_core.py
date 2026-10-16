@@ -62,7 +62,7 @@ from .tool_execution.validation import (
 from .integration.server_manager import connect_server as connect_server_runtime
 from .integration.server_manager import connect_servers as connect_servers_runtime
 from .query_engine import run_agent_query
-from .query_engine.toollist import tools_for_readonly_mode
+from .guardrails.toollist import tools_for_readonly_mode
 from .event_sink import set_event_sink, reset_event_sink
 from .protocol.tool_result import (
     json_error_payload,

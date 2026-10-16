@@ -20,6 +20,7 @@ import mimir.client.guardrails.policy.state_machine as policy_state_machine_modu
 import mimir.client.guardrails.policy.write as policy_runtime_module
 import mimir.client.config as client_config_module
 import mimir.client.query_engine.agent_loop as agent_loop_module
+from mimir.client.context.todo import load_todo_items
 import mimir.client.query_engine.streaming as streaming_module
 import mimir.client.query_engine.history as history_module
 import mimir.client.query_engine.dispatch as dispatch_module
@@ -2747,7 +2748,7 @@ class ClientHelperTests(unittest.TestCase):
             f.write("- [ ] Read file\n- [x] Apply patch\n")
             tmp_path = f.name
         try:
-            result = context_builder_module._load_todo_items(tmp_path)
+            result = load_todo_items(tmp_path)
             self.assertEqual(len(result), 2)
             self.assertFalse(result[0]["done"])
             self.assertTrue(result[1]["done"])
@@ -2755,7 +2756,7 @@ class ClientHelperTests(unittest.TestCase):
             os.unlink(tmp_path)
 
     def test_load_todo_items_returns_empty_for_missing_file(self) -> None:
-        result = context_builder_module._load_todo_items("/nonexistent/todo_list.md")
+        result = load_todo_items("/nonexistent/todo_list.md")
         self.assertEqual(result, [])
 
     def test_build_system_content_injects_live_checklist_from_todo_file(self) -> None:

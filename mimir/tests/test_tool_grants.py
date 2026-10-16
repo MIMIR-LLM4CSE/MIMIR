@@ -12,7 +12,7 @@ import tempfile
 import types
 
 from mimir.client.context.capabilities import ToolCaps, reserved_for_main
-from mimir.client.query_engine.toollist import grantable_tools
+from mimir.client.guardrails.toollist import grantable_tools
 from mimir.servers._shared.state_paths import active_session_id
 
 # name -> (owning server, declared capabilities)

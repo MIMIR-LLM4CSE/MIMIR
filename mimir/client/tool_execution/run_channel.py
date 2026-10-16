@@ -33,10 +33,10 @@ import json
 import os
 
 from ..config.paths import STATE_DIR
+from ...servers._shared.state_paths import session_state_dir
 
 
 def _dir(channel: str, session_id: str | None = None) -> str:
-    from ...servers._shared.state_paths import session_state_dir
     return os.path.join(session_state_dir(STATE_DIR, session_id), "runs", channel)
 
 

@@ -7,11 +7,14 @@ import re
 # The user system-prompt override lives in ``.mimir/`` — its resolution belongs with
 # the other user-extension resolvers (servers/skills/plugins); building lives here.
 from ..extensions.system_prompt import resolve_system_prompt_file
+from ..context.todo import load_todo_items
 from ..config.settings import (
     DEFAULT_SUBAGENT_LEVEL,
     THINKING_DEPTH_AUTO,
     subagent_level_allows,
 )
+from ..config import paths
+from ...servers._shared.state_paths import scratch_dir
 
 logger = logging.getLogger(__name__)
 
@@ -669,12 +672,6 @@ def build_tool_catalog_for_planning(
     return "\n".join(lines)
 
 
-# A step the plan itself marked aspirational ("(optional) convergence study").
-# Without this, such a step is stored as a plain `- [ ]` like any other and, since
-# nothing gates on unchecked items, vanishes silently — which is exactly how a
-# planned convergence study disappeared between plan and delivery. Tagged here so
-# the completion ledger can report it separately without it blocking anything.
-_OPTIONAL_STEP_RE = re.compile(r"^\s*[\(\[]?optional[\)\]]?\s*[:\-–]?\s+", re.IGNORECASE)
 
 
 def _workspace_root_for_prompt(workspace_root: str = "") -> str:
@@ -694,65 +691,16 @@ def _scratch_dir_for_prompt(session_id: str | None = None) -> str:
     The session-scoped directory, not ``standing_roots()[0]``: the standing grant is
     the scratchpad *home* (it has to cover a mid-run session switch), so advertising it
     would point the model one level above where its own working files belong.
-    STATE_DIR is passed explicitly — see tool_execution.validation.scratch_roots.
+    paths.STATE_DIR is passed explicitly — see tool_execution.validation.scratch_roots.
 
     *session_id* names the conversation this prompt is for. It has to be passed, not
     looked up: several sessions build prompts in this one process, and the active-session
     pointer would advertise one conversation's scratchpad to all of them.
     """
     try:
-        from ...servers._shared.state_paths import scratch_dir
-        from ..config.paths import STATE_DIR
-        return scratch_dir(STATE_DIR, session_id)
+        return scratch_dir(paths.STATE_DIR, session_id)
     except Exception:
         return ""
-
-
-def _load_todo_items(todo_file: str) -> list[dict]:
-    """Read the current todo list from todo_list.md, return [] on any error.
-
-    If a todo_deps.json sidecar exists in the same directory, each item is
-    annotated with a ``ready`` boolean so the context injection can inform
-    the model which steps are unblocked.
-    """
-    _checkbox = re.compile(r"^- \[([ x])\] (.+)$")
-    try:
-        with open(todo_file, "r", encoding="utf-8") as f:
-            lines = f.readlines()
-    except OSError:
-        return []
-    items = []
-    for line in lines:
-        m = _checkbox.match(line.rstrip("\n"))
-        if m:
-            text = m.group(2)
-            items.append({
-                "index": len(items),
-                "text": text,
-                "done": m.group(1) == "x",
-                "optional": bool(_OPTIONAL_STEP_RE.match(text)),
-            })
-
-    # Annotate with DAG ready status if deps sidecar exists.
-    deps_file = os.path.join(os.path.dirname(todo_file), "todo_deps.json")
-    if os.path.exists(deps_file):
-        try:
-            import json as _json
-            with open(deps_file, "r", encoding="utf-8") as f:
-                deps: list[list[int]] = _json.load(f)
-            for item in items:
-                if item["done"]:
-                    item["ready"] = False  # already done, not actionable
-                    continue
-                idx = item["index"]
-                step_deps = deps[idx] if idx < len(deps) else []
-                item["ready"] = all(
-                    items[d]["done"] for d in step_deps if d < len(items)
-                )
-        except Exception:
-            pass  # deps annotation is best-effort
-
-    return items
 
 
 def _section(body: str) -> str:
@@ -922,7 +870,7 @@ def build_system_content(
     if active_mode == "agent":
         if todo_file:
             # Live state from the todo server — takes priority over the static plan_todos.
-            items = _load_todo_items(todo_file)
+            items = load_todo_items(todo_file)
             if items:
                 pending = sum(1 for it in items if not it.get("done"))
                 system_content += _section(

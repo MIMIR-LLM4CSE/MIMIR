@@ -969,7 +969,7 @@ class RunLedgerKeyTests(unittest.TestCase):
 
     def test_the_security_default_is_untouched(self):
         # Only run_ledger_key opts in; the gate keeps refusing what it always refused.
-        from mimir.client.guardrails.policy.bash_classify import classify_bash_command
+        from mimir.client.context.bash_classify import classify_bash_command
         cmd = 'python3 t.py; echo "x=$?"'
         self.assertIsNone(classify_bash_command(cmd))
         self.assertIsNotNone(classify_bash_command(cmd, allow_expansion=True))

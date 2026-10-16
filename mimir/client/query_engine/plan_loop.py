@@ -39,7 +39,7 @@ from .loop_base import (
     _rebuild_system_content,
 )
 from .readonly_guard import filter_readonly_tool_calls, refusal_reply
-from .toollist import tools_for_plan_mode
+from ..guardrails.toollist import tools_for_plan_mode
 
 
 _PLAN_ACCEPT = "Accept & start"

@@ -5,6 +5,8 @@ import os
 import re
 import shlex
 from typing import Any, Awaitable, Callable
+from ..config import paths
+from ...servers._shared.state_paths import standing_roots
 
 def is_python_test_filepath(path: str) -> bool:
     basename = os.path.basename(path)
@@ -16,13 +18,11 @@ def scratch_roots() -> list[str]:
 
     The scratchpad home itself comes from ``MIMIR_SCRATCH_DIR``, which the client
     resolves and publishes at startup, so both ends agree without either re-deriving
-    it. ``STATE_DIR`` is still passed because the shared helper reads the active
+    it. ``paths.STATE_DIR`` is still passed because the shared helper reads the active
     -session sidecar from there, and ``MIMIR_STATE_DIR`` reaches only the server
     subprocesses' environment.
     """
-    from ...servers._shared.state_paths import standing_roots
-    from ..config.paths import STATE_DIR
-    return [os.path.realpath(os.path.abspath(r)) for r in standing_roots(STATE_DIR)]
+    return [os.path.realpath(os.path.abspath(r)) for r in standing_roots(paths.STATE_DIR)]
 
 
 def is_scratch_path(path: str) -> bool:
