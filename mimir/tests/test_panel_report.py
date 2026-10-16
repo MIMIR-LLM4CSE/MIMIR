@@ -11,6 +11,7 @@ import asyncio
 import importlib.util
 import os
 import sys
+import json
 import types
 from pathlib import Path
 from unittest import mock
@@ -35,6 +36,11 @@ def _report(hpc, **kwargs) -> dict:
 import slurm_site  # noqa: E402
 
 from mimir.client.context.capabilities import PANEL_REPORT, ToolCaps, panel_sections
+
+
+def _mcp(payload: dict) -> types.SimpleNamespace:
+    """A tool result as an MCP session returns it: one text block carrying the JSON."""
+    return types.SimpleNamespace(content=[types.SimpleNamespace(text=json.dumps(payload))])
 
 
 def _caps(**specs) -> dict[str, ToolCaps]:
@@ -104,7 +110,6 @@ def _drain(loop, future):
 def test_the_worker_asks_by_capability_and_survives_a_silent_server(monkeypatch):
     """One server that cannot answer costs its own section, never the panel."""
     import asyncio
-    import json
     from mimir.client.ui.ws.ws_worker import _AgentWorker
 
     class _Session:
@@ -114,15 +119,14 @@ def test_the_worker_asks_by_capability_and_survives_a_silent_server(monkeypatch)
         async def call_tool(self, tool, args):
             if self.boom:
                 raise RuntimeError("that server is gone")
-            return self.payload
+            return _mcp({"title": "Optimisation",
+                         "lines": [{"label": "state", "value": "running"}]})
 
     agent = types.SimpleNamespace(
         tool_caps=_caps(good={"section": "Optimisation", "order": 10},
                         bad={"section": "Machine", "order": 20}),
         tool_owner={"good": "proxy", "bad": "platform"},
         sessions={"proxy": _Session(payload="x"), "platform": _Session(boom=True)},
-        _normalize_tool_content=lambda raw: json.dumps(
-            {"title": "Optimisation", "lines": [{"label": "state", "value": "running"}]}),
     )
     loop = asyncio.new_event_loop()
     worker = object.__new__(_AgentWorker)
@@ -146,7 +150,6 @@ def test_the_servers_are_all_asked_before_any_of_them_answers():
     of those waits; asked at once it costs the longest of them.
     """
     import asyncio
-    import json
     from mimir.client.ui.ws.ws_worker import _AgentWorker
 
     started: list[str] = []
@@ -156,7 +159,7 @@ def test_the_servers_are_all_asked_before_any_of_them_answers():
         async def call_tool(self, tool, args):
             started.append(tool)
             await release[0]          # nobody answers until everyone has asked
-            return "x"
+            return _mcp({"lines": [{"label": "l", "value": "v"}]})
 
     agent = types.SimpleNamespace(
         tool_caps=_caps(machine={"section": "Machine", "order": 10},
@@ -164,8 +167,6 @@ def test_the_servers_are_all_asked_before_any_of_them_answers():
                         proxy={"section": "Optimisation", "order": 30}),
         tool_owner={"machine": "platform", "cluster": "hpc", "proxy": "proxy"},
         sessions={"platform": _Session(), "hpc": _Session(), "proxy": _Session()},
-        _normalize_tool_content=lambda raw: json.dumps(
-            {"lines": [{"label": "l", "value": "v"}]}),
     )
     loop = asyncio.new_event_loop()
     release.append(loop.create_future())
@@ -192,7 +193,6 @@ def test_only_the_readers_own_refresh_reaches_past_a_servers_cache(monkeypatch):
     sets it for that press and for nothing else.
     """
     import asyncio
-    import json
     from mimir.client.ui.ws.ws_worker import _AgentWorker
 
     seen: list[dict] = []
@@ -200,7 +200,7 @@ def test_only_the_readers_own_refresh_reaches_past_a_servers_cache(monkeypatch):
     class _Session:
         async def call_tool(self, tool, args):
             seen.append({"tool": tool, **args})
-            return "x"
+            return _mcp({"lines": [{"label": "l", "value": "v"}]})
 
     agent = types.SimpleNamespace(
         tool_caps=_caps(cluster={"section": "Cluster", "order": 10,
@@ -208,8 +208,6 @@ def test_only_the_readers_own_refresh_reaches_past_a_servers_cache(monkeypatch):
                         machine={"section": "Machine", "order": 20}),
         tool_owner={"cluster": "hpc", "machine": "platform"},
         sessions={"hpc": _Session(), "platform": _Session()},
-        _normalize_tool_content=lambda raw: json.dumps(
-            {"lines": [{"label": "l", "value": "v"}]}),
     )
     loop = asyncio.new_event_loop()
     worker = object.__new__(_AgentWorker)
@@ -302,7 +300,6 @@ def test_a_server_with_nothing_to_say_gets_no_heading():
     and still appears.
     """
     import asyncio
-    import json
     from mimir.client.ui.ws.ws_worker import _AgentWorker
 
     payloads = {
@@ -316,14 +313,13 @@ def test_a_server_with_nothing_to_say_gets_no_heading():
             self.tool = tool
 
         async def call_tool(self, tool, args):
-            return self.tool
+            return _mcp(payloads[self.tool])
 
     agent = types.SimpleNamespace(
         tool_caps=_caps(empty={"section": "Cluster", "order": 10},
                         spoken_for={"section": "Optimisation", "order": 20}),
         tool_owner={"empty": "hpc", "spoken_for": "proxy"},
         sessions={"hpc": _Session("empty"), "proxy": _Session("spoken_for")},
-        _normalize_tool_content=lambda raw: json.dumps(payloads[raw]),
     )
     loop = asyncio.new_event_loop()
     worker = object.__new__(_AgentWorker)
@@ -345,7 +341,6 @@ def test_a_section_that_only_has_groups_is_kept():
     server answering with a nested shape and nothing flat is the opposite case.
     """
     import asyncio
-    import json
     from mimir.client.ui.ws.ws_worker import _AgentWorker
 
     payload = {"title": "Cluster", "lines": [],
@@ -353,13 +348,12 @@ def test_a_section_that_only_has_groups_is_kept():
 
     class _Session:
         async def call_tool(self, tool, args):
-            return "tree"
+            return _mcp(payload)
 
     agent = types.SimpleNamespace(
         tool_caps=_caps(tree={"section": "Cluster", "order": 10}),
         tool_owner={"tree": "hpc"},
         sessions={"hpc": _Session()},
-        _normalize_tool_content=lambda raw: json.dumps(payload),
     )
     loop = asyncio.new_event_loop()
     worker = object.__new__(_AgentWorker)

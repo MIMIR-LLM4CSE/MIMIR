@@ -30,6 +30,8 @@ from ..config import paths
 from ...servers._shared.state_paths import scratch_dir
 from ..guardrails.toollist import grantable_tools, grantable_writers
 from ..context.execution_context import ExecutionContext
+from ..protocol.tool_result import parse_tool_payload
+from ..protocol.tool_result import normalize_tool_content
 
 _CONTINUATION_CHUNK = 120
 _OUTLINE_HINT_MAX_SYMBOLS = 40
@@ -106,7 +108,7 @@ async def _build_outline_hint(
         # read_files/checked_paths are discovery *evidence* the gates count. An
         # annotation must not clear a gate on the model's behalf.
         result = await agent._run_tool(outline_tools[0], {"path": path}, execution_context=None)
-        symbols = (agent._parse_tool_payload(result) or {}).get("symbols") or []
+        symbols = (parse_tool_payload(result) or {}).get("symbols") or []
     except Exception:
         return ""
     if not symbols:
@@ -525,7 +527,7 @@ async def execute_tool_call(
     result = await session.call_tool(
         tool_name, arguments, progress_callback=_make_subagent_progress_cb(call_id),
         meta=call_meta)
-    normalized = agent._normalize_tool_content(result)
+    normalized = normalize_tool_content(result)
 
     runs_before = set(unsettled_runs(execution_context)) if execution_context else set()
     failed_before = set(failed_runs(execution_context)) if execution_context else set()
@@ -544,7 +546,7 @@ async def execute_tool_call(
     # that read it as JSON must not be handed a blob with earlier hints already on it.
     payload_text = normalized
 
-    payload_dict = agent._parse_tool_payload(payload_text) or {}
+    payload_dict = parse_tool_payload(payload_text) or {}
     normalized += _build_continuation_hint(agent, tool_name, payload_dict)
     normalized += await _build_outline_hint(agent, tool_name, payload_dict, execution_context)
 

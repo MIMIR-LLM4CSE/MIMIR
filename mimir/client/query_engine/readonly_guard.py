@@ -21,6 +21,7 @@ from ..guardrails.policy.readonly_exempt import is_readonly_invocation
 from ..protocol.tool_call import as_dict
 from ..protocol.tool_result import json_error_payload
 from ..guardrails.toollist import hidden_planning_tools
+from ..protocol.tool_call import normalize_arguments
 
 # Why a mode has no plan-writing tool, told to a model that called one anyway.
 _NO_PLANNING_REASON = {
@@ -77,7 +78,7 @@ def filter_readonly_tool_calls(
             emit({"type": "status", "text": f"  ⚠ Blocked '{tc_name}' in {mode_label} mode"})
             messages.append(refusal_reply(tc, f"Tool '{tc_name}' is not available in {mode_label} mode. " + _NO_PLANNING_REASON.get(mode_label, "")))
         elif has_cap(tc_name, PLAN_READONLY, agent.tool_caps):
-            args = agent._normalize_arguments(fn.get("arguments") or {})
+            args = normalize_arguments(fn.get("arguments") or {})
             if is_readonly_invocation(tc_name, args, agent.tool_caps):
                 safe.append(tc)
                 continue

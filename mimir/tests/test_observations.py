@@ -69,7 +69,6 @@ EXPECTED_ORDER = [
 
 def _stub_agent():
     return types.SimpleNamespace(
-        _parse_tool_payload=lambda result: {},
         _normalize_workspace_path=lambda p: p or "",
         tool_caps={},
     )
@@ -110,7 +109,6 @@ class ActionOpCountTests(unittest.TestCase):
     def _agent(self):
         from mimir.client.context.capabilities import PLAN_BLOCKED, ToolCaps
         return types.SimpleNamespace(
-            _parse_tool_payload=lambda result: json.loads(result),
             _normalize_workspace_path=lambda p: p or "",
             _is_code_filepath=lambda p: False,
             tool_caps={
@@ -140,7 +138,6 @@ class DelegatedExplorationTests(unittest.TestCase):
     def _agent(self):
         from mimir.client.context.capabilities import DELEGATE, ToolCaps
         return types.SimpleNamespace(
-            _parse_tool_payload=lambda result: json.loads(result),
             _normalize_workspace_path=lambda p: p or "",
             _is_code_filepath=lambda p: False,
             tool_caps={
@@ -211,7 +208,6 @@ class EditFailureStreakTests(unittest.TestCase):
         if extra_caps:
             caps.update(extra_caps)
         return types.SimpleNamespace(
-            _parse_tool_payload=lambda result: json.loads(result),
             _normalize_workspace_path=lambda p: p or "",
             _is_write_tool=lambda n: n == "replace_in_file",
             _is_code_filepath=lambda p: str(p).endswith(".py"),
@@ -323,7 +319,6 @@ class BashCommandObservationTests(unittest.TestCase):
     def _agent(self):
         from mimir.client.context.capabilities import ToolCaps
         return types.SimpleNamespace(
-            _parse_tool_payload=lambda result: json.loads(result),
             _normalize_workspace_path=lambda p: p or "",
             _is_code_filepath=lambda p: str(p).endswith(".py"),
             tool_caps={
@@ -419,7 +414,6 @@ class BashValidationObservationTests(unittest.TestCase):
         )}
         return types.SimpleNamespace(
             tool_caps=reg,
-            _parse_tool_payload=lambda result: json.loads(result),
             _normalize_workspace_path=lambda p: os.path.normpath(p) if p else "",
             _is_code_filepath=lambda p: str(p).endswith(".py"),
         )
@@ -712,7 +706,6 @@ class RedTestRunObservationTests(unittest.TestCase):
         )}
         return types.SimpleNamespace(
             tool_caps=reg,
-            _parse_tool_payload=lambda result: json.loads(result),
             _normalize_workspace_path=lambda p: os.path.normpath(p) if p else "",
             _is_code_filepath=lambda p: str(p).endswith(".py"),
         )
@@ -889,7 +882,6 @@ class ExitAttributionTests(unittest.TestCase):
                 name="bash_run",
                 scope={"kind": "command_prefix", "args": ["command"]})},
             _normalize_workspace_path=lambda p: os.path.normpath(p) if p else "",
-            _parse_tool_payload=lambda r: json.loads(r),
             _is_code_filepath=lambda p: str(p).endswith(".py"),
         )
 
@@ -1001,7 +993,6 @@ class PluginValidatorObservationTests(unittest.TestCase):
         )}
         return types.SimpleNamespace(
             tool_caps=reg,
-            _parse_tool_payload=lambda result: json.loads(result),
             _normalize_workspace_path=lambda p: os.path.normpath(p) if p else "",
         )
 
@@ -1042,7 +1033,6 @@ class ExecutionToolObservationTests(unittest.TestCase):
         reg = {"runner": ToolCaps(name="runner", capabilities=frozenset(caps), **kwargs)}
         return types.SimpleNamespace(
             tool_caps=reg,
-            _parse_tool_payload=lambda result: json.loads(result),
             _normalize_workspace_path=lambda p: os.path.normpath(p) if p else "",
             _is_code_filepath=lambda p: str(p).endswith(".py"),
         )
@@ -1321,7 +1311,6 @@ class MissingCommandImputationTests(unittest.TestCase):
         )}
         return types.SimpleNamespace(
             tool_caps=reg,
-            _parse_tool_payload=lambda result: json.loads(result),
             _normalize_workspace_path=lambda p: os.path.normpath(p) if p else "",
             _is_code_filepath=lambda p: str(p).endswith(".py"),
         )
@@ -1394,7 +1383,6 @@ class DeclaredEditSetTests(unittest.TestCase):
     def _agent(self):
         from mimir.client.context.capabilities import TASK_PLANNING, ToolCaps
         return types.SimpleNamespace(
-            _parse_tool_payload=lambda result: {},
             _normalize_workspace_path=lambda p: p or "",
             tool_caps={
                 "todo_write": ToolCaps(
@@ -1468,7 +1456,6 @@ class UnwatchedRunObservationTests(unittest.TestCase):
 
     def _agent(self):
         return types.SimpleNamespace(
-            _parse_tool_payload=lambda result: json.loads(result),
             _normalize_workspace_path=lambda p: p or "",
             _is_code_filepath=lambda p: False,
             tool_caps={},

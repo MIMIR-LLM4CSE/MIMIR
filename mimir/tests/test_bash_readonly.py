@@ -249,9 +249,6 @@ class _FakeAgent:
             ),
         }
 
-    @staticmethod
-    def _normalize_arguments(args):
-        return args
 
 
 def _call(name, args=None):

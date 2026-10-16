@@ -295,7 +295,6 @@ class FinalizeAnswerTests(unittest.TestCase):
         agent = types.SimpleNamespace(
             tool_owner={},
             _run_tool=lambda *a, **k: "{}",
-            _truncate_text=lambda text, limit=600: text[:limit],
             _update_carry_context=lambda ec: carry.__setitem__("n", carry["n"] + 1),
         )
         return agent, carry
@@ -599,7 +598,6 @@ class RunPlanModeTests(unittest.TestCase):
             return answer
 
         agent = types.SimpleNamespace(model="m", tools=[], tool_caps=dict(_CHECKLIST_CAPS))
-        agent._normalize_arguments = lambda args: args
         messages = [{"role": "system", "content": "S"}, {"role": "user", "content": "plan it"}]
 
         with patch.object(streaming_module, "get_backend", lambda: backend), \
@@ -1116,13 +1114,7 @@ class RunAgentQueryNonInteractiveTests(unittest.TestCase):
             async def _run_tool(self, tool, args, execution_context=None, run_auto_validation=True, call_id=""):
                 return "{}"
 
-            @staticmethod
-            def _normalize_arguments(args):
-                return args
 
-            @staticmethod
-            def _truncate_text(text, limit=600):
-                return text[:limit]
 
             approvals = types.SimpleNamespace(flush_pending_review=lambda: None)
 
@@ -1484,7 +1476,6 @@ class AskModeInLoopTests(RunAgentQueryNonInteractiveTests):
         agent._normalize_mode = staticmethod(lambda mode: "ask")
         # The shared stub's _normalize_arguments is an identity; the guard needs the
         # real one, which parses the JSON-string arguments a backend actually emits.
-        agent._normalize_arguments = staticmethod(MimirAgent._normalize_arguments)
         agent.tool_caps = {
             "write_file": ToolCaps(name="write_file", capabilities=frozenset({PLAN_BLOCKED})),
             "bash_run": ToolCaps(name="bash_run", capabilities=frozenset({PLAN_READONLY}),
@@ -1571,7 +1562,6 @@ class MidQueryModeSwitchTests(RunAgentQueryNonInteractiveTests):
         agent = self._query_agent()
         agent.mode = start_mode
         agent._normalize_mode = staticmethod(lambda mode: mode)
-        agent._normalize_arguments = staticmethod(MimirAgent._normalize_arguments)
         agent.tool_caps = dict(self._CAPS)
         agent.tools = [{"function": {"name": n}} for n in self._CAPS]
         return agent
@@ -1840,7 +1830,6 @@ class RepeatedFailingCallGuardTests(unittest.TestCase):
     def _agent(self, run_tool):
         approvals = types.SimpleNamespace(record_snapshot=lambda p: None, _file_snapshots={})
         return types.SimpleNamespace(
-            _normalize_arguments=lambda a: (json.loads(a) if isinstance(a, str) else dict(a)),
             _is_write_tool=lambda n: False,
             tool_caps={"code_check_file": ToolCaps(name="code_check_file")},
             get_tool_file_targets=lambda n, a: [],
@@ -1960,7 +1949,6 @@ class WriteDiffEmitTests(unittest.TestCase):
             record_snapshot=record_snapshot, _file_snapshots=snapshots
         )
         return types.SimpleNamespace(
-            _normalize_arguments=lambda a: (json.loads(a) if isinstance(a, str) else dict(a)),
             _is_write_tool=lambda n: n == "replace_in_file",
             tool_caps={"replace_in_file": ToolCaps(name="replace_in_file")},
             get_tool_file_targets=lambda n, a: [a["path"]],
@@ -2162,7 +2150,6 @@ class IdenticalSuccessRepeatTests(unittest.TestCase):
             approvals=types.SimpleNamespace(record_snapshot=lambda p: None),
             get_tool_file_targets=lambda name, args: [],
             _is_write_tool=lambda name: False,
-            _normalize_arguments=lambda args: dict(args),
             _rewrite_tool_for_context=lambda name, args: (name, args),
             _run_tool=_run_tool,
         )

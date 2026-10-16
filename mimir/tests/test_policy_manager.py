@@ -33,9 +33,6 @@ class _FakeAgent:
         self.approvals = _fake_approvals(lambda tool, args: False)
         self.denied_calls: list[tuple[str, dict, dict | None]] = []
 
-    @staticmethod
-    def _json_error_payload(message: str, hint: str = "", **extra) -> str:
-        return f"error:{message}|{hint}|{extra.get('tool', '')}"
 
     @staticmethod
     def _normalize_tool_arguments(tool_name: str, arguments: dict) -> dict:

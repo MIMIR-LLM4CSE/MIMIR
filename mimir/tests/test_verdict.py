@@ -300,7 +300,6 @@ class VerdictToolTests(unittest.TestCase):
         )}
         return types.SimpleNamespace(
             tool_caps=reg,
-            _parse_tool_payload=lambda result: json.loads(result),
             _normalize_workspace_path=lambda p: p or "",
         )
 

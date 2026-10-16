@@ -35,7 +35,8 @@ class _FakeSession:
 
     async def call_tool(self, tool: str, args: dict):
         self.calls.append((tool, dict(args)))
-        return self.payload
+        # As an MCP session answers: one text block carrying the payload.
+        return types.SimpleNamespace(content=[types.SimpleNamespace(text=self.payload)])
 
 
 def _worker_stub(session: _FakeSession, loop) -> types.SimpleNamespace:
@@ -49,7 +50,6 @@ def _worker_stub(session: _FakeSession, loop) -> types.SimpleNamespace:
         tool_owner={"memory_list_all": "memory"},
         sessions={"memory": session},
         _run_tool=_boom,
-        _normalize_tool_content=lambda raw: raw,
     )
     return types.SimpleNamespace(_agent=agent, _loop=loop)
 

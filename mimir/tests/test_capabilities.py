@@ -375,9 +375,6 @@ class ReversibilityDerivationTest(unittest.TestCase):
                 reversibility=caps.IRREVERSIBLE,
             )}
 
-            @staticmethod
-            def _json_error_payload(msg, **kw):
-                return msg
 
         for level in ("strict", "light", "off"):
             with self.subTest(enforcement=level):

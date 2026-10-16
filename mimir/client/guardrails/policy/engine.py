@@ -32,6 +32,7 @@ from ...context.execution_context import (
     unwritten_declared_files,
 )
 from ...context.execution_context import ExecutionContext
+from ...protocol.tool_result import json_error_payload
 
 logger = logging.getLogger(__name__)
 
@@ -341,7 +342,7 @@ def _run_extra_checks(extra_checks: list | None, stage: str,
 def _registry_gate(call: _PolicyCall) -> PolicyEvaluation | None:
     if call.tool_name in call.agent.tool_owner:
         return None
-    return call.refuse(call.agent._json_error_payload(
+    return call.refuse(json_error_payload(
         f"Unknown tool '{call.tool_name}'.",
         hint="Refresh the server registry or choose one of the registered tool names.",
         tool=call.tool_name,

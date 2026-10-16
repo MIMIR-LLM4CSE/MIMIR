@@ -58,7 +58,6 @@ def _stub_agent():
     }
     return types.SimpleNamespace(
         tool_caps=caps,
-        _parse_tool_payload=lambda result: json.loads(result) if result else {},
         _normalize_workspace_path=lambda p: os.path.normpath(p) if p else "",
         _is_code_filepath=lambda p: os.path.splitext(p)[1].lower() in SOURCE_FILE_EXTENSIONS,
     )

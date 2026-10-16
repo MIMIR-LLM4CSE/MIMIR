@@ -176,13 +176,7 @@ class _LoopAgent:
     def _normalize_mode(mode):
         return "agent"
 
-    @staticmethod
-    def _normalize_arguments(args):
-        return args
 
-    @staticmethod
-    def _truncate_text(text, limit=600):
-        return text[:limit]
 
     async def _run_tool(self, tool, args, execution_context=None, run_auto_validation=True, call_id=""):
         return "{}"

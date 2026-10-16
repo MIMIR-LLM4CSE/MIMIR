@@ -38,8 +38,6 @@ class _FakeAgent:
             "read_file_lines": ToolCaps(name="read_file_lines", capabilities=frozenset({READ})),
         }
 
-    def _json_error_payload(self, msg, hint="", tool=""):
-        return json.dumps({"status": "error", "error": msg, "hint": hint, "tool": tool})
 
 
 class ProxyExecGuardTests(unittest.TestCase):

@@ -66,16 +66,11 @@ from .guardrails.toollist import tools_for_readonly_mode
 from .event_sink import set_event_sink, reset_event_sink
 from .protocol.tool_result import (
     json_error_payload,
-    normalize_tool_content,
-    parse_tool_payload,
-    truncate_text,
 )
-from .protocol.tool_call import normalize_arguments
 from .tool_execution.normalizer import (
     normalize_tool_arguments,
     normalize_tool_path_argument,
     normalize_workspace_path,
-    parent_path,
     rewrite_tool_for_context,
 )
 from .tool_execution.executor import execute_tool_call
@@ -403,32 +398,8 @@ class MimirAgent:
         self.enforcement = normalized
 
     @staticmethod
-    def _normalize_arguments(arguments: Any) -> dict[str, Any]:
-        return normalize_arguments(arguments)
-
-    @staticmethod
-    def _normalize_tool_content(result: Any) -> str:
-        return normalize_tool_content(result)
-
-    @staticmethod
-    def _truncate_text(text: str, limit: int = 600) -> str:
-        return truncate_text(text, limit=limit)
-
-    @staticmethod
-    def _json_error_payload(message: str, hint: str = "", **extra) -> str:
-        return json_error_payload(message, hint=hint, **extra)
-
-    @staticmethod
-    def _parse_tool_payload(result_text: str) -> dict[str, Any] | None:
-        return parse_tool_payload(result_text)
-
-    @staticmethod
     def _normalize_workspace_path(path: str | None) -> str:
         return normalize_workspace_path(path)
-
-    @staticmethod
-    def _normalize_tool_path_argument(path: str | None) -> str:
-        return normalize_tool_path_argument(path)
 
     def _normalize_tool_arguments(self, tool_name: str, arguments: dict) -> dict:
         path_arg_names = path_args(tool_name, self.tool_caps)
@@ -436,7 +407,7 @@ class MimirAgent:
             tool_name,
             arguments,
             path_args_by_tool={tool_name: path_arg_names} if path_arg_names else {},
-            normalize_tool_path_argument_fn=self._normalize_tool_path_argument,
+            normalize_tool_path_argument_fn=normalize_tool_path_argument,
         )
 
     def _rewrite_tool_for_context(self, tool_name: str, arguments: dict) -> tuple[str, dict]:
@@ -447,10 +418,6 @@ class MimirAgent:
             is_code_filepath=self._is_code_filepath,
             normalize_workspace_path_fn=self._normalize_workspace_path,
         )
-
-    @staticmethod
-    def _parent_path(path: str) -> str:
-        return parent_path(path)
 
     @staticmethod
     def _new_execution_context(workspace_root: str = "") -> ExecutionContext:
@@ -862,7 +829,7 @@ class MimirAgent:
             else:
                 hint += " No safe alternative is configured for (1)."
 
-        return self._json_error_payload(
+        return json_error_payload(
             f"Execution of tool '{tool_name}' was refused by the user.",
             hint=hint,
             tool=tool_name,

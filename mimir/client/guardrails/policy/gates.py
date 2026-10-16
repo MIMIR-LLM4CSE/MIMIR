@@ -37,6 +37,7 @@ from ...tool_execution.tool_status_messages import (
 )
 from ...tool_execution.validation import absolute_workspace_path, scratch_roots
 from ...context.execution_context import ExecutionContext
+from ...protocol.tool_result import json_error_payload
 
 
 # ── unattended agents ─────────────────────────────────────────────────────────
@@ -59,7 +60,7 @@ def mode_denied_payload(agent: Any, tool_name: str, arguments: dict, needs: str)
     "another way" to look for. The agent skips the step or stops, and says so.
     """
     agent.approvals.block_for_mode(describe_action(agent, tool_name, arguments), needs)
-    return agent._json_error_payload(
+    return json_error_payload(
         f"Not run: the approval mode is '{agent.approvals.approval_mode}', this action "
         f"needs '{needs}', and a sub-agent cannot ask the user.",
         hint=("Do not retry it and do not reach the same result another way. If the rest "
@@ -288,7 +289,7 @@ def _check_out_of_workspace_access(
     # usual tool description ("Running: …") instead of bare paths.
     approved, always = prompt(targets, tool_name, arguments) if prompt else (False, False)
     if not approved:
-        return agent._json_error_payload(
+        return json_error_payload(
             f"Access outside the workspace was not approved: {_name_paths(targets)}.",
             hint=("These paths are outside the workspace root. Ask the user to approve "
                   "them (allow / always), or operate within the workspace."),
@@ -344,7 +345,7 @@ def _check_cluster_submit(
         return None
     if not execution_context.dirty_written_files:
         return None
-    return agent._json_error_payload(
+    return json_error_payload(
         f"Cluster submission '{tool_name}' held: nothing validated locally yet this session.",
         hint=(
             "Cluster submissions consume real allocation hours and cannot be taken back. "
@@ -454,7 +455,7 @@ def _check_proxy_exec(
             return None
     except Exception:
         return None
-    return agent._json_error_payload(
+    return json_error_payload(
         f"Direct execution of the proxy under optimization is blocked ('{tool_name}').",
         hint=(
             "A proxy optimization session is active. Run the proxy through "
@@ -494,7 +495,7 @@ def _check_skill_pull(
     loaded: dict = execution_context.skills_loaded if execution_context is not None else {}
 
     if skill in loaded:
-        return agent._json_error_payload(
+        return json_error_payload(
             f"The skill '{skill}' is already loaded in this conversation.",
             hint="Its instructions are in an earlier tool result — re-read that result "
                  "rather than loading it again.",
@@ -502,7 +503,7 @@ def _check_skill_pull(
         )
 
     if len(loaded) >= SKILL_PULL_MAX:
-        return agent._json_error_payload(
+        return json_error_payload(
             f"{len(loaded)} skills are already loaded "
             f"({', '.join(sorted(loaded))}).",
             hint="That is the limit for one task. Finish the work with the methods you "
@@ -522,7 +523,7 @@ def _check_skill_pull(
     # "switched off" tells the model about a capability it cannot have and invites it to
     # stop and ask the user to switch it back on — a worse outcome than not knowing.
     if meta is None or not agent.skill_enabled(skill):
-        return agent._json_error_payload(
+        return json_error_payload(
             f"No skill named '{skill}'.",
             hint=(f"Available: {', '.join(offered)}." if offered
                   else "No skills are available to load."),
@@ -530,7 +531,7 @@ def _check_skill_pull(
         )
 
     if not meta.get("model_invocable", True):
-        return agent._json_error_payload(
+        return json_error_payload(
             f"The skill '{skill}' is user-invoked only.",
             hint=f"The user can run /{skill}. Carry on with your own method — do not "
                  "ask them to run it for you.",

@@ -83,6 +83,8 @@ from ..context.bash_classify import (
     FILE_LIKE_RE,
 )
 from ..context.execution_context import ExecutionContext
+from ..tool_execution.normalizer import parent_path
+from ..protocol.tool_result import parse_tool_payload
 
 
 # Source-file path regex derived from the canonical extension set so it stays in sync
@@ -539,7 +541,7 @@ def _observe_candidates(
         if not candidate:
             continue
         _register_known_path(execution_context, candidate)
-        candidate_parent = agent._parent_path(candidate)
+        candidate_parent = parent_path(candidate)
         execution_context.similar_candidates_by_dir.setdefault(candidate_parent, set()).add(candidate)
 
 
@@ -1365,7 +1367,7 @@ def record_tool_observation(
     if execution_context is None:
         return
 
-    payload = agent._parse_tool_payload(result) or {}
+    payload = parse_tool_payload(result) or {}
     path = agent._normalize_workspace_path(
         target_path_arg(tool_name, arguments, agent.tool_caps, directories=True))
     status = payload.get("status")

@@ -15,6 +15,7 @@ from typing import Any
 from ...context.capabilities import EDIT, has_cap, target_path_arg
 from ...config.limits import VALIDATION_RETRY_BUDGET
 from ...context.execution_context import ExecutionContext
+from ...protocol.tool_result import json_error_payload
 
 
 def check_state_machine_guard(
@@ -39,7 +40,7 @@ def check_state_machine_guard(
 
     # Hard stop only for the specific file that exhausted its validation retry budget.
     if state == "edit" and failure_count >= VALIDATION_RETRY_BUDGET:
-        return agent._json_error_payload(
+        return json_error_payload(
             f"Workflow state guard blocked '{tool_name}' after repeated validation failures.",
             hint=(
                 f"Validation failed {failure_count} times for this file. "

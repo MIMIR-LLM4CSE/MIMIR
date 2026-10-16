@@ -11,6 +11,7 @@ from ...config import (
     TEMPERATURE_BACKENDS, TEMPERATURE_MAX, TEMPERATURE_MIN, THINKING_DEPTH_LABELS,
     parse_temperature, thinking_depth_from_label,
 )
+from ...protocol.tool_result import normalize_tool_content
 
 
 # What the user types → the mode name. "all" is the spoken form of ``auto_all``:
@@ -500,7 +501,7 @@ async def _call_platform_tool(agent: Any, tool: str, arguments: dict) -> dict | 
     session = agent.sessions[tool_owner[tool]]
     result = await session.call_tool(tool, arguments)
     try:
-        return json.loads(agent._normalize_tool_content(result))
+        return json.loads(normalize_tool_content(result))
     except (TypeError, ValueError):
         return None
 

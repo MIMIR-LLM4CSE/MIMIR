@@ -23,6 +23,8 @@ import mimir.client.guardrails.policy.write as policy_runtime_module
 import mimir.client.config as client_config_module
 import mimir.client.query_engine.agent_loop as agent_loop_module
 from mimir.client.context.todo import load_todo_items
+from mimir.client.tool_execution.normalizer import normalize_tool_path_argument
+from mimir.client.protocol.tool_result import json_error_payload
 import mimir.client.query_engine.streaming as streaming_module
 import mimir.client.query_engine.history as history_module
 import mimir.client.query_engine.dispatch as dispatch_module
@@ -366,7 +368,7 @@ class ClientHelperTests(unittest.TestCase):
 
     def test_json_error_payload_is_structured(self) -> None:
         payload = json.loads(
-            client_module.MimirAgent._json_error_payload(
+            json_error_payload(
                 "Boom",
                 hint="Retry",
                 tool="demo",
@@ -382,11 +384,11 @@ class ClientHelperTests(unittest.TestCase):
         self.assertEqual(client_module._BASE.rstrip("/"), expected)
 
     def test_normalize_tool_path_argument_empty_to_dot(self) -> None:
-        self.assertEqual(client_module.MimirAgent._normalize_tool_path_argument(""), ".")
+        self.assertEqual(normalize_tool_path_argument(""), ".")
 
     def test_normalize_tool_path_argument_collapses_workspace_basename(self) -> None:
         cwd_base = Path(__file__).resolve().parents[2].name
-        normalized = client_module.MimirAgent._normalize_tool_path_argument(f"{cwd_base}/mimir")
+        normalized = normalize_tool_path_argument(f"{cwd_base}/mimir")
         self.assertEqual(normalized, "mimir")
 
     def test_rewrite_read_file_to_read_file_lines_for_code(self) -> None:
@@ -794,13 +796,7 @@ class ClientHelperTests(unittest.TestCase):
             async def _run_tool(self, tool, args, execution_context=None, run_auto_validation=True, call_id=""):
                 return "{}"
 
-            @staticmethod
-            def _normalize_arguments(args):
-                return args
 
-            @staticmethod
-            def _truncate_text(text, limit=600):
-                return text[:limit]
 
             approvals = types.SimpleNamespace(flush_pending_review=lambda: None)
 
@@ -1309,9 +1305,6 @@ class ClientHelperTests(unittest.TestCase):
         class _WriteAgent:
             tool_caps = {}
 
-            @staticmethod
-            def _normalize_arguments(args):
-                return args
 
             @staticmethod
             def _is_write_tool(name):
@@ -1423,9 +1416,6 @@ class ClientHelperTests(unittest.TestCase):
         class _DispatchAgent:
             tool_caps = {}
 
-            @staticmethod
-            def _normalize_arguments(args):
-                return args
 
             @staticmethod
             def _is_write_tool(name):
@@ -1522,8 +1512,6 @@ class ClientHelperTests(unittest.TestCase):
             approvals = types.SimpleNamespace(
                 record_snapshot=lambda path: None, _file_snapshots={})
 
-            @staticmethod
-            def _normalize_arguments(args): return args
 
             @staticmethod
             def _is_write_tool(name): return False
@@ -2510,7 +2498,9 @@ class ModulesCommandTests(unittest.TestCase):
 
         async def call_tool(self, name, arguments, **_kwargs):
             self.calls.append((name, arguments))
-            return self.payloads[name]
+            # As an MCP session answers: one text block carrying the JSON payload.
+            return types.SimpleNamespace(
+                content=[types.SimpleNamespace(text=json.dumps(self.payloads[name]))])
 
     class _Agent:
         def __init__(self, payloads, connected=True):
@@ -2518,10 +2508,6 @@ class ModulesCommandTests(unittest.TestCase):
             self.tool_owner = {n: "platform" for n in names} if connected else {}
             self.session = ModulesCommandTests._Session(payloads)
             self.sessions = {"platform": self.session}
-
-        @staticmethod
-        def _normalize_tool_content(result):
-            return json.dumps(result)
 
     def _run(self, query, agent):
         from mimir.client.ui.cli.chat_commands import handle_chat_command

@@ -43,6 +43,7 @@ from ... import human_pause
 from ...config.settings import DEFAULT_SUBAGENT_LEVEL
 from ...context.todo import load_todo_items
 from ...query_engine import job_poll
+from ...protocol.tool_result import normalize_tool_content
 
 logger = logging.getLogger(__name__)
 
@@ -1993,7 +1994,7 @@ class _AgentWorker:
         async def _run() -> dict:
             try:
                 raw = await agent.sessions[owner].call_tool(tool, dict(args))
-                text = agent._normalize_tool_content(raw)
+                text = normalize_tool_content(raw)
                 return json.loads(text) if isinstance(text, str) else (text or {})
             except Exception as exc:
                 return {"status": "error", "error": str(exc)}
@@ -2037,7 +2038,7 @@ class _AgentWorker:
                 args[str(spec["refresh_arg"])] = True
             try:
                 raw = await agent.sessions[owner].call_tool(tool, args)
-                text = agent._normalize_tool_content(raw)
+                text = normalize_tool_content(raw)
                 return json.loads(text) if isinstance(text, str) else (text or {})
             except Exception as exc:
                 # One server that cannot answer costs its own section, never the

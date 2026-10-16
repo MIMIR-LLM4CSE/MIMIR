@@ -21,6 +21,7 @@ from ...protocol.tool_result import json_error_payload
 from ...tool_execution.normalizer import _make_hashable
 from ...tool_execution.tool_status_messages import clip_doing
 from ...context.execution_context import ExecutionContext
+from ...protocol.tool_call import normalize_arguments
 
 
 @dataclass
@@ -58,7 +59,7 @@ def is_write(agent: Any, name: str) -> bool:
 def _read_call(agent: Any, idx: int, tc: Any) -> Call:
     tc = as_dict(tc)
     fn = as_dict(tc.get("function", {}))
-    args = agent._normalize_arguments(fn.get("arguments") or {})
+    args = normalize_arguments(fn.get("arguments") or {})
     # The description is taken out into a COPY, never popped in place:
     # `normalize_arguments` hands back the very dict the assistant message holds, and
     # that message is the record of what the model issued — `take_deferred_calls` reads

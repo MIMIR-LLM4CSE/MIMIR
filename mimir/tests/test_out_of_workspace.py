@@ -111,9 +111,6 @@ class _FakeAgent:
     def _is_write_tool(self, tool_name):
         return False
 
-    def _json_error_payload(self, msg, hint="", tool="", **extra):
-        import json
-        return json.dumps({"status": "error", "error": msg, "hint": hint, **extra})
 
     def _request_path_approval(self, paths, tool_name, arguments=None):
         # Every outside path of the call arrives in one prompt; the call's own

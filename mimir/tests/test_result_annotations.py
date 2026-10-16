@@ -214,7 +214,6 @@ class OutlineHintTests(unittest.IsolatedAsyncioTestCase):
             name="symbol_outline", capabilities=frozenset({READ, CACHEABLE, CODE_NAV})
         )
         agent._is_code_filepath = lambda p: p.endswith((".f90", ".py"))
-        agent._parse_tool_payload = lambda text: json.loads(text)
 
         async def _run_tool(name, args, execution_context=None):
             if fail:
