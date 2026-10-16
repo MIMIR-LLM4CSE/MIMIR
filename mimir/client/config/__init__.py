@@ -21,6 +21,11 @@ from .limits import (
     CTX_RESERVED_RATIO,
 )
 from .settings import (
+    APPROVAL_MODE_ALIASES,
+    APPROVAL_MODES,
+    BACKENDS,
+    CONTEXT_MODES,
+    ENFORCEMENT_LEVELS,
     THINKING_DEPTH_LABELS,
     THINKING_DEPTH_BUDGETS,
     THINKING_DEPTH_AUTO,
@@ -42,6 +47,11 @@ from .models import DEFAULT_MODEL, VALID_MODES, READONLY_MODES, LLM_BACKEND, VLL
 # ``mimir.client.extensions``; import from there, not from ``config``.
 
 __all__ = [
+    "APPROVAL_MODE_ALIASES",
+    "APPROVAL_MODES",
+    "BACKENDS",
+    "CONTEXT_MODES",
+    "ENFORCEMENT_LEVELS",
     "CHARS_PER_TOKEN",
     "CTX_RESERVED_RATIO",
     "CTX_TOTAL_COMPACT",

@@ -40,13 +40,8 @@ from .detach import detach as detach_process
 from . import server_registry
 from .ws_pool import _AgentPool, idle_stop_reason
 from ...tool_execution import run_channel
-from ...config.preferences import save_subagent_level
-from ...query_engine.backends.factory import switch_backend
-from ...config import (
-    SUBAGENT_LEVELS, clamp_subagent_level,
-    TEMPERATURE_MAX, TEMPERATURE_MIN, THINKING_DEPTH_LABELS, parse_temperature,
-    thinking_depth_from_label,
-)
+from ...session.commands import CommandResult
+from .ws_commands import WS_COMMANDS, WsCommandHost
 
 import asyncio
 import json
@@ -3140,302 +3135,33 @@ class _Session:
             "transient": transient,
         }))
 
-    async def _send_thinking_state(self) -> None:
-        """Report the reasoning depth the agent ACTUALLY holds after a change.
-
-        A state message, not a transcript line. The depth already has a control in
-        the settings panel, so narrating it in the conversation says twice what the
-        panel says once — and the webview replays its stored settings on every
-        connect, so that line greeted each session with a depth nobody had just
-        chosen. Reporting the agent's own value rather than echoing the requested
-        one is also what stops the greeting being wrong: the request is a wish, the
-        attribute is the fact.
-        """
-        agent = getattr(self.worker, "_agent", None)
-        depth = getattr(agent, "thinking_depth", None)
-        if depth is None:
-            return
-        label = (THINKING_DEPTH_LABELS[depth]
-                 if 0 <= depth < len(THINKING_DEPTH_LABELS) else "")
-        await self.ws.send(json.dumps({
-            "type": "thinking_depth", "depth": depth, "label": label,
-        }))
-
-    async def _send_streaming_state(self) -> None:
-        """Report whether the agent is ACTUALLY streaming, after a change.
-
-        Same reasoning as :meth:`_send_thinking_state`: the toggle owns a control in
-        the settings panel, and the webview replays its stored value on connect, so a
-        transcript line about it was chrome repeated as session-opening noise.
-        """
-        agent = getattr(self.worker, "_agent", None)
-        enabled = getattr(agent, "streaming", None)
-        if enabled is None:
-            return
-        await self.ws.send(json.dumps({
-            "type": "streaming", "enabled": bool(enabled),
-        }))
-
     async def _handle_command(self, text: str) -> None:
-        """Answer a session command the user typed (never seen by the model).
+        """Answer a session command the user typed (never seen by the model)."""
+        result = await WS_COMMANDS.run(WsCommandHost(self), text)
+        if result is None:
+            result = CommandResult.error(f"Unknown command: {text}")
+        await self._send_command_result(result)
 
-        Replies go out as ``command_output``, not ``output``. ``output`` is the
-        transient tool-activity channel and the webview drops it on purpose — which
-        silently swallowed every answer here: ``/memory list`` printed nothing, and
-        ``/memory clear`` wiped the store while looking like it had done nothing at
-        all. An answer to something the user typed is not activity chatter, so it
-        travels on its own channel and is rendered.
+    async def _send_command_result(self, result: CommandResult) -> None:
+        """A command's result, the way this front-end shows each shape.
+
+        An error as ``error``. A setting as its STATE message — the webview draws it on
+        the control that owns the setting, and a line in the transcript would only
+        repeat that control. A listing or an irreversible change as ``command_output``,
+        not ``output``: ``output`` is the transient tool-activity channel the webview
+        drops on purpose, which silently swallowed every answer — ``/memory list``
+        printed nothing, and ``/memory clear`` wiped the store while looking like it
+        had done nothing at all.
         """
-        if text.startswith("/mode "):
-            mode = text[6:].strip()
-            error = self._apply_setting("mode", mode)
-            if error:
-                await self.ws.send(json.dumps({"type": "error", "text": f"  ✗ {error}\n"}))
-            else:
-                # State, not narration: the mode switcher shows it, so a line in the
-                # transcript would only repeat the chrome — and the webview replays
-                # its own mode on connect, which made that line session-opening noise.
-                await self.ws.send(json.dumps({"type": "mode", "mode": mode}))
-        elif text.startswith("/batch "):
-            flag = text[7:].strip().lower()
-            self._apply_setting("batch", flag in ("on", "true", "1", "yes"))
-        elif text.startswith("/thinking "):
-            flag = text[10:].strip().lower()
-            on = flag in ("on", "true", "1", "yes")
-            self._apply_setting("thinking", on)
-            await self._send_thinking_state()
-        elif text.startswith("/thinking-depth "):
-            arg = text[16:].strip()
-            level = thinking_depth_from_label(arg) if not arg.lstrip("-").isdigit() else int(arg)
-            if level is None or not 0 <= level < len(THINKING_DEPTH_LABELS):
-                usage = f"Usage: /thinking-depth 0-{len(THINKING_DEPTH_LABELS) - 1} ({'|'.join(THINKING_DEPTH_LABELS)})"
-                await self.ws.send(json.dumps({"type": "error", "text": usage}))
-                return
-            self._apply_setting("thinking_depth", level)
-            await self._send_thinking_state()
-        elif text.startswith("/streaming "):
-            flag = text[11:].strip().lower()
-            on = flag in ("on", "true", "1", "yes")
-            self._apply_setting("streaming", on)
-            await self._send_streaming_state()
-        elif text.startswith("/context "):
-            mode = text[9:].strip().lower()
-            if mode in ("compact", "full"):
-                self._apply_setting("context_mode", mode)
-                # Also what the budget assumes until an agent answers for itself, and
-                # what the session is saved with: a mode chosen before the first query
-                # must not be forgotten by the one piece of code that sizes the window.
-                self._resumed_context_mode = mode
-                await self.ws.send(json.dumps({"type": "context_mode", "mode": mode}))
-            else:
-                await self.ws.send(json.dumps({"type": "error", "text": f"Unknown context mode: {mode}. Use compact or full."}))
-        elif text.startswith("/approvals "):
-            # "all" is the spoken form of auto_all — nobody types an underscore.
-            raw = text[11:].strip().lower()
-            mode = {"all": "auto_all", "auto-all": "auto_all"}.get(raw, raw)
-            if mode in ("manual", "auto", "auto_all"):
-                self._apply_setting("approval_mode", mode)
-                await self.ws.send(json.dumps({"type": "approval_mode", "mode": mode}))
-            else:
-                await self.ws.send(json.dumps({"type": "error", "text": f"Unknown approval mode: {raw}. Use manual, auto, or all."}))
-        elif text == "/subagents" or text.startswith("/subagents "):
-            # How far a sub-agent may go is the user's call, not the model's: this is
-            # where they make it, and a bare command reports without changing anything.
-            raw = text[11:].strip().lower()
-            if raw and raw not in SUBAGENT_LEVELS:
-                await self.ws.send(json.dumps({"type": "error", "text": (
-                    f"Unknown sub-agent setting: {raw}. Use "
-                    f"{', '.join(SUBAGENT_LEVELS)}.")}))
-                return
-            if raw:
-                # Through the pool like every other setting: set on the stand-in that
-                # answers before the first query, it was neither applied nor recorded
-                # for the agent built next. Persisted here as well, because that is
-                # where a new agent reads it from and there may be no live one.
-                level = clamp_subagent_level(raw)
-                self.pool.apply_setting("subagent_level", level)
-                save_subagent_level(level)
-            else:
-                level = self.worker.setting("subagent_level")
-            await self.ws.send(json.dumps({"type": "subagent_level", "level": level}))
-        elif text.startswith("/enforcement "):
-            level = text[13:].strip().lower()
-            if level in ("strict", "light", "off"):
-                self._apply_setting("enforcement", level)
-                await self.ws.send(json.dumps({"type": "enforcement", "mode": level}))
-            else:
-                await self.ws.send(json.dumps({"type": "error", "text": f"Unknown enforcement level: {level}. Use strict, light, or off."}))
-        elif text == "/temperature" or text.startswith("/temperature "):
-            raw = text[12:].strip()
-            ok, value = parse_temperature(raw) if raw else (True, None)
-            if not raw:
-                # Bare command: report, change nothing.
-                pass
-            elif ok:
-                self._apply_setting("temperature", value)
-            else:
-                await self.ws.send(json.dumps({"type": "error", "text": (
-                    f"Invalid temperature: {raw}. Use a number from "
-                    f"{TEMPERATURE_MIN:g} to {TEMPERATURE_MAX:g}, or 'default'.")}))
-                return
-            # The value the agent holds, not the one asked for (see _send_thinking_state).
-            await self.ws.send(json.dumps(
-                {"type": "temperature", **self.worker.get_temperature_state()}))
-        elif text.startswith("/proxy"):
-            # Housekeeping the person running the session may need without asking the
-            # model for it. Without these the only way to remove a proxy's runs and
-            # optimisation state is to delete a store directory whose path nobody has a
-            # reason to know.
-            parts = text.split()
-            if len(parts) >= 2 and parts[1] == "list":
-                # "clean <name>" needs a name, and the only way to learn one was to
-                # ask the model to list them — a round trip through an LLM to read a
-                # registry file.
-                payload = await asyncio.wrap_future(
-                    self.worker.call_session_tool("proxy_get", {"op": "proxies"}))
-                if payload.get("status") != "ok":
-                    await self.ws.send(json.dumps({
-                        "type": "error",
-                        "text": f"  ✗ {payload.get('error', 'list failed')}\n"}))
-                else:
-                    entries = payload.get("proxies") or []
-                    await self._command_reply(
-                        "/proxy list",
-                        f"{len(entries)} registered "
-                        + ("proxy" if len(entries) == 1 else "proxies")
-                        if entries else "No proxies registered",
-                        items=[{"label": e.get("name", "?"),
-                                "detail": (e.get("description") or "").strip()}
-                               for e in entries],
-                        tone="ok" if entries else "empty",
-                    )
-            elif len(parts) >= 3 and parts[1] == "clean":
-                name = parts[2]
-                payload = await asyncio.wrap_future(
-                    self.worker.call_session_tool(
-                        "proxy_manage", {"op": "clean", "name": name, "confirm": True}))
-                if payload.get("status") != "ok":
-                    await self.ws.send(json.dumps({
-                        "type": "error",
-                        "text": f"  ✗ {payload.get('error', 'clean failed')}\n"}))
-                else:
-                    # What survived is the part worth showing: this is the exact
-                    # question ("I deleted everything and it still remembers") that
-                    # made a whole session start from state nobody meant to keep.
-                    items = [{"label": "removed",
-                              "detail": ", ".join(payload.get("removed") or ["nothing"])}]
-                    items += [{"label": "kept", "detail": k}
-                              for k in (payload.get("kept") or [])]
-                    await self._command_reply(
-                        "/proxy clean", f"Cleaned proxy '{name}'",
-                        items=items, tone="warn",
-                    )
-            else:
-                await self.ws.send(json.dumps({
-                    "type": "error",
-                    "text": "Usage: /proxy list  — registered proxies\n"
-                            "       /proxy clean <name>  — removes that proxy's runs, "
-                            "optimisation state and snapshots, and reports what it "
-                            "left behind.\n"}))
-        elif text.startswith("/memory"):
-            # The memory tools existed but only the model could reach them, so "forget
-            # what you learned about this project" was a request rather than an action —
-            # and a stale memory keeps being recalled into every prompt until removed.
-            parts = text.split()
-            sub = parts[1] if len(parts) >= 2 else ""
-            if sub == "list":
-                payload = await asyncio.wrap_future(
-                    self.worker.call_session_tool("memory_list_all", {"scope": "all"}))
-                if payload.get("status") not in (None, "ok"):
-                    # Read as an empty listing, "no agent is running" or a tool error
-                    # said "No memories stored" — a store that may well be full.
-                    await self.ws.send(json.dumps({
-                        "type": "error",
-                        "text": f"  ✗ {payload.get('error', 'listing failed')}\n"}))
-                    return
-                entries = payload.get("memory") or []
-                await self._command_reply(
-                    "/memory list",
-                    f"{len(entries)} " + ("memory" if len(entries) == 1 else "memories")
-                    if entries else "No memories stored",
-                    # The scope rides on each label: a fact reaching every workspace and
-                    # one reaching only this project look identical without it.
-                    items=[{"label": f"[{e.get('scope', '?')}] " + e.get("name", "?"),
-                            "detail": (e.get("description") or "").strip()}
-                           for e in entries],
-                    tone="ok" if entries else "empty",
-                )
-            elif sub == "delete" and len(parts) >= 3:
-                payload = await asyncio.wrap_future(
-                    self.worker.call_session_tool("memory_delete", {"name": parts[2]}))
-                if payload.get("status") != "ok":
-                    await self.ws.send(json.dumps({
-                        "type": "error",
-                        "text": f"  ✗ {payload.get('error', 'delete failed')}\n"}))
-                else:
-                    await self._command_reply(
-                        "/memory delete",
-                        f"Deleted 1 {payload.get('scope', '')} memory".replace("  ", " "),
-                        items=[{"label": parts[2]}], tone="warn")
-            elif sub == "clear":
-                # Workspace only, and named as such: the global memory is every other
-                # workspace's too, so this command does not wipe it on a bare word.
-                # Irreversible, and deliberately typed in full by the person whose
-                # memory it is. The count is reported so the effect is visible —
-                # a wipe that says nothing reads as a wipe that did not happen.
-                payload = await asyncio.wrap_future(
-                    self.worker.call_session_tool("memory_clear", {"scope": "workspace"}))
-                if payload.get("status") != "ok":
-                    await self.ws.send(json.dumps({
-                        "type": "error",
-                        "text": f"  ✗ {payload.get('error', 'clear failed')}\n"}))
-                else:
-                    n = payload.get("cleared", 0)
-                    await self._command_reply(
-                        "/memory clear",
-                        f"Cleared {n} workspace " + ("memory" if n == 1 else "memories"),
-                        note="This cannot be undone. Global memory is untouched.",
-                        tone="warn")
-            else:
-                await self.ws.send(json.dumps({
-                    "type": "error",
-                    "text": "Usage: /memory list | /memory clear | /memory delete <name>\n"}))
-        elif text == "/diag":
-            # The chain the events travel, asked rather than inferred. The pump is the
-            # only consumer of every worker's queue now, so a chat that goes quiet has
-            # several causes that look identical from a chat window: the pump never
-            # started, it died, a watermark is swallowing what it delivers, or the agent
-            # emitted nothing. These rows tell them apart.
-            rows = list(self.pool.bus.diagnostics())
-            rows.append({"label": "active session",
-                         "detail": str(self._active_session_id)})
-            rows.append({"label": "rendered watermark", "detail": str(self._rendered_seq)})
-            for sid, count in sorted(self._foreign_withheld.items()):
-                rows.append({"label": "withheld as foreign", "detail":
-                             f"{count} event(s) stamped {sid} — not this conversation"})
-            for sid, worker in self.pool.items():
-                rows.append({"label": f"worker {sid[:8]}", "detail":
-                             f"queue {worker.out_q.qsize()}, "
-                             f"running {getattr(worker, '_query_session_id', None)}, "
-                             f"parked {getattr(worker, '_pending_prompt', None) is not None}, "
-                             f"deferral {getattr(worker, 'has_deferral', False)}"})
-            await self._command_reply("/diag", "Event chain", items=rows)
-        elif text == "/cancel":
-            cancelled = self.worker.cancel()
-            if not cancelled:
-                await self._command_reply("/cancel", "Nothing to cancel", tone="empty")
-        elif text.startswith("/backend "):
-            mode = text[9:].strip().lower()
-            if mode in ("ollama", "vllm", "ray"):
-                # Process-wide, so switched even with no agent up yet — reached through
-                # the stand-in's missing agent, the command raised before the first query.
-                switch_backend(mode)
-                self.pool.apply_setting("backend", mode)
-                await self._command_reply("/backend", "Backend", items=[{"label": mode}])
-            else:
-                await self.ws.send(json.dumps({"type": "error", "text": f"Unknown backend: {mode}. Use ollama, vllm or ray."}))
-        else:
-            await self.ws.send(json.dumps({"type": "error", "text": f"Unknown command: {text}"}))
+        if result.failed:
+            await self.ws.send(json.dumps({"type": "error", "text": result.title}))
+        elif result.state is not None:
+            await self.ws.send(json.dumps(result.state))
+        elif result.card:
+            await self._command_reply(
+                result.label, result.title,
+                items=[{"label": i.label, "detail": i.detail} for i in result.items],
+                note=result.note, tone=result.tone)
 
     # ── server / skill toggles ─────────────────────────────────────────────────
     async def _send_toggles(self) -> None:

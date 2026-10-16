@@ -6,6 +6,7 @@ import asyncio
 import json
 import unittest
 
+from mimir.client.core.settings import read_setting
 from mimir.client.ui.ws.ws_session import _Session
 
 
@@ -80,11 +81,11 @@ class _StandIn:
         fut.set_result(self._payload)
         return fut
 
-    def get_subagent_level(self) -> str:
-        return "default"
 
 
 class _SettingsPool:
+    """Records what is applied, and answers with it: the pool's own contract."""
+
     def __init__(self, stand_in: _StandIn) -> None:
         self.stand_in = stand_in
         self.applied: list[tuple] = []
@@ -92,9 +93,13 @@ class _SettingsPool:
     def worker_or_detached(self, _sid):
         return self.stand_in
 
-    def apply_setting(self, name, *args):
-        self.applied.append((name, *args))
+    def apply_setting(self, name, value):
+        self.applied.append((name, value))
         return []
+
+    def setting(self, name, _sid):
+        recorded = dict(self.applied)
+        return recorded[name] if name in recorded else read_setting(None, name)
 
 
 class CommandsBeforeTheFirstQueryTests(unittest.TestCase):
@@ -114,10 +119,10 @@ class CommandsBeforeTheFirstQueryTests(unittest.TestCase):
 
     def test_backend_switches_with_no_agent_up(self) -> None:
         from unittest import mock
-        from mimir.client.ui.ws import ws_session
+        from mimir.client.session.commands import settings
 
         sess = self._session()
-        with mock.patch.object(ws_session, "switch_backend") as switch:
+        with mock.patch.object(settings, "switch_backend") as switch:
             asyncio.run(sess._handle_command("/backend ray"))
         switch.assert_called_once_with("ray")
         self.assertIn(("backend", "ray"), sess.pool.applied)
@@ -126,11 +131,11 @@ class CommandsBeforeTheFirstQueryTests(unittest.TestCase):
     def test_subagents_is_recorded_for_the_agent_built_next(self) -> None:
         from unittest import mock
         from mimir.client.config import SUBAGENT_LEVELS
-        from mimir.client.ui.ws import ws_session
+        from mimir.client.session.commands import settings
 
         level = SUBAGENT_LEVELS[-1]
         sess = self._session()
-        with mock.patch.object(ws_session, "save_subagent_level") as save:
+        with mock.patch.object(settings, "save_subagent_level") as save:
             asyncio.run(sess._handle_command(f"/subagents {level}"))
         save.assert_called_once_with(level)
         self.assertIn(("subagent_level", level), sess.pool.applied)
@@ -178,12 +183,12 @@ class CliCommandFailureTests(unittest.TestCase):
             apply_setting=None)
         printed: list[str] = []
 
-        async def _boom(**_kw):
+        async def _boom(*_a, **_kw):
             raise RuntimeError("server gone")
 
         with mock.patch("builtins.input", lambda _p: next(prompts)), \
              mock.patch("builtins.print", lambda *a, **k: printed.append(" ".join(map(str, a)))), \
-             mock.patch.object(chat_session, "handle_chat_command", _boom):
+             mock.patch.object(chat_session, "run_cli_command", _boom):
             asyncio.run(chat_session.run_chat_session(agent))
         self.assertTrue(any("/memory failed" in line for line in printed))
 

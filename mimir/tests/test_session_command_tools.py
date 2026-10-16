@@ -7,8 +7,8 @@ proposed. Applied to a command the user typed themselves, the plan gate answers 
 refusal string in plan or ask mode, so the command does nothing, and scatters tool cards
 through the transcript on its way there.
 
-The CLI surface always bypassed the pipeline (`chat_commands._call_platform_tool`);
-these tests pin the WS surface to the same route, and the two surfaces to the same
+Both surfaces go through the one direct call (`tool_execution.direct.call_tool_directly`);
+these tests pin the WS surface's scheduling of it, and the two surfaces to the same
 command set.
 
 Run:
@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import asyncio
 import os
-import re
 import types
 import unittest
 
@@ -86,11 +85,11 @@ class CallSessionToolTests(unittest.TestCase):
         session = _FakeSession("{}")
         worker = _worker_stub(session, self.loop)
 
-        fut = _AgentWorker.call_session_tool(worker, "proxy_get", {"op": "proxies"})
+        payload = self._run(worker, "proxy_get", {"op": "proxies"})
 
         self.assertEqual(session.calls, [])
-        self.assertEqual(fut.result()["status"], "error")
-        self.assertIn("proxy_get", fut.result()["error"])
+        self.assertEqual(payload["status"], "error")
+        self.assertIn("proxy_get", payload["error"])
 
     def test_a_failing_call_becomes_an_error_payload(self) -> None:
         session = _FakeSession("not json")
@@ -109,36 +108,34 @@ class CallSessionToolTests(unittest.TestCase):
 class ProxyListTests(unittest.TestCase):
     """`/proxy clean` needs a name; listing them must not require asking the model."""
 
-    def _read(self, *parts: str) -> str:
-        with open(os.path.join(_ROOT, *parts), encoding="utf-8") as fh:
-            return fh.read()
+    def test_both_surfaces_offer_it(self) -> None:
+        from mimir.client.ui.cli.chat_commands import CLI_COMMANDS
+        from mimir.client.ui.ws.ws_commands import WS_COMMANDS
+        for registry in (CLI_COMMANDS, WS_COMMANDS):
+            self.assertIsNotNone(registry.find("/proxy list"))
 
-    def test_the_ws_surface_handles_it(self) -> None:
-        src = self._read("client", "ui", "ws", "ws_session.py")
-        self.assertIn('parts[1] == "list"', src)
-        self.assertIn('"proxy_get", {"op": "proxies"}', src)
-
-    def test_the_cli_surface_handles_it(self) -> None:
-        src = self._read("client", "ui", "cli", "chat_commands.py")
-        self.assertIn("_proxy_list_command", src)
-        self.assertIn('"proxy_get", {"op": "proxies"}', src)
+    def test_it_lists_through_the_registry_tool(self) -> None:
+        from mimir.tests._commands import cli
+        session = _FakeSession('{"status": "ok", "proxies": [{"name": "wave2d"}]}')
+        agent = types.SimpleNamespace(tool_owner={"proxy_get": "proxy"},
+                                      sessions={"proxy": session})
+        self.assertIn("wave2d", cli("/proxy list", agent))
+        self.assertEqual(session.calls, [("proxy_get", {"op": "proxies"})])
 
     def test_the_dropdown_advertises_it(self) -> None:
-        src = self._read("vscode-extension", "webview", "src", "components",
-                         "slashUtils.ts")
+        with open(os.path.join(_ROOT, "vscode-extension", "webview", "src", "components",
+                               "slashUtils.ts"), encoding="utf-8") as fh:
+            src = fh.read()
         block = src.split("SESSION_COMMANDS", 1)[1].split("];", 1)[0]
         proxy = next(line for line in block.splitlines() if 'name: "proxy"' in line)
         self.assertIn("list", proxy)
 
     def test_the_usage_line_names_both_subcommands(self) -> None:
         # A usage line that omits one is how a working command stays undiscovered.
-        for path in (("client", "ui", "ws", "ws_session.py"),
-                     ("client", "ui", "cli", "chat_commands.py")):
-            src = self._read(*path)
-            usage = re.search(r"Usage: /proxy[^\"]*", src)
-            self.assertIsNotNone(usage, path)
-            self.assertIn("list", usage.group(0))
-
+        from mimir.tests._commands import cli
+        usage = cli("/proxy", object())
+        self.assertIn("/proxy list", usage)
+        self.assertIn("/proxy clean <name>", usage)
 
 if __name__ == "__main__":
     unittest.main()

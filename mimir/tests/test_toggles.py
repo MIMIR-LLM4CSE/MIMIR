@@ -13,7 +13,7 @@ from pathlib import Path
 
 import mimir.client.config.preferences as preferences
 from mimir.client.agent_core import MimirAgent
-from mimir.client.ui.cli.chat_commands import handle_chat_command
+from mimir.tests._commands import cli
 
 
 def _fake_agent(**overrides):
@@ -166,13 +166,7 @@ class ChatCommandTests(unittest.TestCase):
     """The `/servers` and `/skills` CLI commands list and toggle via the agent."""
 
     def _run(self, query, agent):
-        async def _noop(*a, **k):
-            return None
-        return asyncio.run(handle_chat_command(
-            query=query, mode="agent", thinking=False, streaming=False, batch_mode=False,
-            set_mode=lambda m: None, set_thinking=lambda b: None, set_streaming=lambda b: None,
-            set_batch_mode=lambda b: None, agent=agent,
-        ))
+        return cli(query, agent)
 
     def _agent(self):
         calls = []
@@ -188,20 +182,20 @@ class ChatCommandTests(unittest.TestCase):
         )
 
     def test_servers_list(self):
-        handled, msg = self._run("/servers", self._agent())
-        self.assertTrue(handled)
+        msg = self._run("/servers", self._agent())
+        self.assertIsNotNone(msg)
         self.assertIn("files", msg)
         self.assertIn("strings", msg)
 
     def test_servers_toggle_off(self):
         agent = self._agent()
-        handled, msg = self._run("/servers off strings", agent)
-        self.assertTrue(handled)
+        msg = self._run("/servers off strings", agent)
+        self.assertIsNotNone(msg)
         self.assertIn(("server", "strings", False), agent._calls)
 
     def test_servers_toggle_unknown(self):
         agent = self._agent()
-        handled, msg = self._run("/servers on nope", agent)
+        msg = self._run("/servers on nope", agent)
         self.assertIn("Unknown", msg)
         self.assertEqual(agent._calls, [])
 
@@ -211,8 +205,8 @@ class ChatCommandTests(unittest.TestCase):
         self.assertIn(("skill", "fix-bug", True), agent._calls)
 
     def test_unavailable_without_agent(self):
-        handled, msg = self._run("/servers", None)
-        self.assertTrue(handled)
+        msg = self._run("/servers", None)
+        self.assertIsNotNone(msg)
         self.assertIn("not available", msg)
 
 

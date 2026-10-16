@@ -2345,26 +2345,14 @@ class ClientHelperTests(unittest.TestCase):
         self.assertIn("/ledger", line)
 
     def test_ledger_command_expands_the_last_ledger(self) -> None:
-        from mimir.client.ui.cli.chat_commands import handle_chat_command
+        from mimir.tests._commands import cli
 
         block = self._ledger_block()
-
-        async def _run(show):
-            return await handle_chat_command(
-                query="/ledger", mode="agent", thinking=False, streaming=False,
-                batch_mode=False, set_mode=lambda v: None, set_thinking=lambda v: None,
-                set_streaming=lambda v: None, set_batch_mode=lambda v: None,
-                show_ledger=show,
-            )
-
-        handled, message = asyncio.run(_run(
-            lambda: chat_session_module.format_ledger_full(block)))
-        self.assertTrue(handled)
+        message = cli("/ledger", ledger=lambda: chat_session_module.format_ledger_full(block))
         self.assertIn("solver.py", message)
 
         # No ledger yet (a read-only turn): the command says so instead of erroring.
-        handled, message = asyncio.run(_run(lambda: None))
-        self.assertTrue(handled)
+        message = cli("/ledger", ledger=lambda: None)
         self.assertIn("No verification ledger", message)
 
     def test_cli_ledger_expands_without_markdown_noise(self) -> None:
@@ -2503,14 +2491,8 @@ class ModulesCommandTests(unittest.TestCase):
             self.sessions = {"platform": self.session}
 
     def _run(self, query, agent):
-        from mimir.client.ui.cli.chat_commands import handle_chat_command
-
-        return asyncio.run(handle_chat_command(
-            query=query, mode="agent", thinking=False, streaming=False,
-            batch_mode=False, set_mode=lambda v: None, set_thinking=lambda v: None,
-            set_streaming=lambda v: None, set_batch_mode=lambda v: None,
-            agent=agent,
-        ))
+        from mimir.tests._commands import cli
+        return cli(query, agent)
 
     def test_status_reports_the_index_without_searching(self):
         agent = self._Agent({"platform_catalogue_status": {
@@ -2519,8 +2501,7 @@ class ModulesCommandTests(unittest.TestCase):
             "enriching": False, "built_at": "2026-09-07T10:00:00Z", "signal_fresh": True,
             "digest": {"node_types": [{"arch": "x86_64"}, {"arch": "aarch64"}]},
         }})
-        handled, message = self._run("/modules", agent)
-        self.assertTrue(handled)
+        message = self._run("/modules", agent)
         self.assertIn("1832", message)
         self.assertIn("spider", message)
         self.assertIn("login01", message)
@@ -2533,7 +2514,7 @@ class ModulesCommandTests(unittest.TestCase):
             "status": "ok", "indexed": False, "module_system": "lmod",
             "note": "Not indexed yet; the first platform_search builds it.",
         }})
-        _handled, message = self._run("/modules", agent)
+        message = self._run("/modules", agent)
         self.assertIn("not indexed", message.lower())
 
     def test_search_lists_hits_with_the_load_string(self):
@@ -2545,7 +2526,7 @@ class ModulesCommandTests(unittest.TestCase):
             ],
             "catalogue": {"enriching": False},
         }})
-        _handled, message = self._run("/modules cuda", agent)
+        message = self._run("/modules cuda", agent)
         self.assertIn("cuda/12.2", message)
         self.assertIn("(default)", message)
         self.assertIn("NVIDIA CUDA", message)
@@ -2557,7 +2538,7 @@ class ModulesCommandTests(unittest.TestCase):
             "status": "ok", "module_system": "lmod", "modules": [], "total_indexed": 12,
             "catalogue": {"enriching": False},
         }})
-        _handled, message = self._run("/modules nosuchthing", agent)
+        message = self._run("/modules nosuchthing", agent)
         self.assertIn("No module matched", message)
 
     def test_refresh_forces_a_rebuild(self):
@@ -2565,7 +2546,7 @@ class ModulesCommandTests(unittest.TestCase):
             "status": "ok", "module_system": "lmod", "modules": [], "total_indexed": 1832,
             "catalogue": {"tier": "name", "enriching": True},
         }})
-        _handled, message = self._run("/modules refresh", agent)
+        message = self._run("/modules refresh", agent)
         self.assertTrue(agent.session.calls[0][1]["refresh"])
         self.assertIn("1832", message)
         self.assertIn("background", message)
@@ -2575,17 +2556,16 @@ class ModulesCommandTests(unittest.TestCase):
             "status": "ok", "module_system": "none", "modules": [],
             "note": "No Lmod or Tcl Environment Modules on this host.",
         }})
-        _handled, message = self._run("/modules cuda", agent)
+        message = self._run("/modules cuda", agent)
         self.assertIn("No Lmod", message)
 
     def test_platform_server_disabled_is_a_sentence_not_a_crash(self):
         agent = self._Agent({}, connected=False)
-        handled, message = self._run("/modules", agent)
-        self.assertTrue(handled)
+        message = self._run("/modules", agent)
         self.assertIn("/servers on platform", message)
 
     def test_modules_is_advertised_in_help(self):
-        _handled, message = self._run("/help", None)
+        message = self._run("/help", None)
         self.assertIn("/modules", message)
 
 

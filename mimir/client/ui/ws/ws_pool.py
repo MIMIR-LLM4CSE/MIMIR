@@ -42,6 +42,7 @@ from . import server_registry
 from .event_bus import _EventBus
 from .job_scan import has_baseline, mark_wakes_reported, scan_all_sessions, wake_reported
 from .job_wakes import checkin_text, wake_text
+from ...core.settings import parse_setting
 from ...protocol.events import DURABLE_EVENTS
 from .session_store import SessionStore
 from .turn_commit import commit_answer
@@ -1164,20 +1165,32 @@ class _AgentPool:
             "agent_ready": worker is None or worker.agent_ready(),
         }
         for key in self._UI_STATE:
-            # With no agent: what the user already chose here, else the default.
-            if worker is None and key in self.settings.values:
-                state[key] = self.settings.values[key]
-            else:
-                state[key] = source.setting(key)
+            state[key] = self.setting(key, session_id)
         return state
+
+    def setting(self, name: str, session_id: str | None) -> Any:
+        """The value of *name* in force for *session_id*'s conversation.
+
+        Its agent's own when it has one; with none, what the user already chose in this
+        server's lifetime — replayed onto the agent as soon as one is built, so the bare
+        default would show the user a setting they had already changed — else the
+        default.
+        """
+        source = self.get(session_id) or self._detached
+        return source.setting(name, self.settings.values.get(name))
 
     def apply_setting(self, name: str, value: Any) -> list[str]:
         """Record a setting and apply it to every live worker; returns their refusals.
 
         Both halves matter: the record is what a worker built later starts from, and
         applying it is what makes the change take effect in the conversations already
-        running.
+        running. A value is checked before either: recorded unchecked, a refused value
+        was only refused at replay, on an agent being built, where nobody saw it.
         """
+        try:
+            value = parse_setting(name, value)
+        except ValueError as exc:
+            return [str(exc)]
         self.settings.values[name] = value
         errors = []
         for _sid, worker in self.items():

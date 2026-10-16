@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-import functools
 import os
 from typing import Any
 
-from .chat_commands import handle_chat_command
+from .chat_commands import CliHost, run_cli_command
 from ...context.capabilities import name_with_arg_role
 from ...context.resource_context import augment_query_with_resources
 from ...context.todo import load_todo_items
@@ -193,6 +192,9 @@ async def run_chat_session(agent: Any) -> None:
     def show_ledger() -> str | None:
         return format_ledger_full(last_ledger) if last_ledger else None
 
+    command_host = CliHost(agent, compact=do_compact,
+                           set_compact_threshold=set_compact_threshold, ledger=show_ledger)
+
     while True:
         try:
             query = input("🟦 You: ").strip()
@@ -203,41 +205,13 @@ async def run_chat_session(agent: Any) -> None:
             break
 
         try:
-            handled, message = await handle_chat_command(
-                query=query,
-                mode=agent.mode,
-                thinking=agent.thinking,
-                streaming=agent.streaming,
-                batch_mode=agent.approvals.batch_mode,
-                context_mode=agent.context_mode,
-                enforcement=agent.enforcement,
-                approval_mode=agent.approvals.approval_mode,
-                set_mode=functools.partial(agent.apply_setting, "mode"),
-                set_thinking=functools.partial(agent.apply_setting, "thinking"),
-                thinking_depth=agent.thinking_depth,
-                set_thinking_depth=functools.partial(agent.apply_setting, "thinking_depth"),
-                set_streaming=functools.partial(agent.apply_setting, "streaming"),
-                set_batch_mode=functools.partial(agent.apply_setting, "batch"),
-                set_context_mode=functools.partial(agent.apply_setting, "context_mode"),
-                set_enforcement=functools.partial(agent.apply_setting, "enforcement"),
-                temperature=agent.temperature,
-                set_temperature=functools.partial(agent.apply_setting, "temperature"),
-                set_approval_mode=functools.partial(agent.apply_setting, "approval_mode"),
-                trust_tool=agent.approvals.trust_tool,
-                untrust_tool=agent.approvals.untrust_tool,
-                trusted_tools=agent.approvals.trusted_tools_view(),
-                compact_history=do_compact,
-                compact_threshold_setter=set_compact_threshold,
-                show_ledger=show_ledger,
-                approval_manager=agent.approvals,
-                agent=agent,
-            )
+            message = await run_cli_command(command_host, query)
         except Exception as exc:
             # A command that fails is one answer gone wrong, not the session: raised,
             # it ended the chat loop and took the conversation with it.
             print(f"  ✗ {query.split()[0]} failed: {type(exc).__name__}: {exc}")
             continue
-        if handled:
+        if message is not None:
             if message:
                 print(message)
             continue

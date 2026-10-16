@@ -1,8 +1,8 @@
 """The webview's slash list must name commands the backend actually handles.
 
 Two kinds of slash share the chat input and travel differently: a SKILL is part of the
-query and reaches the model, a SESSION COMMAND is handled by `ws_session._handle_command`
-and never does. The webview's dropdown listed only skills, and typed session commands
+query and reaches the model, a SESSION COMMAND is handled by the session's command
+registry and never does. The webview's dropdown listed only skills, and typed session commands
 were sent as `type: "query"` — so "/memory clear" asked the model to clear memory rather
 than clearing it, and "/proxy clean foo" was a request for the model to tidy up.
 
@@ -13,15 +13,21 @@ and then does nothing.
 """
 from __future__ import annotations
 
+import asyncio
 import os
 import re
 import unittest
+
+from mimir.client.config import THINKING_DEPTH_LABELS
+from mimir.client.core.settings import read_setting
+from mimir.client.session.commands import CommandHost, CommandResult
+from mimir.client.ui.cli.chat_commands import CLI_COMMANDS
+from mimir.client.ui.ws.ws_commands import WS_COMMANDS
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _SLASH_UTILS = os.path.join(
     _ROOT, "vscode-extension", "webview", "src", "components", "slashUtils.ts")
 _WS_SESSION = os.path.join(_ROOT, "client", "ui", "ws", "ws_session.py")
-_CLI_COMMANDS = os.path.join(_ROOT, "client", "ui", "cli", "chat_commands.py")
 
 
 def _advertised() -> list[str]:
@@ -32,34 +38,17 @@ def _advertised() -> list[str]:
     return re.findall(r'name:\s*"([^"]+)"', block)
 
 
-def _ws_handled() -> str:
-    with open(_WS_SESSION, encoding="utf-8") as fh:
-        return fh.read()
-
-
-def _handler_body() -> str:
-    """Just the command handler, so a match elsewhere in the file cannot stand in."""
-    src = _ws_handled()
-    start = src.index("async def _handle_command(self")
-    end = src.index("async def _send_toggles", start)
-    return src[start:end]
-
-
 class AdvertisedCommandsExistTests(unittest.TestCase):
     def test_the_list_is_not_empty(self) -> None:
         # A parser that silently matched nothing would make every assertion below vacuous.
         self.assertGreater(len(_advertised()), 5)
 
     def test_every_advertised_command_is_handled_by_the_session(self) -> None:
-        handler = _ws_handled()
-        missing = [
-            name for name in _advertised()
-            if f'"/{name} "' not in handler and f'"/{name}"' not in handler
-        ]
+        missing = [name for name in _advertised() if WS_COMMANDS.find(f"/{name}") is None]
         self.assertEqual(
             missing, [],
-            "the webview offers these but ws_session._handle_command does not handle "
-            f"them — they would autocomplete and do nothing: {missing}")
+            "the webview offers these but the socket's registry does not handle them — "
+            f"they would autocomplete and do nothing: {missing}")
 
     def test_every_handled_command_is_advertised(self) -> None:
         """The converse of the check above, and the sharper of the two.
@@ -70,34 +59,28 @@ class AdvertisedCommandsExistTests(unittest.TestCase):
         reads as the command working badly rather than never arriving — a `/diag` that
         reports the machine's CPU instead of the event chain's counters.
         """
-        # Every ``"/name"`` literal in the handler, rather than the syntactic forms a
-        # branch can take. The first version of this test enumerated `==` and
-        # `.startswith(`, and missed `text in ("/diag", "/diagnose")` — so it passed
-        # while the very command that prompted it was still unrouted.
-        handler = _handler_body()
-        handled = {name.rstrip() for name in re.findall(r'"/([a-z][a-z-]*)\s?"', handler)}
         # Answered from the model's own surface rather than the panel's: the webview has
         # no business knowing these.
         model_facing = {"backend"}
-        advertised = set(_advertised())
-        unrouted = sorted(handled - advertised - model_facing)
+        unrouted = sorted(set(WS_COMMANDS.names()) - set(_advertised()) - model_facing)
         self.assertEqual(
             unrouted, [],
-            "ws_session handles these but the webview does not route them as commands, "
+            "the socket handles these but the webview does not route them as commands, "
             f"so they reach the model as plain queries instead: {unrouted}")
 
-    def test_the_two_commands_this_work_added_are_both_there(self) -> None:
-        advertised = _advertised()
-        self.assertIn("memory", advertised)
-        self.assertIn("proxy", advertised)
+    def test_the_housekeeping_commands_are_on_both_surfaces(self) -> None:
+        # A command added to one surface and not the other is a command that works in
+        # one window and not the next.
+        for name in ("memory", "proxy", "modules"):
+            self.assertIn(name, _advertised())
+            self.assertIsNotNone(CLI_COMMANDS.find(f"/{name}"), f"/{name} is missing from the CLI")
+            self.assertIsNotNone(WS_COMMANDS.find(f"/{name}"), f"/{name} is missing from the socket")
 
-    def test_they_are_handled_on_the_cli_surface_too(self) -> None:
-        # The CLI has its own table; a command added to one surface and not the other is
-        # a command that works in one window and not the next.
-        with open(_CLI_COMMANDS, encoding="utf-8") as fh:
-            cli = fh.read()
-        for name in ("memory", "proxy"):
-            self.assertIn(f'cmd == "/{name}"', cli, f"/{name} is missing from the CLI")
+    def test_the_old_spellings_still_work_on_both_surfaces(self) -> None:
+        for alias, name in (("think", "thinking"), ("thinking-depth", "thinking"),
+                            ("stream", "streaming")):
+            for registry in (CLI_COMMANDS, WS_COMMANDS):
+                self.assertEqual(registry.find(f"/{alias} on")[0].name, name)
 
 
 class DetachOwnershipTests(unittest.TestCase):
@@ -234,41 +217,53 @@ class RoutingTests(unittest.TestCase):
         self.assertIn("SESSION_COMMANDS", src)
 
 
+class _Host(CommandHost):
+    """A front-end with no agent: settings land in a dict, tool calls answer *payload*."""
+
+    surface = "ws"
+
+    def __init__(self, payload: dict | None = None) -> None:
+        self.values: dict = {}
+        self.payload = payload or {"status": "ok"}
+
+    def apply(self, name, value) -> str:
+        self.values[name] = value
+        return ""
+
+    def read(self, name):
+        return self.values.get(name, read_setting(None, name))
+
+    async def call_tool(self, tool, arguments) -> dict:
+        return self.payload
+
+
+def _run(text: str, host: CommandHost | None = None) -> CommandResult:
+    return asyncio.run(WS_COMMANDS.run(host or _Host(), text))
+
+
 class CommandAnswersAreRenderedTests(unittest.TestCase):
     """A command answer must not travel on the transient `output` channel.
 
     The webview reducer drops `output` on purpose — it is tool-activity chatter — so
-    every answer `_handle_command` sent was swallowed: `/memory list` printed nothing,
+    every answer the session sent there was swallowed: `/memory list` printed nothing,
     and `/memory clear` wiped the store while looking like it had done nothing at all.
     Answers go out as `command_output`, which the reducer renders.
     """
 
-    def _handler_body(self) -> str:
-        return _handler_body()
-
-    def test_the_handler_body_is_found(self) -> None:
-        # A slice that silently matched nothing would make the assertions below vacuous.
-        body = self._handler_body()
-        self.assertIn("/memory", body)
-        self.assertIn("/proxy", body)
+    def _sender(self) -> str:
+        with open(_WS_SESSION, encoding="utf-8") as fh:
+            src = fh.read()
+        return src[src.index("async def _command_reply("):src.index("async def _send_toggles")]
 
     def test_no_answer_uses_the_dropped_output_channel(self) -> None:
-        self.assertNotIn('"type": "output"', self._handler_body())
-
-    def test_answers_use_the_rendered_channel(self) -> None:
-        # Answers go through the one helper, which is what puts them on the channel;
-        # the handler itself no longer builds a payload by hand.
-        self.assertIn("_command_reply(", self._handler_body())
-        src = _ws_handled()
-        helper = src[src.index("async def _command_reply("):src.index("async def _handle_command(")]
-        self.assertIn('"command_output"', helper)
+        self.assertNotIn('"type": "output"', self._sender())
 
     def test_the_answer_is_structured_not_a_formatted_line(self) -> None:
         """A frontend cannot lay out what reaches it as an indented blob of text."""
-        src = _ws_handled()
-        helper = src[src.index("async def _command_reply("):src.index("async def _handle_command(")]
-        for field in ('"command"', '"title"', '"items"', '"note"', '"tone"'):
-            self.assertIn(field, helper)
+        sender = self._sender()
+        for field in ('"command_output"', '"command"', '"title"', '"items"', '"note"',
+                      '"tone"'):
+            self.assertIn(field, sender)
 
     def test_the_webview_renders_that_channel(self) -> None:
         reducer = os.path.join(
@@ -279,65 +274,49 @@ class CommandAnswersAreRenderedTests(unittest.TestCase):
         # And still drops the transient one, or the chatter comes back with it.
         self.assertIn('case "output":', src)
 
-    def test_only_listings_and_erasures_reach_the_transcript(self) -> None:
+    def test_settings_report_state_not_prose(self) -> None:
         """Every setting reports state; nothing about it is written to the chat.
 
         A setting has a control that shows its value, so a line about it repeats the
         chrome — and the webview replays its stored settings on connect, so those
         lines greeted each session with changes nobody had just made.
         """
-        body = self._handler_body()
-        replies = re.findall(r'_command_reply\(\s*"([^"]+)"', body)
-        self.assertEqual(
-            sorted(replies),
-            [
-                # The one setting that still speaks: it has no control anywhere, and
-                # it is not in SESSION_COMMANDS, so the webview never routes it here
-                # at all. Switching the LLM in silence would be the worse trade.
-                "/backend",
-                # Not a setting — an action whose result has nowhere else to appear.
-                "/cancel",
-                # A listing, and the one place the event chain's own counters are
-                # readable. It owns no control, and the question it answers — which
-                # link went quiet — has no other surface.
-                "/diag",
-                "/memory clear", "/memory delete", "/memory list",
-                "/proxy clean", "/proxy list",
-            ],
-            f"a setting is narrating again: {sorted(replies)}",
-        )
+        for text, kind in (("/mode plan", "mode"), ("/thinking deep", "thinking_depth"),
+                           ("/thinking-depth 2", "thinking_depth"),
+                           ("/streaming off", "streaming"), ("/context compact", "context_mode"),
+                           ("/approvals all", "approval_mode"),
+                           ("/enforcement off", "enforcement"),
+                           ("/subagents build", "subagent_level")):
+            with self.subTest(text=text):
+                result = _run(text)
+                self.assertFalse(result.card)
+                self.assertEqual(result.state["type"], kind)
+        self.assertFalse(_run("/batch on").card)
 
-    def test_settings_that_own_a_control_report_state_not_prose(self) -> None:
-        """Thinking and mode have chrome; a transcript line only repeats it.
-
-        The webview replays its stored settings on every connect, so those lines
-        greeted each session with a change nobody had just made — and, because the
-        replay asserts the panel's own value rather than the agent's, sometimes
-        announced a depth the agent was not on.
-        """
-        body = self._handler_body()
-        mode_branch = body[body.index('if text.startswith("/mode ")'):
-                           body.index('elif text.startswith("/batch ")')]
-        self.assertNotIn("_command_reply", mode_branch)
-        self.assertIn('"type": "mode"', mode_branch)
-
-        thinking = body[body.index('elif text.startswith("/thinking ")'):
-                        body.index('elif text.startswith("/streaming ")')]
-        self.assertNotIn("_command_reply", thinking)
-        self.assertEqual(thinking.count("_send_thinking_state()"), 2)  # /thinking + depth
-
-        streaming = body[body.index('elif text.startswith("/streaming ")'):
-                         body.index('elif text.startswith("/context ")')]
-        self.assertNotIn("_command_reply", streaming)
-        self.assertIn("_send_streaming_state()", streaming)
-
-    def test_the_reported_depth_is_the_agents_own(self) -> None:
+    def test_the_reported_value_is_the_one_held(self) -> None:
         # Echoing the requested level back is what let a wrong value be announced.
-        src = _ws_handled()
-        helper = src[src.index("async def _send_thinking_state("):
-                     src.index("async def _handle_command(")]
-        self.assertIn("thinking_depth", helper)
-        self.assertIn('getattr(agent, "thinking_depth"', helper)
+        host = _Host()
+        host.apply = lambda name, value: ""   # the agent refused to move, silently
+        result = _run("/thinking deep", host)
+        self.assertEqual(result.state["label"], THINKING_DEPTH_LABELS[read_setting(None, "thinking_depth")])
+
+    def test_only_listings_and_erasures_are_cards(self) -> None:
+        listing = {"status": "ok", "memory": [{"name": "a", "scope": "workspace"}],
+                   "proxies": [], "cleared": 2, "removed": []}
+        cards = sorted(
+            result.label for text in ("/memory list", "/memory clear", "/memory delete a",
+                                      "/proxy list", "/proxy clean p", "/backend ray")
+            if (result := _run_patched(text, listing)).card)
+        self.assertEqual(cards, ["/backend", "/memory clear", "/memory delete",
+                                 "/memory list", "/proxy clean", "/proxy list"])
+
+    def test_an_invalid_value_is_an_error_not_a_change(self) -> None:
+        host = _Host()
+        for text in ("/mode chat", "/context huge", "/approvals sometimes",
+                     "/temperature 9", "/thinking 12", "/streaming maybe"):
+            with self.subTest(text=text):
+                self.assertTrue(_run(text, host).failed)
+        self.assertEqual(host.values, {})
 
     def test_the_webview_applies_that_state(self) -> None:
         app = os.path.join(_ROOT, "vscode-extension", "webview", "src", "App.tsx")
@@ -359,6 +338,12 @@ class CommandAnswersAreRenderedTests(unittest.TestCase):
         self.assertIn("cmd-line", src)
         self.assertIn("cmd-card", src)
 
+
+def _run_patched(text: str, payload: dict) -> CommandResult:
+    from unittest import mock
+    from mimir.client.session.commands import settings
+    with mock.patch.object(settings, "switch_backend"):
+        return _run(text, _Host(payload))
 
 if __name__ == "__main__":
     unittest.main()

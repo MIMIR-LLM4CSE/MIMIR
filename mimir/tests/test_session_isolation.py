@@ -19,6 +19,7 @@ from mimir.client.ui.ws.ws_session import _Session
 def _bare_worker(session_id: str | None = None) -> _AgentWorker:
     """A worker with only the queue/state fields the tests touch (no agent, no loop)."""
     w = object.__new__(_AgentWorker)
+    w._agent = None
     w.out_q = _queue.Queue()
     w._steer_q = _queue.Queue()
     w._prompts = OrderedDict()

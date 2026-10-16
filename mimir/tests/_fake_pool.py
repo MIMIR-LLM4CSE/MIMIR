@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from typing import Any, Iterator
 
+from mimir.client.core.settings import read_setting
 from mimir.client.ui.ws.event_bus import _EventBus
 
 
@@ -157,6 +158,10 @@ class FakePool:
             "enforcement": read("enforcement", "light"),
             "approval_mode": read("approval_mode", "manual"),
         }
+
+    def setting(self, name: str, session_id: str | None) -> Any:
+        source = getattr(self._for(session_id) or self.worker, "setting", None)
+        return read_setting(None, name) if source is None else source(name)
 
     def apply_setting(self, name: str, value: Any) -> list[str]:
         method = getattr(self.worker, "apply_setting", None)

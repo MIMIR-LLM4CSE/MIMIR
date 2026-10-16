@@ -67,6 +67,9 @@ class _StubWorker:
         return worker
 
     def setting(self, name: str, default=None):
+        # As a worker with no agent yet answers: the caller's default first.
+        if default is not None:
+            return default
         return {"context_mode": "compact", "enforcement": "strict",
                 "approval_mode": "manual"}[name]
 
@@ -331,8 +334,17 @@ class SettingsTests(_PoolCase):
     async def test_a_rejection_from_a_live_worker_is_reported(self) -> None:
         pool = self._pool()
         worker = await pool.worker_for("s1")
-        worker.apply_setting = lambda name, value: "no such mode"
-        self.assertEqual(pool.apply_setting("mode", "nonsense"), ["no such mode"])
+        worker.apply_setting = lambda name, value: "not ready"
+        self.assertEqual(pool.apply_setting("mode", "plan"), ["not ready"])
+
+    async def test_an_invalid_value_is_refused_before_it_is_recorded(self) -> None:
+        # Recorded unchecked, it was only refused at replay, on an agent being built.
+        pool = self._pool()
+        errors = pool.apply_setting("mode", "nonsense")
+        self.assertEqual(len(errors), 1)
+        self.assertIn("Invalid mode", errors[0])
+        later = await pool.worker_for("s1")
+        self.assertEqual([c for c in later.applied if c[0] == "mode"], [])
 
     async def test_the_greeting_reports_a_choice_made_before_any_agent(self) -> None:
         """Reporting the bare default would show "agent" to a user who picked plan — and

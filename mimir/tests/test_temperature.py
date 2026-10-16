@@ -13,7 +13,7 @@ from unittest.mock import patch
 
 from mimir.client.agent_core import MimirAgent
 from mimir.client.config import parse_temperature, preferences
-from mimir.client.ui.cli.chat_commands import handle_chat_command
+from mimir.tests._commands import cli
 # Modules, not their TestCase classes: an imported class would be collected twice.
 from mimir.tests import test_session_isolation as _iso
 from mimir.tests import test_thinking_depth as _depth
@@ -148,18 +148,26 @@ class LoopTests(unittest.TestCase):
         self.assertEqual(backend.calls[1]["options"]["temperature"], 0.7)
 
 
+class _CliAgent:
+    """The two attributes the command reads, and the one setting it applies."""
+
+    def __init__(self, temperature, setter):
+        self.temperature = temperature
+        self.backend = os.environ.get("LLM_BACKEND", "vllm")
+        self._setter = setter
+
+    def apply_setting(self, name, value):
+        (self._setter or (lambda v: None))(value)
+        self.temperature = value
+
+
 class CliTests(unittest.TestCase):
     def _cmd(self, query, temperature=None, setter=None):
-        return asyncio.run(handle_chat_command(
-            query=query, mode="agent", thinking=True, streaming=True, batch_mode=False,
-            set_mode=lambda m: None, set_thinking=lambda b: None,
-            set_streaming=lambda b: None, set_batch_mode=lambda b: None,
-            temperature=temperature, set_temperature=setter,
-        ))
+        return cli(query, _CliAgent(temperature, setter))
 
     def test_bare_command_reports(self):
-        self.assertIn("default", self._cmd("/temperature")[1])
-        self.assertIn("0.6", self._cmd("/temperature", temperature=0.6)[1])
+        self.assertIn("default", self._cmd("/temperature"))
+        self.assertIn("0.6", self._cmd("/temperature", temperature=0.6))
 
     def test_set_and_reset(self):
         got = []
@@ -169,14 +177,13 @@ class CliTests(unittest.TestCase):
 
     def test_invalid_value_is_a_usage_error(self):
         got = []
-        handled, text = self._cmd("/temperature 5", setter=got.append)
-        self.assertTrue(handled)
+        text = self._cmd("/temperature 5", setter=got.append)
         self.assertIn("Usage", text)
         self.assertEqual(got, [])
 
     def test_a_backend_that_ignores_it_says_so(self):
         with patch.dict(os.environ, {"LLM_BACKEND": "anthropic"}):
-            self.assertIn("ignores", self._cmd("/temperature")[1])
+            self.assertIn("ignores", self._cmd("/temperature"))
 
 
 class WsCommandTests(unittest.IsolatedAsyncioTestCase):

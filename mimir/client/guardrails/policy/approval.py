@@ -8,6 +8,7 @@ from typing import Callable
 from urllib.parse import urlparse
 
 from ... import human_pause
+from ...config.settings import APPROVAL_MODES
 from ...context.capabilities import (
     IRREVERSIBLE,
     RECOVERABLE,
@@ -255,7 +256,7 @@ class ApprovalManager:
     # Basic metadata helpers
     # ------------------------------------------------------------------
 
-    APPROVAL_MODES: tuple[str, ...] = ("manual", "auto", "auto_all")
+    APPROVAL_MODES: tuple[str, ...] = APPROVAL_MODES
 
     def auto_tools(self) -> bool:
         """True when a sensitive tool no longer raises a card."""

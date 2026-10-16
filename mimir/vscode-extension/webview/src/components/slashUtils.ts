@@ -39,6 +39,7 @@ export const SESSION_COMMANDS: ToggleItem[] = [
   { name: "batch", description: "on | off — batch review of file changes", enabled: true },
   { name: "memory", description: "list | clear | delete <name> — persistent memory", enabled: true },
   { name: "proxy", description: "list | clean <name> — registered proxies; delete one's runs and optimisation state", enabled: true },
+  { name: "modules", description: "refresh | <term> — environment-module catalogue: status, rebuild, search", enabled: true },
   { name: "cancel", description: "stop the run in flight", enabled: true },
   { name: "diag", description: "what the event chain has done — pump, journal, watermark", enabled: true },
   { name: "subagents", description: "explore | parallel — how far a sub-agent may go", enabled: true },

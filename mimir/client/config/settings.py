@@ -1,9 +1,21 @@
 """The vocabulary of the user's settings: what each one may be, and how it is read.
 
-Thinking depth, how far a sub-agent may go, sampling temperature. Values and parsing
-only — applying a setting to an agent is the agent's business.
+Thinking depth, how far a sub-agent may go, sampling temperature, the closed sets of
+the other settings. Values and parsing only — applying a setting to an agent is
+``core.settings``'s business.
 """
 from __future__ import annotations
+
+CONTEXT_MODES: tuple[str, ...] = ("compact", "full")
+ENFORCEMENT_LEVELS: tuple[str, ...] = ("strict", "light", "off")
+
+# Who answers the approval cards: ``manual`` (the user), ``auto`` (sensitive tools
+# pass, leaving the workspace still asks), ``auto_all`` (nothing asks).
+APPROVAL_MODES: tuple[str, ...] = ("manual", "auto", "auto_all")
+# What the user types for ``auto_all``: nobody types an underscore at a prompt.
+APPROVAL_MODE_ALIASES: dict[str, str] = {"all": "auto_all", "auto-all": "auto_all"}
+
+BACKENDS: tuple[str, ...] = ("ollama", "vllm", "ray")
 
 # Thinking-depth scale — the single source of truth for the reasoning-depth ladder
 # exposed by the CLI (/think) and the WS command (/thinking-depth), and mirrored by

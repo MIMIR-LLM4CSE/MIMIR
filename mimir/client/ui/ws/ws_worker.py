@@ -44,6 +44,7 @@ from ...context.todo import load_todo_items
 from ...core.settings import read_setting
 from ...query_engine import job_poll
 from ...protocol.tool_result import normalize_tool_content
+from ...tool_execution.direct import call_tool_directly
 
 logger = logging.getLogger(__name__)
 
@@ -1868,49 +1869,19 @@ class _AgentWorker:
         )
 
     def call_session_tool(self, tool: str, args: dict) -> Any:
-        """Invoke *tool* on the worker's OWN loop; returns a Future of the decoded payload.
+        """Call *tool* directly (``call_tool_directly``) on the worker's OWN loop.
 
-        Same constraint as :meth:`resolve_resources`: the MCP ClientSession objects are
-        bound to this loop, so a tool call made from the WebSocket thread has to be
-        scheduled onto it rather than awaited where it was asked for.
-
-        This is what lets a slash command do housekeeping directly. These ops are
-        reachable by the model too, but the person who wants to start an optimisation
-        over — or to drop a memory that has gone stale and keeps being recalled into
-        every prompt — should not have to ask the model to do it. The alternative is deleting
-        files under a store whose path they have no reason to know.
-
-        The call goes STRAIGHT to the owning MCP session, around the guardrail
-        pipeline — the same bypass the CLI surface makes in
-        ``chat_commands._call_platform_tool``, and for the same reason: approvals,
-        plan-shape gates and the write policy exist to judge what the *model* asked
-        for. Routed through ``run_tool`` instead, a command the user typed was weighed
-        as if the model had proposed it — in plan or ask mode the plan gate answered
-        with a refusal string, so the command did nothing and said nothing — and every
-        one of them scattered tool cards through the transcript on its way.
+        Returns a Future of the decoded payload. Same constraint as
+        :meth:`resolve_resources`: the MCP ClientSession objects are bound to this loop,
+        so a call made from the WebSocket thread is scheduled onto it rather than
+        awaited where it was asked for.
         """
         if self._agent is None or self._loop is None:
             fut: Any = concurrent.futures.Future()
             fut.set_result({"status": "error", "error": "No agent session is running."})
             return fut
-
-        agent = self._agent
-        owner = (getattr(agent, "tool_owner", None) or {}).get(tool)
-        if owner is None:
-            fut = concurrent.futures.Future()
-            fut.set_result({"status": "error",
-                            "error": f"The server owning '{tool}' is not connected."})
-            return fut
-
-        async def _run() -> dict:
-            try:
-                raw = await agent.sessions[owner].call_tool(tool, dict(args))
-                text = normalize_tool_content(raw)
-                return json.loads(text) if isinstance(text, str) else (text or {})
-            except Exception as exc:
-                return {"status": "error", "error": str(exc)}
-
-        return asyncio.run_coroutine_threadsafe(_run(), self._loop)
+        return asyncio.run_coroutine_threadsafe(
+            call_tool_directly(self._agent, tool, args), self._loop)
 
     def panel_sections(self, *, force: bool = False) -> Any:
         """Collect every section the connected servers can fill. Future of a list.
