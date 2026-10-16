@@ -43,9 +43,16 @@ def has_delete_context(path: str, execution_context: dict[str, Any]) -> bool:
     return is_known_to_exist(execution_context, path) and parent_known
 
 
-def write_policy_violation(tool_name: str, path: str, detail: str | None = None) -> str:
+# The one violation that may come from a mistyped target rather than from the policy:
+# the caller can offer to clarify the path for this kind and only this kind.
+UNCONFIRMED_PATH = "unconfirmed_path"
+
+
+def write_policy_violation(tool_name: str, path: str, detail: str | None = None,
+                           *, kind: str = "policy") -> str:
     payload = {
         "status": "error",
+        "violation_kind": kind,
         "error": f"Write policy blocked tool '{tool_name}' for path '{path}'.",
         "hint": detail or (
             "Inspect the workspace structure first (list/search), then confirm the "
@@ -81,7 +88,8 @@ def check_write_policy(
                 "Confirm the exact target exists and inspect it (existence check, ranged "
                 "read, or directory listing) before deleting it."
             )
-            return write_policy_violation(tool_name, path, detail=detail)
+            return write_policy_violation(tool_name, path, detail=detail,
+                                          kind=UNCONFIRMED_PATH)
         return None
 
     if has_cap(tool_name, OVERWRITE, agent.tool_caps):

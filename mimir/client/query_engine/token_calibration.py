@@ -34,6 +34,7 @@ import os
 import threading
 
 from ..config import constants
+from ..util.files import write_json_atomic
 
 logger = logging.getLogger(__name__)
 
@@ -83,19 +84,10 @@ def _save_locked() -> None:
     """Write the cache out atomically. Never raises."""
     if _cache is None:
         return
-    path = _path()
-    tmp = f"{path}.tmp"
     try:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(tmp, "w", encoding="utf-8") as fh:
-            json.dump(_cache, fh)
-        os.replace(tmp, path)
+        write_json_atomic(_path(), _cache)
     except Exception:
         logger.debug("token calibration: could not write cache", exc_info=True)
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
 
 
 def overhead_key(model: str, mode: str, system_prompt: str, tools_json: str) -> str:

@@ -40,8 +40,10 @@ from .detach import detach as detach_process
 from . import server_registry
 from .ws_pool import _AgentPool, idle_stop_reason
 from ...tool_execution import run_channel
+from ...config.preferences import save_subagent_level
+from ...query_engine.backends.factory import switch_backend
 from ...config import (
-    SUBAGENT_LEVELS,
+    SUBAGENT_LEVELS, clamp_subagent_level,
     TEMPERATURE_MAX, TEMPERATURE_MIN, THINKING_DEPTH_LABELS, parse_temperature,
     thinking_depth_from_label,
 )
@@ -1078,9 +1080,8 @@ class _Session:
                                 ev = inner
                         except json.JSONDecodeError:
                             pass
-                # Logged before the send: an event the client never received still
-                # happened, and the log is the record of the run, not of the socket.
-                # Progress is the exception: a watcher ticks for the whole life of a
+                # The event is already journaled — the bus records it before fanning
+                # out — so a send that fails loses the socket, never the record.
                 try:
                     await self.ws.send(json.dumps(ev, default=str))
                 except Exception:
@@ -1140,7 +1141,7 @@ class _Session:
                     full, start = self._answer_transcript(extras)
                     context_mode = getattr(self.worker._agent, "context_mode", "full")
                     # Left and come back before it answered: it lands here after all.
-                    self._detached_turns.pop(self._active_session_id, None)
+                    self._detached_turns.pop(owner, None)
                     # Whose job it is to write this turn down. The pool writes it when
                     # no view does — that is what keeps a detached turn from running,
                     # costing its tokens and vanishing — and two writers of one session
@@ -1215,16 +1216,20 @@ class _Session:
                     # Before the wakes, and for the same reason they exist: a steer
                     # past the last step boundary was never read. The user is waiting on
                     # their own message, so it takes the next turn ahead of any job.
+                    #
+                    # All three address *owner*, not the conversation on screen: every
+                    # await above yields, and a switch handled meanwhile sent this
+                    # turn's steers and wakes into the conversation switched to.
                     await self._flush_unconsumed_steer(
-                        self._active_session_id, extras.get("_unconsumed_steer") or [])
+                        owner, extras.get("_unconsumed_steer") or [])
                     # Last, so the catch-up turn is handed the history this answer just
                     # wrote rather than the one it inherited. Jobs that finished during
                     # the turn and were never taken in leave together, as one turn.
-                    await self._flush_pending_wakes(self._active_session_id)
+                    await self._flush_pending_wakes(owner)
                     # And the bulletin this conversation held back while it was
                     # working, now that the answer the user waited for has landed.
                     # After the wakes, which supersede it.
-                    await self._flush_held_checkin(self._active_session_id)
+                    await self._flush_held_checkin(owner)
             await asyncio.sleep(0.005)
             await _check_and_push_todos()
             await _tick_context_usage()
@@ -1270,7 +1275,20 @@ class _Session:
         handler_name = self._MSG_HANDLERS.get(msg.get("type"))
         if handler_name is None:
             return  # unknown/missing type — ignore, as the old fall-through did
-        await getattr(self, handler_name)(msg)
+        try:
+            await getattr(self, handler_name)(msg)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            # One message failing is that message's problem. Raised out of here it
+            # ended the read loop, and the connection went deaf with nothing said.
+            logger.exception("ws: handling %r failed", msg.get("type"))
+            try:
+                await self.ws.send(json.dumps({
+                    "type": "error",
+                    "text": f"  ✗ {msg.get('type')} failed: {type(exc).__name__}: {exc}\n"}))
+            except Exception:
+                pass
 
     @staticmethod
     def _wake_text(ev: dict) -> str:
@@ -1579,6 +1597,18 @@ class _Session:
         for a turn it submitted, and without that the catch-up turn runs with no stop
         button and no end the composer can see.
         """
+        if session_id != self._active_session_id:
+            # Not the conversation on screen — the user switched while it answered, or
+            # it ran detached. ``self.history`` is another conversation's, and the
+            # steers on ``_live_steer`` belong to whatever runs on screen: the turn is
+            # started against the stored conversation instead.
+            worker = self.pool.get(session_id)
+            if texts and worker is not None:
+                self.pool._submit_turn(session_id, worker, "\n\n".join(texts))
+            elif texts:
+                logger.warning("unread steering in session %s has no agent to answer "
+                               "it: %r", session_id, texts)
+            return
         stale, self._live_steer = self._live_steer, []
         if not texts:
             return
@@ -2007,9 +2037,11 @@ class _Session:
         await self._notify(f"“{result.title}” is waiting for your decision." if deferred
                            else f"“{result.title}” finished its background turn.")
         await self._send_sessions_list()
-        # The detached twin of the flush after an active turn's answer: jobs that
-        # finished into this conversation while it was answering leave together now,
-        # against the history this turn just wrote.
+        # The detached twin of the flush after an active turn's answer. Steering it
+        # never read first — the user is waiting on their own words — then the jobs that
+        # finished into this conversation while it was answering, together, against the
+        # history this turn just wrote.
+        await self._flush_unconsumed_steer(session_id, extras.get("_unconsumed_steer") or [])
         await self._flush_pending_wakes(session_id)
         await self._flush_held_checkin(session_id)
 
@@ -3033,6 +3065,7 @@ class _Session:
             return
         self._delete_refused.discard(target_id)
         was_active = (target_id == self._active_session_id)
+        self._forget_session_state(target_id)
         # Its agent goes with it, freeing a slot — and whatever it was queued to run,
         # which would otherwise be admitted into a conversation that is gone.
         await self.pool.close(target_id)
@@ -3049,6 +3082,13 @@ class _Session:
             await self._create_new_session()
         await self.pool.pump()   # a freed slot may admit a conversation that was waiting
         await self._send_sessions_list()
+
+    def _forget_session_state(self, session_id: str) -> None:
+        """Drop everything this connection keeps per conversation, for one that is gone."""
+        for per_session in (self._pending_wakes, self._held_checkin, self._detached_turns,
+                            self._live_rows, self._sent_progress, self._foreign_withheld,
+                            getattr(self, "_transcript_sync", None) or {}):
+            per_session.pop(session_id, None)
 
     async def _handle_rename_session(self, msg: dict) -> None:
         target_id = (msg.get("session_id") or "").strip()
@@ -3218,8 +3258,16 @@ class _Session:
                     f"Unknown sub-agent setting: {raw}. Use "
                     f"{', '.join(SUBAGENT_LEVELS)}.")}))
                 return
-            level = self.worker.set_subagent_level(raw) if raw \
-                else self.worker.get_subagent_level()
+            if raw:
+                # Through the pool like every other setting: set on the stand-in that
+                # answers before the first query, it was neither applied nor recorded
+                # for the agent built next. Persisted here as well, because that is
+                # where a new agent reads it from and there may be no live one.
+                level = clamp_subagent_level(raw)
+                self.pool.apply_setting("set_subagent_level", level)
+                save_subagent_level(level)
+            else:
+                level = self.worker.get_subagent_level()
             await self.ws.send(json.dumps({"type": "subagent_level", "level": level}))
         elif text.startswith("/enforcement "):
             level = text[13:].strip().lower()
@@ -3309,6 +3357,13 @@ class _Session:
             if sub == "list":
                 payload = await asyncio.wrap_future(
                     self.worker.call_session_tool("memory_list_all", {"scope": "all"}))
+                if payload.get("status") not in (None, "ok"):
+                    # Read as an empty listing, "no agent is running" or a tool error
+                    # said "No memories stored" — a store that may well be full.
+                    await self.ws.send(json.dumps({
+                        "type": "error",
+                        "text": f"  ✗ {payload.get('error', 'listing failed')}\n"}))
+                    return
                 entries = payload.get("memory") or []
                 await self._command_reply(
                     "/memory list",
@@ -3383,7 +3438,10 @@ class _Session:
         elif text.startswith("/backend "):
             mode = text[9:].strip().lower()
             if mode in ("ollama", "vllm", "ray"):
-                self.worker._agent.set_backend(mode)
+                # Process-wide, so switched even with no agent up yet — reached through
+                # the stand-in's missing agent, the command raised before the first query.
+                switch_backend(mode)
+                self.pool.apply_setting("set_backend", mode)
                 await self._command_reply("/backend", "Backend", items=[{"label": mode}])
             else:
                 await self.ws.send(json.dumps({"type": "error", "text": f"Unknown backend: {mode}. Use ollama, vllm or ray."}))

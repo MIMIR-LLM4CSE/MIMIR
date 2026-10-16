@@ -10,6 +10,7 @@ from typing import Any, Callable
 
 from .base import LLMBackend, normalize_finish_reason, PromptTooLongError
 from .tag_parser import ThinkTagParser
+from ...tool_execution.formatter import normalize_arguments
 # The assistant↔tool pairing invariant belongs to the history, not to this provider:
 # history.py owns the single implementation and applies it before every model call.
 # Re-applied here because _prepare_messages_for_openai normalises ids first, which can
@@ -383,10 +384,7 @@ def _normalize_tool_calls(raw_tool_calls: list) -> list[dict]:
             continue
         name = fn.name if hasattr(fn, "name") else fn.get("name", "")
         args_raw = fn.arguments if hasattr(fn, "arguments") else fn.get("arguments", "{}")
-        try:
-            arguments = json.loads(args_raw) if isinstance(args_raw, str) else args_raw
-        except (json.JSONDecodeError, TypeError):
-            arguments = {}
+        arguments = normalize_arguments(args_raw)
         entry: dict = {"function": {"name": name, "arguments": arguments}}
         tc_id = tc.id if hasattr(tc, "id") else tc.get("id") if isinstance(tc, dict) else None
         if isinstance(tc_id, str) and tc_id:
@@ -775,12 +773,7 @@ class VllmBackend(LLMBackend):
                 # named `reasoning_content` on older vLLM and `reasoning` on 0.22+.
                 reasoning = _extract_reasoning(delta)
                 if reasoning:
-                    if think_start_callback is not None and not parser._thinking_started:
-                        parser._thinking_started = True
-                        think_start_callback()
-                    if think_token_callback is not None:
-                        think_token_callback(reasoning)
-                    parser.thinking_parts.append(reasoning)
+                    parser.feed_reasoning(reasoning)
 
                 # Regular content — may contain <think> tags for tag-based models
                 content = delta.content or ""
@@ -811,19 +804,15 @@ class VllmBackend(LLMBackend):
                 slot = _streaming_tc_buf[idx]
                 if not slot.get("name"):
                     continue  # skip malformed/empty fragments
-                try:
-                    arguments = json.loads(slot["arguments"]) if slot["arguments"] else {}
-                except json.JSONDecodeError:
-                    arguments = {}
-                call_id = slot["id"] or f"call_{idx}"
+                arguments = normalize_arguments(slot["arguments"])
+                # No id streamed: left empty, the history assigns one that is unique
+                # across the query (streaming._ensure_unique_call_ids).
+                call_id = slot["id"] or ""
                 tool_calls_parts.append({
                     "id": call_id,
                     "function": {"name": slot["name"], "arguments": arguments},
                 })
 
-            # Signal end of thinking if we got any native reasoning
-            if parser.thinking_parts and think_end_callback is not None and not parser._in_think:
-                think_end_callback()
 
             _log_cache_usage(usage)
             reported_prompt = self._prompt_tokens(usage)
@@ -854,6 +843,7 @@ class VllmBackend(LLMBackend):
                 if getattr(msg, "tool_calls", None):
                     tool_calls_parts.extend(_normalize_tool_calls(msg.tool_calls))
 
+        parser.finish()
         if parser.content_parts and token_callback is None:
             sys.stdout.write("\n")
             sys.stdout.flush()

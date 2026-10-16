@@ -5,6 +5,7 @@ import contextvars
 import copy
 import inspect
 import json
+import logging
 import os
 import re
 import sys
@@ -20,6 +21,8 @@ from ..context.capabilities import infer_tool_caps
 from ..tool_execution.tool_status_messages import DOING_ARG
 from ..config.constants import GLOBAL_STATE_DIR, STATE_DIR, USER_QUESTION_TIMEOUT_SECS
 from ...servers._shared.state_paths import scratch_home
+
+logger = logging.getLogger(__name__)
 
 
 # A Google-style ``Args:`` block: the section header, then one entry per parameter as
@@ -401,7 +404,17 @@ async def _register_session(*, agent: Any, name: str, session: Any, listing: Any
     """
     agent.sessions[name] = session
 
+    registered: list[str] = []
     for tool in listing.tools:
+        owner = agent.tool_owner.get(tool.name)
+        if owner is not None and owner != name:
+            # First server wins. Re-registered, the name was routed to the second
+            # server while the model was shown both schemas under one name.
+            logger.warning("tool %r of server %r is already provided by %r; ignored",
+                           tool.name, name, owner)
+            print(f"⚠️ [{name}]  tool {tool.name!r} already provided by [{owner}] — ignored")
+            continue
+        registered.append(tool.name)
         agent.tool_owner[tool.name] = name
         # Derive the tool's semantics (capabilities, arg roles, fallbacks, label)
         # from what the server declares (meta/annotations), falling back to the
@@ -424,7 +437,7 @@ async def _register_session(*, agent: Any, name: str, session: Any, listing: Any
             },
         })
 
-    tool_names = [t.name for t in listing.tools]
+    tool_names = registered
 
     n_resources = await register_resources(agent=agent, name=name, session=session)
 

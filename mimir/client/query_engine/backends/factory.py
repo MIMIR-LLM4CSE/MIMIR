@@ -26,6 +26,16 @@ def get_backend() -> LLMBackend:
     return _singleton[backend_name]
 
 
+def switch_backend(name: str) -> None:
+    """Make *name* the backend every model call uses from now on, in this process.
+
+    The choice lives in ``LLM_BACKEND`` because a backend is process-wide: it is what
+    ``get_backend`` reads, and what the MCP servers are spawned with.
+    """
+    os.environ["LLM_BACKEND"] = name
+    clear_backend_cache()
+
+
 def clear_backend_cache() -> None:
     """Evict the cached singleton so the next call to get_backend() recreates it."""
     _singleton.clear()

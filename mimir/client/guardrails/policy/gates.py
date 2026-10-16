@@ -180,6 +180,27 @@ def _shell_path_targets(agent: Any, tool_name: str, arguments: dict, base: str) 
     return out
 
 
+def _call_base(agent: Any, tool_name: str, arguments: dict) -> tuple[str, str]:
+    """``(root, base)``: the agent's workspace root, and where this call's relative
+    paths resolve — a declared ``cwd`` arg-role where the tool has one, else the root.
+    """
+    from ...config.constants import WORKSPACE_ROOT
+    from ...tool_execution.validation import absolute_workspace_path
+    # The agent's own root: a sub-agent working in a copy of the repository is inside
+    # ITS workspace there, and outside the caller's — which is the whole point of the
+    # copy. Falls back to the module constant for anything agent-like without one.
+    root = os.path.realpath(os.path.abspath(
+        getattr(agent, "workspace_root", None) or WORKSPACE_ROOT))
+    # The bash server has no cwd role — every call starts at the workspace root — so
+    # this normally leaves the base at the root.
+    base = root
+    for a in arg_role(tool_name, "cwd", getattr(agent, "tool_caps", None)):
+        v = arguments.get(a)
+        if isinstance(v, str) and v.strip():
+            base = os.path.realpath(absolute_workspace_path(v, cwd=root))
+    return root, base
+
+
 def _out_of_workspace_targets(agent: Any, tool_name: str, arguments: dict) -> list[str]:
     """Absolute target paths of this call outside the workspace and not yet approved.
 
@@ -189,28 +210,19 @@ def _out_of_workspace_targets(agent: Any, tool_name: str, arguments: dict) -> li
     the file-target extractor cannot see because they live inside a string. Reads of
     the trusted roots (item 1) and already-approved paths are excluded.
     """
-    from ...config.constants import WORKSPACE_ROOT
     from ...tool_execution.validation import absolute_workspace_path
-    # The agent's own root: a sub-agent working in a copy of the repository is inside
-    # ITS workspace there, and outside the caller's — which is the whole point of the
-    # copy. Falls back to the module constant for anything agent-like without one.
-    root = os.path.realpath(os.path.abspath(
-        getattr(agent, "workspace_root", None) or WORKSPACE_ROOT))
+    root, call_base = _call_base(agent, tool_name, arguments)
 
     raw: list[str] = []
     try:
         raw.extend(agent.get_tool_file_targets(tool_name, arguments) or [])
     except Exception:
         pass
-    # A declared cwd arg-role, where a tool still has one, is also the base its
-    # relative paths resolve against. The bash server has none — every call starts
-    # at the workspace root — so this normally leaves the base at the root.
-    call_base = root
+    # A declared cwd is itself a place the call goes.
     for a in arg_role(tool_name, "cwd", getattr(agent, "tool_caps", None)):
         v = arguments.get(a)
         if isinstance(v, str) and v.strip():
             raw.append(v)
-            call_base = os.path.realpath(absolute_workspace_path(v, cwd=root))
     raw.extend(_shell_path_targets(agent, tool_name, arguments, call_base))
 
     is_read = has_cap(tool_name, READ, agent.tool_caps) and not (
@@ -415,11 +427,13 @@ def _segment_program(argv: list[str]) -> str | None:
     return head
 
 
-def _executed_programs(command: str) -> set[str]:
-    """Programs a shell command (or a bare path) would execute.
+def _executed_programs(command: str, base: str) -> set[str]:
+    """Real paths of the programs a shell command (or a bare path) would execute.
 
-    Returned as a set of abspaths *and* basenames so both ``python /abs/proxy.py``
-    and ``python proxy.py`` match a proxy path. Mirrors the shlex segmentation of
+    A relative program resolves against *base*, the directory the call runs in, so
+    ``python proxy.py`` and ``python /abs/proxy.py`` name the same file. (Matched on
+    basenames instead, any ``main.py`` anywhere was blocked as the proxy whenever the
+    proxy happened to be called ``main.py``.) Mirrors the shlex segmentation of
     ``bash_classify.classify_bash_command`` (split on ``; && || |``, per-segment
     leading command). A bare path (e.g. running ``./proxy`` directly) parses to a
     single segment whose head is that path, so the same routine covers direct-path
@@ -452,9 +466,7 @@ def _executed_programs(command: str) -> set[str]:
         prog = _segment_program(argv)
         if not prog:
             continue
-        ap = os.path.abspath(prog)
-        progs.add(ap)
-        progs.add(os.path.basename(ap))
+        progs.add(os.path.realpath(os.path.join(base, os.path.expanduser(prog))))
     return progs
 
 
@@ -487,7 +499,7 @@ def active_proxy_source(session_id: str | None = None) -> str:
 
 
 def _proxy_exec_targets(session_id: str | None = None) -> set[str]:
-    """Abspaths + basenames that count as "executing the proxy under optimization".
+    """Real paths that count as "executing the proxy under optimization".
 
     Reads the proxy server's own store for the optimization session *this* conversation
     is driving; returns an empty set when none is initialized so the guard abstains.
@@ -515,12 +527,7 @@ def _proxy_exec_targets(session_id: str | None = None) -> set[str]:
             if isinstance(exe, str) and exe:
                 paths.add(exe)
 
-    targets: set[str] = set()
-    for p in paths:
-        ap = os.path.abspath(p)
-        targets.add(ap)
-        targets.add(os.path.basename(ap))
-    return targets
+    return {os.path.realpath(p) for p in paths}
 
 
 def _check_proxy_exec(
@@ -551,10 +558,11 @@ def _check_proxy_exec(
         targets = _proxy_exec_targets(getattr(agent, "session_id", None))
         if not targets:
             return None
+        _root, base = _call_base(agent, tool_name, arguments)
         executed: set[str] = set()
         for val in arguments.values():
             if isinstance(val, str) and val.strip():
-                executed |= _executed_programs(val)
+                executed |= _executed_programs(val, base)
         if not (executed & targets):
             return None
     except Exception:

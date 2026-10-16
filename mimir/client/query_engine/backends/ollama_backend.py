@@ -143,6 +143,7 @@ class OllamaBackend(LLMBackend):
                 # the thinking block after this call returns.
                 _p = ThinkTagParser()
                 _p.feed_content(raw_content)
+                _p.finish()
                 parser.content_parts.extend(_p.content_parts)
                 parser.thinking_parts.extend(_p.thinking_parts)
                 if _p.content_parts and token_callback is None:
@@ -162,6 +163,7 @@ class OllamaBackend(LLMBackend):
             if "name" in chunk_msg:
                 final_msg["name"] = chunk_msg["name"]
 
+        parser.finish()
         if parser.content_parts and token_callback is None:
             sys.stdout.write("\n")
             sys.stdout.flush()

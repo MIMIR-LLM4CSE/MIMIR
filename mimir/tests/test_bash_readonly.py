@@ -353,5 +353,25 @@ class ReadonlyBashApprovalExemptionTests(unittest.TestCase):
         self.assertFalse(_readonly_bash_exempt(agent, "code_run", {"command": "rg foo"}))
 
 
+class ReadonlyInvocationTests(unittest.TestCase):
+    """One answer to "does this call change anything", for every mode that asks."""
+
+    def _caps(self):
+        from mimir.client.context.capabilities import PLAN_READONLY, ToolCaps
+
+        return {"jobs": ToolCaps(name="jobs", capabilities=frozenset({PLAN_READONLY}),
+                                 readonly_when={"arg": "op", "values": ["list", "status"]})}
+
+    def test_a_declared_readonly_call_needs_no_approval_in_any_mode(self) -> None:
+        # Plan mode ran op=list unasked; agent mode prompted for the very same call.
+        from types import SimpleNamespace
+        from mimir.client.guardrails.policy.readonly_exempt import _readonly_bash_exempt
+
+        agent = SimpleNamespace(tool_caps=self._caps())
+        self.assertTrue(_readonly_bash_exempt(agent, "jobs", {"op": "list"}))
+        self.assertTrue(_readonly_bash_exempt(agent, "jobs", {}))
+        self.assertFalse(_readonly_bash_exempt(agent, "jobs", {"op": "cancel"}))
+
+
 if __name__ == "__main__":
     unittest.main()

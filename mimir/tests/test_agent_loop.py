@@ -2228,5 +2228,51 @@ class IdenticalSuccessRepeatTests(unittest.TestCase):
         self.assertNotIn("IDENTICAL_REPEAT", other)
 
 
+
+class BatchReviewTests(unittest.TestCase):
+    """Both ways out of the loop review a batch the same way."""
+
+    def test_an_agent_without_approvals_ends_its_turn(self) -> None:
+        # Running out of steps called flush_pending_review() unguarded and raised.
+        agent = types.SimpleNamespace(approvals=None)
+        self.assertEqual(agent_loop_module._review_batch(agent, "done", []), "done")
+
+    def test_a_pending_batch_is_reviewed_and_its_outcome_told(self) -> None:
+        approvals = types.SimpleNamespace(_pending_review=[{"tool": "write_file"}],
+                                          flush_pending_review=lambda: False)
+        messages: list[dict] = []
+        answer = agent_loop_module._review_batch(
+            types.SimpleNamespace(approvals=approvals), "done", messages)
+        self.assertEqual(answer, "done\nChanges reverted.")
+        self.assertEqual(messages[-1]["content"], "Changes reverted.")
+
+
+
+class StreamRetryTests(unittest.TestCase):
+    def test_a_retry_drops_what_the_failed_attempt_streamed(self) -> None:
+        # The held draft kept the failed attempt's tokens, and the retry's were
+        # appended behind them: the answer appeared with its opening twice.
+        shown: list[str] = []
+        hold = streaming_module._DraftHold(shown.append)
+        attempts = {"n": 0}
+
+        class _Flaky:
+            def chat(self, **kw):
+                attempts["n"] += 1
+                kw["token_callback"]("partial ")
+                if attempts["n"] == 1:
+                    raise ConnectionError("dropped")
+                kw["token_callback"]("whole answer")
+                return {"content": "partial whole answer"}
+
+        with patch.object(streaming_module, "get_backend", return_value=_Flaky()), \
+             patch.object(streaming_module.time, "sleep", lambda _s: None), \
+             patch.object(streaming_module, "emit", lambda _e: None):
+            streaming_module._stream_chat(
+                "m", [], [], False, True, {}, token_callback=hold.capture,
+                on_retry=hold.discard)
+        hold.flush()
+        self.assertEqual(shown, ["partial whole answer"])
+
 if __name__ == "__main__":
     unittest.main()

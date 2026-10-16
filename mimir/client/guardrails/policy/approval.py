@@ -18,6 +18,7 @@ from ...context.capabilities import (
     risk_note_of,
     scope_spec,
 )
+from ...util.files import write_json_atomic
 
 
 def _packages_scope_token(packages) -> str:
@@ -530,12 +531,7 @@ class ApprovalManager:
     def _flush_allowed_paths(self) -> None:
         """Write the current allowed-paths set to the sidecar the servers read."""
         try:
-            path = self.approved_paths_file()
-            os.makedirs(os.path.dirname(path), exist_ok=True)
-            tmp = path + ".tmp"
-            with open(tmp, "w") as fh:
-                json.dump(sorted(self._allowed_paths), fh)
-            os.replace(tmp, path)
+            write_json_atomic(self.approved_paths_file(), sorted(self._allowed_paths))
         except OSError:
             pass  # best-effort; a failed write simply keeps the server strict
 

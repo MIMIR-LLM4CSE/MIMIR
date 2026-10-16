@@ -910,7 +910,7 @@ class ExerciseRouteTests(unittest.TestCase):
         real = engine._any_command_on_path
         engine._any_command_on_path = lambda cmds: not any(c in absent for c in cmds)
         try:
-            return engine._exercise_route(self._agent(), ec), ec
+            return engine.exercise_route(self._agent(), ec)
         finally:
             engine._any_command_on_path = real
 
@@ -923,11 +923,26 @@ class ExerciseRouteTests(unittest.TestCase):
     def test_an_unconfigured_build_tree_is_not_a_route(self):
         # The criterion itself: a configured tree is one command, configuring one is a
         # step of its own.
-        route, ec = self._route({"solver.c"}, seen={"CMakeLists.txt"})
+        route, obstacle = self._route({"solver.c"}, seen={"CMakeLists.txt"})
         self.assertEqual(route, "")
-        self.assertEqual(
-            ec["exercise_blocked_reason"], "nothing written here starts with one direct command",
-        )
+        self.assertEqual(obstacle, "nothing written here starts with one direct command")
+
+    def test_asking_for_a_route_changes_nothing(self):
+        # Asked from a nudge predicate, it wrote the obstacle into the context: probing
+        # whether a nudge was pending changed what the ledger would say.
+        from mimir.client.guardrails.nudges import engine
+
+        ec = _ctx(dirty_written_files={"solver.c"}, code_mutation_started=True)
+        before = dict(ec)
+        engine.exercise_route(self._agent(), ec)
+        self.assertEqual(ec, before)
+
+    def test_the_obstacle_reaches_the_ledger_when_nothing_ran(self):
+        from mimir.client.guardrails.nudges import engine
+
+        ec = _ctx(dirty_written_files={"solver.c"}, code_mutation_started=True)
+        engine.record_exercise_obstacle(self._agent(), ec)
+        self.assertTrue(ec["exercise_blocked_reason"])
 
     def test_a_build_file_nobody_has_seen_is_not_a_route(self):
         # Evidence only: recommending `make` against a Makefile nobody laid eyes on is

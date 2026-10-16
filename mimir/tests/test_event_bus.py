@@ -313,6 +313,16 @@ class ConcludedTests(_BusCase):
         bus.pump_once()
         self.assertIsNotNone(bus.concluded_at("s1"))
 
+    def test_an_error_is_never_held_for_a_claim_nobody_makes(self):
+        # Offered like an answer, it waited out the grace window unclaimed — a warning
+        # per failed turn, and an agent held unreleasable meanwhile.
+        w = _bare_worker("s1")
+        bus = _EventBus(_FakePool({"s1": w}), commit=lambda ev, extras: None)
+        bus.subscribe()
+        w.out_q.put({"type": "error", "text": "backend gone"})
+        bus.pump_once()
+        self.assertFalse(bus.unclaimed_for("s1"))
+
     def test_output_alone_never_counts_as_concluded(self):
         w = _bare_worker("s1")
         bus = _EventBus(_FakePool({"s1": w}))

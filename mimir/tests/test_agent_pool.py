@@ -200,6 +200,35 @@ class CapAndQueueTests(_PoolCase):
         self.assertEqual(ran, [])
 
 
+    def _slow_builds(self, pool) -> None:
+        async def _build(session_id):
+            await asyncio.sleep(0.01)
+            return _StubWorker(pool.model, session_id=session_id)
+        pool._build = _build
+
+    async def test_builds_in_flight_count_against_the_cap(self) -> None:
+        # Counted on built workers only, two sessions starting together both saw a
+        # free slot and the pool ran past its cap.
+        pool = self._pool(cap=1)
+        self._slow_builds(pool)
+        got = await asyncio.gather(pool.worker_for("s1"), pool.worker_for("s2"))
+        self.assertEqual(sum(w is not None for w in got), 1)
+        self.assertEqual(len(pool), 1)
+
+    async def test_a_turn_dropped_while_its_worker_builds_never_runs(self) -> None:
+        # pump() popped the head of the line after awaiting the build; a drop in that
+        # window replaced the line, and the deleted session's turn ran anyway.
+        pool = self._pool(cap=1)
+        self._slow_builds(pool)
+        ran: list[str] = []
+        pool.enqueue("s2", lambda w: ran.append("s2"))
+        pumping = asyncio.ensure_future(pool.pump())
+        await asyncio.sleep(0)
+        pool.drop_queued("s2")
+        self.assertEqual(await pumping, [])
+        self.assertEqual(ran, [])
+
+
 class ReleaseTests(_PoolCase):
     async def test_an_idle_worker_past_its_ttl_is_released(self) -> None:
         pool = self._pool(idle_ttl=0.0)

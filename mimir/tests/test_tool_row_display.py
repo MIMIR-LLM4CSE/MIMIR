@@ -616,6 +616,37 @@ class DispatchRowFieldsTests(unittest.TestCase):
         self.assertEqual(len(agent.calls), 1)
         self.assertEqual(len(rows), 1)
 
+    def test_a_dropped_duplicate_is_still_answered_under_its_own_id(self) -> None:
+        # Unanswered, the history repair paired it by position with the next result
+        # in line, and the model read another call's outcome as this one's.
+        messages: list[dict] = []
+        self._dispatch([
+            self._call("c1", "read_file_lines", {"path": "/w/a.py"}),
+            self._call("c2", "read_file_lines", {"path": "/w/a.py"}),
+        ], messages=messages)
+        replies = {m["tool_call_id"]: json.loads(m["content"]) for m in messages}
+        self.assertEqual(set(replies), {"c1", "c2"})
+        self.assertEqual(replies["c2"]["status"], "skipped")
+        self.assertIn("c1", replies["c2"]["note"])
+
+    def test_a_call_cut_off_mid_arguments_is_answered_not_run(self) -> None:
+        # Read as {} it ran anyway — a write with no content, at the output cap.
+        messages: list[dict] = []
+        agent, _rows = self._dispatch([
+            self._call("c1", "read_file_lines", '{"path": "/w/a.py", "start'),
+        ], messages=messages)
+        self.assertEqual(agent.calls, [])
+        reply = json.loads(messages[0]["content"])
+        self.assertEqual(reply["status"], "error")
+        self.assertIn("not valid JSON", reply["error"])
+
+    def test_a_readonly_refusal_names_the_call_it_answers(self) -> None:
+        from mimir.client.query_engine.readonly_guard import refusal_reply
+
+        reply = refusal_reply(self._call("c7", "write_file", {}), "not here")
+        self.assertEqual(reply["tool_call_id"], "c7")
+        self.assertEqual(json.loads(reply["content"])["error"], "not here")
+
     def test_a_call_with_no_description_still_makes_a_row(self) -> None:
         # The model will forget. The family and the target carry the row alone.
         _agent, rows = self._dispatch([

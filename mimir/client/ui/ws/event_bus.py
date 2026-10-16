@@ -565,7 +565,10 @@ class _EventBus:
             # does what nobody claimed. Two turns for one finished run, or two writers
             # of one session file, are duplicates nothing downstream can undo — and the
             # claim, not the subscriber list, is what elects the one that acts.
-            if self._commit is not None and etype in _CONCLUSIVE:
+            # Answers only: an ``error`` concludes a turn but writes nothing, and no view
+            # claims one — offered, each failed turn logged "no attached view claimed"
+            # and held its agent unreleasable for the whole grace window.
+            if self._commit is not None and etype == "answer":
                 self._offer(ev, extras, self._commit)
             if self._durable is not None and etype in DURABLE_EVENTS:
                 self._offer(ev, {}, lambda e, _x: self._durable(e))

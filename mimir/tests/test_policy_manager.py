@@ -568,6 +568,41 @@ class PolicyManagerTests(unittest.TestCase):
 
         self.assertEqual(result.violation, "state_violation")
 
+    def test_a_violation_without_a_context_is_still_enriched(self) -> None:
+        # Tools run outside a query (the CLI's direct calls) have no context: a
+        # violation there used to raise AttributeError instead of being reported.
+        violation = json.dumps({"status": "error", "error": "nope"})
+        enriched = json.loads(policy_manager_module._enrich_violation_payload(
+            violation=violation, policy_stage="write_policy",
+            execution_context=None, tool_name="write_file"))
+        self.assertEqual(enriched["policy_stage"], "write_policy")
+        self.assertNotIn("state", enriched)
+
+    def _write_violation_asks_for_a_path(self, kind: str) -> bool:
+        from mimir.client.guardrails.policy.write import write_policy_violation
+
+        agent = _FakeAgent()
+        violation = write_policy_violation("replace_in_file", "x.py", kind=kind)
+        with patch.object(policy_manager_module, "ensure_execution_context", return_value={"ctx": True}), \
+             patch.object(policy_manager_module, "check_state_machine_guard", return_value=None), \
+             patch.object(policy_manager_module, "check_write_policy", return_value=violation), \
+             patch.object(policy_manager_module, "is_known_to_exist", return_value=False), \
+             patch.object(policy_manager_module, "_interactive_clarify_path",
+                          return_value=None) as clarify:
+            policy_manager_module.evaluate_tool_preconditions(
+                agent=agent, tool_name="replace_in_file", arguments={"path": "x.py"},
+                execution_context={})
+        return clarify.called
+
+    def test_only_an_unconfirmed_path_violation_asks_for_the_path(self) -> None:
+        # Every write violation names its path, so matching "path" in the text asked
+        # the user to retype a path they had got right — for a missing read, say.
+        from mimir.client.guardrails.policy.write import UNCONFIRMED_PATH
+
+        self.assertFalse(self._write_violation_asks_for_a_path("policy"))
+        self.assertTrue(self._write_violation_asks_for_a_path(UNCONFIRMED_PATH))
+
+
 class MissingEvidenceTests(unittest.TestCase):
     def test_missing_evidence_suggests_read_when_write_blocked(self) -> None:
         from mimir.client.guardrails import policy as policy_module

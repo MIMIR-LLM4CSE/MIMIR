@@ -8,7 +8,7 @@ Usage:
     # For each streaming chunk:
     content_out, think_out = parser.feed(chunk, is_thinking_field=False)
     # content_out and think_out are lists of str tokens to emit.
-    # Call parser.started and parser.ended to check thinking block state.
+    parser.finish()  # at the end of the stream
 """
 
 from __future__ import annotations
@@ -35,6 +35,7 @@ class ThinkTagParser:
         self._in_think = False
         self._buf = ""
         self._thinking_started = False
+        self._thinking_ended = False
 
         self.content_parts: list[str] = []
         self.thinking_parts: list[str] = []
@@ -56,7 +57,36 @@ class ThinkTagParser:
         self._buf += raw
         self._process(default_to_thinking=True)
 
+    def feed_reasoning(self, text: str) -> None:
+        """Feed reasoning a provider sends in its own field (vLLM ``reasoning``).
+
+        Never parsed for tags: the field holds nothing but the reasoning.
+        """
+        self._emit_thinking(text)
+
+    def finish(self) -> None:
+        """End of the stream: release what is held back and close the thinking block.
+
+        A tag prefix held at the end of the buffer (``<``, ``</thi``) was waiting for
+        the rest of a tag that is never coming, so it is text after all. And a block
+        that was never closed by a tag (native reasoning fields have none) still ends,
+        exactly once.
+        """
+        if self._buf:
+            held, self._buf = self._buf, ""
+            if self._in_think:
+                self._emit_thinking(held)
+            else:
+                self._emit_content(held)
+        self._end_thinking()
+
     # ── internals ────────────────────────────────────────────────────────────
+
+    def _end_thinking(self) -> None:
+        if self._thinking_started and not self._thinking_ended:
+            self._thinking_ended = True
+            if self._think_end_cb is not None:
+                self._think_end_cb()
 
     @staticmethod
     def _partial_tag_at_end(text: str, tag: str) -> int:
@@ -102,15 +132,22 @@ class ThinkTagParser:
                     self._buf = self._buf[end + len("</think>") :]
                     self._in_think = False
                     self._emit_thinking(flush)
-                    if self._think_end_cb is not None:
-                        self._think_end_cb()
+                    self._end_thinking()
             else:
-                # Strip stray </think> that some models emit as content
-                # when thinking is disabled (no matching <think> was seen).
-                self._buf = self._buf.replace("</think>", "")
+                # Strip stray </think> that some models emit as content when thinking
+                # is disabled (no matching <think> was seen) — only ahead of the next
+                # <think>: past it, a </think> is that block's own end, and stripping
+                # it filed a whole one-chunk answer under thinking.
                 start = self._buf.find("<think>")
+                head = self._buf if start == -1 else self._buf[:start]
+                if "</think>" in head:
+                    self._buf = head.replace("</think>", "") + self._buf[len(head):]
+                    start = self._buf.find("<think>")
                 if start == -1:
-                    partial = self._partial_tag_at_end(self._buf, "<think>")
+                    # Either tag may be split across chunks: a stray "</th" held back
+                    # is stripped once its end arrives, instead of leaking as content.
+                    partial = max(self._partial_tag_at_end(self._buf, "<think>"),
+                                  self._partial_tag_at_end(self._buf, "</think>"))
                     flush = self._buf[: len(self._buf) - partial]
                     self._buf = self._buf[len(self._buf) - partial :]
                     if flush:

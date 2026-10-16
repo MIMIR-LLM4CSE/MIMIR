@@ -43,6 +43,7 @@ import threading
 from typing import Any
 
 from .constants import STATE_DIR
+from ..util.files import write_json_atomic
 
 logger = logging.getLogger(__name__)
 
@@ -90,12 +91,7 @@ def _write_preferences(payload: dict[str, Any]) -> None:
     """Write the whole preferences dict atomically. Callers merge into what is there."""
     path = _preferences_path()
     try:
-        os.makedirs(STATE_DIR, exist_ok=True)
-        tmp = f"{path}.tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(payload, f, indent=2)
-            f.write("\n")
-        os.replace(tmp, path)
+        write_json_atomic(path, payload, indent=2, trailing_newline=True)
     except Exception as exc:
         logger.warning("Could not write %s: %s", path, exc)
 

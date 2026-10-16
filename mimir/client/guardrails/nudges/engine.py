@@ -781,8 +781,9 @@ def _exercise_budget_left(execution_context: dict[str, Any]) -> bool:
     )
 
 
-def _exercise_route(agent: Any, execution_context: dict[str, Any]) -> str:
-    """The one direct command that would exercise this change, named — or "" if none.
+def exercise_route(agent: Any, execution_context: dict[str, Any]) -> tuple[str, str]:
+    """``(route, obstacle)``: the one direct command that would exercise this change,
+    named — or ``""`` and what stood in the way.
 
     This is where "recommended when it is simply feasible" is decided, rather than
     recited. A route is one invocation against the project as it stands, using something
@@ -791,18 +792,17 @@ def _exercise_route(agent: Any, execution_context: dict[str, Any]) -> str:
     So the model is never pushed toward a disproportionate step, and a recommendation that
     does fire can name the command it found.
 
-    Silent, but not invisible: the obstacle is recorded so the ledger can say what stood in
-    the way instead of simply omitting the advice. Evidence only — a build file has to have
+    Silent, but not invisible: the obstacle is what :func:`record_exercise_obstacle` puts
+    in the ledger instead of simply omitting the advice. A pure function — it is asked from
+    a nudge predicate, and probing a predicate must change nothing. Evidence only — a build file has to have
     been *seen* this session, because recommending `make` against a Makefile nobody has laid
     eyes on is not obviously proportionate either.
     """
-    def _blocked(reason: str) -> str:
-        execution_context["exercise_blocked_reason"] = reason
-        return ""
+    def _blocked(reason: str) -> tuple[str, str]:
+        return "", reason
 
-    def _route(description: str) -> str:
-        execution_context["exercise_blocked_reason"] = ""
-        return description
+    def _route(description: str) -> tuple[str, str]:
+        return description, ""
 
     if execution_context.get("unresolved_modules"):
         return _blocked("an import could not be resolved in the interpreter that was used")
@@ -843,6 +843,21 @@ def _exercise_route(agent: Any, execution_context: dict[str, Any]) -> str:
             return _route(f"the build already configured here ({build_file})")
 
     return _blocked("nothing written here starts with one direct command")
+
+
+def _exercise_route(agent: Any, execution_context: dict[str, Any]) -> str:
+    return exercise_route(agent, execution_context)[0]
+
+
+def record_exercise_obstacle(agent: Any, execution_context: dict[str, Any]) -> None:
+    """Note on the context why the change could not be exercised, for the ledger.
+
+    Asked where the ledger is built, for the case the ledger reports it in: code was
+    written and nothing was run.
+    """
+    if execution_context.get("dirty_written_files") and not execution_context.get("runs"):
+        execution_context["exercise_blocked_reason"] = exercise_route(
+            agent, execution_context)[1]
 
 
 def _should_nudge_regression(execution_context: dict[str, Any]) -> bool:

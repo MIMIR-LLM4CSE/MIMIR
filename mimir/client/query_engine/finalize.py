@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from ..guardrails.nudges.engine import record_exercise_obstacle
 from .history import reconcile_tool_pairs
 from .verification import build_ledger, render_ledger
 
@@ -47,6 +48,7 @@ async def _finalize_answer(
     full-context history. Returns the annotated answer. ``query`` and ``logger`` are
     kept so every exit path calls it the same way.
     """
+    record_exercise_obstacle(agent, execution_context)
     answer = _annotate_answer_with_changes(answer, execution_context)
     agent._update_carry_context(execution_context)
     _record_turn(agent, messages)

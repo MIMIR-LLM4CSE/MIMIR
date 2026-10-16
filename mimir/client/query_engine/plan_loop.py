@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import asyncio
 import itertools
-import json
 from typing import Any
 
 from . import streaming as _streaming
@@ -47,7 +46,7 @@ from .deferral import (
     mark_deferred,
 )
 from .finalize import _finalize_answer
-from .readonly_guard import filter_readonly_tool_calls
+from .readonly_guard import filter_readonly_tool_calls, refusal_reply
 from .toollist import tools_for_plan_mode
 
 
@@ -119,8 +118,7 @@ def _reject_stalled_calls(tool_calls: list[Any], messages: list[dict]) -> None:
     for tc in tool_calls:
         name = _to_dict(_to_dict(tc).get("function", {})).get("name", "")
         emit({"type": "status", "text": f"  ⏭ Plan already recorded — skipped '{name}'"})
-        messages.append({"role": "tool", "content": json.dumps(
-            {"status": "error", "error": PLAN_ALREADY_RECORDED_ERROR})})
+        messages.append(refusal_reply(tc, PLAN_ALREADY_RECORDED_ERROR))
 
 
 def _clear_recorded_plan(execution_context: dict) -> None:
@@ -471,6 +469,7 @@ async def _run_plan_mode(
                 streaming,
                 options,
                 cancel_flag=getattr(agent, "_cancel_flag", None),
+                on_retry=hold.discard if hold else None,
                 **step_cb,
             )
         except BaseException:

@@ -554,7 +554,7 @@ class WatchJobTests(unittest.TestCase):
 
         agent = _HangingAgent(hang_on="status")
         worker = self._make_worker(agent)
-        with mock.patch.object(ws, "_TOOL_CALL_TIMEOUT", 0.01):
+        with mock.patch.object(job_poll, "STATUS_CALL_TIMEOUT", 0.01):
             self._run(worker, self._descriptor())
 
         ev = worker.out_q.get_nowait()
@@ -574,7 +574,7 @@ class WatchJobTests(unittest.TestCase):
         seen: list[dict] = []
         watch = ws._Watch(task=mock.Mock(), descriptor=self._descriptor())
         worker._bg_jobs["fast"] = watch
-        with mock.patch.object(ws, "_TOOL_CALL_TIMEOUT", 0.01):
+        with mock.patch.object(job_poll, "STATUS_CALL_TIMEOUT", 0.01):
             self._run(worker, self._descriptor())
             seen.append(dict(watch.status))
 
@@ -587,7 +587,7 @@ class WatchJobTests(unittest.TestCase):
 
         agent = _HangingAgent(hang_on="summary", states=["done"])
         worker = self._make_worker(agent)
-        with mock.patch.object(ws, "_TOOL_CALL_TIMEOUT", 0.01):
+        with mock.patch.object(job_poll, "STATUS_CALL_TIMEOUT", 0.01):
             self._run(worker, self._descriptor())
 
         ev = worker.out_q.get_nowait()
@@ -1160,15 +1160,15 @@ class AwaitBackgroundJobTests(unittest.TestCase):
         from mimir.client.query_engine import background as al
 
         async def _drive():
-            orig = al.asyncio.sleep
+            orig = asyncio.sleep
 
             async def _fast(_):
                 await orig(0)
-            al.asyncio.sleep = _fast
+            asyncio.sleep = _fast
             try:
                 return await al._await_background_job(descriptor, agent, result)
             finally:
-                al.asyncio.sleep = orig
+                asyncio.sleep = orig
         return asyncio.run(_drive())
 
     def _descriptor(self) -> dict:
@@ -1183,6 +1183,23 @@ class AwaitBackgroundJobTests(unittest.TestCase):
         self.assertIn("done", out)
         self.assertIn("accept", out)
         self.assertGreaterEqual(agent.status_calls, 3)
+
+    def test_the_users_stop_ends_the_wait(self) -> None:
+        # Nothing checked the flag: a turn waiting on a run could only be left by
+        # the run ending — for 100 000 polls, about three weeks.
+        import threading
+
+        agent = _ScriptedAgent(states=["running"] * 50, summary={})
+        agent._cancel_flag = threading.Event()
+        agent._cancel_flag.set()
+        with self.assertRaises(asyncio.CancelledError):
+            self._run(agent, self._descriptor(), '{"status":"ok"}')
+        self.assertEqual(agent.status_calls, 0)
+
+    def test_a_status_op_that_never_answers_a_state_ends_the_wait(self) -> None:
+        agent = _MuteAgent()
+        out = self._run(agent, self._descriptor(), '{"status":"ok"}')
+        self.assertIn("'unknown'", out)
 
 
 # ── 4. Auto-resume: the wake text the session synthesizes from job_complete ────

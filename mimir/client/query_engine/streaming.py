@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import random
 import time
+import uuid
 from typing import Any
 
 from .backends.base import PromptTooLongError
@@ -33,6 +34,30 @@ def _to_dict(obj: Any) -> dict:
     return {}
 
 
+def _ensure_unique_call_ids(msg: dict, messages: list[dict]) -> None:
+    """Give every tool call of *msg* an id no earlier call of the conversation has.
+
+    Ollama returns calls with no id at all, and a streamed vLLM call whose id never
+    arrived fell back to its position — so every step's first call was ``call_0``.
+    Everything keyed by call id then mixed steps up: a result paired with the wrong
+    call, one pinned skill result pinning every later ``call_0``. Fixed here, before
+    the message enters history, so the history and the dispatch see the same ids.
+    """
+    calls = msg.get("tool_calls")
+    if not calls:
+        return
+    taken = {tc.get("id") for m in messages if m.get("role") == "assistant"
+             for tc in (m.get("tool_calls") or []) if isinstance(tc, dict)}
+    # Ollama's calls can be SDK objects; a dict is what history and dispatch hold.
+    calls = msg["tool_calls"] = [tc if isinstance(tc, dict) else _to_dict(tc)
+                                 for tc in calls]
+    for tc in calls:
+        call_id = tc.get("id")
+        if not isinstance(call_id, str) or not call_id or call_id in taken:
+            call_id = tc["id"] = f"call_{uuid.uuid4().hex[:12]}"
+        taken.add(call_id)
+
+
 def _process_response(msg: dict, messages: list[dict], thinking: bool, streamed_thinking: bool = False) -> None:
     """Emit thinking block as a structured event and append the assistant message (without thinking) to history.
 
@@ -40,6 +65,7 @@ def _process_response(msg: dict, messages: list[dict], thinking: bool, streamed_
     token-by-token, so we do NOT emit the full block again.
     For non-streaming mode (streamed_thinking=False) the block is emitted here.
     """
+    _ensure_unique_call_ids(msg, messages)
     if thinking and not streamed_thinking and msg.get("thinking"):
         clean_thinking = msg["thinking"].replace("<think>", "").replace("</think>", "").strip()
         if clean_thinking:
@@ -82,14 +108,6 @@ def _note_truncated_turn(msg: dict, step: int | None = None) -> None:
         f"  ⚠ Output cut short by the model's max_tokens "
         f"(finish_reason=length){where} — this turn is incomplete."
     )})
-
-
-def _partial_tag_at_end(text: str, tag: str) -> int:
-    """Return how many chars at the end of *text* form a prefix of *tag*."""
-    for length in range(min(len(tag) - 1, len(text)), 0, -1):
-        if text.endswith(tag[:length]):
-            return length
-    return 0
 
 
 class _DraftHold:
@@ -189,7 +207,8 @@ def _stream_chat(model: str,
                  token_callback: Any = None,
                  think_token_callback: Any = None,
                  think_start_callback: Any = None,
-                 think_end_callback: Any = None) -> dict:
+                 think_end_callback: Any = None,
+                 on_retry: Any = None) -> dict:
     """Run one model round-trip, retrying transient backend failures.
 
     A single step of a long loop should not discard the
@@ -202,7 +221,9 @@ def _stream_chat(model: str,
     Caveat: when streaming, a failure can occur after some tokens were already
     emitted via token_callback; the retry re-streams from the start, so the UI
     may briefly show duplicated partial output on the (rare) retry path. We trade
-    that cosmetic glitch for not losing the entire query.
+    that cosmetic glitch for not losing the entire query. ``on_retry`` is called
+    before each new attempt, so a caller holding the partial output (``_DraftHold``)
+    can drop it rather than flush the failed attempt's text ahead of the retry's.
     """
     backend = get_backend()
     last_exc: Exception | None = None
@@ -239,6 +260,8 @@ def _stream_chat(model: str,
                 "text": f"  ⚠ Model call failed ({type(exc).__name__}); retrying in "
                         f"{delay:.1f}s (attempt {attempt + 1}/{LLM_RETRY_ATTEMPTS})",
             })
+            if on_retry is not None:
+                on_retry()
             # A Stop during a 30 s backoff must not wait it out.
             if cancel_flag is not None and hasattr(cancel_flag, "wait"):
                 cancel_flag.wait(delay)

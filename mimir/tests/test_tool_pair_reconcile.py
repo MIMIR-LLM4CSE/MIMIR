@@ -228,5 +228,31 @@ class BackendPreparationTests(unittest.TestCase):
         self.assertEqual([b for b in blocks if b.get("type") == "tool_result"], [])
 
 
+class UniqueCallIdTests(unittest.TestCase):
+    """Every call a conversation holds has its own id, whatever the provider sent."""
+
+    def test_missing_and_repeated_ids_are_replaced(self) -> None:
+        from types import SimpleNamespace
+        from mimir.client.query_engine.streaming import _process_response
+
+        messages: list[dict] = []
+        first = {"role": "assistant", "content": "",
+                 "tool_calls": [{"id": "call_0", "function": {"name": "a", "arguments": {}}}]}
+        _process_response(first, messages, thinking=False)
+        # The next step: the provider repeats call_0, omits an id, and sends an object.
+        second = {"role": "assistant", "content": "", "tool_calls": [
+            {"id": "call_0", "function": {"name": "b", "arguments": {}}},
+            {"function": {"name": "c", "arguments": {}}},
+            SimpleNamespace(function={"name": "d", "arguments": {}}),
+        ]}
+        _process_response(second, messages, thinking=False)
+
+        ids = [tc["id"] for m in messages for tc in m["tool_calls"]]
+        self.assertEqual(len(ids), len(set(ids)))
+        self.assertEqual(ids[0], "call_0")
+        # The dispatch reads the same ids the history holds.
+        self.assertEqual([tc["id"] for tc in second["tool_calls"]], ids[1:])
+
+
 if __name__ == "__main__":
     unittest.main()

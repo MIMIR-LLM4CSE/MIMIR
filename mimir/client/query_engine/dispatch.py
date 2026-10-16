@@ -28,6 +28,7 @@ from ..context.capabilities import (
     CODE_EXEC, DIVERTIBLE, EDIT, has_cap, kind_for, label_for, scope_spec, timeout_for,
 )
 from ..context.execution_context import loop_control, nudge_count
+from ..tool_execution.formatter import UNPARSED_ARGUMENTS
 from ..tool_execution.normalizer import _make_hashable
 from ..tool_execution.executor import run_post_tool_annotations
 from ..tool_execution.exec_preview import exec_input_preview, extract_exec_preview
@@ -292,7 +293,12 @@ async def _dispatch_tool_calls(
     # inside them: it is display, and everything downstream of here — dedup, policy,
     # execution — must see the arguments the tool will actually be given.
     row_doing: dict[str, str] = {}
-    seen_calls: set[tuple] = set()
+    # (name, args) -> the id of the first call issued that way in this step.
+    seen_calls: dict[tuple, str] = {}
+    # Calls answered without being run: (call_id, why). Each still gets its own tool
+    # message — left without one, the history repair paired it by position with the
+    # next unanswered result, and the model read another call's outcome as its own.
+    skipped: list[tuple[str, str]] = []
     # Per-query loop-control state (dedup + spin guards), kept in a dedicated object
     # outside the ExecutionContext schema. Created lazily on first dispatch.
     lc = loop_control(execution_context)
@@ -330,16 +336,32 @@ async def _dispatch_tool_calls(
             args = {k: v for k, v in args.items() if k != DOING_ARG}
         call_id = tc.get("id") if isinstance(tc.get("id"), str) and tc.get("id") else f"call_{idx}"
         row_doing[call_id] = doing
+        if UNPARSED_ARGUMENTS in args:
+            blocked_results[call_id] = json.dumps({
+                "status": "error",
+                "error": f"The arguments of this {name} call are not valid JSON — most "
+                         "likely the call was cut off at the output limit — so it was "
+                         "not run.",
+                "hint": "Issue the call again, complete. For a large write, split it "
+                        "into several smaller calls.",
+            })
+            emit({"type": "status", "text": f"  ⛔ Not running {name}: its arguments were cut off"})
+            normalized.append((name, args, call_id))
+            continue
         # Deduplicate: skip exact (name, args) duplicates within one step.
         key = (name, _make_hashable(args))
         if key in seen_calls:
+            skipped.append((call_id, f"Not run: identical to call {seen_calls[key]} "
+                                     "in this step; its result answers both."))
             continue
-        seen_calls.add(key)
+        seen_calls[key] = call_id
         is_write = agent._is_write_tool(name) or has_cap(name, EDIT, agent.tool_caps)
         # Cross-step dedup: skip write tools whose exact call was already
         # dispatched in a previous step of this query.
         if is_write:
             if key in cross_step_write_calls:
+                skipped.append((call_id, "Not run: this exact write was already applied "
+                                         "earlier in this query."))
                 continue
             cross_step_write_calls.add(key)
         # Hard backstop for non-write tools: an identical call that has already failed
@@ -629,11 +651,12 @@ async def _dispatch_tool_calls(
                     "or a read-only alternative."
                 ),
             )
-            return (
-                f'{{"status": "error", "error": "Tool \'{name}\' timed out after '
-                f'{budget}s.", "hint": "The operation took too long; '
-                f'consider a narrower query or a read-only alternative."}}'
-            )
+            return json.dumps({
+                "status": "error",
+                "error": f"Tool '{name}' timed out after {budget}s.",
+                "hint": "The operation took too long; consider a narrower query or a "
+                        "read-only alternative.",
+            })
 
         except Exception as exc:
             # Any other exception here — most often a dead server subprocess whose
@@ -749,6 +772,10 @@ async def _dispatch_tool_calls(
             tool_msg_files[call_id] = []
         _pin_loaded_skill(agent, name, args, call_id, result, execution_context)
         messages.append({"role": "tool", "tool_call_id": call_id, "content": result})
+    for call_id, why in skipped:
+        tool_msg_files[call_id] = []
+        messages.append({"role": "tool", "tool_call_id": call_id,
+                         "content": json.dumps({"status": "skipped", "note": why})})
 
 
 def _pin_loaded_skill(

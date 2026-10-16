@@ -60,10 +60,11 @@ def _declared_call_ids(assistant: dict) -> list[str | None]:
 def reconcile_tool_pairs(messages: list[dict]) -> list[dict]:
     """Repair assistant.tool_calls ↔ tool-message pairing.
 
-    Three upstream mechanisms legitimately break the pairing: ``_trim_tool_history``
-    evicts a tool result while preserving its assistant turn, ``_maybe_compact_intra_query``
-    can slice between an assistant turn and its results, and the dispatcher drops
-    duplicate/already-dispatched calls without emitting a tool message for them.
+    Two upstream mechanisms legitimately break the pairing: ``_trim_tool_history``
+    evicts a tool result while preserving its assistant turn, and
+    ``_maybe_compact_intra_query`` can slice between an assistant turn and its results.
+    (The dispatcher answers every call it declines to run under that call's own id, so
+    it no longer leaves gaps of its own.)
 
     The invariant belongs to the history, not to one provider: strict backends reject a
     dangling pair outright (the Claude API 400s on a ``tool_use`` with no ``tool_result``)

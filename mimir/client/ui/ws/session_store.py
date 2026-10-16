@@ -39,6 +39,7 @@ from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
 
 from ...config.constants import STATE_DIR
+from ...util.files import write_json_atomic
 
 logger = logging.getLogger(__name__)
 
@@ -362,22 +363,16 @@ class SessionStore:
         """
         sdir = _sessions_dir()
         target = os.path.join(sdir, f"{session.id}.json")
-        tmp = target + ".tmp"
         on_disk = _stored_rev(target)
         if on_disk > session.rev:
             raise StaleSessionWrite(
                 f"session {session.id} moved on (disk rev {on_disk} > {session.rev})")
         session.rev = on_disk + 1
         try:
-            with open(tmp, "w", encoding="utf-8") as f:
-                json.dump(session.to_dict(), f, ensure_ascii=False, indent=2, default=str)
-            os.replace(tmp, target)
+            write_json_atomic(target, session.to_dict(), ensure_ascii=False, indent=2,
+                              default=str)
         except Exception:
             session.rev = on_disk
-            try:
-                os.remove(tmp)
-            except Exception:
-                pass
             raise
 
     def delete_session(self, session_id: str) -> None:

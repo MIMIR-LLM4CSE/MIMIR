@@ -69,15 +69,6 @@ def _direct_opener():
     return _r.build_opener(_r.ProxyHandler({}))
 
 
-# Consecutive status probes that come back without a state we recognise before a
-# watcher gives up. A probe that stopped working — a policy violation, a dead server,
-# a renamed op — is indistinguishable from a running job if we only look for a
-# terminal state, and a watcher that keeps polling one leaves the agent waiting on a
-# wake that can never come. Five ticks is past the exponential backoff's early, short
-# intervals, so a single transient failure never trips it.
-_UNREADABLE_POLL_LIMIT = 5
-
-
 @dataclass
 class _Prompt:
     """One card put to the user, and the slot the thread that raised it waits on.
@@ -92,22 +83,6 @@ class _Prompt:
     answer: "_queue.Queue[dict]"
     shown: bool = False
 
-# How long one of a watcher's own tool calls may take before it is given up on.
-#
-# There is no deadline anywhere beneath this: ``session.call_tool`` takes none, and the
-# MCP sessions are built without a read timeout, so a status op that stops answering —
-# a wedged server, a scheduler that hangs, a queue command that never returns — blocks
-# the watcher for ever. That is the one failure that genuinely loses a run: the task
-# stays in ``_bg_jobs``, so the agent is never released and never woken, the bulletins
-# keep repeating a status frozen at the moment it stopped, and nothing anywhere says
-# the run is no longer being watched. A watcher that dies at least says so.
-#
-# Generous on purpose: a status op is a cheap read, and this is the line between "slow"
-# and "never", not a budget to work inside. A tick that crosses it is counted as
-# unreadable, which is a case this loop already has — ``_UNREADABLE_POLL_LIMIT`` of
-# them in a row and the run is reported as unknown, with the reason — so a stuck status
-# op ends as an honest "I lost track of it" instead of silence.
-_TOOL_CALL_TIMEOUT = 60.0
 
 # When a background check-in fires, as seconds from the one before it: T+30s, T+2.5min,
 # T+12.5min, T+42.5min, and hourly from there for as long as the run lasts. A detached
@@ -1758,13 +1733,13 @@ class _AgentWorker:
         state, reason = await job_poll.poll_until_terminal(
             self._agent._run_tool, status_op,
             interval=5.0, max_interval=30.0,
-            call_timeout=_TOOL_CALL_TIMEOUT,
-            unreadable_limit=_UNREADABLE_POLL_LIMIT,
+            call_timeout=job_poll.STATUS_CALL_TIMEOUT,
+            unreadable_limit=job_poll.UNREADABLE_POLL_LIMIT,
             on_tick=_tick, label=job_key)
 
         summary = await job_poll.read_summary(
             self._agent._run_tool, summary_op,
-            call_timeout=_TOOL_CALL_TIMEOUT, label=job_key)
+            call_timeout=job_poll.STATUS_CALL_TIMEOUT, label=job_key)
 
         logger.info("background job %r of session %s finished (%s); waking it",
                     job_key, session_id, state)
@@ -1879,6 +1854,10 @@ class _AgentWorker:
         if self._agent is None:
             return DEFAULT_SUBAGENT_LEVEL
         return self._agent.set_subagent_level(level)
+
+    def set_backend(self, mode: str) -> None:
+        if self._agent is not None:
+            self._agent.set_backend(mode)
 
     def get_subagent_level(self) -> str:
         return getattr(self._agent, "subagent_level", DEFAULT_SUBAGENT_LEVEL)

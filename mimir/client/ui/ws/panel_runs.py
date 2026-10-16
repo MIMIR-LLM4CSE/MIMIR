@@ -18,7 +18,6 @@ those keys simply never claims anything.
 from __future__ import annotations
 
 import os
-from typing import Any
 
 # The workspace registry servers/_shared/slurm_site.py appends to, one host per line.
 _HOSTS_FILE = "slurm_hosts"

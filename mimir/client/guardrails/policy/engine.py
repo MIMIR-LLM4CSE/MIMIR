@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from ... import human_pause
-from .write import check_write_policy
+from .write import UNCONFIRMED_PATH, check_write_policy
 from .plugins import PolicyRegistry
 from ...context import ensure_execution_context, is_known_to_exist, known_existing_files
 from .state_machine import check_state_machine_guard
@@ -220,6 +220,15 @@ def _next_tool_class(policy_stage: str, execution_context: dict[str, Any] | None
     return "diagnostic"
 
 
+def _violation_kind(violation: str) -> str | None:
+    """The ``violation_kind`` a JSON violation declares, or None."""
+    try:
+        payload = json.loads(violation)
+    except ValueError:
+        return None
+    return payload.get("violation_kind") if isinstance(payload, dict) else None
+
+
 def _enrich_violation_payload(
     *,
     violation: str,
@@ -239,19 +248,16 @@ def _enrich_violation_payload(
     payload.setdefault("policy_stage", policy_stage)
     payload.setdefault("tool", tool_name)
     payload.setdefault("suggested_next_tool_class", _next_tool_class(policy_stage, execution_context))
-    # Attach missing_evidence only when it is actiona
-    if policy_stage in {"write_policy", "approval"}:
+    state = (execution_context or {}).get("workflow_state", "discover")
+    # Attach missing_evidence only when it is actionable — never during discovery,
+    # where everything is still missing and saying so is nagging.
+    if policy_stage in {"write_policy", "approval"} and state != "discover":
         missing = _missing_evidence(execution_context)
         if missing:
             payload["missing_evidence"] = missing
-    
-    # Never nag during discovery phase
-    state = execution_context.get("workflow_state", "discover")
-    if state == "discover":
-        payload.pop("missing_evidence", None)
 
     if execution_context is not None:
-        payload.setdefault("state", execution_context.get("workflow_state", "discover"))
+        payload.setdefault("state", state)
 
     if policy_stage == "state_guard":
         payload.setdefault("status", "blocked")
@@ -445,7 +451,7 @@ def evaluate_tool_preconditions(
         path_already_confirmed = bool(write_path) and is_known_to_exist(
             normalized_context, write_path
         )
-        if "path" in write_policy_violation.lower() and not path_already_confirmed:
+        if _violation_kind(write_policy_violation) == UNCONFIRMED_PATH and not path_already_confirmed:
             clarified_path = _interactive_clarify_path(
                 agent=agent,
                 tool_name=normalized_tool_name,

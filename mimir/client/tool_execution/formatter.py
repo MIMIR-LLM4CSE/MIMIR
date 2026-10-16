@@ -4,16 +4,28 @@ import json
 from typing import Any
 
 
+# Set on a call whose arguments are not a JSON object — most often a call the model
+# was cut off in the middle of, at its output cap. Read as empty arguments, such a call
+# ran anyway (a write with no content); the dispatcher answers it with an error instead.
+UNPARSED_ARGUMENTS = "__unparsed_arguments__"
+
+
 def normalize_arguments(arguments: Any) -> dict[str, Any]:
-    """Normalize tool-call arguments from Ollama into a dict."""
+    """Tool-call arguments as a dict, whichever shape the provider sent them in.
+
+    Every backend parses through here, so a malformed call is caught the same way
+    whichever one produced it: it comes back as ``{UNPARSED_ARGUMENTS: raw}``.
+    """
     if isinstance(arguments, dict):
         return arguments
+    if arguments is None or arguments == "":
+        return {}
     if isinstance(arguments, str):
         try:
             parsed = json.loads(arguments)
-            return parsed if isinstance(parsed, dict) else {"value": parsed}
         except json.JSONDecodeError:
-            return {"value": arguments}
+            return {UNPARSED_ARGUMENTS: arguments}
+        return parsed if isinstance(parsed, dict) else {UNPARSED_ARGUMENTS: arguments}
     return {}
 
 

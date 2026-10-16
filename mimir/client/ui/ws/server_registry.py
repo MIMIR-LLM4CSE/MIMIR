@@ -31,6 +31,7 @@ import time
 
 from ._ws_runtime import _MIMIR_DIR_WS
 from .job_scan import _is_running, _proc_starttime
+from ...util.files import write_json_atomic
 
 logger = logging.getLogger(__name__)
 
@@ -139,18 +140,10 @@ def publish(*, url: str, host: str, port: int, **extra) -> dict | None:
         **extra,
     }
     path = registry_path()
-    tmp = path + ".tmp"
     try:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(tmp, "w", encoding="utf-8") as fh:
-            json.dump(entry, fh, indent=2, default=str)
-        os.replace(tmp, path)
+        write_json_atomic(path, entry, indent=2, default=str)
     except Exception:
         logger.warning("registry: could not publish %s", path, exc_info=True)
-        try:
-            os.remove(tmp)
-        except Exception:
-            pass
         return None
     logger.info("registry: published %s for workspace %s", url, entry["workspace"])
     return entry

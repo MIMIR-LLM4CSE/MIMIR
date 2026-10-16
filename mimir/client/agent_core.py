@@ -252,8 +252,8 @@ class MimirAgent:
         # Reference to the message list of the query currently running (system message
         # INCLUDED, index 0). Front-ends read it to report context usage mid-turn.
         self._live_messages: list[dict] | None = None
-        # Context mode: "compact" (default, aggressive compaction) or
-        # "full" (keep all tool messages in history — requires large context model).
+        # Context mode: "full" (the default — keep every tool message in history) or
+        # "compact" (aggressive compaction, for a small context window).
         self.context_mode: str = "full"
         # Cancellation flag: set by ws_server when the user presses Stop.
         # _stream_chat checks this on every LLM chunk so streaming aborts immediately.
@@ -322,11 +322,9 @@ class MimirAgent:
         self.streaming = enabled
 
     def set_backend(self, mode: str) -> None:
-        import os
-        from .query_engine.backends.factory import clear_backend_cache
-        os.environ["LLM_BACKEND"] = mode
+        from .query_engine.backends.factory import switch_backend
+        switch_backend(mode)
         self.backend = mode
-        clear_backend_cache()
 
     def set_model(self, model: str) -> None:
         """Switch the served model mid-session.

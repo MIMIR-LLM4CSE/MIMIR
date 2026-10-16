@@ -416,9 +416,6 @@ async def _run_agent_loop(
     # Consecutive turns that returned neither prose nor a tool call (see the guard
     # in the loop body).
     empty_turns = 0
-    # Only a caller-supplied budget running out reaches the post-loop report; every
-    # other exit (a final answer, a guard) returns from inside the loop.
-    termination = TERMINATION_STEP_LIMIT
 
     while budget == 0 or step < budget:
         # Pick up anything the user typed mid-run (chat-while-busy steering) and
@@ -528,6 +525,7 @@ async def _run_agent_loop(
                 streaming,
                 step_options,
                 cancel_flag=getattr(agent, "_cancel_flag", None),
+                on_retry=hold.discard if hold else None,
                 **step_cb,
             )
         except BaseException:
@@ -639,17 +637,7 @@ async def _run_agent_loop(
                     continue
                 answer = finalize_incomplete_answer(answer, execution_context)
             answer = await _finalize_answer(agent, query, answer, execution_context, messages, logger)
-
-            # Now prompt for approval if needed
-            if agent.approvals and hasattr(agent.approvals, "_pending_review") and agent.approvals._pending_review:
-                approved = agent.approvals.flush_pending_review()
-                confirm_msg = "Changes applied." if approved else "Changes reverted."
-                messages.append({
-                    "role": "assistant",
-                    "content": confirm_msg
-                })
-                return answer + "\n" + confirm_msg
-            return answer
+            return _review_batch(agent, answer, messages)
 
         # The model acted this turn — reset the no-op streak so it keeps earning
         # reminders as long as it keeps making progress between them.
@@ -690,10 +678,25 @@ async def _run_agent_loop(
         # A run that ran out of steps is unfinished whatever else the ledger says —
         # in particular it must never borrow the "complete except for what you
         # refused" headline just because a refusal was the only thing recorded.
-        answer = finalize_incomplete_answer(answer, execution_context, termination)
-    agent.approvals.flush_pending_review()
+        # Only a caller-supplied budget running out gets here; every other exit (a
+        # final answer, a guard) returns from inside the loop.
+        answer = finalize_incomplete_answer(answer, execution_context, TERMINATION_STEP_LIMIT)
     answer = await _finalize_answer(agent, query, answer, execution_context, messages, logger)
-    return answer
+    return _review_batch(agent, answer, messages)
+
+
+def _review_batch(agent: Any, answer: str, messages: list[dict]) -> str:
+    """Put the turn's batched edits to the user, and say on the answer what became of them.
+
+    Both ways out of the loop end here — an answer, and running out of steps — so a
+    batch is never left unreviewed, and never reviewed without the outcome being told.
+    """
+    approvals = getattr(agent, "approvals", None)
+    if not approvals or not getattr(approvals, "_pending_review", None):
+        return answer
+    confirm_msg = "Changes applied." if approvals.flush_pending_review() else "Changes reverted."
+    messages.append({"role": "assistant", "content": confirm_msg})
+    return answer + "\n" + confirm_msg
 
 
 def _emit_interrupted_state(execution_context: dict) -> None:

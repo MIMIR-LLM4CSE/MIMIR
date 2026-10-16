@@ -85,10 +85,18 @@ class ProxyExecGuardTests(unittest.TestCase):
         self._init_session()
         self._assert_blocked(self._check("bash_run", command=f"python {self.src}"))
 
-    def test_bash_python_basename_blocked(self) -> None:
+    def test_bash_python_relative_path_blocked(self) -> None:
         self._init_session()
-        # cwd-relative basename still resolves to the proxy source's basename.
+        # Relative to the directory the call runs in, which is the proxy's own here.
+        self.agent.workspace_root = self._tmp.name
         self._assert_blocked(self._check("bash_run", command="python proxy_src.py"))
+
+    def test_a_namesake_elsewhere_is_not_the_proxy(self) -> None:
+        # Matched on basenames, every proxy_src.py anywhere was blocked as the proxy.
+        self._init_session()
+        with tempfile.TemporaryDirectory() as other:
+            self.agent.workspace_root = other
+            self.assertIsNone(self._check("bash_run", command="python proxy_src.py"))
 
     def test_bash_env_wrapper_blocked(self) -> None:
         self._init_session()
@@ -178,8 +186,7 @@ class ProxyExecGuardTests(unittest.TestCase):
         letting ``./the_binary`` through while the session is active.
         """
         self._init_session()
-        self.assertIn(os.path.abspath(self.exe), gates._proxy_exec_targets())
-        self.assertIn(os.path.basename(self.exe), gates._proxy_exec_targets())
+        self.assertIn(os.path.realpath(self.exe), gates._proxy_exec_targets())
 
 
 if __name__ == "__main__":

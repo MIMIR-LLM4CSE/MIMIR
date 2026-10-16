@@ -91,6 +91,14 @@ class RegistryOrderTests(unittest.TestCase):
                          ["a_tool", "b_tool", "c_tool"])
         self.assertEqual(list(agent.sessions), ["alpha", "beta", "gamma"])
 
+    def test_a_tool_name_two_servers_provide_stays_with_the_first(self):
+        # Re-registered, the name was routed to the second server while the model
+        # was shown both schemas under one name.
+        agent = _FakeAgent()
+        _connect(agent, {"alpha": _FakeSession("shared"), "beta": _FakeSession("shared")})
+        self.assertEqual([t["function"]["name"] for t in agent.tools], ["shared"])
+        self.assertEqual(agent.tool_owner["shared"], "alpha")
+
     def test_the_handshakes_overlap(self):
         """The point of the exercise: the registry costs its slowest server."""
         sessions = {f"s{i}": _FakeSession(f"t{i}", delay=0.1) for i in range(8)}

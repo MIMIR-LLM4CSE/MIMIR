@@ -8,7 +8,6 @@ UI event when a result opts in. Extracted from ``agent_loop.py``.
 """
 from __future__ import annotations
 
-import asyncio
 import logging
 from typing import Any
 
@@ -220,8 +219,8 @@ async def _await_background_job(descriptor: dict, agent: Any, result_text: str) 
 
     The loop is :func:`job_poll.poll_until_terminal`, shared with the WebSocket
     worker's watcher; what differs is the schedule — a turn waiting on a run asks more
-    often than a watcher holding one across turns — and that there is no deadline on
-    each probe, since here the caller *is* the turn.
+    often than a watcher holding one across turns — and that the user's Stop ends it,
+    since here the caller *is* the turn.
 
     The polls carry ``record_observations=False``: a watcher tick is the client asking
     a question on its own account, not a step the model took.
@@ -241,9 +240,12 @@ async def _await_background_job(descriptor: dict, agent: Any, result_text: str) 
     state, _reason = await job_poll.poll_until_terminal(
         agent._run_tool, status_op,
         interval=3.0, max_interval=20.0,
-        # A safety bound because nothing cancels an in-turn wait: the watcher's task can
-        # be cancelled at shutdown, and this cannot — it is the turn.
-        max_polls=100_000,
+        # The same limits as a watcher's: a status op that hangs or keeps erroring ends
+        # the wait as "unknown" instead of holding the turn for weeks, and the user's
+        # Stop ends it at the next tick.
+        call_timeout=job_poll.STATUS_CALL_TIMEOUT,
+        unreadable_limit=job_poll.UNREADABLE_POLL_LIMIT,
+        cancel_flag=getattr(agent, "_cancel_flag", None),
         on_tick=_tick)
 
     summary_text = ""

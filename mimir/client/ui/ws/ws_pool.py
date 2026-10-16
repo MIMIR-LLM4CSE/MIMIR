@@ -684,7 +684,9 @@ class _AgentPool:
                 self._last_use[session_id] = time.monotonic()
                 return existing
             pending = self._building.get(session_id)
-            if pending is None and len(self._workers) >= self.cap:
+            # Builds in flight hold a slot too: counted on workers alone, two sessions
+            # starting together both saw room and the pool went past its cap.
+            if pending is None and len(self._workers) + len(self._building) >= self.cap:
                 if not await self._release_one_idle_locked():
                     return None
             if pending is None:
@@ -785,11 +787,18 @@ class _AgentPool:
         """Admit as many queued submissions as there are slots. Returns those admitted."""
         admitted: list[str] = []
         while self._queue:
-            session_id, submit = self._queue[0]
+            entry = self._queue[0]
+            session_id, submit = entry
             worker = await self.worker_for(session_id)
             if worker is None:
                 break
-            self._queue.popleft()
+            # Taken out by identity, not by position: the build above yields, and a
+            # ``drop_queued`` meanwhile replaces the line — popleft() then removed
+            # somebody else's turn and ran one whose session had been deleted.
+            try:
+                self._queue.remove(entry)
+            except ValueError:
+                continue
             try:
                 submit(worker)
             except Exception:
@@ -904,10 +913,17 @@ class _AgentPool:
         return closed
 
     async def close(self, session_id: str) -> None:
-        """Close one worker outright — its conversation is gone."""
+        """Close one worker outright — its conversation is gone.
+
+        With everything the pool still owed it: a queued turn, wakes, a held check-in.
+        Left behind, they kept the bookkeeping of a conversation that no longer exists,
+        and a later flush tried to start a turn in it.
+        """
         async with self._lock:
             await self._close_locked(session_id, reason="its session was deleted")
         self.drop_queued(session_id)
+        self._wakes_pending.pop(session_id, None)
+        self._held_checkin.pop(session_id, None)
 
     async def _close_locked(self, session_id: str, *, reason: str) -> None:
         worker = self._workers.pop(session_id, None)

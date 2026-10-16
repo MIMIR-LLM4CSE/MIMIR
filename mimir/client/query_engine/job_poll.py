@@ -37,6 +37,32 @@ logger = logging.getLogger(__name__)
 # ``server_spawn_agent._CARD_STATE_TO_JOB`` for what speaking it costs.
 TERMINAL = frozenset({"done", "crashed", "unknown"})
 
+# Consecutive status probes that come back without a state we recognise before a
+# poll gives up. A probe that stopped working — a policy violation, a dead server,
+# a renamed op — is indistinguishable from a running job if we only look for a
+# terminal state, and a watcher that keeps polling one leaves the agent waiting on a
+# wake that can never come. Five ticks is past the exponential backoff's early, short
+# intervals, so a single transient failure never trips it.
+UNREADABLE_POLL_LIMIT = 5
+
+
+# How long one status probe may take before it is given up on.
+#
+# There is no deadline anywhere beneath this: ``session.call_tool`` takes none, and the
+# MCP sessions are built without a read timeout, so a status op that stops answering —
+# a wedged server, a scheduler that hangs, a queue command that never returns — blocks
+# the watcher for ever. That is the one failure that genuinely loses a run: the task
+# stays in ``_bg_jobs``, so the agent is never released and never woken, the bulletins
+# keep repeating a status frozen at the moment it stopped, and nothing anywhere says
+# the run is no longer being watched. A watcher that dies at least says so.
+#
+# Generous on purpose: a status op is a cheap read, and this is the line between "slow"
+# and "never", not a budget to work inside. A tick that crosses it is counted as
+# unreadable, which is a case this loop already has — ``UNREADABLE_POLL_LIMIT`` of
+# them in a row and the run is reported as unknown, with the reason — so a stuck status
+# op ends as an honest "I lost track of it" instead of silence.
+STATUS_CALL_TIMEOUT = 60.0
+
 # What a poll keeps out of a status answer, for whoever reports the run to somebody: a
 # check-in, a progress line, a badge on the node it landed on. A list of *field names*
 # rather than a parser per tool, which is what keeps this shape-driven — a status op that
@@ -113,6 +139,7 @@ async def poll_until_terminal(
     max_polls: int | None = None,
     on_tick: Callable[[Tick], None] | None = None,
     label: str = "",
+    cancel_flag: Any = None,
 ) -> tuple[str, str]:
     """Poll *status_op* until the run it names reaches a terminal state.
 
@@ -140,6 +167,9 @@ async def poll_until_terminal(
             task somebody can cancel.
         on_tick: Called with a :class:`Tick` per non-terminal poll.
         label: Names the run in this module's logs.
+        cancel_flag: A ``threading.Event`` the user's Stop sets. Checked after every
+            wait, so a caller polling inside a turn stops with the turn instead of
+            outliving it; raises ``asyncio.CancelledError``.
     """
     status_tool = (status_op or {}).get("tool")
     if not status_tool:
@@ -152,6 +182,8 @@ async def poll_until_terminal(
     while max_polls is None or polls < max_polls:
         polls += 1
         await asyncio.sleep(interval)
+        if cancel_flag is not None and cancel_flag.is_set():
+            raise asyncio.CancelledError("Cancelled by user")
         interval = min(interval * 1.5, max_interval)
         answered = True
         reason = ""

@@ -200,35 +200,41 @@ async def run_chat_session(agent: Any) -> None:
         if not query or query.lower() in ("quit", "exit"):
             break
 
-        handled, message = await handle_chat_command(
-            query=query,
-            mode=agent.mode,
-            thinking=agent.thinking,
-            streaming=agent.streaming,
-            batch_mode=agent.approvals.batch_mode,
-            context_mode=agent.context_mode,
-            enforcement=agent.enforcement,
-            approval_mode=agent.approvals.approval_mode,
-            set_mode=agent.set_mode,
-            set_thinking=agent.set_thinking,
-            thinking_depth=agent.thinking_depth,
-            set_thinking_depth=agent.set_thinking_depth,
-            set_streaming=agent.set_streaming,
-            set_batch_mode=agent.set_batch_mode,
-            set_context_mode=agent.set_context_mode,
-            set_enforcement=agent.set_enforcement,
-            temperature=agent.temperature,
-            set_temperature=agent.set_temperature,
-            set_approval_mode=agent.set_approval_mode,
-            trust_tool=agent.approvals.trust_tool,
-            untrust_tool=agent.approvals.untrust_tool,
-            trusted_tools=agent.approvals.trusted_tools_view(),
-            compact_history=do_compact,
-            compact_threshold_setter=set_compact_threshold,
-            show_ledger=show_ledger,
-            approval_manager=agent.approvals,
-            agent=agent,
-        )
+        try:
+            handled, message = await handle_chat_command(
+                query=query,
+                mode=agent.mode,
+                thinking=agent.thinking,
+                streaming=agent.streaming,
+                batch_mode=agent.approvals.batch_mode,
+                context_mode=agent.context_mode,
+                enforcement=agent.enforcement,
+                approval_mode=agent.approvals.approval_mode,
+                set_mode=agent.set_mode,
+                set_thinking=agent.set_thinking,
+                thinking_depth=agent.thinking_depth,
+                set_thinking_depth=agent.set_thinking_depth,
+                set_streaming=agent.set_streaming,
+                set_batch_mode=agent.set_batch_mode,
+                set_context_mode=agent.set_context_mode,
+                set_enforcement=agent.set_enforcement,
+                temperature=agent.temperature,
+                set_temperature=agent.set_temperature,
+                set_approval_mode=agent.set_approval_mode,
+                trust_tool=agent.approvals.trust_tool,
+                untrust_tool=agent.approvals.untrust_tool,
+                trusted_tools=agent.approvals.trusted_tools_view(),
+                compact_history=do_compact,
+                compact_threshold_setter=set_compact_threshold,
+                show_ledger=show_ledger,
+                approval_manager=agent.approvals,
+                agent=agent,
+            )
+        except Exception as exc:
+            # A command that fails is one answer gone wrong, not the session: raised,
+            # it ended the chat loop and took the conversation with it.
+            print(f"  ✗ {query.split()[0]} failed: {type(exc).__name__}: {exc}")
+            continue
         if handled:
             if message:
                 print(message)
