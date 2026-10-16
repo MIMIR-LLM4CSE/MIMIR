@@ -1,44 +1,30 @@
 """Who takes a finished run's wake in — and that somebody always does.
 
-Two consumers can route a finished background run. The socket's drain loop routes it
-against the conversation it holds on screen; the pool routes it against the one on
-disk, which is the only one that exists when no window is open. Exactly one of them may
-act, because a run given two turns is a duplicate nothing downstream can undo.
+A finished background run is owed a turn of the conversation that launched it. It used
+to have two possible consumers — the socket's drain loop, against the conversation it
+held on screen, and the pool, against the one on disk — and a claim deciding which one
+acted. There is one conversation object now, so there is one consumer: the pump hands
+every wake to the pool's ``WakeRouter`` inside the tick that drained it, whether or not
+a window is open, and a view only reports what it did.
 
-The question is how they agree. Asking "is a socket subscribed?" answers a different
-question than "will a socket route this?", and the gap between them is where a night is
-lost: a view whose drain loop returned on a failed send, or that ended without closing
-its subscription, is a promise nobody is keeping — and nothing re-emits a wake, so the
-run that finished at 03:00 waits for somebody to open the panel and ask.
-
-So the right to act is *claimed*. The bus offers each durable event, an attached view
-gets first refusal for a bounded moment, and whatever nobody claims the pool takes in.
-These tests pin that: a claim succeeds once, an unclaimed event is never dropped, and a
-view that ends — however it ends — stops standing in for one.
+These tests pin that: a wake is taken in within its tick, attached or not; a turn that
+lands carries on with what it left unread; and an agent owed anything is not released.
 """
 import asyncio
 import json
 import os
 import queue as _queue
 import tempfile
-import time
 import unittest
 from unittest import mock
 
-from mimir.client.ui.ws import event_bus, job_scan, session_store, transcript_log
+from mimir.client.session import store as session_store
+from mimir.client.session.conversation import Conversations
+from mimir.client.session.store import SessionStore
+from mimir.client.ui.ws import job_scan, transcript_log
 from mimir.client.ui.ws.event_bus import _EventBus
-from mimir.client.ui.ws.session_store import SessionStore
+from mimir.client.ui.ws.wake_router import WakeRouter
 from mimir.client.ui.ws.ws_pool import _AgentPool
-
-
-def _past_the_window() -> float:
-    """A moment after every first-refusal window open right now has closed.
-
-    The sweep is given the time rather than the test waiting for it: what is under test
-    is that an unclaimed event is handed over when its window closes, not how long the
-    window is. ``pump_once`` calls the same sweep with the real clock.
-    """
-    return time.monotonic() + event_bus._CLAIM_GRACE + 1.0
 
 
 class _Worker:
@@ -79,7 +65,7 @@ class _Worker:
         return out
 
 
-class _ClaimCase(unittest.TestCase):
+class _WakeCase(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
         for target, attr in ((session_store, "STATE_DIR"),
@@ -99,14 +85,14 @@ class _ClaimCase(unittest.TestCase):
         pool._queue = []
         pool._building = {}
         pool._reaper = None
-        pool._wakes_pending = {}
-        pool._held_checkin = {}
         pool.stop_requested = None
         pool.server_idle_ttl = 100.0
         pool._idle_since = None
+        pool.conversations = Conversations(self.store)
         pool.store = self.store
-        pool.bus = _EventBus(pool, commit=pool._commit_turn,
-                             durable=pool.consume_durable_event)
+        pool.wakes = WakeRouter(pool)
+        pool.bus = _EventBus(pool, commit=pool.commit_turn, durable=pool.wakes.consume,
+                             steered=pool.wakes.steered)
         return pool
 
     def _session(self):
@@ -136,7 +122,7 @@ class _ClaimCase(unittest.TestCase):
                 "status_op": {"tool": "bash_job", "args": {"job_key": job_key}}}
 
 
-class NobodyAttachedTests(_ClaimCase):
+class NobodyAttachedTests(_WakeCase):
     def test_a_wake_is_taken_in_within_the_tick_that_drained_it(self):
         # The detached case, and the latency it had when it was decided by a test on
         # the subscriber list: no view to grant first refusal to, so no waiting.
@@ -151,113 +137,66 @@ class NobodyAttachedTests(_ClaimCase):
         self.assertIn("finished", w.queries[0]["text"])
 
 
-class AnAttachedViewGetsFirstRefusalTests(_ClaimCase):
-    def test_the_pool_does_not_act_while_a_view_may_still_claim(self):
-        s = self._session()
-        w = _Worker(s.id)
-        pool = self._pool({s.id: w})
-        pool.bus.subscribe()
-        w.out_q.put(self._complete(s.id))
+class AnAttachedViewChangesNothingTests(_WakeCase):
+    """A subscription is a view: it is told what happened, it decides nothing.
 
-        pool.bus.pump_once()
+    When a view had first refusal, a subscription outliving the loop that read it — a
+    drain loop that returned on a failed send — stood in for a consumer nobody was
+    running, and the run waited out a grace window, or the night.
+    """
 
-        self.assertEqual(w.queries, [],
-                         "the attached view had not had its moment yet")
-
-    def test_a_claimed_wake_is_never_taken_in_again(self):
-        # What the drain loop does: claim, then route against the conversation it holds
-        # on screen. The pool must find nothing left to do, however long it waits.
-        s = self._session()
-        w = _Worker(s.id)
-        pool = self._pool({s.id: w})
-        sub = pool.bus.subscribe()
-        w.out_q.put(self._complete(s.id))
-        pool.bus.pump_once()
-
-        ev, _extras = sub.queue.get_nowait()
-        self.assertTrue(pool.bus.claim(ev))
-
-        pool.bus._sweep_unclaimed(now=_past_the_window())
-        self.assertEqual(w.queries, [])
-
-    def test_only_one_consumer_can_claim_one_event(self):
-        s = self._session()
-        pool = self._pool({s.id: _Worker(s.id)})
-        sub = pool.bus.subscribe()
-        pool._workers[s.id].out_q.put(self._complete(s.id))
-        pool.bus.pump_once()
-        ev, _extras = sub.queue.get_nowait()
-
-        self.assertTrue(pool.bus.claim(ev))
-        self.assertFalse(pool.bus.claim(ev))
-
-
-class ClaimingWhatWasNeverOfferedTests(_ClaimCase):
-    def test_an_event_this_bus_never_offered_is_granted(self):
-        # The pump is what offers them, so an event that reached a consumer by another
-        # route reached only that one. Refusing it would lose a wake to protect against
-        # a second consumer that does not exist.
-        pool = self._pool()
-        ev = self._complete("s1")
-        self.assertTrue(pool.bus.claim(ev))
-
-    def test_but_only_once(self):
-        pool = self._pool()
-        ev = self._complete("s1")
-        self.assertTrue(pool.bus.claim(ev))
-        self.assertFalse(pool.bus.claim(ev))
-
-
-class AnUnclaimedWakeIsTakenOverTests(_ClaimCase):
-    def test_a_view_that_routes_nothing_does_not_cost_the_run_its_turn(self):
-        # The failure this exists for: a subscription outlives the loop that was
-        # reading it — a drain loop that returned on a failed send, a handler that left
-        # without closing it — and the server believes somebody is handling the run.
+    def test_the_wake_is_taken_in_within_the_tick_all_the_same(self):
         s = self._session()
         w = _Worker(s.id)
         pool = self._pool({s.id: w})
         pool.bus.subscribe()          # subscribed, and nothing ever reads it
         w.out_q.put(self._complete(s.id))
-        pool.bus.pump_once()
-        self.assertEqual(w.queries, [])
 
-        pool.bus._sweep_unclaimed(now=_past_the_window())
+        pool.bus.pump_once()
 
         self.assertEqual(len(w.queries), 1)
         self.assertIn("finished", w.queries[0]["text"])
 
-    def test_taking_over_is_counted_and_reported(self):
-        # Said out loud: a subscribed socket that routes nothing leaves no other trace.
+    def test_the_view_is_told_a_turn_started(self):
+        # So the chat can mark itself busy for a turn nobody pressed send for.
         s = self._session()
-        pool = self._pool({s.id: _Worker(s.id)})
-        pool.bus.subscribe()
-        pool._workers[s.id].out_q.put(self._complete(s.id))
+        w = _Worker(s.id)
+        pool = self._pool({s.id: w})
+        sub = pool.bus.subscribe()
+        w.out_q.put(self._complete(s.id))
         pool.bus.pump_once()
-        pool.bus._sweep_unclaimed(now=_past_the_window())
 
-        self.assertEqual(pool.bus.claimed_by_sweep, 1)
-        rows = {r["label"]: r["detail"] for r in pool.bus.diagnostics()}
-        self.assertIn("1 handled by the pool unclaimed", rows["claims"])
+        ev, extras = sub.queue.get_nowait()
+        self.assertEqual(ev["type"], "job_complete")
+        self.assertTrue(extras["_started"])
 
-    def test_the_run_is_settled_by_whoever_ends_up_delivering_it(self):
+    def test_the_run_is_settled_as_it_is_delivered(self):
         s = self._session()
         self._ended_job(s.id)
         pool = self._pool({s.id: _Worker(s.id)})
         pool.bus.subscribe()
-        pool._workers[s.id].out_q.put(self._complete(s.id))
-        pool.bus.pump_once()
         self.assertEqual([j.job_key for j in job_scan.scan_session(s.id)], ["j1"])
+        pool._workers[s.id].out_q.put(self._complete(s.id))
 
-        pool.bus._sweep_unclaimed(now=_past_the_window())
+        pool.bus.pump_once()
 
         self.assertEqual(job_scan.scan_session(s.id), [])
 
+    def test_a_run_announced_twice_starts_one_turn(self):
+        # The watcher that held it and a scan that found it unspoken-for can both
+        # speak before either delivers.
+        s = self._session()
+        w = _Worker(s.id, busy=True)
+        pool = self._pool({s.id: w})
+        pool.wakes.consume(self._complete(s.id))
+        pool.wakes.consume(self._complete(s.id))
+        self.assertEqual(len(w.steers), 1)
 
-class CheckInsGoTheSameWayTests(_ClaimCase):
-    def test_a_bulletin_nobody_claims_is_taken_in_too(self):
-        # The other half of the same silence: a view left subscribed stopped the
-        # check-ins of an overnight run as surely as it stopped its completion wake,
-        # and a run nobody is reassured about reads exactly like one that died.
+
+class CheckInsGoTheSameWayTests(_WakeCase):
+    def test_a_bulletin_is_taken_in_with_a_view_attached(self):
+        # The other half of the same silence: a run nobody is reassured about reads
+        # exactly like one that died.
         s = self._session()
         w = _Worker(s.id)
         pool = self._pool({s.id: w})
@@ -266,15 +205,12 @@ class CheckInsGoTheSameWayTests(_ClaimCase):
                      "jobs": [{"job_key": "j1", "kind": "shell-command",
                                "state": "running", "phase": "", "percent": None}]})
         pool.bus.pump_once()
-        self.assertEqual(w.queries, [])
-
-        pool.bus._sweep_unclaimed(now=_past_the_window())
 
         self.assertEqual(len(w.queries), 1)
         self.assertIn("still", w.queries[0]["text"].lower())
 
 
-class ATurnLandingCarriesTheWorkOnTests(_ClaimCase):
+class ATurnLandingCarriesTheWorkOnTests(_WakeCase):
     """What a connection does the moment an answer lands, with none attached.
 
     This is the difference between a chain of steps that runs overnight and one that
@@ -289,7 +225,7 @@ class ATurnLandingCarriesTheWorkOnTests(_ClaimCase):
         """One wake handed to a turn already running."""
         worker._busy = True
         before = len(worker.steers)
-        pool.consume_durable_event(self._complete(s.id, job_key))
+        pool.wakes.consume(self._complete(s.id, job_key))
         self.assertEqual(len(worker.steers), before + 1,
                          "it was not steered into the turn already running")
         worker._busy = False
@@ -309,7 +245,7 @@ class ATurnLandingCarriesTheWorkOnTests(_ClaimCase):
         never_read = wake_text(self._complete(s.id))
 
         ev, extras = self._answer(s.id, unread=[never_read])
-        pool._commit_turn(ev, extras)
+        pool.commit_turn(ev, extras)
 
         self.assertEqual(len(w.queries), 1,
                          "the run that finished during the turn was never answered for")
@@ -323,7 +259,7 @@ class ATurnLandingCarriesTheWorkOnTests(_ClaimCase):
         self._steered(pool, w, s)
 
         ev, extras = self._answer(s.id, unread=[])      # the loop took it in
-        pool._commit_turn(ev, extras)
+        pool.commit_turn(ev, extras)
 
         self.assertEqual(w.queries, [], "a run already dealt with was told again")
         self.assertEqual(job_scan.scan_session(s.id), [],
@@ -341,7 +277,7 @@ class ATurnLandingCarriesTheWorkOnTests(_ClaimCase):
                   wake_text(self._complete(s.id, "j2"))]
 
         ev, extras = self._answer(s.id, unread=unread)
-        pool._commit_turn(ev, extras)
+        pool.commit_turn(ev, extras)
 
         self.assertEqual(len(w.queries), 1, "one turn apiece, not one for the burst")
         self.assertIn("j1", w.queries[0]["text"])
@@ -365,13 +301,13 @@ class ATurnLandingCarriesTheWorkOnTests(_ClaimCase):
         w = _Worker(s.id, busy=True)
         w.watched = ["j1"]
         pool = self._pool({s.id: w})
-        pool.consume_durable_event(
+        pool.wakes.consume(
             {"type": "job_checkin", "session_id": s.id,
              "jobs": [{"job_key": "j1", "state": "running"}]})
         self.assertEqual(w.queries, [], "a bulletin interrupted a running turn")
 
         w._busy = False
-        pool._commit_turn(*self._answer(s.id))
+        pool.commit_turn(*self._answer(s.id))
 
         self.assertEqual(len(w.queries), 1)
         self.assertIn("still", w.queries[0]["text"].lower())
@@ -382,19 +318,19 @@ class ATurnLandingCarriesTheWorkOnTests(_ClaimCase):
         w = _Worker(s.id, busy=True)
         w.watched = ["j1"]
         pool = self._pool({s.id: w})
-        pool.consume_durable_event(
+        pool.wakes.consume(
             {"type": "job_checkin", "session_id": s.id,
              "jobs": [{"job_key": "j1", "state": "running"}]})
 
         w._busy = False
         w.watched = []
-        pool._commit_turn(*self._answer(s.id))
+        pool.commit_turn(*self._answer(s.id))
 
         self.assertEqual(w.queries, [])
-        self.assertEqual(pool._held_checkin, {})
+        self.assertIsNone(pool.conversations.get(s.id).held_checkin)
 
 
-class AWakeNeverArrivesForAClosedAgentTests(_ClaimCase):
+class AWakeNeverArrivesForAClosedAgentTests(_WakeCase):
     """The invariant that replaces a rebuild.
 
     An agent that has delivered its final answer with nothing of its outstanding is
@@ -402,10 +338,10 @@ class AWakeNeverArrivesForAClosedAgentTests(_ClaimCase):
     through the bus runs on a worker's own loop. So rather than machinery to rebuild an
     agent for a wake, the guarantee is that the agent is still there — ``releasable``
     refuses to close one while a job of its is watched, a wake of its is owed, its
-    output is undrained, or an event of its is still to be claimed.
+    output is undrained.
 
-    What is left for the unreachable case is honesty: say the invariant broke, and
-    leave the run unsettled so the next agent built for the conversation reports it.
+    What is left for the unreachable case is honesty: say so, keep the wake for the
+    conversation's next turn, and leave the run unsettled on disk.
     """
 
     def test_the_whole_handover_happens_while_the_agent_is_unreleasable(self):
@@ -422,33 +358,18 @@ class AWakeNeverArrivesForAClosedAgentTests(_ClaimCase):
         pool.bus.pump_once()
         self.assertEqual(len(w.queries), 1)
 
-    def test_an_attached_view_being_given_its_moment_does_not_cost_the_agent(self):
-        # With a socket subscribed the handover waits out a first refusal. The agent
-        # may not be closed inside that window: it is the one the wake is addressed to.
-        s = self._session()
-        w = _Worker(s.id)
-        pool = self._pool({s.id: w})
-        pool.bus.subscribe()
-        pool._last_use[s.id] = 0.0
-        w.out_q.put(self._complete(s.id))
-        pool.bus.pump_once()                  # offered, unclaimed, nothing acted yet
-
-        self.assertEqual(w.queries, [])
-        self.assertFalse(pool.releasable(s.id))
-
-        pool.bus._sweep_unclaimed(now=_past_the_window())
-        self.assertEqual(len(w.queries), 1)
-
     def test_a_wake_for_a_closed_agent_leaves_the_run_owed(self):
         # The unreachable case, kept honest rather than handled: nothing is invented,
         # and the run stays unsettled so the next agent built announces it.
         s = self._session()
         self._ended_job(s.id)
         pool = self._pool()                   # no agent for this conversation
-        with self.assertLogs("mimir.client.ui.ws.ws_pool", "WARNING") as caught:
-            pool.consume_durable_event(self._complete(s.id))
-        self.assertIn("stays owed", "".join(caught.output))
+        with self.assertLogs("mimir.client.ui.ws.wake_router", "WARNING") as caught:
+            pool.wakes.consume(self._complete(s.id))
+        self.assertIn("no agent", "".join(caught.output))
         self.assertEqual([j.job_key for j in job_scan.scan_session(s.id)], ["j1"])
+        # Kept for the conversation's next turn, not dropped.
+        self.assertEqual(len(pool.conversations.get(s.id).pending_wakes), 1)
 
 
 class _NoWS:
@@ -467,7 +388,7 @@ class _NoWS:
         return _empty()
 
 
-class AnAgentOwedAWakeIsNotIdleTests(_ClaimCase):
+class AnAgentOwedAWakeIsNotIdleTests(_WakeCase):
     """What "idle for ten minutes" may not be allowed to mean.
 
     Idleness is measured from the last time the pool was asked for the worker — not
@@ -495,7 +416,7 @@ class AnAgentOwedAWakeIsNotIdleTests(_ClaimCase):
         s = self._session()
         w = _Worker(s.id, busy=True)
         pool = self._pool({s.id: w})
-        pool.consume_durable_event(self._complete(s.id))   # steered, still owed
+        pool.wakes.consume(self._complete(s.id))   # steered, still owed
         w._busy = False
         pool._last_use[s.id] = 0.0
         self.assertFalse(pool.releasable(s.id))
@@ -519,7 +440,7 @@ class AnAgentOwedAWakeIsNotIdleTests(_ClaimCase):
         self.assertTrue(pool.releasable(s.id))
 
 
-class AViewThatEndsReleasesWhatItHoldsTests(_ClaimCase):
+class AViewThatEndsReleasesWhatItHoldsTests(_WakeCase):
     """``run`` subscribes before the handshake; it must unsubscribe however it leaves.
 
     Every step of that handshake sends on a socket that can close under it — a window
@@ -541,10 +462,8 @@ class AViewThatEndsReleasesWhatItHoldsTests(_ClaimCase):
         sess.pool = pool
         sess.store = self.store
         sess.worker_for_test = worker
+        sess.conv = None
         sess._active_session_id = None
-        sess._display_messages = []
-        sess._detached_turns = {}
-        sess._submitted_len = 0
         sess._rendered_seq = 0
         sess._summary_task = None
         sess._greeting = lambda: {"type": "ready", "agent_ready": True}
@@ -593,8 +512,8 @@ class AViewThatEndsReleasesWhatItHoldsTests(_ClaimCase):
         self.assertEqual(pool.bus.attached(), 0)
 
     def test_a_run_finishing_after_that_is_still_answered_for(self):
-        # The two halves together: the view is gone, so the pool is the only consumer,
-        # and it takes the wake in within the tick that drained it.
+        # The view is gone, and the pool takes the wake in within the tick that
+        # drained it — as it would have with the view there.
         s = self._session()
         w = _Worker(s.id)
         pool = self._pool({s.id: w})

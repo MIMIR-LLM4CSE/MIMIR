@@ -1,18 +1,20 @@
-"""A turn that finishes while nobody is attached still gets written down.
+"""One conversation, one copy: what writes a turn into it, with or without a socket.
 
-Recording a turn's result from inside a connection would mean a run that finishes while
-the user is away costs its tokens and vanishes. These tests pin the committer: it takes
-a store, a session id and the answer, has no socket and no session object, and the pump
-calls it when ``bus.attached()`` is zero.
+The pump commits every answer into its conversation before any socket sees it, and the
+connection showing the conversation renders what is already written. Pinned here: the
+commit itself (``Conversation.commit_answer``), the registry that hands every asker the
+same object (``Conversations``), and the pump doing the writing whether or not anyone
+is attached.
 """
 import queue as _queue
 import tempfile
 import unittest
 from unittest import mock
 
-from mimir.client.ui.ws import session_store, transcript_log
-from mimir.client.ui.ws.session_store import SessionStore, StaleSessionWrite
-from mimir.client.ui.ws.turn_commit import commit_answer, turn_messages
+from mimir.client.session import store as session_store
+from mimir.client.session.conversation import Conversation, Conversations, turn_messages
+from mimir.client.session.store import SessionStore, StaleSessionWrite
+from mimir.client.ui.ws import transcript_log
 from mimir.client.ui.ws.ws_worker import _AgentWorker
 
 
@@ -21,15 +23,11 @@ def _bare_worker(session_id: str) -> _AgentWorker:
     w.out_q = _queue.Queue()
     w.session_id = session_id
     w._query_session_id = None
+    w._agent = None
+    w._current_task = None
+    w._query_q = _queue.Queue()
+    w._pending_prompt = None
     return w
-
-
-class _FakePool:
-    def __init__(self, workers: dict) -> None:
-        self._workers = workers
-
-    def items(self):
-        return list(self._workers.items())
 
 
 class _CommitCase(unittest.TestCase):
@@ -42,6 +40,7 @@ class _CommitCase(unittest.TestCase):
             self.addCleanup(patcher.stop)
         self.addCleanup(self._tmp.cleanup)
         self.store = SessionStore()
+        self.conversations = Conversations(self.store)
 
     def _session(self, **fields):
         s = self.store.new_session()
@@ -50,22 +49,26 @@ class _CommitCase(unittest.TestCase):
         self.store.save_session(s)
         return s
 
+    def _commit(self, session_id, ev, extras):
+        conversation = self.conversations.get(session_id)
+        wrote_full = conversation.commit_answer(ev, extras)
+        self.assertTrue(self.conversations.save(conversation))
+        return wrote_full
 
-class CommitWithNoSocketTests(_CommitCase):
+
+class CommitTests(_CommitCase):
     def test_an_answer_lands_in_the_session_file(self):
         s = self._session(llm_history=[{"role": "user", "content": "q"}],
                           llm_history_full=[{"role": "user", "content": "q"}])
         full = [{"role": "user", "content": "q"},
                 {"role": "assistant", "content": "done"}]
 
-        result = commit_answer(
-            self.store, s.id,
-            {"type": "answer", "text": "done", "session_id": s.id},
-            {"_full": full, "_turn_start": 1},
-            submitted_len=1, context_mode="full")
+        wrote_full = self._commit(
+            s.id, {"type": "answer", "text": "done", "session_id": s.id},
+            {"_full": full, "_turn_start": 1, "_submitted_len": 1,
+             "_context_mode": "full"})
 
-        self.assertIsNotNone(result)
-        self.assertTrue(result.wrote_full_history)
+        self.assertTrue(wrote_full)
         stored = self.store.load_session(s.id)
         self.assertEqual(stored.llm_history, full)
         self.assertEqual(stored.llm_history_full[-1]["content"], "done")
@@ -73,13 +76,8 @@ class CommitWithNoSocketTests(_CommitCase):
 
     def test_a_deferral_is_stored_as_the_card_to_put_back(self):
         s = self._session()
-        result = commit_answer(
-            self.store, s.id,
-            {"type": "answer", "text": "waiting", "session_id": s.id},
-            {"_deferred": {"kind": "calls", "prompt": {"type": "approval"}}},
-            context_mode="full")
-
-        self.assertEqual(result.deferred["kind"], "calls")
+        self._commit(s.id, {"type": "answer", "text": "waiting", "session_id": s.id},
+                     {"_deferred": {"kind": "calls", "prompt": {"type": "approval"}}})
         stored = self.store.load_session(s.id)
         self.assertEqual(stored.pending_interaction["kind"], "calls")
 
@@ -88,53 +86,85 @@ class CommitWithNoSocketTests(_CommitCase):
         s = self._session()
         full = [{"role": "user", "content": "q"},
                 {"role": "assistant", "content": "done"}]
-        result = commit_answer(
-            self.store, s.id,
-            {"type": "answer", "text": "done", "session_id": s.id},
-            {"_full": full, "_turn_start": 1},
-            submitted_len=1, context_mode="compact")
+        wrote_full = self._commit(
+            s.id, {"type": "answer", "text": "done", "session_id": s.id},
+            {"_full": full, "_turn_start": 1, "_submitted_len": 1,
+             "_context_mode": "compact"})
 
-        self.assertFalse(result.wrote_full_history)
+        self.assertFalse(wrote_full)
         stored = self.store.load_session(s.id)
         self.assertEqual([m["content"] for m in stored.llm_history], ["done"])
 
     def test_no_transcript_records_the_answer_alone_too(self):
         s = self._session()
-        result = commit_answer(
-            self.store, s.id,
-            {"type": "answer", "text": "done", "session_id": s.id},
-            {}, context_mode="full")
-        self.assertFalse(result.wrote_full_history)
+        self.assertFalse(self._commit(
+            s.id, {"type": "answer", "text": "done", "session_id": s.id}, {}))
         self.assertEqual(
             [m["content"] for m in self.store.load_session(s.id).llm_history], ["done"])
 
-    def test_a_session_that_is_gone_is_not_an_error(self):
-        self.assertIsNone(commit_answer(self.store, "never-existed",
-                                        {"type": "answer", "text": "x"}, {}))
-
-    def test_no_session_id_writes_nothing(self):
-        self.assertIsNone(commit_answer(self.store, "", {"type": "answer"}, {}))
-
     def test_an_empty_answer_leaves_the_chat_alone(self):
-        # A cancelled or silent turn adds no bubble; the history still closes.
+        # A silent turn adds no bubble; the history still closes.
         s = self._session()
-        commit_answer(self.store, s.id,
-                      {"type": "answer", "text": "", "session_id": s.id}, {})
-        self.assertEqual(self.store.load_session(s.id).display_messages, [])
+        self._commit(s.id, {"type": "answer", "text": "", "session_id": s.id}, {})
+        stored = self.store.load_session(s.id)
+        self.assertEqual(stored.display_messages, [])
+        self.assertEqual(stored.llm_history[-1]["role"], "assistant")
 
 
-class ThePumpCommitsOnlyWhenNobodyIsAttachedTests(_CommitCase):
-    """Two writers of one file lose history silently, so only one may be live."""
+class ConversationsTests(_CommitCase):
+    def test_every_asker_gets_the_same_object(self):
+        # Two copies of one conversation is what had to be arbitrated before.
+        s = self._session()
+        self.assertIs(self.conversations.get(s.id), self.conversations.get(s.id))
+
+    def test_a_conversation_that_is_not_there_is_none(self):
+        self.assertIsNone(self.conversations.get("never-existed"))
+        self.assertIsNone(self.conversations.get(""))
+
+    def test_a_new_conversation_is_not_on_disk_until_saved(self):
+        conversation = self.conversations.new()
+        self.assertFalse(self.store.session_exists(conversation.id))
+        self.assertEqual([m.id for m in self.conversations.unsaved()], [conversation.id])
+        conversation.add_user_message("hello", show=True)
+        self.assertTrue(self.conversations.save(conversation))
+        self.assertTrue(self.store.session_exists(conversation.id))
+        self.assertEqual(self.store.load_session(conversation.id).title, "hello")
+        self.assertEqual(self.conversations.unsaved(), [])
+
+    def test_deleting_forgets_it_too(self):
+        s = self._session()
+        self.conversations.get(s.id)
+        self.conversations.delete(s.id)
+        self.assertIsNone(self.conversations.get(s.id))
+
+    def test_a_resume_starts_from_the_untrimmed_record(self):
+        s = self._session(llm_history=[{"role": "user", "content": "tail"}],
+                          llm_history_full=[{"role": "user", "content": "head"},
+                                            {"role": "assistant", "content": "a"},
+                                            {"role": "user", "content": "tail"}])
+        self.assertEqual(len(Conversation(self.store.load_session(s.id), saved=True).history), 3)
+
+    def test_unread_steering_moves_to_the_end_by_identity(self):
+        conversation = self.conversations.new()
+        conversation.add_user_message("same words")
+        conversation.add_steer("same words")
+        conversation.history.append({"role": "assistant", "content": "a"})
+        conversation.take_unread_steer(["same words"])
+        # The older, identical turn stays; only the live copy goes.
+        self.assertEqual([m["content"] for m in conversation.history],
+                         ["same words", "a"])
+        self.assertEqual(conversation.live_steer, [])
+
+
+class ThePumpCommitsEveryAnswerTests(_CommitCase):
+    """One conversation object, so one writer: the pump, attached or not."""
 
     def _pool_with_bus(self, session_id: str):
-        from mimir.client.ui.ws.ws_pool import _AgentPool
-        pool = object.__new__(_AgentPool)
-        pool.store = self.store
+        from mimir.tests._fake_pool import FakePool
         worker = _bare_worker(session_id)
-        pool._workers = {session_id: worker}
-        pool.items = lambda: [(session_id, worker)]
-        from mimir.client.ui.ws.event_bus import _EventBus
-        pool.bus = _EventBus(pool, commit=pool._commit_turn)
+        pool = FakePool(worker, workers={session_id: worker})
+        pool.conversations = self.conversations
+        pool.store = self.store
         return pool, worker
 
     def _answer(self, session_id: str) -> dict:
@@ -151,21 +181,29 @@ class ThePumpCommitsOnlyWhenNobodyIsAttachedTests(_CommitCase):
             [m["text"] for m in self.store.load_session(s.id).display_messages],
             ["done"])
 
-    def test_it_stays_out_of_the_way_while_a_client_is_attached(self):
-        # The connected session writes this itself, as it always has.
+    def test_it_commits_while_a_client_is_attached_too(self):
+        # The connected view no longer writes the turn: it renders what this wrote.
         s = self._session()
         pool, worker = self._pool_with_bus(s.id)
-        pool.bus.subscribe()
+        sub = pool.bus.subscribe()
         worker.out_q.put(self._answer(s.id))
         pool.bus.pump_once()
-        self.assertEqual(self.store.load_session(s.id).display_messages, [])
+        self.assertEqual(
+            [m["text"] for m in self.store.load_session(s.id).display_messages],
+            ["done"])
+        _ev, extras = sub.queue.get_nowait()
+        self.assertEqual(extras["_committed"]["title"], s.id)
 
-    def test_a_cancelled_turn_is_not_committed(self):
-        s = self._session()
+    def test_a_cancelled_turn_closes_the_history_as_well(self):
+        # It was committed when a view held the conversation and dropped when none
+        # did; the user's message then stood unanswered in the history.
+        s = self._session(llm_history=[{"role": "user", "content": "q"}])
         pool, worker = self._pool_with_bus(s.id)
-        worker.out_q.put({**self._answer(s.id), "cancelled": True})
+        worker.out_q.put({**self._answer(s.id), "text": "[Cancelled]", "cancelled": True,
+                          "_full": None})
         pool.bus.pump_once()
-        self.assertEqual(self.store.load_session(s.id).display_messages, [])
+        self.assertEqual(self.store.load_session(s.id).llm_history[-1]["role"],
+                         "assistant")
 
     def test_the_answer_is_committed_once_not_twice(self):
         s = self._session()
@@ -211,18 +249,14 @@ class StaleWriteTests(_CommitCase):
         self.store.save_session(s)               # must not be refused
         self.assertEqual(self.store.load_session(s.id).title, "after the failure")
 
-    def test_the_committer_reports_a_refused_write_rather_than_losing_it_quietly(self):
+    def test_a_refused_write_is_reported_rather_than_lost_quietly(self):
         s = self._session()
-        stale = self.store.load_session(s.id)
-        self.store.save_session(self.store.load_session(s.id))
+        conversation = self.conversations.get(s.id)
+        self.store.save_session(self.store.load_session(s.id))   # someone else wrote
 
-        with mock.patch.object(SessionStore, "load_session", return_value=stale):
-            with self.assertLogs("mimir.client.ui.ws.turn_commit", "WARNING") as logs:
-                result = commit_answer(
-                    self.store, s.id,
-                    {"type": "answer", "text": "done", "session_id": s.id}, {})
-        self.assertIsNone(result)
-        self.assertIn("written by someone else", "\n".join(logs.output))
+        with self.assertLogs("mimir.client.session.conversation", "WARNING") as logs:
+            self.assertFalse(self.conversations.save(conversation))
+        self.assertIn("would not save", "\n".join(logs.output))
 
     def test_a_session_file_written_before_revisions_existed_still_writes(self):
         # The migration case: a file with no ``rev`` key reads as 0 and the guard, which

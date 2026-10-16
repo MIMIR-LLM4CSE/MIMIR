@@ -100,7 +100,7 @@ def active_session_id(base: str | None = None) -> str:
     gets a session of its own, so a child writing its todo cannot land in the list of the
     run that spawned it. The value may carry ``/`` — a sub-session is stored under its
     parent, ``<parent>/subagents/<child>`` — which only ever reaches ``os.path.join``;
-    ids coming from the front end are separately confined by ``session_store._path``.
+    ids coming from the front end are separately confined by ``session.store``'s ``_path``.
 
     The ``active_session`` sidecar is the fallback, for the ends that genuinely have a
     single session: the CLI, standalone server runs, and the test suite. It names the

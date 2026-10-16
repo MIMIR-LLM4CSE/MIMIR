@@ -11,9 +11,9 @@ from collections import OrderedDict
 import unittest
 
 from mimir.tests._fake_pool import FakePool
+from mimir.tests._session import bare_session
 
 from mimir.client.ui.ws.ws_worker import _AgentWorker
-from mimir.client.ui.ws.ws_session import _Session
 
 
 def _bare_worker(session_id: str | None = None) -> _AgentWorker:
@@ -96,26 +96,12 @@ class _FakeWS:
         self.sent.append(payload)
 
 
-class _FakeStore:
-    def __init__(self, ids):
-        self._ids = set(ids)
-
-    def session_exists(self, sid):
-        return sid in self._ids
-
-
 class SessionFencingTests(unittest.IsolatedAsyncioTestCase):
     def _session(self, worker, active="s1"):
-        sess = object.__new__(_Session)
-        sess.ws = _FakeWS()
-        sess.pool = FakePool(worker, active=active)
-        sess.store = _FakeStore(["s1", "s2"])
-        sess._active_session_id = active
-        sess._display_messages = []
-        sess._detached_turns = {}
-        sess._submitted_len = 0
-        sess._rendered_seq = 0
-        return sess
+        pool = FakePool(worker, active=active)
+        for sid in ("s1", "s2"):
+            pool.conversations.get(sid) or pool.conversations.new(sid)
+        return bare_session(pool, active=active, ws=_FakeWS())
 
     def test_foreign_events_are_dropped_and_own_events_kept(self):
         sess = self._session(_bare_worker())
@@ -137,35 +123,26 @@ With an agent per conversation the turn has somewhere to go: it streams into
         w.defer = lambda: self.fail("the turn of the conversation being left was deferred")
         w.flush_prompts = lambda: self.fail("its pending card was thrown away")
         sess = self._session(w)
-        sess._autosave_session = lambda msgs: None
+        sess._save = lambda: None
         sess._send_sessions_list = _noop_async
         sess._load_session = _noop_async
         await sess._handle_switch_session({"session_id": "s2"})
 
-    async def test_leaving_records_where_the_running_turn_stood(self):
-        """So its answer, landing after the user has moved on, is still applied to the
-        conversation it belongs to, and can tell its own messages from the prefix it
-        inherited."""
+    async def test_the_answer_of_a_conversation_left_still_lands_in_it(self):
+        """Its answer arrives after the user has moved on, and goes to the conversation
+        it belongs to — the pool writes it, whichever one is on screen."""
         w = _bare_worker(session_id="s1")
         w._query_session_id = "s1"
         w.is_busy = lambda: True
         sess = self._session(w)
-        sess._submitted_len = 7
-        sess._autosave_session = lambda msgs: None
+        sess.pool.workers = {"s1": w}
         sess._send_sessions_list = _noop_async
         sess._load_session = _noop_async
         await sess._handle_switch_session({"session_id": "s2"})
-        self.assertEqual(sess._detached_turns, {"s1": 7})
-
-    async def test_leaving_an_idle_conversation_records_nothing(self):
-        w = _bare_worker(session_id="s1")
-        w.is_busy = lambda: False
-        sess = self._session(w)
-        sess._autosave_session = lambda msgs: None
-        sess._send_sessions_list = _noop_async
-        sess._load_session = _noop_async
-        await sess._handle_switch_session({"session_id": "s2"})
-        self.assertEqual(sess._detached_turns, {})
+        w.out_q.put({"type": "answer", "text": "done", "session_id": "s1"})
+        sess.pool.bus.pump_once()
+        self.assertEqual(sess.pool.conversations.get("s1").display[-1]["text"], "done")
+        self.assertEqual(sess.pool.conversations.get("s2").display, [])
 
     async def test_set_model_reports_the_new_model_and_derived_settings(self):
         w = _bare_worker()

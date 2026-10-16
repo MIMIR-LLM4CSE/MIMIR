@@ -39,14 +39,14 @@ from datetime import datetime
 from typing import Any, Callable, Iterator
 
 from . import server_registry
+from ._ws_runtime import _todo_file_for_session
 from .event_bus import _EventBus
-from .job_scan import has_baseline, mark_wakes_reported, scan_all_sessions, wake_reported
-from .job_wakes import checkin_text, wake_text
-from ...core.settings import parse_setting
-from ...protocol.events import DURABLE_EVENTS
-from .session_store import SessionStore
-from .turn_commit import commit_answer
+from .job_scan import has_baseline, scan_all_sessions
+from .wake_router import WakeRouter
 from .ws_worker import _AgentWorker, _detach_grace
+from ...context.todo import load_todo_deps, load_todo_items
+from ...core.settings import parse_setting
+from ...session.conversation import Conversation, Conversations
 
 logger = logging.getLogger(__name__)
 
@@ -184,9 +184,13 @@ class _AgentPool:
         # emit and fans it out to whatever sockets are attached — zero included, which
         # is the point: the pool outlives every connection, so what records its output
         # has to as well.
-        self.store = SessionStore()
-        self.bus = _EventBus(self, commit=self._commit_turn,
-                             durable=self.consume_durable_event)
+        # Every conversation of this process, one object each: the connections and
+        # this pool write the same one, so nothing has to decide which of them may.
+        self.conversations = Conversations()
+        self.store = self.conversations.store
+        self.wakes = WakeRouter(self)
+        self.bus = _EventBus(self, commit=self.commit_turn, durable=self.wakes.consume,
+                             steered=self.wakes.steered)
 
         # Resolved when this process decides it is no longer needed. Awaited beside the
         # signal handlers, so an idle stop and a SIGTERM take the same path out — the
@@ -197,13 +201,6 @@ class _AgentPool:
         # is measured from here, so a moment of activity restarts it rather than
         # shortening it.
         self._idle_since: float | None = None
-        # Finished runs whose wake no turn has taken in yet, by session, each entry
-        # remembering whether the user has already been shown it. The pool's own copy
-        # of what a connection keeps, so a wake steered into a running turn is still
-        # owed a turn of its own if that turn never read it.
-        self._wakes_pending: dict[str, list[dict]] = {}
-        # The last bulletin a busy conversation was not interrupted with, by session.
-        self._held_checkin: dict[str, dict] = {}
 
     # ── Is this process still needed ──────────────────────────────────────────
 
@@ -333,294 +330,81 @@ class _AgentPool:
                 self._record_own_stop(headline)
             event.set()
 
-    def _commit_turn(self, ev: dict, extras: dict) -> None:
-        """Write a finished turn into its session file, and carry on from there.
+    # ── Writing a conversation ────────────────────────────────────────────────
 
-        Reached only for an answer no attached view claimed. A connected ``_Session``
-        claims and writes its own — to ``self.history`` for the conversation on screen,
-        through ``_persist_detached_answer`` for any other — and two live writers of one
-        file lose history silently, so the claim is what elects exactly one of us. This
-        covers the case a connection cannot: nobody looking, and a turn that would
-        otherwise run, cost its tokens and vanish.
+    def commit_turn(self, ev: dict, extras: dict) -> dict:
+        """Write a finished turn into its conversation, and carry on from there.
 
-        Writing it down is half of what a connection does when an answer lands. The
-        other half is carrying on — see :meth:`_carry_on_after_turn` — and a detached
-        process that did only the first half answers the step that finished and stops
-        there.
+        Called by the pump for every answer, before any socket sees it, whether or not
+        one is attached: there is one conversation object, so there is one writer, and
+        a connection showing the conversation renders what is already written. Writing
+        it down is half of a turn landing; the other half is carrying on
+        (``WakeRouter.after_turn``), and a process that did only the first half would
+        answer the step that finished and stop there.
+
+        Returns what a connection needs to say about it: the conversation's title, the
+        interaction it is now waiting on, and the steering that was given a turn.
         """
-        if ev.get("type") != "answer":
-            return
         session_id = ev.get("session_id")
-        if not session_id:
-            return
-        if not ev.get("cancelled"):
-            result = commit_answer(
-                self.store, session_id, ev, extras,
-                submitted_len=extras.get("_submitted_len"),
-                context_mode=extras.get("_context_mode") or "full",
-            )
-            if result is not None:
-                logger.info("commit: session %s wrote its answer with nobody attached",
-                            session_id)
-        # After the write, so a turn started here is handed the history this answer
-        # just produced rather than the one it inherited.
+        conversation = self.conversations.get(session_id)
+        if conversation is None:
+            logger.warning("commit: the answer of session %s has no conversation to go "
+                           "to", session_id)
+            return {}
+        conversation.commit_answer(ev, extras)
+        self.save_conversation(conversation)
         try:
-            self._carry_on_after_turn(session_id, extras)
+            steering = self.wakes.after_turn(conversation, extras)
         except Exception:
             logger.warning("session %s could not be carried on after its turn",
                            session_id, exc_info=True)
+            steering = []
+        return {"title": conversation.title or session_id,
+                "deferred": extras.get("_deferred"),
+                "steer_turn": steering}
 
-    def consume_durable_event(self, ev: dict) -> None:
-        """Turn a finished run's wake into a turn when no socket will.
+    def submit_turn(self, conversation: Conversation, worker: _AgentWorker,
+                    text: str) -> bool:
+        """Open a turn of *conversation* with *text* and queue it on its own agent.
 
-        Every way this can fail is a logged return rather than a raise, and the pump
-        guards the call besides: one unreadable session must not stop the tick that is
-        draining every other conversation's output.
-
-        The counterpart of :meth:`_commit_turn`. A watcher outlives every connection —
-        it is a task on a worker's loop, and the pool refuses to release a worker that
-        holds one — so a two-hour run reports in whether or not a window is open, and
-        the pump journals what it says. Acting on that report is this method's job, and
-        it must not need a socket either: a wake only a connection can route is a
-        conversation that waits out the night for a job that finished in three minutes,
-        and resumes when somebody opens the panel and asks.
-
-        Called by the pump, which has already checked that nobody is attached: a
-        ``_Session`` present routes this itself, against the history it holds on screen.
-
-        Everything here is synchronous on purpose. Loading a session, appending to it,
-        saving it and queueing a turn are all plain calls — ``submit_query`` is a queue
-        put — so this needs no loop of its own and runs inside the pump tick that
-        drained the event.
-
-        The turn's answer is written back by :meth:`_commit_turn`, off the same pump,
-        against the ``_submitted_len`` the worker records as it takes the turn in. So a
-        wake taken in here is a complete turn: asked, answered and persisted, with no
-        connection involved at any point.
+        The message is written down before the turn is queued, so a reconnect while it
+        runs reloads it; when it cannot be, nothing is queued and the message is taken
+        back out. Its answer comes back through :meth:`commit_turn`.
         """
-        etype = ev.get("type")
-        owner = ev.get("session_id")
-        if not owner or etype not in DURABLE_EVENTS:
-            return
-        checkin = etype == "job_checkin"
-        worker = self.get(owner)
-        if worker is None:
-            # Not reachable by any emitter that goes through the bus, and said out loud
-            # rather than handled: every one of them runs on a worker's own loop — a
-            # watcher, the check-in cycle, the scan a build does as it comes up — and
-            # ``releasable`` refuses to close a worker while a job of its is watched, a
-            # wake of its is owed, its output is undrained or an event of its is still
-            # to be claimed. So this is a broken invariant, not a case.
-            #
-            # The run is left unsettled on disk, which is the honest state: nothing has
-            # taken its wake in, and the next agent built for this conversation
-            # announces it as it comes up.
-            logger.warning("%s for job %r arrived for session %s, whose agent is "
-                           "closed — the run stays owed", etype, ev.get("job_key"),
-                           owner)
-            return
-        if checkin:
-            if self.is_busy(owner) or self.is_parked(owner):
-                # A bulletin interrupts nothing, by design: steering "nothing to
-                # report" into a turn makes the agent answer about the job instead of
-                # the work. Held, not dropped, and delivered when that turn lands — the
-                # twin of what a connection does with one.
-                self._held_checkin[owner] = ev
-                return
-            self._submit_checkin(owner, worker, ev)
-            return
-        if wake_reported(ev):
-            logger.info("wake for job %r of session %s already delivered; dropping the "
-                        "re-announcement", ev.get("job_key"), owner)
-            return
-        pending = self._wakes_pending.setdefault(owner, [])
-        # One wake per run, however many times it is announced. Two emitters can speak
-        # before either delivers — the watcher that was holding the run, and a disk
-        # scan that found it unspoken-for — and the marker that settles it is written
-        # at delivery, so the dedup has to live here.
-        if any(item["ev"].get("job_key") == ev.get("job_key") for item in pending):
-            logger.info("wake for job %r of session %s already pending; dropping the "
-                        "duplicate announcement", ev.get("job_key"), owner)
-            return
-        item = {"ev": ev, "told": False}
-        pending.append(item)
-        if self.is_busy(owner) or self.is_parked(owner):
-            # Handed to the turn already running, which learns at its next step
-            # boundary that the run finished and carries on — no extra turn, no second
-            # final answer. Left pending deliberately: a steer is only known to have
-            # been read when the loop says so, and the answer that ends that turn says
-            # which ones it never read.
-            self._record_wake(owner, [ev])
-            item["told"] = True
-            worker.submit_steer(wake_text(ev))
-            return
-        self._flush_wakes(owner, worker)
-
-    # ── The twin of what a connection does with a wake ────────────────────────
-
-    def _record_wake(self, owner: str, events: list[dict]) -> None:
-        """Write the bubbles the user finds on their return, and journal the wakes.
-
-        Deliberately not the history: which message a turn is *given* is the flush's
-        business, and a wake steered into a running turn arrives in that turn's own
-        messages instead. The journal entry is what a window opening later replays, and
-        what the mechanism is audited from.
-        """
-        if not events:
-            return
-        self._tell_session(
-            owner,
-            [f"🔔 {wake_text(ev)}" for ev in events],
-            [{"type": "job_wake", "text": wake_text(ev), "job": ev.get("job_key")}
-             for ev in events],
-            about="the wake")
-
-    def _tell_session(self, owner: str, bubbles: list[str], events: list[dict], *,
-                      about: str) -> None:
-        """Put *bubbles* in a conversation the user is away from, and journal *events*.
-
-        The one way this process speaks into a conversation nobody is watching, and
-        there are two things it has to say: a run of theirs finished, and this process
-        is about to stop. Both want the same sequence and the same care — the store is
-        the half the user reads on their way back in, the journal is the half the
-        mechanism is audited from, and either can fail without the other being worth
-        abandoning. Written once because the failure handling is the fragile part.
-        """
-        try:
-            session = self.store.load_session(owner)
-        except Exception:
-            logger.warning("%s of session %s could not be written down: it could not "
-                           "be loaded", about, owner, exc_info=True)
-            return
-        for text in bubbles:
-            session.display_messages.append(
-                {"role": "system", "kind": "text", "text": text})
-        try:
-            self.store.save_session(session)
-        except Exception:
-            logger.warning("%s of session %s could not be written down: it would not "
-                           "save", about, owner, exc_info=True)
-            return
-        for event in events:
-            self.bus.record_client_event(owner, event)
-
-    def _flush_wakes(self, owner: str, worker: _AgentWorker) -> bool:
-        """Start one turn carrying every wake this conversation is still owed.
-
-        One turn for all of them, not one apiece: a burst that finished together is one
-        piece of news, and three turns would answer the first and then re-answer it
-        twice. Every pending wake goes in, including ones already steered — a steer is
-        only known to have been read when the loop says so, and re-telling a run is
-        recoverable where losing one is not.
-        """
-        items = self._wakes_pending.pop(owner, [])
-        if not items:
+        conversation.add_user_message(text)
+        if not self.save_conversation(conversation):
+            conversation.history.pop()
+            conversation.history_full.pop()
+            logger.warning("no turn started for session %s: it would not save",
+                           conversation.id)
             return False
-        events = [item["ev"] for item in items]
-        fresh = [item["ev"] for item in items if not item["told"]]
-        text = "\n\n".join(wake_text(ev) for ev in events)
-        self._record_wake(owner, fresh)
-        if not self._submit_turn(owner, worker, text):
-            # Nothing was started, so nothing may be settled: put them back and let
-            # the next announcement or the next scan try again.
-            self._wakes_pending[owner] = items + self._wakes_pending.get(owner, [])
-            return False
-        mark_wakes_reported(events)
-        logger.info("session %s woken by %s with nobody attached",
-                    owner, ", ".join(str(ev.get("job_key")) for ev in events))
+        worker.submit_query(text, list(conversation.history), session_id=conversation.id)
         return True
 
-    def _submit_checkin(self, owner: str, worker: _AgentWorker, ev: dict) -> None:
-        """Ask this conversation for one line about the runs it is still waiting on.
+    def save_conversation(self, conversation: Conversation) -> bool:
+        """Write *conversation* down, with what its agent and its checklist hold now.
 
-        No bubble: the instruction is addressed to the model, and a conversation checked
-        on twenty times would reopen on twenty blocks of it, every one above the answer
-        it had produced. The journal still records it, which is what it is audited from.
+        The agent's carried context and mode come from its live worker; with none, the
+        conversation keeps what it was saved with. The checklist is read off disk,
+        where the agent keeps it.
         """
-        self._held_checkin.pop(owner, None)
-        text = checkin_text(ev)
-        if self._submit_turn(owner, worker, text):
-            self.bus.record_client_event(
-                owner, {"type": "job_checkin", "text": text,
-                        "job": ev.get("job_key")})
-
-    def _submit_turn(self, owner: str, worker: _AgentWorker, text: str) -> bool:
-        """Append *text* to the stored conversation and queue a turn on its own agent.
-
-        The turn's answer is written back by :meth:`_commit_turn`, off the same pump,
-        against the ``_submitted_len`` the worker records as it takes the turn in. So a
-        turn started here is a complete one: asked, answered and persisted, with no
-        connection involved at any point.
-        """
+        record = conversation.record
+        worker = self.get(conversation.id)
+        if worker is not None:
+            try:
+                record.carry_context = worker.export_agent_state().get("carry_context", {})
+                record.context_mode = worker.setting("context_mode", record.context_mode)
+            except Exception:
+                logger.warning("session %s: its agent's state could not be read",
+                               conversation.id, exc_info=True)
+        todo_file = _todo_file_for_session(conversation.id)
         try:
-            session = self.store.load_session(owner)
+            record.todos = load_todo_items(todo_file)
+            record.todo_deps = load_todo_deps(todo_file)
         except Exception:
-            logger.warning("no turn started for session %s: it could not be loaded",
-                           owner, exc_info=True)
-            return False
-        message = {"role": "user", "content": text}
-        session.llm_history.append(message)
-        session.llm_history_full.append(dict(message))
-        try:
-            self.store.save_session(session)
-        except Exception:
-            logger.warning("no turn started for session %s: it would not save", owner,
-                           exc_info=True)
-            return False
-        worker.submit_query(text, list(session.llm_history), session_id=owner)
-        return True
-
-    def _carry_on_after_turn(self, owner: str, extras: dict) -> None:
-        """Do what a connection does the moment a turn lands, with none attached.
-
-        A turn ending is not the end of the work, and this is the difference between a
-        chain of steps that runs overnight and one that stops at its first link. A
-        socket, on every answer, puts the steering the loop never read to a new turn,
-        starts a turn for every run that finished while it was busy, and delivers the
-        bulletin it was holding. None of that is in the committer — a commit that
-        insisted on a connection could not run without one — so it is here.
-
-        Which steers the loop *did* read is on the answer itself: ``_unconsumed_steer``
-        is what it ended without taking in. A wake named there was never read and is
-        still owed a turn; one not named there was read inside the turn that just
-        answered, and is settled here, which is the only moment that is knowable.
-        """
-        items = self._wakes_pending.pop(owner, [])
-        unread = {text for text in (extras.get("_unconsumed_steer") or []) if text}
-        kept, read = [], []
-        for item in items:
-            if item["told"] and wake_text(item["ev"]) not in unread:
-                read.append(item["ev"])
-            else:
-                kept.append(item)
-        if read:
-            # The turn that just answered took these in and answered for them. Settling
-            # them here is what keeps the next scan from re-announcing a run the model
-            # has already dealt with.
-            mark_wakes_reported(read)
-        worker = self.get(owner)
-        if kept:
-            self._wakes_pending[owner] = kept + self._wakes_pending.get(owner, [])
-            # An owed wake is one of the things that keeps this agent from being
-            # released, so there is one here; the guard is for the broken invariant,
-            # not for a case.
-            if worker is not None and not (self.is_busy(owner) or self.is_parked(owner)):
-                self._flush_wakes(owner, worker)
-            return
-        held = self._held_checkin.get(owner)
-        if held is None or worker is None:
-            return
-        # Dropped rather than delivered when the runs it described have since finished:
-        # their completion wakes say everything it would, and better.
-        try:
-            still_running = bool(worker.watched_job_keys())
-        except Exception:
-            still_running = False
-        if not still_running:
-            self._held_checkin.pop(owner, None)
-            return
-        if not (self.is_busy(owner) or self.is_parked(owner)):
-            self._submit_checkin(owner, worker, held)
+            logger.warning("session %s: its checklist could not be read",
+                           conversation.id, exc_info=True)
+        return self.conversations.save(conversation)
 
     # ── Looking up ────────────────────────────────────────────────────────────
 
@@ -832,12 +616,11 @@ class _AgentPool:
           it, so without this the agent is releasable for the one moment at which it
           is needed most — and the conversation it belongs to has by definition been
           idle for hours, because it was waiting on a long run.
-        * **holding undrained output, or an event still to be claimed** — its last
-          word has not been acted on. The pump empties ``out_q`` every 50 ms and, with
-          nothing attached, does the whole handover inside that same synchronous tick;
-          an attached socket is given a moment's first refusal first. Across either,
-          closing the worker discards what it had just said — the completion event
-          included — or closes the very agent that event is addressed to.
+        * **holding undrained output** — its last word has not been acted on. The
+          pump empties ``out_q`` every 50 ms and does the whole handover inside that
+          same synchronous tick; before it, closing the worker discards what it had
+          just said — the completion event included — and the agent that event is
+          addressed to with it.
         * **on screen** — the conversation the user is reading must stay instant.
 
     Together these are what make "ten minutes idle" safe to act on. Idleness is counted
@@ -863,15 +646,9 @@ class _AgentPool:
             return False
         if getattr(worker, "has_deferral", False):
             return False
-        if self._wakes_pending.get(session_id):
+        conversation = self.conversations._open.get(session_id)
+        if conversation is not None and conversation.pending_wakes:
             return False
-        bus = getattr(self, "bus", None)
-        if bus is not None:
-            try:
-                if bus.unclaimed_for(session_id):
-                    return False
-            except Exception:
-                return False
         out_q = getattr(worker, "out_q", None)
         if out_q is not None:
             try:
@@ -926,8 +703,7 @@ class _AgentPool:
         async with self._lock:
             worker = self._take_locked(session_id, reason="its session was deleted")
         self.drop_queued(session_id)
-        self._wakes_pending.pop(session_id, None)
-        self._held_checkin.pop(session_id, None)
+        self.conversations.forget(session_id)
         if worker is not None:
             await self._close_workers([worker])
 
@@ -1093,7 +869,7 @@ class _AgentPool:
     def _record_own_stop(self, headline: str) -> None:
         """Write into every kept conversation that this process stopped itself, and why.
 
-        The counterpart of :meth:`_record_wake`, for the one thing that happens to a
+        The counterpart of a run's wake, for the one thing that happens to a
         conversation which the conversation can never see happen. Nothing reached the
         transcript when a server stopped on its own: the decision was printed in the
         process's own log, which the user has no reason to be reading, so a morning
@@ -1118,9 +894,13 @@ class _AgentPool:
         # definition there are none — the ones with an agent still here. Those are the
         # threads a user comes back to.
         for session_id in kept or sorted(sid for sid, _w in self.items()):
-            self._tell_session(session_id, [stamped],
-                               [{"type": "server_stopped", "text": headline}],
-                               about="the stop notice")
+            conversation = self.conversations.get(session_id)
+            if conversation is None:
+                continue
+            conversation.note(stamped)
+            if self.save_conversation(conversation):
+                self.bus.record_client_event(
+                    session_id, {"type": "server_stopped", "text": headline})
 
     # ── Addressing a session rather than "the worker" ──────────────────────────
 

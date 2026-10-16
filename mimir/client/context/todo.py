@@ -40,11 +40,9 @@ def load_todo_items(todo_file: str) -> list[dict]:
             })
 
     # Annotate with DAG ready status if deps sidecar exists.
-    deps_file = os.path.join(os.path.dirname(todo_file), "todo_deps.json")
-    if os.path.exists(deps_file):
+    deps = load_todo_deps(todo_file)
+    if deps:
         try:
-            with open(deps_file, "r", encoding="utf-8") as f:
-                deps: list[list[int]] = json.load(f)
             for item in items:
                 if item["done"]:
                     item["ready"] = False  # already done, not actionable
@@ -58,3 +56,15 @@ def load_todo_items(todo_file: str) -> list[dict]:
             pass  # deps annotation is best-effort
 
     return items
+
+
+def load_todo_deps(todo_file: str) -> list[list[int]]:
+    """The ``todo_deps.json`` sidecar beside *todo_file*: per step, the steps it waits
+    on. [] when there is none or it cannot be read."""
+    deps_file = os.path.join(os.path.dirname(todo_file), "todo_deps.json")
+    try:
+        with open(deps_file, "r", encoding="utf-8") as f:
+            deps = json.load(f)
+    except (OSError, ValueError):
+        return []
+    return deps if isinstance(deps, list) else []

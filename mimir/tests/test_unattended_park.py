@@ -13,6 +13,7 @@ resume mechanism that already existed and had no caller.
 import asyncio
 import os
 import queue as _queue
+import tempfile
 import threading
 import time
 import types
@@ -20,6 +21,8 @@ import unittest
 from collections import OrderedDict
 from unittest import mock
 
+from mimir.client.session.conversation import Conversations
+from mimir.client.session.store import SessionStore
 from mimir.client.ui.ws.event_bus import _EventBus
 from mimir.client.ui.ws.ws_worker import _AgentWorker, _detach_grace
 
@@ -246,7 +249,7 @@ class TheReaperTests(unittest.TestCase):
         pool.active_session_id = None
         pool._workers = {"s1": worker}
         pool._last_use = {"s1": 0.0}
-        pool._wakes_pending = {}
+        pool.conversations = Conversations(SessionStore(tempfile.mkdtemp()))
         return pool
 
     def _releasable_worker(self):

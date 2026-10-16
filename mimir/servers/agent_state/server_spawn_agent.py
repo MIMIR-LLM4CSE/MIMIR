@@ -2012,7 +2012,7 @@ async def _run_sub_agent(
                          and not (child or {}).get("abandoned"),
             # Whole, not clipped: this file is the only copy that outlives the
             # run, and the panel is the only place it is ever read. The list view
-            # cuts it for its own payload (session_store.list_subagents); cutting
+            # cuts it for its own payload (session.store.list_subagents); cutting
             # here would cut it everywhere, for good.
             "answer": (result or {}).get("answer") or "",
             "files_written": (result or {}).get("files_written", []),

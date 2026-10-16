@@ -21,6 +21,7 @@ import unittest
 
 from mimir.client.event_sink import event_sink as capture_events
 from mimir.tests._fake_pool import FakePool
+from mimir.tests._session import bare_session
 from unittest.mock import patch
 
 from mimir.client.query_engine import agent_loop as agent_loop_module
@@ -253,16 +254,13 @@ class _FakeWorker:
 
 
 def _session(worker) -> _Session:
-    sess = object.__new__(_Session)
-    sess.pool = FakePool(worker)
-    sess._active_session_id = "s1"
-    sess._detached_turns = {}
-    sess._submitted_len = 3
-    sess._pending_interaction = None
-    sess._stale_prompt_ids = set()
-    sess._display_messages = []
-    sess._autosave_session = lambda msgs: None
+    sess = bare_session(FakePool(worker))
+    sess._save = lambda: None
     return sess
+
+
+async def _noop(*_a, **_k):
+    return None
 
 
 class SessionDeferralTests(unittest.IsolatedAsyncioTestCase):
@@ -271,33 +269,37 @@ class SessionDeferralTests(unittest.IsolatedAsyncioTestCase):
         answered there — nothing has to be set aside to keep it reachable."""
         w = _FakeWorker(parked=True)
         sess = _session(w)
-        sess._detach_running_turn()
+        sess.pool.conversations.new("s2")
+        sess._send_sessions_list = _noop
+        sess._load_session = _noop
+        await sess._handle_switch_session({"session_id": "s2"})
         self.assertEqual(w.calls, [])
-        # Where it stood is still recorded: its answer lands after the user has moved on.
-        self.assertEqual(sess._detached_turns, {"s1": 3})
 
     async def test_leaving_a_working_turn_leaves_it_working(self) -> None:
         w = _FakeWorker(parked=False)
         sess = _session(w)
-        sess._detach_running_turn()
+        sess.pool.conversations.new("s2")
+        sess._send_sessions_list = _noop
+        await sess._handle_create_session({})
         self.assertEqual(w.calls, [])
-        self.assertEqual(sess._detached_turns, {"s1": 3})
 
     async def test_answering_the_card_resumes_the_turn(self) -> None:
         w = _FakeWorker(parked=True)
         sess = _session(w)
         record = {"kind": KIND_CALLS, "call_ids": ["a"], "prompt": dict(_PROMPT)}
-        sess._pending_interaction = record
+        sess.conv.pending_interaction = record
         placeholder = {"role": "tool", "tool_call_id": "a", "content": DEFERRED_RESULT}
-        sess.history = [{"role": "assistant", "tool_calls": [{"id": "a"}]}, dict(placeholder)]
-        sess.history_full = [{"role": "assistant", "tool_calls": [{"id": "a"}]}, dict(placeholder)]
+        sess.conv.history = [{"role": "assistant", "tool_calls": [{"id": "a"}]},
+                             dict(placeholder)]
+        sess.conv.record.llm_history_full = [
+            {"role": "assistant", "tool_calls": [{"id": "a"}]}, dict(placeholder)]
         await sess._handle_approval_response({"id": "card-1", "choice": "y"})
         rec, answer, history, sid = w.resumed
         self.assertEqual((rec, sid), (record, "s1"))
         self.assertEqual(answer["choice"], "y")
         self.assertEqual(len(history), 1)          # placeholder gone from the window
-        self.assertEqual(len(sess.history_full), 1)  # …and from the record
-        self.assertIsNone(sess._pending_interaction)
+        self.assertEqual(len(sess.conv.history_full), 1)  # …and from the record
+        self.assertIsNone(sess.conv.pending_interaction)
         self.assertFalse([c for c in w.calls if c[0] == "resolve"])
 
     async def test_a_live_card_is_still_answered_live(self) -> None:

@@ -12,6 +12,7 @@ Run:
 import asyncio
 import json
 import os
+import queue
 import types
 import unittest
 from unittest import mock
@@ -1206,8 +1207,8 @@ class AwaitBackgroundJobTests(unittest.TestCase):
 
 class WakeTextTests(unittest.TestCase):
     def _wake(self, ev: dict) -> str:
-        from mimir.client.ui.ws.ws_session import _Session
-        return _Session._wake_text(ev)
+        from mimir.client.ui.ws.job_wakes import wake_text
+        return wake_text(ev)
 
     def test_accept_summary_is_enriched(self) -> None:
         ev = {"job_key": "wave1d", "state": "done",
@@ -1414,7 +1415,8 @@ class DetachedSessionResumeTests(unittest.TestCase):
         import shutil
         import tempfile
         from unittest import mock
-        from mimir.client.ui.ws import job_scan, session_store, transcript_log
+        from mimir.client.session import store as session_store
+        from mimir.client.ui.ws import job_scan, transcript_log
         from mimir.client.ui.ws.ws_session import _Session
 
         self._tmp = tempfile.mkdtemp(prefix="mimir-detached-")
@@ -1439,9 +1441,9 @@ class DetachedSessionResumeTests(unittest.TestCase):
         self.b = self.session.store.new_session()
         self.session.store.save_session(self.b)
         self.session._active_session_id = self.b.id
-        self.session.history = [{"role": "user", "content": "something else"}]
-        self.session.history_full = list(self.session.history)
-        self.session._display_messages = []
+        self.session.conv = self.session.pool.conversations.get(self.b.id)
+        self.session.conv.history = [{"role": "user", "content": "something else"}]
+        self.session.conv.record.llm_history_full = list(self.session.conv.history)
 
     def _event(self, **over) -> dict:
         ev = {"type": "job_complete", "job_key": "20260909T170922Z-d123",
@@ -1452,7 +1454,7 @@ class DetachedSessionResumeTests(unittest.TestCase):
         return ev
 
     def test_the_wake_runs_against_the_launching_session_not_the_visible_one(self) -> None:
-        asyncio.run(self.session._handle_job_complete(self._event()))
+        self.session.pool.wakes.consume(self._event())
 
         self.assertEqual(len(self.worker.submitted), 1)
         _text, history, session_id = self.worker.submitted[0]
@@ -1466,25 +1468,25 @@ class DetachedSessionResumeTests(unittest.TestCase):
                             for m in stored_a.display_messages))
 
         # B — the conversation on screen — is untouched.
-        self.assertEqual(self.session.history, [{"role": "user", "content": "something else"}])
-        self.assertEqual(self.session._display_messages, [])
+        self.assertEqual(self.session.conv.history, [{"role": "user", "content": "something else"}])
+        self.assertEqual(self.session.conv.display, [])
 
     def test_a_detached_answer_is_written_to_its_own_session(self) -> None:
-        asyncio.run(self.session._handle_job_complete(self._event()))
+        self.session.pool.wakes.consume(self._event())
         answer = {"type": "answer", "text": "Build finished, 0 errors.",
                   "session_id": self.a.id}
 
-        # The drain loop would filter it out of this socket's stream ...
+        # Filtered out of this socket's stream, it is still written: the pump commits
+        # every answer into its own conversation, whichever one is on screen.
         self.assertTrue(self.session._is_foreign_event(answer))
-        # ... which is exactly why it has to be persisted on its own path.
-        asyncio.run(self.session._persist_detached_answer(answer))
+        self.session.pool.commit_turn(answer, {})
 
         stored_a = self.session.store.load_session(self.a.id)
         self.assertEqual(stored_a.llm_history[-1],
                          {"role": "assistant", "content": "Build finished, 0 errors."})
         self.assertTrue(any(m.get("text") == "Build finished, 0 errors."
                             for m in stored_a.display_messages))
-        self.assertEqual(self.session.history,
+        self.assertEqual(self.session.conv.history,
                          [{"role": "user", "content": "something else"}])
 
     def test_two_detached_turns_are_tracked_apart(self) -> None:
@@ -1495,33 +1497,26 @@ class DetachedSessionResumeTests(unittest.TestCase):
         c.llm_history_full = list(c.llm_history)
         self.session.store.save_session(c)
 
-        asyncio.run(self.session._handle_job_complete(self._event()))
-        asyncio.run(self.session._handle_job_complete(
-            self._event(session_id=c.id, job_key="other-job")))
+        self.session.pool.wakes.consume(self._event())
+        self.session.pool.wakes.consume(
+            self._event(session_id=c.id, job_key="other-job"))
 
-        asyncio.run(self.session._persist_detached_answer(
-            {"type": "answer", "text": "A done", "session_id": self.a.id}))
-        asyncio.run(self.session._persist_detached_answer(
-            {"type": "answer", "text": "C done", "session_id": c.id}))
+        self.session.pool.commit_turn(
+            {"type": "answer", "text": "A done", "session_id": self.a.id}, {})
+        self.session.pool.commit_turn(
+            {"type": "answer", "text": "C done", "session_id": c.id}, {})
 
         self.assertEqual(self.session.store.load_session(self.a.id).llm_history[-1],
                          {"role": "assistant", "content": "A done"})
         self.assertEqual(self.session.store.load_session(c.id).llm_history[-1],
                          {"role": "assistant", "content": "C done"})
 
-    def test_an_answer_for_a_turn_we_did_not_detach_is_ignored(self) -> None:
-        # No detached turn in flight: nothing to write, and nothing to invent.
-        asyncio.run(self.session._persist_detached_answer(
-            {"type": "answer", "text": "stray", "session_id": self.a.id}))
-        self.assertEqual(self.session.store.load_session(self.a.id).llm_history,
-                         [{"role": "user", "content": "build it"}])
-
     def test_a_wake_for_the_visible_session_lands_in_it(self) -> None:
-        asyncio.run(self.session._handle_job_complete(self._event(session_id=self.b.id)))
+        self.session.pool.wakes.consume(self._event(session_id=self.b.id))
         self.assertEqual(self.worker.submitted[0][2], self.b.id)
-        self.assertIn("Built target", self.session.history[-1]["content"])
+        self.assertIn("Built target", self.session.conv.history[-1]["content"])
         self.assertTrue(any("🔔" in m.get("text", "")
-                            for m in self.session._display_messages))
+                            for m in self.session.conv.display))
 
     def test_a_prompt_from_a_detached_turn_still_reaches_the_user(self) -> None:
         # An approval or a question parks the turn until it is answered. Filtered as
@@ -1555,7 +1550,8 @@ class WakeCoalescingTests(unittest.TestCase):
         import shutil
         import tempfile
         from unittest import mock
-        from mimir.client.ui.ws import job_scan, session_store, transcript_log
+        from mimir.client.session import store as session_store
+        from mimir.client.ui.ws import job_scan, transcript_log
         from mimir.client.ui.ws.ws_session import _Session
 
         self._tmp = tempfile.mkdtemp(prefix="mimir-coalesce-")
@@ -1572,9 +1568,11 @@ class WakeCoalescingTests(unittest.TestCase):
         self.here = self.session.store.new_session()
         self.session.store.save_session(self.here)
         self.session._active_session_id = self.here.id
-        self.session.history = [{"role": "user", "content": "go"}]
-        self.session.history_full = list(self.session.history)
-        self.session._display_messages = []
+        self.session.conv = self.session.pool.conversations.get(self.here.id)
+        self.session.conv.history = [{"role": "user", "content": "go"}]
+        self.session.conv.record.llm_history_full = list(self.session.conv.history)
+        # The steers the loop confirmed reading (``steer_injected``).
+        self.read: list[str] = []
 
     def _event(self, job_key: str, session_id: str | None = None) -> dict:
         return {"type": "job_complete", "job_key": job_key, "kind": "shell-command",
@@ -1587,11 +1585,20 @@ class WakeCoalescingTests(unittest.TestCase):
         self.worker._query_session_id = session_id
 
     def _wake(self, ev: dict) -> None:
-        asyncio.run(self.session._handle_job_complete(ev))
+        self.session.pool.wakes.consume(ev)
+
+    def _inject(self, text: str) -> None:
+        """The loop took this steer in at a step boundary, and said so."""
+        self.read.append(text)
+        self.session.pool.wakes.steered(self.here.id, text)
 
     def _answer(self) -> None:
+        """The turn answers; what it never read travels on the answer, as the worker
+        puts it there."""
         self._running(None)
-        asyncio.run(self.session._flush_pending_wakes(self.here.id))
+        unread = [t for t in self.worker.steered if t not in self.read]
+        self.session.pool.wakes.after_turn(self.session.conv,
+                                           {"_unconsumed_steer": unread})
 
     # ── idle: unchanged behaviour ────────────────────────────────────────────
 
@@ -1690,7 +1697,7 @@ class WakeCoalescingTests(unittest.TestCase):
     def test_an_injected_wake_needs_no_catch_up(self) -> None:
         self._running(self.here.id)
         self._wake(self._event("j1"))
-        self.session._drop_injected_wakes(self.worker.steered[0])
+        self._inject(self.worker.steered[0])
         self._answer()
         self.assertEqual(self.worker.submitted, [], "the running turn already had it")
 
@@ -1702,7 +1709,7 @@ class WakeCoalescingTests(unittest.TestCase):
         self._running(self.here.id)
         self._wake(self._event("j1"))
         self._wake(self._event("j2"))
-        self.session._drop_injected_wakes(self.worker.steered[0])   # j1 only
+        self._inject(self.worker.steered[0])   # j1 only
         reported = {key: os.path.exists(os.path.join(
             job_scan._job_dir(self.here.id, key, "shell"), job_scan._REPORTED))
             for key in ("j1", "j2")}
@@ -1712,7 +1719,7 @@ class WakeCoalescingTests(unittest.TestCase):
         self._running(self.here.id)
         self._wake(self._event("j1"))
         self._wake(self._event("j2"))
-        self.session._drop_injected_wakes(self.worker.steered[0])   # j1 only
+        self._inject(self.worker.steered[0])   # j1 only
         self._answer()
         self.assertEqual(len(self.worker.submitted), 1)
         text = self.worker.submitted[0][0]
@@ -1731,7 +1738,7 @@ class WakeCoalescingTests(unittest.TestCase):
         self._running(self.here.id)
         for key in ("j1", "j2", "j3"):
             self._wake(self._event(key))
-        self.session._drop_injected_wakes(self.worker.steered[1])   # j2 taken in
+        self._inject(self.worker.steered[1])   # j2 taken in
         self._answer()
 
         carried = "".join(t for t, _h, _s in self.worker.submitted)
@@ -1751,13 +1758,13 @@ class WakeCoalescingTests(unittest.TestCase):
         The history is the one thing it must NOT write: the running turn receives the
         wake in its own messages, and adding it here as well put the same text in twice.
         """
-        before = list(self.session.history)
+        before = list(self.session.conv.history)
         self._running(self.here.id)
         self._wake(self._event("j1"))
         self.assertEqual(self.worker.submitted, [])
         self.assertTrue(any("🔔" in m.get("text", "")
-                            for m in self.session._display_messages))
-        self.assertEqual(self.session.history, before)
+                            for m in self.session.conv.display))
+        self.assertEqual(self.session.conv.history, before)
 
     def test_a_steered_wake_is_recorded_once_even_if_a_later_flush_retells_it(self) -> None:
         """The re-tell is for the model, not for the record.
@@ -1771,7 +1778,7 @@ class WakeCoalescingTests(unittest.TestCase):
         self._running(None)
         self._wake(self._event("jB"))            # idle → flushes jA and jB together
 
-        notes = [m for m in self.session._display_messages if "🔔" in m.get("text", "")]
+        notes = [m for m in self.session.conv.display if "🔔" in m.get("text", "")]
         self.assertEqual(len(notes), 2, "one notice per job, not one per telling")
         # The model is told about both, because jA's steer was never confirmed read.
         self.assertEqual(len(self.worker.submitted), 1)
@@ -1779,7 +1786,7 @@ class WakeCoalescingTests(unittest.TestCase):
         self.assertIn("jA", text)
         self.assertIn("jB", text)
         # ...but the history carries jA once, not once per route.
-        occurrences = sum(str(m.get("content", "")).count("jA") for m in self.session.history)
+        occurrences = sum(str(m.get("content", "")).count("jA") for m in self.session.conv.history)
         self.assertEqual(occurrences, 1)
 
     # ── a wake for another conversation is never steered into this turn ──────
@@ -2039,7 +2046,8 @@ class CheckinDeliveryTests(unittest.TestCase):
         import shutil
         import tempfile
         from unittest import mock
-        from mimir.client.ui.ws import job_scan, session_store, transcript_log
+        from mimir.client.session import store as session_store
+        from mimir.client.ui.ws import job_scan, transcript_log
         from mimir.client.ui.ws.ws_session import _Session
 
         self._tmp = tempfile.mkdtemp(prefix="mimir-checkin-")
@@ -2058,10 +2066,7 @@ class CheckinDeliveryTests(unittest.TestCase):
         self.here.llm_history_full = list(self.here.llm_history)
         self.session.store.save_session(self.here)
         self.session._active_session_id = self.here.id
-        self.session.history = list(self.here.llm_history)
-        self.session.history_full = list(self.here.llm_history)
-        self.session._display_messages = []
-        self.session._submitted_len = 1
+        self.session.conv = self.session.pool.conversations.get(self.here.id)
 
     def _event(self, *keys: str) -> dict:
         return {"type": "job_checkin", "session_id": self.here.id,
@@ -2071,8 +2076,12 @@ class CheckinDeliveryTests(unittest.TestCase):
     def _busy(self, on: str | None) -> None:
         self.worker._query_session_id = on
 
+    def _landed(self) -> None:
+        """A turn of this conversation has just answered."""
+        self.session.pool.wakes.after_turn(self.session.conv, {})
+
     def test_an_idle_conversation_gets_its_short_turn(self) -> None:
-        started = asyncio.run(self.session._handle_job_checkin(self._event()))
+        started = self.session.pool.wakes.consume(self._event())
         self.assertTrue(started)
         self.assertEqual(len(self.worker.submitted), 1)
         text = self.worker.submitted[0][0]
@@ -2082,35 +2091,35 @@ class CheckinDeliveryTests(unittest.TestCase):
 
     def test_a_busy_conversation_is_never_steered(self) -> None:
         self._busy(self.here.id)
-        started = asyncio.run(self.session._handle_job_checkin(self._event()))
+        started = self.session.pool.wakes.consume(self._event())
         self.assertFalse(started)
         self.assertEqual(self.worker.steered, [], "a bulletin is not worth a derail")
         self.assertEqual(self.worker.submitted, [])
-        self.assertIn(self.here.id, self.session._held_checkin)
+        self.assertIsNotNone(self.session.conv.held_checkin)
 
     def test_a_parked_conversation_is_never_steered(self) -> None:
         """The card is waiting on a person, not on a status line."""
         self.worker._pending_prompt = {"type": "approval"}
-        started = asyncio.run(self.session._handle_job_checkin(self._event()))
+        started = self.session.pool.wakes.consume(self._event())
         self.assertFalse(started)
         self.assertEqual(self.worker.submitted, [])
-        self.assertIn(self.here.id, self.session._held_checkin)
+        self.assertIsNotNone(self.session.conv.held_checkin)
 
     def test_the_held_bulletin_lands_after_the_answer(self) -> None:
         self._busy(self.here.id)
-        asyncio.run(self.session._handle_job_checkin(self._event()))
+        self.session.pool.wakes.consume(self._event())
         self._busy(None)
-        asyncio.run(self.session._flush_held_checkin(self.here.id))
+        self._landed()
         self.assertEqual(len(self.worker.submitted), 1)
         self.assertIn("j1", self.worker.submitted[0][0])
 
     def test_only_the_freshest_held_bulletin_survives(self) -> None:
         """A long turn ends with one current status line, not a backlog of stale ones."""
         self._busy(self.here.id)
-        asyncio.run(self.session._handle_job_checkin(self._event("jOld")))
-        asyncio.run(self.session._handle_job_checkin(self._event("jNew")))
+        self.session.pool.wakes.consume(self._event("jOld"))
+        self.session.pool.wakes.consume(self._event("jNew"))
         self._busy(None)
-        asyncio.run(self.session._flush_held_checkin(self.here.id))
+        self._landed()
         self.assertEqual(len(self.worker.submitted), 1)
         self.assertIn("jNew", self.worker.submitted[0][0])
         self.assertNotIn("jOld", self.worker.submitted[0][0])
@@ -2118,19 +2127,23 @@ class CheckinDeliveryTests(unittest.TestCase):
     def test_a_held_bulletin_is_dropped_once_the_job_has_finished(self) -> None:
         """Its completion wake says everything this would have, and more."""
         self._busy(self.here.id)
-        asyncio.run(self.session._handle_job_checkin(self._event()))
+        self.session.pool.wakes.consume(self._event())
         self._busy(None)
         self.worker.watching = []           # the watcher let it go: the run is over
-        asyncio.run(self.session._flush_held_checkin(self.here.id))
+        self._landed()
         self.assertEqual(self.worker.submitted, [])
 
     def test_a_pending_wake_supersedes_a_held_bulletin(self) -> None:
         self._busy(self.here.id)
-        asyncio.run(self.session._handle_job_checkin(self._event()))
+        self.session.pool.wakes.consume(self._event())
         self._busy(None)
-        self.session._pending_wakes[self.here.id] = [{"ev": {}, "told": False}]
-        asyncio.run(self.session._flush_held_checkin(self.here.id))
-        self.assertEqual(self.worker.submitted, [])
+        self.session.conv.pending_wakes = [{"ev": {
+            "type": "job_complete", "job_key": "j1", "session_id": self.here.id,
+            "state": "done", "summary": {}}, "told": False}]
+        self._landed()
+        # The run's turn goes out; the bulletin about it does not.
+        self.assertEqual(len(self.worker.submitted), 1)
+        self.assertNotIn("ONE short line", self.worker.submitted[0][0])
 
     def test_a_bulletin_leaves_no_bubble_to_come_back_on_every_reload(self) -> None:
         """The stored chat is the conversation, not the plumbing that kept it awake.
@@ -2139,8 +2152,8 @@ class CheckinDeliveryTests(unittest.TestCase):
         instruction asking the model for its one line is addressed to the model. Stored
         as a bubble it was replayed on every reload, once per wake the session ever had.
         """
-        asyncio.run(self.session._handle_job_checkin(self._event()))
-        self.assertEqual(self.session._display_messages, [])
+        self.session.pool.wakes.consume(self._event())
+        self.assertEqual(self.session.conv.display, [])
         stored = self.session.store.load_session(self.here.id)
         self.assertEqual(
             [m for m in stored.display_messages if "🔔" in str(m.get("text", ""))], [],
@@ -2153,7 +2166,7 @@ class CheckinDeliveryTests(unittest.TestCase):
         other = self.session.store.new_session()
         self.session.store.save_session(other)
         ev = {**self._event(), "session_id": other.id}
-        asyncio.run(self.session._handle_job_checkin(ev))
+        self.session.pool.wakes.consume(ev)
         stored = self.session.store.load_session(other.id)
         self.assertEqual(
             [m for m in stored.display_messages if "🔔" in str(m.get("text", ""))], [])
@@ -2161,7 +2174,7 @@ class CheckinDeliveryTests(unittest.TestCase):
     def test_the_transcript_tells_a_bulletin_from_a_wake(self) -> None:
         """``job_wake`` is counted against the jobs that recorded an exit code."""
         from mimir.client.ui.ws import transcript_log
-        asyncio.run(self.session._handle_job_checkin(self._event()))
+        self.session.pool.wakes.consume(self._event())
         lines, _truncated = transcript_log.read_since(self.session._active_session_id, 0)
         kinds = [e["type"] for e in lines if "type" in e]
         self.assertIn("job_checkin", kinds)
@@ -2182,7 +2195,8 @@ class WakeDeliveryLossTests(unittest.TestCase):
         import shutil
         import tempfile
         from unittest import mock
-        from mimir.client.ui.ws import job_scan, session_store, transcript_log
+        from mimir.client.session import store as session_store
+        from mimir.client.ui.ws import job_scan, transcript_log
         from mimir.client.ui.ws.ws_session import _Session
 
         self._tmp = tempfile.mkdtemp(prefix="mimir-wakeloss-")
@@ -2212,9 +2226,8 @@ class WakeDeliveryLossTests(unittest.TestCase):
         self.pool.workers = {self.a.id: self.launcher, self.b.id: self.onscreen}
         self.pool.active_session_id = self.b.id
         self.session._active_session_id = self.b.id
-        self.session.history = [{"role": "user", "content": "something else"}]
-        self.session.history_full = list(self.session.history)
-        self.session._display_messages = []
+        self.session.conv = self.session.pool.conversations.get(self.b.id)
+        self.session.conv.history = [{"role": "user", "content": "something else"}]
 
     def _event(self, key: str = "j1") -> dict:
         return {"type": "job_complete", "job_key": key, "kind": "shell-command",
@@ -2224,7 +2237,7 @@ class WakeDeliveryLossTests(unittest.TestCase):
 
     def test_the_wake_goes_to_the_agent_of_the_conversation_that_launched_it(self) -> None:
         """Not the agent of whatever is on screen, which may not even have one."""
-        asyncio.run(self.session._handle_job_complete(self._event()))
+        self.session.pool.wakes.consume(self._event())
         self.assertEqual(len(self.launcher.submitted), 1)
         self.assertEqual(self.launcher.submitted[0][2], self.a.id)
         self.assertEqual(self.onscreen.submitted, [],
@@ -2233,36 +2246,40 @@ class WakeDeliveryLossTests(unittest.TestCase):
     def test_a_conversation_whose_agent_is_gone_keeps_its_wake(self) -> None:
         """Held, not dropped: a released agent is rebuilt, a lost run is not."""
         self.pool.workers = {self.b.id: self.onscreen}
-        asyncio.run(self.session._handle_job_complete(self._event()))
+        self.session.pool.wakes.consume(self._event())
         self.assertEqual(self.onscreen.submitted, [])
-        self.assertEqual(len(self.session._pending_wakes.get(self.a.id, [])), 1)
+        self.assertEqual(len(self.pool.conversations.get(self.a.id).pending_wakes), 1)
 
     def test_a_store_that_will_not_write_keeps_the_wake(self) -> None:
         from unittest import mock
         with mock.patch.object(self.session.store, "save_session",
                                side_effect=OSError("disk full")):
-            asyncio.run(self.session._handle_job_complete(self._event()))
+            self.session.pool.wakes.consume(self._event())
         self.assertEqual(self.launcher.submitted, [])
-        self.assertEqual(len(self.session._pending_wakes.get(self.a.id, [])), 1)
+        self.assertEqual(len(self.pool.conversations.get(self.a.id).pending_wakes), 1)
 
     def test_a_kept_wake_is_delivered_by_the_next_flush(self) -> None:
         from unittest import mock
         with mock.patch.object(self.session.store, "save_session",
                                side_effect=OSError("disk full")):
-            asyncio.run(self.session._handle_job_complete(self._event()))
-        asyncio.run(self.session._flush_pending_wakes(self.a.id))
+            self.session.pool.wakes.consume(self._event())
+        self.pool.wakes.flush(self.pool.conversations.get(self.a.id), self.launcher)
         self.assertEqual(len(self.launcher.submitted), 1)
         self.assertIn("Built target", self.launcher.submitted[0][0])
 
     def test_a_socket_that_dies_on_the_send_does_not_take_the_wake_with_it(self) -> None:
-        """The event has already left out_q; nothing re-emits it."""
+        """The event has already left out_q; nothing re-emits it. The pump hands it
+        to the router before any socket is sent anything."""
         class _DeadWS:
             async def send(self, raw: str) -> None:
                 raise ConnectionResetError("client went away")
 
         self.session.ws = _DeadWS()
-        started = asyncio.run(self.session._handle_durable_event(
-            self._event(), checkin=False, steer=False))
+        self.launcher.out_q = queue.Queue()
+        self.launcher.out_q.put(self._event())
+        self.session._sub = self.pool.bus.subscribe()
+        self.pool.bus.pump_once()
+        started = self.session._sub.queue.get_nowait()[1]["_started"]
         self.assertTrue(started)
         self.assertEqual(len(self.launcher.submitted), 1)
 
@@ -2270,14 +2287,12 @@ class WakeDeliveryLossTests(unittest.TestCase):
     def test_a_wake_that_started_no_turn_does_not_mark_the_chat_busy(self) -> None:
         """``resumes_active_session`` is a claim the client acts on with a stop button."""
         self.pool.workers = {self.b.id: self.onscreen}      # A's agent is gone
-        started = asyncio.run(self.session._handle_durable_event(
-            self._event(), checkin=False, steer=False))
+        started = self.pool.wakes.consume(self._event())
         self.assertFalse(started)
 
     def test_a_steered_wake_starts_no_turn_either(self) -> None:
         self.launcher._query_session_id = self.a.id         # A is mid-turn
-        started = asyncio.run(self.session._handle_durable_event(
-            self._event(), checkin=False, steer=True))
+        started = self.pool.wakes.consume(self._event())
         self.assertFalse(started)
         self.assertEqual(len(self.launcher.steered), 1)
 

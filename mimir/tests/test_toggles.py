@@ -5,7 +5,6 @@ exercised here as unbound methods on a lightweight stand-in — no model or live
 server connection is required.
 """
 
-import asyncio
 import tempfile
 import types
 import unittest

@@ -4,7 +4,6 @@ None means the model's own: nothing is sent and the server applies the model's
 generation_config. A forced low temperature sent reasoning models into repetition
 loops, so the default must stay "send nothing".
 """
-import asyncio
 import json
 import os
 import tempfile

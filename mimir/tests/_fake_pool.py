@@ -15,16 +15,22 @@ call.
 """
 from __future__ import annotations
 
+import tempfile
 from typing import Any, Iterator
 
 from mimir.client.core.settings import read_setting
+from mimir.client.session.conversation import Conversations
+from mimir.client.session.store import SessionStore
 from mimir.client.ui.ws.event_bus import _EventBus
+from mimir.client.ui.ws.wake_router import WakeRouter
+from mimir.client.ui.ws.ws_pool import _AgentPool
 
 
 class FakePool:
     def __init__(self, worker: Any = None, *, active: str | None = None,
                  workers: dict[str, Any] | None = None,
-                 idle_reasons: list[str] | None = None) -> None:
+                 idle_reasons: list[str] | None = None,
+                 store: SessionStore | None = None) -> None:
         self.worker = worker
         self.workers = dict(workers or {})
         self.active_session_id = active
@@ -39,10 +45,25 @@ class FakePool:
         self.server_idle_ttl = 7200.0
         self.queued: list[tuple[str, Any]] = []
         self.closed: list[str] = []
-        # The real bus over this stand-in: what carries a worker's output to a session
-        # is the seam under test in most of these cases, so faking it would test the
-        # call and not the seam. Tests drive it with ``bus.pump_once()``.
-        self.bus = _EventBus(self)
+        # The real conversations, router and bus over this stand-in: what carries a
+        # worker's output into a conversation and on to a session is the seam under
+        # test in most of these cases, so faking it would test the call and not the
+        # seam. Tests drive the bus with ``bus.pump_once()``.
+        # In a directory of its own unless the test hands one in: a stand-in that saved
+        # into the real state directory would leave conversations in the user's panel.
+        if store is None:
+            self._tmp = tempfile.TemporaryDirectory(prefix="mimir-fakepool-")
+            store = SessionStore(self._tmp.name)
+        self.conversations = Conversations(store)
+        self.store = store
+        self.wakes = WakeRouter(self)
+        self.bus = _EventBus(self, commit=self.commit_turn, durable=self.wakes.consume,
+                             steered=self.wakes.steered)
+
+    # The pool's own: how a conversation is written is not what a stand-in may vary.
+    commit_turn = _AgentPool.commit_turn
+    submit_turn = _AgentPool.submit_turn
+    save_conversation = _AgentPool.save_conversation
 
     def _for(self, session_id: str | None) -> Any:
         """The agent of *session_id*: the per-session table when there is one."""

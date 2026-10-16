@@ -47,25 +47,6 @@ class _Pool:
         return True
 
 
-class SteerOwnershipTests(unittest.TestCase):
-    def test_unread_steering_of_another_conversation_stays_in_it(self) -> None:
-        # Addressed to "the session on screen", a switch during the answer sent one
-        # conversation's unread message into the other one's history.
-        sess = object.__new__(_Session)
-        sess.ws = _FakeWS()
-        sess.pool = _Pool()
-        sess._active_session_id = "on-screen"
-        live = [{"role": "user", "content": "typed on screen"}]
-        sess._live_steer = list(live)
-        sess.history = [{"role": "user", "content": "hello"}]
-        asyncio.run(sess._flush_unconsumed_steer("elsewhere", ["and also this"]))
-        self.assertEqual(sess.pool.turns, [("elsewhere", "and also this")])
-        self.assertEqual(sess.history, [{"role": "user", "content": "hello"}])
-        self.assertEqual(sess._live_steer, live)
-        self.assertEqual(sess.ws.sent, [])
-
-
-
 class _StandIn:
     """What ``_Session.worker`` answers before a conversation's first query."""
 
@@ -146,23 +127,22 @@ class CommandsBeforeTheFirstQueryTests(unittest.TestCase):
 class DeletedSessionTests(unittest.TestCase):
     def test_a_deleted_conversation_leaves_no_bookkeeping_behind(self) -> None:
         sess = object.__new__(_Session)
-        for name in ("_pending_wakes", "_held_checkin", "_detached_turns", "_live_rows",
-                     "_sent_progress", "_foreign_withheld"):
+        for name in ("_live_rows", "_sent_progress", "_foreign_withheld"):
             setattr(sess, name, {"gone": object(), "kept": object()})
         sess._forget_session_state("gone")
-        for name in ("_pending_wakes", "_held_checkin", "_detached_turns", "_live_rows",
-                     "_sent_progress", "_foreign_withheld"):
+        for name in ("_live_rows", "_sent_progress", "_foreign_withheld"):
             self.assertEqual(set(getattr(sess, name)), {"kept"}, name)
 
     def test_the_pool_forgets_what_it_owed_a_deleted_conversation(self) -> None:
         from mimir.client.ui.ws.ws_pool import _AgentPool
 
         pool = _AgentPool("m", cap=1)
-        pool._wakes_pending["gone"] = [{"ev": {}, "told": False}]
-        pool._held_checkin["gone"] = {"type": "job_checkin"}
+        conversation = pool.conversations.new("gone")
+        conversation.pending_wakes.append({"ev": {}, "told": False})
+        conversation.held_checkin = {"type": "job_checkin"}
         asyncio.run(pool.close("gone"))
-        self.assertNotIn("gone", pool._wakes_pending)
-        self.assertNotIn("gone", pool._held_checkin)
+        # What was owed goes with the conversation object, which is forgotten.
+        self.assertNotIn("gone", pool.conversations._open)
 
 
 

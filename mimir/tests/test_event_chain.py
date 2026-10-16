@@ -22,7 +22,8 @@ import unittest
 from collections import OrderedDict
 from unittest import mock
 
-from mimir.client.ui.ws import job_scan, session_store, transcript_log, ws_session
+from mimir.client.session import store as session_store
+from mimir.client.ui.ws import job_scan, transcript_log, ws_session
 from mimir.client.ui.ws.ws_session import _Session
 from mimir.client.ui.ws.ws_worker import _AgentWorker
 from mimir.tests._fake_pool import FakePool
@@ -166,7 +167,7 @@ class ATurnReachesTheClientTests(_ChainCase):
     async def test_everything_the_engine_emitted_arrives(self):
         self._stored_session("s1")
         worker = _worker("s1")
-        pool = FakePool(worker, active="s1")
+        pool = FakePool(worker, active="s1", store=session_store.SessionStore())
         ws = _WS([json.dumps({"type": "query", "text": "run something long"})])
         sess = _Session(ws, pool)
 
@@ -184,7 +185,7 @@ class ATurnReachesTheClientTests(_ChainCase):
         # no tool call and no answer.
         self._stored_session("s1")
         worker = _worker("s1")
-        pool = FakePool(worker, active="s1")
+        pool = FakePool(worker, active="s1", store=session_store.SessionStore())
         ws = _WS([json.dumps({"type": "query", "text": "run something long"})])
         sess = _Session(ws, pool)
 
@@ -197,7 +198,7 @@ class ATurnReachesTheClientTests(_ChainCase):
     async def test_the_journal_holds_the_same_turn_the_client_saw(self):
         self._stored_session("s1")
         worker = _worker("s1")
-        pool = FakePool(worker, active="s1")
+        pool = FakePool(worker, active="s1", store=session_store.SessionStore())
         ws = _WS([json.dumps({"type": "query", "text": "run something long"})])
         sess = _Session(ws, pool)
 
@@ -214,7 +215,7 @@ class ATurnReachesTheClientTests(_ChainCase):
         # the second one only.
         self._stored_session("s1")
         worker = _worker("s1")
-        pool = FakePool(worker, active="s1")
+        pool = FakePool(worker, active="s1", store=session_store.SessionStore())
         ws = _WS([json.dumps({"type": "query", "text": "first"}),
                   json.dumps({"type": "query", "text": "second"})])
         sess = _Session(ws, pool)
@@ -233,7 +234,7 @@ class ATurnReachesTheClientTests(_ChainCase):
         # that the turn arrives, not which of them saw to it. The reset has its own
         # test in test_reattach_replay.
         worker = _worker("s1")
-        pool = FakePool(worker, active=None)
+        pool = FakePool(worker, active=None, store=session_store.SessionStore())
         ws = _WS([json.dumps({"type": "query", "text": "run something long"})])
         sess = _Session(ws, pool)
         sess._rendered_seq = 4321          # as a previous conversation would leave it
@@ -275,7 +276,7 @@ class ProseSurvivesAnAbsenceTests(_ChainCase):
     async def test_the_prose_is_recorded_in_order_with_the_tools(self):
         self._stored_session("s1")
         worker = _worker("s1", turn=self._turn_with_prose())
-        pool = FakePool(worker, active="s1")
+        pool = FakePool(worker, active="s1", store=session_store.SessionStore())
         ws = _WS([json.dumps({"type": "query", "text": "look around"})])
         sess = _Session(ws, pool)
 
@@ -293,7 +294,7 @@ class ProseSurvivesAnAbsenceTests(_ChainCase):
         # Sending the aggregate as well would print the paragraph twice.
         self._stored_session("s1")
         worker = _worker("s1", turn=self._turn_with_prose())
-        pool = FakePool(worker, active="s1")
+        pool = FakePool(worker, active="s1", store=session_store.SessionStore())
         ws = _WS([json.dumps({"type": "query", "text": "look around"})])
         sess = _Session(ws, pool)
 
@@ -307,7 +308,7 @@ class ProseSurvivesAnAbsenceTests(_ChainCase):
         # it would have been watched.
         self._stored_session("s1")
         worker = _worker("s1", turn=self._turn_with_prose())
-        pool = FakePool(worker, active="s1")
+        pool = FakePool(worker, active="s1", store=session_store.SessionStore())
         first = _WS([json.dumps({"type": "query", "text": "look around"})])
         await self._run(_Session(first, pool), pool, first)
 
@@ -366,7 +367,7 @@ class ComingBackToARunningTurnTests(_ChainCase):
         self._detached_run("auto")
         worker = _worker("s1")
         applied: list[tuple] = []
-        pool = FakePool(worker, active="s1")
+        pool = FakePool(worker, active="s1", store=session_store.SessionStore())
         pool.apply_setting = lambda name, value: applied.append((name, value)) or []
         ws = _WS([], linger=0.3)
         sess = _Session(ws, pool)
@@ -386,7 +387,7 @@ class ComingBackToARunningTurnTests(_ChainCase):
         self._stored_session("s1")
         self._detached_run("auto_all")
         worker = _worker("s1")
-        pool = FakePool(worker, active="s1")
+        pool = FakePool(worker, active="s1", store=session_store.SessionStore())
         ws = _WS([], linger=0.3)
 
         await self._run(_Session(ws, pool), pool, ws)
@@ -399,7 +400,7 @@ class ComingBackToARunningTurnTests(_ChainCase):
         self.registry.publish(url="ws://127.0.0.1:1", host="127.0.0.1", port=1)
         worker = _worker("s1")
         applied: list[tuple] = []
-        pool = FakePool(worker, active="s1")
+        pool = FakePool(worker, active="s1", store=session_store.SessionStore())
         pool.apply_setting = lambda name, value: applied.append((name, value)) or []
         ws = _WS([], linger=0.3)
 
@@ -414,7 +415,7 @@ class ComingBackToARunningTurnTests(_ChainCase):
         self._stored_session("s1")
         worker = _worker("s1")
         worker._query_session_id = "s1"            # a turn of ours, mid-flight
-        pool = FakePool(worker, active="s1")
+        pool = FakePool(worker, active="s1", store=session_store.SessionStore())
         ws = _WS([], linger=0.3)
 
         await self._run(_Session(ws, pool), pool, ws)
@@ -427,7 +428,7 @@ class ComingBackToARunningTurnTests(_ChainCase):
     async def test_an_idle_conversation_is_not_reported_as_running(self):
         self._stored_session("s1")
         worker = _worker("s1")
-        pool = FakePool(worker, active="s1")
+        pool = FakePool(worker, active="s1", store=session_store.SessionStore())
         ws = _WS([], linger=0.3)
 
         await self._run(_Session(ws, pool), pool, ws)
@@ -439,7 +440,7 @@ class ComingBackToARunningTurnTests(_ChainCase):
         # The property itself: the window went away, the run did not.
         self._stored_session("s1")
         worker = _worker("s1", turn=[])
-        pool = FakePool(worker, active="s1")
+        pool = FakePool(worker, active="s1", store=session_store.SessionStore())
 
         first = _WS([json.dumps({"type": "query", "text": "a long one"})], linger=0.2)
         await self._run(_Session(first, pool), pool, first)
@@ -468,7 +469,7 @@ class WhenTheChatGoesQuietTests(_ChainCase):
         # chat can go quiet while the journal fills — and that is worth recognising.
         self._stored_session("s1")
         worker = _worker("s1")
-        pool = FakePool(worker, active="s1")
+        pool = FakePool(worker, active="s1", store=session_store.SessionStore())
         ws = _WS([json.dumps({"type": "query", "text": "run something long"})])
         sess = _Session(ws, pool)
 
@@ -490,14 +491,14 @@ class WhenTheChatGoesQuietTests(_ChainCase):
     async def test_a_pump_that_never_ran_is_visible_in_the_diagnostics(self):
         self._stored_session("s1")
         worker = _worker("s1")
-        pool = FakePool(worker, active="s1")
+        pool = FakePool(worker, active="s1", store=session_store.SessionStore())
         rows = {r["label"]: r["detail"] for r in pool.bus.diagnostics()}
         self.assertIn("NOT RUNNING", rows["pump"])
 
     async def test_the_diagnostics_name_every_link(self):
         self._stored_session("s1")
         worker = _worker("s1")
-        pool = FakePool(worker, active="s1")
+        pool = FakePool(worker, active="s1", store=session_store.SessionStore())
         ws = _WS([json.dumps({"type": "query", "text": "x"}),
                   json.dumps({"type": "command", "text": "/diag"})])
         sess = _Session(ws, pool)
@@ -522,7 +523,7 @@ class TheApprovalCardReachesTheClientTests(_ChainCase):
 
     async def test_the_card_arrives_and_the_answer_comes_back(self):
         worker = self._parked_worker()
-        pool = FakePool(worker, active="s1")
+        pool = FakePool(worker, active="s1", store=session_store.SessionStore())
         bus = pool.bus
         sub = bus.subscribe()
 

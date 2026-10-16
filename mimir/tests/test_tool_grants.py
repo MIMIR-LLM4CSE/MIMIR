@@ -147,7 +147,7 @@ class TestSubSessionEnv:
     def test_a_sub_session_does_not_show_up_in_the_session_list(self):
         """It writes a directory, never a <id>.json at the root of sessions/ — which is
         what the front end enumerates."""
-        from mimir.client.ui.ws import session_store
+        from mimir.client.session import store as session_store
 
         with tempfile.TemporaryDirectory() as base:
             sessions = os.path.join(base, "sessions")

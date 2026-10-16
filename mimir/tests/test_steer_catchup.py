@@ -157,10 +157,11 @@ class _FakeWorker:
 
 
 class TheCatchUpTurnTests(unittest.TestCase):
-    """What the session does with steering the run handed back unread."""
+    """What becomes of steering the run handed back unread."""
 
     def setUp(self) -> None:
-        from mimir.client.ui.ws import session_store, transcript_log
+        from mimir.client.session import store as session_store
+        from mimir.client.ui.ws import transcript_log
         from mimir.client.ui.ws.ws_session import _Session
 
         self._tmp = tempfile.mkdtemp(prefix="mimir-steer-")
@@ -173,20 +174,22 @@ class TheCatchUpTurnTests(unittest.TestCase):
 
         self.ws, self.worker = _FakeWS(), _FakeWorker()
         self.session = _Session(self.ws, FakePool(self.worker))
-        meta = self.session.store.new_session()
-        self.session.store.save_session(meta)
-        self.sid = meta.id
+        conv = self.session.pool.conversations.new()
+        conv.history = [{"role": "user", "content": "do it"}]
+        conv.record.llm_history_full = list(conv.history)
+        self.sid = conv.id
+        self.session.conv = conv
         self.session._active_session_id = self.sid
-        self.session.history = [{"role": "user", "content": "do it"}]
-        self.session.history_full = list(self.session.history)
-        self.session._display_messages = []
         self.session._running_turn_is_ours = lambda: True
 
     def _steer(self, text: str) -> None:
         asyncio.run(self.session._handle_steer({"text": text}))
 
     def _flush(self, texts: list[str]) -> None:
-        asyncio.run(self.session._flush_unconsumed_steer(self.sid, texts))
+        """What happens when the answer lands: the pool carries on, the view says so."""
+        started = self.session.pool.wakes.after_turn(
+            self.session.conv, {"_unconsumed_steer": texts})
+        asyncio.run(self.session._announce_steer_turns(started))
 
     def test_the_unread_message_starts_the_next_turn(self) -> None:
         self._steer("use the other file")
@@ -207,8 +210,8 @@ class TheCatchUpTurnTests(unittest.TestCase):
 
     def test_an_older_identical_turn_is_not_swallowed(self) -> None:
         """Removal is by identity: the same words said before are a different turn."""
-        self.session.history.append({"role": "user", "content": "again"})
-        self.session.history_full = list(self.session.history)
+        self.session.conv.history.append({"role": "user", "content": "again"})
+        self.session.conv.record.llm_history_full = list(self.session.conv.history)
         self._steer("again")
         self._flush(["again"])
         _text, history, _sid = self.worker.submitted[0]
@@ -264,7 +267,7 @@ class TheCatchUpTurnTests(unittest.TestCase):
         """Entries kept past the turn would delete a later turn's history from under it."""
         self._steer("read in time")
         self._flush([])
-        self.assertEqual(self.session._live_steer, [])
+        self.assertEqual(self.session.conv.live_steer, [])
 
 
 class SteerSentIntoARunThatHasJustEndedTests(unittest.TestCase):
@@ -281,7 +284,8 @@ class SteerSentIntoARunThatHasJustEndedTests(unittest.TestCase):
     """
 
     def setUp(self) -> None:
-        from mimir.client.ui.ws import session_store, transcript_log
+        from mimir.client.session import store as session_store
+        from mimir.client.ui.ws import transcript_log
         from mimir.client.ui.ws.ws_session import _Session
 
         self._tmp = tempfile.mkdtemp(prefix="mimir-steer-late-")
@@ -300,13 +304,12 @@ class SteerSentIntoARunThatHasJustEndedTests(unittest.TestCase):
         self.worker.get_context_mode = lambda *_a: "flat"
         self.worker.context_overhead_tokens = lambda: 0
         self.session = _Session(self.ws, FakePool(self.worker))
-        meta = self.session.store.new_session()
-        self.session.store.save_session(meta)
-        self.sid = meta.id
+        conv = self.session.pool.conversations.new()
+        conv.history = [{"role": "user", "content": "do it"}]
+        conv.record.llm_history_full = list(conv.history)
+        self.sid = conv.id
+        self.session.conv = conv
         self.session._active_session_id = self.sid
-        self.session.history = [{"role": "user", "content": "do it"}]
-        self.session.history_full = list(self.session.history)
-        self.session._display_messages = []
 
     def _steer(self, text: str) -> None:
         asyncio.run(self.session._handle_steer({"text": text}))
@@ -348,7 +351,7 @@ class SteerSentIntoARunThatHasJustEndedTests(unittest.TestCase):
     def test_the_turn_is_not_bookkept_as_live_steering(self) -> None:
         """It steers nothing, so the answer flush must not delete its history entry."""
         self._steer("use the other file")
-        self.assertEqual(self.session._live_steer, [])
+        self.assertEqual(self.session.conv.live_steer, [])
 
 
 if __name__ == "__main__":

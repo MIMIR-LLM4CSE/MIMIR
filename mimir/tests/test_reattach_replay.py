@@ -16,9 +16,9 @@ from unittest import mock
 import os
 
 from mimir.client.ui.ws import job_scan, transcript_log
-from mimir.client.ui.ws.ws_session import _Session
 from mimir.client.ui.ws.ws_worker import _AgentWorker
 from mimir.tests._fake_pool import FakePool
+from mimir.tests._session import bare_session
 
 
 class _FakeWS:
@@ -47,12 +47,7 @@ class _ReplayCase(unittest.IsolatedAsyncioTestCase):
 
         self.worker = _bare_worker("s1")
         self.pool = FakePool(self.worker, active="s1")
-        self.sess = object.__new__(_Session)
-        self.sess.ws = _FakeWS()
-        self.sess.pool = self.pool
-        self.sess._active_session_id = "s1"
-        self.sess._rendered_seq = 0
-        self.sess._sub = None
+        self.sess = bare_session(self.pool, ws=_FakeWS())
 
     def _produce(self, *texts: str) -> None:
         """Let the agent emit, with nobody attached, and the pump record it."""
@@ -282,18 +277,8 @@ class ANewConversationRendersNothingYetTests(unittest.IsolatedAsyncioTestCase):
     """A new conversation starts with no watermark of its own."""
 
     def setUp(self) -> None:
-        self.sess = object.__new__(_Session)
-        self.sess.ws = _FakeWS()
-        self.sess.pool = FakePool(_bare_worker("s1"), active="s1")
-        self.sess.store = _StoreStub()
+        self.sess = bare_session(FakePool(_bare_worker("s1"), active="s1"))
         self.sess._rendered_seq = 1234          # the conversation being left
-        self.sess._unsaved_session_meta = None
-        self.sess._summary_task = None
-        self.sess._pending_interaction = None
-        self.sess._display_messages = []
-        self.sess.history = []
-        self.sess.history_full = []
-        self.sess._submitted_len = 7
         self.sess._publish_title = lambda *a, **k: None
         self.sess._send_sessions_list = _noop
         self.sess._emit_context_usage = _noop
@@ -303,15 +288,6 @@ class ANewConversationRendersNothingYetTests(unittest.IsolatedAsyncioTestCase):
         await self.sess._create_new_session()
         self.assertEqual(self.sess._rendered_seq, 0,
                          "a new conversation inherited another's rendered watermark")
-
-
-class _StoreStub:
-    def new_session(self):
-        from mimir.client.ui.ws.session_store import SessionStore
-        return SessionStore().new_session()
-
-    def list_sessions(self):
-        return []
 
 
 async def _noop(*_args, **_kwargs):
@@ -345,16 +321,15 @@ class EndedJobsAreReportedOnAttachTests(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(patcher.stop)
         self.addCleanup(self._tmp.cleanup)
 
-        self.sess = object.__new__(_Session)
-        self.sess.ws = _FakeWS()
-        self.sess._active_session_id = "s1"
         self.handled: list[dict] = []
+        pool = FakePool(_bare_worker("s1"), active="s1")
+        self.sess = bare_session(pool)
 
-        async def _handle(ev, steer=None):
+        def _consume(ev):
             self.handled.append(ev)
             return False
 
-        self.sess._handle_job_complete = _handle
+        pool.wakes.consume = _consume
 
     def _baseline(self, session_id: str) -> None:
         """This session has been looked at before — the ordinary state.
@@ -476,12 +451,8 @@ class TheStoredWatermarkTests(unittest.IsolatedAsyncioTestCase):
     """The client's statement of what it has rendered, kept across connections."""
 
     def setUp(self) -> None:
-        self.sess = object.__new__(_Session)
-        self.sess.ws = _FakeWS()
-        self.sess._active_session_id = "s1"
-        self.sess._rendered_seq = 0
-        self.sess._display_messages = []
-        self.sess._autosave_session = lambda messages: None
+        self.sess = bare_session(FakePool(_bare_worker("s1"), active="s1"))
+        self.sess._save = lambda: None
 
     async def test_the_transcript_carries_the_watermark_forward(self):
         await self.sess._handle_transcript(
@@ -503,7 +474,7 @@ class TheStoredWatermarkTests(unittest.IsolatedAsyncioTestCase):
         await self.sess._handle_transcript(
             {"session_id": "s1", "messages": [{"role": "user", "text": "hi"}]})
         self.assertEqual(self.sess._rendered_seq, 0)
-        self.assertEqual(len(self.sess._display_messages), 1)
+        self.assertEqual(len(self.sess.conv.display), 1)
 
 
 if __name__ == "__main__":

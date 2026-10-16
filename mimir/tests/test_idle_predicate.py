@@ -17,8 +17,11 @@ import time
 import unittest
 from unittest import mock
 
+from mimir.client.session.conversation import Conversations
+from mimir.client.session.store import SessionStore
 from mimir.client.ui.ws import job_scan, server_registry, transcript_log, ws_pool
 from mimir.client.ui.ws.event_bus import _EventBus
+from mimir.client.ui.ws.wake_router import WakeRouter
 from mimir.client.ui.ws.ws_pool import _AgentPool
 
 
@@ -70,8 +73,9 @@ class _IdleCase(unittest.TestCase):
         pool.stop_requested = None
         pool.server_idle_ttl = 100.0
         pool._idle_since = None
-        pool._wakes_pending = {}
-        pool._held_checkin = {}
+        pool.conversations = Conversations(SessionStore(self._tmp.name))
+        pool.store = pool.conversations.store
+        pool.wakes = WakeRouter(pool)
         pool.bus = _EventBus(pool)
         return pool
 
@@ -366,30 +370,15 @@ class TheClockTests(_IdleCase):
         # on a thread hours old with nothing between — a night that reads as lost
         # rather than as a decision taken.
         async def run():
-            pool, _w = self._idle_pool()
-            saved: list = []
-
-            class _Session:
-                def __init__(self) -> None:
-                    self.display_messages: list[dict] = []
-
-            class _Store:
-                def __init__(self) -> None:
-                    self.session = _Session()
-
-                def load_session(self, _sid):
-                    return self.session
-
-                def save_session(self, session):
-                    saved.append(session)
-
-            pool.store = _Store()
+            pool, w = self._idle_pool()
+            sid = next(sid for sid, _w in pool.items())
+            conversation = pool.conversations.new(sid)
             pool.server_idle_ttl = 0.0
             pool._consider_stopping()
             pool._consider_stopping()
             self.assertTrue(pool.stop_requested.is_set())
-            self.assertTrue(saved, "the notice was never saved")
-            text = pool.store.session.display_messages[-1]["text"]
+            self.assertTrue(pool.store.session_exists(sid), "the notice was never saved")
+            text = conversation.display[-1]["text"]
             self.assertIn("MIMIR stopped", text)
             # Why it stopped, not when: it had nothing to do throughout, and any work
             # would have restarted the clock.

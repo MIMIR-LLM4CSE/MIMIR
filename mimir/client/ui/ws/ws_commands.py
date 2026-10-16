@@ -31,7 +31,7 @@ class WsCommandHost(CommandHost):
             # Also what the budget assumes until an agent answers for itself, and what
             # the session is saved with: a mode chosen before the first query must not
             # be forgotten by the one piece of code that sizes the window.
-            self.session._resumed_context_mode = value
+            self.session.conv.record.context_mode = value
         return error
 
     def read(self, name: str) -> Any:

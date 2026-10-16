@@ -9,11 +9,10 @@ subscriber that falls behind is told it has a gap rather than stalling the proce
 import asyncio
 import queue as _queue
 import tempfile
-import time
 import unittest
 from unittest import mock
 
-from mimir.client.ui.ws import event_bus, transcript_log
+from mimir.client.ui.ws import transcript_log
 from mimir.client.ui.ws.event_bus import _EventBus
 from mimir.client.ui.ws.ws_worker import _AgentWorker
 
@@ -97,7 +96,7 @@ class PumpRecordsWhenDetachedTests(_BusCase):
             w = _bare_worker("s1")
             committed = []
             bus = _EventBus(_FakePool({"s1": w}),
-                            commit=lambda ev, extras: committed.append((ev, extras)))
+                            commit=lambda ev, extras: committed.append((ev, dict(extras))))
             sub = bus.subscribe()
             w.out_q.put({
                 "type": "answer", "text": "done",
@@ -117,12 +116,8 @@ class PumpRecordsWhenDetachedTests(_BusCase):
             for key in ("_full", "_turn_start", "_deferred"):
                 self.assertNotIn(key, written[0])
 
-            # They are not dropped — they reach the committer, which is what writes
-            # the session file when no attached view claims the answer. This one is
-            # subscribed, so the committer is offered it once that first refusal
-            # expires: it must still arrive carrying them.
-            self.assertEqual(committed, [])
-            bus._sweep_unclaimed(now=time.monotonic() + event_bus._CLAIM_GRACE + 1.0)
+            # They are not dropped — they reach the committer, which writes the
+            # conversation before any socket sees the answer, attached or not.
             self.assertEqual(len(committed), 1)
             _ev, extras = committed[0]
             self.assertEqual(extras["_turn_start"], 0)
@@ -313,15 +308,17 @@ class ConcludedTests(_BusCase):
         bus.pump_once()
         self.assertIsNotNone(bus.concluded_at("s1"))
 
-    def test_an_error_is_never_held_for_a_claim_nobody_makes(self):
-        # Offered like an answer, it waited out the grace window unclaimed — a warning
-        # per failed turn, and an agent held unreleasable meanwhile.
+    def test_an_error_writes_nothing(self):
+        # A failed turn has no answer to write; handed to the committer it would close
+        # the history on an empty reply.
         w = _bare_worker("s1")
-        bus = _EventBus(_FakePool({"s1": w}), commit=lambda ev, extras: None)
+        committed = []
+        bus = _EventBus(_FakePool({"s1": w}),
+                        commit=lambda ev, extras: committed.append(ev))
         bus.subscribe()
         w.out_q.put({"type": "error", "text": "backend gone"})
         bus.pump_once()
-        self.assertFalse(bus.unclaimed_for("s1"))
+        self.assertEqual(committed, [])
 
     def test_output_alone_never_counts_as_concluded(self):
         w = _bare_worker("s1")

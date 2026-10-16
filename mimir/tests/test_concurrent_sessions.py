@@ -17,13 +17,17 @@ from __future__ import annotations
 
 import json
 import queue as _queue
+import tempfile
 import threading
 import unittest
 from collections import OrderedDict
 
+from mimir.client.session.conversation import Conversations
+from mimir.client.session.store import SessionStore
 from mimir.client.ui.ws.event_bus import _EventBus
 from mimir.client.ui.ws.ws_session import _Session
 from mimir.client.ui.ws.ws_worker import _AgentWorker
+from mimir.tests._session import bare_session
 
 
 def _watch(*, done: bool = False):
@@ -80,6 +84,8 @@ class _ManyPool:
         # The real bus over this stand-in: what carries a worker's output to a session
         # is the seam under test, so faking it would test the call and not the seam.
         self.bus = _EventBus(self)
+        self._tmp = tempfile.TemporaryDirectory()
+        self.conversations = Conversations(SessionStore(self._tmp.name))
 
     def get(self, session_id):
         return self._workers.get(session_id or "")
@@ -106,17 +112,7 @@ class _ManyPool:
 
 
 def _session(pool: _ManyPool, active: str) -> _Session:
-    sess = object.__new__(_Session)
-    sess.ws = _FakeWS()
-    sess.pool = pool
-    sess._active_session_id = active
-    sess._stale_prompt_ids = set()
-    sess._pending_interaction = None
-    sess._display_messages = []
-    sess._detached_turns = {}
-    sess._submitted_len = 0
-    sess._live_rows = {}
-    sess._sent_progress = {}
+    sess = bare_session(pool, active=active, ws=_FakeWS())
     pool.set_active(active)
     return sess
 

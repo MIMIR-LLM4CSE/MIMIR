@@ -24,10 +24,13 @@ import tempfile
 import unittest
 from unittest import mock
 
-from mimir.client.ui.ws import job_scan, session_store, transcript_log
+from mimir.client.session import store as session_store
+from mimir.client.ui.ws import job_scan, transcript_log
 from mimir.client.ui.ws.event_bus import _EventBus
 from mimir.client.ui.ws.job_scan import scan_session
-from mimir.client.ui.ws.session_store import SessionStore
+from mimir.client.session.conversation import Conversations
+from mimir.client.session.store import SessionStore
+from mimir.client.ui.ws.wake_router import WakeRouter
 from mimir.client.ui.ws.ws_pool import _AgentPool
 
 
@@ -87,11 +90,11 @@ class _HeadlessCase(unittest.TestCase):
         pool.stop_requested = None
         pool.server_idle_ttl = 100.0
         pool._idle_since = None
-        pool._wakes_pending = {}
-        pool._held_checkin = {}
+        pool.conversations = Conversations(self.store)
         pool.store = self.store
-        pool.bus = _EventBus(pool, commit=pool._commit_turn,
-                             durable=pool.consume_durable_event)
+        pool.wakes = WakeRouter(pool)
+        pool.bus = _EventBus(pool, commit=pool.commit_turn, durable=pool.wakes.consume,
+                             steered=pool.wakes.steered)
         return pool
 
     def _session(self, question: str = "launch the run"):
@@ -136,7 +139,7 @@ class AWakeStartsATurnTests(_HeadlessCase):
         s = self._session()
         w = _Worker(s.id)
         pool = self._pool({s.id: w})
-        pool.consume_durable_event(self._complete(s.id))
+        pool.wakes.consume(self._complete(s.id))
 
         self.assertEqual(len(w.queries), 1)
         self.assertEqual(w.queries[0]["session_id"], s.id)
@@ -151,7 +154,7 @@ class AWakeStartsATurnTests(_HeadlessCase):
         s = self._session("validate J0 when the first cost appears")
         w = _Worker(s.id)
         pool = self._pool({s.id: w})
-        pool.consume_durable_event(self._complete(s.id))
+        pool.wakes.consume(self._complete(s.id))
 
         handed = w.queries[0]["history"]
         self.assertEqual(handed[0]["content"], "validate J0 when the first cost appears")
@@ -162,7 +165,7 @@ class AWakeStartsATurnTests(_HeadlessCase):
         # and `_commit_turn` writes its answer against the history stored here.
         s = self._session()
         pool = self._pool({s.id: _Worker(s.id)})
-        pool.consume_durable_event(self._complete(s.id))
+        pool.wakes.consume(self._complete(s.id))
 
         stored = self.store.load_session(s.id)
         self.assertEqual(stored.llm_history[-1]["role"], "user")
@@ -172,7 +175,7 @@ class AWakeStartsATurnTests(_HeadlessCase):
     def test_the_user_finds_the_wake_on_their_return(self):
         s = self._session()
         pool = self._pool({s.id: _Worker(s.id)})
-        pool.consume_durable_event(self._complete(s.id))
+        pool.wakes.consume(self._complete(s.id))
 
         stored = self.store.load_session(s.id)
         self.assertTrue(stored.display_messages[-1]["text"].startswith("🔔"))
@@ -182,7 +185,7 @@ class AWakeStartsATurnTests(_HeadlessCase):
         # no question in front of it.
         s = self._session()
         pool = self._pool({s.id: _Worker(s.id)})
-        pool.consume_durable_event(self._complete(s.id))
+        pool.wakes.consume(self._complete(s.id))
 
         events = transcript_log.read_since(s.id, 0)[0]
         self.assertEqual([e["type"] for e in events], ["job_wake"])
@@ -196,7 +199,7 @@ class ItSettlesWhatItDeliversTests(_HeadlessCase):
         pool = self._pool({s.id: _Worker(s.id)})
         self.assertEqual([j.job_key for j in scan_session(s.id)], ["j1"])
 
-        pool.consume_durable_event(self._complete(s.id))
+        pool.wakes.consume(self._complete(s.id))
         self.assertEqual(scan_session(s.id), [])
 
     def test_a_run_it_could_not_deliver_stays_owed(self):
@@ -205,7 +208,7 @@ class ItSettlesWhatItDeliversTests(_HeadlessCase):
         s = self._session()
         self._ended_job(s.id, "j1")
         pool = self._pool()
-        pool.consume_durable_event(self._complete(s.id))
+        pool.wakes.consume(self._complete(s.id))
 
         self.assertEqual([j.job_key for j in scan_session(s.id)], ["j1"])
 
@@ -216,7 +219,7 @@ class ItSettlesWhatItDeliversTests(_HeadlessCase):
         self._ended_job(s.id, "j1")
         w = _Worker(s.id, busy=True)
         pool = self._pool({s.id: w})
-        pool.consume_durable_event(self._complete(s.id))
+        pool.wakes.consume(self._complete(s.id))
 
         self.assertEqual(len(w.steers), 1)
         self.assertEqual(w.queries, [])
@@ -224,10 +227,9 @@ class ItSettlesWhatItDeliversTests(_HeadlessCase):
 
 
 class WhoseJobItIsTests(_HeadlessCase):
-    def test_an_attached_client_routes_it_instead(self):
+    def test_an_attached_client_does_not_start_a_second_turn(self):
         # Two consumers starting a turn for one finished run is the duplicate no marker
-        # can catch — neither has written it yet. A subscriber present means a
-        # `_Session` is about to do this against the history it holds on screen.
+        # can catch. There is one consumer: the client is told, it does not act.
         s = self._session()
         w = _Worker(s.id)
         pool = self._pool({s.id: w})
@@ -235,7 +237,7 @@ class WhoseJobItIsTests(_HeadlessCase):
         pool.bus.subscribe()
         pool.bus.pump_once()
 
-        self.assertEqual(w.queries, [])
+        self.assertEqual(len(w.queries), 1)
 
     def test_the_pump_hands_it_over_when_nobody_is_attached(self):
         # The wiring, end to end: a watcher puts the event on the worker's queue and
@@ -254,14 +256,14 @@ class WhoseJobItIsTests(_HeadlessCase):
         w = _Worker(s.id)
         pool = self._pool({s.id: w, other.id: _Worker(other.id)})
         pool.active_session_id = other.id
-        pool.consume_durable_event(self._complete(s.id))
+        pool.wakes.consume(self._complete(s.id))
 
         self.assertEqual(len(w.queries), 1)
         self.assertEqual(w.queries[0]["session_id"], s.id)
 
     def test_an_event_with_no_conversation_is_dropped(self):
         pool = self._pool({"s1": _Worker("s1")})
-        pool.consume_durable_event(self._complete(None))
+        pool.wakes.consume(self._complete(None))
         self.assertEqual(pool._workers["s1"].queries, [])
 
 
@@ -270,7 +272,7 @@ class BulletinsTests(_HeadlessCase):
         s = self._session()
         w = _Worker(s.id)
         pool = self._pool({s.id: w})
-        pool.consume_durable_event(self._checkin(s.id))
+        pool.wakes.consume(self._checkin(s.id))
 
         self.assertEqual(len(w.queries), 1)
         self.assertIn("Background check-in", w.queries[0]["text"])
@@ -280,7 +282,7 @@ class BulletinsTests(_HeadlessCase):
         # instruction addressed to the model.
         s = self._session()
         pool = self._pool({s.id: _Worker(s.id)})
-        pool.consume_durable_event(self._checkin(s.id))
+        pool.wakes.consume(self._checkin(s.id))
 
         stored = self.store.load_session(s.id)
         self.assertEqual(stored.display_messages, [])
@@ -291,7 +293,7 @@ class BulletinsTests(_HeadlessCase):
         s = self._session()
         w = _Worker(s.id, busy=True)
         pool = self._pool({s.id: w})
-        pool.consume_durable_event(self._checkin(s.id))
+        pool.wakes.consume(self._checkin(s.id))
 
         self.assertEqual(w.queries, [])
         self.assertEqual(w.steers, [])
@@ -300,7 +302,7 @@ class BulletinsTests(_HeadlessCase):
         s = self._session()
         w = _Worker(s.id, prompt={"type": "approval"})
         pool = self._pool({s.id: w})
-        pool.consume_durable_event(self._checkin(s.id))
+        pool.wakes.consume(self._checkin(s.id))
 
         self.assertEqual(w.queries, [])
 

@@ -38,8 +38,8 @@ import uuid
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
 
-from ...config.paths import STATE_DIR
-from ...util.files import write_json_atomic
+from ..config.paths import STATE_DIR
+from ..util.files import write_json_atomic
 
 logger = logging.getLogger(__name__)
 
@@ -306,7 +306,21 @@ def _stored_rev(path: str) -> int:
 # ── Store ──────────────────────────────────────────────────────────────────────
 
 class SessionStore:
-    """Reads and writes sessions to .mimir/sessions/<id>.json."""
+    """Reads and writes sessions to <STATE_DIR>/sessions/<id>.json.
+
+    *root* puts the ``sessions`` directory elsewhere — a test's own directory. Left
+    out, ``STATE_DIR`` is read at each call, so patching it redirects every store.
+    """
+
+    def __init__(self, root: str | None = None) -> None:
+        self._root = root
+
+    def _dir(self) -> str:
+        if self._root is None:
+            return _sessions_dir()
+        base = os.path.join(self._root, "sessions")
+        os.makedirs(base, exist_ok=True)
+        return base
 
     # ── CRUD ──────────────────────────────────────────────────────────────────
 
@@ -322,7 +336,7 @@ class SessionStore:
     def list_sessions(self) -> list[SessionMeta]:
         """Return sessions sorted newest-first (by updated_at)."""
         metas: list[SessionMeta] = []
-        sdir = _sessions_dir()
+        sdir = self._dir()
         for fname in os.listdir(sdir):
             if not fname.endswith(".json"):
                 continue
@@ -361,7 +375,7 @@ class SessionStore:
         and say so. A caller that saves the same object repeatedly is unaffected: a
         successful save carries the new revision back onto it.
         """
-        sdir = _sessions_dir()
+        sdir = self._dir()
         target = os.path.join(sdir, f"{session.id}.json")
         on_disk = _stored_rev(target)
         if on_disk > session.rev:
@@ -382,7 +396,7 @@ class SessionStore:
         # Drop the sidecar directory too (todo_list.md, todo_deps.json,
         # transcript.jsonl) — otherwise a deleted session leaves its log behind and a
         # recycled id would append to a stranger's transcript.
-        sidecar = os.path.join(_sessions_dir(), os.path.basename(session_id))
+        sidecar = os.path.join(self._dir(), os.path.basename(session_id))
         if os.path.isdir(sidecar):
             shutil.rmtree(sidecar, ignore_errors=True)
 
@@ -394,4 +408,4 @@ class SessionStore:
     def _path(self, session_id: str) -> str:
         # Guard against path traversal.
         safe_id = os.path.basename(session_id)
-        return os.path.join(_sessions_dir(), f"{safe_id}.json")
+        return os.path.join(self._dir(), f"{safe_id}.json")

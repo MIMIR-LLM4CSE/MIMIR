@@ -13,7 +13,7 @@ from mimir.tests._fake_pool import FakePool
 from unittest.mock import patch
 
 from mimir.client.ui.ws import session_summary as ss
-from mimir.client.ui.ws.session_store import FullSession
+from mimir.client.session.store import FullSession
 
 
 def _msgs(n: int) -> list[dict]:
@@ -210,13 +210,17 @@ class WSLayerTests(unittest.IsolatedAsyncioTestCase):
 
     def _session(self, store):
         from mimir.client.ui.ws.ws_session import _Session
+        from mimir.client.session.conversation import Conversations
+        pool = FakePool(type("W", (), {"model": "m"})())
+        pool.conversations = Conversations(store)
+        pool.store = store
         sess = object.__new__(_Session)
         sess.ws = _FakeWS()
+        sess.pool = pool
         sess.store = store
-        sess._unsaved_session_meta = None
+        sess.conv = None
         sess._active_session_id = "s1"
         sess._summary_task = None
-        sess.pool = FakePool(type("W", (), {"model": "m"})())
         return sess
 
     async def test_provisional_and_generated_summaries_are_both_sent(self):

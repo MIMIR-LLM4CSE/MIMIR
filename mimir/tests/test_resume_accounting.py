@@ -22,10 +22,11 @@ from mimir.client.config import limits, paths
 from mimir.client.query_engine.context_budget import context_budget_for
 from mimir.client.query_engine import token_calibration
 from mimir.client.query_engine.backends.base import LLMBackend
-from mimir.client.ui.ws.session_store import FullSession
+from mimir.client.session.store import FullSession
 from mimir.client.ui.ws.ws_session import _Session
 from mimir.client.ui.ws.ws_worker import _AgentWorker
 from mimir.tests._fake_pool import FakePool
+from mimir.tests._session import bare_session
 
 
 class _NoAgentWorker:
@@ -47,12 +48,8 @@ class _NoAgentWorker:
 
 
 def _session(mode: str = "full") -> _Session:
-    sess = object.__new__(_Session)
-    sess.pool = FakePool(_NoAgentWorker(), active="s1")
-    sess._active_session_id = "s1"
-    sess._resumed_context_mode = mode
-    sess.history = []
-    sess.history_full = []
+    sess = bare_session(FakePool(_NoAgentWorker(), active="s1"))
+    sess.conv.record.context_mode = mode
     return sess
 
 
@@ -112,10 +109,7 @@ class BudgetOrderTests(unittest.IsolatedAsyncioTestCase):
 
         sess._ensure_worker = _ensure_worker
         sess._fit_history_to_budget = _fit
-        sess._pending_interaction = None
-        sess._display_messages = []
-        sess._autosave_session = lambda *_: None
-        sess._stale_prompt_ids = set()
+        sess._save = lambda: None
         sess.transcript = type("T", (), {"append": lambda *_: None})()
         sess.pool.enqueue = lambda *_a, **_k: 1
         sess.ws = type("WS", (), {"send": staticmethod(lambda *_: _done())})()
