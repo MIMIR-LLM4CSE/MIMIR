@@ -23,6 +23,7 @@ from __future__ import annotations
 import asyncio
 import queue as _queue
 import threading
+import time
 import unittest
 
 from mimir.client.ui.ws.ws_worker import _AgentWorker
@@ -54,7 +55,7 @@ def _worker_with_loop(agent: object | None) -> tuple[_AgentWorker, threading.Thr
     w._bg_jobs = {}
     w._checkin_task = None
     w._query_q = _queue.Queue()
-    w._query_event = threading.Event()
+    w._query_wake = None
     w._closed = threading.Event()
     w._current_task = None
     w.out_q = _queue.Queue()
@@ -167,6 +168,46 @@ class ACloseTests(unittest.TestCase):
         self.assertFalse(thread.is_alive(), "the query loop never saw the sentinel")
         self.assertTrue(w._query_q.empty(), "the sentinel was queued but not consumed")
 
+
+
+class TheQueryLoopWaitsTests(unittest.TestCase):
+    """It used to wake every 20 ms, through a thread of the executor, to look."""
+
+    def test_a_turn_queued_from_another_thread_starts_at_once(self) -> None:
+        w = object.__new__(_AgentWorker)
+        w.session_id = "s1"
+        w._query_q = _queue.Queue()
+        w._query_wake = None
+        w._current_task = None
+        w._query_session_id = None
+        w._own_session = lambda: "s1"
+        ran: list[str] = []
+        started = threading.Event()
+
+        async def _run_query(item: dict) -> None:
+            ran.append(item["text"])
+
+        w._run_query = _run_query
+        loop = asyncio.new_event_loop()
+        w._loop = loop
+
+        def _serve() -> None:
+            asyncio.set_event_loop(loop)
+            loop.call_soon(started.set)
+            loop.run_until_complete(w._query_loop())
+            loop.close()
+
+        thread = threading.Thread(target=_serve)
+        thread.start()
+        started.wait(2)
+        while w._query_wake is None:
+            time.sleep(0.001)
+        w.submit_query("go", [], session_id="s1")
+        w._query_q.put(None)
+        w._wake_query_loop()
+        thread.join(2)
+        self.assertFalse(thread.is_alive(), "the loop never woke for its sentinel")
+        self.assertEqual(ran, ["go"])
 
 if __name__ == "__main__":
     unittest.main()

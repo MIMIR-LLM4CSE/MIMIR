@@ -37,7 +37,7 @@ import uuid
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from itertools import chain, repeat
-from typing import Any
+from typing import Any, Callable
 
 from ... import human_pause
 from ...context.todo import load_todo_items
@@ -141,6 +141,28 @@ def _detach_grace() -> float:
         return 30.0
 
 
+class _Outbox(_queue.Queue):
+    """A worker's events on their way to the pump, which each one wakes.
+
+    The pump used to look every 50 ms whether or not anything was there. ``on_put`` is
+    set by the pool once the worker is built, to a thread-safe nudge of the pump; until
+    then, and if the loop is gone, the pump's own tick still drains what is here.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.on_put: Callable[[], None] | None = None
+
+    def put(self, item: Any, block: bool = True, timeout: float | None = None) -> None:
+        super().put(item, block, timeout)
+        notify = self.on_put
+        if notify is not None:
+            try:
+                notify()
+            except RuntimeError:
+                pass   # the loop is closing; there is no pump left to wake
+
+
 class _AgentWorker:
     """Runs MimirAgent in a dedicated background thread with its own event loop.
 
@@ -212,7 +234,7 @@ class _AgentWorker:
         self._error: Exception | None = None
 
         # Queues for cross-thread communication.
-        self.out_q: _queue.Queue[dict] = _queue.Queue()   # agent → WS
+        self.out_q = _Outbox()                               # agent → WS
         self._query_q: _queue.Queue[dict | None] = _queue.Queue()  # WS → query loop
         self._steer_q: _queue.Queue[str] = _queue.Queue()  # WS → running agent (mid-run steering)
         # Cards waiting on the user, oldest first, each holding the slot the thread
@@ -233,9 +255,9 @@ class _AgentWorker:
         # The card currently on screen, set for exactly as long as it is up. Read by a
         # connection that arrives while the wait is on (see _emit_prompt).
         self._pending_prompt: dict | None = None
-        # Event signalled whenever a new item is placed on _query_q so the
-        # background loop wakes up immediately instead of waiting out the poll interval.
-        self._query_event = threading.Event()
+        # Set (thread-safely, on this worker's loop) whenever an item is placed on
+        # _query_q: the query loop waits on it rather than polling the queue.
+        self._query_wake: asyncio.Event | None = None
 
         self._current_task: asyncio.Task | None = None
         # The session the front-end is currently showing. Not the same question as
@@ -500,18 +522,17 @@ class _AgentWorker:
             pass  # Non-fatal — first real query will trigger load.
 
     async def _query_loop(self) -> None:
+        # Bound to this loop, which is the one it is awaited on. A turn queued before
+        # it exists is found by the first look below.
+        self._query_wake = asyncio.Event()
         while True:
-            # Wait until a query (or shutdown sentinel) arrives.
-            # Use a short asyncio sleep + threading.Event combo so we yield to
-            # the event loop while still waking immediately when work arrives.
+            # Cleared before the look, not after the wait: an item queued between the
+            # two then wakes the next wait instead of being missed by it.
+            self._query_wake.clear()
             try:
                 item = self._query_q.get_nowait()
             except _queue.Empty:
-                # Block the thread for up to 0.02 s, then re-check.
-                await asyncio.get_event_loop().run_in_executor(
-                    None, lambda: self._query_event.wait(0.02)
-                )
-                self._query_event.clear()
+                await self._query_wake.wait()
                 continue
 
             if item is None:
@@ -792,7 +813,7 @@ class _AgentWorker:
                            "session_id": session_id, "resume": record,
                            "answer": answer})
         self.has_deferral = False     # answered: the turn is nobody's debt any more
-        self._query_event.set()
+        self._wake_query_loop()
 
     def _emit_prompt(self, payload: dict, questions: list | None = None) -> dict:
         """Register a card the caller is about to park on, and show it when its turn comes.
@@ -1305,7 +1326,17 @@ class _AgentWorker:
         because the conversation that launched the job may no longer be on screen.
         """
         self._query_q.put({"text": text, "history": history, "session_id": session_id})
-        self._query_event.set()  # wake the query loop immediately
+        self._wake_query_loop()
+
+    def _wake_query_loop(self) -> None:
+        """Wake the query loop, from whichever thread queued something for it."""
+        loop, wake = self._loop, self._query_wake
+        if loop is None or wake is None:
+            return   # not started yet: its first look finds what was queued
+        try:
+            loop.call_soon_threadsafe(wake.set)
+        except RuntimeError:
+            pass     # the loop has closed; nothing is left to wake
 
     def submit_steer(self, text: str) -> None:
         """Queue a message to inject into the RUNNING agent at its next step boundary."""
@@ -2170,7 +2201,7 @@ class _AgentWorker:
             if self._loop is not None and not task.done():
                 self._loop.call_soon_threadsafe(task.cancel)
         self._query_q.put(None)
-        self._query_event.set()
+        self._wake_query_loop()
 
     def aclose(self, timeout: float = 20.0) -> None:
         """Shut the worker down AND close the agent's servers, then join the thread.

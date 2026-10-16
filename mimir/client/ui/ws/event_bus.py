@@ -45,10 +45,11 @@ from .transcript_log import TranscriptLog
 
 logger = logging.getLogger(__name__)
 
-# How often the pump looks for output. Fast enough that streamed tokens do not read as
-# stutter, slow enough that an idle server is not a busy loop. The pump also wakes on
-# demand (see ``nudge``), so this is the ceiling on latency, not the usual case.
-_PUMP_INTERVAL = 0.05
+# How often the pump looks without being asked. A worker's outbox nudges it on every
+# event (see ``nudge``), so this is not the latency of anything a turn produces: it is
+# the housekeeping tick — telling parked workers whether anyone is attached — and the
+# backstop for an event put before its worker was wired to nudge.
+_PUMP_INTERVAL = 1.0
 
 # How many events one subscriber may fall behind before it is told it has a gap. Past
 # this the oldest are dropped: the journal still holds them, so the client recovers by
@@ -346,7 +347,8 @@ class _EventBus:
             pass
 
     def nudge(self) -> None:
-        """Ask the pump to look now rather than at the next tick."""
+        """Ask the pump to look now rather than at the next tick. On the loop only — a
+        worker thread goes through ``call_soon_threadsafe`` (see ``_Outbox``)."""
         try:
             self._wake.set()
         except Exception:
@@ -354,6 +356,9 @@ class _EventBus:
 
     async def _pump_loop(self) -> None:
         while True:
+            # Cleared before the tick, not after the wait: a nudge that arrives while
+            # this tick runs is then the next wake-up rather than a lost one.
+            self._wake.clear()
             try:
                 self.pump_once()
             except asyncio.CancelledError:
@@ -370,7 +375,6 @@ class _EventBus:
                 pass
             except asyncio.CancelledError:
                 raise
-            self._wake.clear()
 
     def _publish_attachment(self) -> None:
         """Tell every worker how long this process has been without a client.

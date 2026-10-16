@@ -13,7 +13,6 @@ import asyncio
 import json
 import logging
 import os
-import time
 from typing import Any
 
 from . import server_registry
@@ -25,13 +24,13 @@ from ._ws_runtime import (
     get_backend,
 )
 from .detach import detach as detach_process
+from .event_router import EventRouter
 from .job_scan import establish_baseline, has_baseline, is_settled, scan_all_sessions
 from .panel_runs import attach_runs, recorded_hosts_sections
 from .transcript_log import read_since
 from .ws_commands import WS_COMMANDS, WsCommandHost
 from .ws_pool import _AgentPool, idle_stop_reason
 from .ws_worker import _AgentWorker
-from ...protocol.events import DURABLE_EVENTS
 from ...protocol.messages import reconcile_tool_pairs
 from ...query_engine.deferral import KIND_CALLS, take_deferred_calls
 from ...session.commands import CommandResult
@@ -663,259 +662,12 @@ class _Session:
     # ── Drain loop ────────────────────────────────────────────────────────────
 
     async def _drain_loop(self) -> None:
-        """Forward this connection's share of the stream to the WS client.
+        """Forward this connection's share of the stream to the client (``EventRouter``).
 
-        ``run()`` subscribes before the handshake so nothing can be missed; this is the
-        safety net for a caller that starts the loop on its own.
+        ``run()`` subscribes before the handshake so nothing can be missed; the router
+        subscribes itself for a caller that starts the loop on its own.
         """
-        if self._sub is None:
-            self._sub = self.pool.bus.subscribe()
-        _todo_mtime: float = 0.0  # last known mtime of the session's todo file
-
-        async def _check_and_push_todos() -> None:
-            nonlocal _todo_mtime
-            try:
-                todo_path = _todo_file_for_session(self._active_session_id)
-                mtime = os.path.getmtime(todo_path) if os.path.exists(todo_path) else 0.0
-                if mtime != _todo_mtime:
-                    _todo_mtime = mtime
-                    items = self.worker._load_todos()
-                    if items:
-                        await self.ws.send(json.dumps({"type": "todo", "items": items}))
-            except Exception:
-                pass
-
-        _last_ctx_tick = 0.0
-
-        async def _tick_context_usage() -> None:
-            """Refresh the bar during a running turn, at most once a second.
-
-            A turn can run dozens of tool calls over several minutes; without this the
-            bar only moves when the answer lands and looks frozen for the whole run.
-            """
-            nonlocal _last_ctx_tick
-            if not self._running_turn_is_ours():
-                return  # a detached wake turn's usage is not this session's
-            now = time.monotonic()
-            if now - _last_ctx_tick < 1.0:
-                return
-            _last_ctx_tick = now
-            await self._emit_context_usage()
-
-        _last_progress_tick = 0.0
-
-        async def _tick_run_channels() -> None:
-            """Push what each blocking run is doing, at most once a second.
-
-            A run that blocks the turn for twenty minutes shows a spinner and nothing
-            else; the server publishes its phase on the run channel precisely because
-            the tool call it belongs to cannot answer until it is over. Transient, so
-            deliberately not appended to the transcript — like the context bar, it
-            describes a moment rather than recording one.
-            """
-            nonlocal _last_progress_tick
-            rows = self._rows_for(self._active_session_id)
-            if not rows:
-                return
-            now = time.monotonic()
-            if now - _last_progress_tick < 1.0:
-                return
-            _last_progress_tick = now
-            # Only the conversation on screen: a bar describes a moment the user is
-            # looking at, and a turn running elsewhere has nowhere to draw one. Its
-            # progress is on its own run channel either way, and is read when the user
-            # switches to it.
-            #
-            # A name serving two running rows cannot be attributed to either of them.
-            # Both publishers are non_batch, so this is insurance, not a live case.
-            sent = self._sent_progress.setdefault(self._active_session_id or "", {})
-            names = list(rows.values())
-            for call_id, name in list(rows.items()):
-                if names.count(name) > 1:
-                    continue
-                try:
-                    run = run_channel.current_run(name, self._active_session_id)
-                except Exception:
-                    continue
-                if not run:
-                    continue
-                phase = str(run.get("phase") or "")
-                percent = run.get("percent")
-                if not isinstance(percent, (int, float)):
-                    percent = None
-                # Nothing-to-say is skipped only while nothing was said: once a bar
-                # is up, its retraction (the build ended, the command went on) is a
-                # change the row must hear about, or the bar stays frozen.
-                if sent.get(call_id, ("", None)) == (phase, percent):
-                    continue
-                sent[call_id] = (phase, percent)
-                try:
-                    await self.ws.send(json.dumps({
-                        "type": "tool_progress", "id": call_id,
-                        "phase": phase, "percent": percent,
-                    }))
-                except Exception:
-                    return
-
-        while True:
-            # Read from this connection's subscription, not from the workers: the pump
-            # owns the draining, so that output is recorded whether or not this socket
-            # exists. Per-conversation order comes free — each worker owns its own FIFO
-            # — and the interleaving between them is harmless because every event
-            # carries the session it was produced for.
-            events: list[tuple[dict, dict]] = []
-            while True:
-                try:
-                    events.append(self._sub.queue.get_nowait())
-                except asyncio.QueueEmpty:
-                    break
-            for ev, extras in events:
-                # Which conversation this belongs to. Everything below addresses a
-                # session rather than "the session", because more than one may be
-                # producing at this instant.
-                owner = ev.get("session_id") or self._active_session_id
-                if ev.get("type") in DURABLE_EVENTS:
-                    # Already routed by the pool, to the conversation that launched the
-                    # job, before it reached here. What is left is to say so.
-                    foreign = self._is_foreign_event(ev)
-                    started = bool(extras.get("_started"))
-                    try:
-                        # A wake starts a turn nobody pressed send for. The client
-                        # marks itself busy on its own submit, so without this it has
-                        # no way to know one began, and offers no way to stop it — and
-                        # it cannot work it out: the wake may resume a session that is
-                        # not the one on screen, and marking the visible chat busy for
-                        # a turn running elsewhere leaves a stop button that stops
-                        # nothing. A run steered into the turn already running starts
-                        # nothing, and saying it did makes the client drop that turn's
-                        # live rows.
-                        await self.ws.send(json.dumps(
-                            {**ev, "resumes_active_session": not foreign and started},
-                            default=str))
-                    except Exception:
-                        return
-                    if ev.get("type") != "job_checkin":
-                        # One run fewer. Behind the notification, never ahead of it:
-                        # the news is what the user is waiting for and this is
-                        # bookkeeping.
-                        await self._send_sessions_list()
-                    continue
-                if self._is_foreign_event(ev):
-                    # Counted here rather than in the predicate, which must stay a
-                    # predicate. This is the one way the chat can go quiet that leaves
-                    # no trace: the event is withheld from the socket and journaled
-                    # under its own session, so the conversation looks stalled while
-                    # the record fills — and a reconnect replays it and it appears.
-                    if owner:
-                        self._foreign_withheld[owner] = (
-                            self._foreign_withheld.get(owner, 0) + 1)
-                    # A turn running in a conversation that is not on screen. Its output
-                    # has nowhere to be drawn, but it still happened: it goes to that
-                    # conversation's own log, so switching to it shows the whole turn and
-                    # not only the answer that ended it. (Progress is excluded for the same
-                    # reason it is below — it describes a moment.)
-                    if ev.get("type") in ("answer", "error"):
-                        if ev.get("type") == "answer":
-                            await self._announce_detached_answer(extras)
-                        await self._admit_waiting()
-                    continue
-                # Unwrap embedded JSON events (e.g. diff) from output lines.
-                if ev.get("type") == "output":
-                    text = ev.get("text", "").strip()
-                    if text.startswith("{") and text.endswith("}"):
-                        try:
-                            inner = json.loads(text)
-                            if isinstance(inner, dict) and "type" in inner:
-                                ev = inner
-                        except json.JSONDecodeError:
-                            pass
-                # The event is already journaled — the bus records it before fanning
-                # out — so a send that fails loses the socket, never the record.
-                try:
-                    await self.ws.send(json.dumps(ev, default=str))
-                except Exception:
-                    return
-                if ev.get("type") == "tool_call" and ev.get("divertible"):
-                    # Only divertible rows: they are exactly the ones a channel can
-                    # answer for, and the map is what both the divert click and the
-                    # progress poller resolve through.
-                    self._rows_for(owner)[str(ev.get("id") or "")] = str(ev.get("name") or "")
-                elif ev.get("type") == "tool_result":
-                    self._forget_row(str(ev.get("id") or ""), owner)
-                if ev.get("type") == "error":
-                    # A turn failed (often a context-overflow 400) and no `answer`
-                    # event follows, so refresh the context bar here or it keeps
-                    # showing pre-failure usage and never reflects the overflow.
-                    self._rows_for(owner).clear()
-                    self._sent_progress.setdefault(owner or "", {}).clear()
-                    await self._emit_context_usage()
-                    await self._admit_waiting()
-                if ev.get("type") == "file_progress":
-                    # Push accumulated batch_status for any files already written
-                    # in this turn so the BatchReviewBar appears/updates mid-turn.
-                    try:
-                        files = self.worker._build_batch_status()
-                        if files:
-                            await self.ws.send(json.dumps({"type": "batch_status", "files": files}))
-                    except Exception:
-                        pass
-                    # Pause so the browser can render the "writing..." card before
-                    # the write completes and the diff / answer messages arrive.
-                    await asyncio.sleep(0.1)
-                if ev.get("type") == "diff":
-                    # A file write just completed. Push an updated batch_status
-                    # immediately so the BatchReviewBar appears mid-turn rather
-                    # than waiting for the agent to finish.
-                    try:
-                        files = self.worker._build_batch_status()
-                        if files:
-                            await self.ws.send(json.dumps({"type": "batch_status", "files": files}))
-                    except Exception:
-                        pass
-                if ev.get("type") == "answer":
-                    # The turn is over: no row of it is still running, so nothing is
-                    # left for a channel to report on. Its own conversation's rows —
-                    # another turn may be running in another one, and its rows are live.
-                    self._rows_for(owner).clear()
-                    self._sent_progress.setdefault(owner or "", {}).clear()
-                    # Already written into the conversation by the pool, along with what
-                    # it started next; what is left here is showing it.
-                    committed = extras.get("_committed") or {}
-                    # Set aside while this conversation was still on screen: the card
-                    # it was parked on comes straight back.
-                    if extras.get("_deferred"):
-                        await self._resend_deferred_prompt()
-                    # Once the turn has landed, so the description says what was *done*
-                    # rather than what was asked, and the model call no longer competes
-                    # with the query the user is waiting on.
-                    self._schedule_summary_refresh()
-                    await self._emit_context_usage()
-                    # This conversation stopping work may let the pool release a different
-                    # idle one to make room for whoever is waiting.
-                    await self._admit_waiting()
-                    # What it is still doing, now that it has stopped answering. A turn
-                    # that launched a background run ends with no turn in flight and a
-                    # run going, and the panel decides from this list whether walking
-                    # away would abandon work — so a stale row here is a two-hour build
-                    # dropped with no question asked.
-                    await self._send_sessions_list()
-                    # Sent directly rather than via out_q, so the snapshot dict is read
-                    # *after* any batch_review_accept that arrived mid-run cleared it.
-                    try:
-                        files = self.worker._build_batch_status()
-                        await self.ws.send(json.dumps({"type": "batch_status", "files": files}))
-                    except Exception:
-                        pass
-                    # Steering past the last step boundary was never read, and the pool
-                    # has given it a turn of its own. Each bubble loses its "queued"
-                    # tag, and the last says a turn started: the chat marks itself busy
-                    # only for a turn it submitted, and without this the catch-up turn
-                    # runs with no stop button and no end the composer can see.
-                    await self._announce_steer_turns(committed.get("steer_turn") or [])
-            await asyncio.sleep(0.005)
-            await _check_and_push_todos()
-            await _tick_context_usage()
-            await _tick_run_channels()
+        await EventRouter(self).run()
 
     # Maps an inbound WS message "type" to the _Session handler method that serves it.
     # Replaces the former 13-branch ``if mtype == …`` chain in _handle.

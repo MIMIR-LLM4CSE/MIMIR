@@ -522,6 +522,9 @@ class _AgentPool:
         loop = asyncio.get_running_loop()
         worker = await loop.run_in_executor(
             None, lambda: _AgentWorker(self.model, session_id=session_id))
+        # Every event the worker emits wakes the pump, from whichever thread emits it.
+        # Anything it said while being built is picked up by the pump's own tick.
+        worker.out_q.on_put = lambda: loop.call_soon_threadsafe(self.bus.nudge)
         worker.active_session_id = self.active_session_id
         self.settings.replay(worker)
         # What the last agent of this conversation had learned and set aside. A panel
@@ -616,11 +619,11 @@ class _AgentPool:
           it, so without this the agent is releasable for the one moment at which it
           is needed most — and the conversation it belongs to has by definition been
           idle for hours, because it was waiting on a long run.
-        * **holding undrained output** — its last word has not been acted on. The
-          pump empties ``out_q`` every 50 ms and does the whole handover inside that
-          same synchronous tick; before it, closing the worker discards what it had
-          just said — the completion event included — and the agent that event is
-          addressed to with it.
+        * **holding undrained output** — its last word has not been acted on. Each
+          event wakes the pump, which does the whole handover inside one synchronous
+          tick; before it, closing the worker discards what it had just said — the
+          completion event included — and the agent that event is addressed to with
+          it.
         * **on screen** — the conversation the user is reading must stay instant.
 
     Together these are what make "ten minutes idle" safe to act on. Idleness is counted

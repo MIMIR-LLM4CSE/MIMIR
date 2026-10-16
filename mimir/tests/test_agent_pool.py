@@ -24,6 +24,7 @@ import unittest
 
 from mimir.client.ui.ws import ws_pool
 from mimir.client.ui.ws.ws_pool import _AgentPool
+from mimir.client.ui.ws.ws_worker import _Outbox
 
 
 class _StubWorker:
@@ -42,6 +43,13 @@ class _StubWorker:
         self._bg_jobs: dict = {}
         self._pending_prompt: dict | None = None
         self.applied: list[tuple] = []
+        self.out_q = _Outbox()
+
+    def drain(self) -> list:
+        out = []
+        while not self.out_q.empty():
+            out.append(self.out_q.get_nowait())
+        return out
 
     def is_busy(self) -> bool:
         return self.busy
@@ -446,8 +454,23 @@ class AdmissionLatencyTests(_PoolCase):
         self.assertIn("pool.pump()", source)
         self.assertIn("starting", source)
         # Both the ending of a turn in this conversation and in another one admit.
-        drain = inspect.getsource(ws_session._Session._drain_loop)
-        self.assertGreaterEqual(drain.count("_admit_waiting()"), 2)
+        from mimir.client.ui.ws import event_router
+        router = inspect.getsource(event_router.EventRouter)
+        self.assertGreaterEqual(router.count("_admit_waiting()"), 2)
+
+
+class AnEventWakesThePumpTests(_PoolCase):
+    """The pump used to look every 50 ms whether anything was there or not."""
+
+    async def test_an_event_from_the_worker_thread_wakes_the_pump(self) -> None:
+        import threading
+        pool = self._pool()
+        worker = await pool.worker_for("s1")
+        pool.bus._interval = 60.0          # nothing but the nudge can wake it in time
+        pool.bus._wake.clear()
+        threading.Thread(target=worker.out_q.put,
+                         args=({"type": "output", "text": "x"},)).start()
+        await asyncio.wait_for(pool.bus._wake.wait(), 2.0)
 
 
 class ShutdownClosesEverythingAtOnceTests(_PoolCase):

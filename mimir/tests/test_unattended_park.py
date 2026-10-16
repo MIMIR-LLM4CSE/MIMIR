@@ -173,7 +173,8 @@ class TheWaitTests(unittest.TestCase):
     def test_answering_the_deferral_clears_the_debt(self):
         w = _worker()
         w._query_q = _queue.Queue()
-        w._query_event = threading.Event()
+        w._loop = None
+        w._query_wake = None
         w.unattended_since = time.monotonic() - (_detach_grace() + 1)
         w._await_response(_card(w))
         self.assertTrue(w.has_deferral)
