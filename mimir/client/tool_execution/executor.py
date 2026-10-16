@@ -32,6 +32,7 @@ from ..guardrails.toollist import grantable_tools, grantable_writers
 from ..context.execution_context import ExecutionContext
 from ..protocol.tool_result import parse_tool_payload
 from ..protocol.tool_result import normalize_tool_content
+from ..core.ports import AgentPort
 
 _CONTINUATION_CHUNK = 120
 _OUTLINE_HINT_MAX_SYMBOLS = 40
@@ -46,7 +47,7 @@ _OUTLINE_STRUCTURAL_KINDS = frozenset({
 })
 
 
-def _build_continuation_hint(agent: Any, tool_name: str, payload: dict) -> str:
+def _build_continuation_hint(agent: AgentPort, tool_name: str, payload: dict) -> str:
     """Return a MORE_CONTENT hint when a read stopped short of the end of the file.
 
     Read off what the server reported, not off the arguments: the window that comes
@@ -76,7 +77,7 @@ def _build_continuation_hint(agent: Any, tool_name: str, payload: dict) -> str:
 
 
 async def _build_outline_hint(
-    agent: Any, tool_name: str, payload: dict, execution_context: ExecutionContext | None,
+    agent: AgentPort, tool_name: str, payload: dict, execution_context: ExecutionContext | None,
 ) -> str:
     """Return a symbol map of the file a truncated read only showed a slice of.
 
@@ -91,14 +92,14 @@ async def _build_outline_hint(
     if execution_context is None or not payload.get("truncated"):
         return ""
     path = payload.get("path") or ""
-    if not path or not agent._is_code_filepath(path):
+    if not path or not agent.is_code_filepath(path):
         return ""
     outline_tools = sorted(names_with_cap(CODE_NAV, agent.tool_caps))
     if not outline_tools:
         return ""
 
     counts = execution_context.nudge_counts
-    key = f"outline_hint:{agent._normalize_workspace_path(path)}"
+    key = f"outline_hint:{agent.normalize_workspace_path(path)}"
     if not isinstance(counts, dict) or counts.get(key):
         return ""
     counts[key] = 1
@@ -107,7 +108,7 @@ async def _build_outline_hint(
         # No execution_context: this call is the machine's, not the model's, and
         # read_files/checked_paths are discovery *evidence* the gates count. An
         # annotation must not clear a gate on the model's behalf.
-        result = await agent._run_tool(outline_tools[0], {"path": path}, execution_context=None)
+        result = await agent.run_tool(outline_tools[0], {"path": path}, execution_context=None)
         symbols = (parse_tool_payload(result) or {}).get("symbols") or []
     except Exception:
         return ""
@@ -141,7 +142,7 @@ async def _build_outline_hint(
 
 
 def _build_verdict_due_hint(
-    agent: Any, execution_context: ExecutionContext | None, before: set[str],
+    agent: AgentPort, execution_context: ExecutionContext | None, before: set[str],
 ) -> str:
     """Return a VERDICT_DUE line when this call left a run nobody has judged yet.
 
@@ -169,7 +170,7 @@ def _build_verdict_due_hint(
 
 
 def _build_imputation_hint(
-    agent: Any, execution_context: ExecutionContext | None, before: set[str],
+    agent: AgentPort, execution_context: ExecutionContext | None, before: set[str],
 ) -> str:
     """Return an IMPUTATION_DUE line when this call left a run red for the first time.
 
@@ -200,7 +201,7 @@ def _build_imputation_hint(
     )
 
 
-def _path_stamp(agent: Any, arguments: dict) -> tuple | None:
+def _path_stamp(agent: AgentPort, arguments: dict) -> tuple | None:
     """``(mtime_ns, size)`` of the file this call names, or ``None`` if it names none.
 
     What makes the read cache safe to answer from. The cache is invalidated on every
@@ -213,7 +214,7 @@ def _path_stamp(agent: Any, arguments: dict) -> tuple | None:
     if not isinstance(raw, str) or not raw.strip():
         return None
     try:
-        st = os.stat(absolute_workspace_path(agent._normalize_workspace_path(raw) or raw))
+        st = os.stat(absolute_workspace_path(agent.normalize_workspace_path(raw) or raw))
     except OSError:
         return None
     return (st.st_mtime_ns, st.st_size)
@@ -232,7 +233,7 @@ def _fork_base_stem(stem: str) -> str:
 
 
 def _build_fork_hint(
-    agent: Any, tool_name: str, arguments: dict, result: str,
+    agent: AgentPort, tool_name: str, arguments: dict, result: str,
     execution_context: ExecutionContext | None,
     require_edit_cap: bool = True,
 ) -> str:
@@ -259,7 +260,7 @@ def _build_fork_hint(
     counts = execution_context.nudge_counts
     if not isinstance(counts, dict) or counts.get("fork_hint"):
         return ""
-    path = agent._normalize_workspace_path(arguments.get("path") or "")
+    path = agent.normalize_workspace_path(arguments.get("path") or "")
     if not path or is_scratch_path(path):
         return ""
     try:
@@ -306,7 +307,7 @@ def _build_fork_hint(
 
 
 async def run_post_write_validation(
-    agent: Any,
+    agent: AgentPort,
     tool_name: str,
     arguments: dict[str, Any],
     execution_context: ExecutionContext | None,
@@ -321,11 +322,11 @@ async def run_post_write_validation(
     crashing validator must never be able to turn a successful write into a failed
     tool row — the dispatch layer gives this its own independent budget.
     """
-    target_path = agent._normalize_workspace_path(arguments.get("path"))
+    target_path = agent.normalize_workspace_path(arguments.get("path"))
     if not (has_cap(tool_name, EDIT, agent.tool_caps) and target_path):
         return ""
     try:
-        auto_validation = await agent._auto_validate_written_file(target_path, execution_context)
+        auto_validation = await agent.auto_validate_written_file(target_path, execution_context)
     except Exception:
         return ""
     if auto_validation:
@@ -334,7 +335,7 @@ async def run_post_write_validation(
 
 
 async def run_post_tool_annotations(
-    agent: Any,
+    agent: AgentPort,
     tool_name: str,
     arguments: dict[str, Any],
     result: str,
@@ -426,7 +427,7 @@ def _make_subagent_progress_cb(call_id: str):
 
 async def execute_tool_call(
     *,
-    agent: Any,
+    agent: AgentPort,
     tool_name: str,
     arguments: dict[str, Any],
     execution_context: ExecutionContext | None = None,
@@ -484,7 +485,7 @@ async def execute_tool_call(
     # In batch mode, snapshot the target file before the first write so we can
     # produce a diff and revert if the user rejects the batch at the end of turn.
     if agent.approvals.batch_mode:
-        path = agent._normalize_workspace_path(
+        path = agent.normalize_workspace_path(
             target_path_arg(tool_name, arguments, agent.tool_caps))
         if path:
             agent.approvals.record_snapshot(path)
@@ -536,7 +537,7 @@ async def execute_tool_call(
 
     # Invalidate cached reads for a path when it has just been written.
     if has_cap(tool_name, EDIT, agent.tool_caps):
-        written_path = agent._normalize_workspace_path(arguments.get("path") or "")
+        written_path = agent.normalize_workspace_path(arguments.get("path") or "")
         if written_path:
             stale = [k for k in cache if has_cap(k[0], CACHEABLE, agent.tool_caps) and written_path in str(k)]
             for k in stale:

@@ -66,6 +66,7 @@ from ...config.limits import (
 )
 from .plugins import NudgeRegistry
 from ...context.execution_context import ExecutionContext
+from ...core.ports import AgentPort
 
 logger = logging.getLogger(__name__)
 
@@ -393,7 +394,7 @@ def needs_incomplete_finalization(execution_context: ExecutionContext) -> bool:
 
 def maybe_append_nudge(
     *,
-    agent: Any,
+    agent: AgentPort,
     query: str,
     active_mode: str,
     execution_context: ExecutionContext,
@@ -440,7 +441,7 @@ def maybe_append_nudge(
 
 def nudge_pending(
     *,
-    agent: Any,
+    agent: AgentPort,
     query: str,
     active_mode: str,
     execution_context: ExecutionContext,
@@ -537,7 +538,7 @@ def _should_nudge_validation(execution_context: ExecutionContext) -> bool:
     )
 
 
-def _validation_nudge_content(agent: Any, execution_context: ExecutionContext) -> str:
+def _validation_nudge_content(agent: AgentPort, execution_context: ExecutionContext) -> str:
     # Short pointer only — the full TIER 1 rationale already lives in the system
     # prompt; re-asserting it here as a user-role message would just duplicate the
     # strictest content through the more coercive channel. Pending validation is
@@ -660,7 +661,7 @@ def _exercise_budget_left(execution_context: ExecutionContext) -> bool:
     )
 
 
-def exercise_route(agent: Any, execution_context: ExecutionContext) -> tuple[str, str]:
+def exercise_route(agent: AgentPort, execution_context: ExecutionContext) -> tuple[str, str]:
     """``(route, obstacle)``: the one direct command that would exercise this change,
     named — or ``""`` and what stood in the way.
 
@@ -724,11 +725,11 @@ def exercise_route(agent: Any, execution_context: ExecutionContext) -> tuple[str
     return _blocked("nothing written here starts with one direct command")
 
 
-def _exercise_route(agent: Any, execution_context: ExecutionContext) -> str:
+def _exercise_route(agent: AgentPort, execution_context: ExecutionContext) -> str:
     return exercise_route(agent, execution_context)[0]
 
 
-def record_exercise_obstacle(agent: Any, execution_context: ExecutionContext) -> None:
+def record_exercise_obstacle(agent: AgentPort, execution_context: ExecutionContext) -> None:
     """Note on the context why the change could not be exercised, for the ledger.
 
     Asked where the ledger is built, for the case the ledger reports it in: code was
@@ -776,7 +777,7 @@ def _should_nudge_unfinished_plan(execution_context: ExecutionContext) -> bool:
     )
 
 
-def _should_nudge_unexercised_code(agent: Any, execution_context: ExecutionContext) -> bool:
+def _should_nudge_unexercised_code(agent: AgentPort, execution_context: ExecutionContext) -> bool:
     """Shared budget left, every written file checked, and nothing was ever run.
 
     Mutually exclusive with the two rows around it: ``validation`` speaks while a file
@@ -816,7 +817,7 @@ def _should_nudge_env_resolution(
 
 def maybe_inject_env_resolution(
     *,
-    agent: Any,
+    agent: AgentPort,
     active_mode: str,
     execution_context: ExecutionContext,
     messages: list[dict[str, Any]],
@@ -1028,10 +1029,10 @@ class _CoreNudge:
     # Per-category caps and (for guidance) the enforcement/mode gate live inside each
     # row's ``should_fire``, so the row answers the cascade's interface directly.
 
-    def fires(self, agent: Any, query: str, mode: str, ec: ExecutionContext, level: str) -> bool:
+    def fires(self, agent: AgentPort, query: str, mode: str, ec: ExecutionContext, level: str) -> bool:
         return self.should_fire(agent, query, mode, ec, level)
 
-    def text(self, agent: Any, ec: ExecutionContext) -> str:
+    def text(self, agent: AgentPort, ec: ExecutionContext) -> str:
         return str(self.render(agent, ec) or "")
 
 

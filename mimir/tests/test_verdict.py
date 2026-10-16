@@ -300,7 +300,7 @@ class VerdictToolTests(unittest.TestCase):
         )}
         return types.SimpleNamespace(
             tool_caps=reg,
-            _normalize_workspace_path=lambda p: p or "",
+            normalize_workspace_path=lambda p: p or "",
         )
 
     def _ctx(self):

@@ -19,6 +19,7 @@ from .loop_base import ModeSwitch, StepLoop, TurnContext
 from .plan_loop import PlanLoop
 from .verification import build_ledger
 from ..context.execution_context import ExecutionContext
+from ..core.ports import AgentPort
 
 
 def _loop_for(turn: TurnContext, mode: str, system_content: str, *,
@@ -72,7 +73,7 @@ def _emit_interrupted_state(execution_context: ExecutionContext) -> None:
 
 async def run_agent_query(
     *,
-    agent: Any,
+    agent: AgentPort,
     query: str,
     max_steps: int = 0,
     history: list[dict] | None = None,
@@ -97,22 +98,22 @@ async def run_agent_query(
     ``_finalize_answer`` for end-of-query bookkeeping.
     """
     agent._tool_cache = {}
-    execution_context = agent._new_execution_context()
+    execution_context = agent.new_execution_context()
     # Set here rather than passed in: a front-end's stand-in agent supplies its own
     # zero-argument factory, and the root is a fact about the agent either way.
     execution_context.workspace_root = getattr(agent, "workspace_root", "")
-    agent._apply_carry_context(execution_context)
+    agent.apply_carry_context(execution_context)
     validate_execution_context(execution_context)
-    active_mode = agent._normalize_mode(mode or agent.mode)
+    active_mode = agent.normalize_mode(mode or agent.mode)
     # Baseline for the live-mode check: only a *later* change to agent.mode is a
     # user switching mid-run. Seeded from the agent, not from active_mode, so an
     # explicit per-query override never registers as one. See _live_mode.
     execution_context.observed_agent_mode = getattr(agent, "mode", active_mode)
 
-    system_content = await agent._build_system_content(active_mode=active_mode)
+    system_content = await agent.build_system_content(active_mode=active_mode)
 
     # Store the active todo file path so _sync_checklist can watch it for changes.
-    execution_context.todo_file_path = agent._get_todo_file()
+    execution_context.todo_file_path = agent.todo_file()
 
     # The caller may or may not have already appended the current user turn to
     # ``history``: the WS server does (it owns the chat history and appends the

@@ -362,7 +362,7 @@ class _EmittingAgent(_FakeAgent):
         return self._answer
 
 
-def _run_tool(agent: _FakeAgent, ctx):
+def run_tool(agent: _FakeAgent, ctx):
     with _patched_agent(agent):
         return asyncio.run(spawn.spawn_agent("find X", ctx=ctx))
 
@@ -370,32 +370,32 @@ def _run_tool(agent: _FakeAgent, ctx):
 class ProgressForwardingTests(unittest.TestCase):
     def test_the_child_s_tool_calls_reach_the_caller_in_order(self):
         ctx = _RecordingCtx()
-        _run_tool(_EmittingAgent("X is in a.py:12."), ctx)
+        run_tool(_EmittingAgent("X is in a.py:12."), ctx)
         kinds = [json.loads(m)["t"] for _, m in ctx.reports]
         self.assertEqual(kinds, ["tc", "tr"])
         self.assertEqual(json.loads(ctx.reports[0][1])["n"], "grep")
 
     def test_the_progress_counter_only_moves_forward(self):
         ctx = _RecordingCtx()
-        _run_tool(_EmittingAgent(), ctx)
+        run_tool(_EmittingAgent(), ctx)
         counts = [p for p, _ in ctx.reports]
         self.assertEqual(counts, sorted(set(counts)))
 
     def test_the_answer_is_unchanged_by_any_of_this(self):
         ctx = _RecordingCtx()
-        out = _run_tool(_EmittingAgent("X is in a.py:12."), ctx)
+        out = run_tool(_EmittingAgent("X is in a.py:12."), ctx)
         self.assertEqual(out["status"], "ok")
         self.assertEqual(out["answer"], "X is in a.py:12.")
         self.assertTrue(out["completed"])
         self.assertEqual(out["files_read"], ["/w/a.py", "/w/b.py"])
 
     def test_a_caller_that_is_not_listening_changes_nothing(self):
-        out = _run_tool(_EmittingAgent("X is in a.py:12."), None)
+        out = run_tool(_EmittingAgent("X is in a.py:12."), None)
         self.assertEqual(out["status"], "ok")
         self.assertEqual(out["answer"], "X is in a.py:12.")
 
     def test_a_dead_channel_never_costs_the_run_its_answer(self):
-        out = _run_tool(_EmittingAgent("X is in a.py:12."), _RecordingCtx(fail=True))
+        out = run_tool(_EmittingAgent("X is in a.py:12."), _RecordingCtx(fail=True))
         self.assertEqual(out["status"], "ok")
         self.assertEqual(out["answer"], "X is in a.py:12.")
 
@@ -430,7 +430,7 @@ class ApprovalModeInheritanceTests(unittest.TestCase):
         for mode in ("manual", "auto", "auto_all"):
             with self.subTest(mode=mode):
                 agent = _FakeAgent()
-                _run_tool(agent, _MetaCtx(mode))
+                run_tool(agent, _MetaCtx(mode))
                 self.assertEqual(agent.approvals.approval_mode, mode)
 
 
@@ -441,10 +441,10 @@ class UserChannelTests(unittest.TestCase):
         """Its call is still open, so its approvals and questions ride that session
         rather than being refused on the user's behalf."""
         agent = _FakeAgent()
-        _run_tool(agent, _MetaCtx("manual"))
+        run_tool(agent, _MetaCtx("manual"))
         self.assertFalse(agent.approvals.unattended)
-        for hook in ("_request_tool_approval", "_request_path_approval",
-                     "_request_user_question"):
+        for hook in ("request_tool_approval", "request_path_approval",
+                     "request_user_question"):
             self.assertTrue(callable(getattr(agent, hook, None)), hook)
 
     def test_a_detached_child_can_reach_the_user_too(self):
@@ -542,7 +542,7 @@ class UserChannelTests(unittest.TestCase):
         loop = asyncio.new_event_loop()
         threading.Thread(target=loop.run_forever, daemon=True).start()
         spawn._install_user_channel(agent, _Ctx(), loop, "build the axis")
-        approved, note = agent._request_tool_approval("bash_run", {"command": "make -j"})
+        approved, note = agent.request_tool_approval("bash_run", {"command": "make -j"})
         loop.call_soon_threadsafe(loop.stop)
 
         self.assertTrue(answered.get("asked"))
@@ -570,7 +570,7 @@ class UserChannelTests(unittest.TestCase):
         loop = asyncio.new_event_loop()
         threading.Thread(target=loop.run_forever, daemon=True).start()
         spawn._install_user_channel(agent, session, loop, "vectorise the inner loop")
-        approved, _ = agent._request_tool_approval("write_file", {"path": "/w/a.c"})
+        approved, _ = agent.request_tool_approval("write_file", {"path": "/w/a.c"})
         loop.call_soon_threadsafe(loop.stop)
 
         self.assertFalse(approved)          # a declined card is not an approval
@@ -588,7 +588,7 @@ class UserChannelTests(unittest.TestCase):
         loop = asyncio.new_event_loop()
         threading.Thread(target=loop.run_forever, daemon=True).start()
         spawn._install_user_channel(agent, session, loop, "measure the tiling")
-        out = agent._request_user_question(
+        out = agent.request_user_question(
             [{"header": "Layout", "question": "Row or column major?",
               "options": [{"label": "Option A"}]}])
         loop.call_soon_threadsafe(loop.stop)
@@ -636,11 +636,11 @@ class ParkedChildBudgetTests(unittest.TestCase):
         self.assertEqual(spawn._caller_approval_mode(None), "manual")
         self.assertEqual(spawn._caller_approval_mode(_MetaCtx("yolo")), "manual")
         agent = _FakeAgent()
-        _run_tool(agent, _RecordingCtx())
+        run_tool(agent, _RecordingCtx())
         self.assertEqual(agent.approvals.approval_mode, "manual")
 
     def test_what_the_mode_blocked_reaches_the_caller_and_the_run_is_not_complete(self):
-        out = _run_tool(_BlockedAgent(), _MetaCtx("manual"))
+        out = run_tool(_BlockedAgent(), _MetaCtx("manual"))
         self.assertEqual(out["status"], "ok")
         self.assertFalse(out["completed"])
         self.assertEqual(out["blocked_by_mode"],
@@ -918,7 +918,7 @@ class _PollingAgent(_FakeAgent):
         self.polls = 0
         self.observed: list[bool] = []
 
-    async def _run_tool(self, tool: str, args: dict, execution_context=None,
+    async def run_tool(self, tool: str, args: dict, execution_context=None,
                         record_observations: bool = True) -> str:
         self.observed.append(record_observations)
         if args.get("op") == "output":

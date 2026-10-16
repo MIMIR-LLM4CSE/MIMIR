@@ -26,7 +26,7 @@ class _FakeAgent:
         self.todo_fp = todo_fp
         self.builds = 0
 
-    async def _build_system_content(self, active_mode: str) -> str:
+    async def build_system_content(self, active_mode: str) -> str:
         self.builds += 1
         return build_system_content(
             active_mode=active_mode, tool_owner={}, sensitive_tools=set(),

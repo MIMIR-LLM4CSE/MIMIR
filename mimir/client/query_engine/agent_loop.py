@@ -32,10 +32,11 @@ from .loop_base import (
 )
 from ..guardrails.toollist import tools_for_context, tools_for_readonly_mode
 from ..context.execution_context import ExecutionContext
+from ..core.ports import AgentPort
 
 
 def _mode_tools(
-    agent: Any, query: str, execution_context: ExecutionContext, active_mode: str,
+    agent: AgentPort, query: str, execution_context: ExecutionContext, active_mode: str,
 ) -> list[dict]:
     """Build the tool list for *active_mode*: read-only filter, then context pruning.
 
@@ -51,7 +52,7 @@ def _mode_tools(
     )
 
 
-def _mode_advertised_tools(agent: Any, active_mode: str) -> list[dict]:
+def _mode_advertised_tools(agent: AgentPort, active_mode: str) -> list[dict]:
     """The advertised set narrowed by the mode, from the agent when it can do it.
 
     The rule lives on the agent (``advertised_tools_for_mode``) so the context bar
@@ -68,7 +69,7 @@ def _mode_advertised_tools(agent: Any, active_mode: str) -> list[dict]:
 
 
 async def _sync_checklist(
-    agent: Any,
+    agent: AgentPort,
     messages: list[dict],
     active_mode: str,
     system_content: str,
@@ -118,7 +119,7 @@ async def _sync_checklist(
     if stamp == execution_context.checklist_stamp:
         return system_content
     execution_context.checklist_stamp = stamp
-    if not (getattr(agent, "_build_system_content", None) and messages
+    if not (getattr(agent, "build_system_content", None) and messages
              and messages[0].get("role") == "system"):
         return system_content
     rebuilt = await _rebuild_system_content(agent, active_mode, execution_context)
@@ -130,7 +131,7 @@ async def _sync_checklist(
 
 
 def _turn_may_be_rejected(
-    agent: Any, query: str, active_mode: str, execution_context: ExecutionContext,
+    agent: AgentPort, query: str, active_mode: str, execution_context: ExecutionContext,
 ) -> bool:
     """True if a bare final turn produced *now* would be sent back to the model.
 
@@ -277,7 +278,7 @@ class AgentLoop(StepLoop):
         return _review_batch(self.agent, answer, self.messages)
 
 
-def _review_batch(agent: Any, answer: str, messages: list[dict]) -> str:
+def _review_batch(agent: AgentPort, answer: str, messages: list[dict]) -> str:
     """Put the turn's batched edits to the user, and say on the answer what became of them.
 
     Both ways out of the loop end here — an answer, and running out of steps — so a

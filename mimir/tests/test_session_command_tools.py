@@ -1,7 +1,7 @@
 """A slash command must not be judged as if the model had asked for it.
 
 `call_session_tool` is what `/memory list`, `/memory clear` and `/proxy clean` run
-on, and it deliberately bypasses `agent._run_tool` — the full policy pipeline of
+on, and it deliberately bypasses `agent.run_tool` — the full policy pipeline of
 approvals, plan-shape gates and write policy. Those exist to weigh what the MODEL
 proposed. Applied to a command the user typed themselves, the plan gate answers with a
 refusal string in plan or ask mode, so the command does nothing, and scatters tool cards
@@ -49,7 +49,7 @@ def _worker_stub(session: _FakeSession, loop) -> types.SimpleNamespace:
     agent = types.SimpleNamespace(
         tool_owner={"memory_list_all": "memory"},
         sessions={"memory": session},
-        _run_tool=_boom,
+        run_tool=_boom,
     )
     return types.SimpleNamespace(_agent=agent, _loop=loop)
 
@@ -77,7 +77,7 @@ class CallSessionToolTests(unittest.TestCase):
 
         payload = self._run(worker, "memory_list_all", {})
 
-        # _run_tool would have raised; the call went straight to the MCP session.
+        # run_tool would have raised; the call went straight to the MCP session.
         self.assertEqual(session.calls, [("memory_list_all", {})])
         self.assertEqual(payload["status"], "ok")
         self.assertEqual(payload["count"], 0)

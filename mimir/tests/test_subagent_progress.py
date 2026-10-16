@@ -141,7 +141,7 @@ class CallSiteTests(unittest.IsolatedAsyncioTestCase):
             disabled_servers=set(),
             _tool_cache={},
             approvals=types.SimpleNamespace(batch_mode=False, approval_mode="auto"),
-            _normalize_workspace_path=lambda p: p,
+            normalize_workspace_path=lambda p: p,
             tools=[{"type": "function", "function": {"name": n}}
                    for n in ("delegate", "read_thing")],
         )

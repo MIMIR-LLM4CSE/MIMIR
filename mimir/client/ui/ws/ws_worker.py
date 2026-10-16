@@ -452,12 +452,12 @@ class _AgentWorker:
             agent.seed_classification_from_caps()
 
             # Patch approval to route through WS.
-            agent._request_tool_approval = self._approval_shim
+            agent.request_tool_approval = self._approval_shim
             # Route agent clarification questions (the ``ask_user_question`` tool,
             # delivered via MCP elicitation) through the same WS shim pattern.
-            agent._request_user_question = self._question_shim
+            agent.request_user_question = self._question_shim
             # Route out-of-workspace file-access approval through the same UI.
-            agent._request_path_approval = self._path_approval_shim
+            agent.request_path_approval = self._path_approval_shim
             # Let the loop pick up messages the user types WHILE the agent is
             # working (chat-while-busy steering); drained at each step boundary.
             agent._poll_steer = self._drain_steer_q
@@ -1683,14 +1683,14 @@ class _AgentWorker:
                 })
 
         state, reason = await job_poll.poll_until_terminal(
-            self._agent._run_tool, status_op,
+            self._agent.run_tool, status_op,
             interval=5.0, max_interval=30.0,
             call_timeout=job_poll.STATUS_CALL_TIMEOUT,
             unreadable_limit=job_poll.UNREADABLE_POLL_LIMIT,
             on_tick=_tick, label=job_key)
 
         summary = await job_poll.read_summary(
-            self._agent._run_tool, summary_op,
+            self._agent.run_tool, summary_op,
             call_timeout=job_poll.STATUS_CALL_TIMEOUT, label=job_key)
 
         logger.info("background job %r of session %s finished (%s); waking it",
@@ -1973,7 +1973,7 @@ class _AgentWorker:
         pipeline — the same bypass the CLI surface makes in
         ``chat_commands._call_platform_tool``, and for the same reason: approvals,
         plan-shape gates and the write policy exist to judge what the *model* asked
-        for. Routed through ``_run_tool`` instead, a command the user typed was weighed
+        for. Routed through ``run_tool`` instead, a command the user typed was weighed
         as if the model had proposed it — in plan or ask mode the plan gate answered
         with a refusal string, so the command did nothing and said nothing — and every
         one of them scattered tool cards through the transcript on its way.

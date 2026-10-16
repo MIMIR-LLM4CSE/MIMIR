@@ -138,7 +138,7 @@ async def run_chat_session(agent: Any) -> None:
     checklist_tool = name_with_arg_role("plan_steps", agent.tool_caps)
     if checklist_tool:
         if not _offer_session_resume():
-            await agent._run_tool(checklist_tool, {"steps": []})
+            await agent.run_tool(checklist_tool, {"steps": []})
 
     print("\n✅ MIMIR ready. Type 'quit' to exit.")
     print(

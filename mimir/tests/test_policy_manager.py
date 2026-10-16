@@ -35,37 +35,37 @@ class _FakeAgent:
 
 
     @staticmethod
-    def _normalize_tool_arguments(tool_name: str, arguments: dict) -> dict:
+    def normalize_tool_arguments(tool_name: str, arguments: dict) -> dict:
         normalized = dict(arguments)
         normalized["normalized"] = True
         return normalized
 
     @staticmethod
-    def _rewrite_tool_for_context(tool_name: str, arguments: dict) -> tuple[str, dict]:
+    def rewrite_tool_for_context(tool_name: str, arguments: dict) -> tuple[str, dict]:
         rewritten = dict(arguments)
         rewritten["rewritten"] = True
         return tool_name, rewritten
 
-    def _request_tool_approval(self, tool_name: str, arguments: dict) -> tuple[bool, str]:
+    def request_tool_approval(self, tool_name: str, arguments: dict) -> tuple[bool, str]:
         return False, "denied by user"
 
     @staticmethod
     def approval_scope(tool_name: str, arguments: dict) -> str:
         return f"fake:{tool_name}"
 
-    def _record_denied_tool_call(
+    def record_denied_tool_call(
         self, tool_name: str, arguments: dict, execution_context: dict | None, note: str = "",
     ) -> None:
         self.denied_calls.append((tool_name, arguments, execution_context, note))
 
     @staticmethod
-    def _denied_tool_result(
+    def denied_tool_result(
         tool_name: str, arguments: dict, note: str = "", execution_context: dict | None = None,
     ) -> str:
         return f"denied:{tool_name}:{arguments.get('path', '')}:{note}"
 
     @staticmethod
-    def _is_write_tool(tool_name: str) -> bool:
+    def is_write_tool(tool_name: str) -> bool:
         return tool_name in {
             "write_file",
             "append_file",
@@ -74,11 +74,11 @@ class _FakeAgent:
         }
 
     @staticmethod
-    def _normalize_workspace_path(path: str | None) -> str:
+    def normalize_workspace_path(path: str | None) -> str:
         return path or ""
 
     @staticmethod
-    def _is_code_filepath(path: str) -> bool:
+    def is_code_filepath(path: str) -> bool:
         # Simple check for common code extensions
         code_extensions = {".py", ".js", ".ts", ".cpp", ".c", ".h", ".java", ".go", ".rs"}
         return os.path.splitext(path)[1].lower() in code_extensions
@@ -330,12 +330,12 @@ class PolicyManagerTests(unittest.TestCase):
         so the read_file→read_file_lines heal is exercised end to end."""
         from mimir.client.tool_execution.normalizer import rewrite_tool_for_context
 
-        agent._rewrite_tool_for_context = lambda tool_name, arguments: rewrite_tool_for_context(
+        agent.rewrite_tool_for_context = lambda tool_name, arguments: rewrite_tool_for_context(
             tool_name,
             arguments,
             tool_owner=agent.tool_owner,
-            is_code_filepath=agent._is_code_filepath,
-            normalize_workspace_path_fn=agent._normalize_workspace_path,
+            is_code_filepath=agent.is_code_filepath,
+            normalize_workspace_path_fn=agent.normalize_workspace_path,
         )
 
     def test_read_file_alias_rewritten_before_registry_check(self) -> None:
@@ -431,7 +431,7 @@ class PolicyManagerTests(unittest.TestCase):
     def test_sensitive_tool_approved_returns_no_violation(self) -> None:
         agent = _FakeAgent()
         agent.approvals = _fake_approvals(lambda tool, args: True)
-        agent._request_tool_approval = lambda tool_name, arguments: (True, "approved")
+        agent.request_tool_approval = lambda tool_name, arguments: (True, "approved")
 
         with patch.object(policy_manager_module, "ensure_execution_context", return_value=build_execution_context()), \
              patch.object(policy_manager_module, "check_state_machine_guard", return_value=None), \
@@ -457,7 +457,7 @@ class PolicyManagerTests(unittest.TestCase):
             asked["count"] += 1
             return False, "denied by user"
 
-        agent._request_tool_approval = _never_called
+        agent.request_tool_approval = _never_called
         scope = agent.approval_scope("read_file_lines", {})
         context = build_execution_context(denial_history=[
             {"tool": "read_file_lines", "scope": scope, "kind": "denied", "reason": "denied by user"}
@@ -481,7 +481,7 @@ class PolicyManagerTests(unittest.TestCase):
         # The ladder escalates a goal, not the session: a different action starts fresh.
         agent = _FakeAgent()
         agent.approvals = _fake_approvals(lambda tool, args: True)
-        agent._request_tool_approval = lambda tool_name, arguments: (True, "approved once")
+        agent.request_tool_approval = lambda tool_name, arguments: (True, "approved once")
         context = build_execution_context(denial_history=[
             {"tool": "replace_in_file", "scope": "fake:replace_in_file",
              "kind": "denied", "reason": "denied by user"}

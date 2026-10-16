@@ -47,6 +47,7 @@ from ..context.capabilities import (
     names_with_cap, reserved_for_main,
 )
 from ..context.execution_context import ExecutionContext
+from ..core.ports import AgentPort
 
 logger = logging.getLogger(__name__)
 
@@ -168,7 +169,7 @@ def tools_for_readonly_mode(
     ]
 
 
-def grantable_tools(agent: Any) -> dict[str, str]:
+def grantable_tools(agent: AgentPort) -> dict[str, str]:
     """What the orchestrator may hand to a sub-agent right now: ``{tool: server}``.
 
     The same three filters that decide what *it* can use, in the same order, plus two:
@@ -203,7 +204,7 @@ def grantable_tools(agent: Any) -> dict[str, str]:
     return granted
 
 
-def grantable_writers(agent: Any, granted: dict[str, str] | None = None) -> list[str]:
+def grantable_writers(agent: AgentPort, granted: dict[str, str] | None = None) -> list[str]:
     """Which granted tools would have a sub-agent change the tree it works in.
 
     Read off the capabilities, here, because the spawning server sees only names: it

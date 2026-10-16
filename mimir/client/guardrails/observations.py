@@ -85,6 +85,7 @@ from ..context.bash_classify import (
 from ..context.execution_context import ExecutionContext
 from ..tool_execution.normalizer import parent_path
 from ..protocol.tool_result import parse_tool_payload
+from ..core.ports import AgentPort
 
 
 # Source-file path regex derived from the canonical extension set so it stays in sync
@@ -139,9 +140,9 @@ def _register_known_path(execution_context: ExecutionContext, candidate_path: st
     execution_context.existing_paths.add(candidate_path)
 
 
-def _target_path(agent: Any, tool_name: str, arguments: dict) -> str | None:
+def _target_path(agent: AgentPort, tool_name: str, arguments: dict) -> str | None:
     """The normalized workspace path this call targets."""
-    return agent._normalize_workspace_path(
+    return agent.normalize_workspace_path(
         target_path_arg(tool_name, arguments, agent.tool_caps))
 
 
@@ -216,7 +217,7 @@ def _enter_post_edit_state(execution_context: ExecutionContext) -> None:
 
 
 def _observe_edit_outcome(
-    agent: Any, tool_name: str, arguments: dict, status: Any, execution_context: ExecutionContext,
+    agent: AgentPort, tool_name: str, arguments: dict, status: Any, execution_context: ExecutionContext,
 ) -> None:
     """Record the outcome of a single-file code edit.
 
@@ -227,7 +228,7 @@ def _observe_edit_outcome(
     if not has_cap(tool_name, EDIT, agent.tool_caps):
         return
     edited_path = _target_path(agent, tool_name, arguments)
-    if not (edited_path and agent._is_code_filepath(edited_path)):
+    if not (edited_path and agent.is_code_filepath(edited_path)):
         return
 
     if status == "ok":
@@ -256,7 +257,7 @@ def _observe_edit_outcome(
     execution_context.edit_fail_streak_by_file[edited_path] = streak
 
 
-def _observe_todo_flags(agent: Any, tool_name: str, status: Any, execution_context: ExecutionContext) -> None:
+def _observe_todo_flags(agent: AgentPort, tool_name: str, status: Any, execution_context: ExecutionContext) -> None:
     """Flag that a task plan was recorded. The checklist (ordered steps) and the prose
     rationale are the same TASK_PLANNING capability, told apart by the `plan_steps`
     arg-role — the checklist carries the steps, the rationale does not."""
@@ -269,7 +270,7 @@ def _observe_todo_flags(agent: Any, tool_name: str, status: Any, execution_conte
 
 
 def _observe_replacement_tracking(
-    agent: Any, tool_name: str, arguments: dict, status: Any, execution_context: ExecutionContext,
+    agent: AgentPort, tool_name: str, arguments: dict, status: Any, execution_context: ExecutionContext,
 ) -> None:
     """Track old_text/new_text from replacement operations for completeness checking."""
     if not (has_cap(tool_name, REPLACEMENT_TRACK, agent.tool_caps) and status == "ok"):
@@ -277,7 +278,7 @@ def _observe_replacement_tracking(
     old_text = arguments.get("old_text")
     if not old_text:
         return
-    edited_path = agent._normalize_workspace_path(arguments.get("path"))
+    edited_path = agent.normalize_workspace_path(arguments.get("path"))
     last_file = execution_context.last_replace_file
     # If this edit is on a different file than the previous tracked edit,
     # clear the stale last_replace_* fields first so completeness checks
@@ -352,7 +353,7 @@ def _register_validation_failure(
 
 
 def _observe_validation_tool(
-    agent: Any, tool_name: str, arguments: dict, status: Any, execution_context: ExecutionContext,
+    agent: AgentPort, tool_name: str, arguments: dict, status: Any, execution_context: ExecutionContext,
 ) -> None:
     """A dedicated VALIDATE tool marks its target file validated on success.
 
@@ -367,13 +368,13 @@ def _observe_validation_tool(
         return
     arg_names = path_args(tool_name, getattr(agent, "tool_caps", None)) or ("filepath", "path")
     raw = next((arguments.get(a) for a in arg_names if arguments.get(a)), None)
-    target = agent._normalize_workspace_path(raw)
+    target = agent.normalize_workspace_path(raw)
     if target and target in execution_context.dirty_written_files:
         _mark_file_validated(execution_context, target)
 
 
 def _observe_missing_module(
-    agent: Any, tool_name: str, payload: dict, status: Any, execution_context: ExecutionContext,
+    agent: AgentPort, tool_name: str, payload: dict, status: Any, execution_context: ExecutionContext,
 ) -> None:
     """Flag when a check/run failed for a missing importable module (not a code defect).
 
@@ -415,7 +416,7 @@ def _observe_missing_module(
 
 
 def _observe_env_probe(
-    agent: Any, tool_name: str, execution_context: ExecutionContext,
+    agent: AgentPort, tool_name: str, execution_context: ExecutionContext,
 ) -> None:
     """Record that the agent enumerated the available runtime environments.
 
@@ -427,7 +428,7 @@ def _observe_env_probe(
 
 
 def _observe_env_mutation(
-    agent: Any, tool_name: str, payload: dict, status: Any, execution_context: ExecutionContext,
+    agent: AgentPort, tool_name: str, payload: dict, status: Any, execution_context: ExecutionContext,
 ) -> None:
     """Record a successful environment mutation as a cleanup obligation.
 
@@ -453,12 +454,12 @@ def _observe_env_mutation(
 
 
 def _observe_denial_clearing(
-    agent: Any, tool_name: str, arguments: dict, status: Any, execution_context: ExecutionContext,
+    agent: AgentPort, tool_name: str, arguments: dict, status: Any, execution_context: ExecutionContext,
 ) -> None:
     """Clear a recorded denial once the same tool+path later succeeds."""
     if status != "ok":
         return
-    resolved_path = agent._normalize_workspace_path(
+    resolved_path = agent.normalize_workspace_path(
         arguments.get("path")
         or arguments.get("filepath")
         or arguments.get("subdir")
@@ -477,23 +478,23 @@ def _observe_denial_clearing(
 
 
 def _observe_edit_loop_clear(
-    agent: Any, tool_name: str, arguments: dict, status: Any, execution_context: ExecutionContext,
+    agent: AgentPort, tool_name: str, arguments: dict, status: Any, execution_context: ExecutionContext,
 ) -> None:
     """Re-reading or re-checking a file resets its edit-loop failure tracking."""
     if not (clears_edit_loop(tool_name, agent.tool_caps) and status == "ok"):
         return
-    read_path = agent._normalize_workspace_path(arguments.get("path") or arguments.get("filepath"))
+    read_path = agent.normalize_workspace_path(arguments.get("path") or arguments.get("filepath"))
     if read_path:
         execution_context.edit_loop_state.pop(read_path, None)
         _clear_edit_fail_streak(execution_context, read_path)
 
 
 def _observe_delete(
-    agent: Any, tool_name: str, arguments: dict, status: Any, execution_context: ExecutionContext,
+    agent: AgentPort, tool_name: str, arguments: dict, status: Any, execution_context: ExecutionContext,
 ) -> None:
     if not (has_cap(tool_name, REMOVE, agent.tool_caps) and status == "ok"):
         return
-    deleted_path = agent._normalize_workspace_path(arguments.get("path"))
+    deleted_path = agent.normalize_workspace_path(arguments.get("path"))
     if not deleted_path:
         return
     # Every field that holds file paths, derived from the FILE_PATH trait: a deleted
@@ -501,11 +502,11 @@ def _observe_delete(
     # new path-valued field would silently keep stale entries.
     for field in fields_with(FILE_PATH):
         getattr(execution_context, field).discard(deleted_path)
-    agent._discard_carry_path(deleted_path)
+    agent.discard_carry_path(deleted_path)
 
 
 def _observe_search_flags(
-    agent: Any, tool_name: str, arguments: dict, status: Any, execution_context: ExecutionContext,
+    agent: AgentPort, tool_name: str, arguments: dict, status: Any, execution_context: ExecutionContext,
 ) -> None:
     if not (has_cap(tool_name, SEARCH, agent.tool_caps) and status == "ok"):
         return
@@ -530,14 +531,14 @@ def _observe_discover_transition(payload: dict, execution_context: ExecutionCont
 
 
 def _observe_candidates(
-    agent: Any, tool_name: str, payload: dict, execution_context: ExecutionContext,
+    agent: AgentPort, tool_name: str, payload: dict, execution_context: ExecutionContext,
 ) -> None:
     if not has_cap(tool_name, CANDIDATE_SEARCH, agent.tool_caps):
         return
     for item in payload.get("matches", []):
         if not isinstance(item, dict):
             continue
-        candidate = agent._normalize_workspace_path(item.get("path") or item.get("file"))
+        candidate = agent.normalize_workspace_path(item.get("path") or item.get("file"))
         if not candidate:
             continue
         _register_known_path(execution_context, candidate)
@@ -546,25 +547,25 @@ def _observe_candidates(
 
 
 def _observe_dir_inspect(
-    agent: Any, tool_name: str, status: Any, path: str, payload: dict,
+    agent: AgentPort, tool_name: str, status: Any, path: str, payload: dict,
     execution_context: ExecutionContext,
 ) -> None:
     if not (has_cap(tool_name, INSPECT_DIR, agent.tool_caps) and status == "ok"):
         return
     if path:
         execution_context.inspected_dirs.add(path)
-    listed_dir = agent._normalize_workspace_path(payload.get("path") or payload.get("parent"))
+    listed_dir = agent.normalize_workspace_path(payload.get("path") or payload.get("parent"))
     if listed_dir:
         execution_context.inspected_dirs.add(listed_dir)
 
 
 def _observe_existence_check(
-    agent: Any, tool_name: str, arguments: dict, status: Any, payload: dict,
+    agent: AgentPort, tool_name: str, arguments: dict, status: Any, payload: dict,
     execution_context: ExecutionContext,
 ) -> None:
     if not (has_cap(tool_name, CHECK_EXISTENCE, agent.tool_caps) and arguments.get("path")):
         return
-    checked = agent._normalize_workspace_path(arguments.get("path"))
+    checked = agent.normalize_workspace_path(arguments.get("path"))
     if not checked:
         return
     if status == "ok" or payload.get("exists") is not None:
@@ -574,12 +575,12 @@ def _observe_existence_check(
 
 
 def _observe_read(
-    agent: Any, tool_name: str, arguments: dict, status: Any,
+    agent: AgentPort, tool_name: str, arguments: dict, status: Any,
     execution_context: ExecutionContext,
 ) -> None:
     if not (has_cap(tool_name, READ, agent.tool_caps) and status == "ok"):
         return
-    path = agent._normalize_workspace_path(arguments.get("path"))
+    path = agent.normalize_workspace_path(arguments.get("path"))
     if not path:
         return
 
@@ -589,7 +590,7 @@ def _observe_read(
 
 
 def _observe_delegated_exploration(
-    agent: Any, tool_name: str, payload: dict, status: Any,
+    agent: AgentPort, tool_name: str, payload: dict, status: Any,
     execution_context: ExecutionContext,
 ) -> None:
     """Credit what a sub-agent read back to the caller that sent it.
@@ -603,14 +604,14 @@ def _observe_delegated_exploration(
     if not (has_cap(tool_name, DELEGATE, agent.tool_caps) and status == "ok"):
         return
     for raw in payload.get("files_read") or ():
-        path = agent._normalize_workspace_path(raw)
+        path = agent.normalize_workspace_path(raw)
         if path:
             execution_context.delegated_read_files.add(path)
             _register_known_path(execution_context, path)
 
 
 def _observe_declared_edit_set(
-    agent: Any, tool_name: str, arguments: dict, status: Any, execution_context: ExecutionContext,
+    agent: AgentPort, tool_name: str, arguments: dict, status: Any, execution_context: ExecutionContext,
 ) -> None:
     """Record the source-file paths named in a task-checklist declaration.
 
@@ -640,7 +641,7 @@ def _observe_declared_edit_set(
     declared = {
         candidate
         for match in _SOURCE_FILE_PATH_RE.finditer(str(raw_steps))
-        if (candidate := agent._normalize_workspace_path(match.group(0)))
+        if (candidate := agent.normalize_workspace_path(match.group(0)))
     }
     # Mutated in place: other modules hold a reference to this set.
     execution_context.declared_edit_set.clear()
@@ -648,7 +649,7 @@ def _observe_declared_edit_set(
 
 
 def _observe_action_op(
-    agent: Any, tool_name: str, status: Any, execution_context: ExecutionContext,
+    agent: AgentPort, tool_name: str, status: Any, execution_context: ExecutionContext,
 ) -> None:
     """Count each successful substantive action (write / execution / mutation).
 
@@ -696,7 +697,7 @@ def _matches(payload: dict, spec: dict[str, Any], kind: str) -> bool:
 
 
 def _observe_tool_run(
-    agent: Any, tool_name: str, arguments: dict, status: Any,
+    agent: AgentPort, tool_name: str, arguments: dict, status: Any,
     execution_context: ExecutionContext, call_id: str = "", payload: dict | None = None,
 ) -> None:
     """A non-shell execution tool ran: its output owes a verdict too.
@@ -724,7 +725,7 @@ def _observe_tool_run(
 
 
 def _observe_run_outcome(
-    agent: Any, tool_name: str, payload: dict,
+    agent: AgentPort, tool_name: str, payload: dict,
     execution_context: ExecutionContext, call_id: str = "",
 ) -> None:
     """Record what the *server* saw of a run it performed itself.
@@ -874,7 +875,7 @@ _MACHINE_SAW_FAILURE = "the run server judged this run's result failing"
 
 
 def _outside_workspace(path: str) -> bool:
-    """True for a path ``_normalize_workspace_path`` left outside the user's tree.
+    """True for a path ``normalize_workspace_path`` left outside the user's tree.
 
     Normalization rebases anything under the workspace to a relative path, so what
     stays absolute — or climbs out with ``..`` — is by construction not workspace code.
@@ -901,7 +902,7 @@ def _call_was_refused(status: Any, payload: dict[str, Any]) -> bool:
 
 
 def _bash_validation_scan(
-    agent: Any, command: str,
+    agent: AgentPort, command: str,
 ) -> tuple[list[str], bool, str, str, str, bool]:
     """Scan a bash command, telling checks from builds from executions.
 
@@ -969,7 +970,7 @@ def _bash_validation_scan(
             missing_head = seg.argv[0]
         for op in seg.operands:
             based = op if (os.path.isabs(op) or not rel_base) else os.path.join(rel_base, op)
-            path = agent._normalize_workspace_path(based)
+            path = agent.normalize_workspace_path(based)
             if path:
                 targets.append(path)
         if seg.effect == EFFECT_RUN:
@@ -1117,7 +1118,7 @@ def _stage_moving_test_alert(execution_context: ExecutionContext) -> None:
 
 
 def _observe_bash_validation(
-    agent: Any, tool_name: str, arguments: dict, status: Any, payload: dict,
+    agent: AgentPort, tool_name: str, arguments: dict, status: Any, payload: dict,
     execution_context: ExecutionContext, call_id: str = "",
 ) -> None:
     """Drive validation and run state from a bash command — success AND failure.
@@ -1198,7 +1199,7 @@ def _observe_bash_validation(
 
 
 def _observe_command(
-    agent: Any, tool_name: str, arguments: dict, status: Any, payload: dict,
+    agent: AgentPort, tool_name: str, arguments: dict, status: Any, payload: dict,
     execution_context: ExecutionContext,
 ) -> None:
     """Credit the blackboard from a shell command classified into capability kinds.
@@ -1230,7 +1231,7 @@ def _observe_command(
         if not op:
             return None
         based = op if (os.path.isabs(op) or not rel_base) else os.path.join(rel_base, op)
-        return agent._normalize_workspace_path(based)
+        return agent.normalize_workspace_path(based)
 
     for seg in segments:
         kind, operands = seg.kind, seg.operands
@@ -1260,7 +1261,7 @@ def _observe_command(
             execution_context.action_op_count = int(execution_context.action_op_count) + 1
             for op in operands:
                 path = _resolve(op)
-                if path and agent._is_code_filepath(path):
+                if path and agent.is_code_filepath(path):
                     _record_code_edit(execution_context, path)
                     execution_context.last_edit_success_path = path
                     _enter_post_edit_state(execution_context)
@@ -1287,7 +1288,7 @@ def _observe_command(
 
 
 def _observe_verdict_tool(
-    agent: Any, tool_name: str, arguments: dict, status: Any,
+    agent: AgentPort, tool_name: str, arguments: dict, status: Any,
     execution_context: ExecutionContext,
 ) -> None:
     """The model judged a run's output: settle the run it speaks for.
@@ -1356,7 +1357,7 @@ def _observe_unwatched_runs(
 
 
 def record_tool_observation(
-    agent: Any,
+    agent: AgentPort,
     tool_name: str,
     arguments: dict,
     result: str,
@@ -1368,7 +1369,7 @@ def record_tool_observation(
         return
 
     payload = parse_tool_payload(result) or {}
-    path = agent._normalize_workspace_path(
+    path = agent.normalize_workspace_path(
         target_path_arg(tool_name, arguments, agent.tool_caps, directories=True))
     status = payload.get("status")
 

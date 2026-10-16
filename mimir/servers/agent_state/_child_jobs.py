@@ -214,7 +214,7 @@ class ChildWatcher:
                            exc_info=exc)
 
     async def _watch(self, job_key: str) -> None:
-        run_tool = getattr(self._agent, "_run_tool", None)
+        run_tool = getattr(self._agent, "run_tool", None)
         if run_tool is None:
             logger.warning("child watcher: job %r cannot be polled, the agent has no "
                            "tool runner", job_key)

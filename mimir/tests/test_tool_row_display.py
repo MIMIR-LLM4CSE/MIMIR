@@ -500,7 +500,7 @@ class RowPathsAreShortenedTests(unittest.TestCase):
     def test_cli_prompt_prints_the_absolute_path(self):
         import inspect
         from mimir.client.agent_core import MimirAgent
-        src = inspect.getsource(MimirAgent._request_path_approval)
+        src = inspect.getsource(MimirAgent.request_path_approval)
         self.assertIn('f"  {p}" for p in paths', src)
 
 
@@ -546,16 +546,16 @@ class _FakeAgent:
         self.calls: list[tuple[str, dict]] = []
 
 
-    def _rewrite_tool_for_context(self, name, args):
+    def rewrite_tool_for_context(self, name, args):
         return name, args
 
-    def _is_write_tool(self, name):
+    def is_write_tool(self, name):
         return False
 
     def get_tool_file_targets(self, *a, **k):
         return []
 
-    async def _run_tool(self, name, args, **kwargs):
+    async def run_tool(self, name, args, **kwargs):
         self.calls.append((name, dict(args)))
         return json.dumps({"status": "ok"})
 

@@ -6,7 +6,6 @@ import asyncio
 import difflib
 import os
 import time
-from typing import Any
 
 from ... import human_pause
 from ...config.limits import AUTO_VALIDATION_TIMEOUT_SECS as _AUTO_VALIDATION_TIMEOUT_SECS
@@ -28,6 +27,7 @@ from ..background import (
 from ..deferral import CURRENT_CALL_ID
 from .admission import Call, _reads_progress_of_a_watched_run, _watched_progress_note
 from ...context.execution_context import ExecutionContext
+from ...core.ports import AgentPort
 
 
 async def _await_tool(coro, timeout: float):
@@ -65,7 +65,7 @@ async def _await_tool(coro, timeout: float):
 _DEAD_TRANSPORT = ("ClosedResourceError", "BrokenResourceError", "EndOfStream")
 
 
-def _dead_transport_hint(name: str, exc: BaseException, agent: Any) -> str | None:
+def _dead_transport_hint(name: str, exc: BaseException, agent: AgentPort) -> str | None:
     """The hint for a tool whose server is gone, or None when it is a different failure.
 
     Worth telling apart from every other tool error because the advice is the opposite:
@@ -90,7 +90,7 @@ def _dead_transport_hint(name: str, exc: BaseException, agent: Any) -> str | Non
     )
 
 
-async def run_call(agent: Any, call: Call, execution_context: ExecutionContext) -> str:
+async def run_call(agent: AgentPort, call: Call, execution_context: ExecutionContext) -> str:
     """Run one call and return its result text, reporting its row as it goes.
 
     Never raises for the tool's own failure — a timeout, a crashed server, a payload
@@ -172,7 +172,7 @@ async def run_call(agent: Any, call: Call, execution_context: ExecutionContext) 
         call_token = CURRENT_CALL_ID.set(call_id)
         try:
             result = await _await_tool(
-                agent._run_tool(
+                agent.run_tool(
                     name, args,
                     execution_context=execution_context,
                     run_auto_validation=False,

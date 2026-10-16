@@ -31,6 +31,7 @@ from .history import _enforce_context_budget
 from .readonly_guard import filter_readonly_tool_calls
 from .streaming import _DraftHold, _note_truncated_turn, _process_response, _stream_chat
 from ..context.execution_context import ExecutionContext
+from ..core.ports import AgentPort
 
 
 @dataclass
@@ -42,7 +43,7 @@ class TurnContext:
     state of its system message — survives the handoff.
     """
 
-    agent: Any
+    agent: AgentPort
     query: str
     messages: list[dict]
     execution_context: ExecutionContext
@@ -77,19 +78,19 @@ class ModeSwitch:
 # the next step rather than the next query. Callers that drive a bare stub without the
 # attribute (tests, embedders) keep the value they passed in.
 
-def _live_thinking(agent: Any, fallback: bool) -> bool:
+def _live_thinking(agent: AgentPort, fallback: bool) -> bool:
     """The thinking flag to use for the *next* model call."""
     val = getattr(agent, "thinking", None)
     return fallback if val is None else bool(val)
 
 
-def _live_thinking_budget(agent: Any) -> int:
+def _live_thinking_budget(agent: AgentPort) -> int:
     """The token budget for the next model call. ``-1`` = unbudgeted."""
     val = getattr(agent, "thinking_budget", -1)
     return val if isinstance(val, int) else -1
 
 
-def _live_temperature(agent: Any) -> float | None:
+def _live_temperature(agent: AgentPort) -> float | None:
     """The temperature the user set for this model, re-read per call; None = its own."""
     val = getattr(agent, "temperature", None)
     if isinstance(val, bool) or not isinstance(val, (int, float)):
@@ -97,7 +98,7 @@ def _live_temperature(agent: Any) -> float | None:
     return float(val)
 
 
-def _live_mode(agent: Any, active_mode: str, execution_context: ExecutionContext) -> str:
+def _live_mode(agent: AgentPort, active_mode: str, execution_context: ExecutionContext) -> str:
     """The mode to run the *next* step in, re-read from the agent.
 
     What counts is a *change* to ``agent.mode``, not its value — a caller may run one
@@ -119,7 +120,7 @@ def _live_mode(agent: Any, active_mode: str, execution_context: ExecutionContext
 # ── The system message ──────────────────────────────────────────────────────────
 
 async def _rebuild_system_content(
-    agent: Any, active_mode: str, execution_context: ExecutionContext,
+    agent: AgentPort, active_mode: str, execution_context: ExecutionContext,
 ) -> str:
     """The system message as it must be after ANY rebuild: prompt + skill block.
 
@@ -131,12 +132,12 @@ async def _rebuild_system_content(
     checklist refresh. The three that forgot dropped the skill silently, mid-run, on a
     user action. One function, so the rule cannot be half-applied.
     """
-    content = await agent._build_system_content(active_mode=active_mode)
+    content = await agent.build_system_content(active_mode=active_mode)
     return content + (execution_context.skill_suffix or "")
 
 
 async def _sync_thinking_directive(
-    agent: Any,
+    agent: AgentPort,
     messages: list[dict],
     active_mode: str,
     auto_active: bool,
@@ -158,7 +159,7 @@ async def _sync_thinking_directive(
     now = depth == THINKING_DEPTH_AUTO
     if now == auto_active:
         return auto_active, system_content
-    if getattr(agent, "_build_system_content", None) and messages \
+    if getattr(agent, "build_system_content", None) and messages \
             and messages[0].get("role") == "system":
         system_content = await _rebuild_system_content(
             agent, active_mode, execution_context,
@@ -168,7 +169,7 @@ async def _sync_thinking_directive(
 
 
 async def _apply_mode_switch(
-    agent: Any, messages: list[dict], *, new_mode: str, execution_context: ExecutionContext,
+    agent: AgentPort, messages: list[dict], *, new_mode: str, execution_context: ExecutionContext,
 ) -> str:
     """Rebuild the mode-dependent system prompt after a mid-run mode change.
 
@@ -186,7 +187,7 @@ async def _apply_mode_switch(
     return system_content
 
 
-def _advertised_tools(agent: Any) -> list[dict]:
+def _advertised_tools(agent: AgentPort) -> list[dict]:
     """The tool list to expose this step: the agent's soft-hide-filtered set when it
     provides one (``advertised_tools``), else its raw ``tools`` (keeps lightweight
     test stubs working, matching the loop's defensive ``getattr`` idiom)."""
@@ -196,7 +197,7 @@ def _advertised_tools(agent: Any) -> list[dict]:
 
 # ── Steering and diagnostics ────────────────────────────────────────────────────
 
-def _drain_steer(agent: Any, messages: list[dict]) -> None:
+def _drain_steer(agent: AgentPort, messages: list[dict]) -> None:
     """Inject any user "steer" messages queued mid-run as user turns at a step boundary.
 
     Front-ends that support chatting-while-busy (the WebSocket server) give the agent

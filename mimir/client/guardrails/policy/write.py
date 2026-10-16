@@ -12,7 +12,6 @@ hard guard it would sit outside the enforcement dial that exists to tune exactly
 from __future__ import annotations
 
 import os
-from typing import Any
 
 from ...context import (
     ensure_execution_context,
@@ -29,6 +28,7 @@ from ...context.capabilities import (
 from ...config.limits import REPEATED_EDIT_FAILURE_LIMIT
 from ...protocol.tool_result import json_error_payload
 from ...context.execution_context import ExecutionContext
+from ...core.ports import AgentPort
 
 
 def has_delete_context(path: str, execution_context: ExecutionContext) -> bool:
@@ -61,22 +61,22 @@ def write_policy_violation(tool_name: str, path: str, detail: str | None = None,
 
 
 def check_write_policy(
-    agent: Any,
+    agent: AgentPort,
     tool_name: str,
     arguments: dict,
     execution_context: ExecutionContext | None,
 ) -> str | None:
     execution_context = ensure_execution_context(execution_context)
 
-    if execution_context is None or not agent._is_write_tool(tool_name):
+    if execution_context is None or not agent.is_write_tool(tool_name):
         return None
 
-    path = agent._normalize_workspace_path(
+    path = agent.normalize_workspace_path(
         target_path_arg(tool_name, arguments, agent.tool_caps))
     if not path:
         return None
 
-    is_code_target = agent._is_code_filepath(path)
+    is_code_target = agent.is_code_filepath(path)
     repeated_failures = execution_context.edit_loop_state.get(path, (None, 0))[1]
 
     if has_cap(tool_name, REMOVE, agent.tool_caps):

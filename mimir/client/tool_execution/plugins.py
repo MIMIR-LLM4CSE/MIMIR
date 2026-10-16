@@ -21,7 +21,7 @@ A pack registers a :class:`PostToolRule` at import time::
     async def _project_checks(agent, tool_name, arguments, result, execution_context):
         if not has_cap(tool_name, EDIT, agent.tool_caps):
             return ""
-        out = await agent._run_tool(
+        out = await agent.run_tool(
             "bash_run", {"command": "pytest -q"}, execution_context=execution_context,
         )
         return "" if '"status": "ok"' in out else "\\n\\nPROJECT_CHECK: the suite is red."

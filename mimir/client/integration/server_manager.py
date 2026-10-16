@@ -22,6 +22,7 @@ from ..protocol.tool_call import DOING_ARG
 from ..config.paths import GLOBAL_STATE_DIR, STATE_DIR
 from ..config.limits import USER_QUESTION_TIMEOUT_SECS
 from ...servers._shared.state_paths import scratch_home
+from ..core.ports import AgentPort
 
 logger = logging.getLogger(__name__)
 
@@ -234,13 +235,13 @@ def _bind_question_handler(ask: Any):
     return _call
 
 
-def _make_elicitation_callback(agent: Any):
+def _make_elicitation_callback(agent: AgentPort):
     """Bridge MCP elicitation requests to the active frontend.
 
     A server tool (e.g. ``ask_user_question``) calls ``ctx.session.elicit_form``;
     that arrives here as an ``elicitation/create`` request. We parse the rich
     question spec carried in the schema's ``x_mimir`` extension and hand it to
-    ``agent._request_user_question`` — a per-frontend handler (CLI ``input``, a
+    ``agent.request_user_question`` — a per-frontend handler (CLI ``input``, a
     WebSocket prompt card, or the default no-op) that asks the (possibly several)
     questions sequentially and returns the user's answers.
 
@@ -285,7 +286,7 @@ def _make_elicitation_callback(agent: Any):
                 result = await loop.run_in_executor(
                     None,
                     contextvars.copy_context().run,
-                    _bind_question_handler(agent._request_user_question),
+                    _bind_question_handler(agent.request_user_question),
                     questions,
                     # Who is asking, when the asker is not the turn the user is watching:
                     # a sub-agent names itself here so the card can say so. Absent for
@@ -335,7 +336,7 @@ def _make_elicitation_callback(agent: Any):
     return _callback
 
 
-async def _spawn_session(*, agent: Any, name: str, script: str) -> Any:
+async def _spawn_session(*, agent: AgentPort, name: str, script: str) -> Any:
     """Start a server process and open its session, stopping short of ``initialize``.
 
     Split from the registration half so a whole registry can be started at once:
@@ -396,7 +397,7 @@ async def _spawn_session(*, agent: Any, name: str, script: str) -> Any:
     )
 
 
-async def _register_session(*, agent: Any, name: str, session: Any, listing: Any) -> None:
+async def _register_session(*, agent: AgentPort, name: str, session: Any, listing: Any) -> None:
     """Record an initialized session's tools and resources on the agent.
 
     Callers register one server at a time, in registry order: the tool schema is sent
@@ -452,7 +453,7 @@ async def _handshake(session: Any) -> Any:
     return await session.list_tools()
 
 
-async def connect_server(*, agent: Any, name: str, script: str) -> None:
+async def connect_server(*, agent: AgentPort, name: str, script: str) -> None:
     """Spawn one MCP server process and register its tools on the agent."""
     session = await _spawn_session(agent=agent, name=name, script=script)
     listing = await _handshake(session)
@@ -461,7 +462,7 @@ async def connect_server(*, agent: Any, name: str, script: str) -> None:
 
 async def connect_servers(
     *,
-    agent: Any,
+    agent: AgentPort,
     registry: dict[str, str],
     on_error: Callable[[str, BaseException], None] | None = None,
 ) -> None:
@@ -502,7 +503,7 @@ async def connect_servers(
         await _register_session(agent=agent, name=name, session=session, listing=listing)
 
 
-async def register_resources(*, agent: Any, name: str, session: Any) -> int:
+async def register_resources(*, agent: AgentPort, name: str, session: Any) -> int:
     """Discover a server's MCP resources into ``agent.resources``; return the count.
 
     Resources are user-attached context (Claude/Copilot-style ``@``-mention), not

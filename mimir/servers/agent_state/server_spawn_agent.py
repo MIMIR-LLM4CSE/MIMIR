@@ -873,9 +873,9 @@ def _install_user_channel(agent, session, loop, task: str) -> None:
                             "other_text": None})
         return {"answers": answers}
 
-    agent._request_tool_approval = _approve_tool
-    agent._request_path_approval = _approve_paths
-    agent._request_user_question = _question
+    agent.request_tool_approval = _approve_tool
+    agent.request_path_approval = _approve_paths
+    agent.request_user_question = _question
     # It is no longer unattended: there is a person at the end of the channel, and the
     # mode gate must ask them rather than refuse on their behalf.
     agent.approvals.unattended = False

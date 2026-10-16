@@ -41,6 +41,7 @@ from .loop_base import (
 from .readonly_guard import filter_readonly_tool_calls, refusal_reply
 from ..guardrails.toollist import tools_for_plan_mode
 from ..context.execution_context import ExecutionContext
+from ..core.ports import AgentPort
 
 
 _PLAN_ACCEPT = "Accept & start"
@@ -57,13 +58,13 @@ _PLAN_POST_RECORD_TOOL_TURNS = 2
 _PLAN_NUDGE_EVERY = 5
 
 
-def _plan_title_arg(name: str, agent: Any) -> str:
+def _plan_title_arg(name: str, agent: AgentPort) -> str:
     """Name of the argument that titles a plan document, for the tool *name*."""
     roles = arg_role(name, "plan_title", agent.tool_caps)
     return roles[0] if roles else ""
 
 
-def _plan_document_title(tool_calls: list[Any], agent: Any) -> str:
+def _plan_document_title(tool_calls: list[Any], agent: AgentPort) -> str:
     """Title carried by the plan-document write in *tool_calls*, if there is one."""
     for tc in tool_calls:
         fn = as_dict(as_dict(tc).get("function", {}))
@@ -76,7 +77,7 @@ def _plan_document_title(tool_calls: list[Any], agent: Any) -> str:
     return ""
 
 
-def _pin_plan_title(tool_calls: list[Any], agent: Any, title: str) -> list[Any]:
+def _pin_plan_title(tool_calls: list[Any], agent: AgentPort, title: str) -> list[Any]:
     """Force *title* onto every plan-document write in *tool_calls*.
 
     The plan store derives a document's identity from its title, so a revision the
@@ -125,10 +126,10 @@ def _clear_recorded_plan(execution_context: ExecutionContext) -> None:
     execution_context.plan_written = False
 
 
-async def _request_plan_decision(agent: Any) -> tuple[str, str]:
+async def _request_plan_decision(agent: AgentPort) -> tuple[str, str]:
     """Ask the user to accept, reject, or rework the proposed plan.
 
-    Reuses the interactive ``_request_user_question`` prompt (wired to the CLI and
+    Reuses the interactive ``request_user_question`` prompt (wired to the CLI and
     the VS Code webview), which always offers a free-text "Other" entry on top of the
     listed choices. Returns ``(decision, feedback)`` where ``decision`` is one of
     ``"accept"``, ``"reject"``, ``"rework"``, ``"revise"`` (free-text = fold these
@@ -136,7 +137,7 @@ async def _request_plan_decision(agent: Any) -> tuple[str, str]:
     front-end (default shim / sub-agents / tests) or the user dismisses the prompt,
     so plan mode falls back to simply delivering the plan.
     """
-    ask = getattr(agent, "_request_user_question", None)
+    ask = getattr(agent, "request_user_question", None)
     if not callable(ask):
         return "none", ""
     try:

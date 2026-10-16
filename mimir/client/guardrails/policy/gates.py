@@ -38,11 +38,12 @@ from ...tool_execution.tool_status_messages import (
 from ...tool_execution.validation import absolute_workspace_path, scratch_roots
 from ...context.execution_context import ExecutionContext
 from ...protocol.tool_result import json_error_payload
+from ...core.ports import AgentPort
 
 
 # ── unattended agents ─────────────────────────────────────────────────────────
 
-def describe_action(agent: Any, tool_name: str, arguments: dict) -> str:
+def describe_action(agent: AgentPort, tool_name: str, arguments: dict) -> str:
     """The action as the user would read it on a tool row — never the tool's name."""
     short_args = shorten_display_args(tool_name, arguments or {}, agent.tool_caps)
     label = label_for(tool_name, short_args, agent.tool_caps)
@@ -53,7 +54,7 @@ def describe_action(agent: Any, tool_name: str, arguments: dict) -> str:
     return f"{status}: {preview}" if preview else status
 
 
-def mode_denied_payload(agent: Any, tool_name: str, arguments: dict, needs: str) -> str:
+def mode_denied_payload(agent: AgentPort, tool_name: str, arguments: dict, needs: str) -> str:
     """The result an unattended agent gets for an action its mode does not cover.
 
     Deterministic, not a reading to choose among: no one refused, so there is no
@@ -95,7 +96,7 @@ def _trusted_read_roots() -> list[str]:
             for r in (*trusted_read_roots(), paths.STATE_DIR)]
 
 
-def _shell_path_targets(agent: Any, tool_name: str, arguments: dict, base: str) -> list[str]:
+def _shell_path_targets(agent: AgentPort, tool_name: str, arguments: dict, base: str) -> list[str]:
     """Every filesystem path a shell call's arguments name, as abspaths.
 
     A shell command carries its paths inside a string, so the ordinary file-target
@@ -170,7 +171,7 @@ def _shell_path_targets(agent: Any, tool_name: str, arguments: dict, base: str) 
     return out
 
 
-def _call_base(agent: Any, tool_name: str, arguments: dict) -> tuple[str, str]:
+def _call_base(agent: AgentPort, tool_name: str, arguments: dict) -> tuple[str, str]:
     """``(root, base)``: the agent's workspace root, and where this call's relative
     paths resolve — a declared ``cwd`` arg-role where the tool has one, else the root.
     """
@@ -189,7 +190,7 @@ def _call_base(agent: Any, tool_name: str, arguments: dict) -> tuple[str, str]:
     return root, base
 
 
-def _out_of_workspace_targets(agent: Any, tool_name: str, arguments: dict) -> list[str]:
+def _out_of_workspace_targets(agent: AgentPort, tool_name: str, arguments: dict) -> list[str]:
     """Absolute target paths of this call outside the workspace and not yet approved.
 
     Sources: the existing file/edit-target extractor (covers file & batch args), any
@@ -213,7 +214,7 @@ def _out_of_workspace_targets(agent: Any, tool_name: str, arguments: dict) -> li
     raw.extend(_shell_path_targets(agent, tool_name, arguments, call_base))
 
     is_read = has_cap(tool_name, READ, agent.tool_caps) and not (
-        agent._is_write_tool(tool_name)
+        agent.is_write_tool(tool_name)
         or has_cap(tool_name, EDIT, agent.tool_caps)
         or has_cap(tool_name, PLAN_BLOCKED, agent.tool_caps))
     trusted = _trusted_read_roots()
@@ -251,13 +252,13 @@ def _name_paths(paths: list[str], limit: int = 4) -> str:
 
 
 def _check_out_of_workspace_access(
-    agent: Any, tool_name: str, arguments: dict, execution_context: ExecutionContext | None,
+    agent: AgentPort, tool_name: str, arguments: dict, execution_context: ExecutionContext | None,
     targets: list[str] | None = None,
 ) -> str | None:
     """Prompt the user before a tool touches paths outside the workspace.
 
     Reuses the existing approval UI (allow / deny / always-for-these-paths, via the
-    agent's ``_request_path_approval`` hook). Runs before the sensitive/preview gate
+    agent's ``request_path_approval`` hook). Runs before the sensitive/preview gate
     so a previewable write cannot bypass it. Fail-closed: with no hook wired,
     out-of-workspace access is denied. Returns a violation payload or ``None``.
 
@@ -284,7 +285,7 @@ def _check_out_of_workspace_access(
         return None
     if agent.approvals.unattended:
         return mode_denied_payload(agent, tool_name, arguments, "auto_all")
-    prompt = getattr(agent, "_request_path_approval", None)
+    prompt = getattr(agent, "request_path_approval", None)
     # The call's own arguments travel with the paths so the prompt can show the
     # usual tool description ("Running: …") instead of bare paths.
     approved, always = prompt(targets, tool_name, arguments) if prompt else (False, False)
@@ -303,7 +304,7 @@ def _check_out_of_workspace_access(
 # ── cluster submit ────────────────────────────────────────────────────────────
 
 def _check_cluster_submit(
-    agent: Any, tool_name: str, execution_context: ExecutionContext | None,
+    agent: AgentPort, tool_name: str, execution_context: ExecutionContext | None,
     arguments: dict[str, Any] | None = None,
 ) -> str | None:
     """Hold an expensive cluster submission until something has been validated locally.
@@ -419,7 +420,7 @@ def _proxy_exec_targets(session_id: str | None = None) -> set[str]:
 
 
 def _check_proxy_exec(
-    agent: Any, tool_name: str, arguments: dict[str, Any],
+    agent: AgentPort, tool_name: str, arguments: dict[str, Any],
     execution_context: ExecutionContext | None,
 ) -> str | None:
     """Block direct execution of a proxy that is under optimization.
@@ -470,7 +471,7 @@ def _check_proxy_exec(
 # ── loading a skill on demand ─────────────────────────────────────────────────
 
 def _check_skill_pull(
-    agent: Any, tool_name: str, arguments: dict[str, Any],
+    agent: AgentPort, tool_name: str, arguments: dict[str, Any],
     execution_context: ExecutionContext | None,
 ) -> str | None:
     """Refuse a skill pull the operator, the skill itself, or the budget rules out.

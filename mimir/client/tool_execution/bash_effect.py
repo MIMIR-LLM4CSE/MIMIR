@@ -35,7 +35,6 @@ import difflib
 import os
 import subprocess
 from dataclasses import dataclass, field
-from typing import Any
 
 from ..config.limits import (
     BASH_EFFECT_DIFF_MAX_LINES,
@@ -49,6 +48,7 @@ from ..context.signals import SOURCE_FILE_EXTENSIONS
 from ..context.bash_classify import bash_command_is_readonly, classify_bash_command
 from ..context.capabilities import shell_command_of
 from ..context.execution_context import ExecutionContext
+from ..core.ports import AgentPort
 
 _GIT_TIMEOUT_SECS = 10
 
@@ -135,7 +135,7 @@ class _Probe:
 
 
 def _candidate_dirs(
-    agent: Any, command: str, root: str, execution_context: ExecutionContext | None,
+    agent: AgentPort, command: str, root: str, execution_context: ExecutionContext | None,
 ) -> list[str]:
     """Directories worth watching when git cannot answer.
 
@@ -153,7 +153,7 @@ def _candidate_dirs(
     for segment in classify_bash_command(command) or []:
         for operand in segment.operands:
             try:
-                full = agent._normalize_workspace_path(operand) or operand
+                full = agent.normalize_workspace_path(operand) or operand
             except Exception:
                 full = operand
             if not os.path.isabs(full):
@@ -179,7 +179,7 @@ def _scan(dirs: list[str]) -> dict[str, list[str] | None]:
 
 
 def capture(
-    agent: Any, tool_name: str, arguments: dict,
+    agent: AgentPort, tool_name: str, arguments: dict,
     execution_context: ExecutionContext | None = None,
 ) -> _Probe | None:
     """Snapshot enough state to report what this call changes, or None to skip it."""

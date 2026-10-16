@@ -204,7 +204,7 @@ class ElicitationTransportTests(unittest.TestCase):
             {"selected": ["Auth", "Cache"], "other_text": None},
         ]
         agent = types.SimpleNamespace(
-            _request_user_question=lambda questions, origin=None, timeout_secs=None: {"answers": answers}
+            request_user_question=lambda questions, origin=None, timeout_secs=None: {"answers": answers}
         )
         params = types.SimpleNamespace(
             requestedSchema={
@@ -229,7 +229,7 @@ class ElicitationTransportTests(unittest.TestCase):
             {"selected": ["Ray Serve"], "other_text": "Ray Serve"},
         ]
         agent = types.SimpleNamespace(
-            _request_user_question=lambda questions, origin=None, timeout_secs=None: {"answers": answers}
+            request_user_question=lambda questions, origin=None, timeout_secs=None: {"answers": answers}
         )
         params = types.SimpleNamespace(
             requestedSchema={
@@ -254,7 +254,7 @@ class ElicitationTransportTests(unittest.TestCase):
         from mimir.client.integration.server_manager import _make_elicitation_callback
 
         agent = types.SimpleNamespace(
-            _request_user_question=lambda questions, timeout_secs=None: {
+            request_user_question=lambda questions, timeout_secs=None: {
                 "answers": [], "timed_out": True, "timeout_secs": timeout_secs,
             }
         )
@@ -279,7 +279,7 @@ class ElicitationTransportTests(unittest.TestCase):
         from mimir.client.integration.server_manager import _make_elicitation_callback
 
         agent = types.SimpleNamespace(
-            _request_user_question=lambda questions, timeout_secs=None: {"answers": []}
+            request_user_question=lambda questions, timeout_secs=None: {"answers": []}
         )
         params = types.SimpleNamespace(
             requestedSchema={"x_mimir": {"kind": "user_question", "questions": [_Q_DB]}}
@@ -308,7 +308,7 @@ class ElicitationTransportTests(unittest.TestCase):
             "timeout_secs": USER_QUESTION_TIMEOUT_SECS,
         }})
         asyncio.run(_make_elicitation_callback(
-            types.SimpleNamespace(_request_user_question=_ask))(None, params))
+            types.SimpleNamespace(request_user_question=_ask))(None, params))
 
         self.assertEqual(seen, [float(USER_QUESTION_TIMEOUT_SECS)])
 
@@ -333,7 +333,7 @@ class ElicitationTransportTests(unittest.TestCase):
             requestedSchema={"x_mimir": {"kind": "user_question", "questions": [_Q_DB]}}
         )
         callback = _make_elicitation_callback(
-            types.SimpleNamespace(_request_user_question=_ask))
+            types.SimpleNamespace(request_user_question=_ask))
 
         async def _drive():
             return await dispatch._await_tool(callback(None, params), 0.05)
@@ -349,7 +349,7 @@ class ElicitationTransportTests(unittest.TestCase):
             requestedSchema={"x_mimir": {"kind": "user_question", "questions": [_Q_DB]}}
         )
         result = asyncio.run(_make_elicitation_callback(types.SimpleNamespace(
-            _request_user_question=lambda questions: {
+            request_user_question=lambda questions: {
                 "answers": [{"selected": ["SQLite"], "other_text": None}]},
         ))(None, params))
 
@@ -386,7 +386,7 @@ class ElicitationOriginTests(unittest.TestCase):
             seen["timeout_secs"] = timeout_secs
             return {"answers": [{"selected": ["ok"], "other_text": None}]}
 
-        agent = types.SimpleNamespace(_request_user_question=_ask)
+        agent = types.SimpleNamespace(request_user_question=_ask)
         params = types.SimpleNamespace(requestedSchema={"x_mimir": x_mimir})
         return asyncio.run(_make_elicitation_callback(agent)(None, params))
 
@@ -429,7 +429,7 @@ class QuestionDeadlineTests(unittest.TestCase):
             seen["timeout_secs"] = timeout_secs
             return answer
 
-        agent = types.SimpleNamespace(_request_user_question=_ask)
+        agent = types.SimpleNamespace(request_user_question=_ask)
         params = types.SimpleNamespace(requestedSchema={
             "x_mimir": {"kind": "user_question", "questions": [_Q_DB],
                         "timeout_secs": 300},
@@ -451,7 +451,7 @@ class QuestionDeadlineTests(unittest.TestCase):
             seen["timeout_secs"] = timeout_secs
             return {"answers": [{"selected": ["Postgres"]}]}
 
-        agent = types.SimpleNamespace(_request_user_question=_ask)
+        agent = types.SimpleNamespace(request_user_question=_ask)
         params = types.SimpleNamespace(requestedSchema={
             "x_mimir": {"kind": "user_question", "questions": [_Q_DB]}})
         asyncio.run(_make_elicitation_callback(agent)(None, params))

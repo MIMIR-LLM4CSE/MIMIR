@@ -33,6 +33,7 @@ from ...context.execution_context import (
 )
 from ...context.execution_context import ExecutionContext
 from ...protocol.tool_result import json_error_payload
+from ...core.ports import AgentPort
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +46,7 @@ class PolicyEvaluation:
     violation: str | None
 
 
-def _is_interactive_session(agent: Any) -> bool:
+def _is_interactive_session(agent: AgentPort) -> bool:
     """Return True if it is reasonable to prompt the human mid-run."""
     if getattr(agent, "batch_mode", False):
         return False
@@ -80,7 +81,7 @@ def _collect_candidate_paths(path: str, execution_context: ExecutionContext | No
 
 def _interactive_clarify_path(
     *,
-    agent: Any,
+    agent: AgentPort,
     tool_name: str,
     path: str,
     execution_context: ExecutionContext | None,
@@ -280,7 +281,7 @@ def _enrich_violation_payload(
 class _PolicyCall:
     """The call under evaluation, as every gate of the pipeline sees and may refine it."""
 
-    agent: Any
+    agent: AgentPort
     tool_name: str
     arguments: dict[str, Any]
     execution_context: ExecutionContext | None
@@ -306,7 +307,7 @@ class _PolicyCall:
                                 execution_context=self.execution_context, violation=None)
 
     def record_denial(self, note: str) -> None:
-        self.agent._record_denied_tool_call(
+        self.agent.record_denied_tool_call(
             self.tool_name, self.arguments, self.execution_context, note)
 
 
@@ -381,7 +382,7 @@ def _write_gate(call: _PolicyCall) -> PolicyEvaluation | None:
     # A target nobody confirmed may be a mistyped path rather than a policy matter:
     # offer to clarify it before blocking — only then, and only when the path is not
     # already known from a prior read or check.
-    write_path = call.agent._normalize_workspace_path(
+    write_path = call.agent.normalize_workspace_path(
         target_path_arg(call.tool_name, call.arguments, call.agent.tool_caps))
     path_already_confirmed = bool(write_path) and is_known_to_exist(
         call.execution_context, write_path)
@@ -442,11 +443,11 @@ def _approval_gate(call: _PolicyCall) -> PolicyEvaluation | None:
         # *after* the settled check — a refusal already given stands.
         approved, note = True, "auto-approved (auto mode)"
     else:
-        approved, note = agent._request_tool_approval(call.tool_name, call.arguments)
+        approved, note = agent.request_tool_approval(call.tool_name, call.arguments)
     if approved:
         return None
     call.record_denial(note)
-    return call.refuse(agent._denied_tool_result(
+    return call.refuse(agent.denied_tool_result(
         call.tool_name, call.arguments, note, call.execution_context), "approval")
 
 
@@ -468,7 +469,7 @@ _PIPELINE: tuple = (
 
 def evaluate_tool_preconditions(
     *,
-    agent: Any,
+    agent: AgentPort,
     tool_name: str,
     arguments: dict[str, Any],
     execution_context: ExecutionContext | None = None,
@@ -489,8 +490,8 @@ def evaluate_tool_preconditions(
     # name first would reject the alias before the rewrite that resolves it can
     # run. Both helpers no-op safely on an unregistered name, so genuinely unknown
     # tools still reach the registry gate and report an "Unknown tool" violation.
-    normalized_arguments = agent._normalize_tool_arguments(tool_name, arguments)
-    normalized_tool_name, rewritten_arguments = agent._rewrite_tool_for_context(
+    normalized_arguments = agent.normalize_tool_arguments(tool_name, arguments)
+    normalized_tool_name, rewritten_arguments = agent.rewrite_tool_for_context(
         tool_name, normalized_arguments)
     call = _PolicyCall(agent, normalized_tool_name, rewritten_arguments, normalized_context)
     for step in _PIPELINE:

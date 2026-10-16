@@ -379,7 +379,7 @@ class LiveRegistrySeamTests(unittest.TestCase):
 # ── 3. Worker: _watch_job polls to completion and emits job_complete ───────────
 
 class _ScriptedAgent:
-    """Returns scripted status states, then a summary, via _run_tool.
+    """Returns scripted status states, then a summary, via run_tool.
 
     Records the ``record_observations`` each probe was made with: a watcher tick is
     the client asking a question on its own account, and crediting it to the agent
@@ -392,7 +392,7 @@ class _ScriptedAgent:
         self.status_calls = 0
         self.observed: list[bool] = []
 
-    async def _run_tool(self, tool: str, args: dict, execution_context=None,
+    async def run_tool(self, tool: str, args: dict, execution_context=None,
                         record_observations: bool = True) -> str:
         self.observed.append(record_observations)
         if args.get("op") == "results":
@@ -416,7 +416,7 @@ class _MuteAgent:
         self._raises = raises
         self.status_calls = 0
 
-    async def _run_tool(self, tool: str, args: dict, execution_context=None,
+    async def run_tool(self, tool: str, args: dict, execution_context=None,
                         record_observations: bool = True) -> str:
         self.status_calls += 1
         if self._raises:
@@ -445,7 +445,7 @@ class _HangingAgent:
         self.status_calls = 0
         self.summary_calls = 0
 
-    async def _run_tool(self, tool: str, args: dict, execution_context=None,
+    async def run_tool(self, tool: str, args: dict, execution_context=None,
                         record_observations: bool = True) -> str:
         summary_call = args.get("op") == "results"
         if summary_call:
@@ -607,7 +607,7 @@ class WatchJobTests(unittest.TestCase):
         # One bad tick in the middle of a healthy run must not end the watch: the
         # counter resets on any state the descriptor's own op owns.
         class _Flaky(_ScriptedAgent):
-            async def _run_tool(self, tool, args, execution_context=None,
+            async def run_tool(self, tool, args, execution_context=None,
                                 record_observations: bool = True):
                 self.status_calls += 1
                 if self.status_calls in (2, 5):
@@ -651,7 +651,7 @@ class WatchJobTests(unittest.TestCase):
     def test_a_watch_that_raises_leaves_the_table_too(self) -> None:
         """The one exit that used to leave an entry behind."""
         class _Exploding:
-            async def _run_tool(self, *a, **kw):
+            async def run_tool(self, *a, **kw):
                 raise KeyboardInterrupt("not an Exception the loop catches")
 
         worker = self._make_worker(_Exploding())
@@ -673,7 +673,7 @@ class SharedPollLoopTests(unittest.TestCase):
     def _poll(agent, **kw):
         defaults = dict(interval=0.0, max_interval=0.0, unreadable_limit=3)
         return asyncio.run(job_poll.poll_until_terminal(
-            agent._run_tool, {"tool": "bash_job", "args": {"job_key": "k"}},
+            agent.run_tool, {"tool": "bash_job", "args": {"job_key": "k"}},
             **{**defaults, **kw}))
 
     def test_a_descriptor_naming_no_status_op_is_not_polled(self) -> None:
@@ -684,7 +684,7 @@ class SharedPollLoopTests(unittest.TestCase):
         """
         agent = _ScriptedAgent(states=["done"], summary={})
         state, reason = asyncio.run(job_poll.poll_until_terminal(
-            agent._run_tool, {"args": {}}, interval=0.0, max_interval=0.0))
+            agent.run_tool, {"args": {}}, interval=0.0, max_interval=0.0))
         self.assertEqual(state, "")
         self.assertIn("no status op", reason)
         self.assertEqual(agent.status_calls, 0)
@@ -742,7 +742,7 @@ class SharedPollLoopTests(unittest.TestCase):
         here.
         """
         class _Agent:
-            async def _run_tool(self, tool, args, execution_context=None,
+            async def run_tool(self, tool, args, execution_context=None,
                                 record_observations=True):
                 return json.dumps({"state": "running", "nodes": ["gpu007"],
                                    "scheduler": "hpc1", "pid": 4242,
@@ -789,13 +789,13 @@ class TheDispatchAdoptsHandedOverRunsTests(unittest.TestCase):
         return types.SimpleNamespace(
             _normalize_arguments=lambda a: (json.loads(a) if isinstance(a, str)
                                             else dict(a)),
-            _is_write_tool=lambda n: False,
+            is_write_tool=lambda n: False,
             tool_caps={"spawn_agent": ToolCaps(name="spawn_agent",
                                                capabilities={BACKGROUNDABLE})},
             get_tool_file_targets=lambda n, a: [],
             approvals=approvals,
-            _run_tool=run_tool,
-            _rewrite_tool_for_context=lambda n, a: (n, a),
+            run_tool=run_tool,
+            rewrite_tool_for_context=lambda n, a: (n, a),
             registered=[],
         )
 
@@ -1032,7 +1032,7 @@ class WatcherProbeIsNeverGuardedTests(unittest.TestCase):
     """The failure mode this guard could introduce, pinned down.
 
     The watcher polls the very status op the guard refuses. It reaches the tool through
-    ``agent._run_tool``, never through ``_dispatch_tool_calls``, so the separation is
+    ``agent.run_tool``, never through ``_dispatch_tool_calls``, so the separation is
     structural — but nothing said so out loud until this test, and getting it wrong
     would silently kill every wake.
     """
@@ -1051,12 +1051,12 @@ class WatcherProbeIsNeverGuardedTests(unittest.TestCase):
             src = inspect.getsource(module)
             for guard in guard_names:
                 self.assertNotIn(guard, src, f"{module.__name__} must not gate its own probes")
-        # And every probe path reaches the tool through _run_tool, not the dispatcher.
+        # And every probe path reaches the tool through run_tool, not the dispatcher.
         for probe in (background._await_background_job,
                       ws_worker._AgentWorker._poll_to_completion,
                       _child_jobs.ChildWatcher._watch):
             src = inspect.getsource(probe)
-            self.assertIn("_run_tool", src)
+            self.assertIn("run_tool", src)
             self.assertNotIn("_dispatch_tool_calls", src)
 
 
@@ -2010,7 +2010,7 @@ class CheckinScheduleTests(unittest.IsolatedAsyncioTestCase):
         async def _nosleep(_delay: float) -> None:
             return None
 
-        self.worker._agent = type("A", (), {"_run_tool": staticmethod(_status)})()
+        self.worker._agent = type("A", (), {"run_tool": staticmethod(_status)})()
         with mock.patch.object(job_poll.asyncio, "sleep", _nosleep), \
              mock.patch.object(job_poll, "read_summary", mock.AsyncMock(return_value={})):
             await self.worker._poll_to_completion("j1", {"status_op": {"tool": "x"}}, "s1")

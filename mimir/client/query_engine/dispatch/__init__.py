@@ -30,6 +30,7 @@ from .admission import Call, admit, is_write
 from .execution import run_call
 from .inject import _post_dispatch_inject
 from ...context.execution_context import ExecutionContext
+from ...core.ports import AgentPort
 
 __all__ = ["ToolDispatcher", "_dispatch_tool_calls", "_post_dispatch_inject"]
 
@@ -37,7 +38,7 @@ __all__ = ["ToolDispatcher", "_dispatch_tool_calls", "_post_dispatch_inject"]
 class ToolDispatcher:
     """One step's calls, from what the model issued to the tool messages in history."""
 
-    def __init__(self, agent: Any, messages: list[dict], execution_context: ExecutionContext) -> None:
+    def __init__(self, agent: AgentPort, messages: list[dict], execution_context: ExecutionContext) -> None:
         self.agent = agent
         self.messages = messages
         self.ec = execution_context
@@ -52,7 +53,7 @@ class ToolDispatcher:
 
     def announce(self, call: Call) -> None:
         """Put the call's row on screen before it runs."""
-        display_name, display_args = self.agent._rewrite_tool_for_context(call.name, call.args)
+        display_name, display_args = self.agent.rewrite_tool_for_context(call.name, call.args)
         # Label precedence: the capability-declared template (server-side
         # `label="Reading file: {path}"`) wins; the client status map is the
         # fallback for tools that declare none.
@@ -188,14 +189,14 @@ class ToolDispatcher:
                                   "content": json.dumps({"status": "skipped", "note": why})})
 
 
-async def _dispatch_tool_calls(tool_calls: list, agent: Any, messages: list[dict],
+async def _dispatch_tool_calls(tool_calls: list, agent: AgentPort, messages: list[dict],
                                execution_context: ExecutionContext) -> None:
     """Run one step's calls (see :class:`ToolDispatcher`)."""
     await ToolDispatcher(agent, messages, execution_context).run(tool_calls)
 
 
 def _pin_loaded_skill(
-    agent: Any,
+    agent: AgentPort,
     name: str,
     args: dict,
     call_id: str,
@@ -230,7 +231,7 @@ def _pin_loaded_skill(
     emit({"type": "status", "text": f"  \u2295 Skill loaded: {skill}"})
 
 
-def _bound_results(results: list[str], agent: Any) -> list[str]:
+def _bound_results(results: list[str], agent: AgentPort) -> list[str]:
     """Apply the per-result and per-step context budgets, and say so when they bite.
 
     Best effort: a backend that cannot count tokens, or a budget that cannot be

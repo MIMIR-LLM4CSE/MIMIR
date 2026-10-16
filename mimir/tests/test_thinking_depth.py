@@ -155,30 +155,30 @@ class _LoopAgent:
         self.thinking_budget = -1
 
     # The only depth-dependent part of the prompt, stubbed so the rewrite is visible.
-    async def _build_system_content(self, **kwargs):
+    async def build_system_content(self, **kwargs):
         return f"SYS[auto={self.thinking_depth == THINKING_DEPTH_AUTO}]"
 
     @staticmethod
-    def _new_execution_context():
-        return MimirAgent._new_execution_context()
+    def new_execution_context():
+        return MimirAgent.new_execution_context()
 
     @staticmethod
-    def _get_todo_file():
+    def todo_file():
         return ""
 
-    def _apply_carry_context(self, execution_context):
+    def apply_carry_context(self, execution_context):
         pass
 
-    def _update_carry_context(self, execution_context):
+    def update_carry_context(self, execution_context):
         pass
 
     @staticmethod
-    def _normalize_mode(mode):
+    def normalize_mode(mode):
         return "agent"
 
 
 
-    async def _run_tool(self, tool, args, execution_context=None, run_auto_validation=True, call_id=""):
+    async def run_tool(self, tool, args, execution_context=None, run_auto_validation=True, call_id=""):
         return "{}"
 
 

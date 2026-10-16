@@ -10,16 +10,16 @@ Machine* for why the branch that did block there was removed.
 """
 from __future__ import annotations
 
-from typing import Any
 
 from ...context.capabilities import EDIT, has_cap, target_path_arg
 from ...config.limits import VALIDATION_RETRY_BUDGET
 from ...context.execution_context import ExecutionContext
 from ...protocol.tool_result import json_error_payload
+from ...core.ports import AgentPort
 
 
 def check_state_machine_guard(
-    agent: Any,
+    agent: AgentPort,
     tool_name: str,
     arguments: dict,
     execution_context: ExecutionContext | None,
@@ -28,9 +28,9 @@ def check_state_machine_guard(
         return None
 
     state = execution_context.workflow_state
-    path = agent._normalize_workspace_path(
+    path = agent.normalize_workspace_path(
         target_path_arg(tool_name, arguments, agent.tool_caps))
-    is_code_target = bool(path and agent._is_code_filepath(path))
+    is_code_target = bool(path and agent.is_code_filepath(path))
 
     if not (has_cap(tool_name, EDIT, agent.tool_caps) and is_code_target and path):
         return None

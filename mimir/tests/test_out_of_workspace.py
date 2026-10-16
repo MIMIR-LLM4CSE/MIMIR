@@ -108,11 +108,11 @@ class _FakeAgent:
         p = arguments.get("path")
         return [p] if isinstance(p, str) and p else []
 
-    def _is_write_tool(self, tool_name):
+    def is_write_tool(self, tool_name):
         return False
 
 
-    def _request_path_approval(self, paths, tool_name, arguments=None):
+    def request_path_approval(self, paths, tool_name, arguments=None):
         # Every outside path of the call arrives in one prompt; the call's own
         # arguments travel with them so the card can describe what the tool is
         # doing, not just which paths it touches.
@@ -463,29 +463,29 @@ class _FakeEngineAgent(_FakeExecAgent):
         self.tool_owner = {"run_shell": "code"}
         self.tool_approvals: list[str] = []
 
-    def _normalize_tool_arguments(self, tool_name, arguments):
+    def normalize_tool_arguments(self, tool_name, arguments):
         return dict(arguments)
 
-    def _rewrite_tool_for_context(self, tool_name, arguments):
+    def rewrite_tool_for_context(self, tool_name, arguments):
         return tool_name, dict(arguments)
 
-    def _request_tool_approval(self, tool_name, arguments):
+    def request_tool_approval(self, tool_name, arguments):
         self.tool_approvals.append(tool_name)
         return True, "approved once"
 
     def approval_scope(self, tool_name, arguments):
         return f"fake:{tool_name}"
 
-    def _record_denied_tool_call(self, tool_name, arguments, execution_context, note="") -> None:
+    def record_denied_tool_call(self, tool_name, arguments, execution_context, note="") -> None:
         pass
 
-    def _denied_tool_result(self, tool_name, arguments, note="", execution_context=None):
+    def denied_tool_result(self, tool_name, arguments, note="", execution_context=None):
         return f"denied:{tool_name}:{note}"
 
-    def _normalize_workspace_path(self, path):
+    def normalize_workspace_path(self, path):
         return path or ""
 
-    def _is_code_filepath(self, path):
+    def is_code_filepath(self, path):
         return str(path).endswith(".py")
 
 

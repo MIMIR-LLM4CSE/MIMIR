@@ -35,7 +35,7 @@ async def main(model: str | None = None) -> None:
     print(f"Using model: {model} ({os.environ.get('LLM_BACKEND', 'vllm')})")
     agent = MimirAgent(model=model)
 
-    agent._request_user_question = _cli_request_question
+    agent.request_user_question = _cli_request_question
 
     await agent.connect_servers(all_servers())
     agent.seed_classification_from_caps()

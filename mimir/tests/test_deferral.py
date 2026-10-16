@@ -160,8 +160,8 @@ class PlanDecisionDeferralTests(unittest.TestCase):
 
         backend = ScriptedBackend([])
         agent = types.SimpleNamespace(model="m", tools=[], tool_caps={},
-                                      _deferred_prompts=[], _request_user_question=None)
-        agent._request_user_question = lambda questions: ask(agent)
+                                      _deferred_prompts=[], request_user_question=None)
+        agent.request_user_question = lambda questions: ask(agent)
 
         async def _finalize(agent, query, answer, execution_context, messages, logger):
             return answer

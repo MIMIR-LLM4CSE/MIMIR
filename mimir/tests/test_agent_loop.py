@@ -294,8 +294,8 @@ class FinalizeAnswerTests(unittest.TestCase):
         carry = {"n": 0}
         agent = types.SimpleNamespace(
             tool_owner={},
-            _run_tool=lambda *a, **k: "{}",
-            _update_carry_context=lambda ec: carry.__setitem__("n", carry["n"] + 1),
+            run_tool=lambda *a, **k: "{}",
+            update_carry_context=lambda ec: carry.__setitem__("n", carry["n"] + 1),
         )
         return agent, carry
 
@@ -388,7 +388,7 @@ class FinalizeAnswerTests(unittest.TestCase):
         agent, _ = self._agent()
         calls: list = []
         agent.tool_owner = {"memory_add": "memory"}
-        agent._run_tool = lambda *a, **k: calls.append(a) or "{}"
+        agent.run_tool = lambda *a, **k: calls.append(a) or "{}"
         asyncio.run(
             loop_base_module._finalize_answer(
                 agent, "remember that the project uses pytest", "Noted.",
@@ -759,8 +759,8 @@ class RunPlanModeTests(unittest.TestCase):
         mode_calls: list = []
         agent = types.SimpleNamespace(
             model="m", tools=[], tool_caps=dict(_CHECKLIST_CAPS),
-            _request_user_question=lambda qs: {"answers": [{"selected": [plan_loop_module._PLAN_ACCEPT], "other_text": None}]},
-            _build_system_content=_build_system,
+            request_user_question=lambda qs: {"answers": [{"selected": [plan_loop_module._PLAN_ACCEPT], "other_text": None}]},
+            build_system_content=_build_system,
             set_mode=lambda m: mode_calls.append(m),
         )
         messages = [{"role": "system", "content": "S"}, {"role": "user", "content": "plan it"}]
@@ -817,7 +817,7 @@ class RunPlanModeTests(unittest.TestCase):
 
         agent = types.SimpleNamespace(
             model="m", tools=[], tool_caps=dict(_CHECKLIST_CAPS),
-            _request_user_question=_ask, _build_system_content=_build_system,
+            request_user_question=_ask, build_system_content=_build_system,
         )
         messages = [{"role": "system", "content": "S"}, {"role": "user", "content": "plan it"}]
 
@@ -879,7 +879,7 @@ class RunPlanModeTests(unittest.TestCase):
 
         agent = types.SimpleNamespace(
             model="m", tools=[], tool_caps=dict(_CHECKLIST_CAPS),
-            _request_user_question=_ask, _build_system_content=_build_system,
+            request_user_question=_ask, build_system_content=_build_system,
         )
         messages = [{"role": "system", "content": "S"}, {"role": "user", "content": "plan it"}]
 
@@ -919,7 +919,7 @@ class RunPlanModeTests(unittest.TestCase):
 
         agent = types.SimpleNamespace(
             model="m", tools=[], tool_caps=dict(_CHECKLIST_CAPS),
-            _request_user_question=lambda qs: {
+            request_user_question=lambda qs: {
                 "answers": [{"selected": [plan_loop_module._PLAN_REJECT], "other_text": None}]
             },
         )
@@ -1097,31 +1097,31 @@ class RunAgentQueryNonInteractiveTests(unittest.TestCase):
             _cancel_flag = None
 
             @staticmethod
-            def _new_execution_context():
-                return MimirAgent._new_execution_context()
+            def new_execution_context():
+                return MimirAgent.new_execution_context()
 
             @staticmethod
-            def _get_todo_file():
+            def todo_file():
                 return ""
 
             @staticmethod
-            def _normalize_mode(mode):
+            def normalize_mode(mode):
                 return "agent"
 
-            async def _build_system_content(self, **kwargs):
+            async def build_system_content(self, **kwargs):
                 return "system"
 
-            async def _run_tool(self, tool, args, execution_context=None, run_auto_validation=True, call_id=""):
+            async def run_tool(self, tool, args, execution_context=None, run_auto_validation=True, call_id=""):
                 return "{}"
 
 
 
             approvals = types.SimpleNamespace(flush_pending_review=lambda: None)
 
-            def _apply_carry_context(self, execution_context):
+            def apply_carry_context(self, execution_context):
                 pass
 
-            def _update_carry_context(self, execution_context):
+            def update_carry_context(self, execution_context):
                 pass
 
         return _QueryAgent()
@@ -1211,14 +1211,14 @@ class SkillResolutionTests(RunAgentQueryNonInteractiveTests):
         """The user put a body in the context; the model must not pull it again."""
         agent = self._skilled_agent()
         seen: dict = {}
-        original = MimirAgent._new_execution_context
+        original = MimirAgent.new_execution_context
 
         def _capture():
             ctx = original()
             seen["ctx"] = ctx
             return ctx
 
-        agent._new_execution_context = staticmethod(_capture)
+        agent.new_execution_context = staticmethod(_capture)
         self._run(agent, "/fix-bug the parser crashes")
         self.assertEqual(seen["ctx"].skills_loaded, {"fix-bug": ""})
 
@@ -1353,7 +1353,7 @@ class SteerInjectionInLoopTests(RunAgentQueryNonInteractiveTests):
         with open(todo_fp, "w", encoding="utf-8") as fh:
             fh.write("- [x] one\n- [ ] two\n")
         self.addCleanup(lambda: (os.remove(todo_fp), os.rmdir(d)))
-        agent._get_todo_file = lambda: todo_fp
+        agent.todo_file = lambda: todo_fp
 
         # The shared stub returns a constant; use the real builder so the checklist
         # actually has to find its way into messages[0].
@@ -1365,7 +1365,7 @@ class SteerInjectionInLoopTests(RunAgentQueryNonInteractiveTests):
                 todo_file=todo_fp,
             )
 
-        agent._build_system_content = _build
+        agent.build_system_content = _build
 
         drains = {"n": 0}
 
@@ -1453,12 +1453,12 @@ class EvidenceHandbackTests(RunAgentQueryNonInteractiveTests):
 class NormalizeModeTests(unittest.TestCase):
     def test_accepts_every_valid_mode_case_insensitively(self) -> None:
         for mode in ("agent", "plan", "ask"):
-            self.assertEqual(MimirAgent._normalize_mode(mode), mode)
-            self.assertEqual(MimirAgent._normalize_mode(f"  {mode.upper()} "), mode)
+            self.assertEqual(MimirAgent.normalize_mode(mode), mode)
+            self.assertEqual(MimirAgent.normalize_mode(f"  {mode.upper()} "), mode)
 
     def test_rejects_unknown_mode_and_names_the_valid_ones(self) -> None:
         with self.assertRaises(ValueError) as ctx:
-            MimirAgent._normalize_mode("chat")
+            MimirAgent.normalize_mode("chat")
         for mode in ("agent", "plan", "ask"):
             self.assertIn(mode, str(ctx.exception))
 
@@ -1473,7 +1473,7 @@ class AskModeInLoopTests(RunAgentQueryNonInteractiveTests):
     def _ask_agent(self):
         agent = self._query_agent()
         agent.mode = "ask"
-        agent._normalize_mode = staticmethod(lambda mode: "ask")
+        agent.normalize_mode = staticmethod(lambda mode: "ask")
         # The shared stub's _normalize_arguments is an identity; the guard needs the
         # real one, which parses the JSON-string arguments a backend actually emits.
         agent.tool_caps = {
@@ -1561,7 +1561,7 @@ class MidQueryModeSwitchTests(RunAgentQueryNonInteractiveTests):
     def _agent(self, start_mode="agent"):
         agent = self._query_agent()
         agent.mode = start_mode
-        agent._normalize_mode = staticmethod(lambda mode: mode)
+        agent.normalize_mode = staticmethod(lambda mode: mode)
         agent.tool_caps = dict(self._CAPS)
         agent.tools = [{"function": {"name": n}} for n in self._CAPS]
         return agent
@@ -1627,7 +1627,7 @@ class MidQueryModeSwitchTests(RunAgentQueryNonInteractiveTests):
             built.append(kwargs["active_mode"])
             return f"system:{kwargs['active_mode']}"
 
-        agent._build_system_content = _build
+        agent.build_system_content = _build
         _, backend, _ = self._run(
             agent,
             [
@@ -1744,7 +1744,7 @@ class PlanLoopModeSwitchTests(unittest.TestCase):
 
         agent = types.SimpleNamespace(
             model="m", tools=[], tool_caps={}, mode="agent",
-            _build_system_content=_build,
+            build_system_content=_build,
         )
         messages = [{"role": "system", "content": "system:plan"},
                     {"role": "user", "content": "plan it"}]
@@ -1830,12 +1830,12 @@ class RepeatedFailingCallGuardTests(unittest.TestCase):
     def _agent(self, run_tool):
         approvals = types.SimpleNamespace(record_snapshot=lambda p: None, _file_snapshots={})
         return types.SimpleNamespace(
-            _is_write_tool=lambda n: False,
+            is_write_tool=lambda n: False,
             tool_caps={"code_check_file": ToolCaps(name="code_check_file")},
             get_tool_file_targets=lambda n, a: [],
             approvals=approvals,
-            _run_tool=run_tool,
-            _rewrite_tool_for_context=lambda n, a: (n, a),
+            run_tool=run_tool,
+            rewrite_tool_for_context=lambda n, a: (n, a),
         )
 
     def _dispatch(self, agent, ec):
@@ -1949,12 +1949,12 @@ class WriteDiffEmitTests(unittest.TestCase):
             record_snapshot=record_snapshot, _file_snapshots=snapshots
         )
         return types.SimpleNamespace(
-            _is_write_tool=lambda n: n == "replace_in_file",
+            is_write_tool=lambda n: n == "replace_in_file",
             tool_caps={"replace_in_file": ToolCaps(name="replace_in_file")},
             get_tool_file_targets=lambda n, a: [a["path"]],
             approvals=approvals,
-            _run_tool=run_tool,
-            _rewrite_tool_for_context=lambda n, a: (n, a),
+            run_tool=run_tool,
+            rewrite_tool_for_context=lambda n, a: (n, a),
         )
 
     def _dispatch_capture(self, agent, path: str):
@@ -2024,7 +2024,7 @@ class WriteDiffEmitTests(unittest.TestCase):
                     fh.write("new content\n")
                 # The real executor would append AUTO_VALIDATION here when
                 # run_auto_validation is True; the dispatcher passes False and runs
-                # it separately (mocked via _auto_validate_written_file below).
+                # it separately (mocked via auto_validate_written_file below).
                 return '{"status": "ok", "operation": "replaced"}'
 
             async def _hanging_validate(p, ec):
@@ -2038,8 +2038,8 @@ class WriteDiffEmitTests(unittest.TestCase):
                     name="replace_in_file", capabilities=frozenset({"edit"})
                 )
             }
-            agent._normalize_workspace_path = lambda p: p
-            agent._auto_validate_written_file = _hanging_validate
+            agent.normalize_workspace_path = lambda p: p
+            agent.auto_validate_written_file = _hanging_validate
 
             with patch.object(dispatch_execution, "_AUTO_VALIDATION_TIMEOUT_SECS", 0.05):
                 events = self._dispatch_capture(agent, path)
@@ -2141,7 +2141,7 @@ class IdenticalSuccessRepeatTests(unittest.TestCase):
     def _agent(self, result: str = "(no output)"):
         calls = {"n": 0}
 
-        async def _run_tool(name, args, **kw):
+        async def run_tool(name, args, **kw):
             calls["n"] += 1
             return result() if callable(result) else result
 
@@ -2149,9 +2149,9 @@ class IdenticalSuccessRepeatTests(unittest.TestCase):
             tool_caps={},
             approvals=types.SimpleNamespace(record_snapshot=lambda p: None),
             get_tool_file_targets=lambda name, args: [],
-            _is_write_tool=lambda name: False,
-            _rewrite_tool_for_context=lambda name, args: (name, args),
-            _run_tool=_run_tool,
+            is_write_tool=lambda name: False,
+            rewrite_tool_for_context=lambda name, args: (name, args),
+            run_tool=run_tool,
         )
         return agent, calls
 

@@ -69,7 +69,7 @@ EXPECTED_ORDER = [
 
 def _stub_agent():
     return types.SimpleNamespace(
-        _normalize_workspace_path=lambda p: p or "",
+        normalize_workspace_path=lambda p: p or "",
         tool_caps={},
     )
 
@@ -109,8 +109,8 @@ class ActionOpCountTests(unittest.TestCase):
     def _agent(self):
         from mimir.client.context.capabilities import PLAN_BLOCKED, ToolCaps
         return types.SimpleNamespace(
-            _normalize_workspace_path=lambda p: p or "",
-            _is_code_filepath=lambda p: False,
+            normalize_workspace_path=lambda p: p or "",
+            is_code_filepath=lambda p: False,
             tool_caps={
                 "action_tool": ToolCaps(name="action_tool", capabilities=frozenset({PLAN_BLOCKED})),
                 "readonly_tool": ToolCaps(name="readonly_tool"),
@@ -138,8 +138,8 @@ class DelegatedExplorationTests(unittest.TestCase):
     def _agent(self):
         from mimir.client.context.capabilities import DELEGATE, ToolCaps
         return types.SimpleNamespace(
-            _normalize_workspace_path=lambda p: p or "",
-            _is_code_filepath=lambda p: False,
+            normalize_workspace_path=lambda p: p or "",
+            is_code_filepath=lambda p: False,
             tool_caps={
                 "delegating_tool": ToolCaps(
                     name="delegating_tool", capabilities=frozenset({DELEGATE})),
@@ -208,9 +208,9 @@ class EditFailureStreakTests(unittest.TestCase):
         if extra_caps:
             caps.update(extra_caps)
         return types.SimpleNamespace(
-            _normalize_workspace_path=lambda p: p or "",
-            _is_write_tool=lambda n: n == "replace_in_file",
-            _is_code_filepath=lambda p: str(p).endswith(".py"),
+            normalize_workspace_path=lambda p: p or "",
+            is_write_tool=lambda n: n == "replace_in_file",
+            is_code_filepath=lambda p: str(p).endswith(".py"),
             tool_caps=caps,
         )
 
@@ -319,8 +319,8 @@ class BashCommandObservationTests(unittest.TestCase):
     def _agent(self):
         from mimir.client.context.capabilities import ToolCaps
         return types.SimpleNamespace(
-            _normalize_workspace_path=lambda p: p or "",
-            _is_code_filepath=lambda p: str(p).endswith(".py"),
+            normalize_workspace_path=lambda p: p or "",
+            is_code_filepath=lambda p: str(p).endswith(".py"),
             tool_caps={
                 "bash_run": ToolCaps(
                     name="bash_run",
@@ -414,8 +414,8 @@ class BashValidationObservationTests(unittest.TestCase):
         )}
         return types.SimpleNamespace(
             tool_caps=reg,
-            _normalize_workspace_path=lambda p: os.path.normpath(p) if p else "",
-            _is_code_filepath=lambda p: str(p).endswith(".py"),
+            normalize_workspace_path=lambda p: os.path.normpath(p) if p else "",
+            is_code_filepath=lambda p: str(p).endswith(".py"),
         )
 
     def _ctx(self, dirty):
@@ -706,8 +706,8 @@ class RedTestRunObservationTests(unittest.TestCase):
         )}
         return types.SimpleNamespace(
             tool_caps=reg,
-            _normalize_workspace_path=lambda p: os.path.normpath(p) if p else "",
-            _is_code_filepath=lambda p: str(p).endswith(".py"),
+            normalize_workspace_path=lambda p: os.path.normpath(p) if p else "",
+            is_code_filepath=lambda p: str(p).endswith(".py"),
         )
 
     def _ctx(self, dirty=("tests/test_x.py",)):
@@ -881,8 +881,8 @@ class ExitAttributionTests(unittest.TestCase):
             tool_caps={"bash_run": ToolCaps(
                 name="bash_run",
                 scope={"kind": "command_prefix", "args": ["command"]})},
-            _normalize_workspace_path=lambda p: os.path.normpath(p) if p else "",
-            _is_code_filepath=lambda p: str(p).endswith(".py"),
+            normalize_workspace_path=lambda p: os.path.normpath(p) if p else "",
+            is_code_filepath=lambda p: str(p).endswith(".py"),
         )
 
     def _attributable(self, command):
@@ -993,7 +993,7 @@ class PluginValidatorObservationTests(unittest.TestCase):
         )}
         return types.SimpleNamespace(
             tool_caps=reg,
-            _normalize_workspace_path=lambda p: os.path.normpath(p) if p else "",
+            normalize_workspace_path=lambda p: os.path.normpath(p) if p else "",
         )
 
     def _ctx(self, dirty):
@@ -1033,8 +1033,8 @@ class ExecutionToolObservationTests(unittest.TestCase):
         reg = {"runner": ToolCaps(name="runner", capabilities=frozenset(caps), **kwargs)}
         return types.SimpleNamespace(
             tool_caps=reg,
-            _normalize_workspace_path=lambda p: os.path.normpath(p) if p else "",
-            _is_code_filepath=lambda p: str(p).endswith(".py"),
+            normalize_workspace_path=lambda p: os.path.normpath(p) if p else "",
+            is_code_filepath=lambda p: str(p).endswith(".py"),
         )
 
     def _ctx(self, dirty=()):
@@ -1311,8 +1311,8 @@ class MissingCommandImputationTests(unittest.TestCase):
         )}
         return types.SimpleNamespace(
             tool_caps=reg,
-            _normalize_workspace_path=lambda p: os.path.normpath(p) if p else "",
-            _is_code_filepath=lambda p: str(p).endswith(".py"),
+            normalize_workspace_path=lambda p: os.path.normpath(p) if p else "",
+            is_code_filepath=lambda p: str(p).endswith(".py"),
         )
 
     def _red(self, command, dirty={"solver.c"}, absent=()):
@@ -1383,7 +1383,7 @@ class DeclaredEditSetTests(unittest.TestCase):
     def _agent(self):
         from mimir.client.context.capabilities import TASK_PLANNING, ToolCaps
         return types.SimpleNamespace(
-            _normalize_workspace_path=lambda p: p or "",
+            normalize_workspace_path=lambda p: p or "",
             tool_caps={
                 "todo_write": ToolCaps(
                     name="todo_write",
@@ -1456,8 +1456,8 @@ class UnwatchedRunObservationTests(unittest.TestCase):
 
     def _agent(self):
         return types.SimpleNamespace(
-            _normalize_workspace_path=lambda p: p or "",
-            _is_code_filepath=lambda p: False,
+            normalize_workspace_path=lambda p: p or "",
+            is_code_filepath=lambda p: False,
             tool_caps={},
         )
 

@@ -114,7 +114,7 @@ class ClientHelperTests(unittest.TestCase):
         self.assertEqual(agent.model, client_config_module.DEFAULT_MODEL)
 
     def test_new_execution_context_matches_runtime_contract(self) -> None:
-        context = client_module.MimirAgent._new_execution_context()
+        context = client_module.MimirAgent.new_execution_context()
         execution_context_module.validate_execution_context(context)
         self.assertIsInstance(context, execution_context_module.ExecutionContext)
 
@@ -219,7 +219,7 @@ class ClientHelperTests(unittest.TestCase):
             "inspected_dirs"})
 
     def test_carried_path_purge_drops_the_inert_entry_and_keeps_dirs_out(self) -> None:
-        """`_discard_carry_path`'s field set, now derived — two deliberate absences.
+        """`discard_carry_path`'s field set, now derived — two deliberate absences.
 
         `dirty_written_files` is gone: it was in the hand-written list but is never
         placed in carry_context, so purging it was theatre. `inspected_dirs` stays out
@@ -323,8 +323,8 @@ class ClientHelperTests(unittest.TestCase):
         agent = types.SimpleNamespace(
             tool_caps={"delete_file": ToolCaps(
                 name="delete_file", capabilities=frozenset({REMOVE}))},
-            _normalize_workspace_path=lambda p: p or "",
-            _discard_carry_path=lambda p: None,
+            normalize_workspace_path=lambda p: p or "",
+            discard_carry_path=lambda p: None,
         )
         observations._observe_delete(
             agent, "delete_file", {"path": "doomed.py"}, "ok", ec,
@@ -341,7 +341,7 @@ class ClientHelperTests(unittest.TestCase):
         for field in m.fields_with(m.CARRY):
             agent._carry_context[field] = {"doomed.py", "kept.py"}
 
-        agent._discard_carry_path("doomed.py")
+        agent.discard_carry_path("doomed.py")
 
         for field in m.fields_with(m.CARRY, m.FILE_PATH):
             with self.subTest(field=field):
@@ -395,7 +395,7 @@ class ClientHelperTests(unittest.TestCase):
         agent = client_module.MimirAgent()
         agent.tool_owner = {"read_file_lines": "search"}
 
-        tool_name, rewritten = agent._rewrite_tool_for_context(
+        tool_name, rewritten = agent.rewrite_tool_for_context(
             "read_file",
             {"path": "src/module.py"},
         )
@@ -408,7 +408,7 @@ class ClientHelperTests(unittest.TestCase):
         agent = client_module.MimirAgent()
         agent.tool_owner = {"read_file_lines": "search"}
 
-        tool_name, rewritten = agent._rewrite_tool_for_context(
+        tool_name, rewritten = agent.rewrite_tool_for_context(
             "read_file",
             {"path": "docs/guide.md"},
         )
@@ -423,7 +423,7 @@ class ClientHelperTests(unittest.TestCase):
         agent = client_module.MimirAgent()
         agent.tool_owner = {"read_file_lines": "search"}
 
-        tool_name, rewritten = agent._rewrite_tool_for_context(
+        tool_name, rewritten = agent.rewrite_tool_for_context(
             "read_file",
             {"path": "models/model.gguf"},
         )
@@ -437,7 +437,7 @@ class ClientHelperTests(unittest.TestCase):
         agent._carry_context["existing_paths"] = {"mimir/servers/utilities/server_math.py"}
         execution_context = build_execution_context(searched=False, inspected_dirs=set(), checked_paths=set(), read_files=set(), existing_paths=set(), similar_candidates_by_dir={})
 
-        agent._apply_carry_context(execution_context)
+        agent.apply_carry_context(execution_context)
         self.assertIn("mimir/servers/utilities/server_math.py", execution_context.existing_paths)
 
     def test_write_policy_allows_new_non_code_file_with_direct_target_context(self) -> None:
@@ -549,7 +549,7 @@ class ClientHelperTests(unittest.TestCase):
         agent = client_module.MimirAgent()
         agent.approvals.batch_mode = False
         with patch("builtins.input", side_effect=["?", "invalid", "maybe"]):
-            approved, note = agent._request_tool_approval("write_file", {"path": "x.txt"}, max_attempts=3)
+            approved, note = agent.request_tool_approval("write_file", {"path": "x.txt"}, max_attempts=3)
 
         self.assertFalse(approved)
         self.assertIn("invalid approval responses", note)
@@ -559,7 +559,7 @@ class ClientHelperTests(unittest.TestCase):
         # fallback_tools is seeded from the live registry post-connect; emulate that here.
         agent.approvals.fallback_tools["bash_run"] = ("code_run", "read_file_lines", "grep")
         payload = json.loads(
-            agent._denied_tool_result("bash_run", {"command": "echo hi"}, "denied by user"))
+            agent.denied_tool_result("bash_run", {"command": "echo hi"}, "denied by user"))
         self.assertEqual(payload["status"], "error")
         self.assertEqual(payload["denial_stage"], "reconsider")
         self.assertEqual(payload["denial_reason"], "denied by user")
@@ -578,7 +578,7 @@ class ClientHelperTests(unittest.TestCase):
         def refuse() -> dict:
             execution_context.denial_history.append(
                 {"tool": "bash_run", "scope": scope, "kind": "denied", "reason": "denied by user"})
-            return json.loads(agent._denied_tool_result(
+            return json.loads(agent.denied_tool_result(
                 "bash_run", {"command": "pip install numpy"}, "denied by user", execution_context))
 
         first = refuse()
@@ -601,12 +601,12 @@ class ClientHelperTests(unittest.TestCase):
         from mimir.client.guardrails.workflow import denial_stage
 
         agent = client_module.MimirAgent()
-        execution_context = client_module.MimirAgent._new_execution_context()
+        execution_context = client_module.MimirAgent.new_execution_context()
         args = {"command": "pip install numpy"}
         scope = agent.approval_scope("bash_run", args)
 
-        agent._record_denied_tool_call("bash_run", args, execution_context, "denied by user")
-        agent._record_denied_tool_call("bash_run", args, execution_context, "denied by user")
+        agent.record_denied_tool_call("bash_run", args, execution_context, "denied by user")
+        agent.record_denied_tool_call("bash_run", args, execution_context, "denied by user")
         self.assertEqual(len(execution_context.denied_tool_calls), 2)
         self.assertEqual(execution_context.denial_history[0]["scope"], scope)
         self.assertEqual(execution_context.denial_history[0]["kind"], "denied")
@@ -731,7 +731,7 @@ class ClientHelperTests(unittest.TestCase):
         """The delete guard's *blocking* branch, which nothing exercised.
 
         Every pre-existing write-policy test asserted a permissive outcome, and each
-        did so from the early `_is_write_tool` exit (the bare agent had an empty
+        did so from the early `is_write_tool` exit (the bare agent had an empty
         capability registry), so no test had ever reached a rule at all. Removing two
         neighbouring guards is only defensible if the ones kept actually block — that
         claim needs the negative case, not just the positive one.
@@ -779,31 +779,31 @@ class ClientHelperTests(unittest.TestCase):
             tool_caps = {}
 
             @staticmethod
-            def _new_execution_context():
-                return client_module.MimirAgent._new_execution_context()
+            def new_execution_context():
+                return client_module.MimirAgent.new_execution_context()
 
             @staticmethod
-            def _get_todo_file():
+            def todo_file():
                 return ""
 
             @staticmethod
-            def _normalize_mode(mode):
+            def normalize_mode(mode):
                 return "agent"
 
-            async def _build_system_content(self, **kwargs):
+            async def build_system_content(self, **kwargs):
                 return "system"
 
-            async def _run_tool(self, tool, args, execution_context=None, run_auto_validation=True, call_id=""):
+            async def run_tool(self, tool, args, execution_context=None, run_auto_validation=True, call_id=""):
                 return "{}"
 
 
 
             approvals = types.SimpleNamespace(flush_pending_review=lambda: None)
 
-            def _apply_carry_context(self, execution_context):
+            def apply_carry_context(self, execution_context):
                 captured_context.update(vars(execution_context))
 
-            def _update_carry_context(self, execution_context):
+            def update_carry_context(self, execution_context):
                 pass
 
         fake_agent = _QueryAgent()
@@ -831,7 +831,7 @@ class ClientHelperTests(unittest.TestCase):
         context carries zero evidence, so every gate measures the model's own work.
         """
         ec = execution_context_module
-        execution_context = client_module.MimirAgent._new_execution_context()
+        execution_context = client_module.MimirAgent.new_execution_context()
         self.assertEqual(ec.discovery_signal_count(execution_context), 0)
         for signal in ec.DISCOVERY_EVIDENCE_SIGNALS:
             with self.subTest(signal=signal):
@@ -868,7 +868,7 @@ class ClientHelperTests(unittest.TestCase):
             tools=[],
             tool_caps={},
             thinking_budget=-1,
-            _update_carry_context=lambda ec: None,
+            update_carry_context=lambda ec: None,
             approvals=types.SimpleNamespace(flush_pending_review=lambda: None),
         )
 
@@ -1307,18 +1307,18 @@ class ClientHelperTests(unittest.TestCase):
 
 
             @staticmethod
-            def _is_write_tool(name):
+            def is_write_tool(name):
                 return True
 
             @staticmethod
-            def _rewrite_tool_for_context(name, args):
+            def rewrite_tool_for_context(name, args):
                 return name, args
 
             @staticmethod
             def get_tool_file_targets(name, args):
                 return [args["path"]]
 
-            async def _run_tool(self, name, args, execution_context=None,
+            async def run_tool(self, name, args, execution_context=None,
                                 run_auto_validation=True, call_id=""):
                 # content None models a READ: the tool names a file target but leaves
                 # it untouched.
@@ -1418,11 +1418,11 @@ class ClientHelperTests(unittest.TestCase):
 
 
             @staticmethod
-            def _is_write_tool(name):
+            def is_write_tool(name):
                 return name == "write_file"
 
             @staticmethod
-            def _rewrite_tool_for_context(name, args):
+            def rewrite_tool_for_context(name, args):
                 return name, args
 
             @staticmethod
@@ -1431,7 +1431,7 @@ class ClientHelperTests(unittest.TestCase):
                 # so the test isolates the read/write scheduling behaviour.
                 return []
 
-            async def _run_tool(self, name, args, execution_context=None, run_auto_validation=True, call_id=""):
+            async def run_tool(self, name, args, execution_context=None, run_auto_validation=True, call_id=""):
                 if name == "write_file":
                     state["active_w"] += 1
                     state["max_w"] = max(state["max_w"], state["active_w"])
@@ -1514,15 +1514,15 @@ class ClientHelperTests(unittest.TestCase):
 
 
             @staticmethod
-            def _is_write_tool(name): return False
+            def is_write_tool(name): return False
 
             @staticmethod
-            def _rewrite_tool_for_context(name, args): return name, args
+            def rewrite_tool_for_context(name, args): return name, args
 
             @staticmethod
             def get_tool_file_targets(name, args): return []
 
-            async def _run_tool(self, name, args, execution_context=None,
+            async def run_tool(self, name, args, execution_context=None,
                                 run_auto_validation=True, call_id=""):
                 with human_pause_module.human_pause():
                     time.sleep(0.15)   # user staring at the approval card
@@ -2341,7 +2341,7 @@ class ClientHelperTests(unittest.TestCase):
         from mimir.client.query_engine.finalize import _annotate_answer_with_changes
         from mimir.client.query_engine.verification import split_answer_ledger
 
-        ec = client_module.MimirAgent._new_execution_context()
+        ec = client_module.MimirAgent.new_execution_context()
         ec.dirty_written_files.add("solver.py")
         return split_answer_ledger(_annotate_answer_with_changes("Done.", ec))[1]
 

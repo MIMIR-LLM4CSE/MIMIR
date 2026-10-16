@@ -8,7 +8,6 @@ the rest are static text.
 """
 from __future__ import annotations
 
-from typing import Any
 
 from ..builtin_check import builtin_check_failures
 from ..workflow import (
@@ -21,11 +20,12 @@ from ..workflow import (
 )
 from ...config.limits import STUCK_REPAIR_CONSTRAIN_AFTER
 from ...context.execution_context import ExecutionContext
+from ...core.ports import AgentPort
 
 
 # A refusal is an instruction, not an error to report and retry. The three readings
 # below are stated in priority order and mirror the tool-result hint the model got
-# mid-loop (agent_core._denied_tool_result) and the Non-negotiables line in the system
+# mid-loop (agent_core.denied_tool_result) and the Non-negotiables line in the system
 # prompt — this nudge is the copy that reaches it once it has stopped calling tools.
 _DENIAL_RECONSIDER: str = (
     "A tool call was refused by the user. Do not claim full success, and do not re-issue it. "
@@ -51,7 +51,7 @@ _DENIAL_HANDBACK: str = (
 )
 
 
-def state_nudge_message(agent: Any, execution_context: ExecutionContext) -> str:
+def state_nudge_message(agent: AgentPort, execution_context: ExecutionContext) -> str:
     state = execution_context.workflow_state
     if state == "discover":
         return (
@@ -353,7 +353,7 @@ def todo_nudge_message(execution_context: ExecutionContext) -> str:
     )
 
 
-def validation_nudge_message(agent: Any, execution_context: ExecutionContext) -> str:
+def validation_nudge_message(agent: AgentPort, execution_context: ExecutionContext) -> str:
     """What the model is told about the files the built-in check rejected.
 
     No longer a push toward doing the check — the loop already did it. The message is

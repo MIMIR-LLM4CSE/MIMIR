@@ -211,7 +211,7 @@ class PostToolPluginTests(ExtensionRegistryResetMixin):
     def _agent(self):
         return types.SimpleNamespace(
             tool_caps={},
-            _normalize_workspace_path=lambda p: p or "",
+            normalize_workspace_path=lambda p: p or "",
         )
 
     def _annotate(self, result: str = "{}") -> str:

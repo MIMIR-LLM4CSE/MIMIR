@@ -209,10 +209,10 @@ class AgentCarriesItsSessionTests(_StateDirCase):
              patch("mimir.client.agent_core.STATE_DIR", self.state):
             self.write_pointer("the-one-on-screen")
             agent = MimirAgent(session_id="mine")
-            # _get_todo_file is gated on a planning tool being connected.
+            # todo_file is gated on a planning tool being connected.
             with patch("mimir.client.agent_core.names_with_cap", return_value=["todo_write"]):
                 self.assertEqual(
-                    agent._get_todo_file(),
+                    agent.todo_file(),
                     os.path.join(self.state, "sessions", "mine", "todo_list.md"),
                 )
 

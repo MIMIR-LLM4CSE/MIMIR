@@ -22,6 +22,7 @@ from ...tool_execution.normalizer import _make_hashable
 from ...tool_execution.tool_status_messages import clip_doing
 from ...context.execution_context import ExecutionContext
 from ...protocol.tool_call import normalize_arguments
+from ...core.ports import AgentPort
 
 
 @dataclass
@@ -52,11 +53,11 @@ class Admission:
     skipped: list[tuple[str, str]] = field(default_factory=list)
 
 
-def is_write(agent: Any, name: str) -> bool:
-    return agent._is_write_tool(name) or has_cap(name, EDIT, agent.tool_caps)
+def is_write(agent: AgentPort, name: str) -> bool:
+    return agent.is_write_tool(name) or has_cap(name, EDIT, agent.tool_caps)
 
 
-def _read_call(agent: Any, idx: int, tc: Any) -> Call:
+def _read_call(agent: AgentPort, idx: int, tc: Any) -> Call:
     tc = as_dict(tc)
     fn = as_dict(tc.get("function", {}))
     args = normalize_arguments(fn.get("arguments") or {})
@@ -73,7 +74,7 @@ def _read_call(agent: Any, idx: int, tc: Any) -> Call:
     return Call(fn.get("name", ""), args, call_id, doing)
 
 
-def admit(tool_calls: list, agent: Any, execution_context: ExecutionContext) -> Admission:
+def admit(tool_calls: list, agent: AgentPort, execution_context: ExecutionContext) -> Admission:
     """Read the step's calls and decide, for each, whether it runs."""
     admission = Admission()
     # (name, args) -> the id of the first call issued that way in this step.
@@ -138,11 +139,11 @@ def admit(tool_calls: list, agent: Any, execution_context: ExecutionContext) -> 
 # optional ``agent._watched_background_jobs`` hook (the WS worker sets it; the CLI does
 # not, and then both guards abstain). They live in the dispatch rather than in a policy
 # gate on purpose: the dispatch is the *model's* path, while the watcher's own probes
-# and the CLI's in-turn await call ``agent._run_tool`` directly. A gate would see both
+# and the CLI's in-turn await call ``agent.run_tool`` directly. A gate would see both
 # and, refusing the watcher's probe, would break the very mechanism these protect.
 
 
-def _watched_jobs(agent: Any) -> list[dict]:
+def _watched_jobs(agent: AgentPort) -> list[dict]:
     """Descriptors of the runs a watcher is holding right now. Best-effort, never raises."""
     hook = getattr(agent, "_watched_background_jobs", None)
     if not hook:
@@ -155,7 +156,7 @@ def _watched_jobs(agent: Any) -> list[dict]:
 
 
 def _asks_whether_a_watched_run_is_done(
-    agent: Any, name: str, args: dict,
+    agent: AgentPort, name: str, args: dict,
 ) -> str | None:
     """The job_key this call is asking the state of, when a watcher already answers it.
 
@@ -191,7 +192,7 @@ def _op_matches(op: Any, name: str, args: dict) -> bool:
     return all(args.get(k) == v for k, v in op_args.items())
 
 
-def _reads_progress_of_a_watched_run(agent: Any, name: str, args: dict) -> str | None:
+def _reads_progress_of_a_watched_run(agent: AgentPort, name: str, args: dict) -> str | None:
     """The job_key whose output this call reads while a watcher holds it, else None.
 
     The progress read stays allowed (see above), but it is the one door a poll loop
@@ -217,7 +218,7 @@ def _watched_progress_note(job_key: str) -> str:
     )
 
 
-def _waits_by_blocking_the_turn(agent: Any, name: str, args: dict) -> bool:
+def _waits_by_blocking_the_turn(agent: AgentPort, name: str, args: dict) -> bool:
     """True when this call's command opens by doing nothing but passing time.
 
     Registry-driven on both halves: the tool that carries a raw command line is the one

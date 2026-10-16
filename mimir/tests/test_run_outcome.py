@@ -49,7 +49,7 @@ ROWS_OUTCOME = {**OUTCOME,
 
 def _agent(**caps) -> types.SimpleNamespace:
     return types.SimpleNamespace(
-        tool_caps=caps, _normalize_workspace_path=lambda p: p or "")
+        tool_caps=caps, normalize_workspace_path=lambda p: p or "")
 
 
 def _runner_agent():

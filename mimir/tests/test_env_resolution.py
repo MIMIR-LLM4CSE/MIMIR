@@ -32,7 +32,7 @@ def _agent():
     return types.SimpleNamespace(
         tool_caps=_REGISTRY,
         enforcement="strict",
-        _normalize_workspace_path=lambda p: p or "",
+        normalize_workspace_path=lambda p: p or "",
     )
 
 
@@ -121,7 +121,7 @@ class EnvCleanupNudgeTests(unittest.TestCase):
         # correcting side effect); it is cut only at "off". light/off exercised below.
         agent = types.SimpleNamespace(
             tool_caps=_REGISTRY, enforcement=enforcement,
-            _normalize_workspace_path=lambda p: p or "",
+            normalize_workspace_path=lambda p: p or "",
         )
         messages: list[dict] = []
         maybe_append_nudge(
@@ -176,7 +176,7 @@ class EnvResolutionNudgeTests(unittest.TestCase):
         # the default agent is "strict"; light/off are exercised explicitly below.
         agent = types.SimpleNamespace(
             tool_caps=_REGISTRY, enforcement=enforcement,
-            _normalize_workspace_path=lambda p: p or "",
+            normalize_workspace_path=lambda p: p or "",
         )
         messages: list[dict] = []
         maybe_append_nudge(
@@ -232,7 +232,7 @@ class MidLoopEnvResolutionTests(unittest.TestCase):
     def _agent(self, enforcement="strict"):
         return types.SimpleNamespace(
             tool_caps=_REGISTRY, enforcement=enforcement,
-            _normalize_workspace_path=lambda p: p or "",
+            normalize_workspace_path=lambda p: p or "",
         )
 
     def test_fires_immediately_after_a_failing_call(self) -> None:

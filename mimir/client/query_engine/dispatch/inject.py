@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import os
-from typing import Any
 
 from ...config.limits import NUDGE_MAX_TODO_TICK
 from ...context.execution_context import nudge_count
@@ -15,10 +14,11 @@ from ...guardrails.workflow import (
     repeat_corrective_message,
 )
 from ...context.execution_context import ExecutionContext
+from ...core.ports import AgentPort
 
 
 async def _post_dispatch_inject(
-    agent: Any,
+    agent: AgentPort,
     messages: list[dict],
     execution_context: ExecutionContext,
     *,

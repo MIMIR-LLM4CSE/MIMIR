@@ -132,7 +132,7 @@ _NoneType = type(None)
 class ExecutionContext:
     """Everything one query has established, read by every guard, nudge and report.
 
-    One object per query, built by the agent (``_new_execution_context``) and handed to
+    One object per query, built by the agent (``new_execution_context``) and handed to
     every layer. Each field declares its default, the types it may hold and its traits
     — what the field *is* — and every derived list (the carried fields, the path fields
     a deletion purges, the discovery signals) is computed from those declarations, so a
@@ -321,7 +321,7 @@ class ExecutionContext:
 # they were never declared anywhere, ``export_state`` did not know to normalise them
 # for JSON. ``last_query_written_files`` is a ``set``: the session store serialises with
 # ``default=str``, so it round-tripped as the *string* "{'a.py', 'b.py'}", and the next
-# ``_apply_carry_context`` did ``set(...)`` on that string, exploding it into single
+# ``apply_carry_context`` did ``set(...)`` on that string, exploding it into single
 # characters that the pin then rendered as file paths.
 #
 # Declaring the extras here is what lets the JSON conversion and the deleted-path purge

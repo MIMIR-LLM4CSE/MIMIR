@@ -57,10 +57,10 @@ class RunResult:
 
 def _install_auto_approve(agent: MimirAgent) -> None:
     """Make the agent approve every tool without prompting (unattended mode)."""
-    agent._request_tool_approval = (
+    agent.request_tool_approval = (
         lambda name, arguments, max_attempts=3: (True, "benchmark-auto-approve")
     )
-    agent._request_path_approval = lambda paths, tool_name, arguments=None: (True, False)
+    agent.request_path_approval = lambda paths, tool_name, arguments=None: (True, False)
 
 
 async def run_one(

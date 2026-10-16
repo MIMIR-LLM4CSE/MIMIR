@@ -290,7 +290,7 @@ class MimirAgent:
         self.subagent_level = load_subagent_level()
 
     @staticmethod
-    def _normalize_mode(mode: str) -> str:
+    def normalize_mode(mode: str) -> str:
         normalized = (mode or "").strip().lower()
         if normalized in VALID_MODES:
             return normalized
@@ -299,7 +299,7 @@ class MimirAgent:
         )
 
     def set_mode(self, mode: str) -> None:
-        self.mode = self._normalize_mode(mode)
+        self.mode = self.normalize_mode(mode)
 
     def set_thinking_depth(self, level: int) -> None:
         """Move to a rung of the thinking ladder, keeping the derived flags coherent."""
@@ -398,10 +398,10 @@ class MimirAgent:
         self.enforcement = normalized
 
     @staticmethod
-    def _normalize_workspace_path(path: str | None) -> str:
+    def normalize_workspace_path(path: str | None) -> str:
         return normalize_workspace_path(path)
 
-    def _normalize_tool_arguments(self, tool_name: str, arguments: dict) -> dict:
+    def normalize_tool_arguments(self, tool_name: str, arguments: dict) -> dict:
         path_arg_names = path_args(tool_name, self.tool_caps)
         return normalize_tool_arguments(
             tool_name,
@@ -410,17 +410,17 @@ class MimirAgent:
             normalize_tool_path_argument_fn=normalize_tool_path_argument,
         )
 
-    def _rewrite_tool_for_context(self, tool_name: str, arguments: dict) -> tuple[str, dict]:
+    def rewrite_tool_for_context(self, tool_name: str, arguments: dict) -> tuple[str, dict]:
         return rewrite_tool_for_context(
             tool_name,
             arguments,
             tool_owner=self.tool_owner,
-            is_code_filepath=self._is_code_filepath,
-            normalize_workspace_path_fn=self._normalize_workspace_path,
+            is_code_filepath=self.is_code_filepath,
+            normalize_workspace_path_fn=self.normalize_workspace_path,
         )
 
     @staticmethod
-    def _new_execution_context(workspace_root: str = "") -> ExecutionContext:
+    def new_execution_context(workspace_root: str = "") -> ExecutionContext:
         context = build_execution_context()
         # The root travels on the context because the consumers that need it — the
         # declared-edit tracker among them — never see the agent.
@@ -429,7 +429,7 @@ class MimirAgent:
         return context
 
     @staticmethod
-    def _is_code_filepath(path: str) -> bool:
+    def is_code_filepath(path: str) -> bool:
         return os.path.splitext(path)[1].lower() in SOURCE_FILE_EXTENSIONS
 
     def approval_scope(self, tool_name: str, arguments: dict) -> str:
@@ -447,7 +447,7 @@ class MimirAgent:
         except Exception:
             return ""
 
-    def _record_denied_tool_call(
+    def record_denied_tool_call(
         self,
         tool_name: str,
         arguments: dict,
@@ -469,7 +469,7 @@ class MimirAgent:
         kind = denial_kind(note)
         execution_context.denied_tool_calls.append({
             "tool": tool_name,
-            "path": self._normalize_workspace_path(arguments.get("path") or arguments.get("filepath")),
+            "path": self.normalize_workspace_path(arguments.get("path") or arguments.get("filepath")),
             "fallback_tools": fallback_tools,
             "scope": scope,
             "kind": kind,
@@ -482,19 +482,19 @@ class MimirAgent:
             "reason": note,
         })
 
-    async def _auto_validate_written_file(self, path: str, execution_context: ExecutionContext | None) -> str:
+    async def auto_validate_written_file(self, path: str, execution_context: ExecutionContext | None) -> str:
         return await auto_validate_written_file(
             path=path,
             execution_context=execution_context,
             tool_owner=self.tool_owner,
-            run_tool=lambda tool, args, context: self._run_tool(tool, args, execution_context=context),
-            is_code_filepath=self._is_code_filepath,
+            run_tool=lambda tool, args, context: self.run_tool(tool, args, execution_context=context),
+            is_code_filepath=self.is_code_filepath,
             absolute_workspace_path_fn=absolute_workspace_path,
         )
 
     # Canonical argument key names that carry a target file path.
 
-    def _is_write_tool(self, tool_name: str) -> bool:
+    def is_write_tool(self, tool_name: str) -> bool:
         """Kept for backward compatibility; prefer get_tool_file_targets."""
         return is_write(tool_name, self.tool_caps)
 
@@ -510,11 +510,11 @@ class MimirAgent:
             # We snapshot the file before execution and compare after — tools
             # that don't modify it (reads, checks, etc.) produce no diff.
             raw = target_path_arg(tool_name, arguments, self.tool_caps)
-            normalized = self._normalize_workspace_path(raw) if raw else ""
+            normalized = self.normalize_workspace_path(raw) if raw else ""
             return [normalized] if normalized else []
 
 
-    def _get_todo_file(self) -> str:
+    def todo_file(self) -> str:
         """This agent's own todo_list.md, or '' when it has no planning tool.
 
         ``self.session_id``, never the active-session pointer directly. This path goes into
@@ -531,13 +531,13 @@ class MimirAgent:
             session_state_dir(STATE_DIR, self.session_id), "todo_list.md"
         )
 
-    async def _build_system_content(self, active_mode: str) -> str:
+    async def build_system_content(self, active_mode: str) -> str:
         return self.build_system_content_now(active_mode)
 
     def build_system_content_now(self, active_mode: str) -> str:
         """The full system prompt for *active_mode*, assembled synchronously.
 
-        Split out of :meth:`_build_system_content` so a caller that is not on the
+        Split out of :meth:`build_system_content` so a caller that is not on the
         agent's own loop — the context bar, which estimates the prompt from the WS
         event loop — can measure the prompt the query will actually send instead of
         re-deriving a smaller one of its own. Nothing here awaits; the assembly only
@@ -551,7 +551,7 @@ class MimirAgent:
         global_memory_file = (
             os.path.join(GLOBAL_STATE_DIR, "memory", "MEMORY.md") if has_memory else ""
         )
-        todo_file = self._get_todo_file()
+        todo_file = self.todo_file()
 
         return build_system_content(
             active_mode=active_mode,
@@ -594,7 +594,7 @@ class MimirAgent:
             if self.skill_enabled(name) and meta.get("model_invocable", True)
         ]
 
-    def _apply_carry_context(self, execution_context: ExecutionContext) -> None:
+    def apply_carry_context(self, execution_context: ExecutionContext) -> None:
         """Merge long-lived session knowledge into a fresh per-query execution context.
 
         Only accumulative, additive fields are carried forward.  Per-query state
@@ -641,7 +641,7 @@ class MimirAgent:
         if isinstance(prior_skills, dict):
             execution_context.skills_loaded.update(prior_skills)
 
-    def _update_carry_context(self, execution_context: ExecutionContext) -> None:
+    def update_carry_context(self, execution_context: ExecutionContext) -> None:
         """Persist the fields worth remembering into the session carry dict."""
         for field in _mirrored_carry_fields():
             current: set = getattr(execution_context, field)
@@ -694,7 +694,7 @@ class MimirAgent:
         for p in [p for p in read_mtimes if p not in carried_reads]:
             del read_mtimes[p]
 
-    def _discard_carry_path(self, path: str) -> None:
+    def discard_carry_path(self, path: str) -> None:
         """Remove a deleted file from every carried field that holds file paths.
 
         Derived rather than listed, and derived from the *carry* schema rather than from
@@ -708,7 +708,7 @@ class MimirAgent:
             self._carry_context.get(field, set()).discard(path)
         self._carry_context.get("_read_mtimes", {}).pop(path, None)
 
-    def _request_tool_approval(self, tool_name: str, arguments: dict, max_attempts: int = 3) -> tuple[bool, str]:
+    def request_tool_approval(self, tool_name: str, arguments: dict, max_attempts: int = 3) -> tuple[bool, str]:
         return self.approvals.request(
             tool_name=tool_name,
             server_name=self.tool_owner.get(tool_name, "unknown"),
@@ -716,7 +716,7 @@ class MimirAgent:
             max_attempts=max_attempts,
         )
 
-    def _request_path_approval(
+    def request_path_approval(
         self, paths: list[str], tool_name: str, arguments: dict | None = None
     ) -> tuple[bool, bool]:
         """Approve out-of-workspace access to *paths*. Returns (approved, always).
@@ -755,7 +755,7 @@ class MimirAgent:
             return (True, False)
         return (False, False)
 
-    def _request_user_question(self, questions: list, origin: dict | None = None,
+    def request_user_question(self, questions: list, origin: dict | None = None,
                                timeout_secs: float | None = None) -> dict:
         """Ask the user one or more clarifying questions (``ask_user_question`` tool).
 
@@ -775,7 +775,7 @@ class MimirAgent:
         """
         return {"answers": []}
 
-    def _denied_tool_result(
+    def denied_tool_result(
         self,
         tool_name: str,
         arguments: dict,
@@ -1043,7 +1043,7 @@ class MimirAgent:
                 len(unannotated), ", ".join(unannotated),
             )
 
-    async def _run_tool(
+    async def run_tool(
         self,
         tool_name: str,
         arguments: dict,

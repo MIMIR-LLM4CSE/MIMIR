@@ -15,6 +15,7 @@ from ..event_sink import emit
 from ..context.capabilities import BACKGROUNDABLE, has_cap
 from ..protocol.tool_result import parse_tool_payload
 from . import job_poll
+from ..core.ports import AgentPort
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +42,7 @@ def _maybe_emit_open_editor(result_text: str) -> None:
         emit({"type": "open_editor", "path": path})
 
 
-def _detect_background_job(name: str, result_text: str, agent: Any) -> dict | None:
+def _detect_background_job(name: str, result_text: str, agent: AgentPort) -> dict | None:
     """Return a ``background_job`` descriptor from a BACKGROUNDABLE tool result, else None.
 
     Shape-driven like ``_maybe_emit_open_editor`` — no tool name is hard-coded, and
@@ -57,7 +58,7 @@ def _detect_background_job(name: str, result_text: str, agent: Any) -> dict | No
     return descriptor if isinstance(descriptor, dict) else None
 
 
-def _detect_rewatchable_jobs(name: str, result_text: str, agent: Any) -> list[dict]:
+def _detect_rewatchable_jobs(name: str, result_text: str, agent: AgentPort) -> list[dict]:
     """Descriptors of runs a tool result says are still in flight.
 
     Shape-driven, and with no capability gate at all — like
@@ -106,7 +107,7 @@ def _is_rewatchable(descriptor: Any) -> bool:
     return isinstance(status_op, dict) and bool(status_op.get("tool"))
 
 
-def _maybe_rewatch_background_jobs(name: str, result_text: str, agent: Any) -> str:
+def _maybe_rewatch_background_jobs(name: str, result_text: str, agent: AgentPort) -> str:
     """Put watchers on the in-flight runs a result reported — a status answer's, or
     the one an adopter just handed over.
 
@@ -151,7 +152,7 @@ def _maybe_rewatch_background_jobs(name: str, result_text: str, agent: Any) -> s
 
 
 def _maybe_register_background_job(
-    name: str, result_text: str, agent: Any, descriptor: dict | None = None,
+    name: str, result_text: str, agent: AgentPort, descriptor: dict | None = None,
 ) -> tuple[str, bool]:
     """Register a completion watcher for a detached run and tell the model to yield.
 
@@ -208,7 +209,7 @@ def _maybe_register_background_job(
     return result_text + note, True
 
 
-async def _await_background_job(descriptor: dict, agent: Any, result_text: str) -> str:
+async def _await_background_job(descriptor: dict, agent: AgentPort, result_text: str) -> str:
     """Efficiently wait out a detached run in-turn, then append its results.
 
     The CLI has no persistent worker loop to host a watcher, so instead of the agent
@@ -238,7 +239,7 @@ async def _await_background_job(descriptor: dict, agent: Any, result_text: str) 
             emit({"type": "status", "text": f"background run: {tick.state}"})
 
     state, _reason = await job_poll.poll_until_terminal(
-        agent._run_tool, status_op,
+        agent.run_tool, status_op,
         interval=3.0, max_interval=20.0,
         # The same limits as a watcher's: a status op that hangs or keeps erroring ends
         # the wait as "unknown" instead of holding the turn for weeks, and the user's
@@ -252,7 +253,7 @@ async def _await_background_job(descriptor: dict, agent: Any, result_text: str) 
     summary_tool = summary_op.get("tool")
     if summary_tool:
         try:
-            summary_text = await agent._run_tool(
+            summary_text = await agent.run_tool(
                 summary_tool, dict(summary_op.get("args") or {}),
                 record_observations=False)
         except Exception:

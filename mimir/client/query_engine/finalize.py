@@ -15,6 +15,7 @@ from ..guardrails.nudges.engine import record_exercise_obstacle
 from ..protocol.messages import reconcile_tool_pairs
 from .verification import build_ledger, render_ledger
 from ..context.execution_context import ExecutionContext
+from ..core.ports import AgentPort
 
 
 def _annotate_answer_with_changes(answer: str, execution_context: ExecutionContext) -> str:
@@ -35,7 +36,7 @@ def _annotate_answer_with_changes(answer: str, execution_context: ExecutionConte
 
 
 async def _finalize_answer(
-    agent: Any,
+    agent: AgentPort,
     query: str,
     answer: str,
     execution_context: ExecutionContext,
@@ -51,12 +52,12 @@ async def _finalize_answer(
     """
     record_exercise_obstacle(agent, execution_context)
     answer = _annotate_answer_with_changes(answer, execution_context)
-    agent._update_carry_context(execution_context)
+    agent.update_carry_context(execution_context)
     _record_turn(agent, messages)
     return answer
 
 
-def _record_turn(agent: Any, messages: list[dict], *, repair: bool = True) -> None:
+def _record_turn(agent: AgentPort, messages: list[dict], *, repair: bool = True) -> None:
     """Stash this turn's transcript (minus the system prompt) for full-context history.
 
     Called on every exit, not only on a finished answer. The front-end reads it back
@@ -91,7 +92,7 @@ def _drop_earlier_reasoning(messages: list[dict], turn_start: int | None) -> Non
             messages[i] = {k: v for k, v in m.items() if k != "reasoning"}
 
 
-def _turn_start_index(agent: Any, messages: list[dict]) -> int | None:
+def _turn_start_index(agent: AgentPort, messages: list[dict]) -> int | None:
     """Where this turn's own messages begin in ``_last_full_messages``, or None.
 
     Resolved by identity against the message the loop recorded as this turn's opening

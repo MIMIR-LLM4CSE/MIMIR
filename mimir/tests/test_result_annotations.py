@@ -101,7 +101,7 @@ def _agent():
         ),
     }
     return types.SimpleNamespace(
-        _normalize_workspace_path=lambda p: p or "",
+        normalize_workspace_path=lambda p: p or "",
         tool_caps=caps,
     )
 
@@ -213,14 +213,14 @@ class OutlineHintTests(unittest.IsolatedAsyncioTestCase):
         agent.tool_caps["symbol_outline"] = ToolCaps(
             name="symbol_outline", capabilities=frozenset({READ, CACHEABLE, CODE_NAV})
         )
-        agent._is_code_filepath = lambda p: p.endswith((".f90", ".py"))
+        agent.is_code_filepath = lambda p: p.endswith((".f90", ".py"))
 
-        async def _run_tool(name, args, execution_context=None):
+        async def run_tool(name, args, execution_context=None):
             if fail:
                 raise RuntimeError("no ctags, no language server")
             return json.dumps({"status": "ok", "symbols": symbols})
 
-        agent._run_tool = _run_tool
+        agent.run_tool = run_tool
         return agent
 
     def _payload(self):
@@ -331,7 +331,7 @@ class BashEffectTests(unittest.TestCase):
         self.agent = types.SimpleNamespace(
             workspace_root=self.tmp,
             tool_caps=dict(_DECLARED_REGISTRY),
-            _normalize_workspace_path=lambda p: (
+            normalize_workspace_path=lambda p: (
                 p if os.path.isabs(p) else os.path.join(self.tmp, p)),
         )
 
