@@ -245,7 +245,7 @@ async def handle_chat_command(
         # The rung's former name is still accepted; `set_subagent_level` resolves it.
         if val not in SUBAGENT_LEVELS and val not in SUBAGENT_LEVEL_ALIASES:
             return True, f"\n❌ Usage: /subagents {'|'.join(SUBAGENT_LEVELS)}\n"
-        return True, f"\nSub-agents may now: {agent.set_subagent_level(val)}.\n"
+        return True, f"\nSub-agents may now: {agent.apply_setting('subagent_level', val)}.\n"
 
     if cmd == "/enforcement":
         if len(parts) == 1:

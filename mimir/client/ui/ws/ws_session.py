@@ -698,7 +698,7 @@ class _Session:
             session.pending_interaction = getattr(self, "_pending_interaction", None)
             # So a resume sizes the window the way this session was actually running,
             # rather than falling back to a default that may not be its own.
-            session.context_mode = self.worker.get_context_mode(self._resumed_context_mode)
+            session.context_mode = self.worker.setting("context_mode", self._resumed_context_mode)
             # Never backwards: a replay is sized from this, and lowering it would resend
             # what the client already has.
             session.rendered_seq = max(session.rendered_seq, self._rendered_seq)
@@ -793,7 +793,7 @@ class _Session:
         For vLLM the window tracks the server's reported max_model_len (primed at
         startup so this runs against the cache, never blocking the event loop).
         """
-        mode = self.worker.get_context_mode(self._resumed_context_mode)
+        mode = self.worker.setting("context_mode", self._resumed_context_mode)
         total, reserved, _, _ = context_budget_for(self.worker.model, mode)
         return total, reserved
 
@@ -1818,12 +1818,12 @@ class _Session:
             if worker is None:
                 continue
             try:
-                worker.set_approval_mode(lvl)
+                worker.apply_setting("approval_mode", lvl)
             except Exception:
                 logger.warning("reattach: session %s refused the level %s it was left "
                                "under", sid, lvl, exc_info=True)
         level = held.get(self._active_session_id or "") or sorted(held.values())[-1]
-        self._apply_setting("set_approval_mode", level)
+        self._apply_setting("approval_mode", level)
         # Before anything is announced, because what the panel is about to be told —
         # that this window owns the server — has to be true of the registry the idle
         # sweep reads, and not only of the message. Every claim at once: one process
@@ -2073,7 +2073,7 @@ class _Session:
         })
         return True
 
-    def _apply_setting(self, name: str, *args: Any) -> str:
+    def _apply_setting(self, name: str, value: Any) -> str:
         """Apply a UI knob to every live conversation, and to the next agent built.
 
         Both halves are needed. Pushing it to the live workers makes the change take effect
@@ -2084,10 +2084,7 @@ class _Session:
         Returns the first rejection a live worker reported, or "". Nothing to reject when
         none exists yet: the setting is recorded and validated when it is replayed.
         """
-        for result in self.pool.apply_setting(name, *args):
-            if isinstance(result, str) and result:
-                return result
-        return ""
+        return next(iter(self.pool.apply_setting(name, value)), "")
 
     async def _ensure_worker(self) -> _AgentWorker | None:
         """This conversation's agent, built now if it has none and there is room.
@@ -2527,7 +2524,7 @@ class _Session:
             # detached stops guarding something nothing is guarding.
             try:
                 level = self.pool.worker_or_detached(
-                    self._active_session_id).get_approval_mode()
+                    self._active_session_id).setting("approval_mode")
             except Exception:
                 level = "manual"
             try:
@@ -2597,12 +2594,12 @@ class _Session:
                 if worker is None:
                     continue
                 try:
-                    worker.set_approval_mode(autonomy)
+                    worker.apply_setting("approval_mode", autonomy)
                 except Exception:
                     logger.warning("detach: session %s refused the autonomy level %s",
                                    sid, autonomy, exc_info=True)
         else:
-            self._apply_setting("set_approval_mode", autonomy)
+            self._apply_setting("approval_mode", autonomy)
             # Naming none means all of them, and "all" includes the conversation on
             # screen even before it has asked anything: a window detached the moment it
             # opened claimed nothing at all, because no agent had been built yet.
@@ -2620,7 +2617,7 @@ class _Session:
         # gets it back when a run of its finishes — and the redirect cannot be undone,
         # so one that came up without this would reach for a terminal that is a log
         # file for the rest of the process's life.
-        self._apply_setting("set_non_interactive", True)
+        self.pool.set_non_interactive()
 
         info = detach_process(_MIMIR_DIR_WS)
         # The entry already holds the address; this only adds what has changed about
@@ -3191,7 +3188,7 @@ class _Session:
         """
         if text.startswith("/mode "):
             mode = text[6:].strip()
-            error = self._apply_setting("set_mode", mode)
+            error = self._apply_setting("mode", mode)
             if error:
                 await self.ws.send(json.dumps({"type": "error", "text": f"  ✗ {error}\n"}))
             else:
@@ -3201,11 +3198,11 @@ class _Session:
                 await self.ws.send(json.dumps({"type": "mode", "mode": mode}))
         elif text.startswith("/batch "):
             flag = text[7:].strip().lower()
-            self._apply_setting("set_batch", flag in ("on", "true", "1", "yes"))
+            self._apply_setting("batch", flag in ("on", "true", "1", "yes"))
         elif text.startswith("/thinking "):
             flag = text[10:].strip().lower()
             on = flag in ("on", "true", "1", "yes")
-            self._apply_setting("set_thinking", on)
+            self._apply_setting("thinking", on)
             await self._send_thinking_state()
         elif text.startswith("/thinking-depth "):
             arg = text[16:].strip()
@@ -3214,17 +3211,17 @@ class _Session:
                 usage = f"Usage: /thinking-depth 0-{len(THINKING_DEPTH_LABELS) - 1} ({'|'.join(THINKING_DEPTH_LABELS)})"
                 await self.ws.send(json.dumps({"type": "error", "text": usage}))
                 return
-            self._apply_setting("set_thinking_depth", level)
+            self._apply_setting("thinking_depth", level)
             await self._send_thinking_state()
         elif text.startswith("/streaming "):
             flag = text[11:].strip().lower()
             on = flag in ("on", "true", "1", "yes")
-            self._apply_setting("set_streaming", on)
+            self._apply_setting("streaming", on)
             await self._send_streaming_state()
         elif text.startswith("/context "):
             mode = text[9:].strip().lower()
             if mode in ("compact", "full"):
-                self._apply_setting("set_context_mode", mode)
+                self._apply_setting("context_mode", mode)
                 # Also what the budget assumes until an agent answers for itself, and
                 # what the session is saved with: a mode chosen before the first query
                 # must not be forgotten by the one piece of code that sizes the window.
@@ -3237,7 +3234,7 @@ class _Session:
             raw = text[11:].strip().lower()
             mode = {"all": "auto_all", "auto-all": "auto_all"}.get(raw, raw)
             if mode in ("manual", "auto", "auto_all"):
-                self._apply_setting("set_approval_mode", mode)
+                self._apply_setting("approval_mode", mode)
                 await self.ws.send(json.dumps({"type": "approval_mode", "mode": mode}))
             else:
                 await self.ws.send(json.dumps({"type": "error", "text": f"Unknown approval mode: {raw}. Use manual, auto, or all."}))
@@ -3256,15 +3253,15 @@ class _Session:
                 # for the agent built next. Persisted here as well, because that is
                 # where a new agent reads it from and there may be no live one.
                 level = clamp_subagent_level(raw)
-                self.pool.apply_setting("set_subagent_level", level)
+                self.pool.apply_setting("subagent_level", level)
                 save_subagent_level(level)
             else:
-                level = self.worker.get_subagent_level()
+                level = self.worker.setting("subagent_level")
             await self.ws.send(json.dumps({"type": "subagent_level", "level": level}))
         elif text.startswith("/enforcement "):
             level = text[13:].strip().lower()
             if level in ("strict", "light", "off"):
-                self._apply_setting("set_enforcement", level)
+                self._apply_setting("enforcement", level)
                 await self.ws.send(json.dumps({"type": "enforcement", "mode": level}))
             else:
                 await self.ws.send(json.dumps({"type": "error", "text": f"Unknown enforcement level: {level}. Use strict, light, or off."}))
@@ -3275,7 +3272,7 @@ class _Session:
                 # Bare command: report, change nothing.
                 pass
             elif ok:
-                self._apply_setting("set_temperature", value)
+                self._apply_setting("temperature", value)
             else:
                 await self.ws.send(json.dumps({"type": "error", "text": (
                     f"Invalid temperature: {raw}. Use a number from "
@@ -3433,7 +3430,7 @@ class _Session:
                 # Process-wide, so switched even with no agent up yet — reached through
                 # the stand-in's missing agent, the command raised before the first query.
                 switch_backend(mode)
-                self.pool.apply_setting("set_backend", mode)
+                self.pool.apply_setting("backend", mode)
                 await self._command_reply("/backend", "Backend", items=[{"label": mode}])
             else:
                 await self.ws.send(json.dumps({"type": "error", "text": f"Unknown backend: {mode}. Use ollama, vllm or ray."}))
@@ -3526,7 +3523,7 @@ class _Session:
             # Whether there was anything to ask. An empty section list from a
             # conversation with no agent is not "no clusters here".
             "agent_ready": agent_ready,
-            "subagent_level": self.worker.get_subagent_level(),
+            "subagent_level": self.worker.setting("subagent_level"),
             "subagents": cards,
             "running": sum(1 for c in cards if c.get("state") == "running"),
             "runs": unplaced,
@@ -3565,19 +3562,19 @@ class _Session:
     async def _handle_toggle_server(self, msg: dict) -> None:
         name = msg.get("name")
         if name:
-            self._apply_setting("set_server_enabled", name, bool(msg.get("enabled", True)))
+            self.pool.apply_toggle("server", name, bool(msg.get("enabled", True)))
         await self._send_toggles()
 
     async def _handle_toggle_skill(self, msg: dict) -> None:
         name = msg.get("name")
         if name:
-            self._apply_setting("set_skill_enabled", name, bool(msg.get("enabled", True)))
+            self.pool.apply_toggle("skill", name, bool(msg.get("enabled", True)))
         await self._send_toggles()
 
     async def _handle_toggle_nudge(self, msg: dict) -> None:
         name = msg.get("name")
         if name:
-            self._apply_setting("set_nudge_enabled", name, bool(msg.get("enabled", True)))
+            self.pool.apply_toggle("nudge", name, bool(msg.get("enabled", True)))
         await self._send_toggles()
 
     async def _send_served_models(self) -> None:
@@ -3630,6 +3627,6 @@ class _Session:
             "type": "model_changed",
             "model": self.pool.model,
             "thinking": self.worker.get_thinking_profile(),
-            "enforcement": self.worker.get_enforcement(),
+            "enforcement": self.worker.setting("enforcement"),
             "temperature": self.worker.get_temperature_state(),
         }))

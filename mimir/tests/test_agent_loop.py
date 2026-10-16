@@ -35,6 +35,7 @@ from mimir.client.config.limits import (
     AGENT_EMPTY_TURN_RETRIES, HARD_REPEAT_LIMIT, PLAN_EXPLORE_MAX_TURNS,
 )
 from mimir.client.context.execution_context import build_execution_context
+from mimir.client.core.settings import normalize_mode
 from mimir.client.guardrails.observations import _observe_todo_flags
 from mimir.client.protocol.tool_call import as_dict
 from mimir.client.tool_execution.normalizer import _make_hashable
@@ -761,7 +762,7 @@ class RunPlanModeTests(unittest.TestCase):
             model="m", tools=[], tool_caps=dict(_CHECKLIST_CAPS),
             request_user_question=lambda qs: {"answers": [{"selected": [plan_loop_module._PLAN_ACCEPT], "other_text": None}]},
             build_system_content=_build_system,
-            set_mode=lambda m: mode_calls.append(m),
+            apply_setting=lambda name, v: mode_calls.append(v),
         )
         messages = [{"role": "system", "content": "S"}, {"role": "user", "content": "plan it"}]
 
@@ -1103,10 +1104,6 @@ class RunAgentQueryNonInteractiveTests(unittest.TestCase):
             @staticmethod
             def todo_file():
                 return ""
-
-            @staticmethod
-            def normalize_mode(mode):
-                return "agent"
 
             async def build_system_content(self, **kwargs):
                 return "system"
@@ -1451,14 +1448,15 @@ class EvidenceHandbackTests(RunAgentQueryNonInteractiveTests):
 
 
 class NormalizeModeTests(unittest.TestCase):
+    """Mode names as every front-end hands them in."""
     def test_accepts_every_valid_mode_case_insensitively(self) -> None:
         for mode in ("agent", "plan", "ask"):
-            self.assertEqual(MimirAgent.normalize_mode(mode), mode)
-            self.assertEqual(MimirAgent.normalize_mode(f"  {mode.upper()} "), mode)
+            self.assertEqual(normalize_mode(mode), mode)
+            self.assertEqual(normalize_mode(f"  {mode.upper()} "), mode)
 
     def test_rejects_unknown_mode_and_names_the_valid_ones(self) -> None:
         with self.assertRaises(ValueError) as ctx:
-            MimirAgent.normalize_mode("chat")
+            normalize_mode("chat")
         for mode in ("agent", "plan", "ask"):
             self.assertIn(mode, str(ctx.exception))
 
@@ -1473,7 +1471,6 @@ class AskModeInLoopTests(RunAgentQueryNonInteractiveTests):
     def _ask_agent(self):
         agent = self._query_agent()
         agent.mode = "ask"
-        agent.normalize_mode = staticmethod(lambda mode: "ask")
         # The shared stub's _normalize_arguments is an identity; the guard needs the
         # real one, which parses the JSON-string arguments a backend actually emits.
         agent.tool_caps = {
@@ -1561,7 +1558,6 @@ class MidQueryModeSwitchTests(RunAgentQueryNonInteractiveTests):
     def _agent(self, start_mode="agent"):
         agent = self._query_agent()
         agent.mode = start_mode
-        agent.normalize_mode = staticmethod(lambda mode: mode)
         agent.tool_caps = dict(self._CAPS)
         agent.tools = [{"function": {"name": n}} for n in self._CAPS]
         return agent

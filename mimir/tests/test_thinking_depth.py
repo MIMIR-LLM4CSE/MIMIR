@@ -31,9 +31,7 @@ class _Agent:
     """Minimal stand-in: the real setters over just the thinking state, so the
     ladder is exercised without standing up a whole agent (servers, backend…)."""
 
-    set_thinking_depth = MimirAgent.set_thinking_depth
-    set_thinking = MimirAgent.set_thinking
-    set_thinking_budget = MimirAgent.set_thinking_budget
+    apply_setting = MimirAgent.apply_setting
 
     def __init__(self):
         self.thinking_depth = DEFAULT_THINKING_DEPTH
@@ -75,31 +73,31 @@ class AgentStateTest(unittest.TestCase):
     def test_every_rung_yields_a_coherent_triplet(self):
         a = _Agent()
         for level in range(len(THINKING_DEPTH_LABELS)):
-            a.set_thinking_depth(level)
+            a.apply_setting("thinking_depth", level)
             self.assertEqual(a.thinking_depth, level)
             self.assertEqual(a.thinking, level > 0)
             self.assertEqual(a.thinking_budget, THINKING_DEPTH_BUDGETS[level])
 
     def test_out_of_range_is_clamped(self):
         a = _Agent()
-        a.set_thinking_depth(-3)
+        a.apply_setting("thinking_depth", -3)
         self.assertEqual(a.thinking_depth, 0)
-        a.set_thinking_depth(42)
+        a.apply_setting("thinking_depth", 42)
         self.assertEqual(a.thinking_depth, len(THINKING_DEPTH_LABELS) - 1)
 
     def test_legacy_switch_maps_on_to_auto(self):
         a = _Agent()
-        a.set_thinking(False)
+        a.apply_setting("thinking", False)
         self.assertEqual(a.thinking_depth, 0)
         self.assertFalse(a.thinking)
-        a.set_thinking(True)
+        a.apply_setting("thinking", True)
         self.assertEqual(a.thinking_depth, THINKING_DEPTH_AUTO)
         self.assertTrue(a.thinking)
 
     def test_budget_override_does_not_move_the_rung(self):
         a = _Agent()
-        a.set_thinking_depth(THINKING_DEPTH_AUTO)
-        a.set_thinking_budget(2048)
+        a.apply_setting("thinking_depth", THINKING_DEPTH_AUTO)
+        a.apply_setting("thinking_budget", 2048)
         self.assertEqual(a.thinking_budget, 2048)
         self.assertEqual(a.thinking_depth, THINKING_DEPTH_AUTO)
 
@@ -138,8 +136,6 @@ class PromptDirectiveTest(unittest.TestCase):
 
 class _LoopAgent:
     """Stub with the real depth setters, enough surface to drive run_agent_query."""
-
-    set_thinking_depth = MimirAgent.set_thinking_depth
     mode = "agent"
     model = "dummy"
     tools: list = []
@@ -147,6 +143,7 @@ class _LoopAgent:
     tool_caps: dict = {}
     thinking_budget = -1
     _cancel_flag = None
+    apply_setting = MimirAgent.apply_setting
     approvals = types.SimpleNamespace(batch=types.SimpleNamespace(pending=[], flush=lambda: True))
 
     def __init__(self):
@@ -171,10 +168,6 @@ class _LoopAgent:
 
     def update_carry_context(self, execution_context):
         pass
-
-    @staticmethod
-    def normalize_mode(mode):
-        return "agent"
 
 
 
@@ -216,7 +209,7 @@ class LiveRungChangeTests(unittest.TestCase):
             {"content": "working", "tool_calls": [_tool_call("noop")]},
             {"content": "done"},
         ]
-        backend = self._run(agent, script, lambda: agent.set_thinking_depth(0))
+        backend = self._run(agent, script, lambda: agent.apply_setting("thinking_depth", 0))
 
         self.assertEqual(len(backend.calls), 2)
         self.assertTrue(backend.calls[0]["thinking"])
@@ -228,7 +221,7 @@ class LiveRungChangeTests(unittest.TestCase):
             {"content": "working", "tool_calls": [_tool_call("noop")]},
             {"content": "done"},
         ]
-        backend = self._run(agent, script, lambda: agent.set_thinking_depth(3))
+        backend = self._run(agent, script, lambda: agent.apply_setting("thinking_depth", 3))
 
         self.assertEqual(backend.calls[0]["messages"][0]["content"], "SYS[auto=True]")
         self.assertEqual(backend.calls[1]["messages"][0]["content"], "SYS[auto=False]")
@@ -240,7 +233,7 @@ class LiveRungChangeTests(unittest.TestCase):
             {"content": "done"},
         ]
         # "medium" == 4096, unscaled in the default (discover) workflow phase.
-        backend = self._run(agent, script, lambda: agent.set_thinking_depth(3))
+        backend = self._run(agent, script, lambda: agent.apply_setting("thinking_depth", 3))
 
         self.assertNotIn("thinking_budget", backend.calls[0]["options"])
         self.assertEqual(backend.calls[1]["options"]["thinking_budget"], 4096)

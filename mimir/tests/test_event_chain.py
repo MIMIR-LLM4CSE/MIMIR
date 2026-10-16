@@ -73,10 +73,10 @@ def _worker(session_id: str, turn: list[dict] | None = None) -> _AgentWorker:
     # rebind and nothing has to be queued.
     w._agent = types.SimpleNamespace(
         _cancel_flag=threading.Event(), _deferred_prompts=None, _deferred_turn=None,
-        context_mode="full", non_interactive=False,
-        set_approval_mode=lambda mode: setattr(w, "_approval_mode", mode),
+        context_mode="full", enforcement="light", non_interactive=False,
+        approvals=types.SimpleNamespace(approval_mode="manual"),
+        apply_setting=lambda name, mode: setattr(w._agent.approvals, name, mode),
         toggles_state=lambda: {"servers": [], "skills": [], "nudges": []})
-    w._approval_mode = "manual"
     w._defer = threading.Event()
     w._preanswer = None
     w._pending_prompt = None
@@ -91,7 +91,6 @@ def _worker(session_id: str, turn: list[dict] | None = None) -> _AgentWorker:
     w.pending_prompt = lambda: None
     w.get_context_mode = lambda *a: "full"
     w.get_enforcement = lambda: "light"
-    w.get_approval_mode = lambda: w._approval_mode
     w.get_thinking_profile = lambda: {}
     w.get_temperature_state = lambda: {"supported": True, "value": None}
     w._load_todos = lambda: []
@@ -368,13 +367,13 @@ class ComingBackToARunningTurnTests(_ChainCase):
         worker = _worker("s1")
         applied: list[tuple] = []
         pool = FakePool(worker, active="s1")
-        pool.apply_setting = lambda name, *a: applied.append((name, a)) or []
+        pool.apply_setting = lambda name, value: applied.append((name, value)) or []
         ws = _WS([], linger=0.3)
         sess = _Session(ws, pool)
 
         await self._run(sess, pool, ws)
 
-        self.assertIn(("set_approval_mode", ("auto",)), applied,
+        self.assertIn(("approval_mode", "auto"), applied,
                       "the run's own level was not restored")
         modes = [m for m in ws.sent if m.get("type") == "approval_mode"]
         self.assertTrue(modes, "the panel was never told which level it is on")
@@ -392,7 +391,7 @@ class ComingBackToARunningTurnTests(_ChainCase):
 
         await self._run(_Session(ws, pool), pool, ws)
 
-        self.assertEqual(worker.get_approval_mode(), "auto_all")
+        self.assertEqual(worker.setting("approval_mode"), "auto_all")
 
     async def test_a_server_that_is_not_detached_is_left_alone(self):
         # An ordinary connect decides nothing about the approval mode.
@@ -401,12 +400,12 @@ class ComingBackToARunningTurnTests(_ChainCase):
         worker = _worker("s1")
         applied: list[tuple] = []
         pool = FakePool(worker, active="s1")
-        pool.apply_setting = lambda name, *a: applied.append((name, a)) or []
+        pool.apply_setting = lambda name, value: applied.append((name, value)) or []
         ws = _WS([], linger=0.3)
 
         await self._run(_Session(ws, pool), pool, ws)
 
-        self.assertEqual([a for a in applied if a[0] == "set_approval_mode"], [])
+        self.assertEqual([a for a in applied if a[0] == "approval_mode"], [])
 
     async def test_a_turn_still_in_flight_is_reported_as_running(self):
         # So the chat comes back busy, with a stop button that stops something — and,

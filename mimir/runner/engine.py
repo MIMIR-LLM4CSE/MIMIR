@@ -98,7 +98,7 @@ async def run_one(
     if enforcement is not None:
         # Override the model-profile default so a whole run can be graded at one
         # nudge level (strict/light/off) regardless of which model is served.
-        agent.set_enforcement(enforcement)
+        agent.apply_setting("enforcement", enforcement)
     try:
         with backend_patch:
             _install_auto_approve(agent)

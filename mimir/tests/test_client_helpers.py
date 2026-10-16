@@ -76,7 +76,7 @@ class ClientHelperTests(unittest.TestCase):
         agent = client_module.MimirAgent()
         original = agent.model
         self.assertNotEqual(original, "qwen3:30b")
-        agent.set_model("qwen3:30b")
+        agent.apply_setting("model", "qwen3:30b")
         self.assertEqual(agent.model, "qwen3:30b")
         self.assertEqual(os.environ.get("MIMIR_DEFAULT_MODEL"), before)
 
@@ -86,12 +86,12 @@ class ClientHelperTests(unittest.TestCase):
         second = client_module.MimirAgent(model="some-other-model")
         self.assertEqual(first.model, "qwen3:30b")
         self.assertEqual(second.model, "some-other-model")
-        first.set_model("a-third-model")
+        first.apply_setting("model", "a-third-model")
         self.assertEqual(second.model, "some-other-model")
 
     def test_set_model_re_resolves_enforcement_from_the_profile(self) -> None:
         agent = client_module.MimirAgent()
-        agent.set_model("qwen3:30b")
+        agent.apply_setting("model", "qwen3:30b")
         self.assertEqual(agent.enforcement, "light")
         # A profile-declared strict model opts up; unknown names fall back to light.
         client_config_module.VLLM_MODEL_PROFILES["strict-test-model"] = {
@@ -100,17 +100,17 @@ class ClientHelperTests(unittest.TestCase):
         self.addCleanup(
             client_config_module.VLLM_MODEL_PROFILES.pop, "strict-test-model", None,
         )
-        agent.set_model("strict-test-model")
+        agent.apply_setting("model", "strict-test-model")
         self.assertEqual(agent.enforcement, "strict")
-        agent.set_model("some-unlisted-model")
+        agent.apply_setting("model", "some-unlisted-model")
         self.assertEqual(agent.enforcement, "light")
 
     def test_set_model_refuses_an_empty_name(self) -> None:
         agent = client_module.MimirAgent()
         with self.assertRaises(ValueError):
-            agent.set_model("")
+            agent.apply_setting("model", "")
         with self.assertRaises(ValueError):
-            agent.set_model("   ")
+            agent.apply_setting("model", "   ")
         self.assertEqual(agent.model, client_config_module.DEFAULT_MODEL)
 
     def test_new_execution_context_matches_runtime_contract(self) -> None:
@@ -785,10 +785,6 @@ class ClientHelperTests(unittest.TestCase):
             @staticmethod
             def todo_file():
                 return ""
-
-            @staticmethod
-            def normalize_mode(mode):
-                return "agent"
 
             async def build_system_content(self, **kwargs):
                 return "system"

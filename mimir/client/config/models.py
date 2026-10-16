@@ -223,7 +223,7 @@ def resolve_enforcement(agent: object) -> str:
 
     Prefers the cached ``agent.enforcement`` attribute — set once at ``MimirAgent``
     construction from the model profile (``enforcement_level``) and overridable at
-    runtime via ``MimirAgent.set_enforcement`` / the ``/enforcement`` command. The
+    runtime via ``apply_setting(agent, "enforcement", …)`` / the ``/enforcement`` command. The
     model is immutable for an agent's lifetime, so there is nothing to re-resolve
     per turn. Falls back to resolving from ``agent.model`` for agent-like objects
     that predate the attribute (e.g. lightweight test fakes).

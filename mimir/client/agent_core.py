@@ -14,17 +14,12 @@ from .config import (
     DEFAULT_MODEL,
     DEFAULT_THINKING_DEPTH,
     THINKING_DEPTH_BUDGETS,
-    clamp_thinking_depth,
-    clamp_subagent_level,
-    TEMPERATURE_MAX,
-    TEMPERATURE_MIN,
     GLOBAL_STATE_DIR,
     STATE_DIR,
     WORKSPACE_ROOT,
     SERVER_BASE,
     SKILL_BASE,
     SERVERS,
-    VALID_MODES,
     READONLY_MODES,
 )
 from .config.models import enforcement_level
@@ -64,6 +59,7 @@ from .integration.server_manager import connect_servers as connect_servers_runti
 from .query_engine import run_agent_query
 from .guardrails.toollist import tools_for_readonly_mode
 from .event_sink import set_event_sink, reset_event_sink
+from .core.settings import apply_setting
 from .protocol.tool_result import (
     json_error_payload,
 )
@@ -289,113 +285,10 @@ class MimirAgent:
         # it away.
         self.subagent_level = load_subagent_level()
 
-    @staticmethod
-    def normalize_mode(mode: str) -> str:
-        normalized = (mode or "").strip().lower()
-        if normalized in VALID_MODES:
-            return normalized
-        raise ValueError(
-            "Invalid mode. Use " + " or ".join(f"'{m}'" for m in VALID_MODES) + "."
-        )
-
-    def set_mode(self, mode: str) -> None:
-        self.mode = self.normalize_mode(mode)
-
-    def set_thinking_depth(self, level: int) -> None:
-        """Move to a rung of the thinking ladder, keeping the derived flags coherent."""
-        self.thinking_depth = clamp_thinking_depth(level)
-        self.thinking = self.thinking_depth > 0
-        self.thinking_budget = THINKING_DEPTH_BUDGETS[self.thinking_depth]
-
-    def set_thinking(self, enabled: bool) -> None:
-        """Legacy on/off switch: "on" now means "auto" (the model calibrates)."""
-        self.set_thinking_depth(DEFAULT_THINKING_DEPTH if enabled else 0)
-
-    def set_thinking_budget(self, budget: int) -> None:
-        """Override the token budget without moving the rung (manual/advanced use)."""
-        self.thinking_budget = budget
-
-    def set_streaming(self, enabled: bool) -> None:
-        self.streaming = enabled
-
-    def set_backend(self, mode: str) -> None:
-        from .query_engine.backends.factory import switch_backend
-        switch_backend(mode)
-        self.backend = mode
-
-    def set_model(self, model: str) -> None:
-        """Switch the served model mid-session.
-
-        The model is read live at every LLM call (``agent.model`` is passed to the backend
-        per step), so mutating it here is enough for the next call to use the new model — no
-        reconnect is needed. ``enforcement`` is re-derived from the new model's profile,
-        matching how it is resolved once at ``__init__``.
-
-        Nothing is written to ``os.environ``: a server's environment is a copy frozen at
-        spawn, so a write there reaches no running server, and with concurrent sessions in
-        one process it would change what *another* session's servers were told. Sub-agents
-        inherit the model through their own server's env, built from ``self.model`` at
-        connect time, so a model switched after that applies to this agent's own calls and
-        not to a sub-agent spawned by a server already running.
-        """
-        model = (model or "").strip()
-        if not model:
-            raise ValueError("Model name must not be empty.")
-        self.model = model
-        self.enforcement = enforcement_level(model)
-        from .config.preferences import load_temperature
-        self.temperature = load_temperature(model)
-
-    def set_batch_mode(self, enabled: bool) -> None:
-        self.approvals.batch_mode = enabled
-
-    def set_approval_mode(self, mode: str) -> None:
-        """Set how much of the approval flow the user still answers by hand.
-
-        ``manual`` (default) / ``auto`` (sensitive tools pass, leaving the workspace
-        still asks) / ``auto_all`` (nothing asks). Session state — see
-        ``ApprovalManager.approval_mode`` for what an auto mode does and does not lift.
-        """
-        normalized = (mode or "").strip().lower()
-        if normalized not in self.approvals.APPROVAL_MODES:
-            raise ValueError(
-                "Invalid approval mode. Use 'manual', 'auto' or 'auto_all'.")
-        self.approvals.approval_mode = normalized
-
-    def set_context_mode(self, mode: str) -> None:
-        normalized = (mode or "").strip().lower()
-        if normalized not in ("compact", "full"):
-            raise ValueError("Invalid context mode. Use 'compact' or 'full'.")
-        self.context_mode = normalized
-
-    def set_temperature(self, value: float | None) -> None:
-        """Set this model's sampling temperature and persist it; None restores its own."""
-        if value is not None:
-            value = float(value)
-            if not TEMPERATURE_MIN <= value <= TEMPERATURE_MAX:
-                raise ValueError(
-                    f"Temperature must be between {TEMPERATURE_MIN:g} and {TEMPERATURE_MAX:g}.")
-        self.temperature = value
-        from .config.preferences import save_temperature
-        save_temperature(self.model, value)
-
-    def set_subagent_level(self, level: str) -> str:
-        """Set how far a sub-agent may go, and persist it. Returns the rung applied.
-
-        An unknown rung lands on the weakest one rather than raising: this is also
-        reached from a typed command, and refusing outright would leave the user with
-        an error where a plain "here is what is in force" is more use.
-        """
-        from .config.preferences import save_subagent_level
-        self.subagent_level = clamp_subagent_level(level)
-        save_subagent_level(self.subagent_level)
-        return self.subagent_level
-
-    def set_enforcement(self, level: str) -> None:
-        normalized = (level or "").strip().lower()
-        if normalized not in ("strict", "light", "off"):
-            raise ValueError("Invalid enforcement level. Use 'strict', 'light', or 'off'.")
-        self.enforcement = normalized
+    def apply_setting(self, name: str, value: Any) -> Any:
+        """Change one of this agent's settings (see :mod:`core.settings`); returns the
+        value now in force. Raises ``ValueError`` for a value the setting refuses."""
+        return apply_setting(self, name, value)
 
     @staticmethod
     def normalize_workspace_path(path: str | None) -> str:

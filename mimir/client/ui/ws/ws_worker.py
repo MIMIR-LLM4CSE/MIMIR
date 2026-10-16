@@ -40,8 +40,8 @@ from itertools import chain, repeat
 from typing import Any
 
 from ... import human_pause
-from ...config.settings import DEFAULT_SUBAGENT_LEVEL
 from ...context.todo import load_todo_items
+from ...core.settings import read_setting
 from ...query_engine import job_poll
 from ...protocol.tool_result import normalize_tool_content
 
@@ -152,7 +152,7 @@ class _AgentWorker:
 
         The stand-in for "this conversation has no agent yet", which is the ordinary state
         until its first query. A real ``_AgentWorker`` rather than a parallel null class, on
-        purpose: every getter here answers for ``_agent is None`` (``get_context_mode`` →
+        purpose: every getter here answers for ``_agent is None`` (``setting("context_mode")`` →
         the default its caller passes, ``get_temperature_state`` → the stored preference,
         ``toggles_state`` → empty) and every setter is a no-op in that state. A separate
         class would restate all of those, and then drift from them.
@@ -1723,33 +1723,36 @@ class _AgentWorker:
         """Answer one question card. *req_id* is the id it was sent with."""
         self._deliver(req_id, {"answers": answers or []}, "user_question")
 
-    def set_mode(self, mode: str) -> str:
-        """Apply *mode*, returning "" on success or the reason it was rejected.
+    def apply_setting(self, name: str, value: Any) -> str:
+        """Apply one of the user's settings to this agent: "" on success, else why not.
 
-        The caller reports the failure to the front-end — silently swallowing it
-        left the webview showing a mode the agent was never switched to.
+        The caller reports a refusal to the front-end — swallowed, it left the webview
+        showing a mode the agent was never switched to. With no agent yet there is
+        nothing to apply: the pool records the setting and replays it on the agent
+        built later. Called from the WS event loop while the worker thread may be
+        running a query; a setting only rebinds an attribute the loop reads afresh at
+        each step, so it applies from the next step on.
         """
         if self._agent is None:
-            return "Agent is not ready yet."
+            return ""
         try:
-            self._agent.set_mode(mode)
+            self._agent.apply_setting(name, value)
         except ValueError as exc:
             return str(exc)
+        if name == "model":
+            self.model = value
         return ""
 
-    def set_model(self, model: str) -> str:
-        """Switch the served model, returning "" on success or the reason it failed.
+    def setting(self, name: str, default: Any = None) -> Any:
+        """This agent's *name* setting, or *default* while there is no agent.
 
-        Also updates ``self.model`` so ``ready``/profile reads report the new model.
+        The default is the caller's to give, and it matters: the context budget is
+        derived from ``context_mode``, and answering "compact" for a conversation that
+        was running in full mode sized its window at 32k.
         """
         if self._agent is None:
-            return "Agent is not ready yet."
-        try:
-            self._agent.set_model(model)
-        except ValueError as exc:
-            return str(exc)
-        self.model = model
-        return ""
+            return read_setting(None, name) if default is None else default
+        return read_setting(self._agent, name)
 
     def served_models(self) -> list[str]:
         """Model ids the endpoint is serving, or [] if it cannot say.
@@ -1773,98 +1776,6 @@ class _AgentWorker:
             return [m for m in get_backend().served_models() if isinstance(m, str) and m.strip()]
         except Exception:
             return []
-
-    def set_batch(self, enabled: bool) -> None:
-        if self._agent is not None:
-            self._agent.set_batch_mode(enabled)
-
-    def set_thinking_depth(self, level: int) -> None:
-        if self._agent is not None:
-            self._agent.set_thinking_depth(level)
-
-    def set_thinking(self, enabled: bool) -> None:
-        if self._agent is not None:
-            self._agent.set_thinking(enabled)
-
-    def set_thinking_budget(self, budget: int) -> None:
-        if self._agent is not None:
-            self._agent.set_thinking_budget(budget)
-
-    def set_streaming(self, enabled: bool) -> None:
-        if self._agent is not None:
-            self._agent.set_streaming(enabled)
-
-    def set_context_mode(self, mode: str) -> None:
-        if self._agent is not None:
-            try:
-                self._agent.set_context_mode(mode)
-            except ValueError:
-                pass
-
-    def set_subagent_level(self, level: str) -> str:
-        """Set how far sub-agents may go, and return the rung in force."""
-        if self._agent is None:
-            return DEFAULT_SUBAGENT_LEVEL
-        return self._agent.set_subagent_level(level)
-
-    def set_backend(self, mode: str) -> None:
-        if self._agent is not None:
-            self._agent.set_backend(mode)
-
-    def get_subagent_level(self) -> str:
-        return getattr(self._agent, "subagent_level", DEFAULT_SUBAGENT_LEVEL)
-
-    def set_enforcement(self, level: str) -> None:
-        if self._agent is not None:
-            try:
-                self._agent.set_enforcement(level)
-            except ValueError:
-                pass
-
-    def set_temperature(self, value: float | None) -> None:
-        if self._agent is not None:
-            try:
-                self._agent.set_temperature(value)
-            except ValueError:
-                pass
-
-    def set_approval_mode(self, mode: str) -> None:
-        """Switch who answers the approval cards — valid mid-run.
-
-        Called from the WS event loop while the worker thread may be running a query,
-        or parked on a card. It only rebinds an attribute the policy engine reads
-        afresh at each tool call, so the new mode applies from the next call on with
-        no queue involved. A card *already* on screen is answered by the client, which
-        is the side that knows one is standing.
-        """
-        if self._agent is not None:
-            try:
-                self._agent.set_approval_mode(mode)
-            except ValueError:
-                pass
-
-    def get_context_mode(self, default: str = "full") -> str:
-        """The agent's context mode, or *default* while there is no agent.
-
-        The default is the caller's to give, and it matters: the context budget is
-        derived from this, and answering "compact" for a conversation that was running
-        in full mode sized its window at 32k. A session resumed before its first query
-        passes the mode it was saved with; everything else gets ``MimirAgent``'s own
-        default, which is what the agent built for it will have.
-        """
-        if self._agent is not None:
-            return getattr(self._agent, "context_mode", default)
-        return default
-
-    def get_enforcement(self) -> str:
-        if self._agent is not None:
-            return getattr(self._agent, "enforcement", "light")
-        return "light"
-
-    def get_approval_mode(self) -> str:
-        if self._agent is not None:
-            return getattr(self._agent.approvals, "approval_mode", "manual")
-        return "manual"
 
     def get_temperature_state(self) -> dict:
         """Whether this backend honours a temperature, and the one set for the model.

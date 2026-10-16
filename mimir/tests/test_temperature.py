@@ -38,7 +38,7 @@ class _StateDir:
 class _Agent:
     """The real setter over just the model and temperature."""
 
-    set_temperature = MimirAgent.set_temperature
+    apply_setting = MimirAgent.apply_setting
 
     def __init__(self, model="qwen3"):
         self.model = model
@@ -100,7 +100,7 @@ class AgentTests(unittest.TestCase):
 
     def test_set_persists_and_a_new_agent_of_the_same_model_inherits_it(self):
         with _StateDir():
-            _Agent("qwen3").set_temperature(0.7)
+            _Agent("qwen3").apply_setting("temperature", 0.7)
             self.assertEqual(_Agent("qwen3").temperature, 0.7)  # e.g. a sub-agent
             self.assertIsNone(_Agent("other").temperature)
 
@@ -108,7 +108,7 @@ class AgentTests(unittest.TestCase):
         with _StateDir():
             a = _Agent()
             with self.assertRaises(ValueError):
-                a.set_temperature(3.0)
+                a.apply_setting("temperature", 3.0)
             self.assertIsNone(a.temperature)
             self.assertIsNone(preferences.load_temperature(a.model))
 
@@ -116,11 +116,10 @@ class AgentTests(unittest.TestCase):
         with _StateDir():
             preferences.save_temperature("b", 1.2)
             a = _Agent("a")
-            a.set_model = MimirAgent.set_model.__get__(a)
             with patch.dict(os.environ):
-                a.set_model("b")
+                a.apply_setting("model", "b")
                 self.assertEqual(a.temperature, 1.2)
-                a.set_model("a")
+                a.apply_setting("model", "a")
                 self.assertIsNone(a.temperature)
 
 
@@ -188,7 +187,7 @@ class WsCommandTests(unittest.IsolatedAsyncioTestCase):
         w = _bare_worker()
         w.model = "m"
         w.state = {"supported": True, "value": None}
-        w.set_temperature = lambda v: w.state.update(value=v)
+        w.apply_setting = lambda name, v: w.state.update(value=v) or ""
         w.get_temperature_state = lambda: dict(w.state)
         return w
 

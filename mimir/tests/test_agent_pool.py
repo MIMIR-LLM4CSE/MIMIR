@@ -50,15 +50,12 @@ class _StubWorker:
     def aclose(self) -> None:
         self.closed = True
 
-    def set_mode(self, mode: str) -> str:
-        self.applied.append(("set_mode", mode))
+    def apply_setting(self, name: str, value) -> str:
+        self.applied.append((name, value))
         return ""
 
-    def set_thinking(self, on: bool) -> None:
-        self.applied.append(("set_thinking", on))
-
-    def set_context_mode(self, mode: str) -> None:
-        self.applied.append(("set_context_mode", mode))
+    def set_server_enabled(self, name: str, enabled: bool) -> None:
+        self.applied.append(("server", name, enabled))
 
     # ── the pre-agent stand-in (see _AgentWorker.detached) ────────────────────
 
@@ -69,14 +66,9 @@ class _StubWorker:
         worker.detached_stub = True
         return worker
 
-    def get_context_mode(self) -> str:
-        return "compact"
-
-    def get_enforcement(self) -> str:
-        return "strict"
-
-    def get_approval_mode(self) -> str:
-        return "manual"
+    def setting(self, name: str, default=None):
+        return {"context_mode": "compact", "enforcement": "strict",
+                "approval_mode": "manual"}[name]
 
     def get_thinking_profile(self) -> dict:
         return {"mechanism": "kwarg", "levels": [], "can_disable": True}
@@ -306,39 +298,48 @@ class SettingsTests(_PoolCase):
     async def test_a_setting_reaches_every_live_conversation(self) -> None:
         pool = self._pool(cap=2)
         a, b = await pool.worker_for("s1"), await pool.worker_for("s2")
-        pool.apply_setting("set_mode", "plan")
-        self.assertIn(("set_mode", "plan"), a.applied)
-        self.assertIn(("set_mode", "plan"), b.applied)
+        pool.apply_setting("mode", "plan")
+        self.assertIn(("mode", "plan"), a.applied)
+        self.assertIn(("mode", "plan"), b.applied)
 
     async def test_a_setting_survives_into_the_next_agent_built(self) -> None:
         """The user chooses these long before an agent exists to receive them."""
         pool = self._pool()
-        pool.apply_setting("set_mode", "plan")
-        pool.apply_setting("set_thinking", False)
+        pool.apply_setting("mode", "plan")
+        pool.apply_setting("thinking", False)
         later = await pool.worker_for("s1")
-        self.assertIn(("set_mode", "plan"), later.applied)
-        self.assertIn(("set_thinking", False), later.applied)
+        self.assertIn(("mode", "plan"), later.applied)
+        self.assertIn(("thinking", False), later.applied)
 
     async def test_the_last_value_of_a_setting_is_the_one_replayed(self) -> None:
         pool = self._pool()
-        pool.apply_setting("set_mode", "plan")
-        pool.apply_setting("set_mode", "agent")
+        pool.apply_setting("mode", "plan")
+        pool.apply_setting("mode", "agent")
         later = await pool.worker_for("s1")
-        self.assertEqual([c for c in later.applied if c[0] == "set_mode"],
-                         [("set_mode", "agent")])
+        self.assertEqual([c for c in later.applied if c[0] == "mode"],
+                         [("mode", "agent")])
+
+    async def test_every_toggle_made_before_the_first_agent_is_replayed(self) -> None:
+        # Recorded by method name, only the last of two switches survived.
+        pool = self._pool()
+        pool.apply_toggle("server", "web", False)
+        pool.apply_toggle("server", "github", False)
+        later = await pool.worker_for("s1")
+        self.assertIn(("server", "web", False), later.applied)
+        self.assertIn(("server", "github", False), later.applied)
 
     async def test_a_rejection_from_a_live_worker_is_reported(self) -> None:
         pool = self._pool()
         worker = await pool.worker_for("s1")
-        worker.set_mode = lambda mode: "no such mode"
-        self.assertEqual(pool.apply_setting("set_mode", "nonsense"), ["no such mode"])
+        worker.apply_setting = lambda name, value: "no such mode"
+        self.assertEqual(pool.apply_setting("mode", "nonsense"), ["no such mode"])
 
     async def test_the_greeting_reports_a_choice_made_before_any_agent(self) -> None:
         """Reporting the bare default would show "agent" to a user who picked plan — and
         the choice is real: the pool replays it as soon as an agent exists."""
         pool = _AgentPool("test-model", cap=1)
         self.addAsyncCleanup(pool.aclose_all)
-        pool.apply_setting("set_context_mode", "full")
+        pool.apply_setting("context_mode", "full")
         self.assertEqual(pool.ui_state(None)["context_mode"], "full")
 
     async def test_a_conversation_with_no_agent_is_not_shown_as_starting(self) -> None:

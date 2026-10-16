@@ -152,6 +152,9 @@ class _FakeWorker:
     def watched_job_keys(self) -> list[str]:
         return []
 
+    def setting(self, name, default=None):
+        return getattr(self._agent, name, default)
+
 
 class TheCatchUpTurnTests(unittest.TestCase):
     """What the session does with steering the run handed back unread."""

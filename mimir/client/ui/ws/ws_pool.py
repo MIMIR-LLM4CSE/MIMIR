@@ -118,41 +118,37 @@ def _idle_ttl() -> float:
 
 
 class _Settings:
-    """The UI knobs a newly built worker must start from.
+    """The choices a newly built worker must start from.
 
-    A worker is built long after the user chooses these, so it has to arrive already
+    A worker is built long after the user makes these, so it has to arrive already
     configured: without the record, a conversation started after the user picked "plan
-    mode" would quietly come up in agent mode. Each setter therefore writes its argument
-    here *and* applies it to every live worker, and a new worker replays the record once
-    its agent exists.
-
-    Deliberately a recording of calls rather than a dict of values: the worker's setters
-    are where the validation lives, and duplicating "what a mode may be" here is how the
-    two drift apart.
+    mode" would quietly come up in agent mode. Every choice is therefore recorded here
+    *and* applied to every live worker, and a new worker replays the record once its
+    agent exists. The values are validated where they are applied (core.settings), not
+    here, so the two cannot drift apart about what a mode may be.
     """
 
     def __init__(self) -> None:
-        self._calls: dict[str, tuple] = {}
-
-    def record(self, name: str, *args: Any) -> None:
-        self._calls[name] = args
-
-    def forget(self, name: str) -> None:
-        self._calls.pop(name, None)
+        self.values: dict[str, Any] = {}              # core.settings name -> value
+        # Keyed by (kind, name): one record per server/skill/nudge switched, not one
+        # per kind — keyed by method, only the last toggle before the first agent
+        # survived to be replayed.
+        self.toggles: dict[tuple[str, str], bool] = {}
+        self.non_interactive = False
 
     def replay(self, worker: _AgentWorker) -> None:
-        for name, args in self._calls.items():
-            method = getattr(worker, name, None)
-            if method is None:
-                continue
+        for name, value in self.values.items():
+            error = worker.apply_setting(name, value)
+            if error:
+                logger.warning("pool: could not apply %s to a new worker: %s", name, error)
+        for (kind, name), enabled in self.toggles.items():
             try:
-                method(*args)
+                getattr(worker, f"set_{kind}_enabled")(name, enabled)
             except Exception:
-                logger.warning("pool: could not apply %s to a new worker", name,
+                logger.warning("pool: could not switch %s %s on a new worker", kind, name,
                                exc_info=True)
-
-    def recorded(self, name: str) -> tuple | None:
-        return self._calls.get(name)
+        if self.non_interactive:
+            worker.set_non_interactive(True)
 
 
 class _AgentPool:
@@ -1142,18 +1138,11 @@ class _AgentPool:
         """
         self.model = model
         self._detached.model = model
-        results = self.apply_setting("set_model", model)
-        return [r for r in results if r]
+        return self.apply_setting("model", model)
 
-    # What the greeting reports, keyed by the setter that would change it. The getter
-    # gives the agent's own answer; the recording gives what the user chose before any
-    # agent existed. Listed rather than derived because only the pairs that actually
-    # correspond belong here — `thinking` is a profile of the model, not a setting.
-    _UI_STATE = (
-        ("context_mode", "get_context_mode", "set_context_mode"),
-        ("enforcement", "get_enforcement", "set_enforcement"),
-        ("approval_mode", "get_approval_mode", "set_approval_mode"),
-    )
+    # The settings the greeting reports. `thinking` is not among them: what the panel
+    # draws for it is a profile of the model, not a setting.
+    _UI_STATE = ("context_mode", "enforcement", "approval_mode")
 
     def ui_state(self, session_id: str | None) -> dict:
         """The settings the front-end draws on connect, for the conversation on screen.
@@ -1174,31 +1163,40 @@ class _AgentPool:
             # No worker means nothing is starting: the agent is built on the first query.
             "agent_ready": worker is None or worker.agent_ready(),
         }
-        for key, getter, setter in self._UI_STATE:
-            value = getattr(source, getter)()
-            if worker is None:
-                recorded = self.settings.recorded(setter)
-                if recorded:
-                    value = recorded[0]
-            state[key] = value
+        for key in self._UI_STATE:
+            # With no agent: what the user already chose here, else the default.
+            if worker is None and key in self.settings.values:
+                state[key] = self.settings.values[key]
+            else:
+                state[key] = source.setting(key)
         return state
 
-    def apply_setting(self, name: str, *args: Any) -> list[Any]:
-        """Record a UI knob and push it to every live worker.
+    def apply_setting(self, name: str, value: Any) -> list[str]:
+        """Record a setting and apply it to every live worker; returns their refusals.
 
-        Both halves matter: the record is what a worker built later starts from, and the
-        push is what makes the change take effect in the conversations already running.
-        Returns each live worker's own return value, so a caller that reports a rejection
-        still can.
+        Both halves matter: the record is what a worker built later starts from, and
+        applying it is what makes the change take effect in the conversations already
+        running.
         """
-        self.settings.record(name, *args)
-        results: list[Any] = []
+        self.settings.values[name] = value
+        errors = []
         for _sid, worker in self.items():
-            method = getattr(worker, name, None)
-            if method is None:
-                continue
+            error = worker.apply_setting(name, value)
+            if error:
+                errors.append(error)
+        return errors
+
+    def apply_toggle(self, kind: str, name: str, enabled: bool) -> None:
+        """Switch a server, skill or nudge on or off, here and for agents built later."""
+        self.settings.toggles[(kind, name)] = enabled
+        for _sid, worker in self.items():
             try:
-                results.append(method(*args))
+                getattr(worker, f"set_{kind}_enabled")(name, enabled)
             except Exception:
-                logger.warning("pool: could not apply %s", name, exc_info=True)
-        return results
+                logger.warning("pool: could not switch %s %s", kind, name, exc_info=True)
+
+    def set_non_interactive(self) -> None:
+        """Nobody is at a terminal behind any agent of this pool, from now on."""
+        self.settings.non_interactive = True
+        for _sid, worker in self.items():
+            worker.set_non_interactive(True)

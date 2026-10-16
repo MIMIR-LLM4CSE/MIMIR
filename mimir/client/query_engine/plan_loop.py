@@ -392,11 +392,11 @@ class PlanLoop(StepLoop):
         if decision == "accept":
             emit({"type": "status", "text": "  ✔ Plan approved — switching to agent mode"})
             # Persisted so the in-session default flips to "agent" and the front-end
-            # toggle syncs via the "mode" event. Guarded for callers without set_mode.
-            set_mode = getattr(self.agent, "set_mode", None)
-            if callable(set_mode):
+            # toggle syncs via the "mode" event. Guarded for stand-ins without apply_setting.
+            apply = getattr(self.agent, "apply_setting", None)
+            if callable(apply):
                 try:
-                    set_mode("agent")
+                    apply("mode", "agent")
                 except Exception:
                     pass
             emit({"type": "mode", "mode": "agent"})

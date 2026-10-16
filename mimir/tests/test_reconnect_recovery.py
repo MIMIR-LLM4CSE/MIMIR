@@ -195,9 +195,9 @@ class GreetingTests(unittest.IsolatedAsyncioTestCase):
         w = _bare_worker()
         w._agent = agent
         w.model = "m"
-        w.get_context_mode = lambda: "compact"
-        w.get_enforcement = lambda: "strict"
-        w.get_approval_mode = lambda: "normal"
+        w.setting = lambda name, default=None: {
+            "context_mode": "compact", "enforcement": "strict",
+            "approval_mode": "normal"}.get(name, default)
         w.get_thinking_profile = lambda: {}
         w.get_temperature_state = lambda: {"supported": True, "value": None}
         return SessionFencingTests._session(self, w)
@@ -255,7 +255,7 @@ class HandshakeIsNotBlockedTests(unittest.IsolatedAsyncioTestCase):
         w.model = "m"
         w.is_busy = lambda: False
         w.get_context_mode = lambda: "full"
-        w.get_enforcement = lambda: "light"
+        w.setting = lambda name, default=None: {"enforcement": "light"}.get(name, default)
         w.get_approval_mode = lambda: "manual"
         w.get_thinking_profile = lambda: {}
         w.get_temperature_state = lambda: {"supported": True, "value": None}
@@ -348,7 +348,7 @@ class ReadinessAnnouncementTests(unittest.IsolatedAsyncioTestCase):
         w.model = "m"
         w.is_busy = lambda: False
         w.get_context_mode = lambda: "full"
-        w.get_enforcement = lambda: "light"
+        w.setting = lambda name, default=None: {"enforcement": "light"}.get(name, default)
         w.get_approval_mode = lambda: "manual"
         w.get_thinking_profile = lambda: {}
         w.get_temperature_state = lambda: {"supported": True, "value": None}

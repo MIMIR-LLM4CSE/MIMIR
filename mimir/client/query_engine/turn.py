@@ -12,6 +12,7 @@ from typing import Any
 from ..context import validate_execution_context
 from ..event_sink import emit
 from ..protocol.messages import reconcile_tool_pairs
+from ..core.settings import normalize_mode
 from .agent_loop import AgentLoop
 from .deferral import KIND_CALLS, KIND_PLAN_DECISION, take_deferred_calls
 from .finalize import _record_turn
@@ -104,7 +105,7 @@ async def run_agent_query(
     execution_context.workspace_root = getattr(agent, "workspace_root", "")
     agent.apply_carry_context(execution_context)
     validate_execution_context(execution_context)
-    active_mode = agent.normalize_mode(mode or agent.mode)
+    active_mode = normalize_mode(mode or agent.mode)
     # Baseline for the live-mode check: only a *later* change to agent.mode is a
     # user switching mid-run. Seeded from the agent, not from active_mode, so an
     # explicit per-query override never registers as one. See _live_mode.

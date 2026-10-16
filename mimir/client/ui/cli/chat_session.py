@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import functools
 import os
 from typing import Any
 
@@ -211,17 +212,17 @@ async def run_chat_session(agent: Any) -> None:
                 context_mode=agent.context_mode,
                 enforcement=agent.enforcement,
                 approval_mode=agent.approvals.approval_mode,
-                set_mode=agent.set_mode,
-                set_thinking=agent.set_thinking,
+                set_mode=functools.partial(agent.apply_setting, "mode"),
+                set_thinking=functools.partial(agent.apply_setting, "thinking"),
                 thinking_depth=agent.thinking_depth,
-                set_thinking_depth=agent.set_thinking_depth,
-                set_streaming=agent.set_streaming,
-                set_batch_mode=agent.set_batch_mode,
-                set_context_mode=agent.set_context_mode,
-                set_enforcement=agent.set_enforcement,
+                set_thinking_depth=functools.partial(agent.apply_setting, "thinking_depth"),
+                set_streaming=functools.partial(agent.apply_setting, "streaming"),
+                set_batch_mode=functools.partial(agent.apply_setting, "batch"),
+                set_context_mode=functools.partial(agent.apply_setting, "context_mode"),
+                set_enforcement=functools.partial(agent.apply_setting, "enforcement"),
                 temperature=agent.temperature,
-                set_temperature=agent.set_temperature,
-                set_approval_mode=agent.set_approval_mode,
+                set_temperature=functools.partial(agent.apply_setting, "temperature"),
+                set_approval_mode=functools.partial(agent.apply_setting, "approval_mode"),
                 trust_tool=agent.approvals.trust_tool,
                 untrust_tool=agent.approvals.untrust_tool,
                 trusted_tools=agent.approvals.trusted_tools_view(),
@@ -264,7 +265,7 @@ async def run_chat_session(agent: Any) -> None:
                 print("  ↳ Execution cancelled.")
                 continue
 
-            agent.set_mode("agent")
+            agent.apply_setting("mode", "agent")
             print("  ↳ Auto-switched to agent mode — executing plan.\n")
 
             if agent.last_plan_query:
@@ -360,7 +361,7 @@ async def run_chat_session(agent: Any) -> None:
                     replan = ""
 
                 if replan in ("y", "yes"):
-                    agent.set_mode("plan")
+                    agent.apply_setting("mode", "plan")
                     print("  ↳ Switched to plan mode.\n")
 
         except Exception as exc:

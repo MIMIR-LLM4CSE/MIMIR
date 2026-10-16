@@ -233,10 +233,11 @@ class ComingBackToARunTests(unittest.IsolatedAsyncioTestCase):
             def __init__(self) -> None:
                 self.mode = "manual"
 
-            def set_approval_mode(self, mode):
-                self.mode = mode
+            def apply_setting(self, name, value):
+                self.mode = value
+                return ""
 
-            def get_approval_mode(self):
+            def setting(self, name, default=None):
                 return self.mode
 
         self.sess = object.__new__(_Session)
@@ -407,10 +408,11 @@ class DetachHandlerTests(unittest.IsolatedAsyncioTestCase):
             def __init__(self) -> None:
                 self.mode = "manual"
 
-            def set_approval_mode(self, mode):
-                self.mode = mode
+            def apply_setting(self, name, value):
+                self.mode = value
+                return ""
 
-            def get_approval_mode(self):
+            def setting(self, name, default=None):
                 return self.mode
 
         self.a, self.b = _Worker(), _Worker()
@@ -430,7 +432,8 @@ class DetachHandlerTests(unittest.IsolatedAsyncioTestCase):
         # bare session has none until ``run()`` opens one.
         self.sess._sub = None
         self.applied: list[tuple] = []
-        self.sess._apply_setting = lambda name, *args: self.applied.append((name, args))
+        self.sess._apply_setting = lambda name, value: self.applied.append((name, value))
+        self.sess.pool.set_non_interactive = lambda: self.applied.append(("non_interactive", True))
 
     async def test_it_replies_with_what_it_managed(self):
         await self.sess._handle_detach({"type": "detach", "autonomy": "auto"})
@@ -446,7 +449,7 @@ class DetachHandlerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.b.mode, "auto_all")
         self.assertEqual(self.a.mode, "manual", "a conversation not named was changed")
         self.assertEqual([name for name, _args in self.applied],
-                         ["set_non_interactive"],
+                         ["non_interactive"],
                          "a per-session detach recorded a level pool-wide")
         self.assertEqual(
             [m for m in self.sent if m["type"] == "detached"][0]["sessions"], ["s2"])
@@ -455,7 +458,7 @@ class DetachHandlerTests(unittest.IsolatedAsyncioTestCase):
         # The only form that outlives a worker being rebuilt, since the pool records UI
         # settings per pool rather than per session.
         await self.sess._handle_detach({"type": "detach", "autonomy": "auto"})
-        self.assertIn(("set_approval_mode", ("auto",)), self.applied)
+        self.assertIn(("approval_mode", "auto"), self.applied)
 
     async def test_there_is_no_terminal_whichever_conversations_are_named(self):
         # Recorded pool-wide even for a per-session detach, because it is a fact about
@@ -465,7 +468,7 @@ class DetachHandlerTests(unittest.IsolatedAsyncioTestCase):
         # this would reach for a terminal that is a log file.
         await self.sess._handle_detach(
             {"type": "detach", "autonomy": "auto_all", "session_ids": ["s2"]})
-        self.assertIn(("set_non_interactive", (True,)), self.applied)
+        self.assertIn(("non_interactive", True), self.applied)
 
     async def test_an_unknown_level_is_refused_and_nothing_is_detached(self):
         await self.sess._handle_detach({"type": "detach", "autonomy": "yolo"})

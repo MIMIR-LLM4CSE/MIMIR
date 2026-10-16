@@ -94,9 +94,12 @@ class _FakeAgent:
         except Exception:
             return ""
 
-    def set_mode(self, mode): self.mode = mode
-    def set_approval_mode(self, mode): self.approvals.approval_mode = mode
-    def set_thinking_depth(self, depth): self.thinking_depth = depth
+    def apply_setting(self, name, value):
+        if name == "approval_mode":
+            self.approvals.approval_mode = value
+        else:
+            setattr(self, name, value)
+
     def seed_classification_from_caps(self): pass
 
     async def connect_servers(self, registry, on_error=None):

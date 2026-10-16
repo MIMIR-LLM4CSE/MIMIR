@@ -143,22 +143,35 @@ class FakePool:
 
     def ui_state(self, session_id: str | None) -> dict:
         w = self.worker
+        setting = getattr(w, "setting", None)
+
+        def read(name: str, default: str) -> str:
+            return default if setting is None else setting(name, default)
+
         return {
             "model": self.model,
             "thinking": w.get_thinking_profile() if hasattr(w, "get_thinking_profile") else {},
             "temperature": w.get_temperature_state() if hasattr(w, "get_temperature_state") else {},
             "agent_ready": w.agent_ready() if hasattr(w, "agent_ready") else False,
-            "context_mode": w.get_context_mode() if hasattr(w, "get_context_mode") else "compact",
-            "enforcement": w.get_enforcement() if hasattr(w, "get_enforcement") else "light",
-            "approval_mode": w.get_approval_mode() if hasattr(w, "get_approval_mode") else "manual",
+            "context_mode": read("context_mode", "compact"),
+            "enforcement": read("enforcement", "light"),
+            "approval_mode": read("approval_mode", "manual"),
         }
 
-    def apply_setting(self, name: str, *args: Any) -> list[Any]:
-        if self.worker is None:
-            return []
-        method = getattr(self.worker, name, None)
-        return [] if method is None else [method(*args)]
+    def apply_setting(self, name: str, value: Any) -> list[str]:
+        method = getattr(self.worker, "apply_setting", None)
+        return [] if method is None else [r for r in [method(name, value)] if r]
+
+    def apply_toggle(self, kind: str, name: str, enabled: bool) -> None:
+        method = getattr(self.worker, f"set_{kind}_enabled", None)
+        if method is not None:
+            method(name, enabled)
+
+    def set_non_interactive(self) -> None:
+        method = getattr(self.worker, "set_non_interactive", None)
+        if method is not None:
+            method(True)
 
     def set_model(self, model: str) -> list[str]:
         self.model = model
-        return [r for r in self.apply_setting("set_model", model) if r]
+        return self.apply_setting("model", model)

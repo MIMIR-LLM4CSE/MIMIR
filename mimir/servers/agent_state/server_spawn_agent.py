@@ -2059,7 +2059,7 @@ async def _drive_sub_agent(
     # Sub-agents don't reason out loud: set the rung, not just the run() flag, since
     # the loop re-reads the agent's depth every step (the user steering the parent's
     # thinking must not leak into a child run).
-    agent.set_thinking_depth(0)
+    agent.apply_setting("thinking_depth", 0)
     # A conclusion is a paragraph, and a tool-call step is shorter still. Uncapped,
     # one step may claim the whole answer reserve — measured at ~40k tokens, i.e.
     # several minutes of generation during which the child emits nothing at all.
@@ -2067,7 +2067,7 @@ async def _drive_sub_agent(
     # The user's approval mode, not the default: the child acts for the same user. It
     # has no one to ask (its stdin is this server's JSON-RPC pipe), so what the mode
     # does not cover is refused without a prompt and reported back as blocked.
-    agent.set_approval_mode(approval_mode)
+    agent.apply_setting("approval_mode", approval_mode)
     agent.approvals.unattended = True
     if ask_session is not None and ask_loop is not None:
         # There is a person at the end of this call: its approvals and its questions go
@@ -2115,7 +2115,7 @@ async def _drive_sub_agent(
         for name in requested
     )
     mode = "agent" if working else _READONLY_CHILD_MODE
-    agent.set_mode(mode)
+    agent.apply_setting("mode", mode)
     # Set here rather than with the rest of the child's setup: how much window the
     # child may fill follows from what it was given, and that is not known until its
     # tools have been classified just above.

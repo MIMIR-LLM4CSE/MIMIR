@@ -33,7 +33,7 @@ class _NoAgentWorker:
 
     model = "test-model"
 
-    def get_context_mode(self, default: str = "full") -> str:
+    def setting(self, name, default=None):
         return default
 
     def context_overhead_tokens(self) -> int:
@@ -75,7 +75,7 @@ class ResumedBudgetTests(unittest.TestCase):
         sess = _session("compact")
 
         class _Live(_NoAgentWorker):
-            def get_context_mode(self, default: str = "full") -> str:
+            def setting(self, name, default=None):
                 return "full"
 
         sess.pool = FakePool(_Live(), active="s1")

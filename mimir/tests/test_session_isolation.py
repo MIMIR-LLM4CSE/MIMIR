@@ -169,9 +169,9 @@ With an agent per conversation the turn has somewhere to go: it streams into
     async def test_set_model_reports_the_new_model_and_derived_settings(self):
         w = _bare_worker()
         w.model = "old-model"
-        w.set_model = lambda m: (setattr(w, "model", m), "")[1]
+        w.apply_setting = lambda name, v: (setattr(w, name, v), "")[1]
         w.get_thinking_profile = lambda: {"mechanism": "kwarg"}
-        w.get_enforcement = lambda: "light"
+        w.setting = lambda name, default=None: {"enforcement": "light"}.get(name, default)
         w.get_temperature_state = lambda: {"supported": True, "value": 0.6}
         sess = self._session(w)
         await sess._handle_set_model({"model": "qwen3:30b"})
@@ -227,7 +227,7 @@ With an agent per conversation the turn has somewhere to go: it streams into
     async def test_set_model_failure_is_surfaced_as_an_error(self):
         w = _bare_worker()
         w.model = "old-model"
-        w.set_model = lambda m: "Agent is not ready yet."
+        w.apply_setting = lambda name, v: "Agent is not ready yet."
         sess = self._session(w)
         await sess._handle_set_model({"model": "qwen3:30b"})
         self.assertEqual(len(sess.ws.sent), 1)

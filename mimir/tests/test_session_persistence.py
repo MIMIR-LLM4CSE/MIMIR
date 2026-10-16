@@ -85,7 +85,7 @@ class _FakeWorker:
     def load_agent_state(self, state):
         pass
 
-    def get_context_mode(self, default="full"):
+    def setting(self, name, default=None):
         return default
 
     def watched_job_keys(self):

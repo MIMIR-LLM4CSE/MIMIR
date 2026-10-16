@@ -120,7 +120,7 @@ class CommandsBeforeTheFirstQueryTests(unittest.TestCase):
         with mock.patch.object(ws_session, "switch_backend") as switch:
             asyncio.run(sess._handle_command("/backend ray"))
         switch.assert_called_once_with("ray")
-        self.assertIn(("set_backend", "ray"), sess.pool.applied)
+        self.assertIn(("backend", "ray"), sess.pool.applied)
         self.assertEqual(sess.ws.sent[-1]["type"], "command_output")
 
     def test_subagents_is_recorded_for_the_agent_built_next(self) -> None:
@@ -133,7 +133,7 @@ class CommandsBeforeTheFirstQueryTests(unittest.TestCase):
         with mock.patch.object(ws_session, "save_subagent_level") as save:
             asyncio.run(sess._handle_command(f"/subagents {level}"))
         save.assert_called_once_with(level)
-        self.assertIn(("set_subagent_level", level), sess.pool.applied)
+        self.assertIn(("subagent_level", level), sess.pool.applied)
         self.assertEqual(sess.ws.sent[-1], {"type": "subagent_level", "level": level})
 
 
@@ -175,10 +175,7 @@ class CliCommandFailureTests(unittest.TestCase):
                 batch_mode=False, approval_mode="manual", trust_tool=None,
                 untrust_tool=None, trusted_tools_view=lambda: []),
             context_mode="full", enforcement="strict", thinking_depth=0, temperature=None,
-            **{name: None for name in (
-                "set_mode", "set_thinking", "set_thinking_depth", "set_streaming",
-                "set_batch_mode", "set_context_mode", "set_enforcement",
-                "set_temperature", "set_approval_mode")})
+            apply_setting=None)
         printed: list[str] = []
 
         async def _boom(**_kw):
