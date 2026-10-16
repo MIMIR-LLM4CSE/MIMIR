@@ -1410,7 +1410,9 @@ class BackgroundTests(unittest.TestCase):
     def test_the_client_refuses_polling_but_allows_reading_the_result(self):
         """The wake answers "is it done"; asking it again is the poll the watcher
         exists to replace. Reading what it has is a different question."""
-        from mimir.client.query_engine.dispatch import _asks_whether_a_watched_run_is_done
+        from mimir.client.query_engine.dispatch.admission import (
+            _asks_whether_a_watched_run_is_done,
+        )
         descriptor = spawn._job_descriptor("sub-ab12cd34")
         agent = types.SimpleNamespace(_watched_background_jobs=lambda: [descriptor])
         status = descriptor["status_op"]

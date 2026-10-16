@@ -13,6 +13,7 @@ import asyncio
 import unittest
 from unittest.mock import patch
 
+from mimir.client.event_sink import event_sink as capture_events
 from mimir.client.config.limits import AGENT_EMPTY_TURN_RETRIES
 from mimir.client.guardrails.nudges import drop_transient_reminders, inject_reminder
 from mimir.client.guardrails.workflow import EMPTY_TURN_OPENING
@@ -26,6 +27,9 @@ from mimir.tests.test_agent_loop import (
     _record_plan_flags,
     _tool_call,
 )
+import mimir.client.query_engine.loop_base as loop_base_module
+import mimir.client.query_engine.turn as turn_module
+from mimir.tests._loops import run_plan
 
 
 def _is_empty_assistant(m: dict) -> bool:
@@ -45,9 +49,9 @@ class _LoopRunner(unittest.TestCase):
         m = agent_loop_module
         with patch.object(streaming_module, "get_backend", lambda: backend), \
              patch.object(m, "tools_for_context", lambda **k: k["tools"]), \
-             patch.object(m, "emit", lambda ev: emitted.append(ev)), \
+             capture_events(lambda ev: emitted.append(ev)), \
              patch.object(m, "needs_incomplete_finalization", lambda ec: False):
-            result = asyncio.run(m.run_agent_query(agent=agent, query="q", max_steps=max_steps))
+            result = asyncio.run(turn_module.run_agent_query(agent=agent, query="q", max_steps=max_steps))
         # What the session would persist for this turn.
         return result, backend, emitted, list(agent._last_full_messages)
 
@@ -200,11 +204,11 @@ class InterruptedTurnRecordTests(unittest.TestCase):
 
         m = agent_loop_module
         with patch.object(streaming_module, "get_backend", lambda: backend), \
-             patch.object(m, "_dispatch_tool_calls", _dispatch), \
+             patch.object(loop_base_module, "_dispatch_tool_calls", _dispatch), \
              patch.object(m, "tools_for_context", lambda **k: k["tools"]), \
-             patch.object(m, "emit", lambda ev: None):
+             capture_events(lambda ev: None):
             with self.assertRaises(asyncio.CancelledError):
-                asyncio.run(m.run_agent_query(
+                asyncio.run(turn_module.run_agent_query(
                     agent=agent, query="this task",
                     history=[{"role": "user", "content": "this task"}]))
         return agent
@@ -246,11 +250,11 @@ class InterleavedReasoningTests(unittest.TestCase):
 
         m = agent_loop_module
         with patch.object(streaming_module, "get_backend", lambda: backend), \
-             patch.object(m, "_dispatch_tool_calls", _dispatch), \
+             patch.object(loop_base_module, "_dispatch_tool_calls", _dispatch), \
              patch.object(m, "tools_for_context", lambda **k: k["tools"]), \
-             patch.object(m, "emit", lambda ev: None), \
+             capture_events(lambda ev: None), \
              patch.object(m, "needs_incomplete_finalization", lambda ec: False):
-            asyncio.run(m.run_agent_query(agent=agent, query="q", history=history or []))
+            asyncio.run(turn_module.run_agent_query(agent=agent, query="q", history=history or []))
         return agent, backend
 
     def test_the_next_step_sees_the_reasoning_of_the_last(self) -> None:
@@ -283,9 +287,9 @@ class SkillContextTests(unittest.TestCase):
         m = agent_loop_module
         with patch.object(streaming_module, "get_backend", lambda: backend), \
              patch.object(m, "tools_for_context", lambda **k: k["tools"]), \
-             patch.object(m, "emit", lambda ev: None), \
+             capture_events(lambda ev: None), \
              patch.object(m, "needs_incomplete_finalization", lambda ec: False):
-            asyncio.run(m.run_agent_query(agent=agent, query="/refactor it",
+            asyncio.run(turn_module.run_agent_query(agent=agent, query="/refactor it",
                                           history=history, max_steps=4))
         seen["messages"] = backend.calls[0]["messages"]
         return seen["messages"]
@@ -367,10 +371,10 @@ class PlanModeEmptyTurnTests(unittest.TestCase):
         messages = [{"role": "system", "content": "S"}, {"role": "user", "content": "plan it"}]
         with patch.object(streaming_module, "get_backend", lambda: backend), \
              patch.object(plan_loop_module, "tools_for_plan_mode", lambda tools, caps, **kw: []), \
-             patch.object(plan_loop_module, "_dispatch_tool_calls", _plan_dispatch), \
-             patch.object(plan_loop_module, "_finalize_answer", _finalize):
+             patch.object(loop_base_module, "_dispatch_tool_calls", _plan_dispatch), \
+             patch.object(loop_base_module, "_finalize_answer", _finalize):
             result = asyncio.run(
-                plan_loop_module._run_plan_mode(
+                run_plan(
                     agent=agent, query="q", messages=messages,
                     execution_context=build_execution_context(),
                     max_steps=10, thinking=False, streaming=False, logger=None,

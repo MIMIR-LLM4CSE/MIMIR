@@ -15,6 +15,7 @@ from mimir.client.prompt.system_prompt import build_system_content
 from mimir.client.query_engine import agent_loop as m
 from mimir.client.query_engine import toollist as pe
 from mimir.tests._golden_caps import build_declared_registry
+import mimir.client.query_engine.loop_base as loop_base_module
 
 
 class _FakeAgent:
@@ -163,19 +164,19 @@ class RebuildRuleTests(unittest.TestCase):
 
     def test_the_helper_reapplies_the_skill_block(self):
         ctx = {"_skill_suffix": "\n\nSKILL CONTEXT (SUBORDINATE). xyz"}
-        out = asyncio.run(m._rebuild_system_content(self._agent(), "agent", ctx))
+        out = asyncio.run(loop_base_module._rebuild_system_content(self._agent(), "agent", ctx))
         self.assertTrue(out.endswith("SKILL CONTEXT (SUBORDINATE). xyz"))
         self.assertIn("Task checklist", out)
 
     def test_no_skill_block_adds_nothing(self):
-        out = asyncio.run(m._rebuild_system_content(self._agent(), "agent", {}))
+        out = asyncio.run(loop_base_module._rebuild_system_content(self._agent(), "agent", {}))
         self.assertNotIn("SKILL CONTEXT", out)
 
     def test_a_mode_switch_keeps_the_skill_block(self):
         # The site the plan→agent handoff and the /mode toggle both land on.
         ctx = {"_skill_suffix": "\n\nSKILL CONTEXT (SUBORDINATE). xyz"}
         messages = [{"role": "system", "content": "OLD"}]
-        out = asyncio.run(m._apply_mode_switch(
+        out = asyncio.run(loop_base_module._apply_mode_switch(
             self._agent(), messages, new_mode="agent", execution_context=ctx,
         ))
         self.assertTrue(messages[0]["content"].endswith("SKILL CONTEXT (SUBORDINATE). xyz"))
@@ -187,7 +188,7 @@ class RebuildRuleTests(unittest.TestCase):
         agent.thinking_depth = THINKING_DEPTH_AUTO
         ctx = {"_skill_suffix": "\n\nSKILL CONTEXT (SUBORDINATE). xyz"}
         messages = [{"role": "system", "content": "OLD"}]
-        auto, out = asyncio.run(m._sync_thinking_directive(
+        auto, out = asyncio.run(loop_base_module._sync_thinking_directive(
             agent, messages, "agent", False, "OLD", ctx,
         ))
         self.assertTrue(auto)
@@ -234,7 +235,7 @@ class PulledSkillLeavesThePrefixAloneTests(unittest.TestCase):
     def test_a_rebuild_after_a_pull_carries_no_skill_block(self):
         """Because there is nothing in the suffix to carry: the body is in the tail."""
         ctx = {"skills_loaded": {"fix-bug": "call-1"}, "pinned_call_ids": {"call-1"}}
-        out = asyncio.run(m._rebuild_system_content(self._agent(), "agent", ctx))
+        out = asyncio.run(loop_base_module._rebuild_system_content(self._agent(), "agent", ctx))
         self.assertNotIn("SKILL CONTEXT", out)
 
 

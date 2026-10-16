@@ -923,8 +923,9 @@ def _descriptor(job_key: str = "j1") -> dict:
 
 class WatchedRunPollGuardTests(unittest.TestCase):
     def _asks(self, agent, name, args):
-        from mimir.client.query_engine.dispatch import (
-            _asks_whether_a_watched_run_is_done)
+        from mimir.client.query_engine.dispatch.admission import (
+            _asks_whether_a_watched_run_is_done,
+        )
         return _asks_whether_a_watched_run_is_done(agent, name, args)
 
     def test_state_of_a_watched_run_is_refused(self) -> None:
@@ -968,8 +969,9 @@ class WatchedRunProgressNoteTests(unittest.TestCase):
     """A progress read is allowed, and carries the fact that the run is watched."""
 
     def _reads(self, agent, name, args):
-        from mimir.client.query_engine.dispatch import (
-            _reads_progress_of_a_watched_run)
+        from mimir.client.query_engine.dispatch.admission import (
+            _reads_progress_of_a_watched_run,
+        )
         return _reads_progress_of_a_watched_run(agent, name, args)
 
     def test_output_of_a_watched_run_is_annotated(self) -> None:
@@ -993,7 +995,7 @@ class WatchedRunProgressNoteTests(unittest.TestCase):
 
     def test_the_note_leaves_the_payload_readable(self) -> None:
         """Appended after the JSON, like the launch note: the payload still parses."""
-        from mimir.client.query_engine.dispatch import _watched_progress_note
+        from mimir.client.query_engine.dispatch.admission import _watched_progress_note
         from mimir.client.protocol.tool_result import parse_tool_payload
         raw = json.dumps({"status": "ok", "state": "running", "job_key": "j1"})
         note = _watched_progress_note("j1")
@@ -1003,7 +1005,7 @@ class WatchedRunProgressNoteTests(unittest.TestCase):
 
 class BlockingWaitGuardTests(unittest.TestCase):
     def _waits(self, agent, command, name="bash_run"):
-        from mimir.client.query_engine.dispatch import _waits_by_blocking_the_turn
+        from mimir.client.query_engine.dispatch.admission import _waits_by_blocking_the_turn
         return _waits_by_blocking_the_turn(agent, name, {"command": command})
 
     def test_leading_sleep_is_refused_while_a_run_is_watched(self) -> None:

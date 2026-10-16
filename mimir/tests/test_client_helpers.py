@@ -8,6 +8,8 @@ from pathlib import Path
 from unittest.mock import patch
 import asyncio
 
+import mimir.client.query_engine.dispatch.execution as dispatch_execution
+from mimir.client.event_sink import event_sink as capture_events
 import mimir.client.event_sink as event_sink_module
 from mimir.client.query_engine.backends.base import PromptTooLongError
 from mimir.client.protocol.messages import message_wire_form
@@ -29,6 +31,9 @@ from mimir.client.agent_core import MimirAgent
 from mimir.client.tool_execution.validation import auto_validate_written_file
 from mimir.client.context.capabilities import path_args
 from mimir.tests._golden_caps import build_declared_registry
+import mimir.client.query_engine.loop_base as loop_base_module
+import mimir.client.query_engine.turn as turn_module
+from mimir.tests._loops import run_agent
 
 # Provide a module-compatible namespace so existing test references work.
 import types
@@ -971,9 +976,9 @@ class ClientHelperTests(unittest.TestCase):
         # The LLM backend is reached via agent_loop._stream_chat, which returns a
         # single response dict ({"content": ..., "tool_calls": ...}).  No tool calls
         # means the content becomes the final answer.
-        with patch.object(agent_loop_module, "_stream_chat", return_value={"content": "done"}):
+        with patch.object(loop_base_module, "_stream_chat", return_value={"content": "done"}):
             result = asyncio.run(
-                agent_loop_module.run_agent_query(
+                turn_module.run_agent_query(
                     agent=fake_agent,
                     query="  tighten policy gates  ",
                     max_steps=1,
@@ -1000,7 +1005,7 @@ class ClientHelperTests(unittest.TestCase):
     # ── step budget ───────────────────────────────────────────────────────────
 
     def _run_loop_with_budget(self, *, max_steps, answer_after=None):
-        """Drive _run_agent_loop with a _stream_chat that emits a tool call every step.
+        """Drive the agent loop with a _stream_chat that emits a tool call every step.
 
         ``answer_after`` makes the model deliver a final answer on that step instead,
         which is the only way an unbounded run ends. Returns the step count. Heavy
@@ -1033,16 +1038,16 @@ class ClientHelperTests(unittest.TestCase):
         )
 
         m = agent_loop_module
-        with patch.object(m, "_stream_chat", _fake_stream), \
-             patch.object(m, "_process_response", lambda *a, **k: None), \
-             patch.object(agent_loop_module, "_dispatch_tool_calls", _noop_async), \
-             patch.object(agent_loop_module, "_post_dispatch_inject", _noop_async), \
+        with patch.object(loop_base_module, "_stream_chat", _fake_stream), \
+             patch.object(loop_base_module, "_process_response", lambda *a, **k: None), \
+             patch.object(loop_base_module, "_dispatch_tool_calls", _noop_async), \
+             patch.object(loop_base_module, "_post_dispatch_inject", _noop_async), \
              patch.object(history_module, "_trim_tool_history", lambda *a, **k: None), \
              patch.object(history_module, "_maybe_compact_intra_query", lambda *a, **k: None), \
              patch.object(m, "tools_for_context", lambda **k: []), \
              patch.object(m, "needs_incomplete_finalization", lambda ec: False), \
-             patch.object(m, "_finalize_answer", _fake_finalize):
-            asyncio.run(m._run_agent_loop(
+             patch.object(loop_base_module, "_finalize_answer", _fake_finalize):
+            asyncio.run(run_agent(
                 agent=fake_agent,
                 query="q",
                 active_mode="agent",
@@ -1360,7 +1365,7 @@ class ClientHelperTests(unittest.TestCase):
         # Patch sleep so backoff doesn't actually wait during the test.
         with patch.object(streaming_module, "get_backend", return_value=fake_backend), \
              patch.object(streaming_module.time, "sleep", return_value=None):
-            result = agent_loop_module._stream_chat(
+            result = loop_base_module._stream_chat(
                 model="m", messages=[], tools=[],
                 thinking=False, streaming=False, options={},
             )
@@ -1378,7 +1383,7 @@ class ClientHelperTests(unittest.TestCase):
         with patch.object(streaming_module, "get_backend", return_value=fake_backend), \
              patch.object(streaming_module.time, "sleep", return_value=None):
             with self.assertRaises(ConnectionError):
-                agent_loop_module._stream_chat(
+                loop_base_module._stream_chat(
                     model="m", messages=[], tools=[],
                     thinking=False, streaming=False, options={},
                 )
@@ -1405,7 +1410,7 @@ class ClientHelperTests(unittest.TestCase):
         with patch.object(streaming_module, "get_backend", return_value=fake_backend), \
              patch.object(streaming_module.time, "sleep", return_value=None) as slept:
             with self.assertRaises(PromptTooLongError):
-                agent_loop_module._stream_chat(
+                loop_base_module._stream_chat(
                     model="m", messages=[], tools=[],
                     thinking=False, streaming=False, options={},
                 )
@@ -1424,7 +1429,7 @@ class ClientHelperTests(unittest.TestCase):
         with patch.object(streaming_module, "get_backend", return_value=fake_backend), \
              patch.object(streaming_module.time, "sleep", return_value=None):
             with self.assertRaises(RuntimeError):
-                agent_loop_module._stream_chat(
+                loop_base_module._stream_chat(
                     model="m", messages=[], tools=[],
                     thinking=False, streaming=False, options={},
                 )
@@ -1450,7 +1455,7 @@ class ClientHelperTests(unittest.TestCase):
         fake_backend = types.SimpleNamespace(chat=chat)
         with patch.object(streaming_module, "get_backend", return_value=fake_backend):
             with self.assertRaises(asyncio.CancelledError):
-                agent_loop_module._stream_chat(
+                loop_base_module._stream_chat(
                     model="m", messages=[], tools=[],
                     thinking=False, streaming=False, options={},
                     cancel_flag=_Flag(),
@@ -1519,9 +1524,9 @@ class ClientHelperTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             os.chdir(tmp)
             try:
-                with patch.object(dispatch_module, "summarize_tool_result",
+                with patch.object(dispatch_execution, "summarize_tool_result",
                                   return_value=(True, "")), \
-                     patch.object(dispatch_module, "emit", events.append):
+                     capture_events(events.append):
                     for i, (path, content) in enumerate(edits):
                         asyncio.run(dispatch_module._dispatch_tool_calls(
                             [{"id": f"c{i}", "function": {
@@ -1633,7 +1638,7 @@ class ClientHelperTests(unittest.TestCase):
         messages: list = []
         execution_context = {}
 
-        with patch.object(dispatch_module, "summarize_tool_result", return_value=(True, "")):
+        with patch.object(dispatch_execution, "summarize_tool_result", return_value=(True, "")):
             asyncio.run(
                 dispatch_module._dispatch_tool_calls(
                     tool_calls, agent, messages, execution_context
@@ -1664,7 +1669,7 @@ class ClientHelperTests(unittest.TestCase):
                 time.sleep(0.15)
             return "done"
 
-        out = asyncio.run(dispatch_module._await_tool(_tool(), 0.05))
+        out = asyncio.run(dispatch_execution._await_tool(_tool(), 0.05))
         self.assertEqual(out, "done")
 
     def test_a_genuinely_slow_tool_still_times_out(self) -> None:
@@ -1673,7 +1678,7 @@ class ClientHelperTests(unittest.TestCase):
             return "done"
 
         with self.assertRaises(asyncio.TimeoutError):
-            asyncio.run(dispatch_module._await_tool(_tool(), 0.05))
+            asyncio.run(dispatch_execution._await_tool(_tool(), 0.05))
 
     def test_reported_duration_excludes_the_approval_wait(self) -> None:
         """The row's elapsed time measures the tool, not the user."""
@@ -1704,9 +1709,9 @@ class ClientHelperTests(unittest.TestCase):
 
         tool_calls = [{"id": "c1", "function": {"name": "bash_run",
                                                 "arguments": {"command": "ls"}}}]
-        with patch.object(dispatch_module, "timeout_for", lambda *_a, **_k: 0.05), \
-             patch.object(dispatch_module, "emit", events.append), \
-             patch.object(dispatch_module, "summarize_tool_result", return_value=(True, "")):
+        with patch.object(dispatch_execution, "timeout_for", lambda *_a, **_k: 0.05), \
+             capture_events(events.append), \
+             patch.object(dispatch_execution, "summarize_tool_result", return_value=(True, "")):
             asyncio.run(dispatch_module._dispatch_tool_calls(
                 tool_calls, _SlowApprovalAgent(), [], {}))
 

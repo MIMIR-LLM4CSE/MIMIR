@@ -15,7 +15,6 @@ from unittest.mock import patch
 
 from mimir.client.event_sink import event_sink
 from mimir.client.prompt.system_prompt import build_tool_catalog_for_planning
-from mimir.client.query_engine import agent_loop
 from mimir.client.query_engine import history as history_module
 from mimir.client.query_engine.history import (
     _digest_call_args,
@@ -28,6 +27,7 @@ from mimir.client.query_engine.history import (
     WIRE_LIST_TOKENS_PER_MESSAGE,
 )
 from mimir.client.protocol.messages import reconcile_tool_pairs
+import mimir.client.query_engine.turn as turn_module
 
 
 def _call(call_id: str, name: str = "write_file", **args) -> dict:
@@ -512,7 +512,7 @@ class InterruptedQueryStateTests(unittest.TestCase):
     def test_state_is_emitted_when_a_query_dies(self) -> None:
         events: list[dict] = []
         with event_sink(events.append):
-            agent_loop._emit_interrupted_state(self._context_with_unfinished_work())
+            turn_module._emit_interrupted_state(self._context_with_unfinished_work())
         text = " ".join(e.get("text", "") for e in events)
         self.assertIn("ended early", text)
         self.assertIn("abc.py", text)
@@ -520,14 +520,14 @@ class InterruptedQueryStateTests(unittest.TestCase):
     def test_a_clean_context_says_nothing(self) -> None:
         events: list[dict] = []
         with event_sink(events.append):
-            agent_loop._emit_interrupted_state({})
+            turn_module._emit_interrupted_state({})
         self.assertEqual(events, [])
 
     def test_reporting_never_masks_the_failure_it_reports(self) -> None:
         """It runs with an exception in flight; it may not raise a second one."""
         events: list[dict] = []
         with event_sink(events.append):
-            agent_loop._emit_interrupted_state({"dirty_written_files": object()})  # type: ignore[dict-item]
+            turn_module._emit_interrupted_state({"dirty_written_files": object()})  # type: ignore[dict-item]
 
 
 class PlanModeToolCatalogTests(unittest.TestCase):

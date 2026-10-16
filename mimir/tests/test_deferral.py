@@ -19,6 +19,7 @@ from collections import OrderedDict
 import types
 import unittest
 
+from mimir.client.event_sink import event_sink as capture_events
 from mimir.tests._fake_pool import FakePool
 from unittest.mock import patch
 
@@ -36,6 +37,9 @@ from mimir.client.ui.ws.ws_session import _Session
 from mimir.client.ui.ws.ws_worker import _AgentWorker
 from mimir.tests._fake_backend import ScriptedBackend
 from mimir.tests.test_agent_loop import RunAgentQueryNonInteractiveTests, _tool_call
+import mimir.client.query_engine.loop_base as loop_base_module
+import mimir.client.query_engine.turn as turn_module
+from mimir.tests._loops import run_plan
 
 _PROMPT = {"type": "approval", "id": "card-1", "tool": "bash_run"}
 
@@ -102,11 +106,11 @@ class LoopDeferralTests(unittest.TestCase):
 
         m = agent_loop_module
         with patch.object(streaming_module, "get_backend", lambda: backend), \
-             patch.object(m, "_dispatch_tool_calls", dispatch), \
+             patch.object(loop_base_module, "_dispatch_tool_calls", dispatch), \
              patch.object(m, "tools_for_context", lambda **k: k["tools"]), \
-             patch.object(m, "emit", lambda ev: None), \
+             capture_events(lambda ev: None), \
              patch.object(m, "needs_incomplete_finalization", lambda ec: False):
-            result = asyncio.run(m.run_agent_query(agent=agent, query="q", **kwargs))
+            result = asyncio.run(turn_module.run_agent_query(agent=agent, query="q", **kwargs))
         return result, backend
 
     def test_a_deferred_call_ends_the_turn_and_resumes_on_its_answer(self) -> None:
@@ -166,9 +170,9 @@ class PlanDecisionDeferralTests(unittest.TestCase):
                     {"role": "assistant", "content": "Here is the plan."}]
         with patch.object(streaming_module, "get_backend", lambda: backend), \
              patch.object(plan_loop_module, "tools_for_plan_mode", lambda tools, caps, **kw: []), \
-             patch.object(plan_loop_module, "emit", lambda ev: None), \
-             patch.object(plan_loop_module, "_finalize_answer", _finalize):
-            result = asyncio.run(plan_loop_module._run_plan_mode(
+             capture_events(lambda ev: None), \
+             patch.object(loop_base_module, "_finalize_answer", _finalize):
+            result = asyncio.run(run_plan(
                 agent=agent, query="plan it", messages=messages,
                 execution_context=build_execution_context(),
                 max_steps=10, thinking=False, streaming=False, logger=None,

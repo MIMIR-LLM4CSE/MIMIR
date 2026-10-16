@@ -323,7 +323,7 @@ class ElicitationTransportTests(unittest.TestCase):
         import time
 
         from mimir.client.integration.server_manager import _make_elicitation_callback
-        from mimir.client.query_engine import dispatch
+        from mimir.client.query_engine.dispatch import execution as dispatch
 
         def _ask(questions, timeout_secs=None):
             time.sleep(0.15)   # the user reading the card, in the executor thread

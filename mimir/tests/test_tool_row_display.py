@@ -14,6 +14,8 @@ import asyncio
 import json
 import unittest
 
+import mimir.client.query_engine.dispatch.execution as dispatch_execution
+from mimir.client.event_sink import event_sink as capture_events
 from mimir.client.context.capabilities import ToolCaps, READ, SEARCH_WITH_PATH
 from mimir.client.tool_execution.tool_status_messages import (
     clip_doing,
@@ -576,8 +578,8 @@ class DispatchRowFieldsTests(unittest.TestCase):
 
         agent = _FakeAgent(registry if registry is not None else dict(_REG))
         events: list[dict] = []
-        with patch.object(d, "emit", events.append), \
-             patch.object(d, "run_post_tool_annotations", lambda *a, **k: None):
+        with capture_events(events.append), \
+             patch.object(dispatch_execution, "run_post_tool_annotations", lambda *a, **k: None):
             asyncio.run(d._dispatch_tool_calls(
                 tool_calls, agent, [] if messages is None else messages, {}))
         return agent, [e for e in events if e.get("type") == "tool_call"]

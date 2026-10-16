@@ -94,7 +94,7 @@ def _turn_start_index(agent: Any, messages: list[dict]) -> int | None:
     """Where this turn's own messages begin in ``_last_full_messages``, or None.
 
     Resolved by identity against the message the loop recorded as this turn's opening
-    (see ``_run_agent_loop``), because that is the only thing about the list that the
+    (see ``AgentLoop.run``), because that is the only thing about the list that the
     in-turn budget rewrites cannot invalidate: they evict, summarize and truncate
     messages, but the object a surviving entry *is* does not change.
 

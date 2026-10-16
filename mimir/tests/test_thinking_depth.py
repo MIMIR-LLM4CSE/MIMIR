@@ -23,6 +23,8 @@ from mimir.client.config import (
 )
 from mimir.client.agent_core import MimirAgent
 from mimir.client.prompt import system_prompt as sp
+import mimir.client.query_engine.loop_base as loop_base_module
+import mimir.client.query_engine.turn as turn_module
 
 
 class _Agent:
@@ -205,13 +207,13 @@ class LiveRungChangeTests(unittest.TestCase):
 
         m = agent_loop_module
         with patch.object(streaming_module, "get_backend", lambda: backend), \
-             patch.object(m, "_dispatch_tool_calls", _flip), \
-             patch.object(m, "_post_dispatch_inject", _noop_async), \
+             patch.object(loop_base_module, "_dispatch_tool_calls", _flip), \
+             patch.object(loop_base_module, "_post_dispatch_inject", _noop_async), \
              patch.object(history_module, "_trim_tool_history", lambda *a, **k: None), \
              patch.object(history_module, "_maybe_compact_intra_query", lambda *a, **k: None), \
              patch.object(m, "tools_for_context", lambda **k: []), \
              patch.object(m, "needs_incomplete_finalization", lambda ec: False):
-            asyncio.run(m.run_agent_query(agent=agent, query="do a thing", max_steps=5, thinking=True))
+            asyncio.run(turn_module.run_agent_query(agent=agent, query="do a thing", max_steps=5, thinking=True))
         return backend
 
     def test_turning_thinking_off_mid_query_reaches_the_next_call(self):
@@ -269,14 +271,14 @@ class StubFallbackTests(unittest.TestCase):
 
     def test_live_thinking_falls_back_without_the_attribute(self):
         bare = types.SimpleNamespace(model="m")
-        self.assertTrue(agent_loop_module._live_thinking(bare, True))
-        self.assertFalse(agent_loop_module._live_thinking(bare, False))
+        self.assertTrue(loop_base_module._live_thinking(bare, True))
+        self.assertFalse(loop_base_module._live_thinking(bare, False))
 
     def test_directive_sync_is_a_noop_without_a_depth(self):
         bare = types.SimpleNamespace(model="m")
         messages = [{"role": "system", "content": "S"}]
         auto, sys_content = asyncio.run(
-            agent_loop_module._sync_thinking_directive(
+            loop_base_module._sync_thinking_directive(
                 bare, messages, "agent", False, "S", {},
             )
         )
