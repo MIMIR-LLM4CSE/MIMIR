@@ -229,8 +229,8 @@ class RevertProtectsConcurrentWorkTests(unittest.TestCase):
             with open(path, "w") as fh:
                 fh.write("edited\n")
             approvals = self._manager()
-            approvals.note_reviewed(path, "edited\n")
-            self.assertIs(approvals.reviewed_matches(path), True)
+            approvals.batch.note_reviewed(path, "edited\n")
+            self.assertIs(approvals.batch.reviewed_matches(path), True)
 
     def test_a_file_changed_since_the_review_may_not(self) -> None:
         with tempfile.TemporaryDirectory() as d:
@@ -238,10 +238,10 @@ class RevertProtectsConcurrentWorkTests(unittest.TestCase):
             with open(path, "w") as fh:
                 fh.write("edited\n")
             approvals = self._manager()
-            approvals.note_reviewed(path, "edited\n")
+            approvals.batch.note_reviewed(path, "edited\n")
             with open(path, "w") as fh:          # another session, or the user's editor
                 fh.write("edited, then edited again by someone else\n")
-            self.assertIs(approvals.reviewed_matches(path), False)
+            self.assertIs(approvals.batch.reviewed_matches(path), False)
 
     def test_a_file_deleted_since_the_review_counts_as_moved(self) -> None:
         with tempfile.TemporaryDirectory() as d:
@@ -249,14 +249,14 @@ class RevertProtectsConcurrentWorkTests(unittest.TestCase):
             with open(path, "w") as fh:
                 fh.write("edited\n")
             approvals = self._manager()
-            approvals.note_reviewed(path, "edited\n")
+            approvals.batch.note_reviewed(path, "edited\n")
             os.remove(path)
-            self.assertIs(approvals.reviewed_matches(path), False)
+            self.assertIs(approvals.batch.reviewed_matches(path), False)
 
     def test_an_unrecorded_file_abstains_rather_than_blocking(self) -> None:
         """A guard that cannot tell must not stand in the way of the user's own undo."""
         approvals = self._manager()
-        self.assertIsNone(approvals.reviewed_matches("/nowhere/at/all.py"))
+        self.assertIsNone(approvals.batch.reviewed_matches("/nowhere/at/all.py"))
 
     def test_building_the_review_diff_is_what_records_the_digest(self) -> None:
         """The two ends of the seam, so neither can drift from the other."""

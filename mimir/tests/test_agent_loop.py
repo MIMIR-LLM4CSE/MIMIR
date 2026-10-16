@@ -1116,7 +1116,7 @@ class RunAgentQueryNonInteractiveTests(unittest.TestCase):
 
 
 
-            approvals = types.SimpleNamespace(flush_pending_review=lambda: None)
+            approvals = types.SimpleNamespace(batch=types.SimpleNamespace(pending=[], flush=lambda: True))
 
             def apply_carry_context(self, execution_context):
                 pass
@@ -1828,7 +1828,8 @@ class RepeatedFailingCallGuardTests(unittest.TestCase):
     """
 
     def _agent(self, run_tool):
-        approvals = types.SimpleNamespace(record_snapshot=lambda p: None, _file_snapshots={})
+        approvals = types.SimpleNamespace(batch=types.SimpleNamespace(
+            record_snapshot=lambda p: None, snapshots={}))
         return types.SimpleNamespace(
             is_write_tool=lambda n: False,
             tool_caps={"code_check_file": ToolCaps(name="code_check_file")},
@@ -1945,9 +1946,8 @@ class WriteDiffEmitTests(unittest.TestCase):
             except FileNotFoundError:
                 snapshots[path] = None
 
-        approvals = types.SimpleNamespace(
-            record_snapshot=record_snapshot, _file_snapshots=snapshots
-        )
+        approvals = types.SimpleNamespace(batch=types.SimpleNamespace(
+            record_snapshot=record_snapshot, snapshots=snapshots))
         return types.SimpleNamespace(
             is_write_tool=lambda n: n == "replace_in_file",
             tool_caps={"replace_in_file": ToolCaps(name="replace_in_file")},
@@ -2147,7 +2147,8 @@ class IdenticalSuccessRepeatTests(unittest.TestCase):
 
         agent = types.SimpleNamespace(
             tool_caps={},
-            approvals=types.SimpleNamespace(record_snapshot=lambda p: None),
+            approvals=types.SimpleNamespace(batch=types.SimpleNamespace(
+            record_snapshot=lambda p: None, snapshots={})),
             get_tool_file_targets=lambda name, args: [],
             is_write_tool=lambda name: False,
             rewrite_tool_for_context=lambda name, args: (name, args),
@@ -2209,13 +2210,13 @@ class BatchReviewTests(unittest.TestCase):
     """Both ways out of the loop review a batch the same way."""
 
     def test_an_agent_without_approvals_ends_its_turn(self) -> None:
-        # Running out of steps called flush_pending_review() unguarded and raised.
+        # Running out of steps flushed the batch review unguarded, and raised.
         agent = types.SimpleNamespace(approvals=None)
         self.assertEqual(agent_loop_module._review_batch(agent, "done", []), "done")
 
     def test_a_pending_batch_is_reviewed_and_its_outcome_told(self) -> None:
-        approvals = types.SimpleNamespace(_pending_review=[{"tool": "write_file"}],
-                                          flush_pending_review=lambda: False)
+        approvals = types.SimpleNamespace(batch=types.SimpleNamespace(
+            pending=[{"tool": "write_file"}], flush=lambda: False))
         messages: list[dict] = []
         answer = agent_loop_module._review_batch(
             types.SimpleNamespace(approvals=approvals), "done", messages)

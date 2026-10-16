@@ -147,7 +147,7 @@ class _LoopAgent:
     tool_caps: dict = {}
     thinking_budget = -1
     _cancel_flag = None
-    approvals = types.SimpleNamespace(flush_pending_review=lambda: None)
+    approvals = types.SimpleNamespace(batch=types.SimpleNamespace(pending=[], flush=lambda: True))
 
     def __init__(self):
         self.thinking_depth = DEFAULT_THINKING_DEPTH

@@ -233,7 +233,7 @@ def _out_of_workspace_targets(agent: AgentPort, tool_name: str, arguments: dict)
             continue
         if is_read and any(_is_under(t, full) for t in trusted):
             continue
-        if agent.approvals.is_path_approved(full):
+        if agent.approvals.paths.covers(full):
             continue
         if full not in out:
             out.append(full)
@@ -281,7 +281,7 @@ def _check_out_of_workspace_access(
     # accepted call, so this suppresses the question, not the sandbox.
     if agent.approvals.auto_paths():
         for abspath in targets:
-            agent.approvals.grant_path(abspath, always=False)
+            agent.approvals.paths.grant(abspath, always=False)
         return None
     if agent.approvals.unattended:
         return mode_denied_payload(agent, tool_name, arguments, "auto_all")
@@ -297,7 +297,7 @@ def _check_out_of_workspace_access(
             tool=tool_name,
         )
     for abspath in targets:
-        agent.approvals.grant_path(abspath, always=always)
+        agent.approvals.paths.grant(abspath, always=always)
     return None
 
 

@@ -488,7 +488,7 @@ async def execute_tool_call(
         path = agent.normalize_workspace_path(
             target_path_arg(tool_name, arguments, agent.tool_caps))
         if path:
-            agent.approvals.record_snapshot(path)
+            agent.approvals.batch.record_snapshot(path)
 
     if tool_name not in agent.tool_owner:
         available = sorted(agent.tool_owner.keys())

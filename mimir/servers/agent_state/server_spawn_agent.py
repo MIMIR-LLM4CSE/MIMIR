@@ -2075,7 +2075,7 @@ async def _drive_sub_agent(
         _install_user_channel(agent, ask_session, ask_loop, task)
     # The child writes the shared path allowlist too; starting from what is already
     # there keeps its writes from erasing the caller's grants.
-    agent.approvals._allowed_paths.update(approved_roots())
+    agent.approvals.paths.allowed.update(approved_roots())
 
     _servers = all_servers()
     if requested:

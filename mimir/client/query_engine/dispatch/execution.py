@@ -155,7 +155,7 @@ async def run_call(agent: AgentPort, call: Call, execution_context: ExecutionCon
         targets = agent.get_tool_file_targets(name, args)
         before_by_path: dict[str, str | None] = {}
         for path in targets:
-            agent.approvals.record_snapshot(path)
+            agent.approvals.batch.record_snapshot(path)
             try:
                 with open(path, "r", encoding="utf-8", errors="replace") as fh:
                     before_by_path[path] = fh.read()

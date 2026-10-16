@@ -784,8 +784,8 @@ class TheDispatchAdoptsHandedOverRunsTests(unittest.TestCase):
                            run_auto_validation=True, call_id=""):
             return result_text
 
-        approvals = types.SimpleNamespace(record_snapshot=lambda p: None,
-                                          _file_snapshots={})
+        approvals = types.SimpleNamespace(batch=types.SimpleNamespace(
+            record_snapshot=lambda p: None, snapshots={}))
         return types.SimpleNamespace(
             _normalize_arguments=lambda a: (json.loads(a) if isinstance(a, str)
                                             else dict(a)),

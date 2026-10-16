@@ -268,6 +268,23 @@ class ReseedClassificationTests(unittest.TestCase):
         self.assertIn("bash_run", manager.non_batch_tools)
         self.assertNotIn("read_file_lines", manager.non_batch_tools)
 
+    def test_resetting_the_path_grants_keeps_the_scopes_alias(self):
+        # reset_allowed_paths rebuilt approved_scopes to drop its path tokens, which
+        # left agent.session_approved_scopes pointing at the old set.
+        import tempfile
+        from unittest import mock
+        from mimir.client.config import paths
+
+        manager = approval_module.ApprovalManager(set())
+        scopes_alias = manager.approved_scopes
+        with tempfile.TemporaryDirectory() as state, \
+                mock.patch.object(paths, "STATE_DIR", state):
+            manager.paths.grant("/opt/data", always=True)
+            self.assertTrue(manager.paths.covers("/opt/data/x.csv"))
+            manager.paths.reset()
+        self.assertIs(manager.approved_scopes, scopes_alias)
+        self.assertFalse(manager.paths.covers("/opt/data/x.csv"))
+
 
 class SettledRefusalTests(unittest.TestCase):
     """A refusal the user has already repeated is not put back to them.

@@ -684,7 +684,7 @@ class _AgentWorker:
         agent = self._agent
         if agent is None:
             return []
-        snapshots = agent.approvals._file_snapshots
+        snapshots = agent.approvals.batch.snapshots
         files: list[dict] = []
         for path, original in list(snapshots.items()):
             try:
@@ -695,7 +695,7 @@ class _AgentWorker:
             # What the user is about to be shown, recorded so a later revert can tell
             # whether the file still holds it. Anything else on disk by then was written
             # by something outside this review — another session, or the user's editor.
-            agent.approvals.note_reviewed(path, current)
+            agent.approvals.batch.note_reviewed(path, current)
             before_lines = original.splitlines(keepends=True) if original is not None else []
             after_lines  = current.splitlines(keepends=True)
             if before_lines == after_lines:

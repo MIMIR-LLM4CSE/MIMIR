@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import difflib
 import json
 import os
 import re
@@ -18,9 +17,8 @@ from ...context.capabilities import (
     risk_note_of,
     scope_spec,
 )
-from ...util.files import write_json_atomic
-from ...config import paths
-from ....servers._shared.state_paths import session_state_dir
+from .batch_review import BatchReview
+from .path_grants import PathGrants
 
 
 def _packages_scope_token(packages) -> str:
@@ -198,10 +196,11 @@ class ApprovalManager:
         tool_caps: dict[str, ToolCaps] | None = None,
         session_id: str | None = None,
     ):
-        # Which conversation's allowlist this manager owns. Consent is given inside a
-        # conversation, and several run at once in this process, so the sidecar is one
-        # file per session — see _flush_allowed_paths. None for the session-less ends.
-        self.session_id: str | None = session_id
+        # Out-of-workspace paths the user let this conversation reach (see PathGrants:
+        # per session, mirrored to the sidecar the servers read).
+        self.paths = PathGrants(session_id)
+        # Writes held for one review at the end of the turn (see BatchReview).
+        self.batch = BatchReview()
         # Classification (sensitive / non-batch / fallback) plus scope-narrowing and
         # risk notes are seeded from the per-agent live registry after servers
         # connect, via MimirAgent.seed_classification_from_caps(). Constructed empty
@@ -220,12 +219,6 @@ class ApprovalManager:
         #   "bash:bash_run"              -> trust bash_run from server 'bash'
         #   "bash:bash_run:git status"   -> trust only this narrower scope
         self.approved_scopes: set[str] = set()
-
-        # Out-of-workspace access approved this session. ``_allowed_paths`` is the
-        # full set (allow-once + always) mirrored to the sidecar file the servers
-        # read per call; the ``path:<abspath>`` tokens in ``approved_scopes`` mark
-        # the "always" grants that skip re-prompting. Reset on session change.
-        self._allowed_paths: set[str] = set()
 
         # How much of the approval flow the user still answers by hand. Session
         # state, never persisted: a mode that suppresses every prompt must be
@@ -246,16 +239,17 @@ class ApprovalManager:
         self.unattended: bool = False
         self.mode_blocked: list[dict] = []
 
-        # Batch-approval state
+        # Whether writes are held for one review at the end of the turn.
         self.batch_mode: bool = True
-        self._pending_review: list[dict] = []
-        # path → original content (None means file did not exist before the batch)
-        self._file_snapshots: dict[str, str | None] = {}
-        # Digest of each reviewed file as it stood when its diff was last shown to the
-        # user — see note_reviewed. A revert may undo what was reviewed and nothing else:
-        # anything the file gained since comes from somewhere this agent cannot see, which
-        # under concurrent sessions is usually another conversation.
-        self._reviewed_digests: dict[str, str] = {}
+
+    @property
+    def session_id(self) -> str | None:
+        """Which conversation's grants this manager holds."""
+        return self.paths.session_id
+
+    @session_id.setter
+    def session_id(self, value: str | None) -> None:
+        self.paths.session_id = value
 
     # ------------------------------------------------------------------
     # Basic metadata helpers
@@ -462,79 +456,6 @@ class ApprovalManager:
 
         return False
 
-    # ------------------------------------------------------------------
-    # Out-of-workspace path approvals (session-scoped)
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _path_scope_token(abspath: str) -> str:
-        """Scope token pinning an 'always' grant to one exact absolute path."""
-        return f"path:{os.path.realpath(os.path.abspath(abspath))}"
-
-    def is_path_approved(self, abspath: str) -> bool:
-        """True if an 'always' grant this session covers *abspath*.
-
-        Containment, not equality: the sidecar the servers read admits a granted
-        path as a *root* (``resolve_path_in_root``'s ``extra_roots``), so once a
-        directory is approved the server already allows everything under it and a
-        prompt for a child could no longer deny anything.
-        """
-        real = os.path.realpath(os.path.abspath(abspath))
-        for scope in self.approved_scopes:
-            if not scope.startswith("path:"):
-                continue
-            granted = scope[len("path:"):]
-            if real == granted or real.startswith(granted + os.sep):
-                return True
-        return False
-
-    def grant_path(self, abspath: str, *, always: bool) -> None:
-        """Record an approved out-of-workspace path and mirror it to the sidecar.
-
-        Both allow-once and always add the path to the sidecar so the server honors
-        this access; only ``always`` also records the scope token that skips future
-        prompts for the same path this session.
-        """
-        real = os.path.realpath(os.path.abspath(abspath))
-        self._allowed_paths.add(real)
-        if always:
-            self.approved_scopes.add(self._path_scope_token(real))
-        self._flush_allowed_paths()
-
-    def reset_allowed_paths(self) -> None:
-        """Clear this session's path grants and truncate its own sidecar.
-
-        Only ever its own: the file is per session, so a conversation starting fresh cannot
-        revoke what another one was granted and is still writing under.
-        """
-        self._allowed_paths.clear()
-        self.approved_scopes = {s for s in self.approved_scopes if not s.startswith("path:")}
-        self._flush_allowed_paths()
-
-    def approved_paths_file(self) -> str:
-        """This session's allowlist sidecar — the path the servers read per call.
-
-        ``<STATE_DIR>/sessions/<sid>/approved_paths.json`` — from ``self.session_id``, not
-        from the active-session pointer: the pointer names the conversation on screen, and
-        the grant belongs to the conversation that was asked for it.
-
-        A ``session_id`` of None means this agent has no session of its own, and the path
-        resolves the way the single-session ends resolve it — through the pointer, falling
-        back to the state-dir root when nothing wrote one (the CLI, the benchmark runner,
-        tests). Passing None through rather than coercing it to "" is what keeps the writer
-        and the servers' reader naming the same file.
-        """
-        return os.path.join(
-            session_state_dir(paths.STATE_DIR, self.session_id), "approved_paths.json"
-        )
-
-    def _flush_allowed_paths(self) -> None:
-        """Write the current allowed-paths set to the sidecar the servers read."""
-        try:
-            write_json_atomic(self.approved_paths_file(), sorted(self._allowed_paths))
-        except OSError:
-            pass  # best-effort; a failed write simply keeps the server strict
-
     def _approval_scope_label(self, tool_name: str, server_name: str, arguments: dict) -> str:
         """Human-readable description of what 'always' will approve.
 
@@ -547,191 +468,6 @@ class ApprovalManager:
         if not phrase:
             return "this tool"
         return f"{phrase} ({token})" if token else phrase
-
-    # ------------------------------------------------------------------
-    # Batch-approval helpers
-    # ------------------------------------------------------------------
-
-    @property
-    def has_pending_review(self) -> bool:
-        return bool(self._pending_review)
-
-    def record_snapshot(self, path: str) -> None:
-        """Capture the current content of *path* before a write modifies it.
-
-        Only the first snapshot per path is kept so subsequent edits within
-        the same batch don't overwrite the original baseline.
-        """
-        if path in self._file_snapshots:
-            return
-        try:
-            with open(path, "r", encoding="utf-8", errors="replace") as fh:
-                self._file_snapshots[path] = fh.read()
-        except FileNotFoundError:
-            self._file_snapshots[path] = None  # file will be created by this batch
-        except OSError:
-            pass  # can't snapshot; skip gracefully
-
-    @staticmethod
-    def _digest(text: str) -> str:
-        import hashlib
-        return hashlib.sha1(text.encode("utf-8", "replace")).hexdigest()
-
-    def note_reviewed(self, path: str, content: str) -> None:
-        """Record *content* as the state of *path* the user was just shown.
-
-        Called while the review diff is built, the one moment at which what is on disk and
-        what the user is looking at are known to be the same thing.
-        """
-        self._reviewed_digests[path] = self._digest(content)
-
-    def reviewed_matches(self, path: str) -> bool | None:
-        """Whether *path* on disk is still what was reviewed. None = cannot tell.
-
-        None when nothing was recorded, or the file cannot be read: the caller then
-        proceeds, like every other best-effort check in this module — a guard that cannot
-        read must not block the user's own undo.
-        """
-        expected = self._reviewed_digests.get(path)
-        if expected is None:
-            return None
-        try:
-            with open(path, "r", encoding="utf-8", errors="replace") as fh:
-                return self._digest(fh.read()) == expected
-        except FileNotFoundError:
-            # Gone since the review: restoring recreates it from a baseline nobody asked
-            # for, so this counts as moved.
-            return False
-        except OSError:
-            return None
-
-    def forget_reviewed(self, path: str | None = None) -> None:
-        """Drop the reviewed digest for *path*, or all of them."""
-        if path is None:
-            self._reviewed_digests.clear()
-        else:
-            self._reviewed_digests.pop(path, None)
-
-    def flush_pending_review(
-        self,
-        output_fn: Callable[[str], None] | None = None,
-        input_fn: Callable[[str], str] | None = None,
-    ) -> bool:
-        """Show a combined diff of all batch edits and ask for a single approval.
-
-        Returns True if the user accepted, False if they rejected (in which case
-        all snapshotted files are restored to their pre-batch state).
-        """
-        output_fn = output_fn or print
-        input_fn = input_fn or input
-
-        if not self._pending_review:
-            return True
-
-        output_fn(
-            f"\n📝 Batch review — {len(self._pending_review)} write operation(s) performed:"
-        )
-
-        # Per-operation summary
-        for i, edit in enumerate(self._pending_review, 1):
-            args_display = {
-                k: v
-                for k, v in edit["arguments"].items()
-                if k not in ("new_text", "content")
-            }
-            new_val = edit["arguments"].get("new_text") or edit["arguments"].get("content", "")
-            if new_val:
-                preview = new_val[:120].replace("\n", "↵")
-                args_display["new_text"] = preview + ("…" if len(new_val) > 120 else "")
-            output_fn(
-                f"\n  [{i}] {edit['tool_name']}  (server: {edit['server_name']})\n"
-                + json.dumps(args_display, indent=4, ensure_ascii=False, default=str)
-            )
-
-        # Unified diffs for every snapshotted/modified file
-        for path, original in self._file_snapshots.items():
-            try:
-                with open(path, "r", encoding="utf-8", errors="replace") as fh:
-                    current = fh.read()
-            except OSError:
-                current = ""
-
-            before_lines = original.splitlines(keepends=True) if original is not None else []
-            after_lines = current.splitlines(keepends=True)
-
-            if before_lines == after_lines:
-                continue
-
-            rel = os.path.relpath(path)
-            diff = "".join(
-                difflib.unified_diff(
-                    before_lines,
-                    after_lines,
-                    fromfile=f"a/{rel}",
-                    tofile=f"b/{rel}",
-                    n=3,
-                )
-            )
-            output_fn(f"\n{diff}" if diff else f"\n(binary change: {rel})")
-
-        # Single approval prompt
-        choice = input_fn(
-            "\nApply all changes? [y]es / [n]o (undo all): "
-        ).strip().lower()
-        approved = choice in {"y", "yes"}
-
-        if not approved:
-            for path, original in self._file_snapshots.items():
-                try:
-                    if original is None:
-                        os.remove(path)
-                    else:
-                        with open(path, "w", encoding="utf-8") as fh:
-                            fh.write(original)
-                except OSError as exc:
-                    output_fn(f"  ⚠️  Could not restore {path}: {exc}")
-            output_fn("  ↩  Changes reverted.")
-        else:
-            output_fn("  ✔  Changes applied.")
-
-        self._pending_review.clear()
-        self._file_snapshots.clear()
-        return approved
-
-    def revert_last(self, output_fn: Callable[[str], None] | None = None) -> list[str]:
-        """Restore all files that were snapshotted in the current batch.
-
-        Returns a list of paths that were reverted. If a snapshot has
-        ``None`` as the original (the file was newly created by the agent),
-        the file is deleted.
-
-        This is called by the ``/undo`` slash command.
-        """
-        output_fn = output_fn or print
-
-        if not self._file_snapshots:
-            output_fn("Nothing to undo — no file snapshots are available for this session.")
-            return []
-
-        reverted: list[str] = []
-        for path, original in self._file_snapshots.items():
-            try:
-                if original is None:
-                    if os.path.exists(path):
-                        os.remove(path)
-                        output_fn(f"  ↩  Deleted (newly created): {path}")
-                    reverted.append(path)
-                else:
-                    with open(path, "w", encoding="utf-8") as fh:
-                        fh.write(original)
-                    output_fn(f"  ↩  Restored: {path}")
-                    reverted.append(path)
-            except OSError as exc:
-                output_fn(f"  ⚠️  Could not restore {path}: {exc}")
-
-        self._pending_review.clear()
-        self._file_snapshots.clear()
-        return reverted
 
     def render_prompt(
         self,
@@ -772,8 +508,8 @@ class ApprovalManager:
         # Critical safety rule:
         # if there are pending batched file edits and we are about to run a
         # non-batch tool (execution, network, DB write, etc.), force review now.
-        if tool_name in self.non_batch_tools and self.has_pending_review:
-            approved_batch = self.flush_pending_review(
+        if tool_name in self.non_batch_tools and self.batch.has_pending:
+            approved_batch = self.batch.flush(
                 output_fn=output_func,
                 input_fn=input_func,
             )
@@ -787,9 +523,7 @@ class ApprovalManager:
         # In batch mode: auto-approve and queue for end-of-turn review,
         # EXCEPT for tools in non_batch_tools (e.g. code execution).
         if self.batch_mode and tool_name not in self.non_batch_tools:
-            self._pending_review.append(
-                {"tool_name": tool_name, "server_name": server_name, "arguments": arguments}
-            )
+            self.batch.queue(tool_name, server_name, arguments)
             return True, "queued for batch review"
 
         for attempt in range(max_attempts):

@@ -139,33 +139,33 @@ class ApprovedPathsAreNotSharedTests(_StateDirCase):
     def test_each_session_writes_its_own_file(self):
         with self._patched_state_dir():
             a, b = self._manager("aaa"), self._manager("bbb")
-            self.assertNotEqual(a.approved_paths_file(), b.approved_paths_file())
-            self.assertIn(os.path.join("sessions", "aaa"), a.approved_paths_file())
+            self.assertNotEqual(a.paths.sidecar_file(), b.paths.sidecar_file())
+            self.assertIn(os.path.join("sessions", "aaa"), a.paths.sidecar_file())
 
     def test_a_grant_in_one_session_is_invisible_to_the_other(self):
         with self._patched_state_dir():
             a, b = self._manager("aaa"), self._manager("bbb")
-            a.grant_path("/data/elsewhere", always=False)
+            a.paths.grant("/data/elsewhere", always=False)
             self.assertEqual(self._read(a), [os.path.realpath("/data/elsewhere")])
             self.assertEqual(self._read(b), [])
 
     def test_resetting_one_session_leaves_the_others_grants_standing(self):
         with self._patched_state_dir():
             a, b = self._manager("aaa"), self._manager("bbb")
-            a.grant_path("/data/a-needs-this", always=True)
-            b.reset_allowed_paths()
+            a.paths.grant("/data/a-needs-this", always=True)
+            b.paths.reset()
             self.assertEqual(self._read(a), [os.path.realpath("/data/a-needs-this")])
 
     def test_a_session_less_agent_keeps_the_root_file(self):
         with self._patched_state_dir():
             cli = self._manager(None)
             self.assertEqual(
-                cli.approved_paths_file(), os.path.join(self.state, "approved_paths.json")
+                cli.paths.sidecar_file(), os.path.join(self.state, "approved_paths.json")
             )
 
     def _read(self, manager):
         try:
-            with open(manager.approved_paths_file()) as fh:
+            with open(manager.paths.sidecar_file()) as fh:
                 return json.load(fh)
         except OSError:
             return []

@@ -50,8 +50,8 @@ class GrantPathTests(_TmpStateDir):
 
     def test_allow_once_writes_sidecar_but_not_scope(self) -> None:
         m = self._mgr()
-        m.grant_path("/tmp/data/run.log", always=False)
-        self.assertFalse(m.is_path_approved("/tmp/data/run.log"))   # re-prompts next time
+        m.paths.grant("/tmp/data/run.log", always=False)
+        self.assertFalse(m.paths.covers("/tmp/data/run.log"))   # re-prompts next time
         self.assertTrue(os.path.isfile(self._sidecar()))
         import json
         self.assertIn(os.path.realpath("/tmp/data/run.log"),
@@ -59,8 +59,8 @@ class GrantPathTests(_TmpStateDir):
 
     def test_always_records_scope_and_sidecar(self) -> None:
         m = self._mgr()
-        m.grant_path("/tmp/data/run.log", always=True)
-        self.assertTrue(m.is_path_approved("/tmp/data/run.log"))    # no re-prompt
+        m.paths.grant("/tmp/data/run.log", always=True)
+        self.assertTrue(m.paths.covers("/tmp/data/run.log"))    # no re-prompt
         import json
         self.assertIn(os.path.realpath("/tmp/data/run.log"),
                       json.load(open(self._sidecar())))
@@ -69,15 +69,15 @@ class GrantPathTests(_TmpStateDir):
         # The sidecar hands the server a *root*, so a child of a granted directory
         # is already allowed there — re-prompting for it could deny nothing.
         m = self._mgr()
-        m.grant_path("/tmp/data", always=True)
-        self.assertTrue(m.is_path_approved("/tmp/data/sub/run.log"))
-        self.assertFalse(m.is_path_approved("/tmp/data-other/run.log"))
+        m.paths.grant("/tmp/data", always=True)
+        self.assertTrue(m.paths.covers("/tmp/data/sub/run.log"))
+        self.assertFalse(m.paths.covers("/tmp/data-other/run.log"))
 
     def test_reset_clears_paths_and_sidecar(self) -> None:
         m = self._mgr()
-        m.grant_path("/tmp/data/run.log", always=True)
-        m.reset_allowed_paths()
-        self.assertFalse(m.is_path_approved("/tmp/data/run.log"))
+        m.paths.grant("/tmp/data/run.log", always=True)
+        m.paths.reset()
+        self.assertFalse(m.paths.covers("/tmp/data/run.log"))
         import json
         self.assertEqual(json.load(open(self._sidecar())), [])
 
@@ -90,7 +90,7 @@ class GrantPathTests(_TmpStateDir):
         import approved_roots as ar
         importlib.reload(ar)  # ensure it resolves state_dir() fresh
         m = self._mgr()
-        m.grant_path("/tmp/data/run.log", always=True)
+        m.paths.grant("/tmp/data/run.log", always=True)
         self.assertIn(os.path.realpath("/tmp/data/run.log"), ar.approved_roots())
 
 
@@ -563,7 +563,7 @@ One per path would put three cards in front of the user for
             agent, "run_shell", {"command": self.COMMAND}, {})
         # allow-once records the sidecar grant the servers read (not an "always" scope)
         for path in self._expected():
-            self.assertIn(path, agent.approvals._allowed_paths)
+            self.assertIn(path, agent.approvals.paths.allowed)
 
     def test_one_deny_blocks_and_grants_nothing(self) -> None:
         agent = self._agent(script=(False, False))
@@ -574,7 +574,7 @@ One per path would put three cards in front of the user for
         # The refusal names the paths it refused, not just the first one it saw.
         for path in self._expected():
             self.assertIn(path, out)
-            self.assertNotIn(path, agent.approvals._allowed_paths)
+            self.assertNotIn(path, agent.approvals.paths.allowed)
 
 
 class ApprovalModeTests(_TmpStateDir):
@@ -617,7 +617,7 @@ class ApprovalModeTests(_TmpStateDir):
         self.assertEqual(agent.prompt_calls, 0)
         self.assertEqual(agent.tool_approvals, [])
         self.assertIn(os.path.realpath("/tmp/outside/autoall"),
-                      agent.approvals._allowed_paths)
+                      agent.approvals.paths.allowed)
 
     def test_auto_all_grants_a_path_beside_a_quoted_metacharacter(self) -> None:
         # The grant is reached through the target list, so a command whose paths went
@@ -628,7 +628,7 @@ class ApprovalModeTests(_TmpStateDir):
         self.assertIsNone(out.violation)
         self.assertEqual(agent.prompt_calls, 0)
         self.assertIn(os.path.realpath("/tmp/outside/autoallq"),
-                      agent.approvals._allowed_paths)
+                      agent.approvals.paths.allowed)
 
     def test_the_mode_is_read_afresh_at_every_call(self) -> None:
         # The switch has to work in the middle of a run: the engine reads the manager
@@ -696,7 +696,7 @@ class UnattendedModeTests(_TmpStateDir):
         self.assertEqual(agent.prompt_calls, 0)
         self.assertEqual(json.loads(out.violation)["needs_mode"], "auto_all")
         self.assertNotIn(os.path.realpath("/tmp/outside/unattended"),
-                         agent.approvals._allowed_paths)
+                         agent.approvals.paths.allowed)
 
     def test_the_mode_it_inherited_still_lets_through_what_it_covers(self) -> None:
         agent = self._agent("auto")

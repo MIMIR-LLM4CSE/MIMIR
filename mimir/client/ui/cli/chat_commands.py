@@ -342,7 +342,7 @@ async def handle_chat_command(
         if approval_manager is None:
             return True, "\n❌ Undo is not available (no approval manager attached).\n"
         messages: list[str] = []
-        reverted = approval_manager.revert_last(output_fn=messages.append)
+        reverted = approval_manager.batch.revert(output_fn=messages.append)
         if reverted:
             summary = "\n".join(messages)
             return True, f"\n{summary}\n\n↩  Reverted {len(reverted)} file(s).\n"

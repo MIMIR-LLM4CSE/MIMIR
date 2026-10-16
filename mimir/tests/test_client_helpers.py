@@ -798,7 +798,7 @@ class ClientHelperTests(unittest.TestCase):
 
 
 
-            approvals = types.SimpleNamespace(flush_pending_review=lambda: None)
+            approvals = types.SimpleNamespace(batch=types.SimpleNamespace(pending=[], flush=lambda: True))
 
             def apply_carry_context(self, execution_context):
                 captured_context.update(vars(execution_context))
@@ -869,7 +869,7 @@ class ClientHelperTests(unittest.TestCase):
             tool_caps={},
             thinking_budget=-1,
             update_carry_context=lambda ec: None,
-            approvals=types.SimpleNamespace(flush_pending_review=lambda: None),
+            approvals=types.SimpleNamespace(batch=types.SimpleNamespace(pending=[], flush=lambda: True)),
         )
 
         m = agent_loop_module
@@ -1341,9 +1341,8 @@ class ClientHelperTests(unittest.TestCase):
             except OSError:
                 snapshots[path] = None
 
-        agent.approvals = types.SimpleNamespace(
-            record_snapshot=_record, _file_snapshots=snapshots,
-        )
+        agent.approvals = types.SimpleNamespace(batch=types.SimpleNamespace(
+            record_snapshot=_record, snapshots=snapshots))
 
         events: list = []
         cwd = os.getcwd()
@@ -1445,12 +1444,10 @@ class ClientHelperTests(unittest.TestCase):
                 return "{}"
 
         agent = _DispatchAgent()
-        # approvals is accessed as agent.approvals.record_snapshot(path) and
-        # agent.approvals._file_snapshots — provide both on a namespace.
-        agent.approvals = types.SimpleNamespace(
-            record_snapshot=lambda path: None,
-            _file_snapshots={},
-        )
+        # The dispatcher reads agent.approvals.batch.record_snapshot(path) and
+        # agent.approvals.batch.snapshots.
+        agent.approvals = types.SimpleNamespace(batch=types.SimpleNamespace(
+            record_snapshot=lambda path: None, snapshots={}))
 
         tool_calls = [
             {"id": "c1", "function": {"name": "grep", "arguments": {"q": "a"}}},
@@ -1509,8 +1506,8 @@ class ClientHelperTests(unittest.TestCase):
 
         class _SlowApprovalAgent:
             tool_caps = {}
-            approvals = types.SimpleNamespace(
-                record_snapshot=lambda path: None, _file_snapshots={})
+            approvals = types.SimpleNamespace(batch=types.SimpleNamespace(
+            record_snapshot=lambda path: None, snapshots={}))
 
 
             @staticmethod
