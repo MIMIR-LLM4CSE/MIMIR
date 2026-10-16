@@ -32,7 +32,6 @@ from .messages import (
     validation_nudge_message,
 )
 from ...context.execution_context import (
-    backfill_execution_context,
     declared_edit_set_complete,
     failed_runs,
     idle_steps,
@@ -66,21 +65,9 @@ from ...config.limits import (
     TODO_NUDGE_OP_THRESHOLD,
 )
 from .plugins import NudgeRegistry
+from ...context.execution_context import ExecutionContext
 
 logger = logging.getLogger(__name__)
-
-
-def _bootstrap_nudge_context(execution_context: dict[str, Any]) -> dict[str, Any]:
-    """Ensure every declared field exists before the nudge table reads it.
-
-    Was a hand-picked list of sixteen ``setdefault`` calls. Besides duplicating three
-    similar lists elsewhere, it defaulted ``steps_since_last_edit`` to **99** where the
-    schema and every other seeder use 0 — so on a context missing that field the idle
-    gates here saw "maximally idle" while ``messages.py`` saw "just edited", and the
-    disagreement was absorbed silently by the empty-nudge check. Seeding from the
-    schema removes the second opinion.
-    """
-    return backfill_execution_context(execution_context)
 
 
 # Prefix marking every workflow nudge as machine-generated rather than user speech.
@@ -96,7 +83,7 @@ def inject_reminder(
     *,
     category: str,
     tagged: bool = True,
-    execution_context: dict[str, Any] | None = None,
+    execution_context: ExecutionContext | None = None,
     step: int | None = None,
 ) -> dict[str, Any]:
     """Append a machine-generated reminder as a user turn and announce the injection.
@@ -133,13 +120,13 @@ def inject_reminder(
     }
     messages.append(msg)
     if execution_context is not None:
-        execution_context.setdefault("_transient_reminders", []).append((category, msg))
+        execution_context.transient_reminders.append((category, msg))
     return msg
 
 
 def drop_transient_reminders(
     messages: list[dict[str, Any]],
-    execution_context: dict[str, Any] | None,
+    execution_context: ExecutionContext | None,
 ) -> int:
     """Take back the reminders injected for the call that has just been made.
 
@@ -157,15 +144,15 @@ def drop_transient_reminders(
     """
     if execution_context is None:
         return 0
-    pending = execution_context.get("_transient_reminders")
+    pending = execution_context.transient_reminders
     if not pending:
-        execution_context["_last_call_reminders"] = []
+        execution_context.last_call_reminders = []
         return 0
     doomed = {id(m) for _cat, m in pending}
     before = len(messages)
     messages[:] = [m for m in messages if id(m) not in doomed]
-    execution_context["_last_call_reminders"] = [cat for cat, _m in pending]
-    execution_context["_transient_reminders"] = []
+    execution_context.last_call_reminders = [cat for cat, _m in pending]
+    execution_context.transient_reminders = []
     return before - len(messages)
 
 
@@ -216,7 +203,7 @@ def _guidance_enabled(category: str, *, enforcement: str, active_mode: str) -> b
 
 
 def _fire_nudge(
-    execution_context: dict[str, Any],
+    execution_context: ExecutionContext,
     messages: list[dict[str, Any]],
     category: str,
     content: str,
@@ -230,7 +217,7 @@ def _fire_nudge(
     counter charged when several categories ration one shared budget; the event still
     carries the category, which is what a reader wants to see.
     """
-    counts = execution_context["nudge_counts"]
+    counts = execution_context.nudge_counts
     key = budget_key or category
     counts[key] = counts.get(key, 0) + 1
     logger.debug("nudge fired: category=%s budget=%s count=%d", category, key, counts[key])
@@ -239,7 +226,7 @@ def _fire_nudge(
     return True
 
 
-def _all_pending_budget_exhausted(execution_context: dict[str, Any]) -> bool:
+def _all_pending_budget_exhausted(execution_context: ExecutionContext) -> bool:
     """Return True when every dirty file is either validated or budget-exhausted.
 
     In that case the model auto-escaped to conclude and cannot make further
@@ -249,12 +236,12 @@ def _all_pending_budget_exhausted(execution_context: dict[str, Any]) -> bool:
     excluded from ``pending_validation_paths``, so leaving it out of this test made
     one unverifiable file among several validated ones look like outstanding work.
     """
-    dirty = execution_context.get("dirty_written_files", set())
+    dirty = execution_context.dirty_written_files
     if not dirty:
         return False
-    validated = execution_context.get("validated_files", set())
-    unverifiable = execution_context.get("unverifiable_files", set()) or set()
-    fail_counts = execution_context.get("validation_fail_count_by_file", {})
+    validated = execution_context.validated_files
+    unverifiable = execution_context.unverifiable_files or set()
+    fail_counts = execution_context.validation_fail_count_by_file
     return all(
         f in validated or f in unverifiable
         or int(fail_counts.get(f, 0)) >= VALIDATION_RETRY_BUDGET
@@ -262,7 +249,7 @@ def _all_pending_budget_exhausted(execution_context: dict[str, Any]) -> bool:
     )
 
 
-def _has_declared_write_target(execution_context: dict[str, Any]) -> bool:
+def _has_declared_write_target(execution_context: ExecutionContext) -> bool:
     """True once the model has committed, in its own words, to writing something.
 
     The evidence gate for the two nudges that would otherwise push the model toward a
@@ -275,15 +262,15 @@ def _has_declared_write_target(execution_context: dict[str, Any]) -> bool:
     already happened (dirty files, failed edits, denials) and so need no such gate.
     """
     for field in ("planned_edit_targets", "dirty_written_files"):
-        value = execution_context.get(field)
+        value = getattr(execution_context, field)
         if isinstance(value, set) and value:
             return True
     return bool(
-        execution_context.get("todo_written") or execution_context.get("plan_written")
+        execution_context.todo_written or execution_context.plan_written
     )
 
 
-def _declared_targets_already_existing(execution_context: dict[str, Any]) -> bool:
+def _declared_targets_already_existing(execution_context: ExecutionContext) -> bool:
     """True when a path this turn committed to writing is a file that already exists.
 
     What tells "I am about to change something" from "I am about to create something",
@@ -298,26 +285,26 @@ def _declared_targets_already_existing(execution_context: dict[str, Any]) -> boo
     committed only to *new* files, or that named no path at all, is not about to break
     a caller — so blast-radius stays silent and creation is free to speak.
     """
-    declared = set(execution_context.get("planned_edit_targets") or ()) | set(
-        execution_context.get("declared_edit_set") or ()
+    declared = set(execution_context.planned_edit_targets or ()) | set(
+        execution_context.declared_edit_set or ()
     )
     if not declared:
         return False
     return bool(declared & _known_existing_files(execution_context))
 
 
-def _retryable_pending_validation_exists(execution_context: dict[str, Any]) -> bool:
+def _retryable_pending_validation_exists(execution_context: ExecutionContext) -> bool:
     """Return True if there is at least one pending file that still has retry budget."""
-    dirty = execution_context.get("dirty_written_files", set()) or set()
-    validated = execution_context.get("validated_files", set()) or set()
-    fail_counts = execution_context.get("validation_fail_count_by_file", {})
+    dirty = execution_context.dirty_written_files or set()
+    validated = execution_context.validated_files or set()
+    fail_counts = execution_context.validation_fail_count_by_file
     pending = set(dirty) - set(validated)
     if not pending:
         return False
     return any(int(fail_counts.get(p, 0)) < VALIDATION_RETRY_BUDGET for p in pending)
 
 
-def _known_existing_files(execution_context: dict[str, Any]) -> set[str]:
+def _known_existing_files(execution_context: ExecutionContext) -> set[str]:
     """Files the model has actually encountered this session (proof they exist).
 
     Thin alias over the shared definition. This module and the policy engine each had
@@ -327,7 +314,7 @@ def _known_existing_files(execution_context: dict[str, Any]) -> set[str]:
     return known_existing_files(execution_context)
 
 
-def _untested_edited_sources(execution_context: dict[str, Any]) -> list[tuple[str, str]]:
+def _untested_edited_sources(execution_context: ExecutionContext) -> list[tuple[str, str]]:
     """Edited Python source files whose associated test exists but was not run this query.
 
     Returns ``[(source, test)]``. "Associated test" = a known-existing file named
@@ -335,7 +322,7 @@ def _untested_edited_sources(execution_context: dict[str, Any]) -> list[tuple[st
     Pure reality check (the test file is on disk; it wasn't executed) — model-strength
     independent, so it lives in the verification layer.
     """
-    dirty = execution_context.get("dirty_written_files", set()) or set()
+    dirty = execution_context.dirty_written_files or set()
     edited_sources = [
         p for p in dirty
         if p.endswith(".py")
@@ -345,7 +332,7 @@ def _untested_edited_sources(execution_context: dict[str, Any]) -> list[tuple[st
         return []
 
     known = _known_existing_files(execution_context)
-    tests_run = execution_context.get("tests_run", set()) or set()
+    tests_run = execution_context.tests_run or set()
     known_by_base: dict[str, str] = {os.path.basename(p): p for p in known}
 
     pairs: list[tuple[str, str]] = []
@@ -359,15 +346,14 @@ def _untested_edited_sources(execution_context: dict[str, Any]) -> list[tuple[st
     return pairs
 
 
-def _has_non_doc_code_changes(execution_context: dict[str, Any]) -> bool:
-    dirty = execution_context.get("dirty_written_files", set()) or set()
+def _has_non_doc_code_changes(execution_context: ExecutionContext) -> bool:
+    dirty = execution_context.dirty_written_files or set()
     if not dirty:
         return False
     return any(not p.endswith(".md") for p in dirty)
 
 
-def needs_incomplete_finalization(execution_context: dict[str, Any]) -> bool:
-    execution_context = _bootstrap_nudge_context(execution_context)
+def needs_incomplete_finalization(execution_context: ExecutionContext) -> bool:
 
     # Open steps on the model's own checklist mean the session is not complete,
     # whatever the validation state says. This runs FIRST, ahead of both validation
@@ -410,7 +396,7 @@ def maybe_append_nudge(
     agent: Any,
     query: str,
     active_mode: str,
-    execution_context: dict[str, Any],
+    execution_context: ExecutionContext,
     messages: list[dict[str, Any]],
 ) -> bool:
     """Append at most one workflow nudge, in priority order.
@@ -435,7 +421,6 @@ def maybe_append_nudge(
     Order per layer: core table first, then packs. Verification is tried before
     guidance, so it always wins.
     """
-    execution_context = _bootstrap_nudge_context(execution_context)
     level = resolve_enforcement(agent)
     for layer in ("verification", "guidance"):
         # Guidance nudges are a weak-model compatibility shim — skipped entirely when
@@ -458,7 +443,7 @@ def nudge_pending(
     agent: Any,
     query: str,
     active_mode: str,
-    execution_context: dict[str, Any],
+    execution_context: ExecutionContext,
 ) -> bool:
     """True if :func:`maybe_append_nudge` would fire right now — predicate-only probe.
 
@@ -472,7 +457,6 @@ def nudge_pending(
     but whose render comes back empty is reported as pending. The cost is one turn
     that reaches the screen late; the alternative is rendering twice.
     """
-    execution_context = _bootstrap_nudge_context(execution_context)
     level = resolve_enforcement(agent)
     layers = ("verification",) if level == "off" else ("verification", "guidance")
     return any(nudge.fires(agent, query, active_mode, execution_context, level)
@@ -480,7 +464,7 @@ def nudge_pending(
 
 
 def _log_no_nudge(
-    execution_context: dict[str, Any],
+    execution_context: ExecutionContext,
     *,
     level: str,
     active_mode: str,
@@ -499,10 +483,10 @@ def _log_no_nudge(
         "no nudge: level=%s mode=%s state=%s mutated=%s declared_target=%s counts=%s",
         level,
         active_mode,
-        execution_context.get("workflow_state"),
-        bool(execution_context.get("code_mutation_started")),
+        execution_context.workflow_state,
+        bool(execution_context.code_mutation_started),
         _has_declared_write_target(execution_context),
-        execution_context.get("nudge_counts", {}),
+        execution_context.nudge_counts,
     )
 
 
@@ -512,13 +496,13 @@ def _cascade(layer: str) -> list:
     return [n for n in _CORE_NUDGES if n.layer == layer] + NudgeRegistry.rules(layer)
 
 
-def _first_failing_edit_path(execution_context: dict[str, Any]) -> str | None:
+def _first_failing_edit_path(execution_context: ExecutionContext) -> str | None:
     """First path with at least one recorded consecutive edit failure, else None.
 
     Keyed on the per-file failure streak (any patch), so it reflects a model that keeps
     trying differently-anchored edits on the same file, not just identical retries.
     """
-    streaks = execution_context.get("edit_fail_streak_by_file", {})
+    streaks = execution_context.edit_fail_streak_by_file
     for path, fails in streaks.items():
         if fails >= 1:
             return path
@@ -527,7 +511,7 @@ def _first_failing_edit_path(execution_context: dict[str, Any]) -> str | None:
 
 # ── Verification-layer predicates (reality checks; run at every enforcement level) ──
 
-def _should_nudge_validation(execution_context: dict[str, Any]) -> bool:
+def _should_nudge_validation(execution_context: ExecutionContext) -> bool:
     """The built-in check rejected a file, and there is budget left to repair it.
 
     Verification-layer, at every enforcement level: whether a file one just modified
@@ -553,7 +537,7 @@ def _should_nudge_validation(execution_context: dict[str, Any]) -> bool:
     )
 
 
-def _validation_nudge_content(agent: Any, execution_context: dict[str, Any]) -> str:
+def _validation_nudge_content(agent: Any, execution_context: ExecutionContext) -> str:
     # Short pointer only — the full TIER 1 rationale already lives in the system
     # prompt; re-asserting it here as a user-role message would just duplicate the
     # strictest content through the more coercive channel. Pending validation is
@@ -561,7 +545,7 @@ def _validation_nudge_content(agent: Any, execution_context: dict[str, Any]) -> 
     return validation_nudge_message(agent, execution_context)
 
 
-def _should_nudge_denial(execution_context: dict[str, Any]) -> bool:
+def _should_nudge_denial(execution_context: ExecutionContext) -> bool:
     """Blocking denials exist, budget left, and not already in the exhausted dead-end.
 
     The handback message is exempt from the frequency cap and from the dead-end
@@ -580,7 +564,7 @@ def _should_nudge_denial(execution_context: dict[str, Any]) -> bool:
     )
 
 
-def _should_nudge_error_recovery(execution_context: dict[str, Any]) -> bool:
+def _should_nudge_error_recovery(execution_context: ExecutionContext) -> bool:
     """Budget left and at least one file is stuck in a repeated edit failure."""
     return (
         nudge_count(execution_context, "error_recovery") < NUDGE_MAX_ERROR_RECOVERY
@@ -588,7 +572,7 @@ def _should_nudge_error_recovery(execution_context: dict[str, Any]) -> bool:
     )
 
 
-def _worst_run_failure_streak(execution_context: dict[str, Any]) -> int:
+def _worst_run_failure_streak(execution_context: ExecutionContext) -> int:
     """How many times the most-retried failing command has failed.
 
     Derived, never stored: ``record_run`` already carries ``failures`` across a re-run,
@@ -605,7 +589,7 @@ def _worst_run_failure_streak(execution_context: dict[str, Any]) -> int:
     )
 
 
-def _should_nudge_stuck_repair(execution_context: dict[str, Any]) -> bool:
+def _should_nudge_stuck_repair(execution_context: ExecutionContext) -> bool:
     """One fire per rung, in order — the ladder in `stuck_repair_nudge_message`.
 
     Gated on the fire count as a rung *index* rather than on `< NUDGE_MAX_STUCK_REPAIR`:
@@ -668,15 +652,15 @@ _CONFIGURED_BUILDS: dict[str, tuple[str, ...]] = {
 }
 
 
-def _exercise_budget_left(execution_context: dict[str, Any]) -> bool:
+def _exercise_budget_left(execution_context: ExecutionContext) -> bool:
     """True while the one shared exercise/verdict ask is still available."""
     return (
-        not execution_context.get("exercise_advice_closed")
+        not execution_context.exercise_advice_closed
         and nudge_count(execution_context, EXERCISE_BUDGET) < NUDGE_MAX_EXERCISE
     )
 
 
-def exercise_route(agent: Any, execution_context: dict[str, Any]) -> tuple[str, str]:
+def exercise_route(agent: Any, execution_context: ExecutionContext) -> tuple[str, str]:
     """``(route, obstacle)``: the one direct command that would exercise this change,
     named — or ``""`` and what stood in the way.
 
@@ -699,7 +683,7 @@ def exercise_route(agent: Any, execution_context: dict[str, Any]) -> tuple[str, 
     def _route(description: str) -> tuple[str, str]:
         return description, ""
 
-    if execution_context.get("unresolved_modules"):
+    if execution_context.unresolved_modules:
         return _blocked("an import could not be resolved in the interpreter that was used")
     if not names_with_cap(CODE_EXEC, getattr(agent, "tool_caps", None)):
         return _blocked("no execution tool is connected to this session")
@@ -710,7 +694,7 @@ def exercise_route(agent: Any, execution_context: dict[str, Any]) -> tuple[str, 
     if untested:
         return _route(f"the test that already covers it ({untested[0][1]})")
 
-    dirty = sorted(execution_context.get("dirty_written_files") or ())
+    dirty = sorted(execution_context.dirty_written_files or ())
     known = {os.path.basename(p) for p in _known_existing_files(execution_context)}
 
     # 2. A file this environment starts directly.
@@ -740,22 +724,22 @@ def exercise_route(agent: Any, execution_context: dict[str, Any]) -> tuple[str, 
     return _blocked("nothing written here starts with one direct command")
 
 
-def _exercise_route(agent: Any, execution_context: dict[str, Any]) -> str:
+def _exercise_route(agent: Any, execution_context: ExecutionContext) -> str:
     return exercise_route(agent, execution_context)[0]
 
 
-def record_exercise_obstacle(agent: Any, execution_context: dict[str, Any]) -> None:
+def record_exercise_obstacle(agent: Any, execution_context: ExecutionContext) -> None:
     """Note on the context why the change could not be exercised, for the ledger.
 
     Asked where the ledger is built, for the case the ledger reports it in: code was
     written and nothing was run.
     """
-    if execution_context.get("dirty_written_files") and not execution_context.get("runs"):
-        execution_context["exercise_blocked_reason"] = exercise_route(
+    if execution_context.dirty_written_files and not execution_context.runs:
+        execution_context.exercise_blocked_reason = exercise_route(
             agent, execution_context)[1]
 
 
-def _should_nudge_regression(execution_context: dict[str, Any]) -> bool:
+def _should_nudge_regression(execution_context: ExecutionContext) -> bool:
     """Budget left and an edited source has an on-disk test that was never run."""
     return (
         _exercise_budget_left(execution_context)
@@ -763,7 +747,7 @@ def _should_nudge_regression(execution_context: dict[str, Any]) -> bool:
     )
 
 
-def _required_unchecked_steps(execution_context: dict[str, Any]) -> list[dict]:
+def _required_unchecked_steps(execution_context: ExecutionContext) -> list[dict]:
     """Unticked checklist steps the plan did not mark optional."""
     return [
         it for it in unchecked_checklist_items(execution_context)
@@ -771,7 +755,7 @@ def _required_unchecked_steps(execution_context: dict[str, Any]) -> list[dict]:
     ]
 
 
-def _should_nudge_unfinished_plan(execution_context: dict[str, Any]) -> bool:
+def _should_nudge_unfinished_plan(execution_context: ExecutionContext) -> bool:
     """Budget left, the turn committed to something, and its checklist has open steps.
 
     A reality check, not a reasoning shim: the evidence is `- [ ]` lines in a file
@@ -792,7 +776,7 @@ def _should_nudge_unfinished_plan(execution_context: dict[str, Any]) -> bool:
     )
 
 
-def _should_nudge_unexercised_code(agent: Any, execution_context: dict[str, Any]) -> bool:
+def _should_nudge_unexercised_code(agent: Any, execution_context: ExecutionContext) -> bool:
     """Shared budget left, every written file checked, and nothing was ever run.
 
     Mutually exclusive with the two rows around it: ``validation`` speaks while a file
@@ -808,10 +792,10 @@ def _should_nudge_unexercised_code(agent: Any, execution_context: dict[str, Any]
     """
     return (
         _exercise_budget_left(execution_context)
-        and bool(execution_context.get("code_mutation_started"))
-        and bool(execution_context.get("dirty_written_files"))
+        and bool(execution_context.code_mutation_started)
+        and bool(execution_context.dirty_written_files)
         and not has_pending_validation(execution_context)
-        and not (execution_context.get("runs") or {})
+        and not (execution_context.runs or {})
         and bool(_exercise_route(agent, execution_context))
     )
 
@@ -819,13 +803,13 @@ def _should_nudge_unexercised_code(agent: Any, execution_context: dict[str, Any]
 # ── Guidance-layer predicates (reasoning shim; gated by enforcement + mode) ──
 
 def _should_nudge_env_resolution(
-    execution_context: dict[str, Any], *, level: str, active_mode: str
+    execution_context: ExecutionContext, *, level: str, active_mode: str
 ) -> bool:
     """A check/run failed for a missing module and envs were not enumerated yet."""
     return (
         _guidance_enabled("env_resolution", enforcement=level, active_mode=active_mode)
-        and bool(execution_context.get("unresolved_modules"))
-        and not execution_context.get("env_probed")
+        and bool(execution_context.unresolved_modules)
+        and not execution_context.env_probed
         and nudge_count(execution_context, "env_resolution") < NUDGE_MAX_ENV_RESOLUTION
     )
 
@@ -834,7 +818,7 @@ def maybe_inject_env_resolution(
     *,
     agent: Any,
     active_mode: str,
-    execution_context: dict[str, Any],
+    execution_context: ExecutionContext,
     messages: list[dict[str, Any]],
 ) -> bool:
     """Fire the env-resolution cascade mid-loop, right after the call that failed.
@@ -849,7 +833,6 @@ def maybe_inject_env_resolution(
     first spends the single budget and the other stays silent. Same enforcement/mode
     gate too — this changes *when* the cascade arrives, not *whether* it applies.
     """
-    execution_context = _bootstrap_nudge_context(execution_context)
     if "env_resolution" in (getattr(agent, "disabled_nudges", None) or set()):
         return False
     level = resolve_enforcement(agent)
@@ -866,19 +849,19 @@ def maybe_inject_env_resolution(
 
 
 def _should_nudge_env_cleanup(
-    execution_context: dict[str, Any], *, level: str, active_mode: str
+    execution_context: ExecutionContext, *, level: str, active_mode: str
 ) -> bool:
     """The agent mutated the environment and is now concluding — offer cleanup."""
     return (
         _guidance_enabled("env_cleanup", enforcement=level, active_mode=active_mode)
-        and bool(execution_context.get("env_mutations"))
-        and execution_context.get("workflow_state") == "conclude"
+        and bool(execution_context.env_mutations)
+        and execution_context.workflow_state == "conclude"
         and nudge_count(execution_context, "env_cleanup") < NUDGE_MAX_ENV_CLEANUP
     )
 
 
 def _should_nudge_unwatched_run(
-    execution_context: dict[str, Any], *, level: str, active_mode: str
+    execution_context: ExecutionContext, *, level: str, active_mode: str
 ) -> bool:
     """A scheduler listed work of the user's that no record covers, and we are done.
 
@@ -890,14 +873,14 @@ def _should_nudge_unwatched_run(
     """
     return (
         _guidance_enabled("unwatched_run", enforcement=level, active_mode=active_mode)
-        and bool(execution_context.get("unwatched_runs"))
-        and execution_context.get("workflow_state") == "conclude"
+        and bool(execution_context.unwatched_runs)
+        and execution_context.workflow_state == "conclude"
         and nudge_count(execution_context, "unwatched_run") < NUDGE_MAX_UNWATCHED_RUN
     )
 
 
 def _should_nudge_doc(
-    execution_context: dict[str, Any], *, level: str, active_mode: str
+    execution_context: ExecutionContext, *, level: str, active_mode: str
 ) -> bool:
     """Code changes are done, nothing pending — a gentle documentation reminder.
 
@@ -910,8 +893,8 @@ def _should_nudge_doc(
     return (
         active_mode == "agent"
         and _guidance_enabled("doc", enforcement=level, active_mode=active_mode)
-        and bool(execution_context.get("code_mutation_started"))
-        and execution_context.get("workflow_state") in ("validate", "conclude")
+        and bool(execution_context.code_mutation_started)
+        and execution_context.workflow_state in ("validate", "conclude")
         and not has_pending_validation(execution_context)
         and _has_non_doc_code_changes(execution_context)
         and nudge_count(execution_context, "doc") < NUDGE_MAX_DOC
@@ -919,13 +902,13 @@ def _should_nudge_doc(
 
 
 def _should_nudge_state(
-    execution_context: dict[str, Any], *, level: str, active_mode: str
+    execution_context: ExecutionContext, *, level: str, active_mode: str
 ) -> bool:
     """Softer catch-all: editing paused post-validation but not concluded yet."""
     return (
         _guidance_enabled("state", enforcement=level, active_mode=active_mode)
-        and bool(execution_context.get("code_mutation_started"))
-        and execution_context.get("workflow_state") != "conclude"
+        and bool(execution_context.code_mutation_started)
+        and execution_context.workflow_state != "conclude"
         and nudge_count(execution_context, "state") < NUDGE_MAX_STATE
         and idle_steps(execution_context) >= NUDGE_STATE_IDLE_STEPS
         and nudge_count(execution_context, "validation") >= 1
@@ -936,7 +919,7 @@ def _should_nudge_state(
 
 
 def _should_nudge_blast_radius(
-    execution_context: dict[str, Any], *, level: str, active_mode: str
+    execution_context: ExecutionContext, *, level: str, active_mode: str
 ) -> bool:
     """An EXISTING declared target, nothing written yet, files read, usages never searched.
 
@@ -951,18 +934,18 @@ def _should_nudge_blast_radius(
     return (
         active_mode == "agent"
         and _guidance_enabled("blast_radius", enforcement=level, active_mode=active_mode)
-        and execution_context.get("workflow_state") == "edit"
-        and not execution_context.get("code_mutation_started")
+        and execution_context.workflow_state == "edit"
+        and not execution_context.code_mutation_started
         and _has_declared_write_target(execution_context)
         and _declared_targets_already_existing(execution_context)
         and nudge_count(execution_context, "blast_radius") < NUDGE_MAX_BLAST_RADIUS
-        and bool(execution_context.get("read_files"))
-        and int(execution_context.get("search_tool_calls", 0)) < 1
+        and bool(execution_context.read_files)
+        and int(execution_context.search_tool_calls) < 1
     )
 
 
 def _should_nudge_creation(
-    execution_context: dict[str, Any], *, level: str, active_mode: str
+    execution_context: ExecutionContext, *, level: str, active_mode: str
 ) -> bool:
     """A declared write target that is not an existing file, context gathered, nothing written.
 
@@ -980,17 +963,17 @@ def _should_nudge_creation(
     return (
         active_mode == "agent"
         and _guidance_enabled("creation", enforcement=level, active_mode=active_mode)
-        and not execution_context.get("code_mutation_started")
-        and execution_context.get("workflow_state") in ("edit", "discover")
+        and not execution_context.code_mutation_started
+        and execution_context.workflow_state in ("edit", "discover")
         and _has_declared_write_target(execution_context)
         and not _declared_targets_already_existing(execution_context)
-        and bool(execution_context.get("read_files"))
+        and bool(execution_context.read_files)
         and nudge_count(execution_context, "creation") < NUDGE_MAX_CREATION
     )
 
 
 def _should_nudge_todo(
-    execution_context: dict[str, Any], *, level: str, active_mode: str
+    execution_context: ExecutionContext, *, level: str, active_mode: str
 ) -> bool:
     """A multi-step task is underway but no todo list was written yet.
 
@@ -1001,25 +984,25 @@ def _should_nudge_todo(
         have run — catches tasks that are many operations but few files.
     """
     touched = (
-        execution_context.get("dirty_written_files", set())
-        | execution_context.get("planned_edit_targets", set())
+        execution_context.dirty_written_files
+        | execution_context.planned_edit_targets
     )
     multi_file = (
-        bool(execution_context.get("code_mutation_started"))
-        and execution_context.get("workflow_state") == "edit"
+        bool(execution_context.code_mutation_started)
+        and execution_context.workflow_state == "edit"
         and len(touched) >= TODO_NUDGE_MULTIFILE_THRESHOLD
     )
-    many_ops = int(execution_context.get("action_op_count", 0)) >= TODO_NUDGE_OP_THRESHOLD
+    many_ops = int(execution_context.action_op_count) >= TODO_NUDGE_OP_THRESHOLD
     return (
         active_mode == "agent"
         and _guidance_enabled("todo", enforcement=level, active_mode=active_mode)
-        and not execution_context.get("todo_written", False)
+        and not execution_context.todo_written
         # A checklist is only useful while work remains. The many-ops trigger has no
         # workflow-state bound, so in a long task that never wrote one it would fire
         # at the very end — the model then writes a plan/todo AFTER the work is done
         # (observed: proxy optimization emitting a todo list at conclusion). Suppress
         # once concluding: a plan written then guides nothing.
-        and execution_context.get("workflow_state") != "conclude"
+        and execution_context.workflow_state != "conclude"
         and nudge_count(execution_context, "todo") < NUDGE_MAX_TODO
         and (multi_file or many_ops)
     )
@@ -1045,10 +1028,10 @@ class _CoreNudge:
     # Per-category caps and (for guidance) the enforcement/mode gate live inside each
     # row's ``should_fire``, so the row answers the cascade's interface directly.
 
-    def fires(self, agent: Any, query: str, mode: str, ec: dict[str, Any], level: str) -> bool:
+    def fires(self, agent: Any, query: str, mode: str, ec: ExecutionContext, level: str) -> bool:
         return self.should_fire(agent, query, mode, ec, level)
 
-    def text(self, agent: Any, ec: dict[str, Any]) -> str:
+    def text(self, agent: Any, ec: ExecutionContext) -> str:
         return str(self.render(agent, ec) or "")
 
 
@@ -1096,7 +1079,7 @@ _CORE_NUDGES: tuple[_CoreNudge, ...] = (
         "unexercised", "verification",
         lambda agent, query, mode, ec, level: _should_nudge_unexercised_code(agent, ec),
         lambda agent, ec: unexercised_code_nudge_message(
-            sorted(ec.get("dirty_written_files") or ()), _exercise_route(agent, ec)),
+            sorted(ec.dirty_written_files or ()), _exercise_route(agent, ec)),
         budget_key=EXERCISE_BUDGET,
     ),
     _CoreNudge(

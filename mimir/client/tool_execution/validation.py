@@ -7,6 +7,7 @@ import shlex
 from typing import Any, Awaitable, Callable
 from ..config import paths
 from ...servers._shared.state_paths import standing_roots
+from ..context.execution_context import ExecutionContext
 
 def is_python_test_filepath(path: str) -> bool:
     basename = os.path.basename(path)
@@ -51,7 +52,7 @@ def absolute_workspace_path(path: str, *, cwd: str | None = None) -> str:
 async def auto_validate_written_file(
     *,
     path: str,
-    execution_context: dict[str, Any] | None,
+    execution_context: ExecutionContext | None,
     tool_owner: dict[str, str],
     run_tool: Callable[[str, dict[str, Any], dict[str, Any] | None], Awaitable[str]],
     is_code_filepath: Callable[[str], bool],
@@ -94,17 +95,17 @@ async def auto_validate_written_file(
 
 def _check_replacement_completeness(
     filepath: str,
-    execution_context: dict[str, Any] | None,
+    execution_context: ExecutionContext | None,
 ) -> str:
     """After a replace edit, verify no leftover occurrences of old_text remain.
 
-    Checks ``execution_context["last_replace_old_text"]`` (set by
+    Checks ``execution_context.last_replace_old_text`` (set by
     ``record_tool_observation`` for replace_in_file / replace_all_in_file).
     Returns a warning string if leftovers are found, or empty string.
     """
     if execution_context is None:
         return ""
-    old_text = execution_context.get("last_replace_old_text")
+    old_text = execution_context.last_replace_old_text
     if not old_text or not os.path.isfile(filepath):
         return ""
 
@@ -129,7 +130,7 @@ def _check_replacement_completeness(
     # Skip warning when old_text is a substring of new_text: the replacement
     # itself re-introduces the pattern, so occurrences are expected and not
     # leftovers (e.g. replacing "compute" with "recompute").
-    new_text = execution_context.get("last_replace_new_text") or ""
+    new_text = execution_context.last_replace_new_text or ""
     if new_text and old_text in new_text:
         return ""
 
@@ -167,7 +168,7 @@ _CROSS_FILE_SAFE_RE = re.compile(r"[\w.][\w.\- ]*")
 async def _check_cross_file_references(
     *,
     edited_path: str,
-    execution_context: dict[str, Any] | None,
+    execution_context: ExecutionContext | None,
     tool_owner: dict[str, str],
     run_tool: Callable[[str, dict[str, Any], dict[str, Any] | None], Awaitable[str]],
 ) -> str:
@@ -184,8 +185,8 @@ async def _check_cross_file_references(
     """
     if execution_context is None:
         return ""
-    old_text = execution_context.pop("cross_file_grep_old_text", None)
-    source_file = execution_context.pop("cross_file_grep_source", "")
+    old_text = execution_context.take("cross_file_grep_old_text")
+    source_file = execution_context.take("cross_file_grep_source")
     if not old_text or "bash_run" not in tool_owner:
         return ""
     if "\n" in old_text or not _CROSS_FILE_SAFE_RE.fullmatch(old_text):

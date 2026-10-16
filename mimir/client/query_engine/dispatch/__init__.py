@@ -16,7 +16,6 @@ from .. import streaming as _streaming
 from ...config.limits import IDENTICAL_REPEAT_THRESHOLD, SOFT_REPEAT_THRESHOLD
 from ...config.servers import SKILL_LOAD_TOOL
 from ...context.capabilities import CODE_EXEC, DIVERTIBLE, has_cap, kind_for, label_for
-from ...context.execution_context import loop_control
 from ...event_sink import emit
 from ...tool_execution.exec_preview import exec_input_preview
 from ...tool_execution.tool_status_messages import (
@@ -30,6 +29,7 @@ from ..history import bound_step_results
 from .admission import Call, admit, is_write
 from .execution import run_call
 from .inject import _post_dispatch_inject
+from ...context.execution_context import ExecutionContext
 
 __all__ = ["ToolDispatcher", "_dispatch_tool_calls", "_post_dispatch_inject"]
 
@@ -37,7 +37,7 @@ __all__ = ["ToolDispatcher", "_dispatch_tool_calls", "_post_dispatch_inject"]
 class ToolDispatcher:
     """One step's calls, from what the model issued to the tool messages in history."""
 
-    def __init__(self, agent: Any, messages: list[dict], execution_context: dict) -> None:
+    def __init__(self, agent: Any, messages: list[dict], execution_context: ExecutionContext) -> None:
         self.agent = agent
         self.messages = messages
         self.ec = execution_context
@@ -131,7 +131,7 @@ class ToolDispatcher:
         """Count identical calls across steps: failures toward the guards, successes
         toward the IDENTICAL_REPEAT note. Writes have their own dedup; refused calls
         never ran."""
-        lc = loop_control(self.ec)
+        lc = self.ec.loop_control
         for i, (call, result) in enumerate(zip(calls, results)):
             if call.refused is not None or is_write(self.agent, call.name):
                 continue
@@ -161,7 +161,7 @@ class ToolDispatcher:
             lc.call_fails[key] = lc.call_fails.get(key, 0) + 1
             if lc.call_fails[key] >= SOFT_REPEAT_THRESHOLD and key not in lc.repeat_warned:
                 lc.repeat_warned.add(key)
-                self.ec["_repeat_alert"] = (call.name, lc.call_fails[key])
+                self.ec.repeat_alert = (call.name, lc.call_fails[key])
 
     def append_results(self, admission: Any, results: list[str]) -> None:
         """One tool message per call, in call order, then the calls not run.
@@ -171,7 +171,7 @@ class ToolDispatcher:
         empty list is meaningful: a grep result touches no tracked file, so evicting it
         must not invalidate a read just because a path appears in its text.
         """
-        tool_msg_files: dict = self.ec.setdefault("tool_msg_files", {})
+        tool_msg_files: dict = self.ec.tool_msg_files
         # Bounded BEFORE it is appended: the trim pass exempts the current step, so
         # afterwards only the force-fit backstop could touch it, once already over.
         results = _bound_results(results, self.agent)
@@ -189,7 +189,7 @@ class ToolDispatcher:
 
 
 async def _dispatch_tool_calls(tool_calls: list, agent: Any, messages: list[dict],
-                               execution_context: dict) -> None:
+                               execution_context: ExecutionContext) -> None:
     """Run one step's calls (see :class:`ToolDispatcher`)."""
     await ToolDispatcher(agent, messages, execution_context).run(tool_calls)
 
@@ -200,7 +200,7 @@ def _pin_loaded_skill(
     args: dict,
     call_id: str,
     result: str,
-    execution_context: dict,
+    execution_context: ExecutionContext,
 ) -> None:
     """Promote a successful skill pull from reservation to pinned tail message.
 
@@ -219,14 +219,14 @@ def _pin_loaded_skill(
     skill = str((args or {}).get("name") or "").strip()
     if not skill:
         return
-    loaded: dict = execution_context.setdefault("skills_loaded", {})
+    loaded: dict = execution_context.skills_loaded
     succeeded, _summary = summarize_tool_result(name, result, agent.tool_caps)
     if not succeeded:
         if loaded.get(skill) == "pending":
             del loaded[skill]
         return
     loaded[skill] = call_id
-    execution_context.setdefault("pinned_call_ids", set()).add(call_id)
+    execution_context.pinned_call_ids.add(call_id)
     emit({"type": "status", "text": f"  \u2295 Skill loaded: {skill}"})
 
 

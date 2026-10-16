@@ -1,3 +1,4 @@
+from mimir.client.context.execution_context import build_execution_context
 import contextlib
 import io
 import json
@@ -7,6 +8,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 import asyncio
+import dataclasses
 
 import mimir.client.query_engine.dispatch.execution as dispatch_execution
 from mimir.client.event_sink import event_sink as capture_events
@@ -112,26 +114,35 @@ class ClientHelperTests(unittest.TestCase):
     def test_new_execution_context_matches_runtime_contract(self) -> None:
         context = client_module.MimirAgent._new_execution_context()
         execution_context_module.validate_execution_context(context)
-        self.assertIn("validation_fail_count_by_file", context)
-        self.assertIn("planned_edit_targets", context)
+        self.assertIsInstance(context, execution_context_module.ExecutionContext)
 
     def test_ensure_execution_context_backfills_missing_keys(self) -> None:
-        partial = {"searched": False}
+        partial = build_execution_context(searched=False)
         ensured = execution_context_module.ensure_execution_context(partial)
         self.assertIsNotNone(ensured)
         execution_context_module.validate_execution_context(ensured)
 
-    def test_field_specs_match_typeddict_annotations(self) -> None:
-        # _FIELD_SPECS is the single source of truth from which the template and the
-        # validator are derived; the TypedDict is the static-typing surface. Guard
-        # against the two drifting apart when a field is added or removed.
-        spec_keys = {name for name, _f, _t, _traits in execution_context_module._FIELD_SPECS}
-        annotation_keys = set(execution_context_module.ExecutionContext.__annotations__)
-        self.assertEqual(spec_keys, annotation_keys)
+    def test_every_field_declares_its_types(self) -> None:
+        # The validator checks each field against the types it declares; a field
+        # declared without them would be the one the validator silently skips —
+        # except the loop bookkeeping, which is plumbing, not schema.
+        import dataclasses
+        m = execution_context_module
+        bookkeeping = {"loop_control", "observed_agent_mode", "skill_suffix",
+                       "checklist_stamp", "repeat_alert", "moving_test_alert",
+                       "moving_test_told", "handback_told", "last_todo_tick_path",
+                       "transient_reminders", "last_call_reminders"}
+        for f in dataclasses.fields(m.ExecutionContext):
+            if f.name in bookkeeping:
+                continue
+            with self.subTest(field=f.name):
+                self.assertTrue(f.metadata.get("types"), f"{f.name} declares no types")
 
     def test_declared_traits_are_from_the_known_vocabulary(self) -> None:
         m = execution_context_module
-        for name, _f, _t, traits in m._FIELD_SPECS:
+        import dataclasses
+        for f in dataclasses.fields(m.ExecutionContext):
+            name, traits = f.name, f.metadata.get("traits", frozenset())
             with self.subTest(field=name):
                 self.assertTrue(traits <= m.FIELD_TRAITS,
                                 f"{name} declares unknown trait(s): {traits - m.FIELD_TRAITS}")
@@ -166,7 +177,9 @@ class ClientHelperTests(unittest.TestCase):
             # association it exists to provide.
             "tool_msg_files",
         }
-        for name, _f, _t, traits in m._FIELD_SPECS:
+        import dataclasses
+        for f in dataclasses.fields(m.ExecutionContext):
+            name, traits = f.name, f.metadata.get("traits", frozenset())
             if not name.endswith(("_files", "_paths", "_dirs")):
                 continue
             with self.subTest(field=name):
@@ -222,10 +235,10 @@ class ClientHelperTests(unittest.TestCase):
         """Policy and nudges asked the same question with two separate walks."""
         from mimir.client.guardrails.nudges import engine as nudge_engine
         ec = execution_context_module.build_execution_context()
-        ec["read_files"].add("a.py")
-        ec["checked_paths"].add("c.py")
-        ec["existing_paths"].add("d.py")
-        ec["dirty_written_files"].add("written.py")  # written ≠ "encountered"
+        ec.read_files.add("a.py")
+        ec.checked_paths.add("c.py")
+        ec.existing_paths.add("d.py")
+        ec.dirty_written_files.add("written.py")  # written ≠ "encountered"
         shared = execution_context_module.known_existing_files(ec)
         self.assertEqual(shared, {"a.py", "c.py", "d.py"})
         self.assertEqual(nudge_engine._known_existing_files(ec), shared)
@@ -239,7 +252,7 @@ class ClientHelperTests(unittest.TestCase):
         """
         m = execution_context_module
         ec = m.build_execution_context()
-        ec["read_files"].add("partial.py")
+        ec.read_files.add("partial.py")
         self.assertTrue(m.was_read(ec, "partial.py"))
         # A read also proves the file exists.
         self.assertIn("partial.py", m.known_existing_files(ec))
@@ -250,7 +263,7 @@ class ClientHelperTests(unittest.TestCase):
         """`checked_paths` records that a look happened, including a negative one."""
         m = execution_context_module
         ec = m.build_execution_context()
-        ec["checked_paths"].add("maybe.py")
+        ec.checked_paths.add("maybe.py")
         self.assertTrue(m.was_checked_for(ec, "maybe.py"))
         self.assertFalse(m.is_known_to_exist(ec, "maybe.py"))
         self.assertFalse(m.was_read(ec, "maybe.py"))
@@ -264,7 +277,7 @@ class ClientHelperTests(unittest.TestCase):
         agent = client_module.MimirAgent()
         agent.tool_caps = build_declared_registry()
         ec = execution_context_module.build_execution_context()
-        ec["existing_paths"].add("src/module.py")
+        ec.existing_paths.add("src/module.py")
 
         violation = policy_runtime_module.check_write_policy(
             agent, "write_file", {"path": "src/module.py", "content": "x"}, ec,
@@ -278,8 +291,8 @@ class ClientHelperTests(unittest.TestCase):
         agent = client_module.MimirAgent()
         agent.tool_caps = build_declared_registry()
         ec = execution_context_module.build_execution_context()
-        ec["existing_paths"].add("src/module.py")
-        ec["read_files"].add("src/module.py")
+        ec.existing_paths.add("src/module.py")
+        ec.read_files.add("src/module.py")
 
         violation = policy_runtime_module.check_write_policy(
             agent, "write_file", {"path": "src/module.py", "content": "x"}, ec,
@@ -302,8 +315,8 @@ class ClientHelperTests(unittest.TestCase):
         m = execution_context_module
         ec = m.build_execution_context()
         for field in m.fields_with(m.FILE_PATH):
-            ec[field].add("doomed.py")
-            ec[field].add("kept.py")
+            getattr(ec, field).add("doomed.py")
+            getattr(ec, field).add("kept.py")
 
         agent = types.SimpleNamespace(
             tool_caps={"delete_file": ToolCaps(
@@ -317,8 +330,8 @@ class ClientHelperTests(unittest.TestCase):
 
         for field in m.fields_with(m.FILE_PATH):
             with self.subTest(field=field):
-                self.assertNotIn("doomed.py", ec[field])
-                self.assertIn("kept.py", ec[field], "an unrelated path was purged too")
+                self.assertNotIn("doomed.py", getattr(ec, field))
+                self.assertIn("kept.py", getattr(ec, field), "an unrelated path was purged too")
 
     def test_deleting_a_file_purges_it_from_the_carried_path_fields(self) -> None:
         agent = client_module.MimirAgent()
@@ -335,20 +348,19 @@ class ClientHelperTests(unittest.TestCase):
         # un-inspect the directory it lived in.
         self.assertIn("doomed.py", agent._carry_context["inspected_dirs"])
 
-    def test_backfill_gives_a_bare_dict_every_declared_field(self) -> None:
-        """One seeder, derived from the schema, replacing four hand-picked subsets."""
-        m = execution_context_module
-        ec: dict = {}
-        m.backfill_execution_context(ec)
-        self.assertEqual(set(ec), set(m.ExecutionContext.__annotations__))
+    def test_a_fresh_context_has_every_field_at_its_default(self) -> None:
         # The nudge seeder used to default this to 99 where the schema says 0, so the
         # same absent field meant "maximally idle" to the idle gates and "just edited"
-        # to the message builder. One seeder, one answer.
-        self.assertEqual(ec["steps_since_last_edit"], 0)
-        self.assertIsNone(m.backfill_execution_context(None))
+        # to the message builder. Declared once, there is one answer.
+        self.assertEqual(execution_context_module.build_execution_context().steps_since_last_edit, 0)
+
+    def test_a_dict_is_not_a_context(self) -> None:
+        with self.assertRaises(TypeError):
+            execution_context_module.ensure_execution_context({})
+        self.assertIsNone(execution_context_module.ensure_execution_context(None))
 
     def test_template_satisfies_validator(self) -> None:
-        template = execution_context_module.execution_context_template()
+        template = execution_context_module.build_execution_context()
         # Round-trips: the generated template must pass the generated validator.
         execution_context_module.validate_execution_context(template)
 
@@ -421,30 +433,15 @@ class ClientHelperTests(unittest.TestCase):
     def test_carry_context_populates_existing_paths(self) -> None:
         agent = client_module.MimirAgent()
         agent._carry_context["existing_paths"] = {"mimir/servers/utilities/server_math.py"}
-        execution_context = {
-            "searched": False,
-            "inspected_dirs": set(),
-            "checked_paths": set(),
-            "read_files": set(),
-            "existing_paths": set(),
-            "similar_candidates_by_dir": {},
-        }
+        execution_context = build_execution_context(searched=False, inspected_dirs=set(), checked_paths=set(), read_files=set(), existing_paths=set(), similar_candidates_by_dir={})
 
         agent._apply_carry_context(execution_context)
-        self.assertIn("mimir/servers/utilities/server_math.py", execution_context["existing_paths"])
+        self.assertIn("mimir/servers/utilities/server_math.py", execution_context.existing_paths)
 
     def test_write_policy_allows_new_non_code_file_with_direct_target_context(self) -> None:
         agent = client_module.MimirAgent()
         agent.tool_caps = build_declared_registry()
-        execution_context = {
-            "searched": False,
-            "inspected_dirs": {"docs"},
-            "checked_paths": {"docs/notes.md"},
-            "read_files": set(),
-            "existing_paths": set(),
-            "similar_candidates_by_dir": {},
-            "search_tool_calls": 0,
-        }
+        execution_context = build_execution_context(searched=False, inspected_dirs={"docs"}, checked_paths={"docs/notes.md"}, read_files=set(), existing_paths=set(), similar_candidates_by_dir={}, search_tool_calls=0)
 
         violation = policy_runtime_module.check_write_policy(
             agent,
@@ -458,15 +455,7 @@ class ClientHelperTests(unittest.TestCase):
     def test_replace_in_file_allows_single_line_anchor_for_non_code_files(self) -> None:
         agent = client_module.MimirAgent()
         agent.tool_caps = build_declared_registry()
-        execution_context = {
-            "searched": True,
-            "inspected_dirs": {"docs"},
-            "checked_paths": {"docs/guide.md"},
-            "read_files": {"docs/guide.md"},
-            "existing_paths": {"docs/guide.md"},
-            "similar_candidates_by_dir": {},
-            "search_tool_calls": 1,
-        }
+        execution_context = build_execution_context(searched=True, inspected_dirs={"docs"}, checked_paths={"docs/guide.md"}, read_files={"docs/guide.md"}, existing_paths={"docs/guide.md"}, similar_candidates_by_dir={}, search_tool_calls=1)
 
         violation = policy_runtime_module.check_write_policy(
             agent,
@@ -480,15 +469,7 @@ class ClientHelperTests(unittest.TestCase):
     def test_replace_in_file_allows_two_line_anchor_for_code_with_direct_target_context(self) -> None:
         agent = client_module.MimirAgent()
         agent.tool_caps = build_declared_registry()
-        execution_context = {
-            "searched": False,
-            "inspected_dirs": {"src"},
-            "checked_paths": {"src/module.py"},
-            "read_files": {"src/module.py"},
-            "existing_paths": {"src/module.py"},
-            "similar_candidates_by_dir": {},
-            "search_tool_calls": 0,
-        }
+        execution_context = build_execution_context(searched=False, inspected_dirs={"src"}, checked_paths={"src/module.py"}, read_files={"src/module.py"}, existing_paths={"src/module.py"}, similar_candidates_by_dir={}, search_tool_calls=0)
 
         violation = policy_runtime_module.check_write_policy(
             agent,
@@ -506,15 +487,7 @@ class ClientHelperTests(unittest.TestCase):
     def test_delete_file_ignores_similar_candidates_once_target_is_confirmed(self) -> None:
         agent = client_module.MimirAgent()
         agent.tool_caps = build_declared_registry()
-        execution_context = {
-            "searched": False,
-            "inspected_dirs": {"docs"},
-            "checked_paths": {"docs/obsolete.md"},
-            "read_files": set(),
-            "existing_paths": {"docs/obsolete.md"},
-            "similar_candidates_by_dir": {"docs": {"docs/reference.md"}},
-            "search_tool_calls": 0,
-        }
+        execution_context = build_execution_context(searched=False, inspected_dirs={"docs"}, checked_paths={"docs/obsolete.md"}, read_files=set(), existing_paths={"docs/obsolete.md"}, similar_candidates_by_dir={"docs": {"docs/reference.md"}}, search_tool_calls=0)
 
         violation = policy_runtime_module.check_write_policy(
             agent,
@@ -528,15 +501,7 @@ class ClientHelperTests(unittest.TestCase):
     def test_write_policy_allows_code_creation_with_direct_target_context(self) -> None:
         agent = client_module.MimirAgent()
         agent.tool_caps = build_declared_registry()
-        execution_context = {
-            "searched": False,
-            "inspected_dirs": {"src"},
-            "checked_paths": {"src/new_feature.py"},
-            "read_files": set(),
-            "existing_paths": set(),
-            "similar_candidates_by_dir": {"src": {"src/old_feature.py"}},
-            "search_tool_calls": 0,
-        }
+        execution_context = build_execution_context(searched=False, inspected_dirs={"src"}, checked_paths={"src/new_feature.py"}, read_files=set(), existing_paths=set(), similar_candidates_by_dir={"src": {"src/old_feature.py"}}, search_tool_calls=0)
 
         violation = policy_runtime_module.check_write_policy(
             agent,
@@ -549,23 +514,7 @@ class ClientHelperTests(unittest.TestCase):
 
     def test_state_machine_allows_code_edit_with_direct_target_context_before_global_discovery(self) -> None:
         agent = client_module.MimirAgent()
-        execution_context = {
-            "workflow_state": "discover",
-            "searched": False,
-            "inspected_dirs": {"src"},
-            "checked_paths": {"src/module.py"},
-            "read_files": set(),
-            "existing_paths": {"src/module.py"},
-            "similar_candidates_by_dir": {},
-            "search_tool_calls": 0,
-            "dirty_written_files": set(),
-            "validated_files": set(),
-            "denied_tool_calls": [],
-            "code_mutation_started": False,
-            "denial_nudges": 0,
-            "state_nudges": 0,
-            "creation_nudges": 0,
-        }
+        execution_context = build_execution_context(workflow_state="discover", searched=False, inspected_dirs={"src"}, checked_paths={"src/module.py"}, read_files=set(), existing_paths={"src/module.py"}, similar_candidates_by_dir={}, search_tool_calls=0, dirty_written_files=set(), validated_files=set(), denied_tool_calls=[], code_mutation_started=False)
 
         violation = policy_state_machine_module.check_state_machine_guard(
             agent,
@@ -579,15 +528,7 @@ class ClientHelperTests(unittest.TestCase):
     def test_replace_in_file_allows_previewed_code_target_with_explicit_anchor(self) -> None:
         agent = client_module.MimirAgent()
         agent.tool_caps = build_declared_registry()
-        execution_context = {
-            "searched": False,
-            "inspected_dirs": {"src"},
-            "checked_paths": {"src/module.py"},
-            "read_files": set(),
-            "existing_paths": {"src/module.py"},
-            "similar_candidates_by_dir": {},
-            "search_tool_calls": 0,
-        }
+        execution_context = build_execution_context(searched=False, inspected_dirs={"src"}, checked_paths={"src/module.py"}, read_files=set(), existing_paths={"src/module.py"}, similar_candidates_by_dir={}, search_tool_calls=0)
 
         violation = policy_runtime_module.check_write_policy(
             agent,
@@ -629,11 +570,11 @@ class ClientHelperTests(unittest.TestCase):
 
     def test_denied_tool_result_narrows_as_refusals_accumulate(self) -> None:
         agent = client_module.MimirAgent()
-        execution_context = {"denial_history": []}
+        execution_context = build_execution_context(denial_history=[])
         scope = agent.approval_scope("bash_run", {"command": "pip install numpy"})
 
         def refuse() -> dict:
-            execution_context["denial_history"].append(
+            execution_context.denial_history.append(
                 {"tool": "bash_run", "scope": scope, "kind": "denied", "reason": "denied by user"})
             return json.loads(agent._denied_tool_result(
                 "bash_run", {"command": "pip install numpy"}, "denied by user", execution_context))
@@ -664,15 +605,15 @@ class ClientHelperTests(unittest.TestCase):
 
         agent._record_denied_tool_call("bash_run", args, execution_context, "denied by user")
         agent._record_denied_tool_call("bash_run", args, execution_context, "denied by user")
-        self.assertEqual(len(execution_context["denied_tool_calls"]), 2)
-        self.assertEqual(execution_context["denial_history"][0]["scope"], scope)
-        self.assertEqual(execution_context["denial_history"][0]["kind"], "denied")
+        self.assertEqual(len(execution_context.denied_tool_calls), 2)
+        self.assertEqual(execution_context.denial_history[0]["scope"], scope)
+        self.assertEqual(execution_context.denial_history[0]["kind"], "denied")
         self.assertEqual(denial_stage(execution_context, scope), "drop_or_stop")
 
         _observe_denial_clearing(agent, "bash_run", args, "ok", execution_context)
 
-        self.assertEqual(execution_context["denied_tool_calls"], [])
-        self.assertEqual(len(execution_context["denial_history"]), 2)
+        self.assertEqual(execution_context.denied_tool_calls, [])
+        self.assertEqual(len(execution_context.denial_history), 2)
         self.assertEqual(denial_stage(execution_context, scope), "drop_or_stop")
 
     def test_handback_nudge_fires_past_its_frequency_cap(self) -> None:
@@ -683,16 +624,9 @@ class ClientHelperTests(unittest.TestCase):
         from mimir.client.config.limits import NUDGE_MAX_DENIAL
         nudge_logic = importlib.import_module("mimir.client.guardrails.nudges.engine")
 
-        execution_context = {
-            "workflow_state": "edit",
-            "denied_tool_calls": [{"tool": "bash_run", "scope": "bash:bash_run:pip install"}],
-            "denial_history": [
+        execution_context = build_execution_context(workflow_state="edit", denied_tool_calls=[{"tool": "bash_run", "scope": "bash:bash_run:pip install"}], denial_history=[
                 {"tool": "bash_run", "scope": "bash:bash_run:pip install", "kind": "denied"}
-            ] * 3,
-            "dirty_written_files": set(),
-            "validated_files": set(),
-            "nudge_counts": {"denial": NUDGE_MAX_DENIAL},
-        }
+            ] * 3, dirty_written_files=set(), validated_files=set(), nudge_counts={"denial": NUDGE_MAX_DENIAL})
         messages: list = []
 
         class _FakeAgent:
@@ -712,25 +646,7 @@ class ClientHelperTests(unittest.TestCase):
 
     def test_state_machine_allows_code_edit_without_prior_read_in_edit_state(self) -> None:
         agent = client_module.MimirAgent()
-        execution_context = {
-            "workflow_state": "edit",
-            "searched": True,
-            "inspected_dirs": {"src"},
-            "checked_paths": {"src/module.py"},
-            "read_files": set(),
-            "existing_paths": {"src/module.py"},
-            "similar_candidates_by_dir": {},
-            "search_tool_calls": 2,
-            "dirty_written_files": set(),
-            "validated_files": set(),
-            "validation_fail_count_by_file": {},
-            "denied_tool_calls": [],
-            "code_mutation_started": False,
-            "denial_nudges": 0,
-            "state_nudges": 0,
-            "creation_nudges": 0,
-            "planned_edit_targets": set(),
-        }
+        execution_context = build_execution_context(workflow_state="edit", searched=True, inspected_dirs={"src"}, checked_paths={"src/module.py"}, read_files=set(), existing_paths={"src/module.py"}, similar_candidates_by_dir={}, search_tool_calls=2, dirty_written_files=set(), validated_files=set(), validation_fail_count_by_file={}, denied_tool_calls=[], code_mutation_started=False, planned_edit_targets=set())
 
         violation = policy_state_machine_module.check_state_machine_guard(
             agent,
@@ -744,26 +660,7 @@ class ClientHelperTests(unittest.TestCase):
     def test_state_machine_blocks_code_edit_after_retry_budget_exceeded(self) -> None:
         agent = client_module.MimirAgent()
         agent.tool_caps = build_declared_registry()
-        execution_context = {
-            "workflow_state": "edit",
-            "searched": True,
-            "inspected_dirs": {"src"},
-            "checked_paths": {"src/module.py"},
-            "read_files": {"src/module.py"},
-            "existing_paths": {"src/module.py"},
-            "similar_candidates_by_dir": {},
-            "search_tool_calls": 2,
-            "dirty_written_files": {"src/module.py"},
-            "validated_files": set(),
-            # Meets VALIDATION_RETRY_BUDGET (5) so the hard stop fires.
-            "validation_fail_count_by_file": {"src/module.py": 5},
-            "denied_tool_calls": [],
-            "code_mutation_started": True,
-            "denial_nudges": 0,
-            "state_nudges": 0,
-            "creation_nudges": 0,
-            "planned_edit_targets": {"src/module.py"},
-        }
+        execution_context = build_execution_context(workflow_state="edit", searched=True, inspected_dirs={"src"}, checked_paths={"src/module.py"}, read_files={"src/module.py"}, existing_paths={"src/module.py"}, similar_candidates_by_dir={}, search_tool_calls=2, dirty_written_files={"src/module.py"}, validated_files=set(), validation_fail_count_by_file={"src/module.py": 5}, denied_tool_calls=[], code_mutation_started=True, planned_edit_targets={"src/module.py"})
 
         violation = policy_state_machine_module.check_state_machine_guard(
             agent,
@@ -788,20 +685,7 @@ class ClientHelperTests(unittest.TestCase):
     def test_write_policy_does_not_demand_a_plan_before_the_first_edit(self) -> None:
         agent = client_module.MimirAgent()
         agent.tool_caps = build_declared_registry()
-        execution_context = {
-            "searched": True,
-            "inspected_dirs": {"src"},
-            "checked_paths": {"src/module.py"},
-            "read_files": {"src/module.py", "src/other.py", "src/third.py"},
-            "existing_paths": {"src/module.py"},
-            "similar_candidates_by_dir": {},
-            "search_tool_calls": 1,
-            # No plan, no todo, nothing written yet — what the old gate refused on.
-            "code_mutation_started": False,
-            "plan_written": False,
-            "todo_written": False,
-            "edit_loop_state": {},
-        }
+        execution_context = build_execution_context(searched=True, inspected_dirs={"src"}, checked_paths={"src/module.py"}, read_files={"src/module.py", "src/other.py", "src/third.py"}, existing_paths={"src/module.py"}, similar_candidates_by_dir={}, search_tool_calls=1, code_mutation_started=False, plan_written=False, todo_written=False, edit_loop_state={})
 
         violation = policy_runtime_module.check_write_policy(
             agent, "replace_in_file",
@@ -814,24 +698,7 @@ class ClientHelperTests(unittest.TestCase):
     def test_state_machine_allows_unrelated_edit_while_validation_is_pending(self) -> None:
         agent = client_module.MimirAgent()
         agent.tool_caps = build_declared_registry()
-        execution_context = {
-            "workflow_state": "validate",
-            "searched": True,
-            "inspected_dirs": {"src"},
-            "checked_paths": set(),
-            # Target is NOT in read_files and NOT in the pending set — the one shape
-            # the removed branch actually reached, every other being carved out.
-            "read_files": set(),
-            "existing_paths": set(),
-            "similar_candidates_by_dir": {},
-            "search_tool_calls": 1,
-            "dirty_written_files": {"src/pending.py"},
-            "validated_files": set(),
-            "validation_fail_count_by_file": {},
-            "declared_edit_set": {"src/pending.py"},
-            "denied_tool_calls": [],
-            "code_mutation_started": True,
-        }
+        execution_context = build_execution_context(workflow_state="validate", searched=True, inspected_dirs={"src"}, checked_paths=set(), read_files=set(), existing_paths=set(), similar_candidates_by_dir={}, search_tool_calls=1, dirty_written_files={"src/pending.py"}, validated_files=set(), validation_fail_count_by_file={}, declared_edit_set={"src/pending.py"}, denied_tool_calls=[], code_mutation_started=True)
 
         violation = policy_state_machine_module.check_state_machine_guard(
             agent, "replace_in_file", {"path": "src/unrelated.py"}, execution_context,
@@ -848,16 +715,7 @@ class ClientHelperTests(unittest.TestCase):
         """
         agent = client_module.MimirAgent()
         agent.tool_caps = build_declared_registry()
-        execution_context = {
-            "searched": True,
-            "inspected_dirs": {"src"},
-            "checked_paths": {"src/module.py"},
-            "read_files": set(),
-            "existing_paths": {"src/module.py"},
-            "similar_candidates_by_dir": {},
-            "search_tool_calls": 1,
-            "edit_loop_state": {},
-        }
+        execution_context = build_execution_context(searched=True, inspected_dirs={"src"}, checked_paths={"src/module.py"}, read_files=set(), existing_paths={"src/module.py"}, similar_candidates_by_dir={}, search_tool_calls=1, edit_loop_state={})
 
         violation = policy_runtime_module.check_write_policy(
             agent, "write_file", {"path": "src/module.py", "content": "wiped"},
@@ -878,18 +736,7 @@ class ClientHelperTests(unittest.TestCase):
         """
         agent = client_module.MimirAgent()
         agent.tool_caps = build_declared_registry()
-        execution_context = {
-            "searched": True,
-            # A pre-check happened, but `checked_paths` never proves existence, and the
-            # parent directory was never inspected — the two things a delete needs.
-            "checked_paths": {"src/gone.py"},
-            "inspected_dirs": set(),
-            "read_files": set(),
-            "existing_paths": set(),
-            "similar_candidates_by_dir": {},
-            "search_tool_calls": 1,
-            "edit_loop_state": {},
-        }
+        execution_context = build_execution_context(searched=True, checked_paths={"src/gone.py"}, inspected_dirs=set(), read_files=set(), existing_paths=set(), similar_candidates_by_dir={}, search_tool_calls=1, edit_loop_state={})
 
         violation = policy_runtime_module.check_write_policy(
             agent, "delete_file", {"path": "src/gone.py"}, execution_context,
@@ -908,16 +755,7 @@ class ClientHelperTests(unittest.TestCase):
         from mimir.client.config.limits import REPEATED_EDIT_FAILURE_LIMIT
         agent = client_module.MimirAgent()
         agent.tool_caps = build_declared_registry()
-        execution_context = {
-            "searched": True,
-            "inspected_dirs": {"src"},
-            "checked_paths": {"src/module.py"},
-            "read_files": {"src/module.py"},
-            "existing_paths": {"src/module.py"},
-            "similar_candidates_by_dir": {},
-            "search_tool_calls": 1,
-            "edit_loop_state": {"src/module.py": ("sig-abc", REPEATED_EDIT_FAILURE_LIMIT)},
-        }
+        execution_context = build_execution_context(searched=True, inspected_dirs={"src"}, checked_paths={"src/module.py"}, read_files={"src/module.py"}, existing_paths={"src/module.py"}, similar_candidates_by_dir={}, search_tool_calls=1, edit_loop_state={"src/module.py": ("sig-abc", REPEATED_EDIT_FAILURE_LIMIT)})
 
         violation = policy_runtime_module.check_write_policy(
             agent, "replace_in_file",
@@ -967,7 +805,7 @@ class ClientHelperTests(unittest.TestCase):
             approvals = types.SimpleNamespace(flush_pending_review=lambda: None)
 
             def _apply_carry_context(self, execution_context):
-                captured_context.update(execution_context)
+                captured_context.update(vars(execution_context))
 
             def _update_carry_context(self, execution_context):
                 pass
@@ -1001,7 +839,7 @@ class ClientHelperTests(unittest.TestCase):
         self.assertEqual(ec.discovery_signal_count(execution_context), 0)
         for signal in ec.DISCOVERY_EVIDENCE_SIGNALS:
             with self.subTest(signal=signal):
-                self.assertFalse(execution_context.get(signal))
+                self.assertFalse(getattr(execution_context, signal))
 
     # ── step budget ───────────────────────────────────────────────────────────
 
@@ -1054,7 +892,7 @@ class ClientHelperTests(unittest.TestCase):
                 active_mode="agent",
                 messages=[{"role": "system", "content": "s"}],
                 system_content="s",
-                execution_context={},
+                execution_context=build_execution_context(),
                 max_steps=max_steps,
                 thinking=False,
                 streaming=False,
@@ -1180,7 +1018,7 @@ class ClientHelperTests(unittest.TestCase):
             {"role": "tool", "tool_call_id": f"t{i}", "content": "x" * 100}
             for i in range(5)
         ]
-        execution_context = {"read_files": set(), "tool_msg_files": {}}
+        execution_context = build_execution_context(read_files=set(), tool_msg_files={})
         # token_counter=len over the wire form -> 100 of content plus its JSON
         # envelope each, so the budget that keeps exactly the two newest is
         # derived from the measure rather than hard-coded to the content length it
@@ -1259,10 +1097,7 @@ class ClientHelperTests(unittest.TestCase):
             # The actual read of src/app.py (kept; not evicted at this budget).
             {"role": "tool", "tool_call_id": "r1", "content": "file body"},
         ]
-        execution_context = {
-            "read_files": {"src/app.py"},
-            "tool_msg_files": {"g1": [], "r1": ["src/app.py"]},
-        }
+        execution_context = build_execution_context(read_files={"src/app.py"}, tool_msg_files={"g1": [], "r1": ["src/app.py"]})
         # Budget below the grep message size -> it gets evicted first.
         history_module._trim_tool_history(
             messages, char_budget=1_000, execution_context=execution_context
@@ -1270,7 +1105,7 @@ class ClientHelperTests(unittest.TestCase):
 
         # grep message evicted, but src/app.py read stays valid.
         self.assertNotIn("g1", [m.get("tool_call_id") for m in messages])
-        self.assertIn("src/app.py", execution_context["read_files"])
+        self.assertIn("src/app.py", execution_context.read_files)
 
     def test_trim_history_invalidates_read_files_for_evicted_read(self) -> None:
         # When the actual read message is evicted, its file IS invalidated so the
@@ -1281,16 +1116,13 @@ class ClientHelperTests(unittest.TestCase):
             {"role": "tool", "tool_call_id": "r1", "content": "old body " + big},
             {"role": "tool", "tool_call_id": "r2", "content": "recent body"},
         ]
-        execution_context = {
-            "read_files": {"src/old.py", "src/recent.py"},
-            "tool_msg_files": {"r1": ["src/old.py"], "r2": ["src/recent.py"]},
-        }
+        execution_context = build_execution_context(read_files={"src/old.py", "src/recent.py"}, tool_msg_files={"r1": ["src/old.py"], "r2": ["src/recent.py"]})
         history_module._trim_tool_history(
             messages, char_budget=1_000, execution_context=execution_context
         )
 
-        self.assertNotIn("src/old.py", execution_context["read_files"])
-        self.assertIn("src/recent.py", execution_context["read_files"])
+        self.assertNotIn("src/old.py", execution_context.read_files)
+        self.assertIn("src/recent.py", execution_context.read_files)
 
     def test_trim_history_keeps_the_results_of_the_latest_tool_call_turn(self) -> None:
         # A sub-agent's whole answer comes back as the newest tool result. Evicting
@@ -1304,7 +1136,7 @@ class ClientHelperTests(unittest.TestCase):
             {"role": "assistant", "content": "", "tool_calls": [{"id": "sub"}]},
             {"role": "tool", "tool_call_id": "sub", "content": "sub-agent answer " * 100},
         ]
-        execution_context = {"read_files": set(), "tool_msg_files": {}}
+        execution_context = build_execution_context(read_files=set(), tool_msg_files={})
         history_module._trim_tool_history(
             messages, execution_context=execution_context,
             token_counter=len, token_budget=100,   # far below either result
@@ -1329,7 +1161,7 @@ class ClientHelperTests(unittest.TestCase):
                               16_000, 3_200, 10_000, 8_000)), \
              self.assertRaises(history_module.ContextOverflowError) as caught:
             history_module._enforce_context_budget(
-                messages, "S" * 40_000, None, {}, "m", "full", None, tok,
+                messages, "S" * 40_000, None, build_execution_context(), "m", "full", None, tok,
             )
         self.assertIn("16,000-token window", str(caught.exception))
         # The repair still ran, so what the caller keeps is a coherent history.
@@ -1347,7 +1179,7 @@ class ClientHelperTests(unittest.TestCase):
                           lambda model, mode, ceiling=None: (
                               16_000, 3_200, 10_000, 8_000)):
             history_module._enforce_context_budget(
-                messages, "sys", None, {}, "m", "full", None, lambda t: len(t) // 4,
+                messages, "sys", None, build_execution_context(), "m", "full", None, lambda t: len(t) // 4,
             )
         self.assertEqual(len(messages), 2)
 
@@ -1533,7 +1365,7 @@ class ClientHelperTests(unittest.TestCase):
                             [{"id": f"c{i}", "function": {
                                 "name": "write_file",
                                 "arguments": {"path": path, "content": content}}}],
-                            agent, [], {},
+                            agent, [], build_execution_context(),
                         ))
             finally:
                 os.chdir(cwd)
@@ -1637,7 +1469,7 @@ class ClientHelperTests(unittest.TestCase):
             {"id": "c4", "function": {"name": "write_file", "arguments": {"path": "y", "content": "2"}}},
         ]
         messages: list = []
-        execution_context = {}
+        execution_context = build_execution_context()
 
         with patch.object(dispatch_execution, "summarize_tool_result", return_value=(True, "")):
             asyncio.run(
@@ -1714,7 +1546,7 @@ class ClientHelperTests(unittest.TestCase):
              capture_events(events.append), \
              patch.object(dispatch_execution, "summarize_tool_result", return_value=(True, "")):
             asyncio.run(dispatch_module._dispatch_tool_calls(
-                tool_calls, _SlowApprovalAgent(), [], {}))
+                tool_calls, _SlowApprovalAgent(), [], build_execution_context()))
 
         results = [e for e in events if e.get("type") == "tool_result"]
         self.assertEqual(len(results), 1)
@@ -1728,7 +1560,7 @@ class ClientHelperTests(unittest.TestCase):
         result = asyncio.run(
             auto_validate_written_file(
                 path="src/module.py",
-                execution_context={"workflow_state": "validate"},
+                execution_context=build_execution_context(workflow_state="validate"),
                 tool_owner={},
                 run_tool=lambda tool, args, context: None,
                 is_code_filepath=lambda path: True,
@@ -1746,24 +1578,7 @@ class ClientHelperTests(unittest.TestCase):
             # drops — the test is about the nudge, so it states the level it needs.
             enforcement = "strict"
 
-        execution_context = {
-            "workflow_state": "edit",
-            "code_mutation_started": False,
-            "searched": True,
-            "inspected_dirs": {"mimir/servers/utilities"},
-            "read_files": {"mimir/servers/utilities/server_math.py"},
-            "existing_paths": set(),
-            "search_tool_calls": 2,
-            "denial_nudges": 0,
-            "state_nudges": 0,
-            "creation_nudges": 0,
-            "denied_tool_calls": [],
-            "dirty_written_files": set(),
-            "validated_files": set(),
-            # The model named what it intends to write — the evidence the creation
-            # nudge now requires on top of the (keyword-inferred) create intent.
-            "planned_edit_targets": {"mimir/servers/server_science.py"},
-        }
+        execution_context = build_execution_context(workflow_state="edit", code_mutation_started=False, searched=True, inspected_dirs={"mimir/servers/utilities"}, read_files={"mimir/servers/utilities/server_math.py"}, existing_paths=set(), search_tool_calls=2, denied_tool_calls=[], dirty_written_files=set(), validated_files=set(), planned_edit_targets={"mimir/servers/server_science.py"})
         messages: list = []
 
         fired = nudge_logic.maybe_append_nudge(
@@ -1778,7 +1593,7 @@ class ClientHelperTests(unittest.TestCase):
         self.assertEqual(len(messages), 1)
         self.assertIn("write target was declared", messages[0]["content"])
         self.assertIn("server_science.py", messages[0]["content"])
-        self.assertEqual(execution_context["nudge_counts"]["creation"], 1)
+        self.assertEqual(execution_context.nudge_counts["creation"], 1)
 
     def _pending_case(self, *, query, execution_context):
         """(probe, fired) for one context — the probe read first, then the real call."""
@@ -1795,7 +1610,7 @@ class ClientHelperTests(unittest.TestCase):
         # Probing is read-only: it must not spend a budget or announce anything, or
         # the real call right after it would behave differently for having been asked.
         self.assertEqual(events, [])
-        self.assertEqual(execution_context["nudge_counts"], {})
+        self.assertEqual(execution_context.nudge_counts, {})
 
         messages: list = []
         fired = nudge_logic.maybe_append_nudge(
@@ -1810,17 +1625,7 @@ class ClientHelperTests(unittest.TestCase):
         answer would reach the screen anyway — the symptom it exists to prevent."""
         probe, fired = self._pending_case(
             query="propose me an implementation for a new scientific computing server",
-            execution_context={
-                "workflow_state": "edit",
-                "code_mutation_started": False,
-                "searched": True,
-                "read_files": {"ref.py"},
-                "search_tool_calls": 2,
-                "denied_tool_calls": [],
-                "dirty_written_files": set(),
-                "validated_files": set(),
-                "planned_edit_targets": {"mimir/servers/server_science.py"},
-            },
+            execution_context=build_execution_context(workflow_state="edit", code_mutation_started=False, searched=True, read_files={"ref.py"}, search_tool_calls=2, denied_tool_calls=[], dirty_written_files=set(), validated_files=set(), planned_edit_targets={"mimir/servers/server_science.py"}),
         )
         self.assertTrue(fired)
         self.assertTrue(probe)
@@ -1828,17 +1633,7 @@ class ClientHelperTests(unittest.TestCase):
     def test_the_probe_stays_silent_when_nothing_would_fire(self) -> None:
         probe, fired = self._pending_case(
             query="what does this function return?",
-            execution_context={
-                "workflow_state": "discover",
-                "code_mutation_started": False,
-                "searched": True,
-                "read_files": {"ref.py"},
-                "search_tool_calls": 2,
-                "denied_tool_calls": [],
-                "dirty_written_files": set(),
-                "validated_files": set(),
-                "planned_edit_targets": set(),
-            },
+            execution_context=build_execution_context(workflow_state="discover", code_mutation_started=False, searched=True, read_files={"ref.py"}, search_tool_calls=2, denied_tool_calls=[], dirty_written_files=set(), validated_files=set(), planned_edit_targets=set()),
         )
         self.assertFalse(fired)
         self.assertFalse(probe)
@@ -1853,17 +1648,7 @@ class ClientHelperTests(unittest.TestCase):
             # drops — the test is about the nudge, so it states the level it needs.
             enforcement = "strict"
 
-        execution_context = {
-            "workflow_state": "edit",
-            "code_mutation_started": False,
-            "searched": True,
-            "read_files": {"ref.py"},
-            "search_tool_calls": 2,
-            "denied_tool_calls": [],
-            "dirty_written_files": set(),
-            "validated_files": set(),
-            "planned_edit_targets": {"helper.py"},
-        }
+        execution_context = build_execution_context(workflow_state="edit", code_mutation_started=False, searched=True, read_files={"ref.py"}, search_tool_calls=2, denied_tool_calls=[], dirty_written_files=set(), validated_files=set(), planned_edit_targets={"helper.py"})
         events: list = []
         with event_sink_module.event_sink(events.append):
             fired = nudge_logic.maybe_append_nudge(
@@ -1919,19 +1704,7 @@ class ClientHelperTests(unittest.TestCase):
             # drops — the test is about the nudge, so it states the level it needs.
             enforcement = "strict"
 
-        execution_context = {
-            "workflow_state": "discover",
-            "code_mutation_started": False,
-            "searched": True,
-            "inspected_dirs": {"mimir/scripts"},
-            "read_files": {"pyproject.toml", "mimir/requirements.txt"},
-            "existing_paths": set(),
-            "search_tool_calls": 2,
-            "denied_tool_calls": [],
-            "dirty_written_files": set(),
-            "validated_files": set(),
-            "planned_edit_targets": set(),
-        }
+        execution_context = build_execution_context(workflow_state="discover", code_mutation_started=False, searched=True, inspected_dirs={"mimir/scripts"}, read_files={"pyproject.toml", "mimir/requirements.txt"}, existing_paths=set(), search_tool_calls=2, denied_tool_calls=[], dirty_written_files=set(), validated_files=set(), planned_edit_targets=set())
         messages: list = []
 
         fired = nudge_logic.maybe_append_nudge(
@@ -1963,21 +1736,14 @@ class ClientHelperTests(unittest.TestCase):
         import importlib
         nudge_logic = importlib.import_module("mimir.client.guardrails.nudges.engine")
 
-        base = {
-            "workflow_state": "edit",
-            "code_mutation_started": True,
-            "dirty_written_files": {"module.py"},   # single file → multi-file trigger off
-            "planned_edit_targets": set(),
-            "todo_written": False,
-            "nudge_counts": {},
-        }
+        base = build_execution_context(workflow_state="edit", code_mutation_started=True, dirty_written_files={"module.py"}, planned_edit_targets=set(), todo_written=False, nudge_counts={})
         # Below the op threshold with one file: nothing warrants a checklist yet.
-        below = {**base, "action_op_count": 4}
+        below = dataclasses.replace(base, action_op_count=4)
         self.assertFalse(
             nudge_logic._should_nudge_todo(below, level="strict", active_mode="agent")
         )
         # At the op threshold: the many-ops trigger fires even with a single file.
-        at = {**base, "action_op_count": 5}
+        at = dataclasses.replace(base, action_op_count=5)
         self.assertTrue(
             nudge_logic._should_nudge_todo(at, level="strict", active_mode="agent")
         )
@@ -1988,15 +1754,7 @@ class ClientHelperTests(unittest.TestCase):
         import importlib
         nudge_logic = importlib.import_module("mimir.client.guardrails.nudges.engine")
 
-        concluding = {
-            "workflow_state": "conclude",
-            "code_mutation_started": True,
-            "dirty_written_files": {"module.py"},
-            "planned_edit_targets": set(),
-            "action_op_count": 50,          # well past the op threshold
-            "todo_written": False,
-            "nudge_counts": {},
-        }
+        concluding = build_execution_context(workflow_state="conclude", code_mutation_started=True, dirty_written_files={"module.py"}, planned_edit_targets=set(), action_op_count=50, todo_written=False, nudge_counts={})
         self.assertFalse(
             nudge_logic._should_nudge_todo(concluding, level="strict", active_mode="agent")
         )
@@ -2006,15 +1764,7 @@ class ClientHelperTests(unittest.TestCase):
         import importlib
         nudge_logic = importlib.import_module("mimir.client.guardrails.nudges.engine")
 
-        ctx = {
-            "workflow_state": "edit",
-            "code_mutation_started": True,
-            "dirty_written_files": {"a.py", "b.py", "c.py"},
-            "planned_edit_targets": set(),
-            "action_op_count": 0,
-            "todo_written": False,
-            "nudge_counts": {},
-        }
+        ctx = build_execution_context(workflow_state="edit", code_mutation_started=True, dirty_written_files={"a.py", "b.py", "c.py"}, planned_edit_targets=set(), action_op_count=0, todo_written=False, nudge_counts={})
         self.assertTrue(
             nudge_logic._should_nudge_todo(ctx, level="strict", active_mode="agent")
         )
@@ -2024,15 +1774,7 @@ class ClientHelperTests(unittest.TestCase):
         import importlib
         nudge_logic = importlib.import_module("mimir.client.guardrails.nudges.engine")
 
-        ctx = {
-            "workflow_state": "edit",
-            "code_mutation_started": True,
-            "dirty_written_files": {"module.py"},
-            "planned_edit_targets": set(),
-            "action_op_count": 20,
-            "todo_written": False,
-            "nudge_counts": {},
-        }
+        ctx = build_execution_context(workflow_state="edit", code_mutation_started=True, dirty_written_files={"module.py"}, planned_edit_targets=set(), action_op_count=20, todo_written=False, nudge_counts={})
         self.assertFalse(
             nudge_logic._should_nudge_todo(ctx, level="light", active_mode="agent")
         )
@@ -2045,9 +1787,7 @@ class ClientHelperTests(unittest.TestCase):
         nudge_logic = importlib.import_module("mimir.client.guardrails.nudges.engine")
 
         agent = types.SimpleNamespace(enforcement="strict", tool_caps={})
-        ctx = nudge_logic._bootstrap_nudge_context({
-            "runs": {"python solver.py": {"completed": True, "verdict": ""}},
-        })
+        ctx = (build_execution_context(runs={"python solver.py": {"completed": True, "verdict": ""}}))
         messages: list[dict] = []
         fired = nudge_logic.maybe_append_nudge(
             agent=agent, query="run it", active_mode="agent",
@@ -2062,21 +1802,11 @@ class ClientHelperTests(unittest.TestCase):
         import importlib
         nudge_logic = importlib.import_module("mimir.client.guardrails.nudges.engine")
 
-        ctx = {
-            "workflow_state": "validate",
-            "code_mutation_started": True,
-            "dirty_written_files": {"solver.py"},
-            "validated_files": set(),
-            "declared_edit_set": set(),
-            "steps_since_last_edit": 5,
-            "runs": {"python solver.py": {"completed": True, "verdict": ""}},
-            "builtin_check_findings": {"solver.py": "line 3: '{' is never closed"},
-            "nudge_counts": {},
-        }
+        ctx = build_execution_context(workflow_state="validate", code_mutation_started=True, dirty_written_files={"solver.py"}, validated_files=set(), declared_edit_set=set(), steps_since_last_edit=5, runs={"python solver.py": {"completed": True, "verdict": ""}}, builtin_check_findings={"solver.py": "line 3: '{' is never closed"}, nudge_counts={})
         self.assertTrue(
             nudge_logic._should_nudge_validation(ctx)
         )
-        ctx["validated_files"] = {"solver.py"}
+        ctx.validated_files = {"solver.py"}
         self.assertFalse(
             nudge_logic._should_nudge_validation(ctx)
         )
@@ -2096,30 +1826,30 @@ class ClientHelperTests(unittest.TestCase):
             return ec.has_discovery_evidence(ctx, min_distinct=BAR)
 
         # A single weak signal does not clear the gate.
-        self.assertFalse(cleared({"searched": True}))
+        self.assertFalse(cleared(build_execution_context(searched=True)))
         # Two distinct signals count as real exploration.
-        self.assertTrue(cleared({"searched": True, "read_files": {"a.py"}}))
+        self.assertTrue(cleared(build_execution_context(searched=True, read_files={"a.py"})))
         # A directory the model inspected itself counts, as a second signal —
         # structural discovery is real exploration, not a lesser kind of it.
-        self.assertTrue(cleared({"inspected_dirs": {"mimir/servers"}, "searched": True}))
+        self.assertTrue(cleared(build_execution_context(inspected_dirs={"mimir/servers"}, searched=True)))
 
     # ── single discovery-evidence owner (Move A) ──────────────────────────────
 
     def test_has_discovery_evidence_shared_predicate(self) -> None:
         import importlib
         ec = importlib.import_module("mimir.client.context.execution_context")
-        self.assertEqual(ec.discovery_signal_count({"searched": True}), 1)
-        self.assertEqual(ec.discovery_signal_count({"searched": True, "read_files": {"a.py"}}), 2)
-        self.assertTrue(ec.has_discovery_evidence({"searched": True}, min_distinct=1))
-        self.assertFalse(ec.has_discovery_evidence({"searched": True}, min_distinct=2))
+        self.assertEqual(ec.discovery_signal_count(build_execution_context(searched=True)), 1)
+        self.assertEqual(ec.discovery_signal_count(build_execution_context(searched=True, read_files={"a.py"})), 2)
+        self.assertTrue(ec.has_discovery_evidence(build_execution_context(searched=True), min_distinct=1))
+        self.assertFalse(ec.has_discovery_evidence(build_execution_context(searched=True), min_distinct=2))
         # inspected_dirs counts, but only past the baseline seed: a snapshot must not
         # pre-satisfy a gate, while a subtree the model actually inspected is real
         # exploration (excluding the field outright made structural discovery worth
         # nothing, so only a grep or a file read could ever clear a gate).
         self.assertIn("inspected_dirs", ec.DISCOVERY_EVIDENCE_SIGNALS)
-        self.assertEqual(ec.discovery_signal_count({}), 0)
-        self.assertEqual(ec.discovery_signal_count({"inspected_dirs": {"mimir/servers"}}), 1)
-        self.assertEqual(ec.discovery_signal_count({"inspected_dirs": {".", "mimir/servers"}}), 1)
+        self.assertEqual(ec.discovery_signal_count(build_execution_context()), 0)
+        self.assertEqual(ec.discovery_signal_count(build_execution_context(inspected_dirs={"mimir/servers"})), 1)
+        self.assertEqual(ec.discovery_signal_count(build_execution_context(inspected_dirs={".", "mimir/servers"})), 1)
 
     # ── model-tiered enforcement (Move B) ─────────────────────────────────────
 
@@ -2142,18 +1872,13 @@ class ClientHelperTests(unittest.TestCase):
     def test_discovery_nudge_suppressed_when_not_strict(self) -> None:
         import importlib
         nudge_logic = importlib.import_module("mimir.client.guardrails.nudges.engine")
-        execution_context = {
-            "workflow_state": "discover",
-            "denied_tool_calls": [],
-            "dirty_written_files": set(),
-            "validated_files": set(),
-        }
+        execution_context = build_execution_context(workflow_state="discover", denied_tool_calls=[], dirty_written_files=set(), validated_files=set())
 
         class _FakeAgent:
             model = "big-model"
 
         for level in ("light", "off"):
-            execution_context["nudge_counts"] = {}
+            execution_context.nudge_counts = {}
             messages: list = []
             agent = _FakeAgent()
             agent.enforcement = level
@@ -2172,13 +1897,7 @@ class ClientHelperTests(unittest.TestCase):
         # regardless of model strength — they are NOT gated by enforcement level.
         import importlib
         nudge_logic = importlib.import_module("mimir.client.guardrails.nudges.engine")
-        execution_context = {
-            "workflow_state": "edit",
-            "denied_tool_calls": [{"tool": "write_file"}],
-            "dirty_written_files": set(),
-            "validated_files": set(),
-            "nudge_counts": {},
-        }
+        execution_context = build_execution_context(workflow_state="edit", denied_tool_calls=[{"tool": "write_file"}], dirty_written_files=set(), validated_files=set(), nudge_counts={})
         messages: list = []
 
         class _FakeAgent:
@@ -2193,7 +1912,7 @@ class ClientHelperTests(unittest.TestCase):
             messages=messages,
         )
         self.assertTrue(fired, "denial (verification) nudge must fire even at enforcement=off")
-        self.assertEqual(execution_context["nudge_counts"]["denial"], 1)
+        self.assertEqual(execution_context.nudge_counts["denial"], 1)
 
     def test_guidance_nudge_gated_by_enforcement_off(self) -> None:
         # A guidance nudge (creation) fires at strict but is fully suppressed at off.
@@ -2210,17 +1929,7 @@ class ClientHelperTests(unittest.TestCase):
             # reads as a file still to be created — which is what keeps `blast_radius`
             # (whose subject is an existing definition's callers) off this turn and
             # leaves `creation` as the branch under test.
-            return {
-                "workflow_state": "edit",
-                "searched": True,
-                "read_files": {"ref.py"},
-                "denied_tool_calls": [],
-                "dirty_written_files": set(),
-                "validated_files": set(),
-                "planned_edit_targets": {"helper.py"},
-                "code_mutation_started": False,
-                "nudge_counts": {},
-            }
+            return build_execution_context(workflow_state="edit", searched=True, read_files={"ref.py"}, denied_tool_calls=[], dirty_written_files=set(), validated_files=set(), planned_edit_targets={"helper.py"}, code_mutation_started=False, nudge_counts={})
 
         # strict → creation guidance fires
         ctx = _fresh_ctx()
@@ -2233,7 +1942,7 @@ class ClientHelperTests(unittest.TestCase):
             messages=messages,
         )
         self.assertTrue(fired, "creation guidance nudge should fire at enforcement=strict")
-        self.assertEqual(ctx["nudge_counts"]["creation"], 1)
+        self.assertEqual(ctx.nudge_counts["creation"], 1)
 
         # off → guidance layer skipped entirely
         ctx = _fresh_ctx()
@@ -2268,17 +1977,7 @@ class ClientHelperTests(unittest.TestCase):
             # KNOWN_FILE trait), so the two cases differ in the declared target, not in
             # a flag: `mod.py` was read and is therefore a definition with possible
             # callers; `brand_new.py` was only ever named.
-            return {
-                "workflow_state": "edit",
-                "read_files": {"mod.py"},
-                "search_tool_calls": 0,
-                "denied_tool_calls": [],
-                "dirty_written_files": set(),
-                "validated_files": set(),
-                "planned_edit_targets": {"mod.py"} if exists else {"brand_new.py"},
-                "code_mutation_started": False,
-                "nudge_counts": {},
-            }
+            return build_execution_context(workflow_state="edit", read_files={"mod.py"}, search_tool_calls=0, denied_tool_calls=[], dirty_written_files=set(), validated_files=set(), planned_edit_targets={"mod.py"} if exists else {"brand_new.py"}, code_mutation_started=False, nudge_counts={})
 
         # Same query both times: the wording is no longer what decides.
         query = "sors moi une version propre de ce module"
@@ -2288,16 +1987,16 @@ class ClientHelperTests(unittest.TestCase):
             agent=_Agent(), query=query, active_mode="agent",
             execution_context=existing, messages=[],
         ))
-        self.assertEqual(existing["nudge_counts"].get("blast_radius"), 1)
-        self.assertIsNone(existing["nudge_counts"].get("creation"))
+        self.assertEqual(existing.nudge_counts.get("blast_radius"), 1)
+        self.assertIsNone(existing.nudge_counts.get("creation"))
 
         brand_new = _ctx(exists=False)
         self.assertTrue(nudge_logic.maybe_append_nudge(
             agent=_Agent(), query=query, active_mode="agent",
             execution_context=brand_new, messages=[],
         ))
-        self.assertEqual(brand_new["nudge_counts"].get("creation"), 1)
-        self.assertIsNone(brand_new["nudge_counts"].get("blast_radius"))
+        self.assertEqual(brand_new.nudge_counts.get("creation"), 1)
+        self.assertIsNone(brand_new.nudge_counts.get("blast_radius"))
 
     def test_light_subset_drops_procedural_guidance_but_keeps_blast_radius(self) -> None:
         # The deliberate "light" line (agent mode): procedural nudges (creation/state/
@@ -2310,17 +2009,7 @@ class ClientHelperTests(unittest.TestCase):
             enforcement = "light"
 
         # A context+query that fires the creation nudge at strict (cf. the test above).
-        creation_ctx = {
-            "workflow_state": "edit",
-            "searched": True,
-            "read_files": {"ref.py"},
-            "denied_tool_calls": [],
-            "dirty_written_files": set(),
-            "validated_files": set(),
-            "planned_edit_targets": {"helper.py"},
-            "code_mutation_started": False,
-            "nudge_counts": {},
-        }
+        creation_ctx = build_execution_context(workflow_state="edit", searched=True, read_files={"ref.py"}, denied_tool_calls=[], dirty_written_files=set(), validated_files=set(), planned_edit_targets={"helper.py"}, code_mutation_started=False, nudge_counts={})
         fired = nudge_logic.maybe_append_nudge(
             agent=_Agent(),
             query="create a new helper module",
@@ -2329,23 +2018,12 @@ class ClientHelperTests(unittest.TestCase):
             messages=[],
         )
         self.assertFalse(fired, "creation (procedural) must NOT fire at light")
-        self.assertIsNone(creation_ctx["nudge_counts"].get("creation"))
+        self.assertIsNone(creation_ctx.nudge_counts.get("creation"))
 
         # blast_radius IS in the light subset: a declared target that already exists,
         # files read, no search yet. `existing_paths` is what makes `mod.py` a
         # definition with possible callers rather than a file about to be created.
-        blast_ctx = {
-            "workflow_state": "edit",
-            "read_files": {"mod.py"},
-            "existing_paths": {"mod.py"},
-            "search_tool_calls": 0,
-            "denied_tool_calls": [],
-            "dirty_written_files": set(),
-            "validated_files": set(),
-            "planned_edit_targets": {"mod.py"},
-            "code_mutation_started": False,
-            "nudge_counts": {},
-        }
+        blast_ctx = build_execution_context(workflow_state="edit", read_files={"mod.py"}, existing_paths={"mod.py"}, search_tool_calls=0, denied_tool_calls=[], dirty_written_files=set(), validated_files=set(), planned_edit_targets={"mod.py"}, code_mutation_started=False, nudge_counts={})
         fired = nudge_logic.maybe_append_nudge(
             agent=_Agent(),
             query="refactor the existing parser",
@@ -2354,7 +2032,7 @@ class ClientHelperTests(unittest.TestCase):
             messages=[],
         )
         self.assertTrue(fired, "blast_radius must fire at light")
-        self.assertEqual(blast_ctx["nudge_counts"].get("blast_radius"), 1)
+        self.assertEqual(blast_ctx.nudge_counts.get("blast_radius"), 1)
 
     def test_light_plan_fires_no_guidance(self) -> None:
         # light-plan = no guidance nudges (plan relies on its explore phase).
@@ -2365,16 +2043,7 @@ class ClientHelperTests(unittest.TestCase):
             model = "big-model"
             enforcement = "light"
 
-        blast_ctx = {
-            "workflow_state": "edit",
-            "read_files": {"mod.py"},
-            "search_tool_calls": 0,
-            "denied_tool_calls": [],
-            "dirty_written_files": set(),
-            "validated_files": set(),
-            "code_mutation_started": False,
-            "nudge_counts": {},
-        }
+        blast_ctx = build_execution_context(workflow_state="edit", read_files={"mod.py"}, search_tool_calls=0, denied_tool_calls=[], dirty_written_files=set(), validated_files=set(), code_mutation_started=False, nudge_counts={})
         fired = nudge_logic.maybe_append_nudge(
             agent=_Agent(),
             query="refactor the existing parser",
@@ -2394,15 +2063,7 @@ class ClientHelperTests(unittest.TestCase):
             enforcement = "off"
 
         # source validated (no pending validation) but its existing test was never run.
-        ctx = {
-            "workflow_state": "validate",
-            "dirty_written_files": {"foo.py"},
-            "validated_files": {"foo.py"},
-            "existing_paths": {"tests/test_foo.py"},
-            "tests_run": set(),
-            "denied_tool_calls": [],
-            "nudge_counts": {},
-        }
+        ctx = build_execution_context(workflow_state="validate", dirty_written_files={"foo.py"}, validated_files={"foo.py"}, existing_paths={"tests/test_foo.py"}, tests_run=set(), denied_tool_calls=[], nudge_counts={})
         messages: list = []
         fired = nudge_logic.maybe_append_nudge(
             agent=_FakeAgent(),
@@ -2412,7 +2073,7 @@ class ClientHelperTests(unittest.TestCase):
             messages=messages,
         )
         self.assertTrue(fired, "regression nudge should fire for an un-run existing test")
-        self.assertEqual(ctx["nudge_counts"]["exercise"], 1)
+        self.assertEqual(ctx.nudge_counts["exercise"], 1)
         self.assertIn("test_foo.py", messages[0]["content"])
 
     def test_regression_nudge_silent_when_test_was_run(self) -> None:
@@ -2423,15 +2084,7 @@ class ClientHelperTests(unittest.TestCase):
             model = "big-model"
             enforcement = "off"
 
-        ctx = {
-            "workflow_state": "validate",
-            "dirty_written_files": {"foo.py"},
-            "validated_files": {"foo.py"},
-            "existing_paths": {"tests/test_foo.py"},
-            "tests_run": {"tests/test_foo.py"},  # already executed this session
-            "denied_tool_calls": [],
-            "nudge_counts": {},
-        }
+        ctx = build_execution_context(workflow_state="validate", dirty_written_files={"foo.py"}, validated_files={"foo.py"}, existing_paths={"tests/test_foo.py"}, tests_run={"tests/test_foo.py"}, denied_tool_calls=[], nudge_counts={})
         messages: list = []
         fired = nudge_logic.maybe_append_nudge(
             agent=_FakeAgent(),
@@ -2701,7 +2354,7 @@ class ClientHelperTests(unittest.TestCase):
         from mimir.client.query_engine.verification import split_answer_ledger
 
         ec = client_module.MimirAgent._new_execution_context()
-        ec["dirty_written_files"].add("solver.py")
+        ec.dirty_written_files.add("solver.py")
         return split_answer_ledger(_annotate_answer_with_changes("Done.", ec))[1]
 
     def test_cli_ledger_collapses_to_one_line_pointing_at_the_command(self) -> None:

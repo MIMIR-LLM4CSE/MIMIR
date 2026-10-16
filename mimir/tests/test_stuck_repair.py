@@ -44,8 +44,8 @@ from mimir.client.context.execution_context import run_ledger_key
 def _ctx(command="pytest -q solver.py", failures=0, fired=0):
     """A context whose one command has already failed `failures` times."""
     ec = build_execution_context()
-    ec["dirty_written_files"] = {"solver.py"}
-    ec["code_mutation_started"] = True
+    ec.dirty_written_files = {"solver.py"}
+    ec.code_mutation_started = True
     for _ in range(max(failures, 1)):
         record_run(ec, command, completed=False)
         if failures:
@@ -53,10 +53,10 @@ def _ctx(command="pytest -q solver.py", failures=0, fired=0):
     if not failures:
         # Runs are keyed by identity, not by the text typed (run_ledger_key).
         key = run_ledger_key(command)
-        ec["runs"][key]["failures"] = 0
-        ec["runs"][key]["completed"] = True
-        ec["runs"][key]["verdict"] = "pass"
-    ec["nudge_counts"]["stuck_repair"] = fired
+        ec.runs[key]["failures"] = 0
+        ec.runs[key]["completed"] = True
+        ec.runs[key]["verdict"] = "pass"
+    ec.nudge_counts["stuck_repair"] = fired
     return ec
 
 
@@ -68,7 +68,7 @@ class StreakTests(unittest.TestCase):
         # Two unrelated commands failing once each is ordinary early red, not a model
         # going round in circles. Summing them would fire on the honest case.
         ec = build_execution_context()
-        ec["code_mutation_started"] = True
+        ec.code_mutation_started = True
         for cmd in ("make", "pytest -q"):
             record_run(ec, cmd, completed=False)
             _register_run_failure(ec, cmd, "nope")
@@ -83,8 +83,8 @@ class StreakTests(unittest.TestCase):
     def test_a_settled_run_leaves_the_streak(self) -> None:
         # A pass drops the run out of failed_runs, so the ladder disarms on its own.
         ec = _ctx(failures=4)
-        ec["runs"]["pytest solver.py"]["completed"] = True
-        ec["runs"]["pytest solver.py"]["verdict"] = "pass"
+        ec.runs["pytest solver.py"]["completed"] = True
+        ec.runs["pytest solver.py"]["verdict"] = "pass"
         self.assertEqual(_worst_run_failure_streak(ec), 0)
         self.assertFalse(_should_nudge_stuck_repair(ec))
 
@@ -92,7 +92,7 @@ class StreakTests(unittest.TestCase):
         # The environment putting up a wall is not the model repeating itself, and
         # failed_runs already excludes it.
         ec = _ctx(failures=4)
-        ec["runs"]["pytest solver.py"]["blocked"] = "pytest not installed"
+        ec.runs["pytest solver.py"]["blocked"] = "pytest not installed"
         self.assertEqual(_worst_run_failure_streak(ec), 0)
 
 
@@ -202,8 +202,8 @@ class FiringPathTests(unittest.TestCase):
 
     def _fire(self, ec):
         """The category of the one nudge this call injects, plus the text."""
-        ec.setdefault("read_files", set()).add("solver.py")
-        ec["searched"] = True
+        ec.read_files.add("solver.py")
+        ec.searched = True
         events: list[dict] = []
         messages: list[dict] = []
         token = set_event_sink(events.append)
@@ -233,16 +233,16 @@ class FiringPathTests(unittest.TestCase):
     def test_firing_charges_its_own_counter(self) -> None:
         ec = _ctx(failures=STUCK_REPAIR_ADVISE_AFTER)
         self._fire(ec)
-        self.assertEqual(ec["nudge_counts"].get("stuck_repair"), 1)
-        self.assertEqual(ec["nudge_counts"].get("exercise", 0), 0)
+        self.assertEqual(ec.nudge_counts.get("stuck_repair"), 1)
+        self.assertEqual(ec.nudge_counts.get("exercise", 0), 0)
 
     def test_the_probe_agrees_with_the_injection(self) -> None:
         # `nudge_pending` runs before the model call so the loop can hold streaming
         # prose; if the two walks disagreed the answer would be dropped for a reminder
         # that never came.
         ec = _ctx(failures=STUCK_REPAIR_ADVISE_AFTER)
-        ec["read_files"] = {"solver.py"}
-        ec["searched"] = True
+        ec.read_files = {"solver.py"}
+        ec.searched = True
         self.assertTrue(nudge_pending(agent=self._agent(), query="fix the solver",
                                       active_mode="agent", execution_context=ec))
 
@@ -250,15 +250,15 @@ class FiringPathTests(unittest.TestCase):
         ec = _ctx(failures=STUCK_REPAIR_ADVISE_AFTER)
         nudge_pending(agent=self._agent(), query="fix the solver",
                       active_mode="agent", execution_context=ec)
-        self.assertEqual(ec["nudge_counts"].get("stuck_repair", 0), 0)
+        self.assertEqual(ec.nudge_counts.get("stuck_repair", 0), 0)
 
     def test_it_survives_enforcement_off(self) -> None:
         # A verification row by construction: guidance is gated off, this is not.
         ec = _ctx(failures=STUCK_REPAIR_ADVISE_AFTER)
         agent = self._agent()
         agent.enforcement = "off"
-        ec["read_files"] = {"solver.py"}
-        ec["searched"] = True
+        ec.read_files = {"solver.py"}
+        ec.searched = True
         self.assertTrue(nudge_pending(agent=agent, query="fix the solver",
                                       active_mode="agent", execution_context=ec))
 
@@ -287,8 +287,8 @@ class TheLadderIsReachableThroughAStatusLineTests(unittest.TestCase):
         for cmd in forms:
             record_run(ec, cmd, completed=False)
             _register_run_failure(ec, cmd, "red")
-        self.assertEqual(len(ec["runs"]), 1)
-        self.assertEqual(ec["runs"][base]["failures"], len(forms))
+        self.assertEqual(len(ec.runs), 1)
+        self.assertEqual(ec.runs[base]["failures"], len(forms))
 
 
 if __name__ == "__main__":

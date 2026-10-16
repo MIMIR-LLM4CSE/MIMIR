@@ -14,7 +14,7 @@ import unittest
 
 from mimir.client.context.execution_context import (
     RecencySet,
-    execution_context_template,
+    build_execution_context,
     recent_first,
     validate_execution_context,
 )
@@ -66,8 +66,8 @@ class RecencySetTests(unittest.TestCase):
         self.assertEqual(recent_first(RecencySet(["a", "b", "c"])), ["c", "b", "a"])
 
     def test_template_still_validates(self) -> None:
-        ctx = execution_context_template()
-        ctx["read_files"].add("a.py")
+        ctx = build_execution_context()
+        ctx.read_files.add("a.py")
         validate_execution_context(ctx)  # must not raise
 
 

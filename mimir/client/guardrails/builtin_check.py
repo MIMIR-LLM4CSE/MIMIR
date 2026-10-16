@@ -34,6 +34,7 @@ import re
 from dataclasses import dataclass
 from .observations import _mark_file_validated, _register_validation_failure
 from .workflow import pending_validation_paths
+from ..context.execution_context import ExecutionContext
 
 # Anything larger is not read: the floor is a cheap check, and a multi-megabyte source
 # file is not what it was built for.
@@ -526,7 +527,7 @@ def _stamp(path: str) -> tuple[int, int]:
     return (info.st_mtime_ns, info.st_size)
 
 
-def sweep_builtin_checks(execution_context: dict, absolute_path_fn=None) -> None:
+def sweep_builtin_checks(execution_context: ExecutionContext, absolute_path_fn=None) -> None:
     """Check every file that still owes one, once each, on its final content.
 
     Called where the loop asks whether it may conclude — not after each write. A file
@@ -536,8 +537,8 @@ def sweep_builtin_checks(execution_context: dict, absolute_path_fn=None) -> None
     """
 
     resolve = absolute_path_fn or os.path.abspath
-    stamps = execution_context.setdefault("builtin_check_stamp", {})
-    findings = execution_context.setdefault("builtin_check_findings", {})
+    stamps = execution_context.builtin_check_stamp
+    findings = execution_context.builtin_check_findings
 
     for path in pending_validation_paths(execution_context):
         absolute = resolve(path)
@@ -548,7 +549,7 @@ def sweep_builtin_checks(execution_context: dict, absolute_path_fn=None) -> None
         outcome = check_file(absolute)
         if outcome.status == STATUS_UNREADABLE:
             findings.pop(path, None)
-            execution_context["unverifiable_files"].add(path)
+            execution_context.unverifiable_files.add(path)
         elif outcome.status == STATUS_FAIL:
             findings[path] = outcome.detail
             _register_validation_failure(execution_context, path, outcome.tier)
@@ -557,8 +558,8 @@ def sweep_builtin_checks(execution_context: dict, absolute_path_fn=None) -> None
             _mark_file_validated(execution_context, path, outcome.tier)
 
 
-def builtin_check_failures(execution_context: dict) -> dict[str, str]:
+def builtin_check_failures(execution_context: ExecutionContext) -> dict[str, str]:
     """Files the floor rejected and that are still dirty, path -> diagnostic."""
-    findings = execution_context.get("builtin_check_findings") or {}
-    validated = execution_context.get("validated_files", set())
+    findings = execution_context.builtin_check_findings or {}
+    validated = execution_context.validated_files
     return {p: d for p, d in sorted(findings.items()) if p not in validated}

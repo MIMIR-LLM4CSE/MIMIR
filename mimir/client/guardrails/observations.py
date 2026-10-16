@@ -17,7 +17,6 @@ from ..context import (
     FILE_PATH,
     SOURCE_FILE_EXTENSIONS,
     VALIDATION_TIERS,
-    bootstrap_runtime_context,
     declared_edit_set_complete,
     ensure_execution_context,
     failed_runs,
@@ -83,6 +82,7 @@ from ..context.bash_classify import (
     opaque_command_executes,
     FILE_LIKE_RE,
 )
+from ..context.execution_context import ExecutionContext
 
 
 # Source-file path regex derived from the canonical extension set so it stays in sync
@@ -110,7 +110,7 @@ _MODULE_NAME_RE = _re.compile(
 )
 
 
-def _should_enter_validate(execution_context: dict[str, Any]) -> bool:
+def _should_enter_validate(execution_context: ExecutionContext) -> bool:
     """Return True when the agent should transition from edit -> validate.
 
     If the model declared a multi-file edit plan (a task-checklist declaration), do not force
@@ -131,10 +131,10 @@ def _edit_signature(tool_name: str, path: str, arguments: dict, registry: Any = 
     return f"{tool_name}|{path}|{json.dumps(arguments, sort_keys=True, ensure_ascii=False)}"
 
 
-def _register_known_path(execution_context: dict[str, Any], candidate_path: str) -> None:
+def _register_known_path(execution_context: ExecutionContext, candidate_path: str) -> None:
     if not candidate_path:
         return
-    execution_context["existing_paths"].add(candidate_path)
+    execution_context.existing_paths.add(candidate_path)
 
 
 def _target_path(agent: Any, tool_name: str, arguments: dict) -> str | None:
@@ -143,7 +143,7 @@ def _target_path(agent: Any, tool_name: str, arguments: dict) -> str | None:
         target_path_arg(tool_name, arguments, agent.tool_caps))
 
 
-def _clear_edit_fail_streak(execution_context: dict[str, Any], path: str) -> None:
+def _clear_edit_fail_streak(execution_context: ExecutionContext, path: str) -> None:
     """Drop *path*'s edit-failure streak and re-arm the error_recovery reminder budget.
 
     The error_recovery nudge is capped per query so two ignored reminders don't turn
@@ -153,15 +153,15 @@ def _clear_edit_fail_streak(execution_context: dict[str, Any], path: str) -> Non
     of failures earns fresh reminders. While any file remains stuck the budget stays
     spent, preserving the anti-spam guarantee.
     """
-    streaks = execution_context["edit_fail_streak_by_file"]
+    streaks = execution_context.edit_fail_streak_by_file
     streaks.pop(path, None)
     if not streaks:
-        counts = execution_context.get("nudge_counts")
+        counts = execution_context.nudge_counts
         if isinstance(counts, dict):
             counts["error_recovery"] = 0
 
 
-def _record_code_edit(execution_context: dict[str, Any], edited_path: str) -> None:
+def _record_code_edit(execution_context: ExecutionContext, edited_path: str) -> None:
     """Mark one successfully-written code file dirty (the per-path edit slice).
 
     Split out of :func:`_observe_edit_outcome` so the post-edit transition
@@ -178,25 +178,25 @@ def _record_code_edit(execution_context: dict[str, Any], edited_path: str) -> No
     parent_dir = os.path.dirname(edited_path)
     if parent_dir and parent_dir != ".":
         _register_known_path(execution_context, parent_dir)
-    execution_context["code_mutation_started"] = True
-    execution_context["planned_edit_targets"].add(edited_path)
-    execution_context["dirty_written_files"].add(edited_path)
-    execution_context["validated_files"].discard(edited_path)
+    execution_context.code_mutation_started = True
+    execution_context.planned_edit_targets.add(edited_path)
+    execution_context.dirty_written_files.add(edited_path)
+    execution_context.validated_files.discard(edited_path)
     # Evidence is about a revision, and so is its absence: a file rewritten after the
     # floor rejected it — or after the floor could not read it — is owed a fresh answer,
     # not the previous one.
-    execution_context["unverifiable_files"].discard(edited_path)
-    execution_context.get("builtin_check_findings", {}).pop(edited_path, None)
-    execution_context.get("builtin_check_stamp", {}).pop(edited_path, None)
+    execution_context.unverifiable_files.discard(edited_path)
+    execution_context.builtin_check_findings.pop(edited_path, None)
+    execution_context.builtin_check_stamp.pop(edited_path, None)
     # Evidence is about a specific revision: rewriting the file retracts it. Runs are
     # not retracted — a run is a past event, and its verdict is a statement about what
     # that event showed, which re-editing does not undo.
-    execution_context.get("validation_tier_by_file", {}).pop(edited_path, None)
-    execution_context["edit_loop_state"].pop(edited_path, None)
+    execution_context.validation_tier_by_file.pop(edited_path, None)
+    execution_context.edit_loop_state.pop(edited_path, None)
     _clear_edit_fail_streak(execution_context, edited_path)
 
 
-def _enter_post_edit_state(execution_context: dict[str, Any]) -> None:
+def _enter_post_edit_state(execution_context: ExecutionContext) -> None:
     """Reset the idle counter and move to validate (if the declared set is done) or edit.
 
     Straight to ``conclude`` when the declared set is done and nothing owes a check:
@@ -204,7 +204,7 @@ def _enter_post_edit_state(execution_context: dict[str, Any]) -> None:
     enter and telling the model to check them is asking for a command that does not
     exist on this machine.
     """
-    execution_context["steps_since_last_edit"] = 0
+    execution_context.steps_since_last_edit = 0
     if not _should_enter_validate(execution_context):
         set_workflow_state(execution_context, "edit")
     elif has_pending_validation(execution_context):
@@ -214,7 +214,7 @@ def _enter_post_edit_state(execution_context: dict[str, Any]) -> None:
 
 
 def _observe_edit_outcome(
-    agent: Any, tool_name: str, arguments: dict, status: Any, execution_context: dict[str, Any],
+    agent: Any, tool_name: str, arguments: dict, status: Any, execution_context: ExecutionContext,
 ) -> None:
     """Record the outcome of a single-file code edit.
 
@@ -231,18 +231,18 @@ def _observe_edit_outcome(
     if status == "ok":
         _record_code_edit(execution_context, edited_path)
         # Signal the post-dispatch injector that a successful code edit occurred.
-        execution_context["last_edit_success_path"] = edited_path
+        execution_context.last_edit_success_path = edited_path
         _enter_post_edit_state(execution_context)
         return
 
     current_signature = _edit_signature(tool_name, edited_path, arguments, agent.tool_caps)
-    last_sig, _fail_count = execution_context["edit_loop_state"].get(edited_path, (None, 0))
+    last_sig, _fail_count = execution_context.edit_loop_state.get(edited_path, (None, 0))
     if current_signature == last_sig:
         new_fail_count = _fail_count + 1
-        execution_context["edit_loop_state"][edited_path] = (last_sig, new_fail_count)
+        execution_context.edit_loop_state[edited_path] = (last_sig, new_fail_count)
     else:
         new_fail_count = 1
-        execution_context["edit_loop_state"][edited_path] = (current_signature, new_fail_count)
+        execution_context.edit_loop_state[edited_path] = (current_signature, new_fail_count)
     # Per-file streak, incremented whether or not the patch changed — this is what
     # escalates a model trying *different* wrong anchors on the same file. The
     # signature-based count above resets per patch and only guards identical-patch spin.
@@ -250,24 +250,24 @@ def _observe_edit_outcome(
     # missing content, and forging "you have not read this" to provoke a re-read buys a
     # blind reread where the failure itself already carries the current text (see
     # server_files._anchor_retry_hint).
-    streak = int(execution_context["edit_fail_streak_by_file"].get(edited_path, 0)) + 1
-    execution_context["edit_fail_streak_by_file"][edited_path] = streak
+    streak = int(execution_context.edit_fail_streak_by_file.get(edited_path, 0)) + 1
+    execution_context.edit_fail_streak_by_file[edited_path] = streak
 
 
-def _observe_todo_flags(agent: Any, tool_name: str, status: Any, execution_context: dict[str, Any]) -> None:
+def _observe_todo_flags(agent: Any, tool_name: str, status: Any, execution_context: ExecutionContext) -> None:
     """Flag that a task plan was recorded. The checklist (ordered steps) and the prose
     rationale are the same TASK_PLANNING capability, told apart by the `plan_steps`
     arg-role — the checklist carries the steps, the rationale does not."""
     if status != "ok" or tool_name not in names_with_cap(TASK_PLANNING, agent.tool_caps):
         return
     if arg_role(tool_name, "plan_steps", agent.tool_caps):
-        execution_context["todo_written"] = True
+        execution_context.todo_written = True
     else:
-        execution_context["plan_written"] = True
+        execution_context.plan_written = True
 
 
 def _observe_replacement_tracking(
-    agent: Any, tool_name: str, arguments: dict, status: Any, execution_context: dict[str, Any],
+    agent: Any, tool_name: str, arguments: dict, status: Any, execution_context: ExecutionContext,
 ) -> None:
     """Track old_text/new_text from replacement operations for completeness checking."""
     if not (has_cap(tool_name, REPLACEMENT_TRACK, agent.tool_caps) and status == "ok"):
@@ -276,26 +276,26 @@ def _observe_replacement_tracking(
     if not old_text:
         return
     edited_path = agent._normalize_workspace_path(arguments.get("path"))
-    last_file = execution_context.get("last_replace_file", "")
+    last_file = execution_context.last_replace_file
     # If this edit is on a different file than the previous tracked edit,
     # clear the stale last_replace_* fields first so completeness checks
     # don't fire against the wrong file.
     if last_file and edited_path and edited_path != last_file:
-        execution_context["last_replace_old_text"] = ""
-        execution_context["last_replace_new_text"] = ""
-        execution_context["last_replace_file"] = ""
-    execution_context["last_replace_old_text"] = old_text
-    execution_context["last_replace_new_text"] = arguments.get("new_text") or ""
-    execution_context["last_replace_file"] = edited_path or ""
+        execution_context.last_replace_old_text = ""
+        execution_context.last_replace_new_text = ""
+        execution_context.last_replace_file = ""
+    execution_context.last_replace_old_text = old_text
+    execution_context.last_replace_new_text = arguments.get("new_text") or ""
+    execution_context.last_replace_file = edited_path or ""
     # A confirmed replacement (only the workspace-wide replacer takes confirm=True among
     # replacement-tracking tools) seeds the cross-file completeness check.
     if arguments.get("confirm"):
-        execution_context["cross_file_grep_old_text"] = old_text
-        execution_context["cross_file_grep_source"] = edited_path or ""
+        execution_context.cross_file_grep_old_text = old_text
+        execution_context.cross_file_grep_source = edited_path or ""
 
 
 def _mark_file_validated(
-    execution_context: dict[str, Any], target: str, tier: str = "static",
+    execution_context: ExecutionContext, target: str, tier: str = "static",
 ) -> None:
     """Credit *target* as checked and advance the workflow when nothing is pending.
 
@@ -309,17 +309,17 @@ def _mark_file_validated(
     effect on the conclude-gate — every tier counts as validated — and is read only by
     the completion ledger.
     """
-    execution_context["validation_fail_count_by_file"].pop(target, None)
-    execution_context["validated_files"].add(target)
+    execution_context.validation_fail_count_by_file.pop(target, None)
+    execution_context.validated_files.add(target)
     raise_validation_tier(execution_context, target, tier)
-    if execution_context["code_mutation_started"] and not has_pending_validation(execution_context):
+    if execution_context.code_mutation_started and not has_pending_validation(execution_context):
         set_workflow_state(execution_context, "conclude")
-        execution_context["nudge_counts"]["validation"] = 0
-        execution_context["nudge_counts"]["state"] = 0
+        execution_context.nudge_counts["validation"] = 0
+        execution_context.nudge_counts["state"] = 0
 
 
 def _register_validation_failure(
-    execution_context: dict[str, Any], target: str, tier: str = "static",
+    execution_context: ExecutionContext, target: str, tier: str = "static",
 ) -> None:
     """Record a failed check of *target* and drive the retry-budget escape.
 
@@ -332,15 +332,15 @@ def _register_validation_failure(
     stated. This is what re-feeds the (otherwise inert) fail-count that the completion
     gate, the anti-thrashing state guard, and the nudge all read.
     """
-    fail_counts = execution_context["validation_fail_count_by_file"]
+    fail_counts = execution_context.validation_fail_count_by_file
     fail_counts[target] = int(fail_counts.get(target, 0)) + 1
-    execution_context["validated_files"].discard(target)
-    execution_context.get("validation_tier_by_file", {}).pop(target, None)
-    if not execution_context["code_mutation_started"]:
+    execution_context.validated_files.discard(target)
+    execution_context.validation_tier_by_file.pop(target, None)
+    if not execution_context.code_mutation_started:
         return
     set_workflow_state(execution_context, "edit")
-    dirty = execution_context.get("dirty_written_files", set())
-    validated = execution_context.get("validated_files", set())
+    dirty = execution_context.dirty_written_files
+    validated = execution_context.validated_files
     all_stuck = dirty and all(
         f in validated or int(fail_counts.get(f, 0)) >= VALIDATION_RETRY_BUDGET
         for f in dirty
@@ -350,7 +350,7 @@ def _register_validation_failure(
 
 
 def _observe_validation_tool(
-    agent: Any, tool_name: str, arguments: dict, status: Any, execution_context: dict[str, Any],
+    agent: Any, tool_name: str, arguments: dict, status: Any, execution_context: ExecutionContext,
 ) -> None:
     """A dedicated VALIDATE tool marks its target file validated on success.
 
@@ -366,12 +366,12 @@ def _observe_validation_tool(
     arg_names = path_args(tool_name, getattr(agent, "tool_caps", None)) or ("filepath", "path")
     raw = next((arguments.get(a) for a in arg_names if arguments.get(a)), None)
     target = agent._normalize_workspace_path(raw)
-    if target and target in execution_context.get("dirty_written_files", set()):
+    if target and target in execution_context.dirty_written_files:
         _mark_file_validated(execution_context, target)
 
 
 def _observe_missing_module(
-    agent: Any, tool_name: str, payload: dict, status: Any, execution_context: dict[str, Any],
+    agent: Any, tool_name: str, payload: dict, status: Any, execution_context: ExecutionContext,
 ) -> None:
     """Flag when a check/run failed for a missing importable module (not a code defect).
 
@@ -390,9 +390,9 @@ def _observe_missing_module(
     """
     if status == "ok":
         if has_cap(tool_name, CODE_EXEC, getattr(agent, "tool_caps", None)):
-            execution_context.get("unresolved_modules", set()).clear()
+            execution_context.unresolved_modules.clear()
         return
-    unresolved = execution_context.setdefault("unresolved_modules", set())
+    unresolved = execution_context.unresolved_modules
     text_fields = (
         payload.get("stderr"),
         payload.get("stdout"),
@@ -413,7 +413,7 @@ def _observe_missing_module(
 
 
 def _observe_env_probe(
-    agent: Any, tool_name: str, execution_context: dict[str, Any],
+    agent: Any, tool_name: str, execution_context: ExecutionContext,
 ) -> None:
     """Record that the agent enumerated the available runtime environments.
 
@@ -421,11 +421,11 @@ def _observe_env_probe(
     the env-resolution nudge stops firing — the agent has the env list it was steered to.
     """
     if has_cap(tool_name, ENV_DISCOVERY, getattr(agent, "tool_caps", None)):
-        execution_context["env_probed"] = True
+        execution_context.env_probed = True
 
 
 def _observe_env_mutation(
-    agent: Any, tool_name: str, payload: dict, status: Any, execution_context: dict[str, Any],
+    agent: Any, tool_name: str, payload: dict, status: Any, execution_context: ExecutionContext,
 ) -> None:
     """Record a successful environment mutation as a cleanup obligation.
 
@@ -438,7 +438,7 @@ def _observe_env_mutation(
         return
     if not has_cap(tool_name, ENV_MUTATE, getattr(agent, "tool_caps", None)):
         return
-    mutations = execution_context.setdefault("env_mutations", [])
+    mutations = execution_context.env_mutations
     record = {
         "tool": tool_name,
         "installed": payload.get("installed") or [],
@@ -451,7 +451,7 @@ def _observe_env_mutation(
 
 
 def _observe_denial_clearing(
-    agent: Any, tool_name: str, arguments: dict, status: Any, execution_context: dict[str, Any],
+    agent: Any, tool_name: str, arguments: dict, status: Any, execution_context: ExecutionContext,
 ) -> None:
     """Clear a recorded denial once the same tool+path later succeeds."""
     if status != "ok":
@@ -462,32 +462,32 @@ def _observe_denial_clearing(
         or arguments.get("subdir")
         or arguments.get("directory")
     )
-    denied_calls = execution_context["denied_tool_calls"]
-    execution_context["denied_tool_calls"] = [
+    denied_calls = execution_context.denied_tool_calls
+    execution_context.denied_tool_calls = [
         item for item in denied_calls
         if not (
             item.get("tool") == tool_name
             and item.get("path") == resolved_path
         )
     ]
-    if not execution_context["denied_tool_calls"]:
-        execution_context["nudge_counts"]["denial"] = 0
+    if not execution_context.denied_tool_calls:
+        execution_context.nudge_counts["denial"] = 0
 
 
 def _observe_edit_loop_clear(
-    agent: Any, tool_name: str, arguments: dict, status: Any, execution_context: dict[str, Any],
+    agent: Any, tool_name: str, arguments: dict, status: Any, execution_context: ExecutionContext,
 ) -> None:
     """Re-reading or re-checking a file resets its edit-loop failure tracking."""
     if not (clears_edit_loop(tool_name, agent.tool_caps) and status == "ok"):
         return
     read_path = agent._normalize_workspace_path(arguments.get("path") or arguments.get("filepath"))
     if read_path:
-        execution_context["edit_loop_state"].pop(read_path, None)
+        execution_context.edit_loop_state.pop(read_path, None)
         _clear_edit_fail_streak(execution_context, read_path)
 
 
 def _observe_delete(
-    agent: Any, tool_name: str, arguments: dict, status: Any, execution_context: dict[str, Any],
+    agent: Any, tool_name: str, arguments: dict, status: Any, execution_context: ExecutionContext,
 ) -> None:
     if not (has_cap(tool_name, REMOVE, agent.tool_caps) and status == "ok"):
         return
@@ -498,22 +498,22 @@ def _observe_delete(
     # file must not survive anywhere as evidence, and hand-listing the fields meant a
     # new path-valued field would silently keep stale entries.
     for field in fields_with(FILE_PATH):
-        execution_context[field].discard(deleted_path)
+        getattr(execution_context, field).discard(deleted_path)
     agent._discard_carry_path(deleted_path)
 
 
 def _observe_search_flags(
-    agent: Any, tool_name: str, arguments: dict, status: Any, execution_context: dict[str, Any],
+    agent: Any, tool_name: str, arguments: dict, status: Any, execution_context: ExecutionContext,
 ) -> None:
     if not (has_cap(tool_name, SEARCH, agent.tool_caps) and status == "ok"):
         return
-    execution_context["searched"] = True
-    execution_context["search_tool_calls"] += 1
+    execution_context.searched = True
+    execution_context.search_tool_calls += 1
 
 
-def _observe_discover_transition(payload: dict, execution_context: dict[str, Any]) -> None:
+def _observe_discover_transition(payload: dict, execution_context: ExecutionContext) -> None:
     """Leave discover state once any tool returns concrete results."""
-    if execution_context["workflow_state"] != "discover":
+    if execution_context.workflow_state != "discover":
         return
     search_has_results = bool(
         payload.get("matches")
@@ -528,7 +528,7 @@ def _observe_discover_transition(payload: dict, execution_context: dict[str, Any
 
 
 def _observe_candidates(
-    agent: Any, tool_name: str, payload: dict, execution_context: dict[str, Any],
+    agent: Any, tool_name: str, payload: dict, execution_context: ExecutionContext,
 ) -> None:
     if not has_cap(tool_name, CANDIDATE_SEARCH, agent.tool_caps):
         return
@@ -540,25 +540,25 @@ def _observe_candidates(
             continue
         _register_known_path(execution_context, candidate)
         candidate_parent = agent._parent_path(candidate)
-        execution_context["similar_candidates_by_dir"].setdefault(candidate_parent, set()).add(candidate)
+        execution_context.similar_candidates_by_dir.setdefault(candidate_parent, set()).add(candidate)
 
 
 def _observe_dir_inspect(
     agent: Any, tool_name: str, status: Any, path: str, payload: dict,
-    execution_context: dict[str, Any],
+    execution_context: ExecutionContext,
 ) -> None:
     if not (has_cap(tool_name, INSPECT_DIR, agent.tool_caps) and status == "ok"):
         return
     if path:
-        execution_context["inspected_dirs"].add(path)
+        execution_context.inspected_dirs.add(path)
     listed_dir = agent._normalize_workspace_path(payload.get("path") or payload.get("parent"))
     if listed_dir:
-        execution_context["inspected_dirs"].add(listed_dir)
+        execution_context.inspected_dirs.add(listed_dir)
 
 
 def _observe_existence_check(
     agent: Any, tool_name: str, arguments: dict, status: Any, payload: dict,
-    execution_context: dict[str, Any],
+    execution_context: ExecutionContext,
 ) -> None:
     if not (has_cap(tool_name, CHECK_EXISTENCE, agent.tool_caps) and arguments.get("path")):
         return
@@ -566,14 +566,14 @@ def _observe_existence_check(
     if not checked:
         return
     if status == "ok" or payload.get("exists") is not None:
-        execution_context["checked_paths"].add(checked)
+        execution_context.checked_paths.add(checked)
     if payload.get("exists") is True:
         _register_known_path(execution_context, checked)
 
 
 def _observe_read(
     agent: Any, tool_name: str, arguments: dict, status: Any,
-    execution_context: dict[str, Any],
+    execution_context: ExecutionContext,
 ) -> None:
     if not (has_cap(tool_name, READ, agent.tool_caps) and status == "ok"):
         return
@@ -581,14 +581,14 @@ def _observe_read(
     if not path:
         return
 
-    execution_context["read_files"].add(path)
+    execution_context.read_files.add(path)
     _register_known_path(execution_context, path)
-    execution_context["checked_paths"].add(path)
+    execution_context.checked_paths.add(path)
 
 
 def _observe_delegated_exploration(
     agent: Any, tool_name: str, payload: dict, status: Any,
-    execution_context: dict[str, Any],
+    execution_context: ExecutionContext,
 ) -> None:
     """Credit what a sub-agent read back to the caller that sent it.
 
@@ -603,12 +603,12 @@ def _observe_delegated_exploration(
     for raw in payload.get("files_read") or ():
         path = agent._normalize_workspace_path(raw)
         if path:
-            execution_context["delegated_read_files"].add(path)
+            execution_context.delegated_read_files.add(path)
             _register_known_path(execution_context, path)
 
 
 def _observe_declared_edit_set(
-    agent: Any, tool_name: str, arguments: dict, status: Any, execution_context: dict[str, Any],
+    agent: Any, tool_name: str, arguments: dict, status: Any, execution_context: ExecutionContext,
 ) -> None:
     """Record the source-file paths named in a task-checklist declaration.
 
@@ -641,12 +641,12 @@ def _observe_declared_edit_set(
         if (candidate := agent._normalize_workspace_path(match.group(0)))
     }
     # Mutated in place: other modules hold a reference to this set.
-    execution_context["declared_edit_set"].clear()
-    execution_context["declared_edit_set"].update(declared)
+    execution_context.declared_edit_set.clear()
+    execution_context.declared_edit_set.update(declared)
 
 
 def _observe_action_op(
-    agent: Any, tool_name: str, status: Any, execution_context: dict[str, Any],
+    agent: Any, tool_name: str, status: Any, execution_context: ExecutionContext,
 ) -> None:
     """Count each successful substantive action (write / execution / mutation).
 
@@ -657,7 +657,7 @@ def _observe_action_op(
     still recognised as multi-step and prompted to record a checklist.
     """
     if status == "ok" and has_cap(tool_name, PLAN_BLOCKED, agent.tool_caps):
-        execution_context["action_op_count"] = int(execution_context.get("action_op_count", 0)) + 1
+        execution_context.action_op_count = int(execution_context.action_op_count) + 1
 
 
 def _run_key(tool_name: str, payload: dict, spec: dict[str, Any] | None) -> str:
@@ -695,7 +695,7 @@ def _matches(payload: dict, spec: dict[str, Any], kind: str) -> bool:
 
 def _observe_tool_run(
     agent: Any, tool_name: str, arguments: dict, status: Any,
-    execution_context: dict[str, Any], call_id: str = "", payload: dict | None = None,
+    execution_context: ExecutionContext, call_id: str = "", payload: dict | None = None,
 ) -> None:
     """A non-shell execution tool ran: its output owes a verdict too.
 
@@ -723,7 +723,7 @@ def _observe_tool_run(
 
 def _observe_run_outcome(
     agent: Any, tool_name: str, payload: dict,
-    execution_context: dict[str, Any], call_id: str = "",
+    execution_context: ExecutionContext, call_id: str = "",
 ) -> None:
     """Record what the *server* saw of a run it performed itself.
 
@@ -756,7 +756,7 @@ def _observe_run_outcome(
 
 
 def _credit_measured_source(
-    execution_context: dict[str, Any], payload: dict, spec: dict[str, Any],
+    execution_context: ExecutionContext, payload: dict, spec: dict[str, Any],
 ) -> None:
     """Raise the optimisation session's source file to the ``measured`` tier.
 
@@ -775,12 +775,12 @@ def _credit_measured_source(
         return
 
     source = active_proxy_source()
-    if source and source in execution_context.get("dirty_written_files", set()):
+    if source and source in execution_context.dirty_written_files:
         _mark_file_validated(execution_context, source, "measured")
 
 
 def _settle_from_machine(
-    execution_context: dict[str, Any], tool_name: str, payload: dict,
+    execution_context: ExecutionContext, tool_name: str, payload: dict,
     spec: dict[str, Any], call_id: str,
 ) -> None:
     """Apply one declared run outcome to the ledger.
@@ -803,7 +803,7 @@ def _settle_from_machine(
             execution_context, key, False, call_id, _MACHINE_SAW_CRASH)
         return
     _record_run_outcome(execution_context, key, True, call_id)
-    run = (execution_context.get("runs") or {}).get(key)
+    run = (execution_context.runs or {}).get(key)
     if run is not None:
         run["verdict"] = "fail"
         run["reason"] = _MACHINE_SAW_FAILURE
@@ -996,7 +996,7 @@ def _bash_validation_scan(
 
 
 def _record_run_outcome(
-    execution_context: dict[str, Any], command: str, completed: bool,
+    execution_context: ExecutionContext, command: str, completed: bool,
     call_id: str = "", reason: str = "", effect: str = EFFECT_RUN,
     missing_head: str = "", exit_settles: bool = True,
 ) -> None:
@@ -1029,14 +1029,14 @@ def _record_run_outcome(
     if not completed:
         if missing_head:
             run["blocked"] = f"{missing_head} is not installed here"
-            execution_context["exercise_blocked_reason"] = run["blocked"]
-            execution_context["exercise_advice_closed"] = True
+            execution_context.exercise_blocked_reason = run["blocked"]
+            execution_context.exercise_advice_closed = True
         else:
             _register_run_failure(execution_context, command, reason)
 
 
 def _register_run_failure(
-    execution_context: dict[str, Any], command: str, reason: str = "",
+    execution_context: ExecutionContext, command: str, reason: str = "",
 ) -> None:
     """Charge a run's failure against the repair budget and steer back to ``edit``.
 
@@ -1045,13 +1045,13 @@ def _register_run_failure(
     ``conclude`` rather than wedged — the run is reported unresolved with what was
     tried, and the answer carries the residual risk instead of looping on it.
     """
-    run = (execution_context.get("runs") or {}).get(run_ledger_key(command))
+    run = (execution_context.runs or {}).get(run_ledger_key(command))
     if run is None:
         return
     run["failures"] = int(run.get("failures", 0)) + 1
     if reason:
         run.setdefault("attempts", []).append(reason)
-    if not execution_context.get("code_mutation_started"):
+    if not execution_context.code_mutation_started:
         return
     set_workflow_state(execution_context, "edit")
     if all(
@@ -1062,7 +1062,7 @@ def _register_run_failure(
 
 
 def _record_test_failure_signatures(
-    execution_context: dict[str, Any], out: str,
+    execution_context: ExecutionContext, out: str,
 ) -> None:
     """Record WHICH tests a red run reported, per test file.
 
@@ -1084,7 +1084,7 @@ def _record_test_failure_signatures(
     by_file: dict[str, list[str]] = {}
     for node in signature.split():
         by_file.setdefault(node.split("::", 1)[0], []).append(node)
-    ledger = execution_context.setdefault("test_failure_signatures", {})
+    ledger = execution_context.test_failure_signatures
     for path, nodes in by_file.items():
         seen = ledger.setdefault(path, [])
         sig = " ".join(nodes)
@@ -1092,7 +1092,7 @@ def _record_test_failure_signatures(
             seen.append(sig)
 
 
-def _stage_moving_test_alert(execution_context: dict[str, Any]) -> None:
+def _stage_moving_test_alert(execution_context: ExecutionContext) -> None:
     """Arm the one-time "read the test itself" corrective for a test that is moving.
 
     Fires on a file whose failing SET has changed at least once — two entries in the
@@ -1105,18 +1105,18 @@ def _stage_moving_test_alert(execution_context: dict[str, Any]) -> None:
     debugging a red suite is by definition still calling tools. Once per file per query:
     the point is made or it is not.
     """
-    ledger = execution_context.get("test_failure_signatures") or {}
-    told = execution_context.setdefault("_moving_test_told", [])
+    ledger = execution_context.test_failure_signatures or {}
+    told = execution_context.moving_test_told
     for path, seen in sorted(ledger.items()):
         if len(seen) >= 2 and path not in told:
             told.append(path)
-            execution_context["_moving_test_alert"] = path
+            execution_context.moving_test_alert = path
             return
 
 
 def _observe_bash_validation(
     agent: Any, tool_name: str, arguments: dict, status: Any, payload: dict,
-    execution_context: dict[str, Any], call_id: str = "",
+    execution_context: ExecutionContext, call_id: str = "",
 ) -> None:
     """Drive validation and run state from a bash command — success AND failure.
 
@@ -1170,10 +1170,10 @@ def _observe_bash_validation(
     if reason == TEST_RUNNER_FAILURE:
         _record_test_failure_signatures(execution_context, out)
         _stage_moving_test_alert(execution_context)
-    dirty = execution_context.get("dirty_written_files", set())
+    dirty = execution_context.dirty_written_files
     for target in explicit:
         if is_python_test_filepath(target):
-            execution_context["tests_run"].add(target)
+            execution_context.tests_run.add(target)
         if not tier or target not in dirty:
             continue
         if completed:
@@ -1197,7 +1197,7 @@ def _observe_bash_validation(
 
 def _observe_command(
     agent: Any, tool_name: str, arguments: dict, status: Any, payload: dict,
-    execution_context: dict[str, Any],
+    execution_context: ExecutionContext,
 ) -> None:
     """Credit the blackboard from a shell command classified into capability kinds.
 
@@ -1243,33 +1243,33 @@ def _observe_command(
             for op in operands:
                 path = _resolve(op)
                 if path:
-                    execution_context["read_files"].add(path)
-                    execution_context["checked_paths"].add(path)
+                    execution_context.read_files.add(path)
+                    execution_context.checked_paths.add(path)
                     _register_known_path(execution_context, path)
         elif kind == Kind.SEARCH:
-            execution_context["searched"] = True
-            execution_context["search_tool_calls"] += 1
+            execution_context.searched = True
+            execution_context.search_tool_calls += 1
         elif kind == Kind.INSPECT:
             for op in operands:
                 path = _resolve(op)
                 if path:
-                    execution_context["inspected_dirs"].add(path)
+                    execution_context.inspected_dirs.add(path)
         elif kind == Kind.WRITE:
-            execution_context["action_op_count"] = int(execution_context.get("action_op_count", 0)) + 1
+            execution_context.action_op_count = int(execution_context.action_op_count) + 1
             for op in operands:
                 path = _resolve(op)
                 if path and agent._is_code_filepath(path):
                     _record_code_edit(execution_context, path)
-                    execution_context["last_edit_success_path"] = path
+                    execution_context.last_edit_success_path = path
                     _enter_post_edit_state(execution_context)
         elif kind in (Kind.EXEC, Kind.UNKNOWN):
             # Marking a dirty file validated (or failed) is handled status-agnostically
             # by _observe_bash_validation; here we only count the substantive action.
-            execution_context["action_op_count"] = int(execution_context.get("action_op_count", 0)) + 1
+            execution_context.action_op_count = int(execution_context.action_op_count) + 1
         elif kind == Kind.ENV_DISCOVERY:
-            execution_context["env_probed"] = True
+            execution_context.env_probed = True
         elif kind == Kind.ENV_MUTATE:
-            mutations = execution_context.setdefault("env_mutations", [])
+            mutations = execution_context.env_mutations
             record = {
                 "tool": tool_name, "installed": list(operands),
                 "python": "", "path": "", "name": "",
@@ -1279,14 +1279,14 @@ def _observe_command(
 
     # Mirror _observe_discover_transition (which matches result payloads the bash
     # tool doesn't emit): a read/search/inspect that produced output leaves discover.
-    if execution_context["workflow_state"] == "discover" and payload.get("stdout"):
+    if execution_context.workflow_state == "discover" and payload.get("stdout"):
         if any(seg.kind in (Kind.READ, Kind.SEARCH, Kind.INSPECT) for seg in segments):
             set_workflow_state(execution_context, "edit")
 
 
 def _observe_verdict_tool(
     agent: Any, tool_name: str, arguments: dict, status: Any,
-    execution_context: dict[str, Any],
+    execution_context: ExecutionContext,
 ) -> None:
     """The model judged a run's output: settle the run it speaks for.
 
@@ -1318,7 +1318,7 @@ def _observe_verdict_tool(
 
 
 def _observe_unwatched_runs(
-    payload: dict, status: Any, execution_context: dict[str, Any],
+    payload: dict, status: Any, execution_context: ExecutionContext,
 ) -> None:
     """Record long work a scheduler says exists and no descriptor covers.
 
@@ -1342,7 +1342,7 @@ def _observe_unwatched_runs(
     listed = payload.get("unwatched") or ()
     if status != "ok" or not (listed or handles):
         return
-    unwatched = execution_context.setdefault("unwatched_runs", set())
+    unwatched = execution_context.unwatched_runs
     unwatched.update(job_id for job_id in listed
                      if isinstance(job_id, str) and job_id)
     # Adopted or freshly submitted, which are the same fact here: something now polls
@@ -1358,13 +1358,10 @@ def record_tool_observation(
     tool_name: str,
     arguments: dict,
     result: str,
-    execution_context: dict[str, Any] | None,
+    execution_context: ExecutionContext | None,
     call_id: str = "",
 ) -> None:
     execution_context = ensure_execution_context(execution_context)
-    execution_context = (
-        bootstrap_runtime_context(execution_context) if execution_context is not None else None
-    )
     if execution_context is None:
         return
 

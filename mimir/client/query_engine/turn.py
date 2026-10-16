@@ -15,9 +15,10 @@ from ..protocol.messages import reconcile_tool_pairs
 from .agent_loop import AgentLoop
 from .deferral import KIND_CALLS, KIND_PLAN_DECISION, take_deferred_calls
 from .finalize import _record_turn
-from .loop_base import _OBSERVED_MODE, ModeSwitch, StepLoop, TurnContext
+from .loop_base import ModeSwitch, StepLoop, TurnContext
 from .plan_loop import PlanLoop
 from .verification import build_ledger
+from ..context.execution_context import ExecutionContext
 
 
 def _loop_for(turn: TurnContext, mode: str, system_content: str, *,
@@ -47,7 +48,7 @@ async def run_loops(turn: TurnContext, mode: str, system_content: str, *,
         loop = _loop_for(turn, outcome.mode, outcome.system_content)
 
 
-def _emit_interrupted_state(execution_context: dict) -> None:
+def _emit_interrupted_state(execution_context: ExecutionContext) -> None:
     """Say what an abandoned query left behind, best-effort and never raising.
 
     Best-effort because it runs while an exception is in flight: a failure here
@@ -99,19 +100,19 @@ async def run_agent_query(
     execution_context = agent._new_execution_context()
     # Set here rather than passed in: a front-end's stand-in agent supplies its own
     # zero-argument factory, and the root is a fact about the agent either way.
-    execution_context["workspace_root"] = getattr(agent, "workspace_root", "")
+    execution_context.workspace_root = getattr(agent, "workspace_root", "")
     agent._apply_carry_context(execution_context)
     validate_execution_context(execution_context)
     active_mode = agent._normalize_mode(mode or agent.mode)
     # Baseline for the live-mode check: only a *later* change to agent.mode is a
     # user switching mid-run. Seeded from the agent, not from active_mode, so an
     # explicit per-query override never registers as one. See _live_mode.
-    execution_context[_OBSERVED_MODE] = getattr(agent, "mode", active_mode)
+    execution_context.observed_agent_mode = getattr(agent, "mode", active_mode)
 
     system_content = await agent._build_system_content(active_mode=active_mode)
 
     # Store the active todo file path so _sync_checklist can watch it for changes.
-    execution_context["todo_file_path"] = agent._get_todo_file()
+    execution_context.todo_file_path = agent._get_todo_file()
 
     # The caller may or may not have already appended the current user turn to
     # ``history``: the WS server does (it owns the chat history and appends the
@@ -199,21 +200,21 @@ async def run_agent_query(
             + skill["content"]
         )
         messages[0]["content"] = system_content
-        execution_context["_skill_suffix"] = system_content[len(_base_system_content):]
+        execution_context.skill_suffix = system_content[len(_base_system_content):]
         # Counted among the loaded skills, with no call id: there is no tool result to
         # pin because the body is in messages[0], which nothing evicts. What this buys
         # is that the model cannot pull what it has already been given, and that the
         # cap counts a body the user put there the same as one the model asked for.
-        execution_context.setdefault("skills_loaded", {})[skill_name] = ""
+        execution_context.skills_loaded[skill_name] = ""
 
     # messages[0] now carries the checklist as it stands at query start; _sync_checklist
     # rewrites it from here on, and only when the file behind it actually changes. The
     # mtime is seeded rather than left unset so an unchanged checklist costs nothing on
     # the first step of every query.
-    _todo_fp = execution_context.get("todo_file_path", "")
+    _todo_fp = execution_context.todo_file_path
     if _todo_fp:
         try:
-            execution_context["_checklist_stamp"] = os.stat(_todo_fp).st_mtime_ns
+            execution_context.checklist_stamp = os.stat(_todo_fp).st_mtime_ns
         except OSError:
             pass
 

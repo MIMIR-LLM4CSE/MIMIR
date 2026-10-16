@@ -1,3 +1,4 @@
+from mimir.client.context.execution_context import build_execution_context
 import unittest
 
 from mimir.client.config.limits import EXERCISE_BUDGET
@@ -110,12 +111,9 @@ class UnwatchedRunNudgeTest(unittest.TestCase):
     """
 
     def _context(self, **over):
-        ctx = {
-            "unwatched_runs": {"15306620"},
-            "workflow_state": "conclude",
-            "nudge_counts": {},
-        }
-        ctx.update(over)
+        ctx = build_execution_context(unwatched_runs={"15306620"}, workflow_state="conclude", nudge_counts={})
+        for _name, _value in over.items():
+            setattr(ctx, _name, _value)
         return ctx
 
     def _fires(self, ctx, *, level="strict", mode="agent") -> bool:
@@ -148,7 +146,7 @@ class UnwatchedRunNudgeTest(unittest.TestCase):
     def test_the_message_names_the_ids_and_both_handles(self):
         from mimir.client.guardrails.nudges.messages import unwatched_run_nudge_message
         text = unwatched_run_nudge_message(
-            {"unwatched_runs": {"15306620", "15306621"}})
+            build_execution_context(unwatched_runs={"15306620", "15306621"}))
         self.assertIn("15306620", text)
         self.assertIn("15306621", text)
         # Both kinds, because the set is kind-agnostic by construction.

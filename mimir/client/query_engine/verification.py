@@ -18,6 +18,7 @@ from ..context import (
     weakest_validation_tier,
 )
 from ..guardrails.workflow import unchecked_checklist_items
+from ..context.execution_context import ExecutionContext
 
 #: Opening marker of a rendered ledger block. Stable — UIs split answers on it.
 LEDGER_MARKER = "<!--mimir:ledger"
@@ -119,7 +120,7 @@ def _plural(n: int, word: str) -> str:
     return f"{n} {word}" if n == 1 else f"{n} {word}s"
 
 
-def build_ledger(execution_context: dict) -> dict | None:
+def build_ledger(execution_context: ExecutionContext) -> dict | None:
     """The ledger for this run, or None when nothing happened worth recording.
 
     Returns ``{"status": ok|note|warn, "files": int, "summary": str, "rows": [markdown]}``.
@@ -139,10 +140,10 @@ def build_ledger(execution_context: dict) -> dict | None:
     the code was executed and what the model read in the output. Merging them is what let
     "validated" be reported as "correct".
     """
-    written = sorted(execution_context.get("dirty_written_files", set()))
-    validated = execution_context.get("validated_files", set())
+    written = sorted(execution_context.dirty_written_files)
+    validated = execution_context.validated_files
     unchecked = unchecked_checklist_items(execution_context)
-    runs = execution_context.get("runs") or {}
+    runs = execution_context.runs or {}
     required = [it for it in unchecked if not it.get("optional")]
     optional = [it for it in unchecked if it.get("optional")]
 
@@ -153,7 +154,7 @@ def build_ledger(execution_context: dict) -> dict | None:
 
     rows: list[str] = []
     notes: list[str] = []
-    unverifiable = set(execution_context.get("unverifiable_files", set()) or set())
+    unverifiable = set(execution_context.unverifiable_files or set())
     unvalidated = [f for f in written if f not in validated]
 
     for f in written:
@@ -187,7 +188,7 @@ def build_ledger(execution_context: dict) -> dict | None:
     blocked = [c for c, r in runs.items() if r.get("blocked")]
     if written and not unvalidated and not runs:
         notes.append(_UNCHECKED_OUTPUT_NOTE)
-        blocked = str(execution_context.get("exercise_blocked_reason") or "").strip()
+        blocked = str(execution_context.exercise_blocked_reason or "").strip()
         if blocked:
             notes.append(_EXERCISE_BLOCKED_NOTE.format(reason=blocked))
     if any(f in unverifiable for f in unvalidated):

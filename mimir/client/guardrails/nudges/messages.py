@@ -19,10 +19,8 @@ from ..workflow import (
     VALIDATION_RETRY_BUDGET,
     WORKFLOW_STATES,
 )
-from ...context import (
-    bootstrap_state_context,
-)
 from ...config.limits import STUCK_REPAIR_CONSTRAIN_AFTER
+from ...context.execution_context import ExecutionContext
 
 
 # A refusal is an instruction, not an error to report and retry. The three readings
@@ -53,8 +51,8 @@ _DENIAL_HANDBACK: str = (
 )
 
 
-def state_nudge_message(agent: Any, execution_context: dict) -> str:
-    state = execution_context.get("workflow_state", "discover")
+def state_nudge_message(agent: Any, execution_context: ExecutionContext) -> str:
+    state = execution_context.workflow_state
     if state == "discover":
         return (
             "Workflow state is DISCOVER (gather evidence). Collect enough material — repository context "
@@ -103,7 +101,7 @@ def _validation_nudge_message(findings: dict[str, str]) -> str:
     )
 
 
-def denial_nudge_message(execution_context: dict | None = None) -> str:
+def denial_nudge_message(execution_context: ExecutionContext | None = None) -> str:
     context = execution_context or {}
     stage = worst_denial_stage(context)
 
@@ -112,7 +110,7 @@ def denial_nudge_message(execution_context: dict | None = None) -> str:
     if stage == STAGE_DROP_OR_STOP:
         return _DENIAL_DROP_OR_STOP
 
-    denied_calls = context.get("denied_tool_calls", [])
+    denied_calls = context.denied_tool_calls
     if not denied_calls:
         return _DENIAL_RECONSIDER
 
@@ -242,8 +240,8 @@ def unfinished_plan_nudge_message(unchecked: list[dict]) -> str:
     )
 
 
-def env_resolution_nudge_message(execution_context: dict) -> str:
-    modules = sorted(m for m in execution_context.get("unresolved_modules", set()) if m)
+def env_resolution_nudge_message(execution_context: ExecutionContext) -> str:
+    modules = sorted(m for m in execution_context.unresolved_modules if m)
     mod_hint = f" (missing: {', '.join(modules[:3])})" if modules else ""
     return (
         "A check or run failed because a required module is not importable in the "
@@ -261,8 +259,8 @@ def env_resolution_nudge_message(execution_context: dict) -> str:
     )
 
 
-def env_cleanup_nudge_message(execution_context: dict) -> str:
-    mutations = execution_context.get("env_mutations", []) or []
+def env_cleanup_nudge_message(execution_context: ExecutionContext) -> str:
+    mutations = execution_context.env_mutations or []
     lines = []
     for m in mutations[:4]:
         if m.get("installed"):
@@ -279,8 +277,8 @@ def env_cleanup_nudge_message(execution_context: dict) -> str:
     )
 
 
-def unwatched_run_nudge_message(execution_context: dict) -> str:
-    ids = sorted(execution_context.get("unwatched_runs", set()) or set())
+def unwatched_run_nudge_message(execution_context: ExecutionContext) -> str:
+    ids = sorted(execution_context.unwatched_runs or set())
     named = ", ".join(ids[:6]) + (f" (+{len(ids) - 6} more)" if len(ids) > 6 else "")
     plural = "s" if len(ids) != 1 else ""
     return (
@@ -297,8 +295,8 @@ def unwatched_run_nudge_message(execution_context: dict) -> str:
     )
 
 
-def documentation_nudge_message(execution_context: dict) -> str:
-    written = sorted(execution_context.get("dirty_written_files", set()))
+def documentation_nudge_message(execution_context: ExecutionContext) -> str:
+    written = sorted(execution_context.dirty_written_files)
     file_hint = f" You modified: {', '.join(written[:3])}." if written else ""
     return (
         "Before concluding, quickly check whether any documentation or reference file "
@@ -308,8 +306,8 @@ def documentation_nudge_message(execution_context: dict) -> str:
     )
 
 
-def blast_radius_nudge_message(execution_context: dict) -> str:
-    read_files = sorted(execution_context.get("read_files", set()))
+def blast_radius_nudge_message(execution_context: ExecutionContext) -> str:
+    read_files = sorted(execution_context.read_files)
     file_hint = f" You have read: {', '.join(read_files[:3])}." if read_files else ""
     return (
         "Before changing a function/class definition or renaming a symbol, "
@@ -319,8 +317,8 @@ def blast_radius_nudge_message(execution_context: dict) -> str:
     )
 
 
-def creation_nudge_message(execution_context: dict) -> str:
-    targets = sorted(execution_context.get("planned_edit_targets", set()))
+def creation_nudge_message(execution_context: ExecutionContext) -> str:
+    targets = sorted(execution_context.planned_edit_targets)
     target_hint = f" Declared target(s): {', '.join(targets[:3])}." if targets else ""
     return (
         "A write target was declared earlier in this task but nothing has been "
@@ -332,13 +330,13 @@ def creation_nudge_message(execution_context: dict) -> str:
     )
 
 
-def todo_nudge_message(execution_context: dict) -> str:
+def todo_nudge_message(execution_context: ExecutionContext) -> str:
     files = sorted(
-        execution_context.get("dirty_written_files", set())
-        | execution_context.get("planned_edit_targets", set())
+        execution_context.dirty_written_files
+        | execution_context.planned_edit_targets
     )
     file_hint = f" Files touched so far: {', '.join(files[:4])}." if files else ""
-    if execution_context.get("plan_written", False):
+    if execution_context.plan_written:
         guidance = (
             " Record the ordered remaining steps as a checklist using the plan/todo tool "
             "so progress is tracked."
@@ -355,15 +353,14 @@ def todo_nudge_message(execution_context: dict) -> str:
     )
 
 
-def validation_nudge_message(agent: Any, execution_context: dict) -> str:
+def validation_nudge_message(agent: Any, execution_context: ExecutionContext) -> str:
     """What the model is told about the files the built-in check rejected.
 
     No longer a push toward doing the check — the loop already did it. The message is
     the finding, so the branches that used to soften it (mid-refactor, just-edited)
     are gone with the request they were softening.
     """
-    execution_context = bootstrap_state_context(execution_context) or {}
-
+    
     findings = builtin_check_failures(execution_context)
     if not findings:
         # Nothing was rejected: the pending files are ones the sweep has not reached
@@ -377,15 +374,15 @@ def validation_nudge_message(agent: Any, execution_context: dict) -> str:
 
     base_message = _validation_nudge_message(findings)
 
-    fail_counts = execution_context.get("validation_fail_count_by_file", {})
+    fail_counts = execution_context.validation_fail_count_by_file
     hottest_path = max(findings, key=lambda path: int(fail_counts.get(path, 0)))
     hottest_count = int(fail_counts.get(hottest_path, 0))
     if hottest_count < 2:
         return base_message
 
     suffix = f" The check has now failed {hottest_count} time(s) for {hottest_path}."
-    last_replace_file = execution_context.get("last_replace_file", "")
-    last_replace_old_text = execution_context.get("last_replace_old_text", "")
+    last_replace_file = execution_context.last_replace_file
+    last_replace_old_text = execution_context.last_replace_old_text
     if last_replace_file == hottest_path and last_replace_old_text:
         return (
             base_message + suffix

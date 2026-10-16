@@ -14,9 +14,10 @@ from typing import Any
 from ..guardrails.nudges.engine import record_exercise_obstacle
 from ..protocol.messages import reconcile_tool_pairs
 from .verification import build_ledger, render_ledger
+from ..context.execution_context import ExecutionContext
 
 
-def _annotate_answer_with_changes(answer: str, execution_context: dict) -> str:
+def _annotate_answer_with_changes(answer: str, execution_context: ExecutionContext) -> str:
     """Append the machine-recorded verification ledger to the answer text.
 
     Saved into conversation history so the next query — and the user — sees what was
@@ -37,7 +38,7 @@ async def _finalize_answer(
     agent: Any,
     query: str,
     answer: str,
-    execution_context: dict,
+    execution_context: ExecutionContext,
     messages: list[dict],
     logger: Any,
 ) -> str:

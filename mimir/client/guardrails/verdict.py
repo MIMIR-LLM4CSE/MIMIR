@@ -46,6 +46,7 @@ from typing import Any
 from ..context import VERDICTS, failed_runs, unsettled_runs
 from ..event_sink import emit
 from .observations import _register_run_failure
+from ..context.execution_context import ExecutionContext
 
 
 # Verdicts that settle the one run they speak for and no other. ``pass`` because
@@ -114,7 +115,7 @@ def _runs_addressed(runs: dict[str, Any], scope: str) -> dict[str, Any]:
 
 
 def apply_verdict(
-    verdict: str, reason: str, scope: str, execution_context: dict[str, Any] | None,
+    verdict: str, reason: str, scope: str, execution_context: ExecutionContext | None,
 ) -> list[dict[str, Any]]:
     """Apply a stated verdict to the runs it addresses; return the ones it settled.
 
@@ -173,7 +174,7 @@ def apply_verdict(
 
 
 def _apply_blocked(
-    reason: str, scope: str, execution_context: dict[str, Any],
+    reason: str, scope: str, execution_context: ExecutionContext,
 ) -> list[dict[str, Any]]:
     """Re-impute failed runs from the change to the environment; return the ones addressed.
 
@@ -198,7 +199,7 @@ def _apply_blocked(
     return settled
 
 
-def _close_exercise_advice(execution_context: dict[str, Any], verdict: str) -> None:
+def _close_exercise_advice(execution_context: ExecutionContext, verdict: str) -> None:
     """``unknown`` and ``blocked`` end the build-it/run-it recommendation for this query.
 
     Both are accepted answers to the whole advisory question — one says the output cannot
@@ -212,4 +213,4 @@ def _close_exercise_advice(execution_context: dict[str, Any], verdict: str) -> N
     that just judged its run to go and run more.
     """
     if verdict in ("unknown", "blocked"):
-        execution_context["exercise_advice_closed"] = True
+        execution_context.exercise_advice_closed = True

@@ -6,6 +6,7 @@ backend receives the same history, so the repair belongs to ``history.py`` rathe
 than to one provider. These tests pin the repair itself, its wiring into the budget
 pass, and the fact that each backend's own preparation preserves it.
 """
+from mimir.client.context.execution_context import build_execution_context
 
 import json
 import unittest
@@ -152,7 +153,7 @@ class TrimBreaksPairingTests(unittest.TestCase):
             _assistant("c2"),
             _tool("c2", "y" * 500),
         ]
-        _trim_tool_history(messages, char_budget=600, execution_context={})
+        _trim_tool_history(messages, char_budget=600, execution_context=build_execution_context())
         self.assertFalse(_pairs_are_valid(messages))
         self.assertTrue(_pairs_are_valid(reconcile_tool_pairs(messages)))
 
@@ -169,7 +170,7 @@ class TrimBreaksPairingTests(unittest.TestCase):
             messages,
             system_content="S",
             step_tools=None,
-            execution_context={},
+            execution_context=build_execution_context(),
             model="test-model",
             context_mode="compact",
             compact_fn=None,

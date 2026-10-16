@@ -12,6 +12,7 @@ carry away. So the pin is the load-bearing part of the feature, and most of this
 about it: the model has been told the method is in its context, and a pull that can
 silently disappear is worse than no pull at all.
 """
+from mimir.client.context.execution_context import build_execution_context
 import json
 import types
 import unittest
@@ -62,24 +63,24 @@ class SkillPullGateTests(unittest.TestCase):
     """The five refusals, and the reservation that makes the cap exact."""
 
     def test_a_first_pull_is_allowed_and_reserves_its_slot(self) -> None:
-        context: dict = {}
+        context = build_execution_context()
         self.assertIsNone(
             _check_skill_pull(_agent(), SKILL_LOAD_TOOL, {"name": "fix-bug"}, context)
         )
         # "pending", not the call id: the result has not come back yet. What the
         # reservation buys is a cap that two parallel pulls in one step cannot both
         # pass with one slot left.
-        self.assertEqual(context["skills_loaded"], {"fix-bug": "pending"})
+        self.assertEqual(context.skills_loaded, {"fix-bug": "pending"})
 
     def test_another_tool_is_not_this_gate_s_business(self) -> None:
-        context: dict = {}
+        context = build_execution_context()
         self.assertIsNone(
             _check_skill_pull(_agent(), "read_file_lines", {"name": "fix-bug"}, context)
         )
-        self.assertNotIn("skills_loaded", context)
+        self.assertFalse(context.skills_loaded)
 
     def test_the_same_skill_twice_is_refused_pointing_at_the_earlier_result(self) -> None:
-        context: dict = {}
+        context = build_execution_context()
         _check_skill_pull(_agent(), SKILL_LOAD_TOOL, {"name": "fix-bug"}, context)
         refusal = _refusal(
             _check_skill_pull(_agent(), SKILL_LOAD_TOOL, {"name": "fix-bug"}, context)
@@ -89,7 +90,7 @@ class SkillPullGateTests(unittest.TestCase):
 
     def test_an_unknown_skill_is_refused_with_the_ones_on_offer(self) -> None:
         refusal = _refusal(
-            _check_skill_pull(_agent(), SKILL_LOAD_TOOL, {"name": "nope"}, {})
+            _check_skill_pull(_agent(), SKILL_LOAD_TOOL, {"name": "nope"}, build_execution_context())
         )
         self.assertIn("No skill named 'nope'", refusal["error"])
         self.assertIn("fix-bug", refusal["hint"])
@@ -103,7 +104,7 @@ class SkillPullGateTests(unittest.TestCase):
         """
         refusal = _refusal(_check_skill_pull(
             _agent(disabled={"write-tests"}),
-            SKILL_LOAD_TOOL, {"name": "write-tests"}, {},
+            SKILL_LOAD_TOOL, {"name": "write-tests"}, build_execution_context(),
         ))
         self.assertIn("No skill named 'write-tests'", refusal["error"])
         self.assertNotIn("disabled", refusal["error"].lower())
@@ -111,7 +112,7 @@ class SkillPullGateTests(unittest.TestCase):
 
     def test_a_user_invoked_only_skill_names_its_slash_command(self) -> None:
         refusal = _refusal(
-            _check_skill_pull(_agent(), SKILL_LOAD_TOOL, {"name": "prepare-pr"}, {})
+            _check_skill_pull(_agent(), SKILL_LOAD_TOOL, {"name": "prepare-pr"}, build_execution_context())
         )
         self.assertIn("user-invoked only", refusal["error"])
         self.assertIn("/prepare-pr", refusal["hint"])
@@ -120,7 +121,7 @@ class SkillPullGateTests(unittest.TestCase):
         self.assertIn("do not", refusal["hint"].lower())
 
     def test_the_cap_refuses_the_next_one_and_names_what_is_loaded(self) -> None:
-        context: dict = {}
+        context = build_execution_context()
         agent = _agent()
         for name in ("fix-bug", "write-tests", "explore-repo")[:SKILL_PULL_MAX]:
             self.assertIsNone(
@@ -143,10 +144,10 @@ class PinRecordingTests(unittest.TestCase):
         )
 
     def test_a_successful_pull_is_promoted_and_pinned(self) -> None:
-        context: dict = {"skills_loaded": {"fix-bug": "pending"}}
+        context = build_execution_context(skills_loaded={"fix-bug": "pending"})
         self._pin(json.dumps({"status": "ok", "instructions": "method"}), context)
-        self.assertEqual(context["skills_loaded"], {"fix-bug": "call-1"})
-        self.assertEqual(context["pinned_call_ids"], {"call-1"})
+        self.assertEqual(context.skills_loaded, {"fix-bug": "call-1"})
+        self.assertEqual(context.pinned_call_ids, {"call-1"})
 
     def test_a_refused_pull_releases_the_slot_it_reserved(self) -> None:
         """A refusal must not charge the budget of the thing it refused.
@@ -154,18 +155,18 @@ class PinRecordingTests(unittest.TestCase):
         Otherwise a mistyped name, or a skill the file declares user-invoked only,
         spends one of the three loads the model is allowed.
         """
-        context: dict = {"skills_loaded": {"fix-bug": "pending"}}
+        context = build_execution_context(skills_loaded={"fix-bug": "pending"})
         self._pin(json.dumps({"status": "error", "error": "no"}), context)
-        self.assertEqual(context["skills_loaded"], {})
-        self.assertNotIn("call-1", context.get("pinned_call_ids", set()))
+        self.assertEqual(context.skills_loaded, {})
+        self.assertNotIn("call-1", context.pinned_call_ids)
 
     def test_a_result_for_any_other_tool_pins_nothing(self) -> None:
-        context: dict = {}
+        context = build_execution_context()
         dispatch_module._pin_loaded_skill(
             _agent(), "read_file_lines", {"name": "fix-bug"}, "call-9", "ok", context,
         )
-        self.assertNotIn("skills_loaded", context)
-        self.assertNotIn("pinned_call_ids", context)
+        self.assertFalse(context.skills_loaded)
+        self.assertFalse(context.pinned_call_ids)
 
 
 def _history_with_pinned_body(body_size: int = 400) -> list[dict]:
@@ -194,7 +195,7 @@ def _history_with_pinned_body(body_size: int = 400) -> list[dict]:
 class PinSurvivesTrimTests(unittest.TestCase):
     def test_the_pinned_result_outlives_an_unpinned_sibling_of_equal_size(self) -> None:
         messages = _history_with_pinned_body()
-        context = {"pinned_call_ids": {"pinned"}, "tool_msg_files": {}}
+        context = build_execution_context(pinned_call_ids={"pinned"}, tool_msg_files={})
         _trim_tool_history(messages, char_budget=100, execution_context=context)
         kept = {m.get("tool_call_id") for m in messages if m.get("role") == "tool"}
         self.assertIn("pinned", kept)
@@ -204,7 +205,7 @@ class PinSurvivesTrimTests(unittest.TestCase):
         """The control: the pin is what saves it, not its position or its size."""
         messages = _history_with_pinned_body()
         _trim_tool_history(messages, char_budget=100,
-                           execution_context={"tool_msg_files": {}})
+                           execution_context=build_execution_context(tool_msg_files={}))
         kept = {m.get("tool_call_id") for m in messages if m.get("role") == "tool"}
         self.assertNotIn("pinned", kept)
 
@@ -218,7 +219,7 @@ class PinSurvivesCompactionTests(unittest.TestCase):
 
     def test_the_body_survives_the_summary_and_stays_paired(self) -> None:
         messages = _history_with_pinned_body(body_size=2000)
-        context = {"pinned_call_ids": {"pinned"}}
+        context = build_execution_context(pinned_call_ids={"pinned"})
         _maybe_compact_intra_query(messages, "sys", context, self._compact,
                                    token_counter=len, token_budget=100)
         bodies = [m for m in messages if m.get("tool_call_id") == "pinned"]
@@ -236,7 +237,7 @@ class PinSurvivesCompactionTests(unittest.TestCase):
 
     def test_an_unpinned_sibling_of_the_same_turn_is_summarised_away(self) -> None:
         messages = _history_with_pinned_body(body_size=2000)
-        _maybe_compact_intra_query(messages, "sys", {"pinned_call_ids": {"pinned"}},
+        _maybe_compact_intra_query(messages, "sys", build_execution_context(pinned_call_ids={"pinned"}),
                                    self._compact, token_counter=len, token_budget=100)
         self.assertEqual(
             [m for m in messages

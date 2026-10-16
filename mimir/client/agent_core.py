@@ -79,6 +79,7 @@ from .tool_execution.normalizer import (
     rewrite_tool_for_context,
 )
 from .tool_execution.executor import execute_tool_call
+from .context.execution_context import ExecutionContext
 
 
 logger = logging.getLogger(__name__)
@@ -452,11 +453,11 @@ class MimirAgent:
         return parent_path(path)
 
     @staticmethod
-    def _new_execution_context(workspace_root: str = "") -> dict[str, Any]:
+    def _new_execution_context(workspace_root: str = "") -> ExecutionContext:
         context = build_execution_context()
         # The root travels on the context because the consumers that need it — the
         # declared-edit tracker among them — never see the agent.
-        context["workspace_root"] = workspace_root
+        context.workspace_root = workspace_root
         validate_execution_context(context)
         return context
 
@@ -483,7 +484,7 @@ class MimirAgent:
         self,
         tool_name: str,
         arguments: dict,
-        execution_context: dict | None,
+        execution_context: ExecutionContext | None,
         note: str = "",
     ) -> None:
         """Record a refusal in both ledgers.
@@ -499,7 +500,7 @@ class MimirAgent:
         fallback_tools = list(self.approvals.fallback_suggestions(tool_name))
         scope = self.approval_scope(tool_name, arguments)
         kind = denial_kind(note)
-        execution_context.setdefault("denied_tool_calls", []).append({
+        execution_context.denied_tool_calls.append({
             "tool": tool_name,
             "path": self._normalize_workspace_path(arguments.get("path") or arguments.get("filepath")),
             "fallback_tools": fallback_tools,
@@ -507,14 +508,14 @@ class MimirAgent:
             "kind": kind,
             "reason": note,
         })
-        execution_context.setdefault("denial_history", []).append({
+        execution_context.denial_history.append({
             "tool": tool_name,
             "scope": scope,
             "kind": kind,
             "reason": note,
         })
 
-    async def _auto_validate_written_file(self, path: str, execution_context: dict | None) -> str:
+    async def _auto_validate_written_file(self, path: str, execution_context: ExecutionContext | None) -> str:
         return await auto_validate_written_file(
             path=path,
             execution_context=execution_context,
@@ -626,7 +627,7 @@ class MimirAgent:
             if self.skill_enabled(name) and meta.get("model_invocable", True)
         ]
 
-    def _apply_carry_context(self, execution_context: dict) -> None:
+    def _apply_carry_context(self, execution_context: ExecutionContext) -> None:
         """Merge long-lived session knowledge into a fresh per-query execution context.
 
         Only accumulative, additive fields are carried forward.  Per-query state
@@ -657,32 +658,32 @@ class MimirAgent:
 
         for field in _mirrored_carry_fields():
             prior: set = self._carry_context.get(field, set())
-            if isinstance(prior, set) and isinstance(execution_context.get(field), set):
+            if isinstance(prior, set) and isinstance(getattr(execution_context, field), set):
                 # sorted(): carried entries seed a RecencySet's order, and a plain set
                 # iterates in hash order — which varies per process. Insert them in a
                 # stable order so the pin renders identically across runs. They are all
                 # older than anything this query records, so relative order among them
                 # carries no recency information to preserve.
-                execution_context[field].update(sorted(prior))
+                getattr(execution_context, field).update(sorted(prior))
         if self._carry_context.get("searched"):
-            execution_context["searched"] = True
+            execution_context.searched = True
         # A dict, so the set-only mirror above skips it. Carried because the tool
         # results carrying these bodies are archived and replayed: a skill already in
         # the conversation must not be pulled again just because a new query started.
         prior_skills = self._carry_context.get("skills_loaded")
         if isinstance(prior_skills, dict):
-            execution_context["skills_loaded"].update(prior_skills)
+            execution_context.skills_loaded.update(prior_skills)
 
-    def _update_carry_context(self, execution_context: dict) -> None:
+    def _update_carry_context(self, execution_context: ExecutionContext) -> None:
         """Persist the fields worth remembering into the session carry dict."""
         for field in _mirrored_carry_fields():
-            current: set = execution_context.get(field, set())
+            current: set = getattr(execution_context, field)
             if isinstance(current, set):
                 prior: set = self._carry_context.get(field, set())
                 self._carry_context[field] = prior | current
-        if execution_context.get("searched"):
+        if execution_context.searched:
             self._carry_context["searched"] = True
-        loaded = execution_context.get("skills_loaded")
+        loaded = execution_context.skills_loaded
         if isinstance(loaded, dict):
             prior_skills = self._carry_context.get("skills_loaded")
             merged = dict(prior_skills) if isinstance(prior_skills, dict) else {}
@@ -694,12 +695,12 @@ class MimirAgent:
         # Record which files were written this query so a sub-agent's hand-back can
         # report them (see server_spawn_agent).
         self._carry_context["last_query_written_files"] = set(
-            execution_context.get("dirty_written_files", set())
+            execution_context.dirty_written_files
         )
         # Evict files that were written this query from read_files carry.
         # The agent just changed them, so the old read evidence is stale — a
         # fresh read_file must happen before the next query edits them again.
-        dirty: set[str] = execution_context.get("dirty_written_files", set())
+        dirty: set[str] = execution_context.dirty_written_files
         read_mtimes: dict[str, float] = self._carry_context.setdefault("_read_mtimes", {})
         if dirty:
             carry_reads: set[str] = self._carry_context.get("read_files", set())
@@ -812,7 +813,7 @@ class MimirAgent:
         tool_name: str,
         arguments: dict,
         note: str = "",
-        execution_context: dict | None = None,
+        execution_context: ExecutionContext | None = None,
     ) -> str:
         """The tool result a refused approval puts back in front of the model.
 
@@ -828,7 +829,7 @@ class MimirAgent:
         )
 
         scope = self.approval_scope(tool_name, arguments)
-        context = execution_context if execution_context is not None else {}
+        context = execution_context if execution_context is not None else build_execution_context()
         stage = denial_stage(context, scope)
         refusals = denial_scope_count(context, scope)
 
@@ -1079,7 +1080,7 @@ class MimirAgent:
         self,
         tool_name: str,
         arguments: dict,
-        execution_context: dict | None = None,
+        execution_context: ExecutionContext | None = None,
         run_auto_validation: bool = True,
         call_id: str = "",
         record_observations: bool = True,

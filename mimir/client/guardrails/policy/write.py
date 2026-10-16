@@ -15,7 +15,6 @@ import os
 from typing import Any
 
 from ...context import (
-    backfill_execution_context,
     ensure_execution_context,
     is_known_to_exist,
     was_read,
@@ -29,18 +28,18 @@ from ...context.capabilities import (
 )
 from ...config.limits import REPEATED_EDIT_FAILURE_LIMIT
 from ...protocol.tool_result import json_error_payload
+from ...context.execution_context import ExecutionContext
 
 
-def has_delete_context(path: str, execution_context: dict[str, Any]) -> bool:
+def has_delete_context(path: str, execution_context: ExecutionContext) -> bool:
     """Require stronger evidence before allowing deletion.
 
     `checked_paths` proves only that a check was attempted, not that the file really exists.
     For destructive actions, require explicit existence/read evidence plus parent-dir context.
     """
     parent = os.path.dirname(path) or "."
-    execution_context = backfill_execution_context(execution_context)
 
-    parent_known = parent in execution_context["inspected_dirs"]
+    parent_known = parent in execution_context.inspected_dirs
     return is_known_to_exist(execution_context, path) and parent_known
 
 
@@ -65,10 +64,9 @@ def check_write_policy(
     agent: Any,
     tool_name: str,
     arguments: dict,
-    execution_context: dict[str, Any] | None,
+    execution_context: ExecutionContext | None,
 ) -> str | None:
     execution_context = ensure_execution_context(execution_context)
-    execution_context = backfill_execution_context(execution_context)
 
     if execution_context is None or not agent._is_write_tool(tool_name):
         return None
@@ -79,7 +77,7 @@ def check_write_policy(
         return None
 
     is_code_target = agent._is_code_filepath(path)
-    repeated_failures = execution_context["edit_loop_state"].get(path, (None, 0))[1]
+    repeated_failures = execution_context.edit_loop_state.get(path, (None, 0))[1]
 
     if has_cap(tool_name, REMOVE, agent.tool_caps):
         has_direct_context = has_delete_context(path, execution_context)

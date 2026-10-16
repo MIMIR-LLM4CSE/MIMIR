@@ -5,6 +5,7 @@ against the live server declarations by ``test_phase_b_servers.py``. This file
 covers the registry's pure logic: ``infer_tool_caps`` precedence, the server-side
 ``tool_caps`` helper round-trip, the unannotated-tool report, and ``explorer_servers``.
 """
+from mimir.client.context.execution_context import build_execution_context
 
 import types
 import unittest
@@ -386,7 +387,7 @@ class ReversibilityDerivationTest(unittest.TestCase):
                 # guard exists for. An untouched session is exempt by design (nothing
                 # was changed, so nothing ought to have been checked), which is about
                 # reachability of the exit, not about the dial.
-                ctx: dict = {"dirty_written_files": {"job.py"}}
+                ctx: dict = build_execution_context(dirty_written_files={"job.py"})
                 self.assertIsNotNone(
                     gates._check_cluster_submit(agent, "submit", ctx),
                     "an irreversible action was softened by the enforcement dial",

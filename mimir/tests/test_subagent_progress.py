@@ -9,6 +9,7 @@ isolation between concurrent delegations.
 Pure-Python + stubs (no live model/servers): runs on x86 and ARM.
 """
 from __future__ import annotations
+from mimir.client.context.execution_context import build_execution_context
 
 import asyncio
 import json
@@ -148,7 +149,7 @@ class CallSiteTests(unittest.IsolatedAsyncioTestCase):
         )
         agent.advertised_tools = lambda: agent.tools
         evaluation = types.SimpleNamespace(
-            violation=None, tool_name="delegate", arguments={}, execution_context={},
+            violation=None, tool_name="delegate", arguments={}, execution_context=build_execution_context(),
         )
         with mock.patch.object(ex, "evaluate_tool_preconditions", return_value=evaluation), \
              mock.patch.object(ex, "record_tool_observation"), \
@@ -157,7 +158,7 @@ class CallSiteTests(unittest.IsolatedAsyncioTestCase):
              mock.patch.object(ex.bash_effect, "created_paths", return_value=[]):
             await ex.execute_tool_call(
                 agent=agent, tool_name="delegate", arguments={},
-                execution_context={}, run_auto_validation=False, call_id=call_id,
+                execution_context=build_execution_context(), run_auto_validation=False, call_id=call_id,
             )
         return captured
 

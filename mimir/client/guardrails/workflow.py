@@ -16,12 +16,13 @@ from ..context.execution_context import (
 # config.limits alongside the other agent-loop tuning knobs.
 from ..config.limits import VALIDATION_RETRY_BUDGET
 from ..config.limits import DENIAL_QUERY_HANDBACK_TOTAL, DENIAL_SCOPE_DROP_AFTER, DENIAL_SCOPE_HANDBACK_AFTER
+from ..context.execution_context import ExecutionContext
 
 WORKFLOW_STATES: tuple[str, ...] = ("discover", "edit", "validate", "conclude")
 
 
 
-def pending_validation_paths(execution_context: dict) -> list[str]:
+def pending_validation_paths(execution_context: ExecutionContext) -> list[str]:
     """Dirty files that still owe a check, minus the ones nothing here can read.
 
     The mandatory axis is the cheap one — does this parse, is it whole — and since it is
@@ -29,21 +30,21 @@ def pending_validation_paths(execution_context: dict) -> list[str]:
     every language. What leaves this list for the ledger is now only a file the floor
     cannot read as text at all: a binary, or bytes that are not UTF-8.
     """
-    dirty_files = set(execution_context.get("dirty_written_files", set()))
-    validated_files = set(execution_context.get("validated_files", set()))
-    unverifiable = set(execution_context.get("unverifiable_files", set()) or set())
+    dirty_files = set(execution_context.dirty_written_files)
+    validated_files = set(execution_context.validated_files)
+    unverifiable = set(execution_context.unverifiable_files or set())
     return sorted(
         path for path in dirty_files
         if path not in validated_files and path not in unverifiable
     )
 
 
-def has_pending_validation(execution_context: dict) -> bool:
+def has_pending_validation(execution_context: ExecutionContext) -> bool:
     return bool(pending_validation_paths(execution_context))
 
 
-def has_blocking_denials(execution_context: dict) -> bool:
-    return bool(execution_context.get("denied_tool_calls", []))
+def has_blocking_denials(execution_context: ExecutionContext) -> bool:
+    return bool(execution_context.denied_tool_calls)
 
 
 # ── Denial escalation ladder ──────────────────────────────────────────────────
@@ -68,17 +69,17 @@ STAGE_DROP_OR_STOP: str = "drop_or_stop"  # reading 1 spent: drop the step or ha
 STAGE_HANDBACK: str = "handback"          # only reading 3 is left
 
 
-def denial_scope_count(execution_context: dict, scope: str) -> int:
+def denial_scope_count(execution_context: ExecutionContext, scope: str) -> int:
     """How many times this approval scope has been refused this query."""
     if not scope:
         return 0
     return sum(
-        1 for item in execution_context.get("denial_history", [])
+        1 for item in execution_context.denial_history
         if item.get("scope") == scope
     )
 
 
-def denial_stage(execution_context: dict, scope: str = "") -> str:
+def denial_stage(execution_context: ExecutionContext, scope: str = "") -> str:
     """Which readings of a refusal are still open, for *scope* (or the query overall).
 
     A refusal already counted for *scope* must be in ``denial_history`` before this
@@ -86,7 +87,7 @@ def denial_stage(execution_context: dict, scope: str = "") -> str:
     first refusal of a scope reports ``reconsider`` (all three readings open).
     """
 
-    history = execution_context.get("denial_history", [])
+    history = execution_context.denial_history
     total = len(history)
     scoped = denial_scope_count(execution_context, scope)
 
@@ -104,14 +105,14 @@ def denial_stage(execution_context: dict, scope: str = "") -> str:
 _STAGE_ORDER: tuple[str, ...] = (STAGE_RECONSIDER, STAGE_DROP_OR_STOP, STAGE_HANDBACK)
 
 
-def worst_denial_stage(execution_context: dict) -> str:
+def worst_denial_stage(execution_context: ExecutionContext) -> str:
     """The furthest stage any refused scope has reached this query.
 
     What the layers that speak about the run as a whole (the nudge, the completion
     report) need: one scope at the end of the ladder governs the turn, even if another
     was only refused once.
     """
-    history = execution_context.get("denial_history", [])
+    history = execution_context.denial_history
     if not history:
         return STAGE_RECONSIDER
     scopes = {item.get("scope", "") for item in history}
@@ -121,13 +122,13 @@ def worst_denial_stage(execution_context: dict) -> str:
     )
 
 
-def handback_required(execution_context: dict) -> bool:
+def handback_required(execution_context: ExecutionContext) -> bool:
     """True once any refused scope has reached the end of the ladder."""
-    return bool(execution_context.get("denial_history")) and \
+    return bool(execution_context.denial_history) and \
         worst_denial_stage(execution_context) == STAGE_HANDBACK
 
 
-def approval_is_settled(execution_context: dict, scope: str) -> bool:
+def approval_is_settled(execution_context: ExecutionContext, scope: str) -> bool:
     """True when raising an approval card for *scope* would re-ask an answered question.
 
     The ladder tells the model what a refusal *means*; it cannot stop it re-issuing the
@@ -143,9 +144,9 @@ def approval_is_settled(execution_context: dict, scope: str) -> bool:
     )
 
 
-def handback_scopes(execution_context: dict) -> list[dict]:
+def handback_scopes(execution_context: ExecutionContext) -> list[dict]:
     """The refusal records whose scope reached ``handback``, newest first."""
-    history = execution_context.get("denial_history", [])
+    history = execution_context.denial_history
     seen: set = set()
     out: list[dict] = []
     for item in reversed(history):
@@ -158,9 +159,9 @@ def handback_scopes(execution_context: dict) -> list[dict]:
     return out
 
 
-def set_workflow_state(execution_context: dict, new_state: str) -> None:
+def set_workflow_state(execution_context: ExecutionContext, new_state: str) -> None:
     if new_state in WORKFLOW_STATES:
-        execution_context["workflow_state"] = new_state
+        execution_context.workflow_state = new_state
     else:
         warnings.warn(
             f"set_workflow_state called with unknown state '{new_state}'; ignored. "
@@ -171,7 +172,7 @@ def set_workflow_state(execution_context: dict, new_state: str) -> None:
 
 
 
-def turn_made_commitments(execution_context: dict) -> bool:
+def turn_made_commitments(execution_context: ExecutionContext) -> bool:
     """Did THIS turn commit to producing something?
 
     The question the guards below actually want, asked directly. They used to ask
@@ -190,13 +191,13 @@ def turn_made_commitments(execution_context: dict) -> bool:
     falls out of the definition instead of being approximated.
     """
     return bool(
-        execution_context.get("code_mutation_started")
-        or execution_context.get("declared_edit_set")
-        or execution_context.get("todo_written")
+        execution_context.code_mutation_started
+        or execution_context.declared_edit_set
+        or execution_context.todo_written
     )
 
 
-def unhonoured_commitments(execution_context: dict) -> bool:
+def unhonoured_commitments(execution_context: ExecutionContext) -> bool:
     """True when this turn promised work and some of it is still undone.
 
     The two halves of "promised and then skipped" that the codebase already defines
@@ -212,7 +213,7 @@ def unhonoured_commitments(execution_context: dict) -> bool:
     )
 
 
-def unchecked_checklist_items(execution_context: dict) -> list[dict]:
+def unchecked_checklist_items(execution_context: ExecutionContext) -> list[dict]:
     """Steps still unticked on the live checklist, or [] if there is no checklist.
 
     The single reader of checklist state outside the prompt builder, shared by the
@@ -224,7 +225,7 @@ def unchecked_checklist_items(execution_context: dict) -> list[dict]:
     Optional steps are included; callers that must not block on them filter on
     ``item["optional"]``.
     """
-    todo_fp = execution_context.get("todo_file_path", "")
+    todo_fp = execution_context.todo_file_path
     if not todo_fp:
         return []
     # Imported lazily: the prompt package pulls in the extension loader, and the
@@ -257,7 +258,7 @@ def _run_label(run: dict) -> str:
 
 
 def _collect_completion_issues(
-    execution_context: dict, termination: str = TERMINATION_ANSWERED,
+    execution_context: ExecutionContext, termination: str = TERMINATION_ANSWERED,
 ) -> tuple[list[str], list[str]]:
     """Return (issues, completed) describing the final completion state."""
     issues: list[str] = []
@@ -268,8 +269,8 @@ def _collect_completion_issues(
         issues.append(termination_issue)
 
     pending = pending_validation_paths(execution_context)
-    fail_counts: dict = execution_context.get("validation_fail_count_by_file", {})
-    dirty: set = execution_context.get("dirty_written_files", set())
+    fail_counts: dict = execution_context.validation_fail_count_by_file
+    dirty: set = execution_context.dirty_written_files
 
     if pending:
         # Split pending files into three sub-buckets for clearer feedback.
@@ -296,7 +297,7 @@ def _collect_completion_issues(
     # the user judged unnecessary is not a failure to fix, and listing it as one is what
     # made every refusal come back as "Task is incomplete". It is still reported, in its
     # own section (see refused_action_lines), because a skipped step must never be silent.
-    denied_calls = execution_context.get("denied_tool_calls", [])
+    denied_calls = execution_context.denied_tool_calls
     if denied_calls and handback_required(execution_context):
         issues.append("Stopped at the user's request: " + ", ".join(refused_action_lines(execution_context)))
     elif not denied_calls:
@@ -317,7 +318,7 @@ def _collect_completion_issues(
 
     # The reminder budget stops asking after two tries; what it must not do is let a run
     # disappear. Every run still open at completion is named here, with what was tried.
-    runs = execution_context.get("runs") or {}
+    runs = execution_context.runs or {}
     never_judged = [c for c, r in sorted(runs.items()) if r.get("completed") and not r.get("verdict")]
     unresolved = [c for c, r in sorted(runs.items()) if r.get("verdict") == "unknown"]
     # A blocked run is red, and stays reported as red — but by a wall this environment put
@@ -360,7 +361,7 @@ def _collect_completion_issues(
     return issues, completed
 
 
-def unjudged_run_lines(execution_context: dict) -> list[str]:
+def unjudged_run_lines(execution_context: ExecutionContext) -> list[str]:
     """One line per run whose output was never read out, for the report.
 
     Same standing as :func:`blocked_run_lines`: reported, never counted. A verdict says
@@ -368,7 +369,7 @@ def unjudged_run_lines(execution_context: dict) -> list[str]:
     verdict is a gap in the record, not a defect in the change. Charging it here is what
     taught the model to emit a label for every command it issued.
     """
-    runs = execution_context.get("runs") or {}
+    runs = execution_context.runs or {}
     lines = [
         f"{run.get('command') or command} — ran; its output was never judged"
         for command, run in sorted(runs.items())
@@ -381,7 +382,7 @@ def unjudged_run_lines(execution_context: dict) -> list[str]:
     return lines[:5]
 
 
-def unmeasured_proxy_source_lines(execution_context: dict) -> list[str]:
+def unmeasured_proxy_source_lines(execution_context: ExecutionContext) -> list[str]:
     """One line when an optimisation session's source was edited and never measured.
 
     In an optimisation session the objective *is* a number, so a check that proves the
@@ -394,28 +395,28 @@ def unmeasured_proxy_source_lines(execution_context: dict) -> list[str]:
     """
 
     source = active_proxy_source()
-    if not source or source not in execution_context.get("dirty_written_files", set()):
+    if not source or source not in execution_context.dirty_written_files:
         return []
     if validation_tier(execution_context, source) == "measured":
         return []
     return [f"{source} — edited under an optimisation session, never measured by a run"]
 
 
-def blocked_run_lines(execution_context: dict) -> list[str]:
+def blocked_run_lines(execution_context: ExecutionContext) -> list[str]:
     """One line per run that hit a wall this environment put there, for the report.
 
     Reported, never counted: a prerequisite that is missing is a limitation the user has to
     see, and never a defect in the change to be charged against completion. Kept out of
     ``_collect_completion_issues`` for that reason alone — it is what decides the headline.
     """
-    runs = execution_context.get("runs") or {}
+    runs = execution_context.runs or {}
     return [
         f"{_run_label(run)} not attempted — {run['blocked']}: {run.get('command') or command}"
         for command, run in sorted(runs.items()) if run.get("blocked")
     ][:5]
 
 
-def refused_action_lines(execution_context: dict) -> list[str]:
+def refused_action_lines(execution_context: ExecutionContext) -> list[str]:
     """One line per action the user refused, for the completion report.
 
     Deduplicated, and named by target where there is one: three refusals of the same
@@ -423,7 +424,7 @@ def refused_action_lines(execution_context: dict) -> list[str]:
     about what they had actually refused.
     """
     lines: list[str] = []
-    for item in execution_context.get("denied_tool_calls", []):
+    for item in execution_context.denied_tool_calls:
         tool_name = item.get("tool", "unknown")
         # The scope token is the command family / host / package set the refusal was
         # really about; the tool name alone is the least informative part of it.
@@ -528,11 +529,11 @@ def is_incomplete_answer(answer: str) -> bool:
 
 
 def finalize_incomplete_answer(
-    answer: str, execution_context: dict, termination: str = TERMINATION_ANSWERED,
+    answer: str, execution_context: ExecutionContext, termination: str = TERMINATION_ANSWERED,
 ) -> str:
     issues, completed = _collect_completion_issues(execution_context, termination)
     pending = pending_validation_paths(execution_context)
-    denied_calls = execution_context.get("denied_tool_calls", [])
+    denied_calls = execution_context.denied_tool_calls
     refused = refused_action_lines(execution_context)
     handback = handback_required(execution_context)
 
@@ -662,7 +663,7 @@ PLAN_ALREADY_RECORDED_ERROR = (
 )
 
 
-def evidence_handback_message(execution_context: dict) -> str:
+def evidence_handback_message(execution_context: ExecutionContext) -> str:
     """Hand the model the machine-recorded state before it writes its conclusion.
 
     The gap this closes: the completion report is assembled *after* the model has
@@ -760,7 +761,7 @@ _EMPTY_TURN_ESCALATION = (
 
 
 def empty_turn_retry_message(
-    execution_context: dict | None = None, *, attempt: int = 1,
+    execution_context: ExecutionContext | None = None, *, attempt: int = 1,
 ) -> str:
     """What to say after a turn that produced nothing, given what the turn owes.
 

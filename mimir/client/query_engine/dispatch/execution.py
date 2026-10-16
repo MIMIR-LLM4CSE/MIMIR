@@ -27,6 +27,7 @@ from ..background import (
 )
 from ..deferral import CURRENT_CALL_ID
 from .admission import Call, _reads_progress_of_a_watched_run, _watched_progress_note
+from ...context.execution_context import ExecutionContext
 
 
 async def _await_tool(coro, timeout: float):
@@ -89,7 +90,7 @@ def _dead_transport_hint(name: str, exc: BaseException, agent: Any) -> str | Non
     )
 
 
-async def run_call(agent: Any, call: Call, execution_context: dict) -> str:
+async def run_call(agent: Any, call: Call, execution_context: ExecutionContext) -> str:
     """Run one call and return its result text, reporting its row as it goes.
 
     Never raises for the tool's own failure — a timeout, a crashed server, a payload

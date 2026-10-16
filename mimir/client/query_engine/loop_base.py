@@ -30,6 +30,7 @@ from .finalize import _finalize_answer
 from .history import _enforce_context_budget
 from .readonly_guard import filter_readonly_tool_calls
 from .streaming import _DraftHold, _note_truncated_turn, _process_response, _stream_chat
+from ..context.execution_context import ExecutionContext
 
 
 @dataclass
@@ -44,7 +45,7 @@ class TurnContext:
     agent: Any
     query: str
     messages: list[dict]
-    execution_context: dict
+    execution_context: ExecutionContext
     # 0 means no ceiling: the run ends when the model answers, a guard stops it, or the
     # user interrupts. Callers that want a bound (runner, sub-agents, tests) pass one.
     max_steps: int = 0
@@ -96,10 +97,7 @@ def _live_temperature(agent: Any) -> float | None:
     return float(val)
 
 
-_OBSERVED_MODE = "_observed_agent_mode"
-
-
-def _live_mode(agent: Any, active_mode: str, execution_context: dict) -> str:
+def _live_mode(agent: Any, active_mode: str, execution_context: ExecutionContext) -> str:
     """The mode to run the *next* step in, re-read from the agent.
 
     What counts is a *change* to ``agent.mode``, not its value — a caller may run one
@@ -112,16 +110,16 @@ def _live_mode(agent: Any, active_mode: str, execution_context: dict) -> str:
     if not isinstance(val, str):
         return active_mode
     val = val.strip().lower()
-    if val not in VALID_MODES or val == execution_context.get(_OBSERVED_MODE):
+    if val not in VALID_MODES or val == execution_context.observed_agent_mode:
         return active_mode
-    execution_context[_OBSERVED_MODE] = val
+    execution_context.observed_agent_mode = val
     return val
 
 
 # ── The system message ──────────────────────────────────────────────────────────
 
 async def _rebuild_system_content(
-    agent: Any, active_mode: str, execution_context: dict,
+    agent: Any, active_mode: str, execution_context: ExecutionContext,
 ) -> str:
     """The system message as it must be after ANY rebuild: prompt + skill block.
 
@@ -134,7 +132,7 @@ async def _rebuild_system_content(
     user action. One function, so the rule cannot be half-applied.
     """
     content = await agent._build_system_content(active_mode=active_mode)
-    return content + (execution_context.get("_skill_suffix") or "")
+    return content + (execution_context.skill_suffix or "")
 
 
 async def _sync_thinking_directive(
@@ -143,7 +141,7 @@ async def _sync_thinking_directive(
     active_mode: str,
     auto_active: bool,
     system_content: str,
-    execution_context: dict,
+    execution_context: ExecutionContext,
 ) -> tuple[bool, str]:
     """Rewrite the system message when the run enters or leaves the "auto" rung.
 
@@ -170,7 +168,7 @@ async def _sync_thinking_directive(
 
 
 async def _apply_mode_switch(
-    agent: Any, messages: list[dict], *, new_mode: str, execution_context: dict,
+    agent: Any, messages: list[dict], *, new_mode: str, execution_context: ExecutionContext,
 ) -> str:
     """Rebuild the mode-dependent system prompt after a mid-run mode change.
 
@@ -228,7 +226,7 @@ def _drain_steer(agent: Any, messages: list[dict]) -> None:
         emit({"type": "steer_injected", "text": text})
 
 
-def _note_empty_turn(msg: dict, messages: list[dict], execution_context: dict,
+def _note_empty_turn(msg: dict, messages: list[dict], execution_context: ExecutionContext,
                      step: int) -> None:
     """Record the shape of the prompt that produced an empty turn.
 
@@ -242,7 +240,7 @@ def _note_empty_turn(msg: dict, messages: list[dict], execution_context: dict,
     tail = " → ".join(str(m.get("role")) for m in messages[-6:])
     # Read after the fact: the reminders that were in this prompt have already been
     # taken back out by the time the turn is judged empty.
-    cats = list(execution_context.get("_last_call_reminders") or [])
+    cats = list(execution_context.last_call_reminders or [])
     emit({"type": "status", "text": (
         f"  ⓘ Empty turn diagnostics — step {step}, {len(messages)} messages, "
         f"finish_reason={msg.get('finish_reason') or 'none'}, "

@@ -34,6 +34,7 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 from ...config.limits import CUSTOM_NUDGE_MAX_PER_QUERY
+from ...context.execution_context import ExecutionContext
 
 logger = logging.getLogger(__name__)
 
@@ -69,13 +70,13 @@ class NudgeRule:
     def budget_key(self) -> str:
         return self.name
 
-    def fires(self, agent: Any, query: str, mode: str, ec: dict, level: str) -> bool:
+    def fires(self, agent: Any, query: str, mode: str, ec: ExecutionContext, level: str) -> bool:
         """Whether the rule would fire now: not switched off, under its per-query cap,
         in tier (guidance), and its predicate holds. A predicate that raises is "no": a
         bad pack cannot break the loop — but it is logged."""
         if self.name in (getattr(agent, "disabled_nudges", None) or set()):
             return False
-        if (ec.get("nudge_counts") or {}).get(self.name, 0) >= CUSTOM_NUDGE_MAX_PER_QUERY:
+        if (ec.nudge_counts or {}).get(self.name, 0) >= CUSTOM_NUDGE_MAX_PER_QUERY:
             return False
         if self.layer == "guidance" and not rule_tier_enabled(
                 self, enforcement=level, active_mode=mode):
@@ -86,7 +87,7 @@ class NudgeRule:
             logger.warning("nudge rule %r raised; skipped", self.name, exc_info=True)
             return False
 
-    def text(self, agent: Any, ec: dict) -> str:
+    def text(self, agent: Any, ec: ExecutionContext) -> str:
         try:
             return str(self.render(agent, ec) or "")
         except Exception:

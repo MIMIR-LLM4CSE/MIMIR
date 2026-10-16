@@ -8,6 +8,7 @@ arguments, 22k of those ``write_file`` bodies — so neither trigger ever fired 
 the force-fit backstop, which *did* count the arguments, had no way to reduce them.
 """
 from __future__ import annotations
+from mimir.client.context.execution_context import build_execution_context
 
 import json
 import unittest
@@ -182,7 +183,8 @@ class CompactionTriggerTests(unittest.TestCase):
 
         with patch.object(history_module, "emit"):
             _maybe_compact_intra_query(
-                messages, "sys", {}, compact_fn, token_counter=len, token_budget=1_000,
+                messages, "sys", build_execution_context(), compact_fn, token_counter=len,
+                token_budget=1_000,
             )
         self.assertLess(len(messages), original)
         self.assertEqual(messages[2]["content"], "[summary]")
@@ -485,7 +487,7 @@ class EnforceBudgetIntegrationTests(unittest.TestCase):
                           lambda model, mode, ceiling=None: (
                               1_000_000, 200_000, 500_000, 400_000)):
             history_module._enforce_context_budget(
-                messages, "sys", None, {}, "m", "full", None, lambda t: len(t) // 4,
+                messages, "sys", None, build_execution_context(), "m", "full", None, lambda t: len(t) // 4,
             )
         self.assertIn("elided", messages[1]["tool_calls"][0]["function"]["arguments"]["content"])
         self.assertTrue(any("failed tool call" in e.get("text", "") for e in emitted))
@@ -503,11 +505,7 @@ class InterruptedQueryStateTests(unittest.TestCase):
 
     @staticmethod
     def _context_with_unfinished_work() -> dict:
-        return {
-            "dirty_written_files": {"/w/wave2d/abc.py"},
-            "validated_files": set(),
-            "runs": {},
-        }
+        return build_execution_context(dirty_written_files={"/w/wave2d/abc.py"}, validated_files=set(), runs={})
 
     def test_state_is_emitted_when_a_query_dies(self) -> None:
         events: list[dict] = []
@@ -527,7 +525,7 @@ class InterruptedQueryStateTests(unittest.TestCase):
         """It runs with an exception in flight; it may not raise a second one."""
         events: list[dict] = []
         with event_sink(events.append):
-            turn_module._emit_interrupted_state({"dirty_written_files": object()})  # type: ignore[dict-item]
+            turn_module._emit_interrupted_state(build_execution_context(dirty_written_files=object()))  # type: ignore[dict-item]
 
 
 class PlanModeToolCatalogTests(unittest.TestCase):

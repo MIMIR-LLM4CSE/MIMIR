@@ -12,22 +12,21 @@ from __future__ import annotations
 
 from typing import Any
 
-from ...context import bootstrap_state_context
 from ...context.capabilities import EDIT, has_cap, target_path_arg
 from ...config.limits import VALIDATION_RETRY_BUDGET
+from ...context.execution_context import ExecutionContext
 
 
 def check_state_machine_guard(
     agent: Any,
     tool_name: str,
     arguments: dict,
-    execution_context: dict | None,
+    execution_context: ExecutionContext | None,
 ) -> str | None:
-    execution_context = bootstrap_state_context(execution_context)
     if execution_context is None:
         return None
 
-    state = execution_context.get("workflow_state", "discover")
+    state = execution_context.workflow_state
     path = agent._normalize_workspace_path(
         target_path_arg(tool_name, arguments, agent.tool_caps))
     is_code_target = bool(path and agent._is_code_filepath(path))
@@ -35,7 +34,7 @@ def check_state_machine_guard(
     if not (has_cap(tool_name, EDIT, agent.tool_caps) and is_code_target and path):
         return None
 
-    fail_counts = execution_context.get("validation_fail_count_by_file", {})
+    fail_counts = execution_context.validation_fail_count_by_file
     failure_count = int(fail_counts.get(path, 0))
 
     # Hard stop only for the specific file that exhausted its validation retry budget.

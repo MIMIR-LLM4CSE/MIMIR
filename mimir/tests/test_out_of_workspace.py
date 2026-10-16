@@ -7,6 +7,7 @@ and the smoke checks here.
 Run:
     python -m unittest mimir.tests.test_out_of_workspace -v
 """
+from mimir.client.context.execution_context import build_execution_context
 
 import json
 import os
@@ -507,7 +508,7 @@ class SingleApprovalPerCallTests(_TmpStateDir):
     def _evaluate(self, agent, command):
         return engine.evaluate_tool_preconditions(
             agent=agent, tool_name="run_shell", arguments={"command": command},
-            execution_context={"searched": True},
+            execution_context=build_execution_context(searched=True),
         )
 
     def test_outside_workspace_asks_once(self) -> None:
@@ -592,7 +593,7 @@ class ApprovalModeTests(_TmpStateDir):
     def _evaluate(self, agent, command):
         return engine.evaluate_tool_preconditions(
             agent=agent, tool_name="run_shell", arguments={"command": command},
-            execution_context={"searched": True},
+            execution_context=build_execution_context(searched=True),
         )
 
     def test_manual_asks_for_both(self) -> None:
@@ -649,8 +650,7 @@ class ApprovalModeTests(_TmpStateDir):
         # A scope already refused twice stays refused: auto mode decides what is
         # *asked*, it does not overturn an answer the user has already given.
         agent = self._agent("auto")
-        ctx = {"searched": True,
-               "denial_history": [{"scope": "fake:run_shell", "kind": "denied"}] * 2}
+        ctx = build_execution_context(searched=True, denial_history=[{"scope": "fake:run_shell", "kind": "denied"}] * 2)
         out = engine.evaluate_tool_preconditions(
             agent=agent, tool_name="run_shell", arguments={"command": "mkdir build"},
             execution_context=ctx,
@@ -677,7 +677,7 @@ class UnattendedModeTests(_TmpStateDir):
     def _evaluate(self, agent, command, ctx=None):
         return engine.evaluate_tool_preconditions(
             agent=agent, tool_name="run_shell", arguments={"command": command},
-            execution_context=ctx if ctx is not None else {"searched": True},
+            execution_context=ctx if ctx is not None else build_execution_context(searched=True),
         )
 
     def test_manual_refuses_a_sensitive_tool_without_asking(self) -> None:
@@ -710,8 +710,7 @@ class UnattendedModeTests(_TmpStateDir):
 
     def test_a_repeat_is_still_the_mode_s_refusal_not_the_user_s(self) -> None:
         agent = self._agent("manual")
-        ctx = {"searched": True,
-               "denial_history": [{"scope": "fake:run_shell", "kind": "mode_denied"}] * 2}
+        ctx = build_execution_context(searched=True, denial_history=[{"scope": "fake:run_shell", "kind": "mode_denied"}] * 2)
         out = self._evaluate(agent, "mkdir build", ctx)
         self.assertEqual(json.loads(out.violation)["denial_kind"], "mode_denied")
         self.assertEqual(len(agent.approvals.mode_blocked), 1)

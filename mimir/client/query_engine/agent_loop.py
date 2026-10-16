@@ -31,10 +31,11 @@ from .loop_base import (
     _rebuild_system_content,
 )
 from ..guardrails.toollist import tools_for_context, tools_for_readonly_mode
+from ..context.execution_context import ExecutionContext
 
 
 def _mode_tools(
-    agent: Any, query: str, execution_context: dict, active_mode: str,
+    agent: Any, query: str, execution_context: ExecutionContext, active_mode: str,
 ) -> list[dict]:
     """Build the tool list for *active_mode*: read-only filter, then context pruning.
 
@@ -71,7 +72,7 @@ async def _sync_checklist(
     messages: list[dict],
     active_mode: str,
     system_content: str,
-    execution_context: dict,
+    execution_context: ExecutionContext,
 ) -> str:
     """Rewrite the system message when the on-disk task checklist has changed.
 
@@ -107,16 +108,16 @@ async def _sync_checklist(
     Returns the system content to keep budgeting against, like
     :func:`loop_base._sync_thinking_directive`.
     """
-    todo_fp = execution_context.get("todo_file_path", "")
+    todo_fp = execution_context.todo_file_path
     if not todo_fp:
         return system_content
     try:
         stamp = os.stat(todo_fp).st_mtime_ns
     except OSError:
         return system_content  # no checklist on disk — nothing to refresh
-    if stamp == execution_context.get("_checklist_stamp"):
+    if stamp == execution_context.checklist_stamp:
         return system_content
-    execution_context["_checklist_stamp"] = stamp
+    execution_context.checklist_stamp = stamp
     if not (getattr(agent, "_build_system_content", None) and messages
              and messages[0].get("role") == "system"):
         return system_content
@@ -129,7 +130,7 @@ async def _sync_checklist(
 
 
 def _turn_may_be_rejected(
-    agent: Any, query: str, active_mode: str, execution_context: dict,
+    agent: Any, query: str, active_mode: str, execution_context: ExecutionContext,
 ) -> bool:
     """True if a bare final turn produced *now* would be sent back to the model.
 
@@ -138,7 +139,7 @@ def _turn_may_be_rejected(
     once-per-query evidence handback.
     """
     sweep_builtin_checks(execution_context)
-    prospective_noop = execution_context.get("consecutive_noop_turns", 0) + 1
+    prospective_noop = execution_context.consecutive_noop_turns + 1
     if prospective_noop <= NUDGE_MAX_CONSECUTIVE_NOOP and nudge_pending(
         agent=agent,
         query=query,
@@ -146,9 +147,7 @@ def _turn_may_be_rejected(
         execution_context=execution_context,
     ):
         return True
-    return needs_incomplete_finalization(execution_context) and not execution_context.get(
-        "evidence_handback_used"
-    )
+    return needs_incomplete_finalization(execution_context) and not execution_context.evidence_handback_used
 
 
 class AgentLoop(StepLoop):
@@ -172,7 +171,7 @@ class AgentLoop(StepLoop):
     def thinking_budget(self, base: int) -> int:
         """Scaled by workflow phase: the full rung while reasoning about code, less
         once the work is being validated or concluded."""
-        phase = self.ec.get("workflow_state", "discover")
+        phase = self.ec.workflow_state
         if phase in ("discover", "edit"):
             return base
         if phase == "validate":
@@ -203,7 +202,7 @@ class AgentLoop(StepLoop):
                                 tagged=False, execution_context=self.ec, step=self.step)
             # Steps since the last successful edit, so the nudges can tell a refactor
             # in progress from a paused one.
-            self.ec["steps_since_last_edit"] = self.ec.get("steps_since_last_edit", 0) + 1
+            self.ec.steps_since_last_edit = self.ec.steps_since_last_edit + 1
 
             await self.refresh_live_settings()
             msg, hold = await self.call_model(
@@ -221,7 +220,7 @@ class AgentLoop(StepLoop):
 
             # The model acted — the no-op streak resets, so it keeps earning reminders
             # as long as it keeps making progress between them.
-            self.ec["consecutive_noop_turns"] = 0
+            self.ec.consecutive_noop_turns = 0
             ended = await self.dispatch(tool_calls)
             if ended is not None:
                 return ended
@@ -250,8 +249,8 @@ class AgentLoop(StepLoop):
             return await self.on_empty_turn(msg, hold)
         # A nudge is only worth sending while the model still *acts* on reminders:
         # once it answers one with another bare turn, it is ignoring them.
-        noop_turns = self.ec.get("consecutive_noop_turns", 0) + 1
-        self.ec["consecutive_noop_turns"] = noop_turns
+        noop_turns = self.ec.consecutive_noop_turns + 1
+        self.ec.consecutive_noop_turns = noop_turns
         # The mandatory check happens here rather than after each write: the model has
         # stopped editing, so every dirty file is at the revision it will ship at.
         sweep_builtin_checks(self.ec)
@@ -265,8 +264,8 @@ class AgentLoop(StepLoop):
         if needs_incomplete_finalization(self.ec):
             # Once per query, before the report is assembled: the model has never seen
             # the ledger its summary is about to contradict.
-            if not self.ec.get("evidence_handback_used"):
-                self.ec["evidence_handback_used"] = True
+            if not self.ec.evidence_handback_used:
+                self.ec.evidence_handback_used = True
                 inject_reminder(self.messages, evidence_handback_message(self.ec),
                                 category="evidence_handback", tagged=False,
                                 execution_context=self.ec, step=self.step)

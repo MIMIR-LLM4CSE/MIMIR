@@ -30,8 +30,8 @@ from ...context.capabilities import EDIT, REMOVE, has_cap, target_path_arg
 from ...context.execution_context import (
     has_discovery_evidence,
     unwritten_declared_files,
-    bootstrap_engine_context as _bootstrap_engine_context,
 )
+from ...context.execution_context import ExecutionContext
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +40,7 @@ logger = logging.getLogger(__name__)
 class PolicyEvaluation:
     tool_name: str
     arguments: dict[str, Any]
-    execution_context: dict[str, Any] | None
+    execution_context: ExecutionContext | None
     violation: str | None
 
 
@@ -56,7 +56,7 @@ def _is_interactive_session(agent: Any) -> bool:
         return False
 
 
-def _collect_candidate_paths(path: str, execution_context: dict[str, Any] | None) -> list[str]:
+def _collect_candidate_paths(path: str, execution_context: ExecutionContext | None) -> list[str]:
     """Collect likely candidate paths related to `path` from execution context."""
     if execution_context is None:
         return []
@@ -64,7 +64,7 @@ def _collect_candidate_paths(path: str, execution_context: dict[str, Any] | None
     target_base = os.path.basename(path).lower()
     known: set[str] = known_existing_files(execution_context)
 
-    similar_by_dir = execution_context.get("similar_candidates_by_dir", {})
+    similar_by_dir = execution_context.similar_candidates_by_dir
     if isinstance(similar_by_dir, dict):
         for paths in similar_by_dir.values():
             if isinstance(paths, set):
@@ -82,7 +82,7 @@ def _interactive_clarify_path(
     agent: Any,
     tool_name: str,
     path: str,
-    execution_context: dict[str, Any] | None,
+    execution_context: ExecutionContext | None,
 ) -> str | None:
     """Ask the user to confirm or correct an ambiguous target path.
 
@@ -133,20 +133,19 @@ def _interactive_clarify_path(
     return reply
 
 
-def _missing_evidence(execution_context: dict[str, Any] | None) -> list[str]:
+def _missing_evidence(execution_context: ExecutionContext | None) -> list[str]:
     """Return concrete missing evidence items to guide the agent toward policy compliance."""
     if execution_context is None:
         return []
 
-    execution_context = _bootstrap_engine_context(execution_context)
 
     evidence: list[str] = []
-    state = execution_context.get("workflow_state", "discover")
+    state = execution_context.workflow_state
 
-    searched = execution_context.get("searched", False)
-    read_files = execution_context.get("read_files", set()) or set()
-    dirty_files = execution_context.get("dirty_written_files", set()) or set()
-    validated_files = execution_context.get("validated_files", set()) or set()
+    searched = execution_context.searched
+    read_files = execution_context.read_files or set()
+    dirty_files = execution_context.dirty_written_files or set()
+    validated_files = execution_context.validated_files or set()
 
     if state == "discover":
         # Coherent with the discovery gates: only guide toward discovery while the
@@ -194,9 +193,9 @@ def _missing_evidence(execution_context: dict[str, Any] | None) -> list[str]:
     return deduped
 
 
-def _next_tool_class(policy_stage: str, execution_context: dict[str, Any] | None) -> str:
+def _next_tool_class(policy_stage: str, execution_context: ExecutionContext | None) -> str:
     if policy_stage == "state_guard" and execution_context is not None:
-        state = execution_context.get("workflow_state", "discover")
+        state = execution_context.workflow_state
         if state == "discover":
             return "discovery"
         if state == "edit":
@@ -236,7 +235,7 @@ def _enrich_violation_payload(
     *,
     violation: str,
     policy_stage: str,
-    execution_context: dict[str, Any] | None,
+    execution_context: ExecutionContext | None,
     tool_name: str,
 ) -> str:
     """Attach metadata to JSON policy violations; keep non-JSON violations untouched."""
@@ -251,7 +250,7 @@ def _enrich_violation_payload(
     payload.setdefault("policy_stage", policy_stage)
     payload.setdefault("tool", tool_name)
     payload.setdefault("suggested_next_tool_class", _next_tool_class(policy_stage, execution_context))
-    state = (execution_context or {}).get("workflow_state", "discover")
+    state = execution_context.workflow_state if execution_context is not None else "discover"
     # Attach missing_evidence only when it is actionable — never during discovery,
     # where everything is still missing and saying so is nagging.
     if policy_stage in {"write_policy", "approval"} and state != "discover":
@@ -269,7 +268,7 @@ def _enrich_violation_payload(
 
     
     if execution_context is not None:
-        nudges = execution_context.get("nudge_counts", {}).get("denial", 0)
+        nudges = execution_context.nudge_counts.get("denial", 0)
         if nudges >= 2:
             payload.pop("missing_evidence", None)
 
@@ -283,7 +282,7 @@ class _PolicyCall:
     agent: Any
     tool_name: str
     arguments: dict[str, Any]
-    execution_context: dict[str, Any] | None
+    execution_context: ExecutionContext | None
     # Out-of-workspace targets, set by the workspace gate for the approval gate.
     oow_targets: list = field(default_factory=list)
 
@@ -432,7 +431,7 @@ def _approval_gate(call: _PolicyCall) -> PolicyEvaluation | None:
         return call.refuse(
             mode_denied_payload(agent, call.tool_name, call.arguments, "auto"), "approval")
     scope = agent.approval_scope(call.tool_name, call.arguments)
-    if approval_is_settled(call.execution_context or {}, scope):
+    if call.execution_context is not None and approval_is_settled(call.execution_context, scope):
         # Already refused twice on this scope: refuse it ourselves rather than putting
         # the same card in front of the user again. From `drop_or_stop` on, the ladder
         # has already ruled out another attempt at the same goal.
@@ -471,7 +470,7 @@ def evaluate_tool_preconditions(
     agent: Any,
     tool_name: str,
     arguments: dict[str, Any],
-    execution_context: dict[str, Any] | None = None,
+    execution_context: ExecutionContext | None = None,
 ) -> PolicyEvaluation:
     """Run registry/state/write/approval checks and return normalized execution inputs.
 
@@ -482,7 +481,6 @@ def evaluate_tool_preconditions(
     """
     extra_checks = PolicyRegistry.active_checks()
     normalized_context = ensure_execution_context(execution_context)
-    normalized_context = _bootstrap_engine_context(normalized_context)
 
     # Normalize + rewrite BEFORE the registry check. Legacy aliases such as the
     # model's habitual `read_file` are intentionally unregistered and exist only

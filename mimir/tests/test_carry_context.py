@@ -20,7 +20,7 @@ from mimir.client.context.execution_context import (
     carry_context_to_json,
     carry_path_fields,
     carry_set_fields,
-    execution_context_template,
+    build_execution_context,
 )
 
 
@@ -108,10 +108,10 @@ class ReadStalenessTests(unittest.TestCase):
 
     def _query_that_reads_the_file(self) -> bool:
         """Run one query's carry cycle; return whether the carried read was accepted."""
-        ctx = execution_context_template()
+        ctx = build_execution_context()
         self.agent._apply_carry_context(ctx)
-        accepted = self.path in ctx["read_files"]
-        ctx["read_files"].add(self.path)
+        accepted = self.path in ctx.read_files
+        ctx.read_files.add(self.path)
         self.agent._update_carry_context(ctx)
         return accepted
 
@@ -139,10 +139,10 @@ class ReadStalenessTests(unittest.TestCase):
         self.assertTrue(self._query_that_reads_the_file())
 
     def test_a_file_written_this_query_is_dropped_from_carry(self) -> None:
-        ctx = execution_context_template()
+        ctx = build_execution_context()
         self.agent._apply_carry_context(ctx)
-        ctx["read_files"].add(self.path)
-        ctx["dirty_written_files"].add(self.path)
+        ctx.read_files.add(self.path)
+        ctx.dirty_written_files.add(self.path)
         self.agent._update_carry_context(ctx)
         self.assertNotIn(self.path, self.agent._carry_context["read_files"])
         self.assertNotIn(self.path, self.agent._carry_context["_read_mtimes"])

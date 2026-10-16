@@ -1,3 +1,4 @@
+from mimir.client.context.execution_context import build_execution_context
 import os
 import unittest
 import json
@@ -103,7 +104,7 @@ class PolicyManagerTests(unittest.TestCase):
         # time by policy.write.check_write_policy instead.
         blocked = toollist.blocked_tools_for_context(
             "please refactor this function",
-            {"searched": True},
+            build_execution_context(searched=True),
             _DECLARED_REGISTRY,
         )
         self.assertEqual(blocked, set())
@@ -118,7 +119,7 @@ class PolicyManagerTests(unittest.TestCase):
 
         filtered = toollist.tools_for_context(
             query="refactor this function",
-            execution_context={"searched": True},
+            execution_context=build_execution_context(searched=True),
             tools=tools,
             tool_caps=_DECLARED_REGISTRY,
         )
@@ -135,7 +136,7 @@ class PolicyManagerTests(unittest.TestCase):
         filtered = toollist.tools_for_context(
             query=("now refactor the code so that everything is tidy and modular for "
                    "runiing with different boundary conditions or time schemes"),
-            execution_context={"searched": True},
+            execution_context=build_execution_context(searched=True),
             tools=tools,
             tool_caps=_DECLARED_REGISTRY,
         )
@@ -149,7 +150,7 @@ class PolicyManagerTests(unittest.TestCase):
 
         filtered = toollist.tools_for_context(
             query="show me status",
-            execution_context={"searched": True},
+            execution_context=build_execution_context(searched=True),
             tools=tools,
         )
 
@@ -172,13 +173,13 @@ class PolicyManagerTests(unittest.TestCase):
 
         before = toollist.tools_for_context(
             query="update the helper function",
-            execution_context={},
+            execution_context=build_execution_context(),
             tools=tools,
             tool_caps=_DECLARED_REGISTRY,
         )
         after = toollist.tools_for_context(
             query="update the helper function",
-            execution_context={"searched": True, "read_files": {"x.py"}},
+            execution_context=build_execution_context(searched=True, read_files={"x.py"}),
             tools=tools,
             tool_caps=_DECLARED_REGISTRY,
         )
@@ -206,7 +207,7 @@ class PolicyManagerTests(unittest.TestCase):
             agent=agent,
             tool_name="github_get_file",
             arguments={"owner": "o", "repo": "r", "path": "x"},
-            execution_context={},
+            execution_context=build_execution_context(),
         )
         self.assertIsNone(result.violation)
 
@@ -223,7 +224,7 @@ class PolicyManagerTests(unittest.TestCase):
         agent.tool_owner["salloc_submit"] = "hpc"
         args = {"partition": "compute", "confirm": True}
         # Something was edited and never checked: the state the hold is about.
-        ctx: dict = {"dirty_written_files": {"job.py"}}
+        ctx: dict = build_execution_context(dirty_written_files={"job.py"})
 
         def _submit():
             return policy_manager_module.evaluate_tool_preconditions(
@@ -239,7 +240,7 @@ class PolicyManagerTests(unittest.TestCase):
         self.assertIn("held", second.lower())
 
         # The stated exit — one local check that passes — is the only thing that lifts it.
-        ctx["validated_files"] = {"job.py"}
+        ctx.validated_files = {"job.py"}
         self.assertIsNone(_submit())
 
     def test_cluster_submit_not_held_when_the_session_wrote_nothing(self) -> None:
@@ -258,7 +259,7 @@ class PolicyManagerTests(unittest.TestCase):
             agent=agent,
             tool_name="salloc_submit",
             arguments={"partition": "compute", "confirm": True},
-            execution_context={},
+            execution_context=build_execution_context(),
         )
         self.assertIsNone(result.violation)
 
@@ -270,7 +271,7 @@ class PolicyManagerTests(unittest.TestCase):
             agent=agent,
             tool_name="proxy_slurm",
             arguments={"op": "run", "proxy_name": "p", "confirm": True},
-            execution_context={"validated_files": {"solver.py"}},
+            execution_context=build_execution_context(validated_files={"solver.py"}),
         )
         self.assertIsNone(result.violation)
 
@@ -280,7 +281,7 @@ class PolicyManagerTests(unittest.TestCase):
         allocation: inside one it is a step on resources already granted."""
         agent = _FakeAgent()
         agent.tool_owner["bash_run"] = "bash"
-        ctx: dict = {"dirty_written_files": {"solver.c"}}
+        ctx: dict = build_execution_context(dirty_written_files={"solver.c"})
 
         def _run(command: str):
             return policy_manager_module.evaluate_tool_preconditions(
@@ -354,7 +355,7 @@ class PolicyManagerTests(unittest.TestCase):
                 agent=agent,
                 tool_name="read_file",
                 arguments={"path": "README.md"},
-                execution_context={},
+                execution_context=build_execution_context(),
             )
 
         self.assertIsNone(result.violation)
@@ -370,7 +371,7 @@ class PolicyManagerTests(unittest.TestCase):
             agent=agent,
             tool_name="frobnicate",
             arguments={"path": "x.py"},
-            execution_context={},
+            execution_context=build_execution_context(),
         )
 
         self.assertEqual(result.tool_name, "frobnicate")
@@ -378,14 +379,14 @@ class PolicyManagerTests(unittest.TestCase):
 
     def test_state_violation_short_circuits_other_checks(self) -> None:
         agent = _FakeAgent()
-        with patch.object(policy_manager_module, "ensure_execution_context", return_value={"ctx": True}), \
+        with patch.object(policy_manager_module, "ensure_execution_context", return_value=build_execution_context()), \
              patch.object(policy_manager_module, "check_state_machine_guard", return_value="state_violation") as state_guard, \
              patch.object(policy_manager_module, "check_write_policy", return_value=None) as write_guard:
             result = policy_manager_module.evaluate_tool_preconditions(
                 agent=agent,
                 tool_name="read_file_lines",
                 arguments={"path": "x.py"},
-                execution_context={},
+                execution_context=build_execution_context(),
             )
 
         self.assertEqual(result.violation, "state_violation")
@@ -396,14 +397,14 @@ class PolicyManagerTests(unittest.TestCase):
         agent = _FakeAgent()
         agent.approvals = _fake_approvals(lambda tool, args: True)
 
-        with patch.object(policy_manager_module, "ensure_execution_context", return_value={"ctx": True}), \
+        with patch.object(policy_manager_module, "ensure_execution_context", return_value=build_execution_context()), \
              patch.object(policy_manager_module, "check_state_machine_guard", return_value=None), \
              patch.object(policy_manager_module, "check_write_policy", return_value=None):
             result = policy_manager_module.evaluate_tool_preconditions(
                 agent=agent,
                 tool_name="read_file_lines",
                 arguments={"path": "x.py"},
-                execution_context={},
+                execution_context=build_execution_context(),
             )
 
         # The refusal note reaches both the ledger and the tool result: computed by the
@@ -417,14 +418,14 @@ class PolicyManagerTests(unittest.TestCase):
         approval_probe = {"called": False}
         agent.approvals = _fake_approvals(lambda tool, args: approval_probe.__setitem__("called", True))
 
-        with patch.object(policy_manager_module, "ensure_execution_context", return_value={"ctx": True}), \
+        with patch.object(policy_manager_module, "ensure_execution_context", return_value=build_execution_context()), \
              patch.object(policy_manager_module, "check_state_machine_guard", return_value=None), \
              patch.object(policy_manager_module, "check_write_policy", return_value="write_violation"):
             result = policy_manager_module.evaluate_tool_preconditions(
                 agent=agent,
                 tool_name="read_file_lines",
                 arguments={"path": "x.py"},
-                execution_context={},
+                execution_context=build_execution_context(),
             )
 
         self.assertEqual(result.violation, "write_violation")
@@ -435,14 +436,14 @@ class PolicyManagerTests(unittest.TestCase):
         agent.approvals = _fake_approvals(lambda tool, args: True)
         agent._request_tool_approval = lambda tool_name, arguments: (True, "approved")
 
-        with patch.object(policy_manager_module, "ensure_execution_context", return_value={"ctx": True}), \
+        with patch.object(policy_manager_module, "ensure_execution_context", return_value=build_execution_context()), \
              patch.object(policy_manager_module, "check_state_machine_guard", return_value=None), \
              patch.object(policy_manager_module, "check_write_policy", return_value=None):
             result = policy_manager_module.evaluate_tool_preconditions(
                 agent=agent,
                 tool_name="read_file_lines",
                 arguments={"path": "x.py"},
-                execution_context={},
+                execution_context=build_execution_context(),
             )
 
         self.assertIsNone(result.violation)
@@ -461,10 +462,10 @@ class PolicyManagerTests(unittest.TestCase):
 
         agent._request_tool_approval = _never_called
         scope = agent.approval_scope("read_file_lines", {})
-        context = {"denial_history": [
+        context = build_execution_context(denial_history=[
             {"tool": "read_file_lines", "scope": scope, "kind": "denied", "reason": "denied by user"}
             for _ in range(3)
-        ]}
+        ])
 
         with patch.object(policy_manager_module, "ensure_execution_context", return_value=context), \
              patch.object(policy_manager_module, "check_state_machine_guard", return_value=None), \
@@ -484,11 +485,11 @@ class PolicyManagerTests(unittest.TestCase):
         agent = _FakeAgent()
         agent.approvals = _fake_approvals(lambda tool, args: True)
         agent._request_tool_approval = lambda tool_name, arguments: (True, "approved once")
-        context = {"denial_history": [
+        context = build_execution_context(denial_history=[
             {"tool": "replace_in_file", "scope": "fake:replace_in_file",
              "kind": "denied", "reason": "denied by user"}
             for _ in range(3)
-        ]}
+        ])
 
         with patch.object(policy_manager_module, "ensure_execution_context", return_value=context), \
              patch.object(policy_manager_module, "check_state_machine_guard", return_value=None), \
@@ -504,23 +505,23 @@ class PolicyManagerTests(unittest.TestCase):
 
     def test_returns_normalized_inputs_when_allowed(self) -> None:
         agent = _FakeAgent()
-        with patch.object(policy_manager_module, "ensure_execution_context", return_value={"ctx": True}), \
+        ensured = build_execution_context()
+        with patch.object(policy_manager_module, "ensure_execution_context", return_value=ensured), \
              patch.object(policy_manager_module, "check_state_machine_guard", return_value=None), \
              patch.object(policy_manager_module, "check_write_policy", return_value=None):
             result = policy_manager_module.evaluate_tool_preconditions(
                 agent=agent,
                 tool_name="read_file_lines",
                 arguments={"path": "x.py"},
-                execution_context={},
+                execution_context=build_execution_context(),
             )
 
         self.assertIsNone(result.violation)
         self.assertEqual(result.tool_name, "read_file_lines")
         self.assertTrue(result.arguments.get("normalized"))
         self.assertTrue(result.arguments.get("rewritten"))
-        # The engine seeds its own bookkeeping keys on top of the ensured context,
-        # so assert the supplied value is preserved rather than exact equality.
-        self.assertEqual(result.execution_context.get("ctx"), True)
+        # The context the call is evaluated against is the one handed in, not a copy.
+        self.assertIs(result.execution_context, ensured)
 
     def test_json_state_violation_is_enriched_with_policy_metadata(self) -> None:
         agent = _FakeAgent()
@@ -529,13 +530,7 @@ class PolicyManagerTests(unittest.TestCase):
             "error": "blocked",
             "hint": "do discovery first",
         })
-        execution_context = {
-            "workflow_state": "discover",
-            "searched": False,
-            "inspected_dirs": set(),
-            "read_files": set(),
-            "search_tool_calls": 0,
-        }
+        execution_context = build_execution_context(workflow_state="discover", searched=False, inspected_dirs=set(), read_files=set(), search_tool_calls=0)
 
         with patch.object(policy_manager_module, "ensure_execution_context", return_value=execution_context), \
              patch.object(policy_manager_module, "check_state_machine_guard", return_value=json_violation), \
@@ -544,7 +539,7 @@ class PolicyManagerTests(unittest.TestCase):
                 agent=agent,
                 tool_name="read_file_lines",
                 arguments={"path": "x.py"},
-                execution_context={},
+                execution_context=build_execution_context(),
             )
 
         self.assertIsNotNone(result.violation)
@@ -556,14 +551,14 @@ class PolicyManagerTests(unittest.TestCase):
 
     def test_non_json_violation_stays_compatible(self) -> None:
         agent = _FakeAgent()
-        with patch.object(policy_manager_module, "ensure_execution_context", return_value={"ctx": True}), \
+        with patch.object(policy_manager_module, "ensure_execution_context", return_value=build_execution_context()), \
              patch.object(policy_manager_module, "check_state_machine_guard", return_value="state_violation"), \
              patch.object(policy_manager_module, "check_write_policy", return_value=None):
             result = policy_manager_module.evaluate_tool_preconditions(
                 agent=agent,
                 tool_name="read_file_lines",
                 arguments={"path": "x.py"},
-                execution_context={},
+                execution_context=build_execution_context(),
             )
 
         self.assertEqual(result.violation, "state_violation")
@@ -583,7 +578,7 @@ class PolicyManagerTests(unittest.TestCase):
 
         agent = _FakeAgent()
         violation = write_policy_violation("replace_in_file", "x.py", kind=kind)
-        with patch.object(policy_manager_module, "ensure_execution_context", return_value={"ctx": True}), \
+        with patch.object(policy_manager_module, "ensure_execution_context", return_value=build_execution_context()), \
              patch.object(policy_manager_module, "check_state_machine_guard", return_value=None), \
              patch.object(policy_manager_module, "check_write_policy", return_value=violation), \
              patch.object(policy_manager_module, "is_known_to_exist", return_value=False), \
@@ -591,7 +586,7 @@ class PolicyManagerTests(unittest.TestCase):
                           return_value=None) as clarify:
             policy_manager_module.evaluate_tool_preconditions(
                 agent=agent, tool_name="replace_in_file", arguments={"path": "x.py"},
-                execution_context={})
+                execution_context=build_execution_context())
         return clarify.called
 
     def test_only_an_unconfirmed_path_violation_asks_for_the_path(self) -> None:
@@ -608,24 +603,14 @@ class MissingEvidenceTests(unittest.TestCase):
         from mimir.client.guardrails import policy as policy_module
 
         # Context simulating a write blocked due to missing read
-        context = {
-            "read_files": set(),
-            "checked_paths": set(),
-            "existing_paths": set(),
-            "last_replace_file": "src/foo.py",
-            "last_replace_old_text": "old_val",
-        }
+        context = build_execution_context(read_files=set(), checked_paths=set(), existing_paths=set(), last_replace_file="src/foo.py", last_replace_old_text="old_val")
         missing = policy_module.engine._missing_evidence(context)
         self.assertIn("Read at least one concrete file before proposing code changes.", missing)
 
     def test_missing_evidence_suggests_search_when_discover_and_empty(self) -> None:
         from mimir.client.guardrails import policy as policy_module
 
-        context = {
-            "workflow_state": "discover",
-            "searched": False,
-            "read_files": set(),
-        }
+        context = build_execution_context(workflow_state="discover", searched=False, read_files=set())
         missing = policy_module.engine._missing_evidence(context)
         self.assertIn("Run a targeted local search first.", missing)
 
@@ -634,11 +619,7 @@ class MissingEvidenceTests(unittest.TestCase):
         # the discover-branch stops nagging — asked once, not per field.
         from mimir.client.guardrails import policy as policy_module
 
-        context = {
-            "workflow_state": "discover",
-            "searched": True,
-            "read_files": {"src/foo.py"},
-        }
+        context = build_execution_context(workflow_state="discover", searched=True, read_files={"src/foo.py"})
         missing = policy_module.engine._missing_evidence(context)
         self.assertNotIn("Run a targeted local search first.", missing)
         self.assertNotIn("Read at least one concrete file before proposing code changes.", missing)
@@ -646,10 +627,7 @@ class MissingEvidenceTests(unittest.TestCase):
     def test_missing_evidence_empty_when_context_sufficient(self) -> None:
         from mimir.client.guardrails import policy as policy_module
 
-        context = {
-            "workflow_state": "edit",
-            "read_files": {"src/foo.py"},
-        }
+        context = build_execution_context(workflow_state="edit", read_files={"src/foo.py"})
         missing = policy_module.engine._missing_evidence(context)
         self.assertEqual(missing, [])
 
@@ -660,15 +638,7 @@ class ValidationNudgeTests(unittest.TestCase):
 
         agent = _FakeAgent()
 
-        context = {
-            "pending_validation": set(),
-            "workflow_state": "validate",
-            "steps_since_last_edit": 2,
-            "validation_fail_count_by_file": {"src/foo.py": 3},
-            "builtin_check_findings": {"src/foo.py": "line 7: invalid syntax"},
-            "last_replace_file": "src/foo.py",
-            "last_replace_old_text": "def foo():",
-        }
+        context = build_execution_context(workflow_state="validate", steps_since_last_edit=2, validation_fail_count_by_file={"src/foo.py": 3}, builtin_check_findings={"src/foo.py": "line 7: invalid syntax"}, last_replace_file="src/foo.py", last_replace_old_text="def foo():")
         with patch.object(state_machine, "_validation_nudge_message", return_value=""):
             nudge = state_machine.validation_nudge_message(agent, context)
         self.assertIn("Read the local failing region around the last replacement anchor first", nudge)
@@ -678,15 +648,7 @@ class ValidationNudgeTests(unittest.TestCase):
 
         agent = _FakeAgent()
 
-        context = {
-            "pending_validation": set(),
-            "workflow_state": "validate",
-            "steps_since_last_edit": 2,
-            "validation_fail_count_by_file": {"src/bar.py": 4},
-            "builtin_check_findings": {"src/bar.py": "line 7: invalid syntax"},
-            "last_replace_file": "",
-            "last_replace_old_text": "",
-        }
+        context = build_execution_context(workflow_state="validate", steps_since_last_edit=2, validation_fail_count_by_file={"src/bar.py": 4}, builtin_check_findings={"src/bar.py": "line 7: invalid syntax"}, last_replace_file="", last_replace_old_text="")
         with patch.object(state_machine, "_validation_nudge_message", return_value=""):
             nudge = state_machine.validation_nudge_message(agent, context)
         self.assertIn("Prefer a smaller, localized repair", nudge)

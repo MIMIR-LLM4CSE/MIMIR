@@ -14,12 +14,13 @@ from ...guardrails.workflow import (
     moving_test_corrective_message,
     repeat_corrective_message,
 )
+from ...context.execution_context import ExecutionContext
 
 
 async def _post_dispatch_inject(
     agent: Any,
     messages: list[dict],
-    execution_context: dict,
+    execution_context: ExecutionContext,
     *,
     active_mode: str = "agent",
 ) -> None:
@@ -37,14 +38,14 @@ async def _post_dispatch_inject(
     chasing a moving test, is by definition still calling tools.
     """
     # remind agent to mark completed step done in todo list
-    success_path = execution_context.get("last_edit_success_path", "")
+    success_path = execution_context.last_edit_success_path
     if (
         success_path
-        and execution_context.get("todo_written")
-        and execution_context.get("todo_file_path")
+        and execution_context.todo_written
+        and execution_context.todo_file_path
     ):
-        execution_context["last_edit_success_path"] = ""  # consume
-        counts = execution_context.setdefault("nudge_counts", {})
+        execution_context.last_edit_success_path = ""  # consume
+        counts = execution_context.nudge_counts
         if (
             # The per-category cap every nudge in the table honours, applied here too:
             # this reminder reached the model on EVERY successful write, uncapped, which
@@ -52,10 +53,10 @@ async def _post_dispatch_inject(
             nudge_count(execution_context, "todo_tick") < NUDGE_MAX_TODO_TICK
             # And never twice running about the same file: re-editing what we just spoke
             # about is the middle of one change, not the end of a step.
-            and success_path != execution_context.get("_last_todo_tick_path")
+            and success_path != execution_context.last_todo_tick_path
         ):
             counts["todo_tick"] = counts.get("todo_tick", 0) + 1
-            execution_context["_last_todo_tick_path"] = success_path
+            execution_context.last_todo_tick_path = success_path
             inject_reminder(
                 messages,
                 f"You just wrote {os.path.basename(success_path)} successfully. "
@@ -66,7 +67,7 @@ async def _post_dispatch_inject(
             )
 
     # one-time corrective for a repeated identical failing call
-    alert = execution_context.pop("_repeat_alert", None)
+    alert = execution_context.take("repeat_alert")
     if alert:
         name, fails = alert
         inject_reminder(
@@ -75,7 +76,7 @@ async def _post_dispatch_inject(
         )
 
     # one-time corrective for a test file whose failing set keeps changing
-    moving_test = execution_context.pop("_moving_test_alert", None)
+    moving_test = execution_context.take("moving_test_alert")
     if moving_test:
         inject_reminder(
             messages, moving_test_corrective_message(moving_test),
@@ -83,8 +84,8 @@ async def _post_dispatch_inject(
         )
 
     # one-time stop once refusals reached the end of the denial ladder
-    if handback_required(execution_context) and not execution_context.get("_handback_told"):
-        execution_context["_handback_told"] = True
+    if handback_required(execution_context) and not execution_context.handback_told:
+        execution_context.handback_told = True
         inject_reminder(
             messages,
             handback_corrective_message(handback_scopes(execution_context)),

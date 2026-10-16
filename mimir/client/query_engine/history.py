@@ -25,6 +25,7 @@ from ..config.limits import (
     INTRA_QUERY_COMPACT_CHARS as _INTRA_QUERY_COMPACT_CHARS,
 )
 from .context_budget import context_budget_for
+from ..context.execution_context import ExecutionContext
 
 
 class ContextOverflowError(RuntimeError):
@@ -153,7 +154,7 @@ def served_compaction_instruction() -> str:
 def _trim_tool_history(
     messages: list[dict],
     char_budget: int = _TOOL_HISTORY_CHAR_BUDGET,
-    execution_context: dict | None = None,
+    execution_context: ExecutionContext | None = None,
     token_counter: Any | None = None,
     token_budget: int = _TOOL_HISTORY_TOKEN_BUDGET,
 ) -> None:
@@ -172,14 +173,14 @@ def _trim_tool_history(
     evicted: they are the current turn's payload, and stubbing them out costs more
     than the space it frees. Only the force-fit backstop may shrink them.
 
-    Results whose ``tool_call_id`` is in ``execution_context["pinned_call_ids"]`` are
+    Results whose ``tool_call_id`` is in ``execution_context.pinned_call_ids`` are
     exempt for as long as anything else is reducible: a skill's instructions, which the
     model was told are in its context and will act on for the rest of the task.
 
     Tool messages whose content references a file currently being written
     (dirty_written_files or declared_edit_set) are protected from eviction.
     When a file has been read but then evicted from history, its path is also
-    removed from execution_context["read_files"] so the policy cannot falsely
+    removed from execution_context.read_files so the policy cannot falsely
     allow an edit without a fresh re-read.
     """
     _size = token_counter if token_counter is not None else len
@@ -192,13 +193,13 @@ def _trim_tool_history(
     # Build set of protected file paths — files being actively written/planned.
     protected_paths: set[str] = set()
     if execution_context:
-        protected_paths |= execution_context.get("dirty_written_files", set())
-        protected_paths |= execution_context.get("declared_edit_set", set())
+        protected_paths |= execution_context.dirty_written_files
+        protected_paths |= execution_context.declared_edit_set
         # Also protect reads for files being actively repaired: when dirty files
         # exist, the model may need earlier read_file results to produce correct
         # repair anchors — keep them from being evicted.
-        if execution_context.get("dirty_written_files"):
-            protected_paths |= execution_context.get("read_files", set())
+        if execution_context.dirty_written_files:
+            protected_paths |= execution_context.read_files
     protected_paths = {p for p in protected_paths if p}  # drop empty strings
 
     # Authoritative per-message file association, recorded at dispatch time (see
@@ -206,7 +207,7 @@ def _trim_tool_history(
     # result that merely *mentions* a path neither protects it from eviction nor
     # invalidates that file's actual read.
     tool_msg_files: dict = (
-        execution_context.get("tool_msg_files", {}) if execution_context else {}
+        execution_context.tool_msg_files if execution_context else {}
     )
 
     def _structural_paths(m: dict) -> tuple[list[str], bool]:
@@ -240,7 +241,7 @@ def _trim_tool_history(
     # So the tail is where it stays, and this is what makes the tail safe to promise:
     # the model has been told the method is in its context.
     pinned_call_ids: set[str] = (
-        execution_context.get("pinned_call_ids", set()) if execution_context else set()
+        execution_context.pinned_call_ids if execution_context else set()
     )
     pinned = (
         {i for i in tool_indices if messages[i].get("tool_call_id") in pinned_call_ids}
@@ -279,7 +280,7 @@ def _trim_tool_history(
         # read_files entry, so policy demands a fresh re-read before the next edit.
         # The substring fallback covers untracked (carried-over) messages.
         if execution_context is not None:
-            read_files: set[str] = execution_context.get("read_files", set())
+            read_files: set[str] = execution_context.read_files
             if structural:
                 for path in paths:
                     read_files.discard(path)
@@ -330,7 +331,7 @@ def _carve_out_pinned(
 def _maybe_compact_intra_query(
     messages: list[dict],
     system_content: str,
-    execution_context: dict,
+    execution_context: ExecutionContext,
     compact_fn: Any | None,
     token_counter: Any | None = None,
     token_budget: int | None = None,
@@ -346,7 +347,7 @@ def _maybe_compact_intra_query(
     Total size is measured in tokens via *token_counter* against the token
     budget when supplied, else in characters against the char budget.
 
-    Pinned results (``execution_context["pinned_call_ids"]``) are carved out of the
+    Pinned results (``execution_context.pinned_call_ids``) are carved out of the
     middle with their assistant turn and re-appended after the summary — see
     :func:`_carve_out_pinned`.
     """
@@ -373,7 +374,7 @@ def _maybe_compact_intra_query(
     # A pinned result sits in this slice like any other and would be summarised away
     # with it — the one pass that could silently drop a skill's instructions without
     # the eviction path ever running. Carved out, with its assistant turn.
-    pinned_call_ids: set[str] = execution_context.get("pinned_call_ids", set()) or set()
+    pinned_call_ids: set[str] = execution_context.pinned_call_ids or set()
     middle, kept = (_carve_out_pinned(middle, pinned_call_ids)
                     if pinned_call_ids else (middle, []))
     if not middle:
@@ -802,7 +803,7 @@ def _enforce_context_budget(
     messages: list[dict],
     system_content: str,
     step_tools: list[dict] | None,
-    execution_context: dict,
+    execution_context: ExecutionContext,
     model: str,
     context_mode: str,
     compact_fn: Any | None,
@@ -867,7 +868,7 @@ def _enforce_context_budget(
         before = sum(_message_tokens(m, token_counter) for m in messages)
         fitted = _force_fit_to_window(
             messages, usable, token_counter,
-            pinned_call_ids=execution_context.get("pinned_call_ids") or set(),
+            pinned_call_ids=execution_context.pinned_call_ids or set(),
         )
         after = sum(_message_tokens(m, token_counter) for m in messages)
         if after < before:

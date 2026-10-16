@@ -36,6 +36,7 @@ from ...tool_execution.tool_status_messages import (
     shorten_display_args, tool_arg_preview, tool_status_message,
 )
 from ...tool_execution.validation import absolute_workspace_path, scratch_roots
+from ...context.execution_context import ExecutionContext
 
 
 # ── unattended agents ─────────────────────────────────────────────────────────
@@ -249,7 +250,7 @@ def _name_paths(paths: list[str], limit: int = 4) -> str:
 
 
 def _check_out_of_workspace_access(
-    agent: Any, tool_name: str, arguments: dict, execution_context: dict[str, Any] | None,
+    agent: Any, tool_name: str, arguments: dict, execution_context: ExecutionContext | None,
     targets: list[str] | None = None,
 ) -> str | None:
     """Prompt the user before a tool touches paths outside the workspace.
@@ -301,7 +302,7 @@ def _check_out_of_workspace_access(
 # ── cluster submit ────────────────────────────────────────────────────────────
 
 def _check_cluster_submit(
-    agent: Any, tool_name: str, execution_context: dict[str, Any] | None,
+    agent: Any, tool_name: str, execution_context: ExecutionContext | None,
     arguments: dict[str, Any] | None = None,
 ) -> str | None:
     """Hold an expensive cluster submission until something has been validated locally.
@@ -339,9 +340,9 @@ def _check_cluster_submit(
                     and allocates_cluster(str((arguments or {}).get("command", ""))))
     if not (has_cap(tool_name, CLUSTER_SUBMIT, agent.tool_caps) or shell_submit):
         return None
-    if execution_context.get("validated_files"):
+    if execution_context.validated_files:
         return None
-    if not execution_context.get("dirty_written_files"):
+    if not execution_context.dirty_written_files:
         return None
     return agent._json_error_payload(
         f"Cluster submission '{tool_name}' held: nothing validated locally yet this session.",
@@ -418,7 +419,7 @@ def _proxy_exec_targets(session_id: str | None = None) -> set[str]:
 
 def _check_proxy_exec(
     agent: Any, tool_name: str, arguments: dict[str, Any],
-    execution_context: dict[str, Any] | None,
+    execution_context: ExecutionContext | None,
 ) -> str | None:
     """Block direct execution of a proxy that is under optimization.
 
@@ -469,7 +470,7 @@ def _check_proxy_exec(
 
 def _check_skill_pull(
     agent: Any, tool_name: str, arguments: dict[str, Any],
-    execution_context: dict[str, Any] | None,
+    execution_context: ExecutionContext | None,
 ) -> str | None:
     """Refuse a skill pull the operator, the skill itself, or the budget rules out.
 
@@ -489,8 +490,8 @@ def _check_skill_pull(
     skill = str((arguments or {}).get("name") or "").strip()
     if not skill:
         return None   # the server answers for a malformed name
-    context = execution_context if execution_context is not None else {}
-    loaded: dict = context.setdefault("skills_loaded", {})
+    # A call made outside a query has nothing loaded and nothing to reserve against.
+    loaded: dict = execution_context.skills_loaded if execution_context is not None else {}
 
     if skill in loaded:
         return agent._json_error_payload(

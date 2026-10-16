@@ -14,13 +14,13 @@ from typing import Any
 
 from ...config.limits import HARD_REPEAT_LIMIT
 from ...context.capabilities import EDIT, has_cap, shell_command_args
-from ...context.execution_context import loop_control
 from ...event_sink import emit
 from ...context.bash_classify import segment_program, shell_segments
 from ...protocol.tool_call import DOING_ARG, UNPARSED_ARGUMENTS, as_dict
 from ...protocol.tool_result import json_error_payload
 from ...tool_execution.normalizer import _make_hashable
 from ...tool_execution.tool_status_messages import clip_doing
+from ...context.execution_context import ExecutionContext
 
 
 @dataclass
@@ -72,13 +72,13 @@ def _read_call(agent: Any, idx: int, tc: Any) -> Call:
     return Call(fn.get("name", ""), args, call_id, doing)
 
 
-def admit(tool_calls: list, agent: Any, execution_context: dict) -> Admission:
+def admit(tool_calls: list, agent: Any, execution_context: ExecutionContext) -> Admission:
     """Read the step's calls and decide, for each, whether it runs."""
     admission = Admission()
     # (name, args) -> the id of the first call issued that way in this step.
     seen: dict[tuple, str] = {}
     # Per-query loop-control state (dedup + spin guards), outside the schema.
-    lc = loop_control(execution_context)
+    lc = execution_context.loop_control
     for idx, tc in enumerate(tool_calls):
         call = _read_call(agent, idx, tc)
         if UNPARSED_ARGUMENTS in call.args:

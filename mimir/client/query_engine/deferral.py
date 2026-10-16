@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 from contextvars import ContextVar
 from typing import Any
+from ..context.execution_context import ExecutionContext
 
 # The tool call whose execution is running in this context. Set around each call's
 # task, so a prompt raised from inside the call can say which call it holds up.
@@ -104,7 +105,7 @@ def end_deferred_calls(agent: Any, messages: list[dict], tool_calls: list, *,
     return True
 
 
-def end_deferred_turn(agent: Any, execution_context: dict) -> str:
+def end_deferred_turn(agent: Any, execution_context: ExecutionContext) -> str:
     """End a turn whose calls were set aside. The answer is empty: nothing concluded.
 
     What the turn learned is kept for the one that resumes it; its transcript is

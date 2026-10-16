@@ -40,6 +40,7 @@ from .loop_base import (
 )
 from .readonly_guard import filter_readonly_tool_calls, refusal_reply
 from ..guardrails.toollist import tools_for_plan_mode
+from ..context.execution_context import ExecutionContext
 
 
 _PLAN_ACCEPT = "Accept & start"
@@ -113,15 +114,15 @@ def _reject_stalled_calls(tool_calls: list[Any], messages: list[dict]) -> None:
         messages.append(refusal_reply(tc, PLAN_ALREADY_RECORDED_ERROR))
 
 
-def _clear_recorded_plan(execution_context: dict) -> None:
+def _clear_recorded_plan(execution_context: ExecutionContext) -> None:
     """Forget the recorded plan so a reworked one has to be written afresh.
 
     The loop reads "is a plan recorded" from the execution context, so resetting only
     its local flag would leave the sticky context flags set and the very next tool turn
     would count the discarded plan as the new one.
     """
-    execution_context["todo_written"] = False
-    execution_context["plan_written"] = False
+    execution_context.todo_written = False
+    execution_context.plan_written = False
 
 
 async def _request_plan_decision(agent: Any) -> tuple[str, str]:
@@ -298,7 +299,7 @@ class PlanLoop(StepLoop):
             # Whether a plan exists is the execution context's call, never a second
             # derivation from tool names here (observations._observe_todo_flags records
             # `plan_written` for the prose document — the only form plan mode produces).
-            if self.ec.get("plan_written"):
+            if self.ec.plan_written:
                 self.plan_title = self.plan_title or _plan_document_title(tool_calls, self.agent)
                 self.plan_recorded = True
             if not self.plan_recorded:

@@ -6,6 +6,7 @@ prompt — which is what empties turns on a served model (37/108 draws with it, 
 0/40 once the same text sits in messages[0]). These tests hold the checklist to messages[0]
 and hold the rebuild to the moments the checklist actually changed.
 """
+from mimir.client.context.execution_context import build_execution_context
 import asyncio
 import os
 import tempfile
@@ -59,7 +60,7 @@ class ChecklistPlacementTests(unittest.TestCase):
         fp = self._todo("- [x] one\n- [ ] two\n")
         agent = _FakeAgent(fp)
         messages = [{"role": "system", "content": "SYS"}, {"role": "user", "content": "q"}]
-        out = self._sync(agent, messages, {"todo_file_path": fp})
+        out = self._sync(agent, messages, build_execution_context(todo_file_path=fp))
         self.assertIn("Task checklist (1 pending", messages[0]["content"])
         self.assertIn("[ ] two", messages[0]["content"])
         self.assertEqual(out, messages[0]["content"])
@@ -73,7 +74,7 @@ class ChecklistPlacementTests(unittest.TestCase):
                     {"role": "user", "content": "q"},
                     {"role": "assistant", "content": "a"},
                     {"role": "tool", "content": "t"}]
-        self._sync(agent, messages, {"todo_file_path": fp})
+        self._sync(agent, messages, build_execution_context(todo_file_path=fp))
         self.assertEqual(len(messages), 4)
         self.assertEqual(messages[-1]["role"], "tool")
         for msg in messages[1:]:
@@ -82,7 +83,7 @@ class ChecklistPlacementTests(unittest.TestCase):
     def test_an_unchanged_file_is_not_rebuilt(self):
         fp = self._todo("- [ ] two\n")
         agent = _FakeAgent(fp)
-        ctx = {"todo_file_path": fp}
+        ctx = build_execution_context(todo_file_path=fp)
         messages = [{"role": "system", "content": "SYS"}]
         self._sync(agent, messages, ctx)
         first, builds = messages[0]["content"], agent.builds
@@ -96,7 +97,7 @@ class ChecklistPlacementTests(unittest.TestCase):
         # item already ticked). The mtime moves; the prompt must not.
         fp = self._todo("- [x] one\n")
         agent = _FakeAgent(fp)
-        ctx = {"todo_file_path": fp}
+        ctx = build_execution_context(todo_file_path=fp)
         messages = [{"role": "system", "content": "SYS"}]
         self._sync(agent, messages, ctx)
         first = messages[0]["content"]
@@ -109,7 +110,7 @@ class ChecklistPlacementTests(unittest.TestCase):
     def test_a_real_tick_reaches_the_prompt(self):
         fp = self._todo("- [ ] one\n- [ ] two\n")
         agent = _FakeAgent(fp)
-        ctx = {"todo_file_path": fp}
+        ctx = build_execution_context(todo_file_path=fp)
         messages = [{"role": "system", "content": "SYS"}]
         self._sync(agent, messages, ctx)
         self.assertIn("Task checklist (2 pending", messages[0]["content"])
@@ -124,7 +125,7 @@ class ChecklistPlacementTests(unittest.TestCase):
         # message, so a bare rebuild would silently drop it.
         fp = self._todo("- [ ] one\n")
         agent = _FakeAgent(fp)
-        ctx = {"todo_file_path": fp, "_skill_suffix": "\n\nSKILL CONTEXT (SUBORDINATE). xyz"}
+        ctx = build_execution_context(todo_file_path=fp, skill_suffix="\n\nSKILL CONTEXT (SUBORDINATE). xyz")
         messages = [{"role": "system", "content": "SYS"}]
         self._sync(agent, messages, ctx)
         self.assertTrue(messages[0]["content"].endswith("SKILL CONTEXT (SUBORDINATE). xyz"))
@@ -132,13 +133,13 @@ class ChecklistPlacementTests(unittest.TestCase):
 
     def test_no_checklist_leaves_the_prompt_alone(self):
         messages = [{"role": "system", "content": "SYS"}]
-        out = self._sync(_FakeAgent(""), messages, {})
+        out = self._sync(_FakeAgent(""), messages, build_execution_context())
         self.assertEqual(messages, [{"role": "system", "content": "SYS"}])
         self.assertEqual(out, "SYS")
 
     def test_a_missing_todo_file_is_not_an_error(self):
         messages = [{"role": "system", "content": "SYS"}]
-        ctx = {"todo_file_path": "/nonexistent/todo_list.md"}
+        ctx = build_execution_context(todo_file_path="/nonexistent/todo_list.md")
         out = self._sync(_FakeAgent("/nonexistent/todo_list.md"), messages, ctx)
         self.assertEqual(out, "SYS")
         self.assertEqual(messages[0]["content"], "SYS")
@@ -163,18 +164,18 @@ class RebuildRuleTests(unittest.TestCase):
         return _FakeAgent(fp)
 
     def test_the_helper_reapplies_the_skill_block(self):
-        ctx = {"_skill_suffix": "\n\nSKILL CONTEXT (SUBORDINATE). xyz"}
+        ctx = build_execution_context(skill_suffix="\n\nSKILL CONTEXT (SUBORDINATE). xyz")
         out = asyncio.run(loop_base_module._rebuild_system_content(self._agent(), "agent", ctx))
         self.assertTrue(out.endswith("SKILL CONTEXT (SUBORDINATE). xyz"))
         self.assertIn("Task checklist", out)
 
     def test_no_skill_block_adds_nothing(self):
-        out = asyncio.run(loop_base_module._rebuild_system_content(self._agent(), "agent", {}))
+        out = asyncio.run(loop_base_module._rebuild_system_content(self._agent(), "agent", build_execution_context()))
         self.assertNotIn("SKILL CONTEXT", out)
 
     def test_a_mode_switch_keeps_the_skill_block(self):
         # The site the plan→agent handoff and the /mode toggle both land on.
-        ctx = {"_skill_suffix": "\n\nSKILL CONTEXT (SUBORDINATE). xyz"}
+        ctx = build_execution_context(skill_suffix="\n\nSKILL CONTEXT (SUBORDINATE). xyz")
         messages = [{"role": "system", "content": "OLD"}]
         out = asyncio.run(loop_base_module._apply_mode_switch(
             self._agent(), messages, new_mode="agent", execution_context=ctx,
@@ -186,7 +187,7 @@ class RebuildRuleTests(unittest.TestCase):
         from mimir.client.config.settings import THINKING_DEPTH_AUTO
         agent = self._agent()
         agent.thinking_depth = THINKING_DEPTH_AUTO
-        ctx = {"_skill_suffix": "\n\nSKILL CONTEXT (SUBORDINATE). xyz"}
+        ctx = build_execution_context(skill_suffix="\n\nSKILL CONTEXT (SUBORDINATE). xyz")
         messages = [{"role": "system", "content": "OLD"}]
         auto, out = asyncio.run(loop_base_module._sync_thinking_directive(
             agent, messages, "agent", False, "OLD", ctx,
@@ -218,7 +219,7 @@ class PulledSkillLeavesThePrefixAloneTests(unittest.TestCase):
         from mimir.client.query_engine import dispatch as dispatch_module
         agent = self._agent()
         agent.tool_caps = {}   # the only thing the pin helper reads off the agent
-        ctx = {"skills_loaded": {"fix-bug": "pending"}}
+        ctx = build_execution_context(skills_loaded={"fix-bug": "pending"})
         messages = [{"role": "system", "content": "SYS"}]
         before = messages[0]["content"]
 
@@ -229,12 +230,12 @@ class PulledSkillLeavesThePrefixAloneTests(unittest.TestCase):
 
         # Not even reassigned: the same string object is still there.
         self.assertIs(messages[0]["content"], before)
-        self.assertNotIn("_skill_suffix", ctx)
-        self.assertEqual(ctx["pinned_call_ids"], {"call-1"})
+        self.assertFalse(ctx.skill_suffix)
+        self.assertEqual(ctx.pinned_call_ids, {"call-1"})
 
     def test_a_rebuild_after_a_pull_carries_no_skill_block(self):
         """Because there is nothing in the suffix to carry: the body is in the tail."""
-        ctx = {"skills_loaded": {"fix-bug": "call-1"}, "pinned_call_ids": {"call-1"}}
+        ctx = build_execution_context(skills_loaded={"fix-bug": "call-1"}, pinned_call_ids={"call-1"})
         out = asyncio.run(loop_base_module._rebuild_system_content(self._agent(), "agent", ctx))
         self.assertNotIn("SKILL CONTEXT", out)
 
@@ -276,7 +277,7 @@ class ToolListStabilityTest(unittest.TestCase):
 
     def test_tool_list_is_identical_across_discovery_state(self):
         before = self._build({})
-        after = self._build({"searched": True, "read_files": {"x.py"}})
+        after = self._build(build_execution_context(searched=True, read_files={"x.py"}))
         self.assertEqual(before, after)
 
     def test_tool_list_is_identical_across_different_queries(self):
@@ -300,7 +301,7 @@ class ToolListStabilityTest(unittest.TestCase):
         import json
         self.assertEqual(
             json.dumps(self._build({})),
-            json.dumps(self._build({"searched": True, "read_files": {"x.py"}})),
+            json.dumps(self._build(build_execution_context(searched=True, read_files={"x.py"}))),
         )
 
 

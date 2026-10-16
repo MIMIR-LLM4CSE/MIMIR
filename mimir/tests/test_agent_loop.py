@@ -10,6 +10,7 @@ Plain ``unittest`` + ``asyncio.run`` to match the rest of the suite.
 from __future__ import annotations
 
 import asyncio
+import copy
 import contextlib
 import json
 import os
@@ -33,7 +34,7 @@ from mimir.client.context.capabilities import (
 from mimir.client.config.limits import (
     AGENT_EMPTY_TURN_RETRIES, HARD_REPEAT_LIMIT, PLAN_EXPLORE_MAX_TURNS,
 )
-from mimir.client.context.execution_context import build_execution_context, loop_control
+from mimir.client.context.execution_context import build_execution_context
 from mimir.client.guardrails.observations import _observe_todo_flags
 from mimir.client.protocol.tool_call import as_dict
 from mimir.client.tool_execution.normalizer import _make_hashable
@@ -122,7 +123,7 @@ class MaybeCompactIntraQueryTests(unittest.TestCase):
             return [{"role": "assistant", "content": "SUMMARY"}]
         with patch.object(history_module, "_INTRA_QUERY_COMPACT_TOKENS", 1):
             history_module._maybe_compact_intra_query(
-                messages, "S", {}, compacted, token_counter=len,
+                messages, "S", build_execution_context(), compacted, token_counter=len,
             )
 
         self.assertEqual(messages[:2], original_head)
@@ -159,7 +160,7 @@ class MaybeCompactIntraQueryTests(unittest.TestCase):
     def test_noop_when_no_compact_fn(self) -> None:
         messages = self._messages(n_middle=4)
         snapshot = [dict(m) for m in messages]
-        history_module._maybe_compact_intra_query(messages, "S", {}, None, token_counter=len)
+        history_module._maybe_compact_intra_query(messages, "S", build_execution_context(), None, token_counter=len)
         self.assertEqual(messages, snapshot)
 
 
@@ -172,56 +173,40 @@ class CommitmentTests(unittest.TestCase):
     succeeded — so every completeness guard exempted it.
     """
 
-    ABANDONED = {
-        "todo_written": True,
-        "todo_file_path": "/tmp/todo.md",
-        "declared_edit_set": {"solver.py", "boundaries.py", "timestepping.py"},
-        "dirty_written_files": set(),
-        "code_mutation_started": False,      # nothing was ever written
-    }
+    ABANDONED = build_execution_context(todo_written=True, todo_file_path="/tmp/todo.md", declared_edit_set={"solver.py", "boundaries.py", "timestepping.py"}, dirty_written_files=set(), code_mutation_started=False)
 
     def test_the_abandoned_plan_is_recognised_as_committed(self):
         from mimir.client.guardrails.workflow import turn_made_commitments
-        self.assertTrue(turn_made_commitments(dict(self.ABANDONED)))
+        self.assertTrue(turn_made_commitments(copy.deepcopy(self.ABANDONED)))
 
     def test_a_discovery_turn_is_still_exempt(self):
         from mimir.client.guardrails.workflow import turn_made_commitments
-        self.assertFalse(turn_made_commitments({
-            "code_mutation_started": False, "declared_edit_set": set(),
-            "todo_written": False,
-        }))
+        self.assertFalse(turn_made_commitments(build_execution_context(code_mutation_started=False, declared_edit_set=set(), todo_written=False)))
 
     def test_declared_but_unwritten_files_are_unhonoured(self):
         from mimir.client.guardrails.workflow import unhonoured_commitments
-        self.assertTrue(unhonoured_commitments(dict(self.ABANDONED)))
+        self.assertTrue(unhonoured_commitments(copy.deepcopy(self.ABANDONED)))
 
     def test_nothing_promised_means_nothing_outstanding(self):
         from mimir.client.guardrails.workflow import unhonoured_commitments
-        self.assertFalse(unhonoured_commitments({
-            "code_mutation_started": False, "declared_edit_set": set(),
-            "todo_written": False,
-        }))
+        self.assertFalse(unhonoured_commitments(build_execution_context(code_mutation_started=False, declared_edit_set=set(), todo_written=False)))
 
     def test_the_empty_turn_advice_stops_offering_the_exit(self):
         from mimir.client.guardrails.workflow import empty_turn_retry_message
-        owed = empty_turn_retry_message(dict(self.ABANDONED))
+        owed = empty_turn_retry_message(copy.deepcopy(self.ABANDONED))
         self.assertNotIn("or write the answer", owed)
         self.assertIn("do the next piece of the work", owed)
-        free = empty_turn_retry_message({})
+        free = empty_turn_retry_message(build_execution_context())
         self.assertIn("or write the answer", free)
 
 
 class PostDispatchInjectTests(unittest.TestCase):
     def test_injects_todo_reminder_after_successful_edit(self) -> None:
         messages: list[dict] = []
-        ec = {
-            "last_edit_success_path": "src/kernel.cu",
-            "todo_written": True,
-            "todo_file_path": "/tmp/todo.md",
-        }
+        ec = build_execution_context(last_edit_success_path="src/kernel.cu", todo_written=True, todo_file_path="/tmp/todo.md")
         asyncio.run(dispatch_module._post_dispatch_inject(None, messages, ec))
 
-        self.assertEqual(ec["last_edit_success_path"], "")   # consumed on inject
+        self.assertEqual(ec.last_edit_success_path, "")   # consumed on inject
         self.assertEqual(len(messages), 1)
         self.assertEqual(messages[0]["role"], "user")
         self.assertIn("kernel.cu", messages[0]["content"])
@@ -229,42 +214,38 @@ class PostDispatchInjectTests(unittest.TestCase):
 
     def test_no_reminder_without_written_todo(self) -> None:
         messages: list[dict] = []
-        ec = {
-            "last_edit_success_path": "src/kernel.cu",
-            "todo_written": False,          # plan not written → no nudge
-            "todo_file_path": "/tmp/todo.md",
-        }
+        ec = build_execution_context(last_edit_success_path="src/kernel.cu", todo_written=False, todo_file_path="/tmp/todo.md")
         asyncio.run(dispatch_module._post_dispatch_inject(None, messages, ec))
         self.assertEqual(messages, [])
         # success_path is NOT consumed when no reminder fires
-        self.assertEqual(ec["last_edit_success_path"], "src/kernel.cu")
+        self.assertEqual(ec.last_edit_success_path, "src/kernel.cu")
 
     def _tick(self, ec: dict, path: str) -> list[dict]:
         """One post-dispatch pass after a successful write of *path*."""
         messages: list[dict] = []
-        ec["last_edit_success_path"] = path
+        ec.last_edit_success_path = path
         asyncio.run(dispatch_module._post_dispatch_inject(None, messages, ec))
         return messages
 
     def test_the_todo_reminder_is_silent_on_a_repeat_of_the_same_file(self) -> None:
         # The observed pathology: five consecutive edits of one test file mid-debug, each
         # answered with "is that step done now?" when it plainly is not.
-        ec = {"todo_written": True, "todo_file_path": "/tmp/todo.md"}
+        ec = build_execution_context(todo_written=True, todo_file_path="/tmp/todo.md")
         self.assertEqual(len(self._tick(ec, "tests/test_x.py")), 1)
         self.assertEqual(self._tick(ec, "tests/test_x.py"), [])
         self.assertEqual(self._tick(ec, "tests/test_x.py"), [])
 
     def test_the_todo_reminder_honours_a_per_query_cap(self) -> None:
         from mimir.client.config.limits import NUDGE_MAX_TODO_TICK
-        ec = {"todo_written": True, "todo_file_path": "/tmp/todo.md"}
+        ec = build_execution_context(todo_written=True, todo_file_path="/tmp/todo.md")
         fired = sum(bool(self._tick(ec, f"src/f{i}.py")) for i in range(NUDGE_MAX_TODO_TICK + 3))
         self.assertEqual(fired, NUDGE_MAX_TODO_TICK)
 
     def test_injects_moving_test_corrective_and_consumes_alert(self) -> None:
         messages: list[dict] = []
-        ec = {"_moving_test_alert": "tests/test_wave2d.py"}
+        ec = build_execution_context(moving_test_alert="tests/test_wave2d.py")
         asyncio.run(dispatch_module._post_dispatch_inject(None, messages, ec))
-        self.assertNotIn("_moving_test_alert", ec)     # consumed
+        self.assertIsNone(ec.moving_test_alert)     # consumed
         self.assertEqual(len(messages), 1)
         self.assertEqual(messages[0]["role"], "user")
         self.assertIn("tests/test_wave2d.py", messages[0]["content"])
@@ -272,17 +253,17 @@ class PostDispatchInjectTests(unittest.TestCase):
 
     def test_injects_repeat_corrective_and_consumes_alert(self) -> None:
         messages: list[dict] = []
-        ec = {"_repeat_alert": ("code_check_file", 2)}
+        ec = build_execution_context(repeat_alert=("code_check_file", 2))
         asyncio.run(dispatch_module._post_dispatch_inject(None, messages, ec))
-        self.assertNotIn("_repeat_alert", ec)          # consumed
+        self.assertIsNone(ec.repeat_alert)          # consumed
         self.assertEqual(len(messages), 1)
         self.assertEqual(messages[0]["role"], "user")
         self.assertIn("failed 2 times", messages[0]["content"])
 
     def _refusals(self, times: int) -> dict:
-        return {"denial_history": [
+        return build_execution_context(denial_history=[
             {"tool": "bash_run", "scope": "bash:bash_run:pip install", "kind": "denied"}
-        ] * times}
+        ] * times)
 
     def test_end_of_the_denial_ladder_stops_the_model_mid_loop(self) -> None:
         # The nudge layer only fires when the model stops calling tools — and a model
@@ -321,7 +302,7 @@ class FinalizeAnswerTests(unittest.TestCase):
 
     def test_annotates_and_saves_carry(self) -> None:
         agent, carry = self._agent()
-        ec = {"dirty_written_files": {"a.py", "b.cu"}}
+        ec = build_execution_context(dirty_written_files={"a.py", "b.cu"})
         messages = [{"role": "system", "content": "S"}, {"role": "user", "content": "U"}]
 
         result = asyncio.run(
@@ -393,7 +374,7 @@ class FinalizeAnswerTests(unittest.TestCase):
         agent, _ = self._agent()
         result = asyncio.run(
             loop_base_module._finalize_answer(
-                agent, "q", "Nothing changed.", {"dirty_written_files": set()},
+                agent, "q", "Nothing changed.", build_execution_context(dirty_written_files=set()),
                 [{"role": "system", "content": "S"}], logger=None,
             )
         )
@@ -412,7 +393,7 @@ class FinalizeAnswerTests(unittest.TestCase):
         asyncio.run(
             loop_base_module._finalize_answer(
                 agent, "remember that the project uses pytest", "Noted.",
-                {"dirty_written_files": {"a.py"}},
+                build_execution_context(dirty_written_files={"a.py"}),
                 [{"role": "system", "content": "S"}], logger=None,
             )
         )
@@ -526,7 +507,7 @@ class RunPlanModeTests(unittest.TestCase):
             dispatches.append(1)
             if len(dispatches) == 1:
                 # Exactly what the real dispatch records on the second identical failure.
-                execution_context["_repeat_alert"] = ("github_get_file", 2)
+                execution_context.repeat_alert = ("github_get_file", 2)
 
         async def _finalize(agent, query, answer, execution_context, messages, logger):
             return answer
@@ -552,7 +533,7 @@ class RunPlanModeTests(unittest.TestCase):
             [1],
         )
         # And it was consumed, so it cannot resurface in a later mode.
-        self.assertNotIn("_repeat_alert", context)
+        self.assertIsNone(context.repeat_alert)
 
     def test_replaying_the_plan_forever_is_cut_short(self) -> None:
         # Regression: with the plan already recorded, some models keep re-reading /
@@ -979,9 +960,9 @@ class RunPlanModeTests(unittest.TestCase):
             return []
 
         async def _plan_dispatch(tool_calls, agent_, messages_, execution_context):
-            if reads and not execution_context.get("read_files"):
-                execution_context["read_files"] = set(reads)
-                execution_context["searched"] = True
+            if reads and not execution_context.read_files:
+                execution_context.read_files = set(reads)
+                execution_context.searched = True
             _record_plan_flags(tool_calls, agent_, execution_context)
 
         async def _finalize(agent_, query_, answer, execution_context, messages_, logger):
@@ -1247,7 +1228,7 @@ class SkillResolutionTests(RunAgentQueryNonInteractiveTests):
 
         agent._new_execution_context = staticmethod(_capture)
         self._run(agent, "/fix-bug the parser crashes")
-        self.assertEqual(seen["ctx"]["skills_loaded"], {"fix-bug": ""})
+        self.assertEqual(seen["ctx"].skills_loaded, {"fix-bug": ""})
 
 
 class LiveMessagesExposureTests(RunAgentQueryNonInteractiveTests):
@@ -1468,7 +1449,7 @@ class EvidenceHandbackTests(RunAgentQueryNonInteractiveTests):
         second_users = [m["content"] for m in backend.calls[1]["messages"] if m["role"] == "user"]
         self.assertTrue(any("machine-recorded facts" in c for c in second_users))
         # And only once: the corrected answer goes straight to the report.
-        self.assertTrue(ec_holder[-1]["evidence_handback_used"])
+        self.assertTrue(ec_holder[-1].evidence_handback_used)
         # The report is there, as a marked block behind the model's own prose rather
         # than a wall of text in front of it.
         from mimir.client.guardrails.workflow import COMPLETION_MARKER
@@ -1778,7 +1759,7 @@ class PlanLoopModeSwitchTests(unittest.TestCase):
         messages = [{"role": "system", "content": "system:plan"},
                     {"role": "user", "content": "plan it"}]
         # The user already flipped to agent: the loop was entered observing "plan".
-        ec = {loop_base_module._OBSERVED_MODE: "plan"}
+        ec = build_execution_context(observed_agent_mode="plan")
         backend = ScriptedBackend([{"content": "unused"}])
 
         with patch.object(streaming_module, "get_backend", lambda: backend), \
@@ -1887,19 +1868,19 @@ class RepeatedFailingCallGuardTests(unittest.TestCase):
 
         # Failure 1: counted, no corrective yet.
         self._dispatch(agent, ec)
-        self.assertEqual(loop_control(ec).call_fails[key], 1)
-        self.assertNotIn("_repeat_alert", ec)
+        self.assertEqual(ec.loop_control.call_fails[key], 1)
+        self.assertFalse(ec.repeat_alert)
 
         # Failure 2: crosses SOFT_REPEAT_THRESHOLD → corrective staged once.
         self._dispatch(agent, ec)
-        self.assertEqual(loop_control(ec).call_fails[key], 2)
-        self.assertEqual(ec["_repeat_alert"][0], "code_check_file")
-        ec.pop("_repeat_alert")
+        self.assertEqual(ec.loop_control.call_fails[key], 2)
+        self.assertEqual(ec.repeat_alert[0], "code_check_file")
+        ec.take("repeat_alert")
 
         # Failure 3: reaches HARD_REPEAT_LIMIT; still executed, not re-warned.
         self._dispatch(agent, ec)
-        self.assertEqual(loop_control(ec).call_fails[key], HARD_REPEAT_LIMIT)
-        self.assertNotIn("_repeat_alert", ec)
+        self.assertEqual(ec.loop_control.call_fails[key], HARD_REPEAT_LIMIT)
+        self.assertFalse(ec.repeat_alert)
         executed_before = calls["n"]
 
         # 4th attempt: hard-blocked — the tool is NOT executed, a synthetic error is returned.

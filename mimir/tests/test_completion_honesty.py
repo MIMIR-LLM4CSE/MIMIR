@@ -22,6 +22,7 @@ import os
 import shutil
 import tempfile
 import types
+import copy
 import unittest
 from unittest import mock
 
@@ -61,9 +62,7 @@ from mimir.client.query_engine.verification import (
 
 
 def _ctx(**over):
-    ec = build_execution_context()
-    ec.update(over)
-    return ec
+    return build_execution_context(**over)
 
 
 def _written(paths, tier=None, validated=True):
@@ -87,7 +86,7 @@ class _ChecklistFixture(unittest.TestCase):
         with open(fp, "w", encoding="utf-8") as fh:
             fh.write("\n".join(lines) + "\n")
         self.addCleanup(lambda: (os.remove(fp), os.rmdir(d)))
-        ec["todo_file_path"] = fp
+        ec.todo_file_path = fp
         return fp
 
 
@@ -135,7 +134,7 @@ class VerificationLedgerTests(_ChecklistFixture):
         # Once a run has been read, the ledger has something better to show than the
         # reminder that a checker proves nothing about the answer.
         ec = _written({"solver.py"}, tier="static")
-        ec["runs"] = {"pytest -q": {
+        ec.runs = {"pytest -q": {
             "completed": True, "verdict": "pass", "reason": "l2_rel=3e-4",
             "failures": 0, "attempts": [],
         }}
@@ -149,7 +148,7 @@ class VerificationLedgerTests(_ChecklistFixture):
         # from plan prose, so at completion time a plan the model revised on purpose is
         # indistinguishable from a step it skipped, and charging it read as a defect.
         ec = _written({"a.py"}, tier="static")
-        ec["declared_edit_set"] = {"a.py", "b.py"}
+        ec.declared_edit_set = {"a.py", "b.py"}
         out = _annotate_answer_with_changes("Done.", ec)
         self.assertNotIn("Declared but never written", out)
         self.assertNotIn("declared, never written", out)
@@ -209,7 +208,7 @@ class LedgerMarkerTests(_ChecklistFixture):
         # ok: settled evidence, nothing open. note: it checks out, but nothing read the
         # result. warn: something the reader has to act on.
         clean = _written({"a.py"}, tier="static")
-        clean["runs"] = {"pytest -q": {
+        clean.runs = {"pytest -q": {
             "completed": True, "verdict": "pass", "reason": "l2_rel=3e-4",
             "failures": 0, "attempts": [],
         }}
@@ -221,7 +220,7 @@ class LedgerMarkerTests(_ChecklistFixture):
         # Suppressing the run recommendation and suppressing the fact that it could not
         # be followed are different things; the second is what the reader needs.
         ec = _written({"a.py"}, tier="static")
-        ec["exercise_blocked_reason"] = "no execution tool is connected to this session"
+        ec.exercise_blocked_reason = "no execution tool is connected to this session"
         rows = "\n".join(build_ledger(ec)["rows"])
         self.assertIn("no execution tool is connected", rows)
         # Silent when nothing blocked it: an ordinary unexercised change says enough.
@@ -339,9 +338,9 @@ class OutputVerdictLedgerTests(_ChecklistFixture):
             failures=VALIDATION_RETRY_BUDGET,
             attempts=["0.00% amplitude reduction", "energy grew by 0.6%"],
         )
-        ec["dirty_written_files"] = {"solver.py"}
-        ec["validated_files"] = {"solver.py"}
-        ec["code_mutation_started"] = True
+        ec.dirty_written_files = {"solver.py"}
+        ec.validated_files = {"solver.py"}
+        ec.code_mutation_started = True
         issues, _ = _collect_completion_issues(ec)
         joined = "\n".join(issues)
         self.assertIn("budget exhausted", joined)
@@ -352,9 +351,9 @@ class OutputVerdictLedgerTests(_ChecklistFixture):
         # The loop is over by the time this is rendered; a retry budget with room
         # left describes what the loop *would* have done, not what will happen.
         ec = self._run(verdict="fail", reason="segfault", failures=1)
-        ec["dirty_written_files"] = {"solver.py"}
-        ec["validated_files"] = {"solver.py"}
-        ec["code_mutation_started"] = True
+        ec.dirty_written_files = {"solver.py"}
+        ec.validated_files = {"solver.py"}
+        ec.code_mutation_started = True
         joined = "\n".join(_collect_completion_issues(ec)[0])
         self.assertIn("unresolved", joined)
         self.assertNotIn("will retry", joined)
@@ -390,8 +389,8 @@ class WorkflowNudgeSequenceTests(unittest.TestCase):
         """
         # Two distinct discovery signals, else the guidance layer's `discovery` nudge
         # speaks first and this reads as "no workflow nudge fired".
-        ec.setdefault("read_files", set()).add("solver.py")
-        ec["searched"] = True
+        ec.read_files.add("solver.py")
+        ec.searched = True
         events: list[dict] = []
         token = set_event_sink(events.append)
         try:
@@ -409,7 +408,7 @@ class WorkflowNudgeSequenceTests(unittest.TestCase):
         unchecked = _written({"solver.py"}, validated=False)
         # `validation` now carries a finding rather than a request, so it fires on the
         # built-in check having rejected the file, not on editing having paused.
-        unchecked["builtin_check_findings"] = {"solver.py": "line 3: '{' is never closed"}
+        unchecked.builtin_check_findings = {"solver.py": "line 3: '{' is never closed"}
         cases = [
             ("written, never checked", unchecked, "validation"),
             ("checked, never run", _written({"solver.py"}, tier="static"), "unexercised"),
@@ -453,7 +452,7 @@ class WorkflowNudgeSequenceTests(unittest.TestCase):
         # The env-resolution advice owns this moment; "you never ran it" would be
         # asking for the run that just failed to start.
         ec = _written({"solver.py"}, tier="static")
-        ec["unresolved_modules"] = {"numpy"}
+        ec.unresolved_modules = {"numpy"}
         self.assertNotEqual(self._fired(ec), "unexercised")
 
     def test_an_unrun_change_still_concludes(self) -> None:
@@ -473,7 +472,7 @@ class WorkflowNudgeSequenceTests(unittest.TestCase):
             messages: list[dict] = []
             maybe_append_nudge(agent=agent, query="fix it", active_mode="agent",
                                execution_context=ec, messages=messages)
-        self.assertEqual(ec["nudge_counts"][EXERCISE_BUDGET], 1)
+        self.assertEqual(ec.nudge_counts[EXERCISE_BUDGET], 1)
 
     def test_the_reminder_names_the_three_routes_and_the_way_out(self) -> None:
         text = unexercised_code_nudge_message(["solver.py"])
@@ -519,7 +518,7 @@ class CompletionIssueTests(_ChecklistFixture):
         # Same reason as the ledger row it mirrors: an issue is something the run left
         # broken, and a plan revised mid-course is not that.
         ec = _written({"a.py"}, tier="static")
-        ec["declared_edit_set"] = {"a.py", "b.py"}
+        ec.declared_edit_set = {"a.py", "b.py"}
         issues, _ = _collect_completion_issues(ec)
         self.assertFalse(any("Declared but never written" in i for i in issues))
 
@@ -564,7 +563,7 @@ class RecommendedAxesDoNotBlockTests(_ChecklistFixture):
         _register_run_failure(ec, "python solver.py", "segfault")
         # The state machine still steers the model back to the code — it just no
         # longer doubles as the completion gate.
-        self.assertEqual(ec["workflow_state"], "edit")
+        self.assertEqual(ec.workflow_state, "edit")
         self.assertFalse(needs_incomplete_finalization(ec))
 
     def test_a_fail_verdict_does_not_either(self):
@@ -630,12 +629,13 @@ class RefusedActionReportTests(_ChecklistFixture):
         # An otherwise clean run — validated, concluded, nothing else outstanding — so
         # the refusal is the only thing the report has to account for.
         ec = _written({"a.py"}, tier="static")
-        ec["workflow_state"] = "conclude"
-        ec.update(over)
+        ec.workflow_state = "conclude"
+        for name, value in over.items():
+            setattr(ec, name, value)
         for _ in range(times):
-            ec["denied_tool_calls"].append(
+            ec.denied_tool_calls.append(
                 {"tool": "bash_run", "path": "", "scope": "bash:bash_run:pip install"})
-            ec["denial_history"].append(
+            ec.denial_history.append(
                 {"tool": "bash_run", "scope": "bash:bash_run:pip install", "kind": "denied"})
         return ec
 
@@ -658,7 +658,7 @@ class RefusedActionReportTests(_ChecklistFixture):
         # The refusal alone reads as "complete, except what you refused"; a file the
         # run modified and never checked is a blocker of its own, and it wins.
         ec = self._refused()
-        ec["dirty_written_files"].add("b.py")  # written, never validated
+        ec.dirty_written_files.add("b.py")  # written, never validated
         out = finalize_incomplete_answer("Done.", ec)
         self.assertEqual(self._headline(out), HEADLINE_INCOMPLETE)
         self.assertIn("b.py", out)
@@ -752,7 +752,7 @@ class UnfinishedPlanNudgeTests(_ChecklistFixture):
         ec = _written({"a.py"}, tier="static")
         self.checklist(ec, ["- [ ] two"])
         self.assertTrue(self._should(ec))
-        ec["nudge_counts"]["unfinished_plan"] = NUDGE_MAX_UNFINISHED_PLAN
+        ec.nudge_counts["unfinished_plan"] = NUDGE_MAX_UNFINISHED_PLAN
         self.assertFalse(self._should(ec))
 
     def test_message_offers_both_exits(self):
@@ -833,7 +833,7 @@ class BlockedRunIsALimitationTests(unittest.TestCase):
             validated_files={"solver.c"},
             code_mutation_started=True,
         )
-        ec["validation_tier_by_file"] = {"solver.c": "compiled"}
+        ec.validation_tier_by_file = {"solver.c": "compiled"}
         run = record_run(ec, command, completed=False, effect="build")
         run["blocked"] = reason
         run["reason"] = reason
@@ -853,7 +853,7 @@ class BlockedRunIsALimitationTests(unittest.TestCase):
         # appears under its own heading and never among the issues that drive the
         # headline: a wall the environment put there is not a defect of the change.
         ec = self._blocked()
-        ec["dirty_written_files"].add("mesh.c")  # a file that still owes a check
+        ec.dirty_written_files.add("mesh.c")  # a file that still owes a check
         summary = finalize_incomplete_answer("Done.", ec)
         self.assertIn(
             "Not attempted (a prerequisite this environment does not have)", summary,
@@ -881,7 +881,7 @@ class BlockedRunIsALimitationTests(unittest.TestCase):
     def test_a_genuinely_failing_run_is_still_an_issue(self):
         # The negative control: nothing here swallows a real failure.
         ec = self._blocked()
-        ec["runs"]["make"]["blocked"] = ""
+        ec.runs["make"]["blocked"] = ""
         issues, _ = _collect_completion_issues(ec)
         self.assertTrue(any("make" in i for i in issues))
         self.assertTrue(is_incomplete_answer(finalize_incomplete_answer("Done.", ec)))
@@ -906,7 +906,7 @@ class ExerciseRouteTests(unittest.TestCase):
         from mimir.client.guardrails.nudges import engine
 
         ec = _ctx(dirty_written_files=set(dirty), code_mutation_started=True)
-        ec["read_files"] = set(seen)
+        ec.read_files = set(seen)
         real = engine._any_command_on_path
         engine._any_command_on_path = lambda cmds: not any(c in absent for c in cmds)
         try:
@@ -933,16 +933,16 @@ class ExerciseRouteTests(unittest.TestCase):
         from mimir.client.guardrails.nudges import engine
 
         ec = _ctx(dirty_written_files={"solver.c"}, code_mutation_started=True)
-        before = dict(ec)
+        before = copy.deepcopy(vars(ec))
         engine.exercise_route(self._agent(), ec)
-        self.assertEqual(ec, before)
+        self.assertEqual(vars(ec), before)
 
     def test_the_obstacle_reaches_the_ledger_when_nothing_ran(self):
         from mimir.client.guardrails.nudges import engine
 
         ec = _ctx(dirty_written_files={"solver.c"}, code_mutation_started=True)
         engine.record_exercise_obstacle(self._agent(), ec)
-        self.assertTrue(ec["exercise_blocked_reason"])
+        self.assertTrue(ec.exercise_blocked_reason)
 
     def test_a_build_file_nobody_has_seen_is_not_a_route(self):
         # Evidence only: recommending `make` against a Makefile nobody laid eyes on is
@@ -1008,7 +1008,7 @@ class TestRedRunRaisesResidualRisk(unittest.TestCase):
     def _clean_but_for_runs(self):
         # Everything on the file axis settled, so the runs are the only open fact.
         ec = _written({"a.py"}, tier="static")
-        ec["workflow_state"] = "conclude"
+        ec.workflow_state = "conclude"
         return ec
 
     def test_a_failing_run_lifts_low_to_medium(self):
@@ -1021,7 +1021,7 @@ class TestRedRunRaisesResidualRisk(unittest.TestCase):
     def test_a_model_stated_fail_lifts_low_to_medium(self):
         ec = self._clean_but_for_runs()
         record_run(ec, "./solver", completed=True)
-        ec["runs"]["./solver"]["verdict"] = "fail"
+        ec.runs["./solver"]["verdict"] = "fail"
         self.assertIn("Residual risk: medium.", finalize_incomplete_answer("Done.", ec))
 
     def test_a_blocked_run_stays_low(self):
@@ -1029,7 +1029,7 @@ class TestRedRunRaisesResidualRisk(unittest.TestCase):
         # change — POLICY is explicit that it must not be charged against completion.
         ec = self._clean_but_for_runs()
         record_run(ec, "cmake --build .", completed=False)
-        ec["runs"]["cmake --build ."]["blocked"] = "cmake is not installed here"
+        ec.runs["cmake --build ."]["blocked"] = "cmake is not installed here"
         out = finalize_incomplete_answer("Done.", ec)
         self.assertIn("Not attempted", out)
         self.assertIn("Residual risk: low.", out)

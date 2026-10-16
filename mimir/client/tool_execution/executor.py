@@ -29,6 +29,7 @@ from .normalizer import _make_hashable
 from ..config import paths
 from ...servers._shared.state_paths import scratch_dir
 from ..guardrails.toollist import grantable_tools, grantable_writers
+from ..context.execution_context import ExecutionContext
 
 _CONTINUATION_CHUNK = 120
 _OUTLINE_HINT_MAX_SYMBOLS = 40
@@ -73,7 +74,7 @@ def _build_continuation_hint(agent: Any, tool_name: str, payload: dict) -> str:
 
 
 async def _build_outline_hint(
-    agent: Any, tool_name: str, payload: dict, execution_context: dict[str, Any] | None,
+    agent: Any, tool_name: str, payload: dict, execution_context: ExecutionContext | None,
 ) -> str:
     """Return a symbol map of the file a truncated read only showed a slice of.
 
@@ -94,7 +95,7 @@ async def _build_outline_hint(
     if not outline_tools:
         return ""
 
-    counts = execution_context.get("nudge_counts")
+    counts = execution_context.nudge_counts
     key = f"outline_hint:{agent._normalize_workspace_path(path)}"
     if not isinstance(counts, dict) or counts.get(key):
         return ""
@@ -138,7 +139,7 @@ async def _build_outline_hint(
 
 
 def _build_verdict_due_hint(
-    agent: Any, execution_context: dict[str, Any] | None, before: set[str],
+    agent: Any, execution_context: ExecutionContext | None, before: set[str],
 ) -> str:
     """Return a VERDICT_DUE line when this call left a run nobody has judged yet.
 
@@ -166,7 +167,7 @@ def _build_verdict_due_hint(
 
 
 def _build_imputation_hint(
-    agent: Any, execution_context: dict[str, Any] | None, before: set[str],
+    agent: Any, execution_context: ExecutionContext | None, before: set[str],
 ) -> str:
     """Return an IMPUTATION_DUE line when this call left a run red for the first time.
 
@@ -230,7 +231,7 @@ def _fork_base_stem(stem: str) -> str:
 
 def _build_fork_hint(
     agent: Any, tool_name: str, arguments: dict, result: str,
-    execution_context: dict[str, Any] | None,
+    execution_context: ExecutionContext | None,
     require_edit_cap: bool = True,
 ) -> str:
     """Flag a file that duplicates one already written, or a probe in the wrong place.
@@ -253,7 +254,7 @@ def _build_fork_hint(
         return ""
     if require_edit_cap and not has_cap(tool_name, EDIT, agent.tool_caps):
         return ""
-    counts = execution_context.get("nudge_counts")
+    counts = execution_context.nudge_counts
     if not isinstance(counts, dict) or counts.get("fork_hint"):
         return ""
     path = agent._normalize_workspace_path(arguments.get("path") or "")
@@ -276,7 +277,7 @@ def _build_fork_hint(
 
     base = _fork_base_stem(stem)
     if base:
-        for other in sorted(execution_context.get("dirty_written_files") or ()):
+        for other in sorted(execution_context.dirty_written_files or ()):
             if other == path or os.path.dirname(other) != parent:
                 continue
             if os.path.splitext(os.path.basename(other))[0] == base:
@@ -306,7 +307,7 @@ async def run_post_write_validation(
     agent: Any,
     tool_name: str,
     arguments: dict[str, Any],
-    execution_context: dict[str, Any] | None,
+    execution_context: ExecutionContext | None,
 ) -> str:
     """Return the advisory AUTO_VALIDATION annotation for a write, or "".
 
@@ -335,7 +336,7 @@ async def run_post_tool_annotations(
     tool_name: str,
     arguments: dict[str, Any],
     result: str,
-    execution_context: dict[str, Any] | None,
+    execution_context: ExecutionContext | None,
 ) -> str:
     """Everything appended to a successful tool result: built-in ladder, then hooks.
 
@@ -426,7 +427,7 @@ async def execute_tool_call(
     agent: Any,
     tool_name: str,
     arguments: dict[str, Any],
-    execution_context: dict[str, Any] | None = None,
+    execution_context: ExecutionContext | None = None,
     run_auto_validation: bool = True,
     call_id: str = "",
     record_observations: bool = True,
@@ -526,8 +527,8 @@ async def execute_tool_call(
         meta=call_meta)
     normalized = agent._normalize_tool_content(result)
 
-    runs_before = set(unsettled_runs(execution_context or {}))
-    failed_before = set(failed_runs(execution_context or {}))
+    runs_before = set(unsettled_runs(execution_context)) if execution_context else set()
+    failed_before = set(failed_runs(execution_context)) if execution_context else set()
     if record_observations:
         record_tool_observation(agent, tool_name, arguments, normalized, execution_context, call_id)
 

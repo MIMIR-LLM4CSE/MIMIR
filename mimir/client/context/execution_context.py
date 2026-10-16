@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, field
+from dataclasses import MISSING, dataclass, field, fields
 from collections.abc import Iterable
-from typing import Any, Callable, TypedDict, cast
+from typing import Any, Callable
 
 from ..config.limits import (
     DISCOVERY_EVIDENCE_MIN_DISTINCT_PLAN,
@@ -13,71 +13,10 @@ from .bash_classify import Kind, classify_bash_command
 from ..config import paths
 
 
-class ExecutionContext(TypedDict):
-    # ── Discovery: what the agent has searched, inspected, and read ────────────
-    searched: bool                                  # True once any SEARCH-capability tool has run (discovery-evidence signal)
-    planned_edit_targets: set[str]                  # files the model intends to / has begun editing (union'd with dirty for todo + blast gating)
-    inspected_dirs: set[str]                        # directories listed/inspected (delete context, discovery-evidence signal)
-    checked_paths: set[str]                         # paths whose existence was probed via an existence check
-    read_files: set[str]                            # files whose content was read (edit/overwrite precondition; dropped to force a re-read after repeated edit failures)
-    existing_paths: set[str]                        # paths proven to exist on disk (reads, existence hits, candidate matches, written files + their parent dirs)
-    delegated_read_files: set[str]                  # files a delegated sub-agent read and reported back; discovery evidence for the caller, never a substitute for read_files
-    similar_candidates_by_dir: dict[str, set[str]]  # per-directory near-name candidates from candidate searches (path clarification)
-    search_tool_calls: int                          # count of successful search calls (blast-radius gate)
-    action_op_count: int                            # count of successful substantive actions (PLAN_BLOCKED: writes/exec/mutations); drives the todo op-count trigger
-    workspace_root: str                             # the tree THIS agent works in; a sub-agent given a copy of the repository declares its paths under that copy
-    # ── Edit: planned and in-flight mutations ──────────────────────────────────
-    dirty_written_files: set[str]                   # code files successfully written this query and not yet re-validated
-    validated_files: set[str]                       # dirty files that have since passed a checker (syntax/imports/lint) — never an execution
-    validation_tier_by_file: dict[str, str]         # per-file strength of that validation: structural|syntax|static|compiled (completion ledger)
-    validation_fail_count_by_file: dict[str, int]   # per-file count of failed checks (retry-budget exhaustion)
-    unverifiable_files: set[str]                    # dirty files the built-in floor cannot read at all (binary, undecodable): reported, never demanded
-    builtin_check_stamp: dict[str, tuple[int, int]] # path -> (mtime_ns, size) at its last built-in check: what makes the conclusion sweep check each revision once
-    builtin_check_findings: dict[str, str]          # path -> the built-in floor's diagnostic for a file it rejected (drives the validation nudge)
-    runs: dict[str, dict[str, Any]]                 # command -> {call_id, completed: bool, effect: run|build, verdict: ''|pass|fail|unknown, reason, failures: int, attempts: [str]}: everything about an execution, which is judged on its own and credits no file
-    exercise_advice_closed: bool                    # True once the model answered the run/verdict advice; the shared exercise budget never re-arms after that
-    exercise_blocked_reason: str                    # why running the change was out of reach (no exec tool, unresolved imports, needs a build): reported in the ledger instead of silently dropping the advice
-    evidence_handback_used: bool                    # True once the model was handed the completion ledger to rewrite its summary (once per query)
-    denied_tool_calls: list[dict[str, Any]]         # tool calls blocked by policy/approval (denial nudge + finalization)
-    denial_history: list[dict[str, Any]]            # append-only refusal log keyed by approval scope; drives the escalation ladder (never cleared, unlike denied_tool_calls)
-    workflow_state: str                             # coarse phase of the loop: "discover" | "edit" | "validate" | "conclude"
-    code_mutation_started: bool                     # True once the first code file was successfully edited this query
-    nudge_counts: dict[str, int]                    # per-category nudge fire counts (frequency caps). keys: discovery, validation, denial, state, creation, blast_radius, doc, todo, error_recovery, regression
-    cross_file_grep_old_text: str | None            # old_text of a confirmed workspace-wide replace, seeding the cross-file completeness check
-    cross_file_grep_source: str | None              # file where that workspace-wide replacement originated
-    last_replace_old_text: str | None               # old_text of the most recent tracked replacement (completeness checking)
-    last_replace_new_text: str                      # new_text of that most recent tracked replacement
-    last_replace_file: str                          # file the most recent tracked replacement targeted
-    edit_loop_state: dict[str, tuple]               # path -> (last_signature: str|None, identical consecutive failures: int); guards the identical-patch hard block
-    edit_fail_streak_by_file: dict[str, int]        # path -> consecutive edit failures regardless of patch (force-re-read + error_recovery)
-    steps_since_last_edit: int                      # agent-loop steps since the last successful edit (idle gating)
-    declared_edit_set: set[str]                     # source files named in a task-checklist declaration (multi-file plan completeness)
-    tests_run: set[str]                             # files passed to a tests-kind validator this query (regression guard)
-    test_failure_signatures: dict[str, list[str]]   # test file -> distinct failing-node-id sets seen this query (oracle nudge)
-    # ── Environment: what the run needs and what it changed ────────────────────
-    unresolved_modules: set[str]                     # imports a run failed to resolve (env-resolution nudge)
-    unwatched_runs: set[str]                         # ids a scheduler listed that no descriptor covers — nothing watches them, no wake is owed (unwatched-run nudge)
-    env_probed: bool                                 # True once the model enumerated the available interpreters/envs
-    env_mutations: list[dict[str, Any]]              # installs / env creations recorded this query (conclude-phase cleanup nudge)
-    # ── Todo / planning ────────────────────────────────────────────────────────
-    todo_written: bool                              # True once an ordered checklist (plan_steps) was recorded
-    plan_written: bool                              # True once a prose plan/rationale was recorded
-    todo_file_path: str                             # absolute path to the active todo_list.md (set at query start)
-    last_edit_success_path: str                     # path of last successful code edit (cleared after injection)
-    # ── Cross-query and loop bookkeeping ───────────────────────────────────────
-    tool_msg_files: dict[str, list[str]]             # tool_call_id -> files that tool message concerns; lets history trimming match messages to files structurally
-    consecutive_noop_turns: int                      # consecutive bare final-answer turns with no tool call (nudge cutoff)
-    history_truncated: bool                          # the context backstop dropped older content this query; a cached read may no longer be "above in your context"
-    skills_loaded: dict[str, str]                    # skill name -> tool_call_id carrying its instructions ("" = folded into messages[0] by /<name>, "pending" = pull in flight)
-    pinned_call_ids: set[str]                        # tool_call_ids the history budget may not evict or summarise while anything else is reducible
-
-
 # Per-query loop-control bookkeeping used only by the tool-dispatch dedup and the
-# repeated-failing-call guard. Deliberately kept OUT of the
-# ExecutionContext contract above: these are private dedup implementation details,
-# reset fresh each query, not semantic discovery/edit/validation state. They live in
-# one object stored under the private ``_loop_control`` context key (via
-# ``loop_control()``) so the public schema stays about meaning, not plumbing.
+# repeated-failing-call guard: private dedup implementation details, reset fresh each
+# query, not semantic discovery/edit/validation state — so kept in one object of its
+# own (``ExecutionContext.loop_control``) rather than spread over the context.
 @dataclass
 class LoopControlState:
     write_calls: set = field(default_factory=set)          # (tool, args) writes already dispatched this query
@@ -85,22 +24,6 @@ class LoopControlState:
     repeat_warned: set = field(default_factory=set)        # keys the soft repeated-call corrective fired for
     call_results: dict = field(default_factory=dict)       # (tool, args) -> (result digest, identical-SUCCESS count)
     repeat_noted: set = field(default_factory=set)         # keys the identical-success annotation fired for
-
-
-_LOOP_CONTROL_KEY = "_loop_control"
-
-
-def loop_control(execution_context: dict[str, Any]) -> LoopControlState:
-    """Return the per-query loop-control state, creating it on first use.
-
-    Not part of the validated ExecutionContext schema — the state is created lazily
-    the first time agent_loop needs it and discarded with the per-query context.
-    """
-    lc = execution_context.get(_LOOP_CONTROL_KEY)
-    if not isinstance(lc, LoopControlState):
-        lc = LoopControlState()
-        execution_context[_LOOP_CONTROL_KEY] = lc
-    return lc
 
 
 # ── Recency-preserving sets ────────────────────────────────────────────────────
@@ -196,94 +119,153 @@ FIELD_TRAITS: frozenset[str] = frozenset({CARRY, FILE_PATH, KNOWN_FILE, DISCOVER
 # ``inspected_dirs`` is deliberately CARRY + DISCOVERY but NOT FILE_PATH: it holds
 # directories, and deleting a file does not un-inspect the directory that contained it.
 
-# Single source of truth for the execution-context schema: ``(name, default_factory,
-# accepted_types, traits)``.  ``execution_context_template``, ``validate_execution_context``
-# and every derived field list are computed from this table, so a new field only needs to
-# be added once here (plus the ``ExecutionContext`` TypedDict above, kept in sync by the
-# contract test asserting the two key sets match).  Grouped by concern for readability.
-_FieldSpec = tuple[str, Callable[[], Any], tuple[type, ...], frozenset[str]]
-_NoneType = type(None)
-_NO_TRAITS: frozenset[str] = frozenset()
+def _spec(factory: Callable[[], Any], types: tuple[type, ...], *traits: str) -> Any:
+    """A context field: its default, the types it may hold, and what it *is* (traits)."""
+    return field(default_factory=factory,
+                 metadata={"types": types, "traits": frozenset(traits)})
 
-_FIELD_SPECS: tuple[_FieldSpec, ...] = (
+
+_NoneType = type(None)
+
+
+@dataclass(eq=False)
+class ExecutionContext:
+    """Everything one query has established, read by every guard, nudge and report.
+
+    One object per query, built by the agent (``_new_execution_context``) and handed to
+    every layer. Each field declares its default, the types it may hold and its traits
+    — what the field *is* — and every derived list (the carried fields, the path fields
+    a deletion purges, the discovery signals) is computed from those declarations, so a
+    new field is declared once, here.
+    """
+
     # ── Discovery: what the agent has searched, inspected, and read ────────────
-    ("searched", lambda: False, (bool,), frozenset({DISCOVERY})),
-    ("inspected_dirs", set, (set,), frozenset({CARRY, DISCOVERY})),
-    ("checked_paths", set, (set,), frozenset({CARRY, FILE_PATH, KNOWN_FILE, DISCOVERY})),
+    # True once any SEARCH-capability tool has run (discovery-evidence signal)
+    searched: bool = _spec(lambda: False, (bool,), DISCOVERY)
+    # directories listed/inspected (delete context, discovery-evidence signal)
+    inspected_dirs: set[str] = _spec(set, (set,), CARRY, DISCOVERY)
+    # paths whose existence was probed via an existence check
+    checked_paths: set[str] = _spec(set, (set,), CARRY, FILE_PATH, KNOWN_FILE, DISCOVERY)
     # RecencySet: shown as a bounded slice, where recency is what makes the slice
     # useful (see recent_first).
-    ("read_files", RecencySet, (set,), frozenset({CARRY, FILE_PATH, KNOWN_FILE, DISCOVERY})),
+    # files whose content was read (edit/overwrite precondition; dropped to force a re-read after repeated edit failures)
+    read_files: set[str] = _spec(RecencySet, (set,), CARRY, FILE_PATH, KNOWN_FILE, DISCOVERY)
     # Not DISCOVERY: a path's existence can be established as a side effect of the
     # loop's own bookkeeping rather than by the model's own exploration, which is
     # exactly what the discovery gates must not accept as evidence.
-    ("existing_paths", RecencySet, (set,), frozenset({CARRY, FILE_PATH, KNOWN_FILE})),
+    # paths proven to exist on disk (reads, existence hits, candidate matches, written files + their parent dirs)
+    existing_paths: set[str] = _spec(RecencySet, (set,), CARRY, FILE_PATH, KNOWN_FILE)
     # Read by a sub-agent the model sent, and reported back with the finding: the
     # model's own discovery, done at arm's length. Kept apart from `read_files`
     # because that field also gates editing, and the model has not read these.
-    ("delegated_read_files", RecencySet, (set,), frozenset({CARRY, FILE_PATH, KNOWN_FILE, DISCOVERY})),
-    ("similar_candidates_by_dir", dict, (dict,), _NO_TRAITS),
-    ("search_tool_calls", lambda: 0, (int,), _NO_TRAITS),
+    # files a delegated sub-agent read and reported back; discovery evidence for the caller, never a substitute for read_files
+    delegated_read_files: set[str] = _spec(RecencySet, (set,), CARRY, FILE_PATH, KNOWN_FILE, DISCOVERY)
+    # per-directory near-name candidates from candidate searches (path clarification)
+    similar_candidates_by_dir: dict[str, set[str]] = _spec(dict, (dict,))
+    # count of successful search calls (blast-radius gate)
+    search_tool_calls: int = _spec(lambda: 0, (int,))
     # Count of successful substantive actions (writes/exec/mutations — any PLAN_BLOCKED
     # tool). Read by the todo nudge so a many-operation task is recognised as
     # multi-step even when it touches only one (or zero) files.
-    ("action_op_count", lambda: 0, (int,), _NO_TRAITS),
+    # count of successful substantive actions (PLAN_BLOCKED: writes/exec/mutations); drives the todo op-count trigger
+    action_op_count: int = _spec(lambda: 0, (int,))
     # Empty means "the workspace the client was started in" — the module constant.
     # Set per run, because an agent's root is a property of the agent and a sub-agent
     # may work in a copy of the repository.
-    ("workspace_root", lambda: "", (str,), _NO_TRAITS),
+    # the tree THIS agent works in; a sub-agent given a copy of the repository declares its paths under that copy
+    workspace_root: str = _spec(lambda: "", (str,))
     # ── Edit: planned and in-flight mutations ──────────────────────────────────
-    ("planned_edit_targets", RecencySet, (set,), _NO_TRAITS),
-    ("declared_edit_set", set, (set,), _NO_TRAITS),
-    ("dirty_written_files", RecencySet, (set,), frozenset({FILE_PATH})),
-    ("cross_file_grep_old_text", lambda: None, (str, _NoneType), _NO_TRAITS),
-    ("cross_file_grep_source", lambda: None, (str, _NoneType), _NO_TRAITS),
-    ("last_replace_old_text", lambda: None, (str, _NoneType), _NO_TRAITS),
-    ("last_replace_new_text", lambda: "", (str,), _NO_TRAITS),
-    ("last_replace_file", lambda: "", (str,), _NO_TRAITS),
-    ("edit_loop_state", dict, (dict,), _NO_TRAITS),
-    ("edit_fail_streak_by_file", dict, (dict,), _NO_TRAITS),
-    ("steps_since_last_edit", lambda: 0, (int,), _NO_TRAITS),
-    ("last_edit_success_path", lambda: "", (str,), _NO_TRAITS),
+    # files the model intends to / has begun editing (union'd with dirty for todo + blast gating)
+    planned_edit_targets: set[str] = _spec(RecencySet, (set,))
+    # source files named in a task-checklist declaration (multi-file plan completeness)
+    declared_edit_set: set[str] = _spec(set, (set,))
+    # code files successfully written this query and not yet re-validated
+    dirty_written_files: set[str] = _spec(RecencySet, (set,), FILE_PATH)
+    # old_text of a confirmed workspace-wide replace, seeding the cross-file completeness check
+    cross_file_grep_old_text: str | None = _spec(lambda: None, (str, _NoneType,))
+    # file where that workspace-wide replacement originated
+    cross_file_grep_source: str | None = _spec(lambda: None, (str, _NoneType,))
+    # old_text of the most recent tracked replacement (completeness checking)
+    last_replace_old_text: str | None = _spec(lambda: None, (str, _NoneType,))
+    # new_text of that most recent tracked replacement
+    last_replace_new_text: str = _spec(lambda: "", (str,))
+    # file the most recent tracked replacement targeted
+    last_replace_file: str = _spec(lambda: "", (str,))
+    # path -> (last_signature: str|None, identical consecutive failures: int); guards the identical-patch hard block
+    edit_loop_state: dict[str, tuple] = _spec(dict, (dict,))
+    # path -> consecutive edit failures regardless of patch (force-re-read + error_recovery)
+    edit_fail_streak_by_file: dict[str, int] = _spec(dict, (dict,))
+    # agent-loop steps since the last successful edit (idle gating)
+    steps_since_last_edit: int = _spec(lambda: 0, (int,))
+    # path of last successful code edit (cleared after injection)
+    last_edit_success_path: str = _spec(lambda: "", (str,))
     # ── Validation ─────────────────────────────────────────────────────────────
-    ("validated_files", set, (set,), frozenset({FILE_PATH})),
-    ("validation_tier_by_file", dict, (dict,), _NO_TRAITS),
-    ("validation_fail_count_by_file", dict, (dict,), _NO_TRAITS),
-    ("unverifiable_files", set, (set,), frozenset({FILE_PATH})),
-    ("builtin_check_stamp", dict, (dict,), _NO_TRAITS),
-    ("builtin_check_findings", dict, (dict,), _NO_TRAITS),
-    ("runs", dict, (dict,), _NO_TRAITS),
-    ("exercise_advice_closed", lambda: False, (bool,), _NO_TRAITS),
-    ("exercise_blocked_reason", lambda: "", (str,), _NO_TRAITS),
-    ("evidence_handback_used", lambda: False, (bool,), _NO_TRAITS),
+    # dirty files that have since passed a checker (syntax/imports/lint) — never an execution
+    validated_files: set[str] = _spec(set, (set,), FILE_PATH)
+    # per-file strength of that validation: structural|syntax|static|compiled (completion ledger)
+    validation_tier_by_file: dict[str, str] = _spec(dict, (dict,))
+    # per-file count of failed checks (retry-budget exhaustion)
+    validation_fail_count_by_file: dict[str, int] = _spec(dict, (dict,))
+    # dirty files the built-in floor cannot read at all (binary, undecodable): reported, never demanded
+    unverifiable_files: set[str] = _spec(set, (set,), FILE_PATH)
+    # path -> (mtime_ns, size) at its last built-in check: what makes the conclusion sweep check each revision once
+    builtin_check_stamp: dict[str, tuple[int, int]] = _spec(dict, (dict,))
+    # path -> the built-in floor's diagnostic for a file it rejected (drives the validation nudge)
+    builtin_check_findings: dict[str, str] = _spec(dict, (dict,))
+    # command -> {call_id, completed: bool, effect: run|build, verdict: ''|pass|fail|unknown, reason, failures: int, attempts: [str]}: everything about an execution, which is judged on its own and credits no file
+    runs: dict[str, dict[str, Any]] = _spec(dict, (dict,))
+    # True once the model answered the run/verdict advice; the shared exercise budget never re-arms after that
+    exercise_advice_closed: bool = _spec(lambda: False, (bool,))
+    # why running the change was out of reach (no exec tool, unresolved imports, needs a build): reported in the ledger instead of silently dropping the advice
+    exercise_blocked_reason: str = _spec(lambda: "", (str,))
+    # True once the model was handed the completion ledger to rewrite its summary (once per query)
+    evidence_handback_used: bool = _spec(lambda: False, (bool,))
     # ── Workflow + policy ──────────────────────────────────────────────────────
-    ("workflow_state", lambda: "discover", (str,), _NO_TRAITS),
-    ("code_mutation_started", lambda: False, (bool,), _NO_TRAITS),
-    ("nudge_counts", dict, (dict,), _NO_TRAITS),
-    ("denied_tool_calls", list, (list,), _NO_TRAITS),
-    ("denial_history", list, (list,), _NO_TRAITS),
-    ("tests_run", set, (set,), _NO_TRAITS),
-    ("test_failure_signatures", dict, (dict,), _NO_TRAITS),
+    # coarse phase of the loop: "discover" | "edit" | "validate" | "conclude"
+    workflow_state: str = _spec(lambda: "discover", (str,))
+    # True once the first code file was successfully edited this query
+    code_mutation_started: bool = _spec(lambda: False, (bool,))
+    # per-category nudge fire counts (frequency caps). keys: discovery, validation, denial, state, creation, blast_radius, doc, todo, error_recovery, regression
+    nudge_counts: dict[str, int] = _spec(dict, (dict,))
+    # tool calls blocked by policy/approval (denial nudge + finalization)
+    denied_tool_calls: list[dict[str, Any]] = _spec(list, (list,))
+    # append-only refusal log keyed by approval scope; drives the escalation ladder (never cleared, unlike denied_tool_calls)
+    denial_history: list[dict[str, Any]] = _spec(list, (list,))
+    # files passed to a tests-kind validator this query (regression guard)
+    tests_run: set[str] = _spec(set, (set,))
+    # test file -> distinct failing-node-id sets seen this query (oracle nudge)
+    test_failure_signatures: dict[str, list[str]] = _spec(dict, (dict,))
     # ── Environment ────────────────────────────────────────────────────────────
     # These three were live for a long time without being declared here at all: seeded
     # by a bootstrap helper, written by the observers, read by the nudges — and so
     # invisible to the template, to validate_execution_context, and to the TypedDict
     # parity test. Declaring them is what lets a backfill be derived from this table
     # instead of hand-listed per module.
-    ("unresolved_modules", set, (set,), _NO_TRAITS),
-    ("unwatched_runs", set, (set,), _NO_TRAITS),
-    ("env_probed", lambda: False, (bool,), _NO_TRAITS),
-    ("env_mutations", list, (list,), _NO_TRAITS),
+    # imports a run failed to resolve (env-resolution nudge)
+    unresolved_modules: set[str] = _spec(set, (set,))
+    # ids a scheduler listed that no descriptor covers — nothing watches them, no wake is owed (unwatched-run nudge)
+    unwatched_runs: set[str] = _spec(set, (set,))
+    # True once the model enumerated the available interpreters/envs
+    env_probed: bool = _spec(lambda: False, (bool,))
+    # installs / env creations recorded this query (conclude-phase cleanup nudge)
+    env_mutations: list[dict[str, Any]] = _spec(list, (list,))
     # ── Todo / planning ────────────────────────────────────────────────────────
-    ("todo_written", lambda: False, (bool,), _NO_TRAITS),
-    ("plan_written", lambda: False, (bool,), _NO_TRAITS),
-    ("todo_file_path", lambda: "", (str,), _NO_TRAITS),
+    # True once an ordered checklist (plan_steps) was recorded
+    todo_written: bool = _spec(lambda: False, (bool,))
+    # True once a prose plan/rationale was recorded
+    plan_written: bool = _spec(lambda: False, (bool,))
+    # absolute path to the active todo_list.md (set at query start)
+    todo_file_path: str = _spec(lambda: "", (str,))
     # ── Cross-query and loop bookkeeping ───────────────────────────────────────
     # These were live without being declared: written by the loop, the dispatcher or
     # the carry merge, and read by the history budget — but invisible to the template,
     # to validate_execution_context and to the trait derivations.
-    ("tool_msg_files", dict, (dict,), _NO_TRAITS),
-    ("consecutive_noop_turns", lambda: 0, (int,), _NO_TRAITS),
-    ("history_truncated", lambda: False, (bool,), _NO_TRAITS),
+    # tool_call_id -> files that tool message concerns; lets history trimming match messages to files structurally
+    tool_msg_files: dict[str, list[str]] = _spec(dict, (dict,))
+    # consecutive bare final-answer turns with no tool call (nudge cutoff)
+    consecutive_noop_turns: int = _spec(lambda: 0, (int,))
+    # the context backstop dropped older content this query; a cached read may no longer be "above in your context"
+    history_truncated: bool = _spec(lambda: False, (bool,))
     # ── Skills loaded on demand ────────────────────────────────────────────────
     # skill name -> the tool_call_id of the result carrying its instructions; "" for
     # one the user's /<name> folded into messages[0], "pending" while a pull is in
@@ -292,13 +274,44 @@ _FIELD_SPECS: tuple[_FieldSpec, ...] = (
     # message list and in agent.skills.
     # Mirrored into carry_context by hand, like ``searched``: the trait-driven mirror
     # only handles sets, and the instructions outlive the query that pulled them.
-    ("skills_loaded", dict, (dict,), _NO_TRAITS),
+    # skill name -> tool_call_id carrying its instructions ("" = folded into messages[0] by /<name>, "pending" = pull in flight)
+    skills_loaded: dict[str, str] = _spec(dict, (dict,))
     # tool_call_ids whose results the history budget may not evict or summarise away
     # while anything else is reducible. The one pin mechanism; see history.py. CARRY
     # because the pinned message is archived and replayed into the next query, so its
     # protection has to outlive the query too.
-    ("pinned_call_ids", set, (set,), frozenset({CARRY})),
-)
+    # tool_call_ids the history budget may not evict or summarise while anything else is reducible
+    pinned_call_ids: set[str] = _spec(set, (set,), CARRY)
+
+    # ── Loop bookkeeping: state the loop and the correctives keep between two steps ──
+    # The per-query dedup and spin guards (see LoopControlState).
+    loop_control: LoopControlState = field(default_factory=LoopControlState)
+    # The agent's mode as last seen, so only a *change* reads as the user switching
+    # (loop_base._live_mode); None until the query starts.
+    observed_agent_mode: str | None = None
+    # The /<skill> block folded into the system message, put back on every rebuild.
+    skill_suffix: str = ""
+    # mtime of the checklist file the system message currently renders.
+    checklist_stamp: int | None = None
+    # One-shot correctives staged during a step and consumed by the next injection.
+    repeat_alert: tuple | None = None          # (tool, failures) of a repeated failing call
+    moving_test_alert: str | None = None        # a test file whose failing set keeps moving
+    moving_test_told: list = field(default_factory=list)   # test files already told about
+    handback_told: bool = False                 # the end of the denial ladder was said
+    last_todo_tick_path: str = ""               # the file the last "tick the step" was about
+    # Reminders injected for the next call only, and the categories of the last call's.
+    transient_reminders: list = field(default_factory=list)
+    last_call_reminders: list = field(default_factory=list)
+
+    def take(self, name: str) -> Any:
+        """Read a one-shot field and reset it to its default: the staged correctives
+        are consumed by whoever delivers them."""
+        value = getattr(self, name)
+        spec = self.__dataclass_fields__[name]
+        setattr(self, name, spec.default_factory() if spec.default_factory is not MISSING
+                else spec.default)
+        return value
+
 
 
 # ── The carry-context schema ───────────────────────────────────────────────────
@@ -374,31 +387,32 @@ def fields_with(*traits: str) -> tuple[str, ...]:
     iterate get a deterministic result without sorting.
     """
     wanted = frozenset(traits)
-    return tuple(name for name, _f, _t, field_traits in _FIELD_SPECS if wanted <= field_traits)
+    return tuple(f.name for f in fields(ExecutionContext)
+                 if wanted <= f.metadata.get("traits", frozenset()))
 
 
-def was_read(execution_context: dict[str, Any], path: str) -> bool:
+def was_read(execution_context: ExecutionContext, path: str) -> bool:
     """Whether *path* was read through a direct read tool this query.
 
     Says nothing about *how much* of it was read, and deliberately so: reads are
     targeted, a capped window is the normal case, and a gate that asked for the whole
     file would be asking for the one thing the read policy tells the model not to do.
     """
-    return path in (execution_context.get("read_files") or set())
+    return path in (execution_context.read_files or set())
 
 
-def is_known_to_exist(execution_context: dict[str, Any], path: str) -> bool:
+def is_known_to_exist(execution_context: ExecutionContext, path: str) -> bool:
     """Whether *path* is proven to exist — a successful read or an existence hit.
 
     Stronger than :func:`was_checked_for`, which only records that a look happened.
     """
     return (
-        path in (execution_context.get("existing_paths") or set())
+        path in (execution_context.existing_paths or set())
         or was_read(execution_context, path)
     )
 
 
-def was_checked_for(execution_context: dict[str, Any], path: str) -> bool:
+def was_checked_for(execution_context: ExecutionContext, path: str) -> bool:
     """Whether a pre-check was *attempted* for *path*.
 
     Explicitly **not** proof that it exists: a check that came back negative lands here
@@ -406,10 +420,10 @@ def was_checked_for(execution_context: dict[str, Any], path: str) -> bool:
     need the stronger fact, and a name is the only thing that keeps the two apart at
     the call site.
     """
-    return path in (execution_context.get("checked_paths") or set())
+    return path in (execution_context.checked_paths or set())
 
 
-def known_existing_files(execution_context: dict[str, Any]) -> set[str]:
+def known_existing_files(execution_context: ExecutionContext) -> set[str]:
     """Every file path the model has encountered this session (proof they exist).
 
     One implementation for a question that had two: the policy engine's path-clarification
@@ -418,7 +432,7 @@ def known_existing_files(execution_context: dict[str, Any]) -> set[str]:
     """
     known: set[str] = set()
     for name in fields_with(KNOWN_FILE):
-        value = execution_context.get(name)
+        value = getattr(execution_context, name)
         if isinstance(value, set):
             known.update(str(p) for p in value if p)
     return known
@@ -482,38 +496,38 @@ def known_existing_files(execution_context: dict[str, Any]) -> set[str]:
 DISCOVERY_EVIDENCE_SIGNALS: tuple[str, ...] = fields_with(DISCOVERY)
 
 
-def discovery_signal_count(execution_context: dict[str, Any]) -> int:
+def discovery_signal_count(execution_context: ExecutionContext) -> int:
     """Number of distinct model-initiated discovery signals present in *execution_context*."""
     return sum(1 for s in DISCOVERY_EVIDENCE_SIGNALS
-               if execution_context.get(s))
+               if getattr(execution_context, s))
 
 
-def nudge_count(execution_context: dict[str, Any], category: str) -> int:
+def nudge_count(execution_context: ExecutionContext, category: str) -> int:
     """How many times the *category* nudge has fired this query (0 if never).
 
-    Named accessor for the ``execution_context["nudge_counts"].get(category, 0)``
+    Named accessor for the ``execution_context.nudge_counts.get(category, 0)``
     pattern that the per-category frequency caps repeat across every nudge branch.
     """
-    return execution_context.get("nudge_counts", {}).get(category, 0)
+    return execution_context.nudge_counts.get(category, 0)
 
 
-def idle_steps(execution_context: dict[str, Any]) -> int:
+def idle_steps(execution_context: ExecutionContext) -> int:
     """Steps since the last successful edit (large sentinel when none yet).
 
-    Named accessor for ``int(execution_context.get("steps_since_last_edit", 99))``;
+    Named accessor for ``int(execution_context.steps_since_last_edit)``;
     the 99 sentinel means "the model has not edited anything, so it is maximally
     idle" — used by the validation/state idle gates.
     """
-    return int(execution_context.get("steps_since_last_edit", 99))
+    return int(execution_context.steps_since_last_edit)
 
 
-def has_discovery_evidence(execution_context: dict[str, Any], *, min_distinct: int = 1) -> bool:
+def has_discovery_evidence(execution_context: ExecutionContext, *, min_distinct: int = 1) -> bool:
     """True once the model has done at least *min_distinct* distinct discovery actions."""
     return discovery_signal_count(execution_context) >= min_distinct
 
 
 def plan_evidence_ready(
-    execution_context: dict[str, Any],
+    execution_context: ExecutionContext,
     *,
     min_files: int = PLAN_EVIDENCE_MIN_FILES_READ,
     min_distinct: int = DISCOVERY_EVIDENCE_MIN_DISTINCT_PLAN,
@@ -526,11 +540,11 @@ def plan_evidence_ready(
     file contents is what a plan's "WHERE" rests on, so the read count carries the
     gate and the kind count stays as the breadth term beside it.
     """
-    read = set(execution_context.get("read_files") or ())
+    read = set(execution_context.read_files or ())
     # A file a sub-agent read and reported on counts here: the plan's "WHERE" rests on
     # code that was read and whose finding is in the model's context. It does NOT count
     # toward the pre-edit gate, which asks whether *this* agent holds the lines.
-    read |= set(execution_context.get("delegated_read_files") or ())
+    read |= set(execution_context.delegated_read_files or ())
     return (
         len(read) >= min_files
         and has_discovery_evidence(execution_context, min_distinct=min_distinct)
@@ -561,7 +575,7 @@ def _declared_target_written(declared: str, written: set[str], root: str) -> boo
     return any(os.path.abspath(os.path.join(root, w)) == target for w in same_name)
 
 
-def unwritten_declared_files(execution_context: dict[str, Any]) -> list[str]:
+def unwritten_declared_files(execution_context: ExecutionContext) -> list[str]:
     """Declared edit targets that no write this query honoured, sorted.
 
     Read while the work is still going — the edit→validate transition, the empty-turn
@@ -576,17 +590,17 @@ def unwritten_declared_files(execution_context: dict[str, Any]) -> list[str]:
     a raw set difference reported a file as never written whenever the plan spelled it
     differently from the write.
     """
-    declared = execution_context.get("declared_edit_set", set()) or set()
+    declared = execution_context.declared_edit_set or set()
     if not declared:
         return []
-    dirty = set(execution_context.get("dirty_written_files", set()) or set())
+    dirty = set(execution_context.dirty_written_files or set())
     # Off the context, not off the import: a sub-agent in a copy of the repository
     # declares paths under its own root, and this function never sees the agent.
-    root = os.path.abspath(execution_context.get("workspace_root") or paths.WORKSPACE_ROOT)
+    root = os.path.abspath(execution_context.workspace_root or paths.WORKSPACE_ROOT)
     return sorted(d for d in declared if not _declared_target_written(d, dirty, root))
 
 
-def declared_edit_set_complete(execution_context: dict[str, Any]) -> bool:
+def declared_edit_set_complete(execution_context: ExecutionContext) -> bool:
     """True when every file the model declared it would edit has been dirtied.
 
     The single definition of "the planned multi-file refactor is finished writing"
@@ -631,12 +645,12 @@ VALIDATION_TIERS: tuple[str, ...] = ("structural", "syntax", "static", "compiled
 _TIER_RANK = {name: i for i, name in enumerate(VALIDATION_TIERS)}
 
 
-def validation_tier(execution_context: dict[str, Any], path: str) -> str | None:
+def validation_tier(execution_context: ExecutionContext, path: str) -> str | None:
     """The strength of *path*'s validation, or None if it was never validated."""
-    return execution_context.get("validation_tier_by_file", {}).get(path)
+    return execution_context.validation_tier_by_file.get(path)
 
 
-def raise_validation_tier(execution_context: dict[str, Any], path: str, tier: str) -> None:
+def raise_validation_tier(execution_context: ExecutionContext, path: str, tier: str) -> None:
     """Record *tier* for *path*, keeping the strongest evidence seen.
 
     Monotone by design: a file validated by a reference comparison and then
@@ -646,14 +660,14 @@ def raise_validation_tier(execution_context: dict[str, Any], path: str, tier: st
     """
     if tier not in _TIER_RANK:
         return
-    tiers = execution_context.setdefault("validation_tier_by_file", {})
+    tiers = execution_context.validation_tier_by_file
     current = tiers.get(path)
     if current is None or _TIER_RANK[tier] > _TIER_RANK[current]:
         tiers[path] = tier
 
 
 def weakest_validation_tier(
-    execution_context: dict[str, Any], paths: Iterable[str],
+    execution_context: ExecutionContext, paths: Iterable[str],
 ) -> str | None:
     """The lowest tier across *paths*, or None if none of them was validated.
 
@@ -668,7 +682,7 @@ def weakest_validation_tier(
     return VALIDATION_TIERS[min(ranks)] if ranks else None
 
 
-def files_below_tier(execution_context: dict[str, Any], tier: str) -> list[str]:
+def files_below_tier(execution_context: ExecutionContext, tier: str) -> list[str]:
     """Validated files whose evidence is weaker than *tier* (sorted).
 
     Unvalidated files are excluded — they are already reported as pending, and
@@ -677,7 +691,7 @@ def files_below_tier(execution_context: dict[str, Any], tier: str) -> list[str]:
     threshold = _TIER_RANK.get(tier)
     if threshold is None:
         return []
-    tiers = execution_context.get("validation_tier_by_file", {})
+    tiers = execution_context.validation_tier_by_file
     return sorted(p for p, t in tiers.items() if _TIER_RANK.get(t, 0) < threshold)
 
 
@@ -767,7 +781,7 @@ def run_ledger_key(command: str) -> str:
 
 
 def record_run(
-    execution_context: dict[str, Any], command: str, *, completed: bool, call_id: str = "",
+    execution_context: ExecutionContext, command: str, *, completed: bool, call_id: str = "",
     effect: str = "run",
 ) -> dict[str, Any]:
     """Register an execution, or re-register one being run again.
@@ -784,7 +798,7 @@ def record_run(
     ``effect`` distinguishes a build from a run of the project's code, so the completion
     report can name what actually hit a wall.
     """
-    runs = execution_context.setdefault("runs", {})
+    runs = execution_context.runs
     key = run_ledger_key(command)
     previous = runs.pop(key, None) or {}
     run = {
@@ -804,7 +818,7 @@ def record_run(
     return run
 
 
-def unsettled_runs(execution_context: dict[str, Any]) -> dict[str, dict[str, Any]]:
+def unsettled_runs(execution_context: ExecutionContext) -> dict[str, dict[str, Any]]:
     """Runs that reached their end and still owe a reading of what they showed.
 
     A run that did not complete owes nothing: its non-zero exit *is* the finding, and
@@ -812,126 +826,80 @@ def unsettled_runs(execution_context: dict[str, Any]) -> dict[str, dict[str, Any
     judged ``unknown`` stays here — "I cannot tell" is not a settlement.
     """
     return {
-        command: run for command, run in (execution_context.get("runs") or {}).items()
+        command: run for command, run in (execution_context.runs or {}).items()
         if run.get("completed") and run.get("verdict") in ("", "unknown")
     }
 
 
-def failed_runs(execution_context: dict[str, Any]) -> dict[str, dict[str, Any]]:
+def failed_runs(execution_context: ExecutionContext) -> dict[str, dict[str, Any]]:
     """Runs that did not reach their end, or whose output the model judged wrong.
 
     A blocked run is excluded: it charges no repair budget, so leaving it here would hold
     the "every failure is spent" release below its threshold for the rest of the query.
     """
     return {
-        command: run for command, run in (execution_context.get("runs") or {}).items()
+        command: run for command, run in (execution_context.runs or {}).items()
         if (not run.get("completed") or run.get("verdict") == "fail")
         and not run.get("blocked")
     }
 
 
-def execution_context_template() -> ExecutionContext:
-    template = {name: factory() for name, factory, _types, _traits in _FIELD_SPECS}
-    return cast(ExecutionContext, template)
+def build_execution_context(**values: Any) -> ExecutionContext:
+    """A fresh context, with *values* set over the defaults."""
+    return ExecutionContext(**values)
 
 
-def build_execution_context() -> ExecutionContext:
-    return execution_context_template()
-
-
-def validate_execution_context(execution_context: dict[str, Any]) -> None:
+def validate_execution_context(execution_context: ExecutionContext) -> None:
     """Fail fast if the runtime policy contract is broken."""
-    for key, _factory, types, _traits in _FIELD_SPECS:
-        if key not in execution_context:
-            raise KeyError(f"Missing execution_context key: {key}")
-        if not isinstance(execution_context[key], types):
+    for f in fields(execution_context):
+        types = f.metadata.get("types")
+        value = getattr(execution_context, f.name)
+        if types and not isinstance(value, types):
             type_names = ", ".join(tp.__name__ for tp in types)
             raise TypeError(
-                f"Invalid execution_context[{key!r}] type: "
-                f"{type(execution_context[key]).__name__}; expected one of: {type_names}"
+                f"Invalid execution_context.{f.name} type: {type(value).__name__}; "
+                f"expected one of: {type_names}"
             )
 
-    for parent, candidates in execution_context["similar_candidates_by_dir"].items():
+    for parent, candidates in execution_context.similar_candidates_by_dir.items():
         if not isinstance(parent, str):
-            raise TypeError("execution_context['similar_candidates_by_dir'] keys must be str")
+            raise TypeError("execution_context.similar_candidates_by_dir keys must be str")
         if not isinstance(candidates, set):
-            raise TypeError("execution_context['similar_candidates_by_dir'] values must be set[str]")
+            raise TypeError("execution_context.similar_candidates_by_dir values must be set[str]")
 
-    for target in execution_context["planned_edit_targets"]:
+    for target in execution_context.planned_edit_targets:
         if not isinstance(target, str):
-            raise TypeError("execution_context['planned_edit_targets'] values must be str")
+            raise TypeError("execution_context.planned_edit_targets values must be str")
 
-    for key, count in execution_context["validation_fail_count_by_file"].items():
+    for key, count in execution_context.validation_fail_count_by_file.items():
         if not isinstance(key, str):
-            raise TypeError("execution_context['validation_fail_count_by_file'] keys must be str")
+            raise TypeError("execution_context.validation_fail_count_by_file keys must be str")
         if not isinstance(count, int):
-            raise TypeError("execution_context['validation_fail_count_by_file'] values must be int")
+            raise TypeError("execution_context.validation_fail_count_by_file values must be int")
 
-    for key, tier in execution_context["validation_tier_by_file"].items():
+    for key, tier in execution_context.validation_tier_by_file.items():
         if not isinstance(key, str):
-            raise TypeError("execution_context['validation_tier_by_file'] keys must be str")
+            raise TypeError("execution_context.validation_tier_by_file keys must be str")
         if tier not in VALIDATION_TIERS:
             raise ValueError(
-                f"execution_context['validation_tier_by_file'][{key!r}] must be one of "
+                f"execution_context.validation_tier_by_file[{key!r}] must be one of "
                 f"{VALIDATION_TIERS}; got {tier!r}"
             )
 
-    for key, run in execution_context["runs"].items():
+    for key, run in execution_context.runs.items():
         if not isinstance(key, str):
-            raise TypeError("execution_context['runs'] keys must be str")
+            raise TypeError("execution_context.runs keys must be str")
         if not isinstance(run, dict) or not isinstance(run.get("attempts"), list):
-            raise TypeError("execution_context['runs'] values must be dict with an 'attempts' list")
+            raise TypeError("execution_context.runs values must be dict with an 'attempts' list")
         if run.get("verdict") not in ("",) + VERDICTS:
             raise ValueError(
-                f"execution_context['runs'][{key!r}]['verdict'] must be '' or one of "
+                f"execution_context.runs[{key!r}]['verdict'] must be '' or one of "
                 f"{VERDICTS}; got {run.get('verdict')!r}"
             )
 
 
-def ensure_execution_context(execution_context: dict[str, Any] | None) -> ExecutionContext | None:
-    if execution_context is None:
-        return None
-
-    # Defensive backfill so policy checks do not crash when keys are missing.
-    defaults = execution_context_template()
-    for key, value in defaults.items():
-        if key not in execution_context:
-            execution_context[key] = value
-
-    validate_execution_context(execution_context)
-    return cast(ExecutionContext, execution_context)
-
-
-def backfill_execution_context(execution_context: dict[str, Any] | None) -> dict[str, Any] | None:
-    """Give *execution_context* every declared field, without validating it.
-
-    The one seeding helper. There were four — ``bootstrap_engine_context``,
-    ``bootstrap_runtime_context``, ``bootstrap_state_context`` and the nudge engine's
-    own ``_bootstrap_nudge_context`` — each ``setdefault``-ing the subset of fields its
-    own module happened to read. Four hand-picked subsets of one schema is four chances
-    to miss a field, and they had already diverged: the nudge one defaulted
-    ``steps_since_last_edit`` to **99** where the others (and the schema) use 0, so the
-    same absent field meant "maximally idle" to the idle gates and "just edited" to the
-    message builder.
-
-    Deriving from :data:`_FIELD_SPECS` removes the choice: a field that exists is
-    seeded, wherever the context came from. Callers can then read ``ec["field"]``
-    instead of defending with ``ec.get("field", set())`` at every site.
-
-    Distinct from :func:`ensure_execution_context` only by what it *skips*: no
-    validation pass, so it stays cheap enough for a per-tool-call path. The saving was
-    never about seeding fewer fields.
-    """
-    if execution_context is None:
-        return None
-    for name, factory, _types, _traits in _FIELD_SPECS:
-        if name not in execution_context:
-            execution_context[name] = factory()
+def ensure_execution_context(execution_context: ExecutionContext | None) -> ExecutionContext | None:
+    """*execution_context*, checked to be one. A tool run outside a query has none."""
+    if execution_context is not None and not isinstance(execution_context, ExecutionContext):
+        raise TypeError(f"expected an ExecutionContext, got {type(execution_context).__name__}")
     return execution_context
-
-
-# Names the call sites still use. Kept as aliases so this change stays a pure
-# consolidation; they carry no distinct behaviour any more.
-bootstrap_engine_context = backfill_execution_context
-bootstrap_runtime_context = backfill_execution_context
-bootstrap_state_context = backfill_execution_context

@@ -48,6 +48,7 @@ from ..config.limits import (
 from ..context.signals import SOURCE_FILE_EXTENSIONS
 from ..context.bash_classify import bash_command_is_readonly, classify_bash_command
 from ..context.capabilities import shell_command_of
+from ..context.execution_context import ExecutionContext
 
 _GIT_TIMEOUT_SECS = 10
 
@@ -134,7 +135,7 @@ class _Probe:
 
 
 def _candidate_dirs(
-    agent: Any, command: str, root: str, execution_context: dict[str, Any] | None,
+    agent: Any, command: str, root: str, execution_context: ExecutionContext | None,
 ) -> list[str]:
     """Directories worth watching when git cannot answer.
 
@@ -146,7 +147,8 @@ def _candidate_dirs(
     Guessing at the command is the failure mode this whole module exists to avoid.
     """
     dirs: set[str] = {root}
-    for path in (execution_context or {}).get("dirty_written_files") or ():
+    dirty = execution_context.dirty_written_files if execution_context is not None else ()
+    for path in dirty:
         dirs.add(os.path.dirname(str(path)))
     for segment in classify_bash_command(command) or []:
         for operand in segment.operands:
@@ -178,7 +180,7 @@ def _scan(dirs: list[str]) -> dict[str, list[str] | None]:
 
 def capture(
     agent: Any, tool_name: str, arguments: dict,
-    execution_context: dict[str, Any] | None = None,
+    execution_context: ExecutionContext | None = None,
 ) -> _Probe | None:
     """Snapshot enough state to report what this call changes, or None to skip it."""
     try:

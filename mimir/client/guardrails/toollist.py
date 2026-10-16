@@ -46,15 +46,14 @@ from ..context.capabilities import (
     PLAN_BLOCKED, PLAN_READONLY, TASK_PLANNING, has_cap, names_with_arg_role,
     names_with_cap, reserved_for_main,
 )
-from ..context.execution_context import bootstrap_engine_context as _bootstrap_engine_context
+from ..context.execution_context import ExecutionContext
 
 logger = logging.getLogger(__name__)
 
 
 def blocked_tools_for_context(
-    query: str, execution_context: dict[str, Any] | None, tool_caps: Any = None,
+    query: str, execution_context: ExecutionContext | None, tool_caps: Any = None,
 ) -> set[str]:
-    execution_context = _bootstrap_engine_context(execution_context)
 
     if execution_context is None:
         return set()
@@ -96,7 +95,7 @@ def blocked_tools_for_context(
 def tools_for_context(
     *,
     query: str,
-    execution_context: dict[str, Any] | None,
+    execution_context: ExecutionContext | None,
     tools: list[dict[str, Any]],
     tool_caps: Any = None,
 ) -> list[dict[str, Any]]:
