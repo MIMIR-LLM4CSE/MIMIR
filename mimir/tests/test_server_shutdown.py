@@ -15,7 +15,7 @@ import os
 import signal
 import unittest
 
-from mimir.client.ui.ws.ws_server import _run_until_signalled
+from mimir.client.ui.ws.serving import _run_until_signalled
 
 
 class _StubPool:

@@ -6,11 +6,12 @@ different ports, in an order that changes between launches. The line used to say
 extension dialled 127.0.0.1 on the IPv6 port and was refused on every retry.
 """
 import asyncio
+import os
 import unittest
 
 import websockets
 
-from mimir.client.ui.ws.ws_server import _announced_url
+from mimir.client.ui.ws.serving import _announced_url
 
 
 class _Sock:
@@ -48,6 +49,24 @@ class AnnouncedUrlAnswersTests(unittest.IsolatedAsyncioTestCase):
                 async with websockets.connect(url, proxy=None) as ws:
                     self.assertEqual(await asyncio.wait_for(ws.recv(), 5), "hi")
 
+
+
+class EntryPointTests(unittest.TestCase):
+    def test_the_entry_point_resolves_no_workspace_before_main(self) -> None:
+        """``--cwd`` is applied in ``main``; anything that resolved the workspace root
+        while the entry module was imported would have resolved the launch directory.
+
+        It did: the package's own ``__init__`` imported the agent, so ``--cwd`` changed
+        the directory after ``config.paths`` had already fixed the workspace root.
+        """
+        import subprocess
+        import sys
+        code = ("import sys; import mimir.client.ui.ws.ws_server; "
+                "print(any(m.startswith('mimir.client.config') for m in sys.modules))")
+        root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        out = subprocess.run([sys.executable, "-c", code], cwd=root, capture_output=True,
+                             text=True, check=True).stdout.strip()
+        self.assertEqual(out, "False")
 
 if __name__ == "__main__":
     unittest.main()

@@ -466,7 +466,7 @@ class _HangingAgent:
 class WatchJobTests(unittest.TestCase):
     def _make_worker(self, agent) -> object:
         import queue as _queue
-        from mimir.client.ui.ws.ws_server import _AgentWorker
+        from mimir.client.ui.ws.ws_worker import _AgentWorker
         w = _AgentWorker.__new__(_AgentWorker)   # bypass __init__ (spawns a thread)
         w._agent = agent
         w.out_q = _queue.Queue()
@@ -863,7 +863,7 @@ class RegisterBgJobTests(unittest.TestCase):
     """
 
     def _worker(self) -> object:
-        from mimir.client.ui.ws.ws_server import _AgentWorker
+        from mimir.client.ui.ws.ws_worker import _AgentWorker
         w = _AgentWorker.__new__(_AgentWorker)   # bypass __init__ (spawns a thread)
         w._bg_jobs = {}
         w.session_id = None
@@ -1206,7 +1206,7 @@ class AwaitBackgroundJobTests(unittest.TestCase):
 
 class WakeTextTests(unittest.TestCase):
     def _wake(self, ev: dict) -> str:
-        from mimir.client.ui.ws.ws_server import _Session
+        from mimir.client.ui.ws.ws_session import _Session
         return _Session._wake_text(ev)
 
     def test_accept_summary_is_enriched(self) -> None:

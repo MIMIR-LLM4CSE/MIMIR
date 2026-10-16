@@ -676,6 +676,7 @@ class _AgentPool:
         if existing is not None:
             return existing
 
+        evicted = None
         async with self._lock:
             existing = self._workers.get(session_id)
             if existing is not None:
@@ -685,7 +686,8 @@ class _AgentPool:
             # Builds in flight hold a slot too: counted on workers alone, two sessions
             # starting together both saw room and the pool went past its cap.
             if pending is None and len(self._workers) + len(self._building) >= self.cap:
-                if not await self._release_one_idle_locked():
+                evicted = self._take_one_idle_locked()
+                if evicted is None:
                     return None
             if pending is None:
                 pending = asyncio.get_running_loop().create_future()
@@ -693,6 +695,8 @@ class _AgentPool:
                 starting = True
             else:
                 starting = False
+        if evicted is not None:
+            await self._close_workers([evicted])
 
         if not starting:
             # Someone else is building it; wait for their result rather than racing.
@@ -880,34 +884,36 @@ class _AgentPool:
     def idle_for(self, session_id: str) -> float:
         return time.monotonic() - self._last_use.get(session_id, 0.0)
 
-    async def _release_one_idle_locked(self) -> bool:
-        """Free a slot by closing the longest-idle releasable worker. Caller holds the lock.
+    def _take_one_idle_locked(self) -> _AgentWorker | None:
+        """Take out the longest-idle releasable worker, to free its slot. Caller holds
+        the lock, and closes what it is given once it has let go of it.
 
-        Returns False when nothing may be released — every worker is working, waiting on
-        the user, or being read. The caller then queues instead of evicting: taking a slot
-        from a conversation that is mid-task to give it to a new one trades a visible wait
-        for silent lost work.
+        None when nothing may be released — every worker is working, waiting on the
+        user, or being read. The caller then queues instead of evicting: taking a slot
+        from a conversation that is mid-task to give it to a new one trades a visible
+        wait for silent lost work.
         """
         candidates = sorted(
             (sid for sid in self._workers if self.releasable(sid)),
             key=self.idle_for, reverse=True,
         )
         if not candidates:
-            return False
-        await self._close_locked(candidates[0], reason="a slot was needed")
-        return True
+            return None
+        return self._take_locked(candidates[0], reason="a slot was needed")
 
     async def release_idle(self) -> list[str]:
         """Close every releasable worker idle past the TTL. Returns the sessions closed."""
         closed: list[str] = []
+        taken: list[_AgentWorker] = []
         async with self._lock:
             for session_id in list(self._workers):
                 if not self.releasable(session_id):
                     continue
                 if self.idle_for(session_id) < self.idle_ttl:
                     continue
-                await self._close_locked(session_id, reason="idle")
+                taken.append(self._take_locked(session_id, reason="idle"))
                 closed.append(session_id)
+        await self._close_workers(taken)
         return closed
 
     async def close(self, session_id: str) -> None:
@@ -918,20 +924,39 @@ class _AgentPool:
         and a later flush tried to start a turn in it.
         """
         async with self._lock:
-            await self._close_locked(session_id, reason="its session was deleted")
+            worker = self._take_locked(session_id, reason="its session was deleted")
         self.drop_queued(session_id)
         self._wakes_pending.pop(session_id, None)
         self._held_checkin.pop(session_id, None)
+        if worker is not None:
+            await self._close_workers([worker])
 
-    async def _close_locked(self, session_id: str, *, reason: str) -> None:
+    def _take_locked(self, session_id: str, *, reason: str) -> _AgentWorker | None:
+        """Remove *session_id*'s worker from the pool, freeing its slot. Caller holds the
+        lock; the worker is closed after it is released (:meth:`_close_workers`)."""
         worker = self._workers.pop(session_id, None)
         self._last_use.pop(session_id, None)
-        if worker is None:
+        if worker is not None:
+            logger.info("pool: releasing the agent of session %s (%s)", session_id, reason)
+        return worker
+
+    async def _close_workers(self, workers: list[_AgentWorker]) -> None:
+        """Close workers taken out of the pool, all at once and outside its lock.
+
+        Outside the lock: a close waits for the MCP servers to go — seconds of
+        subprocess teardown — and held across it, the lock kept every other
+        conversation from even looking up its own worker. Off the loop for the same
+        reason, and together rather than in series: they share nothing.
+        """
+        if not workers:
             return
-        logger.info("pool: releasing the agent of session %s (%s)", session_id, reason)
-        # Off the loop: aclose waits for the MCP servers to go, which is seconds of
-        # subprocess teardown, and the event loop is serving every other conversation.
-        await asyncio.get_running_loop().run_in_executor(None, worker.aclose)
+        loop = asyncio.get_running_loop()
+        results = await asyncio.gather(
+            *(loop.run_in_executor(None, worker.aclose) for worker in workers),
+            return_exceptions=True)
+        for result in results:
+            if isinstance(result, BaseException):
+                logger.warning("pool: closing an agent failed: %r", result)
 
     async def aclose_all(self) -> None:
         """Close every agent, all at once.
@@ -953,19 +978,9 @@ class _AgentPool:
             logger.warning("pool: final pump flush failed", exc_info=True)
         await self.bus.aclose()
         async with self._lock:
-            workers = list(self._workers.items())
-            self._workers.clear()
-            self._last_use.clear()
-        if not workers:
-            return
-        loop = asyncio.get_running_loop()
-        for session_id, _worker in workers:
-            logger.info("pool: releasing the agent of session %s (shutting down)",
-                        session_id)
-        await asyncio.gather(
-            *(loop.run_in_executor(None, worker.aclose) for _sid, worker in workers),
-            return_exceptions=True,
-        )
+            workers = [self._take_locked(sid, reason="shutting down")
+                       for sid in list(self._workers)]
+        await self._close_workers(workers)
 
     # ── The reaper ────────────────────────────────────────────────────────────
 

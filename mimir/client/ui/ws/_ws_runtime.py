@@ -1,17 +1,10 @@
 """Shared runtime foundation for the WebSocket-server modules.
 
-Split out of ``ws_server.py`` so ``_AgentWorker`` (``ws_worker``) and ``_Session``
-(``ws_session``) can share the stdout router, the session-scoped todo helpers, and
-the context-budget constants without a circular import.
-
-IMPORTANT — cwd bootstrap ordering: ``_bootstrap_cwd()`` MUST run before any import
-that captures the workspace root *at import time* — ``config.paths`` resolves
-WORKSPACE_ROOT / MIMIR_DIR from MCP_FILES_ROOT or os.getcwd() when first imported,
-and the backend factory / ``resource_context`` do likewise. The ``--cwd`` flag is
-only applied in ``main()``, which runs after module-level imports, so without this
-early hook ``.mimir`` would be created against the launch directory. This module is
-imported first by both ``ws_worker`` and ``ws_session``, so applying ``--cwd`` here
-guarantees correct resolution regardless of which module is imported first.
+Split out so ``_AgentWorker`` (``ws_worker``) and ``_Session`` (``ws_session``) can
+share the stdout router, the session-scoped todo helpers and the context-budget
+constants without a circular import. Importing it changes nothing: the router is
+installed by ``serve``, and ``--cwd`` is applied by ``ws_server.main`` before any of
+this is imported.
 """
 
 from __future__ import annotations
@@ -21,29 +14,11 @@ import sys
 import threading
 from typing import Any, Callable
 
-
-# ── Working-directory bootstrap (MUST run before any cwd-dependent import) ──────
-def _bootstrap_cwd() -> None:
-    argv = sys.argv[1:]
-    target: str | None = None
-    for i, tok in enumerate(argv):
-        if tok == "--cwd":
-            target = argv[i + 1] if i + 1 < len(argv) else None
-        elif tok.startswith("--cwd="):
-            target = tok.split("=", 1)[1]
-    if target:
-        os.chdir(target)
-        # Pin the sandbox/workspace root so constants and the MCP servers all
-        # resolve `.mimir` (and MCP_FILES_ROOT) to the same place.
-        os.environ.setdefault("MCP_FILES_ROOT", os.getcwd())
-
-
-_bootstrap_cwd()
-
-# Re-exported (imported *after* _bootstrap_cwd so the workspace root is captured
-# correctly) for the ws modules to pull through this runtime — see module docstring.
-from ...query_engine.backends.factory import get_backend
+from ...config.limits import CTX_TOTAL_FULL as _CTX_DEFAULT_FULL
+from ...config.paths import STATE_DIR
 from ...context.resource_context import augment_query_with_resources
+from ...query_engine.backends.factory import get_backend
+from ...query_engine.context_budget import context_budget_for
 
 
 # ── Thread-aware stdout router ─────────────────────────────────────────────────
@@ -88,14 +63,6 @@ _ROUTER = _ThreadAwareOutput(_ORIGINAL_STDOUT)
 # Install the router once; uninstall on shutdown.
 _ROUTER_INSTALLED = False
 
-# ── Context-window budget constants ────────────────────────────────────────────
-# Canonical values live in config.limits; aliased here to the private names this
-# module already uses (kept in sync with chat_session.py via the shared source).
-from ...query_engine.context_budget import context_budget_for
-from ...config.limits import CTX_TOTAL_FULL as _CTX_DEFAULT_FULL
-from ...config.paths import STATE_DIR
-
-
 def _ensure_router_installed() -> None:
     global _ROUTER_INSTALLED
     if not _ROUTER_INSTALLED:
@@ -126,10 +93,7 @@ def _write_active_session(session_id: str | None) -> None:
         pass
 
 
-# Public surface pulled by the sibling ws modules. Listing the re-exports here
-# (get_backend / augment_query_with_resources / context_budget_for / _CTX_DEFAULT_FULL)
-# marks them intentional — they are imported through this runtime so its cwd
-# bootstrap runs before the backend factory / config capture the workspace root.
+# Public surface pulled by the sibling ws modules, re-exports included.
 __all__ = [
     "_ORIGINAL_STDOUT",
     "_ROUTER",

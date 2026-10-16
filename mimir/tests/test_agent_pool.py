@@ -18,6 +18,8 @@ not the agent.
 from __future__ import annotations
 
 import asyncio
+import threading
+import time
 import unittest
 
 from mimir.client.ui.ws import ws_pool
@@ -295,6 +297,28 @@ class ReleaseTests(_PoolCase):
         await pool.aclose_all()
         self.assertTrue(all(w.closed for w in workers))
         self.assertEqual(len(pool), 0)
+
+    async def test_a_slow_close_does_not_hold_up_another_conversation(self) -> None:
+        """A close waits on the MCP servers going away — seconds. Held under the pool's
+        lock, it kept every other conversation from having its agent built."""
+        pool = self._pool(cap=3)
+        slow = await pool.worker_for("s1")
+        closing = threading.Event()
+
+        def _slow_close() -> None:
+            closing.set()
+            time.sleep(0.5)
+            slow.closed = True
+
+        slow.aclose = _slow_close
+        close = asyncio.create_task(pool.close("s1"))
+        while not closing.is_set():
+            await asyncio.sleep(0.01)
+        started = time.monotonic()
+        await pool.worker_for("s2")
+        self.assertLess(time.monotonic() - started, 0.3)
+        await close
+        self.assertTrue(slow.closed)
 
 
 class SettingsTests(_PoolCase):
